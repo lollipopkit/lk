@@ -1,8 +1,11 @@
 package stdlib
 
-import "sort"
-import "strings"
-import . "luago/api"
+import (
+	"sort"
+	"strings"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+)
 
 const MAX_LEN = 1000000 // TODO
 

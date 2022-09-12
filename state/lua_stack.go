@@ -1,6 +1,6 @@
 package state
 
-import . "luago/api"
+import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
 
 type luaStack struct {
 	/* virtual stack */

@@ -1,6 +1,6 @@
 package vm
 
-import . "luago/api"
+import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
 
 // R(A) := R(B)
 func move(i Instruction, vm LuaVM) {

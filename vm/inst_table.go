@@ -1,6 +1,6 @@
 package vm
 
-import . "luago/api"
+import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
 
 /* number of list items to accumulate before a SETLIST instruction */
 const LFIELDS_PER_FLUSH = 50

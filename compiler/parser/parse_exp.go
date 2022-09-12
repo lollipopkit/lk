@@ -1,8 +1,10 @@
 package parser
 
-import . "luago/compiler/ast"
-import . "luago/compiler/lexer"
-import "luago/number"
+import (
+	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
+	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/lexer"
+	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+)
 
 // explist ::= exp {‘,’ exp}
 func parseExpList(lexer *Lexer) []Exp {

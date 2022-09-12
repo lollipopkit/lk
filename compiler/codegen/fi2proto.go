@@ -1,6 +1,6 @@
 package codegen
 
-import . "luago/binchunk"
+import . "git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
 
 func toProto(fi *funcInfo) *Prototype {
 	proto := &Prototype{

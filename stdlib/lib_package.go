@@ -1,8 +1,11 @@
 package stdlib
 
-import "os"
-import "strings"
-import . "luago/api"
+import (
+	"os"
+	"strings"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+)
 
 /* key, in the registry, for table of loaded modules */
 const LUA_LOADED_TABLE = "_LOADED"

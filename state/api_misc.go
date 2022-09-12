@@ -1,6 +1,6 @@
 package state
 
-import "luago/number"
+import "git.lolli.tech/lollipopkit/go-lang-lk/number"
 
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_len

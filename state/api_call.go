@@ -1,9 +1,11 @@
 package state
 
-import . "luago/api"
-import "luago/binchunk"
-import "luago/compiler"
-import "luago/vm"
+import (
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+	"git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
+	"git.lolli.tech/lollipopkit/go-lang-lk/compiler"
+	"git.lolli.tech/lollipopkit/go-lang-lk/vm"
+)
 
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_load

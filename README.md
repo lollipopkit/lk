@@ -1,5 +1,5 @@
 # Lang LK
-改编自Lua5.3
+改编自Lua5.3，[luago](https://github.com/zxh0/luago-book)
 
 ## 改变
 ### 关键字

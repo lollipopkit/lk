@@ -1,3 +1,3 @@
-module luago
+module git.lolli.tech/lollipopkit/go-lang-lk
 
-go 1.15
+go 1.18

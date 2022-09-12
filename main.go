@@ -1,7 +1,10 @@
 package main
 
-import "os"
-import "luago/state"
+import (
+	"os"
+
+	"git.lolli.tech/lollipopkit/go-lang-lk/state"
+)
 
 func main() {
 	if len(os.Args) > 1 {

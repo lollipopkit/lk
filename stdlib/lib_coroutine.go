@@ -1,6 +1,6 @@
 package stdlib
 
-import . "luago/api"
+import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
 
 var coFuncs = map[string]GoFunction{
 	"create":      coCreate,

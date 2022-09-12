@@ -1,8 +1,11 @@
 package stdlib
 
-import "fmt"
-import "strings"
-import . "luago/api"
+import (
+	"fmt"
+	"strings"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+)
 
 var strLib = map[string]GoFunction{
 	"len":      strLen,

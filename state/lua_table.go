@@ -1,7 +1,10 @@
 package state
 
-import "math"
-import "luago/number"
+import (
+	"math"
+
+	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+)
 
 type luaTable struct {
 	metatable *luaTable

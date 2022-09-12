@@ -1,6 +1,6 @@
 package state
 
-import . "luago/api"
+import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_newtable

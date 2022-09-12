@@ -1,6 +1,6 @@
 package codegen
 
-import . "luago/compiler/ast"
+import . "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
 
 func isVarargOrFuncCall(exp Exp) bool {
 	switch exp.(type) {

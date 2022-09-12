@@ -1,8 +1,11 @@
 package state
 
-import "math"
-import . "luago/api"
-import "luago/number"
+import (
+	"math"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+)
 
 type operator struct {
 	metamethod  string

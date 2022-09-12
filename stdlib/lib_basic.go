@@ -1,9 +1,12 @@
 package stdlib
 
-import "fmt"
-import "strconv"
-import "strings"
-import . "luago/api"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+)
 
 var baseFuncs = map[string]GoFunction{
 	"print":        basePrint,

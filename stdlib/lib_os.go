@@ -3,9 +3,12 @@ package stdlib
 //#include <time.h>
 import "C"
 
-import "os"
-import "time"
-import . "luago/api"
+import (
+	"os"
+	"time"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+)
 
 var sysLib = map[string]GoFunction{
 	"clock":     osClock,

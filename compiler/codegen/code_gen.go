@@ -1,7 +1,9 @@
 package codegen
 
-import . "luago/binchunk"
-import . "luago/compiler/ast"
+import (
+	. "git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
+	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
+)
 
 func GenProto(chunk *Block) *Prototype {
 	fd := &FuncDefExp{

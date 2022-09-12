@@ -1,7 +1,9 @@
 package parser
 
-import . "luago/compiler/ast"
-import . "luago/compiler/lexer"
+import (
+	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
+	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/lexer"
+)
 
 var _statEmpty = &EmptyStat{}
 

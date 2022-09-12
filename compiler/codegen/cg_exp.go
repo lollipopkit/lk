@@ -1,8 +1,11 @@
 package codegen
 
-import . "luago/compiler/ast"
-import . "luago/compiler/lexer"
-import . "luago/vm"
+import (
+	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
+	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/lexer"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/vm"
+)
 
 // kind of operands
 const (

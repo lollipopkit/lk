@@ -1,8 +1,11 @@
 package state
 
-import "fmt"
-import . "luago/api"
-import "luago/number"
+import (
+	"fmt"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+)
 
 type luaValue interface{}
 

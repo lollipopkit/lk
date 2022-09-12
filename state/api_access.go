@@ -1,7 +1,10 @@
 package state
 
-import "fmt"
-import . "luago/api"
+import (
+	"fmt"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+)
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_rawlen

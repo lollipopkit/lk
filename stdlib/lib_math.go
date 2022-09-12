@@ -1,9 +1,12 @@
 package stdlib
 
-import "math"
-import "math/rand"
-import . "luago/api"
-import "luago/number"
+import (
+	"math"
+	"math/rand"
+
+	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+)
 
 var mathLib = map[string]GoFunction{
 	"random":     mathRandom,

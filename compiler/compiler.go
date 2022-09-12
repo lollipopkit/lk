@@ -1,8 +1,10 @@
 package compiler
 
-import "luago/binchunk"
-import "luago/compiler/codegen"
-import "luago/compiler/parser"
+import (
+	"git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
+	"git.lolli.tech/lollipopkit/go-lang-lk/compiler/codegen"
+	"git.lolli.tech/lollipopkit/go-lang-lk/compiler/parser"
+)
 
 func Compile(chunk, chunkName string) *binchunk.Prototype {
 	ast := parser.Parse(chunk, chunkName)
