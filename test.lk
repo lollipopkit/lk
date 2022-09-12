@@ -1,0 +1,11 @@
+import "test2"
+
+shy a = {"a", "b", 'c'}
+shy p,pp, ppp = pairs(a)
+
+shy func = fn (e) print(e) end
+func(1!=2)
+
+for b,c in p do
+    print(b,c)
+end
