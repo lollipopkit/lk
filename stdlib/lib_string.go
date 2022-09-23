@@ -27,13 +27,13 @@ var strLib = map[string]GoFunction{
 	"gmatch":   strGmatch,
 }
 
-func OpenStringLib(ls LuaState) int {
+func OpenStringLib(ls LkState) int {
 	ls.NewLib(strLib)
 	createMetatable(ls)
 	return 1
 }
 
-func createMetatable(ls LuaState) {
+func createMetatable(ls LkState) {
 	ls.CreateTable(0, 1)       /* table to be metatable for strings */
 	ls.PushString("dummy")     /* dummy string */
 	ls.PushValue(-2)           /* copy table */
@@ -49,7 +49,7 @@ func createMetatable(ls LuaState) {
 // string.len (s)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.len
 // lua-5.3.4/src/lstrlib.c#str_len()
-func strLen(ls LuaState) int {
+func strLen(ls LkState) int {
 	s := ls.CheckString(1)
 	ls.PushInteger(int64(len(s)))
 	return 1
@@ -58,7 +58,7 @@ func strLen(ls LuaState) int {
 // string.rep (s, n [, sep])
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.rep
 // lua-5.3.4/src/lstrlib.c#str_rep()
-func strRep(ls LuaState) int {
+func strRep(ls LkState) int {
 	s := ls.CheckString(1)
 	n := ls.CheckInteger(2)
 	sep := ls.OptString(3, "")
@@ -81,7 +81,7 @@ func strRep(ls LuaState) int {
 // string.reverse (s)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.reverse
 // lua-5.3.4/src/lstrlib.c#str_reverse()
-func strReverse(ls LuaState) int {
+func strReverse(ls LkState) int {
 	s := ls.CheckString(1)
 
 	if strLen := len(s); strLen > 1 {
@@ -98,7 +98,7 @@ func strReverse(ls LuaState) int {
 // string.lower (s)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.lower
 // lua-5.3.4/src/lstrlib.c#str_lower()
-func strLower(ls LuaState) int {
+func strLower(ls LkState) int {
 	s := ls.CheckString(1)
 	ls.PushString(strings.ToLower(s))
 	return 1
@@ -107,7 +107,7 @@ func strLower(ls LuaState) int {
 // string.upper (s)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.upper
 // lua-5.3.4/src/lstrlib.c#str_upper()
-func strUpper(ls LuaState) int {
+func strUpper(ls LkState) int {
 	s := ls.CheckString(1)
 	ls.PushString(strings.ToUpper(s))
 	return 1
@@ -116,7 +116,7 @@ func strUpper(ls LuaState) int {
 // string.sub (s, i [, j])
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.sub
 // lua-5.3.4/src/lstrlib.c#str_sub()
-func strSub(ls LuaState) int {
+func strSub(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
 	i := posRelat(ls.CheckInteger(2), sLen)
@@ -141,7 +141,7 @@ func strSub(ls LuaState) int {
 // string.byte (s [, i [, j]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.byte
 // lua-5.3.4/src/lstrlib.c#str_byte()
-func strByte(ls LuaState) int {
+func strByte(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
 	i := posRelat(ls.OptInteger(2, 1), sLen)
@@ -173,7 +173,7 @@ func strByte(ls LuaState) int {
 // string.char (···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.char
 // lua-5.3.4/src/lstrlib.c#str_char()
-func strChar(ls LuaState) int {
+func strChar(ls LkState) int {
 	nArgs := ls.GetTop()
 
 	s := make([]byte, nArgs)
@@ -190,7 +190,7 @@ func strChar(ls LuaState) int {
 // string.dump (function [, strip])
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.dump
 // lua-5.3.4/src/lstrlib.c#str_dump()
-func strDump(ls LuaState) int {
+func strDump(ls LkState) int {
 	// strip := ls.ToBoolean(2)
 	// ls.CheckType(1, LUA_TFUNCTION)
 	// ls.SetTop(1)
@@ -203,7 +203,7 @@ func strDump(ls LuaState) int {
 
 // string.packsize (fmt)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.packsize
-func strPackSize(ls LuaState) int {
+func strPackSize(ls LkState) int {
 	fmt := ls.CheckString(1)
 	if fmt == "j" {
 		ls.PushInteger(8) // todo
@@ -215,13 +215,13 @@ func strPackSize(ls LuaState) int {
 
 // string.pack (fmt, v1, v2, ···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.pack
-func strPack(ls LuaState) int {
+func strPack(ls LkState) int {
 	panic("todo: strPack!")
 }
 
 // string.unpack (fmt, s [, pos])
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.unpack
-func strUnpack(ls LuaState) int {
+func strUnpack(ls LkState) int {
 	panic("todo: strUnpack!")
 }
 
@@ -229,7 +229,7 @@ func strUnpack(ls LuaState) int {
 
 // string.format (formatstring, ···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.format
-func strFormat(ls LuaState) int {
+func strFormat(ls LkState) int {
 	fmtStr := ls.CheckString(1)
 	if len(fmtStr) <= 1 || strings.IndexByte(fmtStr, '%') < 0 {
 		ls.PushString(fmtStr)
@@ -253,7 +253,7 @@ func strFormat(ls LuaState) int {
 	return 1
 }
 
-func _fmtArg(tag string, ls LuaState, argIdx int) string {
+func _fmtArg(tag string, ls LkState, argIdx int) string {
 	switch tag[len(tag)-1] { // specifier
 	case 'c': // character
 		return string([]byte{byte(ls.ToInteger(argIdx))})
@@ -280,7 +280,7 @@ func _fmtArg(tag string, ls LuaState, argIdx int) string {
 
 // string.find (s, pattern [, init [, plain]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.find
-func strFind(ls LuaState) int {
+func strFind(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
 	pattern := ls.CheckString(2)
@@ -306,7 +306,7 @@ func strFind(ls LuaState) int {
 
 // string.match (s, pattern [, init])
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.match
-func strMatch(ls LuaState) int {
+func strMatch(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
 	pattern := ls.CheckString(2)
@@ -334,7 +334,7 @@ func strMatch(ls LuaState) int {
 
 // string.gsub (s, pattern, repl [, n])
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.gsub
-func strGsub(ls LuaState) int {
+func strGsub(ls LkState) int {
 	s := ls.CheckString(1)
 	pattern := ls.CheckString(2)
 	repl := ls.CheckString(3) // todo
@@ -348,11 +348,11 @@ func strGsub(ls LuaState) int {
 
 // string.gmatch (s, pattern)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.gmatch
-func strGmatch(ls LuaState) int {
+func strGmatch(ls LkState) int {
 	s := ls.CheckString(1)
 	pattern := ls.CheckString(2)
 
-	gmatchAux := func(ls LuaState) int {
+	gmatchAux := func(ls LkState) int {
 		captures := match(s, pattern, 1)
 		if captures != nil {
 			for i := 0; i < len(captures); i += 2 {

@@ -30,7 +30,7 @@ var tabFuncs = map[string]GoFunction{
 	"unpack": tabUnpack,
 }
 
-func OpenTableLib(ls LuaState) int {
+func OpenTableLib(ls LkState) int {
 	ls.NewLib(tabFuncs)
 	return 1
 }
@@ -38,7 +38,7 @@ func OpenTableLib(ls LuaState) int {
 // table.move (a1, f, e, t [,a2])
 // http://www.lua.org/manual/5.3/manual.html#pdf-table.move
 // lua-5.3.4/src/ltablib.c#tremove()
-func tabMove(ls LuaState) int {
+func tabMove(ls LkState) int {
 	f := ls.CheckInteger(2)
 	e := ls.CheckInteger(3)
 	t := ls.CheckInteger(4)
@@ -74,7 +74,7 @@ func tabMove(ls LuaState) int {
 // table.insert (list, [pos,] value)
 // http://www.lua.org/manual/5.3/manual.html#pdf-table.insert
 // lua-5.3.4/src/ltablib.c#tinsert()
-func tabInsert(ls LuaState) int {
+func tabInsert(ls LkState) int {
 	e := _auxGetN(ls, 1, TAB_RW) + 1 /* first empty element */
 	var pos int64                    /* where to insert new element */
 	switch ls.GetTop() {
@@ -97,7 +97,7 @@ func tabInsert(ls LuaState) int {
 // table.remove (list [, pos])
 // http://www.lua.org/manual/5.3/manual.html#pdf-table.remove
 // lua-5.3.4/src/ltablib.c#tremove()
-func tabRemove(ls LuaState) int {
+func tabRemove(ls LkState) int {
 	size := _auxGetN(ls, 1, TAB_RW)
 	pos := ls.OptInteger(2, size)
 	if pos != size { /* validate 'pos' if given */
@@ -116,7 +116,7 @@ func tabRemove(ls LuaState) int {
 // table.concat (list [, sep [, i [, j]]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-table.concat
 // lua-5.3.4/src/ltablib.c#tconcat()
-func tabConcat(ls LuaState) int {
+func tabConcat(ls LkState) int {
 	tabLen := _auxGetN(ls, 1, TAB_R)
 	sep := ls.OptString(2, "")
 	i := ls.OptInteger(3, 1)
@@ -142,7 +142,7 @@ func tabConcat(ls LuaState) int {
 	return 1
 }
 
-func _auxGetN(ls LuaState, n, w int) int64 {
+func _auxGetN(ls LkState, n, w int) int64 {
 	_checkTab(ls, n, w|TAB_L)
 	return ls.Len2(n)
 }
@@ -151,7 +151,7 @@ func _auxGetN(ls LuaState, n, w int) int64 {
 ** Check that 'arg' either is a table or can behave like one (that is,
 ** has a metatable with the required metamethods)
  */
-func _checkTab(ls LuaState, arg, what int) {
+func _checkTab(ls LkState, arg, what int) {
 	if ls.Type(arg) != LUA_TTABLE { /* is it not a table? */
 		n := 1                     /* number of elements to pop */
 		if ls.GetMetatable(arg) && /* must have metatable */
@@ -165,7 +165,7 @@ func _checkTab(ls LuaState, arg, what int) {
 	}
 }
 
-func _checkField(ls LuaState, key string, n *int) bool {
+func _checkField(ls LkState, key string, n *int) bool {
 	ls.PushString(key)
 	*n++
 	return ls.RawGet(-*n) != LUA_TNIL
@@ -176,7 +176,7 @@ func _checkField(ls LuaState, key string, n *int) bool {
 // table.pack (···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-table.pack
 // lua-5.3.4/src/ltablib.c#pack()
-func tabPack(ls LuaState) int {
+func tabPack(ls LkState) int {
 	n := int64(ls.GetTop())   /* number of elements to pack */
 	ls.CreateTable(int(n), 1) /* create result table */
 	ls.Insert(1)              /* put it at index 1 */
@@ -191,7 +191,7 @@ func tabPack(ls LuaState) int {
 // table.unpack (list [, i [, j]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-table.unpack
 // lua-5.3.4/src/ltablib.c#unpack()
-func tabUnpack(ls LuaState) int {
+func tabUnpack(ls LkState) int {
 	i := ls.OptInteger(2, 1)
 	e := ls.OptInteger(3, ls.Len2(1))
 	if i > e { /* empty range */
@@ -214,7 +214,7 @@ func tabUnpack(ls LuaState) int {
 
 // table.sort (list [, comp])
 // http://www.lua.org/manual/5.3/manual.html#pdf-table.sort
-func tabSort(ls LuaState) int {
+func tabSort(ls LkState) int {
 	w := wrapper{ls}
 	ls.ArgCheck(w.Len() < MAX_LEN, 1, "array too big")
 	sort.Sort(w)
@@ -222,7 +222,7 @@ func tabSort(ls LuaState) int {
 }
 
 type wrapper struct {
-	ls LuaState
+	ls LkState
 }
 
 func (self wrapper) Len() int {

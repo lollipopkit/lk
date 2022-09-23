@@ -101,7 +101,7 @@ func (self *luaState) SetTop(idx int) {
 
 // [-?, +?, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_xmove
-func (self *luaState) XMove(to LuaState, n int) {
+func (self *luaState) XMove(to LkState, n int) {
 	vals := self.stack.popN(n)
 	to.(*luaState).stack.pushN(vals, n)
 }

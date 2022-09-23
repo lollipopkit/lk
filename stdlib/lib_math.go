@@ -39,7 +39,7 @@ var mathLib = map[string]GoFunction{
 	"mininteger": nil,
 }
 
-func OpenMathLib(ls LuaState) int {
+func OpenMathLib(ls LkState) int {
 	ls.NewLib(mathLib)
 	ls.PushNumber(math.Pi)
 	ls.SetField(-2, "pi")
@@ -57,7 +57,7 @@ func OpenMathLib(ls LuaState) int {
 // math.random ([m [, n]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.random
 // lua-5.3.4/src/lmathlib.c#math_random()
-func mathRandom(ls LuaState) int {
+func mathRandom(ls LkState) int {
 	var low, up int64
 	switch ls.GetTop() { /* check number of arguments */
 	case 0: /* no arguments */
@@ -88,7 +88,7 @@ func mathRandom(ls LuaState) int {
 // math.randomseed (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.randomseed
 // lua-5.3.4/src/lmathlib.c#math_randomseed()
-func mathRandomSeed(ls LuaState) int {
+func mathRandomSeed(ls LkState) int {
 	x := ls.CheckNumber(1)
 	rand.Seed(int64(x))
 	return 0
@@ -99,7 +99,7 @@ func mathRandomSeed(ls LuaState) int {
 // math.max (x, ···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.max
 // lua-5.3.4/src/lmathlib.c#math_max()
-func mathMax(ls LuaState) int {
+func mathMax(ls LkState) int {
 	n := ls.GetTop() /* number of arguments */
 	imax := 1        /* index of current maximum value */
 	ls.ArgCheck(n >= 1, 1, "value expected")
@@ -115,7 +115,7 @@ func mathMax(ls LuaState) int {
 // math.min (x, ···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.min
 // lua-5.3.4/src/lmathlib.c#math_min()
-func mathMin(ls LuaState) int {
+func mathMin(ls LkState) int {
 	n := ls.GetTop() /* number of arguments */
 	imin := 1        /* index of current minimum value */
 	ls.ArgCheck(n >= 1, 1, "value expected")
@@ -133,7 +133,7 @@ func mathMin(ls LuaState) int {
 // math.exp (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.exp
 // lua-5.3.4/src/lmathlib.c#math_exp()
-func mathExp(ls LuaState) int {
+func mathExp(ls LkState) int {
 	x := ls.CheckNumber(1)
 	ls.PushNumber(math.Exp(x))
 	return 1
@@ -142,7 +142,7 @@ func mathExp(ls LuaState) int {
 // math.log (x [, base])
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.log
 // lua-5.3.4/src/lmathlib.c#math_log()
-func mathLog(ls LuaState) int {
+func mathLog(ls LkState) int {
 	x := ls.CheckNumber(1)
 	var res float64
 
@@ -168,7 +168,7 @@ func mathLog(ls LuaState) int {
 // math.deg (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.deg
 // lua-5.3.4/src/lmathlib.c#math_deg()
-func mathDeg(ls LuaState) int {
+func mathDeg(ls LkState) int {
 	x := ls.CheckNumber(1)
 	ls.PushNumber(x * 180 / math.Pi)
 	return 1
@@ -177,7 +177,7 @@ func mathDeg(ls LuaState) int {
 // math.rad (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.rad
 // lua-5.3.4/src/lmathlib.c#math_rad()
-func mathRad(ls LuaState) int {
+func mathRad(ls LkState) int {
 	x := ls.CheckNumber(1)
 	ls.PushNumber(x * math.Pi / 180)
 	return 1
@@ -186,7 +186,7 @@ func mathRad(ls LuaState) int {
 // math.sin (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.sin
 // lua-5.3.4/src/lmathlib.c#math_sin()
-func mathSin(ls LuaState) int {
+func mathSin(ls LkState) int {
 	x := ls.CheckNumber(1)
 	ls.PushNumber(math.Sin(x))
 	return 1
@@ -195,7 +195,7 @@ func mathSin(ls LuaState) int {
 // math.cos (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.cos
 // lua-5.3.4/src/lmathlib.c#math_cos()
-func mathCos(ls LuaState) int {
+func mathCos(ls LkState) int {
 	x := ls.CheckNumber(1)
 	ls.PushNumber(math.Cos(x))
 	return 1
@@ -204,7 +204,7 @@ func mathCos(ls LuaState) int {
 // math.tan (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.tan
 // lua-5.3.4/src/lmathlib.c#math_tan()
-func mathTan(ls LuaState) int {
+func mathTan(ls LkState) int {
 	x := ls.CheckNumber(1)
 	ls.PushNumber(math.Tan(x))
 	return 1
@@ -213,7 +213,7 @@ func mathTan(ls LuaState) int {
 // math.asin (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.asin
 // lua-5.3.4/src/lmathlib.c#math_asin()
-func mathAsin(ls LuaState) int {
+func mathAsin(ls LkState) int {
 	x := ls.CheckNumber(1)
 	ls.PushNumber(math.Asin(x))
 	return 1
@@ -222,7 +222,7 @@ func mathAsin(ls LuaState) int {
 // math.acos (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.acos
 // lua-5.3.4/src/lmathlib.c#math_acos()
-func mathAcos(ls LuaState) int {
+func mathAcos(ls LkState) int {
 	x := ls.CheckNumber(1)
 	ls.PushNumber(math.Acos(x))
 	return 1
@@ -231,7 +231,7 @@ func mathAcos(ls LuaState) int {
 // math.atan (y [, x])
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.atan
 // lua-5.3.4/src/lmathlib.c#math_atan()
-func mathAtan(ls LuaState) int {
+func mathAtan(ls LkState) int {
 	y := ls.CheckNumber(1)
 	x := ls.OptNumber(2, 1.0)
 	ls.PushNumber(math.Atan2(y, x))
@@ -243,7 +243,7 @@ func mathAtan(ls LuaState) int {
 // math.ceil (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.ceil
 // lua-5.3.4/src/lmathlib.c#math_ceil()
-func mathCeil(ls LuaState) int {
+func mathCeil(ls LkState) int {
 	if ls.IsInteger(1) {
 		ls.SetTop(1) /* integer is its own ceil */
 	} else {
@@ -256,7 +256,7 @@ func mathCeil(ls LuaState) int {
 // math.floor (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.floor
 // lua-5.3.4/src/lmathlib.c#math_floor()
-func mathFloor(ls LuaState) int {
+func mathFloor(ls LkState) int {
 	if ls.IsInteger(1) {
 		ls.SetTop(1) /* integer is its own floor */
 	} else {
@@ -271,7 +271,7 @@ func mathFloor(ls LuaState) int {
 // math.fmod (x, y)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.fmod
 // lua-5.3.4/src/lmathlib.c#math_fmod()
-func mathFmod(ls LuaState) int {
+func mathFmod(ls LkState) int {
 	if ls.IsInteger(1) && ls.IsInteger(2) {
 		d := ls.ToInteger(2)
 		if uint64(d)+1 <= 1 { /* special cases: -1 or 0 */
@@ -292,7 +292,7 @@ func mathFmod(ls LuaState) int {
 // math.modf (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.modf
 // lua-5.3.4/src/lmathlib.c#math_modf()
-func mathModf(ls LuaState) int {
+func mathModf(ls LkState) int {
 	if ls.IsInteger(1) {
 		ls.SetTop(1)     /* number is its own integer part */
 		ls.PushNumber(0) /* no fractional part */
@@ -313,7 +313,7 @@ func mathModf(ls LuaState) int {
 // math.abs (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.abs
 // lua-5.3.4/src/lmathlib.c#math_abs()
-func mathAbs(ls LuaState) int {
+func mathAbs(ls LkState) int {
 	if ls.IsInteger(1) {
 		x := ls.ToInteger(1)
 		if x < 0 {
@@ -329,7 +329,7 @@ func mathAbs(ls LuaState) int {
 // math.sqrt (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.sqrt
 // lua-5.3.4/src/lmathlib.c#math_sqrt()
-func mathSqrt(ls LuaState) int {
+func mathSqrt(ls LkState) int {
 	x := ls.CheckNumber(1)
 	ls.PushNumber(math.Sqrt(x))
 	return 1
@@ -338,7 +338,7 @@ func mathSqrt(ls LuaState) int {
 // math.ult (m, n)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.ult
 // lua-5.3.4/src/lmathlib.c#math_ult()
-func mathUlt(ls LuaState) int {
+func mathUlt(ls LkState) int {
 	m := ls.CheckInteger(1)
 	n := ls.CheckInteger(2)
 	ls.PushBoolean(uint64(m) < uint64(n))
@@ -348,7 +348,7 @@ func mathUlt(ls LuaState) int {
 // math.tointeger (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.tointeger
 // lua-5.3.4/src/lmathlib.c#math_toint()
-func mathToInt(ls LuaState) int {
+func mathToInt(ls LkState) int {
 	if i, ok := ls.ToIntegerX(1); ok {
 		ls.PushInteger(i)
 	} else {
@@ -361,7 +361,7 @@ func mathToInt(ls LuaState) int {
 // math.type (x)
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.type
 // lua-5.3.4/src/lmathlib.c#math_type()
-func mathType(ls LuaState) int {
+func mathType(ls LkState) int {
 	if ls.Type(1) == LUA_TNUMBER {
 		if ls.IsInteger(1) {
 			ls.PushString("integer")
@@ -375,7 +375,7 @@ func mathType(ls LuaState) int {
 	return 1
 }
 
-func _pushNumInt(ls LuaState, d float64) {
+func _pushNumInt(ls LkState, d float64) {
 	if i, ok := number.FloatToInteger(d); ok { /* does 'd' fit in an integer? */
 		ls.PushInteger(i) /* result is integer */
 	} else {

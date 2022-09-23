@@ -198,7 +198,7 @@ func (self *luaState) ToGoFunction(idx int) GoFunction {
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_tothread
-func (self *luaState) ToThread(idx int) LuaState {
+func (self *luaState) ToThread(idx int) LkState {
 	val := self.stack.get(idx)
 	if val != nil {
 		if ls, ok := val.(*luaState); ok {

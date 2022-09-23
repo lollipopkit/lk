@@ -12,7 +12,7 @@ var coFuncs = map[string]GoFunction{
 	"wrap":        coWrap,
 }
 
-func OpenCoroutineLib(ls LuaState) int {
+func OpenCoroutineLib(ls LkState) int {
 	ls.NewLib(coFuncs)
 	return 1
 }
@@ -20,7 +20,7 @@ func OpenCoroutineLib(ls LuaState) int {
 // coroutine.create (f)
 // http://www.lua.org/manual/5.3/manual.html#pdf-coroutine.create
 // lua-5.3.4/src/lcorolib.c#luaB_cocreate()
-func coCreate(ls LuaState) int {
+func coCreate(ls LkState) int {
 	ls.CheckType(1, LUA_TFUNCTION)
 	ls2 := ls.NewThread()
 	ls.PushValue(1)  /* move function to top */
@@ -31,7 +31,7 @@ func coCreate(ls LuaState) int {
 // coroutine.resume (co [, val1, ···])
 // http://www.lua.org/manual/5.3/manual.html#pdf-coroutine.resume
 // lua-5.3.4/src/lcorolib.c#luaB_coresume()
-func coResume(ls LuaState) int {
+func coResume(ls LkState) int {
 	co := ls.ToThread(1)
 	ls.ArgCheck(co != nil, 1, "thread expected")
 
@@ -46,7 +46,7 @@ func coResume(ls LuaState) int {
 	}
 }
 
-func _auxResume(ls, co LuaState, narg int) int {
+func _auxResume(ls, co LkState, narg int) int {
 	if !ls.CheckStack(narg) {
 		ls.PushString("too many arguments to resume")
 		return -1 /* error flag */
@@ -75,14 +75,14 @@ func _auxResume(ls, co LuaState, narg int) int {
 // coroutine.yield (···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-coroutine.yield
 // lua-5.3.4/src/lcorolib.c#luaB_yield()
-func coYield(ls LuaState) int {
+func coYield(ls LkState) int {
 	return ls.Yield(ls.GetTop())
 }
 
 // coroutine.status (co)
 // http://www.lua.org/manual/5.3/manual.html#pdf-coroutine.status
 // lua-5.3.4/src/lcorolib.c#luaB_costatus()
-func coStatus(ls LuaState) int {
+func coStatus(ls LkState) int {
 	co := ls.ToThread(1)
 	ls.ArgCheck(co != nil, 1, "thread expected")
 	if ls == co {
@@ -109,14 +109,14 @@ func coStatus(ls LuaState) int {
 
 // coroutine.isyieldable ()
 // http://www.lua.org/manual/5.3/manual.html#pdf-coroutine.isyieldable
-func coYieldable(ls LuaState) int {
+func coYieldable(ls LkState) int {
 	ls.PushBoolean(ls.IsYieldable())
 	return 1
 }
 
 // coroutine.running ()
 // http://www.lua.org/manual/5.3/manual.html#pdf-coroutine.running
-func coRunning(ls LuaState) int {
+func coRunning(ls LkState) int {
 	isMain := ls.PushThread()
 	ls.PushBoolean(isMain)
 	return 2
@@ -124,6 +124,6 @@ func coRunning(ls LuaState) int {
 
 // coroutine.wrap (f)
 // http://www.lua.org/manual/5.3/manual.html#pdf-coroutine.wrap
-func coWrap(ls LuaState) int {
+func coWrap(ls LkState) int {
 	panic("todo: coWrap!")
 }

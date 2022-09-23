@@ -21,7 +21,7 @@ var utf8Lib = map[string]GoFunction{
 	"charpattern": nil,
 }
 
-func OpenUTF8Lib(ls LuaState) int {
+func OpenUTF8Lib(ls LkState) int {
 	ls.NewLib(utf8Lib)
 	ls.PushString(UTF8PATT)
 	ls.SetField(-2, "charpattern")
@@ -31,7 +31,7 @@ func OpenUTF8Lib(ls LuaState) int {
 // utf8.len (s [, i [, j]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-utf8.len
 // lua-5.3.4/src/lutf8lib.c#utflen()
-func utfLen(ls LuaState) int {
+func utfLen(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
 	i := posRelat(ls.OptInteger(2, 1), sLen)
@@ -53,7 +53,7 @@ func utfLen(ls LuaState) int {
 
 // utf8.offset (s, n [, i])
 // http://www.lua.org/manual/5.3/manual.html#pdf-utf8.offset
-func utfByteOffset(ls LuaState) int {
+func utfByteOffset(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
 	n := ls.CheckInteger(2)
@@ -108,7 +108,7 @@ func utfByteOffset(ls LuaState) int {
 // utf8.codepoint (s [, i [, j]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-utf8.codepoint
 // lua-5.3.4/src/lutf8lib.c#codepoint()
-func utfCodePoint(ls LuaState) int {
+func utfCodePoint(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
 	i := posRelat(ls.OptInteger(2, 1), sLen)
@@ -143,7 +143,7 @@ func utfCodePoint(ls LuaState) int {
 // utf8.char (···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-utf8.char
 // lua-5.3.4/src/lutf8lib.c#utfchar()
-func utfChar(ls LuaState) int {
+func utfChar(ls LkState) int {
 	n := ls.GetTop() /* number of arguments */
 	codePoints := make([]rune, n)
 
@@ -171,7 +171,7 @@ func _encodeUtf8(codePoints []rune) string {
 
 // utf8.codes (s)
 // http://www.lua.org/manual/5.3/manual.html#pdf-utf8.codes
-func utfIterCodes(ls LuaState) int {
+func utfIterCodes(ls LkState) int {
 	ls.CheckString(1)
 	ls.PushGoFunction(_iterAux)
 	ls.PushValue(1)
@@ -179,7 +179,7 @@ func utfIterCodes(ls LuaState) int {
 	return 3
 }
 
-func _iterAux(ls LuaState) int {
+func _iterAux(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := int64(len(s))
 	n := ls.ToInteger(2) - 1

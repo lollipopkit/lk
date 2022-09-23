@@ -4,13 +4,13 @@ type LuaType = int
 type ArithOp = int
 type CompareOp = int
 
-type GoFunction func(LuaState) int
+type GoFunction func(LkState) int
 
 func LuaUpvalueIndex(i int) int {
 	return LUA_REGISTRYINDEX - i
 }
 
-type LuaState interface {
+type LkState interface {
 	BasicAPI
 	AuxLib
 }
@@ -28,7 +28,7 @@ type BasicAPI interface {
 	Remove(idx int)
 	Rotate(idx, n int)
 	SetTop(idx int)
-	XMove(to LuaState, n int)
+	XMove(to LkState, n int)
 	/* access functions (stack -> Go) */
 	TypeName(tp LuaType) string
 	Type(idx int) LuaType
@@ -51,7 +51,7 @@ type BasicAPI interface {
 	ToString(idx int) string
 	ToStringX(idx int) (string, bool)
 	ToGoFunction(idx int) GoFunction
-	ToThread(idx int) LuaState
+	ToThread(idx int) LkState
 	ToPointer(idx int) interface{}
 	RawLen(idx int) uint
 	/* push functions (Go -> stack) */
@@ -99,8 +99,8 @@ type BasicAPI interface {
 	Error() int
 	StringToNumber(s string) bool
 	/* coroutine functions */
-	NewThread() LuaState
-	Resume(from LuaState, nArgs int) int
+	NewThread() LkState
+	Resume(from LkState, nArgs int) int
 	Yield(nResults int) int
 	Status() int
 	IsYieldable() bool

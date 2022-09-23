@@ -36,7 +36,7 @@ var baseFuncs = map[string]GoFunction{
 }
 
 // lua-5.3.4/src/lbaselib.c#luaopen_base()
-func OpenBaseLib(ls LuaState) int {
+func OpenBaseLib(ls LkState) int {
 	/* open lib into global table */
 	ls.PushGlobalTable()
 	ls.SetFuncs(baseFuncs, 0)
@@ -52,7 +52,7 @@ func OpenBaseLib(ls LuaState) int {
 // print (···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-print
 // lua-5.3.4/src/lbaselib.c#luaB_print()
-func basePrint(ls LuaState) int {
+func basePrint(ls LkState) int {
 	n := ls.GetTop() /* number of arguments */
 	ls.GetGlobal("tostring")
 	for i := 1; i <= n; i++ {
@@ -76,7 +76,7 @@ func basePrint(ls LuaState) int {
 // assert (v [, message])
 // http://www.lua.org/manual/5.3/manual.html#pdf-assert
 // lua-5.3.4/src/lbaselib.c#luaB_assert()
-func baseAssert(ls LuaState) int {
+func baseAssert(ls LkState) int {
 	if ls.ToBoolean(1) { /* condition is true? */
 		return ls.GetTop() /* return all arguments */
 	} else { /* error */
@@ -91,7 +91,7 @@ func baseAssert(ls LuaState) int {
 // error (message [, level])
 // http://www.lua.org/manual/5.3/manual.html#pdf-error
 // lua-5.3.4/src/lbaselib.c#luaB_error()
-func baseError(ls LuaState) int {
+func baseError(ls LkState) int {
 	level := int(ls.OptInteger(2, 1))
 	ls.SetTop(1)
 	if ls.Type(1) == LUA_TSTRING && level > 0 {
@@ -105,7 +105,7 @@ func baseError(ls LuaState) int {
 // select (index, ···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-select
 // lua-5.3.4/src/lbaselib.c#luaB_select()
-func baseSelect(ls LuaState) int {
+func baseSelect(ls LkState) int {
 	n := int64(ls.GetTop())
 	if ls.Type(1) == LUA_TSTRING && ls.CheckString(1) == "#" {
 		ls.PushInteger(n - 1)
@@ -125,7 +125,7 @@ func baseSelect(ls LuaState) int {
 // ipairs (t)
 // http://www.lua.org/manual/5.3/manual.html#pdf-ipairs
 // lua-5.3.4/src/lbaselib.c#luaB_ipairs()
-func baseIPairs(ls LuaState) int {
+func baseIPairs(ls LkState) int {
 	ls.CheckAny(1)
 	ls.PushGoFunction(iPairsAux) /* iteration function */
 	ls.PushValue(1)              /* state */
@@ -133,7 +133,7 @@ func baseIPairs(ls LuaState) int {
 	return 3
 }
 
-func iPairsAux(ls LuaState) int {
+func iPairsAux(ls LkState) int {
 	i := ls.CheckInteger(2) + 1
 	ls.PushInteger(i)
 	if ls.GetI(1, i) == LUA_TNIL {
@@ -146,7 +146,7 @@ func iPairsAux(ls LuaState) int {
 // pairs (t)
 // http://www.lua.org/manual/5.3/manual.html#pdf-pairs
 // lua-5.3.4/src/lbaselib.c#luaB_pairs()
-func basePairs(ls LuaState) int {
+func basePairs(ls LkState) int {
 	ls.CheckAny(1)
 	if ls.GetMetafield(1, "__pairs") == LUA_TNIL { /* no metamethod? */
 		ls.PushGoFunction(baseNext) /* will return generator, */
@@ -162,7 +162,7 @@ func basePairs(ls LuaState) int {
 // next (table [, index])
 // http://www.lua.org/manual/5.3/manual.html#pdf-next
 // lua-5.3.4/src/lbaselib.c#luaB_next()
-func baseNext(ls LuaState) int {
+func baseNext(ls LkState) int {
 	ls.CheckType(1, LUA_TTABLE)
 	ls.SetTop(2) /* create a 2nd argument if there isn't one */
 	if ls.Next(1) {
@@ -176,7 +176,7 @@ func baseNext(ls LuaState) int {
 // load (chunk [, chunkname [, mode [, env]]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-load
 // lua-5.3.4/src/lbaselib.c#luaB_load()
-func baseLoad(ls LuaState) int {
+func baseLoad(ls LkState) int {
 	var status int
 	chunk, isStr := ls.ToStringX(1)
 	mode := ls.OptString(3, "bt")
@@ -194,7 +194,7 @@ func baseLoad(ls LuaState) int {
 }
 
 // lua-5.3.4/src/lbaselib.c#load_aux()
-func loadAux(ls LuaState, status, envIdx int) int {
+func loadAux(ls LkState, status, envIdx int) int {
 	if status == LUA_OK {
 		if envIdx != 0 { /* 'env' parameter? */
 			panic("todo!")
@@ -210,7 +210,7 @@ func loadAux(ls LuaState, status, envIdx int) int {
 // loadfile ([filename [, mode [, env]]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-loadfile
 // lua-5.3.4/src/lbaselib.c#luaB_loadfile()
-func baseLoadFile(ls LuaState) int {
+func baseLoadFile(ls LkState) int {
 	fname := ls.OptString(1, "")
 	mode := ls.OptString(1, "bt")
 	env := 0 /* 'env' index or 0 if no 'env' */
@@ -224,7 +224,7 @@ func baseLoadFile(ls LuaState) int {
 // dofile ([filename])
 // http://www.lua.org/manual/5.3/manual.html#pdf-dofile
 // lua-5.3.4/src/lbaselib.c#luaB_dofile()
-func baseDoFile(ls LuaState) int {
+func baseDoFile(ls LkState) int {
 	fname := ls.OptString(1, "bt")
 	ls.SetTop(1)
 	if ls.LoadFile(fname) != LUA_OK {
@@ -236,7 +236,7 @@ func baseDoFile(ls LuaState) int {
 
 // pcall (f [, arg1, ···])
 // http://www.lua.org/manual/5.3/manual.html#pdf-pcall
-func basePCall(ls LuaState) int {
+func basePCall(ls LkState) int {
 	nArgs := ls.GetTop() - 1
 	status := ls.PCall(nArgs, -1, 0)
 	ls.PushBoolean(status == LUA_OK)
@@ -246,14 +246,14 @@ func basePCall(ls LuaState) int {
 
 // xpcall (f, msgh [, arg1, ···])
 // http://www.lua.org/manual/5.3/manual.html#pdf-xpcall
-func baseXPCall(ls LuaState) int {
+func baseXPCall(ls LkState) int {
 	panic("todo!")
 }
 
 // getmetatable (object)
 // http://www.lua.org/manual/5.3/manual.html#pdf-getmetatable
 // lua-5.3.4/src/lbaselib.c#luaB_getmetatable()
-func baseGetMetatable(ls LuaState) int {
+func baseGetMetatable(ls LkState) int {
 	ls.CheckAny(1)
 	if !ls.GetMetatable(1) {
 		ls.PushNil()
@@ -267,7 +267,7 @@ func baseGetMetatable(ls LuaState) int {
 // setmetatable (table, metatable)
 // http://www.lua.org/manual/5.3/manual.html#pdf-setmetatable
 // lua-5.3.4/src/lbaselib.c#luaB_setmetatable()
-func baseSetMetatable(ls LuaState) int {
+func baseSetMetatable(ls LkState) int {
 	t := ls.Type(2)
 	ls.CheckType(1, LUA_TTABLE)
 	ls.ArgCheck(t == LUA_TNIL || t == LUA_TTABLE, 2,
@@ -283,7 +283,7 @@ func baseSetMetatable(ls LuaState) int {
 // rawequal (v1, v2)
 // http://www.lua.org/manual/5.3/manual.html#pdf-rawequal
 // lua-5.3.4/src/lbaselib.c#luaB_rawequal()
-func baseRawEqual(ls LuaState) int {
+func baseRawEqual(ls LkState) int {
 	ls.CheckAny(1)
 	ls.CheckAny(2)
 	ls.PushBoolean(ls.RawEqual(1, 2))
@@ -293,7 +293,7 @@ func baseRawEqual(ls LuaState) int {
 // rawlen (v)
 // http://www.lua.org/manual/5.3/manual.html#pdf-rawlen
 // lua-5.3.4/src/lbaselib.c#luaB_rawlen()
-func baseRawLen(ls LuaState) int {
+func baseRawLen(ls LkState) int {
 	t := ls.Type(1)
 	ls.ArgCheck(t == LUA_TTABLE || t == LUA_TSTRING, 1,
 		"table or string expected")
@@ -304,7 +304,7 @@ func baseRawLen(ls LuaState) int {
 // rawget (table, index)
 // http://www.lua.org/manual/5.3/manual.html#pdf-rawget
 // lua-5.3.4/src/lbaselib.c#luaB_rawget()
-func baseRawGet(ls LuaState) int {
+func baseRawGet(ls LkState) int {
 	ls.CheckType(1, LUA_TTABLE)
 	ls.CheckAny(2)
 	ls.SetTop(2)
@@ -315,7 +315,7 @@ func baseRawGet(ls LuaState) int {
 // rawset (table, index, value)
 // http://www.lua.org/manual/5.3/manual.html#pdf-rawset
 // lua-5.3.4/src/lbaselib.c#luaB_rawset()
-func baseRawSet(ls LuaState) int {
+func baseRawSet(ls LkState) int {
 	ls.CheckType(1, LUA_TTABLE)
 	ls.CheckAny(2)
 	ls.CheckAny(3)
@@ -327,7 +327,7 @@ func baseRawSet(ls LuaState) int {
 // type (v)
 // http://www.lua.org/manual/5.3/manual.html#pdf-type
 // lua-5.3.4/src/lbaselib.c#luaB_type()
-func baseType(ls LuaState) int {
+func baseType(ls LkState) int {
 	t := ls.Type(1)
 	ls.ArgCheck(t != LUA_TNONE, 1, "value expected")
 	ls.PushString(ls.TypeName(t))
@@ -337,7 +337,7 @@ func baseType(ls LuaState) int {
 // tostring (v)
 // http://www.lua.org/manual/5.3/manual.html#pdf-tostring
 // lua-5.3.4/src/lbaselib.c#luaB_tostring()
-func baseToString(ls LuaState) int {
+func baseToString(ls LkState) int {
 	ls.CheckAny(1)
 	ls.ToString2(1)
 	return 1
@@ -346,7 +346,7 @@ func baseToString(ls LuaState) int {
 // tonumber (e [, base])
 // http://www.lua.org/manual/5.3/manual.html#pdf-tonumber
 // lua-5.3.4/src/lbaselib.c#luaB_tonumber()
-func baseToNumber(ls LuaState) int {
+func baseToNumber(ls LkState) int {
 	if ls.IsNoneOrNil(2) { /* standard conversion? */
 		ls.CheckAny(1)
 		if ls.Type(1) == LUA_TNUMBER { /* already a number? */

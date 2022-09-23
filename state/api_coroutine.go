@@ -5,7 +5,7 @@ import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_newthread
 // lua-5.3.4/src/lstate.c#lua_newthread()
-func (self *luaState) NewThread() LuaState {
+func (self *luaState) NewThread() LkState {
 	t := &luaState{registry: self.registry}
 	t.pushLuaStack(newLuaStack(LUA_MINSTACK, t))
 	self.stack.push(t)
@@ -14,7 +14,7 @@ func (self *luaState) NewThread() LuaState {
 
 // [-?, +?, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_resume
-func (self *luaState) Resume(from LuaState, nArgs int) int {
+func (self *luaState) Resume(from LkState, nArgs int) int {
 	lsFrom := from.(*luaState)
 	if lsFrom.coChan == nil {
 		lsFrom.coChan = make(chan int)

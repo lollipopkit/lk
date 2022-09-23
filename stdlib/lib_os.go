@@ -24,7 +24,7 @@ var sysLib = map[string]GoFunction{
 	"setlocale": osSetLocale,
 }
 
-func OpenOSLib(ls LuaState) int {
+func OpenOSLib(ls LkState) int {
 	ls.NewLib(sysLib)
 	return 1
 }
@@ -32,7 +32,7 @@ func OpenOSLib(ls LuaState) int {
 // os.clock ()
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.clock
 // lua-5.3.4/src/loslib.c#os_clock()
-func osClock(ls LuaState) int {
+func osClock(ls LkState) int {
 	c := float64(C.clock()) / float64(C.CLOCKS_PER_SEC)
 	ls.PushNumber(c)
 	return 1
@@ -41,7 +41,7 @@ func osClock(ls LuaState) int {
 // os.difftime (t2, t1)
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.difftime
 // lua-5.3.4/src/loslib.c#os_difftime()
-func osDiffTime(ls LuaState) int {
+func osDiffTime(ls LkState) int {
 	t2 := ls.CheckInteger(1)
 	t1 := ls.CheckInteger(2)
 	ls.PushInteger(t2 - t1)
@@ -51,7 +51,7 @@ func osDiffTime(ls LuaState) int {
 // os.time ([table])
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.time
 // lua-5.3.4/src/loslib.c#os_time()
-func osTime(ls LuaState) int {
+func osTime(ls LkState) int {
 	if ls.IsNoneOrNil(1) { /* called without args? */
 		t := time.Now().Unix() /* get current time */
 		ls.PushInteger(t)
@@ -72,7 +72,7 @@ func osTime(ls LuaState) int {
 }
 
 // lua-5.3.4/src/loslib.c#getfield()
-func _getField(ls LuaState, key string, dft int64) int {
+func _getField(ls LkState, key string, dft int64) int {
 	t := ls.GetField(-1, key) /* get field and its type */
 	res, isNum := ls.ToIntegerX(-1)
 	if !isNum { /* field is not an integer? */
@@ -90,7 +90,7 @@ func _getField(ls LuaState, key string, dft int64) int {
 // os.date ([format [, time]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.date
 // lua-5.3.4/src/loslib.c#os_date()
-func osDate(ls LuaState) int {
+func osDate(ls LkState) int {
 	format := ls.OptString(1, "%c")
 	var t time.Time
 	if ls.IsInteger(2) {
@@ -123,14 +123,14 @@ func osDate(ls LuaState) int {
 	return 1
 }
 
-func _setField(ls LuaState, key string, value int) {
+func _setField(ls LkState, key string, value int) {
 	ls.PushInteger(int64(value))
 	ls.SetField(-2, key)
 }
 
 // os.remove (filename)
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.remove
-func osRemove(ls LuaState) int {
+func osRemove(ls LkState) int {
 	filename := ls.CheckString(1)
 	if err := os.Remove(filename); err != nil {
 		ls.PushNil()
@@ -144,7 +144,7 @@ func osRemove(ls LuaState) int {
 
 // os.rename (oldname, newname)
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.rename
-func osRename(ls LuaState) int {
+func osRename(ls LkState) int {
 	oldName := ls.CheckString(1)
 	newName := ls.CheckString(2)
 	if err := os.Rename(oldName, newName); err != nil {
@@ -159,14 +159,14 @@ func osRename(ls LuaState) int {
 
 // os.tmpname ()
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.tmpname
-func osTmpName(ls LuaState) int {
+func osTmpName(ls LkState) int {
 	panic("todo: osTmpName!")
 }
 
 // os.getenv (varname)
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.getenv
 // lua-5.3.4/src/loslib.c#os_getenv()
-func osGetEnv(ls LuaState) int {
+func osGetEnv(ls LkState) int {
 	key := ls.CheckString(1)
 	if env := os.Getenv(key); env != "" {
 		ls.PushString(env)
@@ -178,14 +178,14 @@ func osGetEnv(ls LuaState) int {
 
 // os.execute ([command])
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.execute
-func osExecute(ls LuaState) int {
+func osExecute(ls LkState) int {
 	panic("todo: osExecute!")
 }
 
 // os.exit ([code [, close]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.exit
 // lua-5.3.4/src/loslib.c#os_exit()
-func osExit(ls LuaState) int {
+func osExit(ls LkState) int {
 	if ls.IsBoolean(1) {
 		if ls.ToBoolean(1) {
 			os.Exit(0)
@@ -204,6 +204,6 @@ func osExit(ls LuaState) int {
 
 // os.setlocale (locale [, category])
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.setlocale
-func osSetLocale(ls LuaState) int {
+func osSetLocale(ls LkState) int {
 	panic("todo: osSetLocale!")
 }

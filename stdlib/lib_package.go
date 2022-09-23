@@ -35,7 +35,7 @@ var llFuncs = map[string]GoFunction{
 	"import": pkgImport,
 }
 
-func OpenPackageLib(ls LuaState) int {
+func OpenPackageLib(ls LkState) int {
 	ls.NewLib(pkgFuncs) /* create 'package' table */
 	createSearchersTable(ls)
 	/* set paths */
@@ -58,7 +58,7 @@ func OpenPackageLib(ls LuaState) int {
 	return 1                /* return 'package' table */
 }
 
-func createSearchersTable(ls LuaState) {
+func createSearchersTable(ls LkState) {
 	searchers := []GoFunction{
 		preloadSearcher,
 		luaSearcher,
@@ -74,7 +74,7 @@ func createSearchersTable(ls LuaState) {
 	ls.SetField(-2, "searchers") /* put it in field 'searchers' */
 }
 
-func preloadSearcher(ls LuaState) int {
+func preloadSearcher(ls LkState) int {
 	name := ls.CheckString(1)
 	ls.GetField(LUA_REGISTRYINDEX, "_PRELOAD")
 	if ls.GetField(-1, name) == LUA_TNIL { /* not found? */
@@ -83,7 +83,7 @@ func preloadSearcher(ls LuaState) int {
 	return 1
 }
 
-func luaSearcher(ls LuaState) int {
+func luaSearcher(ls LkState) int {
 	name := ls.CheckString(1)
 	ls.GetField(LuaUpvalueIndex(1), "path")
 	path, ok := ls.ToStringX(-1)
@@ -109,7 +109,7 @@ func luaSearcher(ls LuaState) int {
 // package.searchpath (name, path [, sep [, rep]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-package.searchpath
 // loadlib.c#ll_searchpath
-func pkgSearchPath(ls LuaState) int {
+func pkgSearchPath(ls LkState) int {
 	name := ls.CheckString(1)
 	path := ls.CheckString(2)
 	sep := ls.OptString(3, ".")
@@ -142,7 +142,7 @@ func _searchPath(name, path, sep, dirSep string) (filename, errMsg string) {
 
 // require (modname)
 // http://www.lua.org/manual/5.3/manual.html#pdf-require
-func pkgImport(ls LuaState) int {
+func pkgImport(ls LkState) int {
 	name := ls.CheckString(1)
 	ls.SetTop(1) /* LOADED table will be at index 2 */
 	ls.GetField(LUA_REGISTRYINDEX, LUA_LOADED_TABLE)
@@ -167,7 +167,7 @@ func pkgImport(ls LuaState) int {
 	return 1
 }
 
-func _findLoader(ls LuaState, name string) {
+func _findLoader(ls LkState, name string) {
 	/* push 'package.searchers' to index 3 in the stack */
 	if ls.GetField(LuaUpvalueIndex(1), "searchers") != LUA_TTABLE {
 		ls.Error2("'package.searchers' must be a table")

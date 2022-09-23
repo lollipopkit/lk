@@ -13,3 +13,9 @@ if #a >= 0 {
 for b,c in p, pp {
     print(b,c)
 }
+
+shy code, resp = http.req('GET', 'https://api.backend.cust.team/')
+print(code, resp)
+
+shy ok, data = json.get(resp, 'data')
+print(ok, data)

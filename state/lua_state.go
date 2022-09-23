@@ -11,7 +11,7 @@ type luaState struct {
 	coChan   chan int
 }
 
-func New() LuaState {
+func New() LkState {
 	ls := &luaState{}
 
 	registry := newLuaTable(8, 0)
