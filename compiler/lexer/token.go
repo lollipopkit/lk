@@ -40,10 +40,8 @@ const (
 	TOKEN_OP_OR                        // or
 	TOKEN_OP_NOT                       // not
 	TOKEN_KW_BREAK                     // break
-	TOKEN_KW_DO                        // do
 	TOKEN_KW_ELSE                      // else
 	TOKEN_KW_ELSEIF                    // elseif
-	TOKEN_KW_END                       // end
 	TOKEN_KW_FALSE                     // false
 	TOKEN_KW_FOR                       // for
 	TOKEN_KW_FUNCTION                  // function
@@ -68,10 +66,8 @@ const (
 var keywords = map[string]int{
 	"and":      TOKEN_OP_AND,
 	"break":    TOKEN_KW_BREAK,
-	"do":       TOKEN_KW_DO,
 	"else":     TOKEN_KW_ELSE,
 	"elif":   TOKEN_KW_ELSEIF,
-	"end":      TOKEN_KW_END,
 	"false":    TOKEN_KW_FALSE,
 	"for":      TOKEN_KW_FOR,
 	"fn": TOKEN_KW_FUNCTION,

@@ -8,12 +8,8 @@ func cgStat(fi *funcInfo, node Stat) {
 		cgFuncCallStat(fi, stat)
 	case *BreakStat:
 		cgBreakStat(fi, stat)
-	case *DoStat:
-		cgDoStat(fi, stat)
 	case *WhileStat:
 		cgWhileStat(fi, stat)
-	case *RepeatStat:
-		cgRepeatStat(fi, stat)
 	case *IfStat:
 		cgIfStat(fi, stat)
 	case *ForNumStat:
@@ -47,13 +43,6 @@ func cgBreakStat(fi *funcInfo, node *BreakStat) {
 	fi.addBreakJmp(pc)
 }
 
-func cgDoStat(fi *funcInfo, node *DoStat) {
-	fi.enterScope(false)
-	cgBlock(fi, node.Block)
-	fi.closeOpenUpvals(node.Block.LastLine)
-	fi.exitScope(fi.pc() + 1)
-}
-
 /*
            ______________
           /  false? jmp  |
@@ -81,30 +70,6 @@ func cgWhileStat(fi *funcInfo, node *WhileStat) {
 	fi.exitScope(fi.pc())
 
 	fi.fixSbx(pcJmpToEnd, fi.pc()-pcJmpToEnd)
-}
-
-/*
-        ______________
-       |  false? jmp  |
-       V              /
-repeat block until exp
-*/
-func cgRepeatStat(fi *funcInfo, node *RepeatStat) {
-	fi.enterScope(true)
-
-	pcBeforeBlock := fi.pc()
-	cgBlock(fi, node.Block)
-
-	oldRegs := fi.usedRegs
-	a, _ := expToOpArg(fi, node.Exp, ARG_REG)
-	fi.usedRegs = oldRegs
-
-	line := lastLineOf(node.Exp)
-	fi.emitTest(line, a, 0)
-	fi.emitJmp(line, fi.getJmpArgA(), pcBeforeBlock-fi.pc()-1)
-	fi.closeOpenUpvals(line)
-
-	fi.exitScope(fi.pc() + 1)
 }
 
 /*

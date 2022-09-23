@@ -23,7 +23,6 @@ type EmptyStat struct{}              // ‘;’
 type BreakStat struct{ Line int }    // break
 type LabelStat struct{ Name string } // ‘::’ Name ‘::’
 type GotoStat struct{ Name string }  // goto Name
-type DoStat struct{ Block *Block }   // do block end
 type FuncCallStat = FuncCallExp      // functioncall
 
 // if exp then block {elseif exp then block} [else block] end
@@ -36,12 +35,6 @@ type IfStat struct {
 type WhileStat struct {
 	Exp   Exp
 	Block *Block
-}
-
-// repeat block until exp
-type RepeatStat struct {
-	Block *Block
-	Exp   Exp
 }
 
 // for Name ‘=’ exp ‘,’ exp [‘,’ exp] do block end
