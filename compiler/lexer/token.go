@@ -52,11 +52,9 @@ const (
 	TOKEN_KW_IN                        // in
 	TOKEN_KW_LOCAL                     // local
 	TOKEN_KW_NIL                       // nil
-	TOKEN_KW_REPEAT                    // repeat
 	TOKEN_KW_RETURN                    // return
 	TOKEN_KW_THEN                      // then
 	TOKEN_KW_TRUE                      // true
-	TOKEN_KW_UNTIL                     // until
 	TOKEN_KW_WHILE                     // while
 	TOKEN_IDENTIFIER                   // identifier
 	TOKEN_NUMBER                       // number literal
@@ -84,10 +82,8 @@ var keywords = map[string]int{
 	"nil":      TOKEN_KW_NIL,
 	"not":      TOKEN_OP_NOT,
 	"or":       TOKEN_OP_OR,
-	"repeat":   TOKEN_KW_REPEAT,
 	"rt":   TOKEN_KW_RETURN,
 	"then":     TOKEN_KW_THEN,
 	"true":     TOKEN_KW_TRUE,
-	"until":    TOKEN_KW_UNTIL,
 	"while":    TOKEN_KW_WHILE,
 }

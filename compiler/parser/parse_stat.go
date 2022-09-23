@@ -38,8 +38,6 @@ func parseStat(lexer *Lexer) Stat {
 		return parseDoStat(lexer)
 	case TOKEN_KW_WHILE:
 		return parseWhileStat(lexer)
-	case TOKEN_KW_REPEAT:
-		return parseRepeatStat(lexer)
 	case TOKEN_KW_IF:
 		return parseIfStat(lexer)
 	case TOKEN_KW_FOR:
@@ -96,15 +94,6 @@ func parseWhileStat(lexer *Lexer) *WhileStat {
 	block := parseBlock(lexer)            // block
 	lexer.NextTokenOfKind(TOKEN_KW_END)   // end
 	return &WhileStat{exp, block}
-}
-
-// repeat block until exp
-func parseRepeatStat(lexer *Lexer) *RepeatStat {
-	lexer.NextTokenOfKind(TOKEN_KW_REPEAT) // repeat
-	block := parseBlock(lexer)             // block
-	lexer.NextTokenOfKind(TOKEN_KW_UNTIL)  // until
-	exp := parseExp(lexer)                 // exp
-	return &RepeatStat{block, exp}
 }
 
 // if exp then block {elseif exp then block} [else block] end
