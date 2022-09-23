@@ -78,11 +78,11 @@ func parseGotoStat(lexer *Lexer) *GotoStat {
 
 // while exp do block end
 func parseWhileStat(lexer *Lexer) *WhileStat {
-	lexer.NextTokenOfKind(TOKEN_KW_WHILE) // while
-	exp := parseExp(lexer)                // exp
-	lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)    // {
-	block := parseBlock(lexer)            // block
-	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)   // }
+	lexer.NextTokenOfKind(TOKEN_KW_WHILE)   // while
+	exp := parseExp(lexer)                  // exp
+	lexer.NextTokenOfKind(TOKEN_SEP_LCURLY) // {
+	block := parseBlock(lexer)              // block
+	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY) // }
 	return &WhileStat{exp, block}
 }
 
@@ -93,24 +93,24 @@ func parseIfStat(lexer *Lexer) *IfStat {
 
 	lexer.NextTokenOfKind(TOKEN_KW_IF)         // if
 	exps = append(exps, parseExp(lexer))       // exp
-	lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)       // {
+	lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)    // {
 	blocks = append(blocks, parseBlock(lexer)) // block
-	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)       // }
+	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)    // }
 	for lexer.LookAhead() == TOKEN_KW_ELSEIF {
 		lexer.NextToken()                          // elseif
 		exps = append(exps, parseExp(lexer))       // exp
-		lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)       // {
+		lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)    // {
 		blocks = append(blocks, parseBlock(lexer)) // block
-		lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)       // }
+		lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)    // }
 	}
 
 	// else block => elseif true then block
 	if lexer.LookAhead() == TOKEN_KW_ELSE {
 		lexer.NextToken()                           // else
-		lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)        // {
+		lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)     // {
 		exps = append(exps, &TrueExp{lexer.Line()}) //
 		blocks = append(blocks, parseBlock(lexer))  // block
-		lexer.NextTokenOfKind(TOKEN_SEP_RCURLY) // }
+		lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)     // }
 	}
 
 	return &IfStat{exps, blocks}
@@ -144,8 +144,8 @@ func _finishForNumStat(lexer *Lexer, lineOfFor int, varName string) *ForNumStat 
 	}
 
 	lineOfDo, _ := lexer.NextTokenOfKind(TOKEN_SEP_LCURLY) // {
-	block := parseBlock(lexer)                        // block
-	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)               // }
+	block := parseBlock(lexer)                             // block
+	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)                // }
 
 	return &ForNumStat{lineOfFor, lineOfDo,
 		varName, initExp, limitExp, stepExp, block}
@@ -155,12 +155,12 @@ func _finishForNumStat(lexer *Lexer, lineOfFor int, varName string) *ForNumStat 
 // namelist ::= Name {‘,’ Name}
 // explist ::= exp {‘,’ exp}
 func _finishForInStat(lexer *Lexer, name0 string) *ForInStat {
-	nameList := _finishNameList(lexer, name0)         // for namelist
-	lexer.NextTokenOfKind(TOKEN_KW_IN)                // in
-	expList := parseExpList(lexer)                    // explist
+	nameList := _finishNameList(lexer, name0)              // for namelist
+	lexer.NextTokenOfKind(TOKEN_KW_IN)                     // in
+	expList := parseExpList(lexer)                         // explist
 	lineOfDo, _ := lexer.NextTokenOfKind(TOKEN_SEP_LCURLY) // {
-	block := parseBlock(lexer)                        // block
-	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)               // }
+	block := parseBlock(lexer)                             // block
+	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)                // }
 	return &ForInStat{lineOfDo, nameList, expList, block}
 }
 

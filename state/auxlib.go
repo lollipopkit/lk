@@ -268,8 +268,8 @@ func (self *luaState) OpenLibs() {
 		"os":        stdlib.OpenOSLib,
 		"package":   stdlib.OpenPackageLib,
 		"coroutine": stdlib.OpenCoroutineLib,
-		"http": stdlib.OpenHttpLib,
-		"json": stdlib.OpenJsonLib,
+		"http":      stdlib.OpenHttpLib,
+		"json":      stdlib.OpenJsonLib,
 	}
 
 	for name, fun := range libs {

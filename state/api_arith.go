@@ -37,20 +37,20 @@ var (
 )
 
 var operators = []operator{
-	operator{"__add", iadd, fadd},
-	operator{"__sub", isub, fsub},
-	operator{"__mul", imul, fmul},
-	operator{"__mod", imod, fmod},
-	operator{"__pow", nil, pow},
-	operator{"__div", nil, div},
-	operator{"__idiv", iidiv, fidiv},
-	operator{"__band", band, nil},
-	operator{"__bor", bor, nil},
-	operator{"__bxor", bxor, nil},
-	operator{"__shl", shl, nil},
-	operator{"__shr", shr, nil},
-	operator{"__unm", iunm, funm},
-	operator{"__bnot", bnot, nil},
+	{"__add", iadd, fadd},
+	{"__sub", isub, fsub},
+	{"__mul", imul, fmul},
+	{"__mod", imod, fmod},
+	{"__pow", nil, pow},
+	{"__div", nil, div},
+	{"__idiv", iidiv, fidiv},
+	{"__band", band, nil},
+	{"__bor", bor, nil},
+	{"__bxor", bxor, nil},
+	{"__shl", shl, nil},
+	{"__shr", shr, nil},
+	{"__unm", iunm, funm},
+	{"__bnot", bnot, nil},
 }
 
 // [-(2|1), +1, e]
