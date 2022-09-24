@@ -11,8 +11,9 @@ import (
 // http://www.lua.org/manual/5.3/manual.html#lua_load
 func (self *luaState) Load(chunk []byte, chunkName, mode string) int {
 	var proto *binchunk.Prototype
-	if binchunk.IsBinaryChunk(chunk) {
-		proto = binchunk.Undump(chunk)
+	isJson, prot := binchunk.IsJsonChunk(chunk)
+	if isJson {
+		proto = prot
 	} else {
 		proto = compiler.Compile(string(chunk), chunkName)
 	}

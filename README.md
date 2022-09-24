@@ -11,6 +11,11 @@ shy a = {"a", "b", 'c'}
 #### 定义函数
 ```lua
 shy func = fn (e) {print(e)}
+func("hello")
+
+fn hello() {
+    print("hello")
+}
 ```
 
 #### if

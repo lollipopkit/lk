@@ -1,0 +1,8 @@
+shy url = 'http://httpbin.org/post'
+shy headers = 'accept: application/json'
+shy body = '{"foo": "bar"}'
+shy _, resp = http.req('post', url, headers, body)
+print(resp)
+
+shy ok, data = json.get(resp, 'json.foo')
+print(ok, data)

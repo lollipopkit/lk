@@ -1,17 +1,14 @@
 package binchunk
 
-const (
-	LUA_SIGNATURE    = "Loli"
-	LUAC_VERSION     = 0x53
-	LUAC_FORMAT      = 0
-	LUAC_DATA        = "\x19\x93\r\n\x1a\n"
-	CINT_SIZE        = 4
-	CSIZET_SIZE      = 8
-	INSTRUCTION_SIZE = 4
-	LUA_INTEGER_SIZE = 8
-	LUA_NUMBER_SIZE  = 8
-	LUAC_INT         = 0x5678
-	LUAC_NUM         = 370.5
+import (
+	"bytes"
+	"math"
+
+	jsoniter "github.com/json-iterator/go"
+)
+
+var (
+	json = jsoniter.ConfigCompatibleWithStandardLibrary
 )
 
 const (
@@ -21,64 +18,65 @@ const (
 	TAG_INTEGER   = 0x13
 	TAG_SHORT_STR = 0x04
 	TAG_LONG_STR  = 0x14
+
+	VERSION = 0.1
+	SIGNATURE = `LANG_LK`
 )
-
-type binaryChunk struct {
-	header
-	sizeUpvalues byte // ?
-	mainFunc     *Prototype
-}
-
-type header struct {
-	signature       [4]byte
-	version         byte
-	format          byte
-	luacData        [6]byte
-	cintSize        byte
-	sizetSize       byte
-	instructionSize byte
-	luaIntegerSize  byte
-	luaNumberSize   byte
-	luacInt         int64
-	luacNum         float64
-}
 
 // function prototype
 type Prototype struct {
-	Source          string // debug
-	LineDefined     uint32
-	LastLineDefined uint32
-	NumParams       byte
-	IsVararg        byte
-	MaxStackSize    byte
-	Code            []uint32
-	Constants       []interface{}
-	Upvalues        []Upvalue
-	Protos          []*Prototype
-	LineInfo        []uint32 // debug
-	LocVars         []LocVar // debug
-	UpvalueNames    []string // debug
+	Source          string `json:"s"`// debug
+	LineDefined     uint32	`json:"ld"`
+	LastLineDefined uint32	`json:"lld"`
+	NumParams       byte	`json:"np"`
+	IsVararg        byte	`json:"iv"`
+	MaxStackSize    byte	`json:"ms"`
+	Code            []uint32	`json:"c"`
+	Constants       []interface{}	`json:"cs"`
+	Upvalues        []Upvalue	`json:"us"`
+	Protos          []*Prototype	`json:"ps"`
+	LineInfo        []uint32 	`json:"li"`// debug
+	LocVars         []LocVar 	`json:"lvs"`// debug
+	UpvalueNames    []string 	`json:"uns"`// debug
 }
 
 type Upvalue struct {
-	Instack byte
-	Idx     byte
+	Instack byte	`json:"is"`
+	Idx     byte	`json:"idx"`
 }
 
 type LocVar struct {
-	VarName string
-	StartPC uint32
-	EndPC   uint32
+	VarName string	`json:"vn"`
+	StartPC uint32	`json:"spc"`
+	EndPC   uint32	`json:"epc"`
 }
 
-func IsBinaryChunk(data []byte) bool {
-	return len(data) > 4 &&
-		string(data[:4]) == LUA_SIGNATURE
+func IsJsonChunk(data []byte) (bool, *Prototype) {
+	if len(data) < 9 {
+		return false, nil
+	}
+	if !bytes.HasPrefix(data, []byte{'\x1b'}) {
+		return false, nil
+	}
+	if data[1] != byte(math.Float64bits(VERSION)) {
+		panic("version not match!")
+	}
+	data = data[9:]
+	var proto Prototype
+	err := json.Unmarshal(data, &proto)
+	return err == nil, &proto
 }
 
-func Undump(data []byte) *Prototype {
-	reader := &reader{data}
-	reader.checkHeader()
-	reader.readByte() // size_upvalues
-	return reader.readProto("")
+func (proto *Prototype) Dump() ([]byte, error) {
+	data, err := json.Marshal(proto)
+	if err != nil {
+		return nil, err
+	}
+
+	v := math.Float64bits(VERSION)
+	by := []byte{'\x1b'}
+	by = append(by, byte(v))
+	by = append(by, bytes.NewBufferString(SIGNATURE).Bytes()...)
+	data = append(by, data...)
+	return data, err
 }

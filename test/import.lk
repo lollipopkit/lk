@@ -1,5 +1,6 @@
 shy a = 1
 test2 = {}
 fn test2.add2(b) {
-    rt b + 2
+    a = a + 1
+    rt b + a
 }
