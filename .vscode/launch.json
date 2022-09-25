@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "main.go",
-            "args": ["test.lk"]
+            "args": ["test/basic.lk"]
         }
     ]
 }

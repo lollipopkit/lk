@@ -1,0 +1,11 @@
+shy tmpDir = os.tmp()
+print('temp_dir: ', tmpDir)
+shy path = tmpDir .. 'test'
+os.write(path, "test")
+print('write content: ', os.read(path))
+os.rm(path)
+
+print('ls result: ', os.exec('ls', '-a'))
+print('env HOME: ', os.env('HOME'))
+print('date: ', os.date())
+os.exit(0)

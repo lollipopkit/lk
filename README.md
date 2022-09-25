@@ -1,14 +1,25 @@
 # Lang LK
 改编自Lua5.3，[luago](https://github.com/zxh0/luago-book)
 
+## CLI
+```bash
+# 编译test/basic.lk，输出到test/basic.lkc
+./go-lang-lk -c test/basic.lk
+# 运行test/basic.lkc
+./go-lang-lk test/basic.lkc
+# 也可以运行test/basic.lk（内部会先进行编译）
+./go-lang-lk test/basic.lk
+```
+
 ## 速览
-#### 定义变量
+**详细语法**可以查看[test](test)文件夹的内容
+#### 变量
 ```lua
 shy a = {"a", "b", 'c'}
 ```
 `shy` -> `local`
 
-#### 定义函数
+#### 函数
 ```lua
 shy func = fn (e) {print(e)}
 func("hello")
@@ -50,17 +61,3 @@ shy ok, data = json.get(resp, 'data')
 print(ok, data)
 ```
 使用`gjson`库
-
-## 改变
-原始|更改后
--|-
-`elseif`|`elif`
-`function`|`fn`
-`local`|`shy`
-`return`|`rt`
-`local`|`shy`
-`do block end`|`{ block }`
-`~=`|`!=`
-
-## 测试
-`go run . test.lk`

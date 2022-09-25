@@ -4,24 +4,27 @@ package stdlib
 import "C"
 
 import (
+	"io/fs"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
 )
 
 var sysLib = map[string]GoFunction{
-	"clock":     osClock,
-	"difftime":  osDiffTime,
 	"time":      osTime,
 	"date":      osDate,
-	"remove":    osRemove,
-	"rename":    osRename,
-	"tmpname":   osTmpName,
-	"getenv":    osGetEnv,
-	"execute":   osExecute,
+	"rm":    osRemove,
+	"mv":    osRename,
+	"tmp":   osTmpName,
+	"env":    osGetEnv,
+	"exec":   osExecute,
 	"exit":      osExit,
-	"setlocale": osSetLocale,
+	"dir": osDir,
+	"read": osRead,
+	"write": osWrite,
 }
 
 func OpenOSLib(ls LkState) int {
@@ -29,22 +32,52 @@ func OpenOSLib(ls LkState) int {
 	return 1
 }
 
-// os.clock ()
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.clock
-// lua-5.3.4/src/loslib.c#os_clock()
-func osClock(ls LkState) int {
-	c := float64(C.clock()) / float64(C.CLOCKS_PER_SEC)
-	ls.PushNumber(c)
+func osDir(ls LkState) int {
+	dir := ls.CheckString(1)
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		ls.PushNil()
+		return 1
+	}
+	ls.CreateTable(len(files), 0)
+	for i, file := range files {
+		ls.PushString(file.Name())
+		ls.SetI(-2, int64(i+1))
+	}
 	return 1
 }
 
-// os.difftime (t2, t1)
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.difftime
-// lua-5.3.4/src/loslib.c#os_difftime()
-func osDiffTime(ls LkState) int {
-	t2 := ls.CheckInteger(1)
-	t1 := ls.CheckInteger(2)
-	ls.PushInteger(t2 - t1)
+func osRead(ls LkState) int {
+	path := ls.CheckString(1)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		ls.PushNil()
+		return 1
+	}
+	ls.PushString(string(data))
+	return 1
+}
+
+func dirName(path string) string {
+	if strings.Contains(path, "/") {
+		return path[:strings.LastIndex(path, "/")]
+	}
+	return ""
+}
+
+func osWrite(ls LkState) int {
+	path := ls.CheckString(1)
+	data := ls.CheckString(2)
+	perm := fs.FileMode(ls.OptInteger(3, 0744))
+	dir := dirName(path)
+	if dir != "" {
+		os.MkdirAll(dir, perm)
+	}
+	if err := os.WriteFile(path, []byte(data), perm); err != nil {
+		ls.PushString(err.Error())
+		return 1
+	}
+	ls.PushNil()
 	return 1
 }
 
@@ -160,7 +193,8 @@ func osRename(ls LkState) int {
 // os.tmpname ()
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.tmpname
 func osTmpName(ls LkState) int {
-	panic("todo: osTmpName!")
+	ls.PushString(os.TempDir())
+	return 1
 }
 
 // os.getenv (varname)
@@ -176,10 +210,21 @@ func osGetEnv(ls LkState) int {
 	return 1
 }
 
-// os.execute ([command])
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.execute
+// os.exec (exe, [args...])
 func osExecute(ls LkState) int {
-	panic("todo: osExecute!")
+	exe := ls.CheckString(1)
+	args := make([]string, 0, ls.GetTop()-1)
+	for i := 2; i <= ls.GetTop(); i++ {
+		args = append(args, ls.CheckString(i))
+	}
+	cmd := exec.Command(exe, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		ls.PushString(err.Error())
+		return 1
+	}
+	ls.PushString(string(out))
+	return 1
 }
 
 // os.exit ([code [, close]])
@@ -202,8 +247,3 @@ func osExit(ls LkState) int {
 	return 0
 }
 
-// os.setlocale (locale [, category])
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.setlocale
-func osSetLocale(ls LkState) int {
-	panic("todo: osSetLocale!")
-}
