@@ -1,4 +1,4 @@
-shy tb = {0, a: 1, c: num('2')}
+shy tb = {0, d: 4, c: num('2')}
 for key, value in tb {
     print(key, value, type(value))
 }

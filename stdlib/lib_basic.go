@@ -2,7 +2,6 @@ package stdlib
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -16,7 +15,6 @@ var baseFuncs = map[string]GoFunction{
 	"select":       baseSelect,
 	"irange":       baseIPairs,
 	"range":        basePairs,
-	"sort":         baseSort,
 	"next":         baseNext,
 	"load":         baseLoad,
 	"loadfile":     baseLoadFile,
@@ -373,48 +371,4 @@ func baseToNumber(ls LkState) int {
 	} /* else not a number */
 	ls.PushNil() /* not a number */
 	return 1
-}
-
-// sort (list [, comp])
-// http://www.lua.org/manual/5.3/manual.html#pdf-table.sort
-func baseSort(ls LkState) int {
-	w := wrapper{ls}
-	ls.ArgCheck(w.Len() < 1000000, 1, "array too big")
-	sort.Sort(w)
-	return 0
-}
-
-type wrapper struct {
-	ls LkState
-}
-
-func (self wrapper) Len() int {
-	return int(self.ls.Len2(1))
-}
-
-func (self wrapper) Less(i, j int) bool {
-	ls := self.ls
-	if ls.IsFunction(2) { // cmp is given
-		ls.PushValue(2)
-		ls.GetI(1, int64(i+1))
-		ls.GetI(1, int64(j+1))
-		ls.Call(2, 1)
-		b := ls.ToBoolean(-1)
-		ls.Pop(1)
-		return b
-	} else { // cmp is missing
-		ls.GetI(1, int64(i+1))
-		ls.GetI(1, int64(j+1))
-		b := ls.Compare(-2, -1, LUA_OPLT)
-		ls.Pop(2)
-		return b
-	}
-}
-
-func (self wrapper) Swap(i, j int) {
-	ls := self.ls
-	ls.GetI(1, int64(i+1))
-	ls.GetI(1, int64(j+1))
-	ls.SetI(1, int64(i+1))
-	ls.SetI(1, int64(j+1))
 }
