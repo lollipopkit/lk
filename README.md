@@ -15,9 +15,9 @@
 **详细语法**可以查看[test](test)文件夹的内容
 #### 变量
 ```lua
-shy a = {"a", "b", 'c'}
+shy a = {a="a", "b", 'c'}
 ```
-`shy` -> `local`
+`shy`表明为局部变量
 
 #### 函数
 ```lua
@@ -41,7 +41,7 @@ if #a >= 0 {
 for i = 0, #a {
     print(a[i])
 }
-for b,c in pairs(a) {
+for b,c in a {
     print(b,c)
 }
 ```
@@ -60,4 +60,4 @@ print(code, resp)
 shy ok, data = json.get(resp, 'data')
 print(ok, data)
 ```
-使用`gjson`库
+用法请参考`gjson`库

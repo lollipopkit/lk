@@ -28,8 +28,8 @@ var baseFuncs = map[string]GoFunction{
 	"rawget":       baseRawGet,
 	"rawset":       baseRawSet,
 	"type":         baseType,
-	"tostring":     baseToString,
-	"tonumber":     baseToNumber,
+	"str":     baseToString,
+	"num":     baseToNumber,
 	/* placeholders */
 	"_G":       nil,
 	"_VERSION": nil,
@@ -44,7 +44,7 @@ func OpenBaseLib(ls LkState) int {
 	ls.PushValue(-1)
 	ls.SetField(-2, "_G")
 	/* set global _VERSION */
-	ls.PushString("Lua 5.3") // todo
+	ls.PushString("LK 5.3") // todo
 	ls.SetField(-2, "_VERSION")
 	return 1
 }
@@ -54,14 +54,14 @@ func OpenBaseLib(ls LkState) int {
 // lua-5.3.4/src/lbaselib.c#luaB_print()
 func basePrint(ls LkState) int {
 	n := ls.GetTop() /* number of arguments */
-	ls.GetGlobal("tostring")
+	ls.GetGlobal("str")
 	for i := 1; i <= n; i++ {
 		ls.PushValue(-1) /* function to be called */
 		ls.PushValue(i)  /* value to print */
 		ls.Call(1, 1)
 		s, ok := ls.ToStringX(-1) /* get result */
 		if !ok {
-			return ls.Error2("'tostring' must return a string to 'print'")
+			return ls.Error2("'str' must return a string to 'print'")
 		}
 		if i > 1 {
 			fmt.Print("\t")
