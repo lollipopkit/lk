@@ -1,4 +1,14 @@
-shy tb = {0, d: 4, c: num('2')}
+shy tb = {5, d: 4, c: num('2')}
+
+insert(tb, 2, 3)
+
+shy fn sort_fn(e1, e2) {
+    rt e1 > e2
+}
+sort(tb, sort_fn)
+
+delete(tb, 1)
+
 for key, value in tb {
     print(key, value, type(value))
 }

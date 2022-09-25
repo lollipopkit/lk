@@ -2,6 +2,7 @@ package stdlib
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -33,6 +34,10 @@ var baseFuncs = map[string]GoFunction{
 	/* placeholders */
 	"_G":       nil,
 	"_VERSION": nil,
+	// table
+	"insert": tabInsert,
+	"delete": tabRemove,
+	"sort":   tabSort,
 }
 
 // lua-5.3.4/src/lbaselib.c#luaopen_base()
@@ -372,3 +377,134 @@ func baseToNumber(ls LkState) int {
 	ls.PushNil() /* not a number */
 	return 1
 }
+
+const MAX_LEN = 1000000 // TODO
+
+/*
+** Operations that an object must define to mimic a table
+** (some functions only need some of them)
+ */
+const (
+	TAB_R  = 1               /* read */
+	TAB_W  = 2               /* write */
+	TAB_L  = 4               /* length */
+	TAB_RW = (TAB_R | TAB_W) /* read/write */
+)
+
+// table.insert (list, [pos,] value)
+// http://www.lua.org/manual/5.3/manual.html#pdf-table.insert
+// lua-5.3.4/src/ltablib.c#tinsert()
+func tabInsert(ls LkState) int {
+	e := _auxGetN(ls, 1, TAB_RW) + 1 /* first empty element */
+	var pos int64                    /* where to insert new element */
+	switch ls.GetTop() {
+	case 2: /* called with only 2 arguments */
+		pos = e /* insert new element at the end */
+	case 3:
+		pos = ls.CheckInteger(2) /* 2nd argument is the position */
+		ls.ArgCheck(1 <= pos && pos <= e, 2, "position out of bounds")
+		for i := e; i > pos; i-- { /* move up elements */
+			ls.GetI(1, i-1)
+			ls.SetI(1, i) /* t[i] = t[i - 1] */
+		}
+	default:
+		return ls.Error2("wrong number of arguments to 'insert'")
+	}
+	ls.SetI(1, pos) /* t[pos] = v */
+	return 0
+}
+
+// table.remove (list [, pos])
+// http://www.lua.org/manual/5.3/manual.html#pdf-table.remove
+// lua-5.3.4/src/ltablib.c#tremove()
+func tabRemove(ls LkState) int {
+	size := _auxGetN(ls, 1, TAB_RW)
+	pos := ls.OptInteger(2, size)
+	if pos != size { /* validate 'pos' if given */
+		ls.ArgCheck(1 <= pos && pos <= size+1, 1, "position out of bounds")
+	}
+	ls.GetI(1, pos) /* result = t[pos] */
+	for ; pos < size; pos++ {
+		ls.GetI(1, pos+1)
+		ls.SetI(1, pos) /* t[pos] = t[pos + 1] */
+	}
+	ls.PushNil()
+	ls.SetI(1, pos) /* t[pos] = nil */
+	return 1
+}
+
+func _auxGetN(ls LkState, n, w int) int64 {
+	_checkTab(ls, n, w|TAB_L)
+	return ls.Len2(n)
+}
+
+/*
+** Check that 'arg' either is a table or can behave like one (that is,
+** has a metatable with the required metamethods)
+ */
+func _checkTab(ls LkState, arg, what int) {
+	if ls.Type(arg) != LUA_TTABLE { /* is it not a table? */
+		n := 1                     /* number of elements to pop */
+		if ls.GetMetatable(arg) && /* must have metatable */
+			(what&TAB_R != 0 || _checkField(ls, "__index", &n)) &&
+			(what&TAB_W != 0 || _checkField(ls, "__newindex", &n)) &&
+			(what&TAB_L != 0 || _checkField(ls, "__len", &n)) {
+			ls.Pop(n) /* pop metatable and tested metamethods */
+		} else {
+			ls.CheckType(arg, LUA_TTABLE) /* force an error */
+		}
+	}
+}
+
+func _checkField(ls LkState, key string, n *int) bool {
+	ls.PushString(key)
+	*n++
+	return ls.RawGet(-*n) != LUA_TNIL
+}
+
+/* sort */
+
+// table.sort (list [, comp])
+// http://www.lua.org/manual/5.3/manual.html#pdf-table.sort
+func tabSort(ls LkState) int {
+	w := wrapper{ls}
+	ls.ArgCheck(w.Len() < MAX_LEN, 1, "array too big")
+	sort.Sort(w)
+	return 0
+}
+
+type wrapper struct {
+	ls LkState
+}
+
+func (self wrapper) Len() int {
+	return int(self.ls.Len2(1))
+}
+
+func (self wrapper) Less(i, j int) bool {
+	ls := self.ls
+	if ls.IsFunction(2) { // cmp is given
+		ls.PushValue(2)
+		ls.GetI(1, int64(i+1))
+		ls.GetI(1, int64(j+1))
+		ls.Call(2, 1)
+		b := ls.ToBoolean(-1)
+		ls.Pop(1)
+		return b
+	} else { // cmp is missing
+		ls.GetI(1, int64(i+1))
+		ls.GetI(1, int64(j+1))
+		b := ls.Compare(-2, -1, LUA_OPLT)
+		ls.Pop(2)
+		return b
+	}
+}
+
+func (self wrapper) Swap(i, j int) {
+	ls := self.ls
+	ls.GetI(1, int64(i+1))
+	ls.GetI(1, int64(j+1))
+	ls.SetI(1, int64(i+1))
+	ls.SetI(1, int64(j+1))
+}
+
