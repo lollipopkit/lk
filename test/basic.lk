@@ -1,6 +1,6 @@
 import "test/import"
 
-shy a = {"a", "b", 'c'}
+shy a = {a: "a", "b", 'c'}
 
 shy func = fn (e) {print(e)}
 func(1!=2 and 3!=4)

@@ -269,13 +269,8 @@ func _checkVar(lexer *Lexer, exp Exp) Exp {
 // namelist ::= Name {‘,’ Name}
 func parseFuncDefStat(lexer *Lexer) *AssignStat {
 	lexer.NextTokenOfKind(TOKEN_KW_FUNCTION) // function
-	fnExp, hasColon := _parseFuncName(lexer) // funcname
+	fnExp := _parseFuncName(lexer)           // funcname
 	fdExp := parseFuncDefExp(lexer)          // funcbody
-	if hasColon {                            // insert self
-		fdExp.ParList = append(fdExp.ParList, "")
-		copy(fdExp.ParList[1:], fdExp.ParList)
-		fdExp.ParList[0] = "self"
-	}
 
 	return &AssignStat{
 		LastLine: fdExp.Line,
@@ -284,8 +279,8 @@ func parseFuncDefStat(lexer *Lexer) *AssignStat {
 	}
 }
 
-// funcname ::= Name {‘.’ Name} [‘:’ Name]
-func _parseFuncName(lexer *Lexer) (exp Exp, hasColon bool) {
+// funcname ::= Name {‘.’ Name}
+func _parseFuncName(lexer *Lexer) (exp Exp) {
 	line, name := lexer.NextIdentifier()
 	exp = &NameExp{line, name}
 
@@ -294,13 +289,6 @@ func _parseFuncName(lexer *Lexer) (exp Exp, hasColon bool) {
 		line, name := lexer.NextIdentifier()
 		idx := &StringExp{line, name}
 		exp = &TableAccessExp{line, exp, idx}
-	}
-	if lexer.LookAhead() == TOKEN_SEP_COLON {
-		lexer.NextToken()
-		line, name := lexer.NextIdentifier()
-		idx := &StringExp{line, name}
-		exp = &TableAccessExp{line, exp, idx}
-		hasColon = true
 	}
 
 	return

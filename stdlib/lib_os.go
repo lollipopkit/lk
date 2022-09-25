@@ -14,16 +14,16 @@ import (
 )
 
 var sysLib = map[string]GoFunction{
-	"time":      osTime,
-	"date":      osDate,
+	"time":  osTime,
+	"date":  osDate,
 	"rm":    osRemove,
 	"mv":    osRename,
 	"tmp":   osTmpName,
-	"env":    osGetEnv,
-	"exec":   osExecute,
-	"exit":      osExit,
-	"dir": osDir,
-	"read": osRead,
+	"env":   osGetEnv,
+	"exec":  osExecute,
+	"exit":  osExit,
+	"dir":   osDir,
+	"read":  osRead,
 	"write": osWrite,
 }
 
@@ -246,4 +246,3 @@ func osExit(ls LkState) int {
 	}
 	return 0
 }
-

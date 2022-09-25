@@ -316,15 +316,15 @@ func _parseField(lexer *Lexer) (k, v Exp) {
 		lexer.NextToken()                       // [
 		k = parseExp(lexer)                     // exp
 		lexer.NextTokenOfKind(TOKEN_SEP_RBRACK) // ]
-		lexer.NextTokenOfKind(TOKEN_OP_ASSIGN)  // =
+		lexer.NextTokenOfKind(TOKEN_SEP_COLON)  // :
 		v = parseExp(lexer)                     // exp
 		return
 	}
 
 	exp := parseExp(lexer)
 	if nameExp, ok := exp.(*NameExp); ok {
-		if lexer.LookAhead() == TOKEN_OP_ASSIGN {
-			// Name ‘=’ exp => ‘[’ LiteralString ‘]’ = exp
+		if lexer.LookAhead() == TOKEN_SEP_COLON {
+			// Name ‘:’ exp => ‘[’ LiteralString ‘]’ = exp
 			lexer.NextToken()
 			k = &StringExp{nameExp.Line, nameExp.Name}
 			v = parseExp(lexer)

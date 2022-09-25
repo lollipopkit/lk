@@ -13,7 +13,7 @@ import (
 var (
 	client  = http.Client{}
 	httpLib = map[string]GoFunction{
-		"req": req,
+		"req": httpReq,
 	}
 )
 
@@ -24,7 +24,7 @@ func OpenHttpLib(ls LkState) int {
 
 // http.req (method, url [, headers, body])
 // return code, data
-func req(ls LkState) int {
+func httpReq(ls LkState) int {
 	method := ls.CheckString(1)
 	url := ls.CheckString(2)
 	headers := ls.OptString(3, "user-agent: lang-lk")

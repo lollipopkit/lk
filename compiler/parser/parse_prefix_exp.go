@@ -54,8 +54,7 @@ func _finishPrefixExp(lexer *Lexer, exp Exp) Exp {
 			line, name := lexer.NextIdentifier() // Name
 			keyExp := &StringExp{line, name}
 			exp = &TableAccessExp{line, exp, keyExp}
-		case TOKEN_SEP_COLON, // prefixexp ‘:’ Name args
-			TOKEN_SEP_LPAREN, TOKEN_STRING: // prefixexp args
+		case TOKEN_SEP_LPAREN, TOKEN_STRING: // prefixexp args
 			exp = _finishFuncCallExp(lexer, exp)
 		default:
 			return exp
@@ -65,21 +64,21 @@ func _finishPrefixExp(lexer *Lexer, exp Exp) Exp {
 
 // functioncall ::=  prefixexp args | prefixexp ‘:’ Name args
 func _finishFuncCallExp(lexer *Lexer, prefixExp Exp) *FuncCallExp {
-	nameExp := _parseNameExp(lexer)
+	//nameExp := _parseNameExp(lexer)
 	line := lexer.Line() // todo
 	args := _parseArgs(lexer)
 	lastLine := lexer.Line()
-	return &FuncCallExp{line, lastLine, prefixExp, nameExp, args}
+	return &FuncCallExp{line, lastLine, prefixExp, nil, args}
 }
 
-func _parseNameExp(lexer *Lexer) *StringExp {
-	if lexer.LookAhead() == TOKEN_SEP_COLON {
-		lexer.NextToken()
-		line, name := lexer.NextIdentifier()
-		return &StringExp{line, name}
-	}
-	return nil
-}
+// func _parseNameExp(lexer *Lexer) *StringExp {
+// 	if lexer.LookAhead() == TOKEN_SEP_COLON {
+// 		lexer.NextToken()
+// 		line, name := lexer.NextIdentifier()
+// 		return &StringExp{line, name}
+// 	}
+// 	return nil
+// }
 
 // args ::=  ‘(’ [explist] ‘)’ | tableconstructor | LiteralString
 func _parseArgs(lexer *Lexer) (args []Exp) {

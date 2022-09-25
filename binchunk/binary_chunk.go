@@ -19,36 +19,36 @@ const (
 	TAG_SHORT_STR = 0x04
 	TAG_LONG_STR  = 0x14
 
-	VERSION = 0.1
+	VERSION   = 0.1
 	SIGNATURE = `LANG_LK`
 )
 
 // function prototype
 type Prototype struct {
-	Source          string `json:"s"`// debug
-	LineDefined     uint32	`json:"ld"`
-	LastLineDefined uint32	`json:"lld"`
-	NumParams       byte	`json:"np"`
-	IsVararg        byte	`json:"iv"`
-	MaxStackSize    byte	`json:"ms"`
-	Code            []uint32	`json:"c"`
-	Constants       []interface{}	`json:"cs"`
-	Upvalues        []Upvalue	`json:"us"`
-	Protos          []*Prototype	`json:"ps"`
-	LineInfo        []uint32 	`json:"li"`// debug
-	LocVars         []LocVar 	`json:"lvs"`// debug
-	UpvalueNames    []string 	`json:"uns"`// debug
+	Source          string        `json:"s"` // debug
+	LineDefined     uint32        `json:"ld"`
+	LastLineDefined uint32        `json:"lld"`
+	NumParams       byte          `json:"np"`
+	IsVararg        byte          `json:"iv"`
+	MaxStackSize    byte          `json:"ms"`
+	Code            []uint32      `json:"c"`
+	Constants       []interface{} `json:"cs"`
+	Upvalues        []Upvalue     `json:"us"`
+	Protos          []*Prototype  `json:"ps"`
+	LineInfo        []uint32      `json:"li"`  // debug
+	LocVars         []LocVar      `json:"lvs"` // debug
+	UpvalueNames    []string      `json:"uns"` // debug
 }
 
 type Upvalue struct {
-	Instack byte	`json:"is"`
-	Idx     byte	`json:"idx"`
+	Instack byte `json:"is"`
+	Idx     byte `json:"idx"`
 }
 
 type LocVar struct {
-	VarName string	`json:"vn"`
-	StartPC uint32	`json:"spc"`
-	EndPC   uint32	`json:"epc"`
+	VarName string `json:"vn"`
+	StartPC uint32 `json:"spc"`
+	EndPC   uint32 `json:"epc"`
 }
 
 func IsJsonChunk(data []byte) (bool, *Prototype) {
