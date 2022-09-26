@@ -1,13 +1,14 @@
 package stdlib
 
 import (
-	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 
 	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+	"git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
 )
 
 var (
@@ -27,7 +28,9 @@ func OpenHttpLib(ls LkState) int {
 func httpReq(ls LkState) int {
 	method := ls.CheckString(1)
 	url := ls.CheckString(2)
-	headers := ls.OptString(3, "user-agent: lang-lk")
+	headers := OptTable(ls, 3, map[string]any{
+		"User-Agent": "lk/"+strconv.FormatFloat(binchunk.VERSION, 'f', 1, 64),
+	})
 	bodyStr := ls.OptString(4, "")
 
 	body := func() io.Reader {
@@ -44,17 +47,8 @@ func httpReq(ls LkState) int {
 		return 2
 	}
 
-	for _, header := range strings.Split(headers, "\n") {
-		if header == "" {
-			continue
-		}
-		kv := strings.Split(header, ":")
-		if len(kv) != 2 {
-			ls.PushInteger(0)
-			ls.PushString(fmt.Sprintf("invalid header: %s", header))
-			return 2
-		}
-		request.Header.Set(strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1]))
+	for k, v := range headers {
+		request.Header.Set(k, v.(string))
 	}
 
 	resp, err := client.Do(request)

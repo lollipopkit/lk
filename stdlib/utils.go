@@ -37,7 +37,7 @@ func pushTable(ls LkState, items map[string]any) {
 func getTable(ls LkState, idx int) map[string]any {
 	ls.CheckType(idx, LUA_TTABLE)
 	table := make(map[string]any)
-	ls.PushInteger(1)
+	ls.PushNil()
 	for ls.Next(idx) {
 		key := ls.ToString(-2)
 		val := ls.ToPointer(-1)
@@ -45,6 +45,13 @@ func getTable(ls LkState, idx int) map[string]any {
 		ls.Pop(1)
 	}
 	return table
+}
+
+func OptTable(ls LkState, idx int, dft map[string]any) map[string]any {
+	if ls.IsNoneOrNil(idx) {
+		return dft
+	}
+	return getTable(ls, idx)
 }
 
 // lua-5.3.4/src/loslib.c#getfield()
