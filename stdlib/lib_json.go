@@ -34,7 +34,7 @@ func jsonGet(ls LkState) int {
 	} else {
 		gjsonResult, ok = gjsonCache.(gjson.Result)
 		if !ok {
-			ls.PushString("gjson cache type convert error")
+			ls.PushNil()
 			return 1
 		}
 	}
@@ -42,11 +42,9 @@ func jsonGet(ls LkState) int {
 	// 从gjson.Result中获取结果
 	result := gjsonResult.Get(path)
 	if !result.Exists() {
-		ls.PushBoolean(false)
-		ls.PushString("")
-		return 2
+		ls.PushNil()
+		return 1
 	}
-	ls.PushBoolean(true)
 	ls.PushString(result.String())
-	return 2
+	return 1
 }

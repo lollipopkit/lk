@@ -1,8 +1,18 @@
-shy url = 'http://httpbin.org/post'
-shy headers = {accept: 'application/json'}
-shy body = '{"foo": "bar"}'
-shy _, resp = http.req('post', url, headers, body)
-print(resp)
+shy code, resp = http.req(
+    'post', 
+    'http://httpbin.org/post', 
+    {accept: 'application/json'}, 
+    '{"foo": "bar"}'
+)
+print(code, resp)
 
-shy ok, data = json.get(resp, 'json.foo')
-print(ok, data)
+print('json.foo:', json.get(resp, 'json.foo'))
+
+shy fn handle(req) {
+    shy body = req.body
+    rt 200, body
+}
+
+if http.listen(':8080', handle) != nil {
+    error(err)
+}

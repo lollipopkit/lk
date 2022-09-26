@@ -57,7 +57,7 @@ func OpenBaseLib(ls LkState) int {
 
 func baseKV(ls LkState) int {
 	tb := getTable(ls, 1)
-	keys := make([]any, 0, len(tb))
+	keys := make([]string, 0, len(tb))
 	for k := range tb {
 		keys = append(keys, k)
 	}

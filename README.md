@@ -9,25 +9,20 @@ shy a = {a: "a", "b", 'c'}
 ```
 `shy`表明为局部变量
 
-#### 函数
+#### function
 ```lua
 shy func = fn (e) {print(e)}
-func("hello")
 
 fn hello() {
-    print("hello")
+    func('hello')
 }
 ```
 
-#### if
+#### if & for
 ```lua
 if #a >= 0 {
     print("hello")
 }
-```
-
-#### for
-```lua
 for i = 0, #a {
     print(a[i])
 }
@@ -36,21 +31,27 @@ for b,c in a {
 }
 ```
 
-#### 网络请求
+#### http & json
 ```lua
-shy url = 'http://httpbin.org/post'
-shy headers = {accept: 'application/json'}
-shy body = '{"foo": "bar"}'
-shy code, resp = http.req('post', url, headers, body)
+shy code, resp = http.req(
+    'post', 
+    'http://httpbin.org/post', 
+    {accept: 'application/json'}, 
+    '{"foo": "bar"}'
+)
 print(code, resp)
-```
 
-#### json
-```lua
-shy ok, data = json.get(resp, 'data')
-print(ok, data)
+print('json.foo:', json.get(resp, 'json.foo'))
+
+shy fn handle(req) {
+    shy body = req.body
+    rt 200, body
+}
+
+if http.listen(':8080', handle) != nil {
+    error(err)
+}
 ```
-用法请参考`gjson`库
 
 ## CLI
 ```bash

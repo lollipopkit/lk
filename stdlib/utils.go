@@ -1,35 +1,52 @@
 package stdlib
 
 import (
+	"fmt"
+
 	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
 )
 
-func pushList(ls LkState, items []any) {
+func pushValue(ls LkState, item any) {
+	switch item.(type) {
+	case string:
+		ls.PushString(item.(string))
+	case int, int64:
+		ls.PushInteger(item.(int64))
+	case float32, float64:
+		ls.PushNumber(item.(float64))
+	case bool:
+		ls.PushBoolean(item.(bool))
+	case GoFunction:
+		ls.PushGoFunction(item.(GoFunction))
+	case nil:
+		ls.PushNil()
+	default:
+		list, ok := item.([]string)
+		if ok {
+			pushList(ls, list)
+			return
+		}
+		table, ok := item.(map[string]any)
+		if ok {
+			pushTable(ls, table)
+			return
+		}
+		panic(fmt.Sprintf("unsupported type: %T", item))
+	}
+}
+
+func pushList[T string|int|int64|float64|any](ls LkState, items []T) {
 	ls.CreateTable(len(items), 0)
 	for i, item := range items {
-		switch item.(type) {
-		case string:
-			ls.PushString(item.(string))
-		case int, int64:
-			ls.PushInteger(item.(int64))
-		case float32, float64:
-			ls.PushNumber(item.(float64))
-		}
+		pushValue(ls, item)
 		ls.SetI(-2, int64(i+1))
 	}
 }
 
 func pushTable(ls LkState, items map[string]any) {
-	ls.CreateTable(0, len(items))
+	ls.CreateTable(0, len(items) + 1)
 	for k, v := range items {
-		switch v.(type) {
-		case string:
-			ls.PushString(v.(string))
-		case int, int64:
-			ls.PushInteger(v.(int64))
-		case float32, float64:
-			ls.PushNumber(v.(float64))
-		}
+		pushValue(ls, v)
 		ls.SetField(-2, k)
 	}
 }
@@ -69,3 +86,9 @@ func _getField(ls LkState, key string, dft int64) int {
 	ls.Pop(1)
 	return int(res)
 }
+
+func getFunc(ls LkState, idx int) GoFunction {
+	ls.CheckType(idx, LUA_TFUNCTION)
+	return ls.ToGoFunction(idx)
+}
+

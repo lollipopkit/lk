@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "main.go",
-            "args": ["test/basic.lk"]
+            "args": ["test/httpjson.lk"]
         }
     ]
 }

@@ -1,6 +1,8 @@
 package state
 
 import (
+	"fmt"
+
 	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
 	"git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
 	"git.lolli.tech/lollipopkit/go-lang-lk/compiler"
@@ -50,7 +52,7 @@ func (self *luaState) Call(nArgs, nResults int) {
 			self.callGoClosure(nArgs, nResults, c)
 		}
 	} else {
-		panic("not function!")
+		panic(fmt.Sprintf("attempt to call on <%#v>", val))
 	}
 }
 

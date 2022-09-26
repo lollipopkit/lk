@@ -7,7 +7,7 @@ import (
 	"git.lolli.tech/lollipopkit/go-lang-lk/number"
 )
 
-type luaValue interface{}
+type luaValue any
 
 func typeOf(val luaValue) LuaType {
 	switch val.(type) {

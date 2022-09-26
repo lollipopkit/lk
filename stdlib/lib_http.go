@@ -9,12 +9,15 @@ import (
 
 	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
 	"git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
+	jsoniter "github.com/json-iterator/go"
 )
 
 var (
 	client  = http.Client{}
+	json = jsoniter.ConfigCompatibleWithStandardLibrary
 	httpLib = map[string]GoFunction{
 		"req": httpReq,
+		"listen": httpListen,
 	}
 )
 
@@ -70,4 +73,52 @@ func httpReq(ls LkState) int {
 	ls.PushInteger(int64(resp.StatusCode))
 	ls.PushString(string(data))
 	return 2
+}
+
+func genReqTable(r *http.Request) (map[string]any, error) {
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+	headers := map[string]any{}
+	for k, v := range r.Header {
+		headers[k] = v
+	}
+	return map[string]any{
+		"method": r.Method,
+		"url": r.URL.String(),
+		"proto": r.Proto,
+		"headers": headers,
+		"body": string(body),
+	}, nil
+}
+
+// Lua eg: 
+// http.listen(port, fn(req) {rt code, data})
+// return err
+func httpListen(ls LkState) int {
+	addr := ls.CheckString(1)
+	ls.CheckType(2, LUA_TFUNCTION)
+	err := http.ListenAndServe(addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, err := genReqTable(r)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		ls.PushValue(-1)
+		pushTable(ls, req)
+		ls.Call(1, 2)
+		code := ls.ToInteger(-2)
+		data := ls.ToString(-1)
+		w.WriteHeader(int(code))
+		w.Write([]byte(data))
+		ls.Pop(2)
+	}))
+	if err != nil {
+		ls.PushString(err.Error())
+		return 1
+	}
+	ls.PushNil()
+	return 1
 }
