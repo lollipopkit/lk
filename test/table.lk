@@ -1,5 +1,10 @@
 shy tb = {5, d: 4, c: num('2')}
 
+shy keys, vals = kv(tb)
+for i, k in keys {
+    print(k, vals[i])
+}
+
 insert(tb, 2, 3)
 
 shy fn sort_fn(e1, e2) {

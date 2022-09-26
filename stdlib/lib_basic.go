@@ -31,6 +31,7 @@ var baseFuncs = map[string]GoFunction{
 	"type":         baseType,
 	"str":          baseToString,
 	"num":          baseToNumber,
+	"kv":           baseKV,
 	/* placeholders */
 	"_G":       nil,
 	"_VERSION": nil,
@@ -52,6 +53,21 @@ func OpenBaseLib(ls LkState) int {
 	ls.PushString("LK 5.3") // todo
 	ls.SetField(-2, "_VERSION")
 	return 1
+}
+
+func baseKV(ls LkState) int {
+	tb := getTable(ls, 1)
+	keys := make([]any, 0, len(tb))
+	for k := range tb {
+		keys = append(keys, k)
+	}
+	values := make([]any, 0, len(tb))
+	for _, v := range tb {
+		values = append(values, v)
+	}
+	pushList(ls, keys)
+	pushList(ls, values)
+	return 2
 }
 
 // print (···)
@@ -507,4 +523,3 @@ func (self wrapper) Swap(i, j int) {
 	ls.SetI(1, int64(i+1))
 	ls.SetI(1, int64(j+1))
 }
-

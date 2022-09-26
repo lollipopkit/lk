@@ -10,8 +10,8 @@ const LUA_RIDX_GLOBALS int64 = 2
 const LUA_MULTRET = -1
 
 const (
-	offset = bits.UintSize - 1
-	LUA_MAXINTEGER = 1 << offset - 1
+	offset         = bits.UintSize - 1
+	LUA_MAXINTEGER = 1<<offset - 1
 	LUA_MININTEGER = -1 << offset
 )
 
