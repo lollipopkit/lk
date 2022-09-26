@@ -47,7 +47,7 @@ func osDir(ls LkState) int {
 		ls.PushString(err.Error())
 		return 2
 	}
-	filenames := make([]string, 0, len(files))
+	filenames := make([]any, 0, len(files))
 	for _, file := range files {
 		filenames = append(filenames, file.Name())
 	}

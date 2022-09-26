@@ -14,9 +14,9 @@ import (
 
 var (
 	client  = http.Client{}
-	json = jsoniter.ConfigCompatibleWithStandardLibrary
+	json    = jsoniter.ConfigCompatibleWithStandardLibrary
 	httpLib = map[string]GoFunction{
-		"req": httpReq,
+		"req":    httpReq,
 		"listen": httpListen,
 	}
 )
@@ -32,7 +32,7 @@ func httpReq(ls LkState) int {
 	method := ls.CheckString(1)
 	url := ls.CheckString(2)
 	headers := OptTable(ls, 3, map[string]any{
-		"User-Agent": "lk/"+strconv.FormatFloat(binchunk.VERSION, 'f', 1, 64),
+		"User-Agent": "lk/" + strconv.FormatFloat(binchunk.VERSION, 'f', 1, 64),
 	})
 	bodyStr := ls.OptString(4, "")
 
@@ -85,15 +85,15 @@ func genReqTable(r *http.Request) (map[string]any, error) {
 		headers[k] = v
 	}
 	return map[string]any{
-		"method": r.Method,
-		"url": r.URL.String(),
-		"proto": r.Proto,
+		"method":  r.Method,
+		"url":     r.URL.String(),
+		"proto":   r.Proto,
 		"headers": headers,
-		"body": string(body),
+		"body":    string(body),
 	}, nil
 }
 
-// Lua eg: 
+// Lua eg:
 // http.listen(port, fn(req) {rt code, data})
 // return err
 func httpListen(ls LkState) int {
