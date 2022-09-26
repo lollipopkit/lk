@@ -89,6 +89,13 @@ func (self *luaState) CheckString(arg int) string {
 	return s
 }
 
+func (self *luaState) CheckBool(arg int) bool {
+	if self.Type(arg) != LUA_TBOOLEAN {
+		self.tagError(arg, LUA_TBOOLEAN)
+	}
+	return self.ToBoolean(arg)
+}
+
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_optinteger
 func (self *luaState) OptInteger(arg int, def int64) int64 {
@@ -114,6 +121,13 @@ func (self *luaState) OptString(arg int, def string) string {
 		return def
 	}
 	return self.CheckString(arg)
+}
+
+func (self *luaState) OptBool(arg int, def bool) bool {
+	if self.IsNoneOrNil(arg) {
+		return def
+	}
+	return self.ToBoolean(arg)
 }
 
 // [-0, +?, e]

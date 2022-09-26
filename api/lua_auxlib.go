@@ -15,9 +15,11 @@ type AuxLib interface {
 	CheckInteger(arg int) int64
 	CheckNumber(arg int) float64
 	CheckString(arg int) string
+	CheckBool(arg int) bool
 	OptInteger(arg int, d int64) int64
 	OptNumber(arg int, d float64) float64
 	OptString(arg int, d string) string
+	OptBool(arg int, d bool) bool
 	/* Load functions */
 	DoFile(filename string) bool
 	DoString(str string) bool

@@ -1,11 +1,25 @@
 shy tmpDir = os.tmp()
 print('temp_dir: ', tmpDir)
-shy path = tmpDir .. 'test'
-os.write(path, "test")
-print('write content: ', os.read(path))
-os.rm(path)
 
-print('ls result: ', os.exec('ls', '-a'))
+shy path = tmpDir .. 'test'
+shy err = os.write(path, "test")
+print('write err: ', err)
+shy data, err = os.read(path)
+print('write content: ', data, err)
+
+shy err = os.rm(path, false)
+print('rm err: ', err)
+
+shy result, ok = os.exec('ls', '-l', 'test')
+print('ls result: ', ok, result)
+
 print('env HOME: ', os.env('HOME'))
 print('date: ', os.date())
-os.exit(0)
+
+shy dirs, err = os.dir('test')
+for _, dir in dirs {
+    print(dir)
+}
+
+os.sleep(1)
+os.exit()

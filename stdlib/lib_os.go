@@ -25,6 +25,7 @@ var sysLib = map[string]GoFunction{
 	"dir":   osDir,
 	"read":  osRead,
 	"write": osWrite,
+	"sleep": osSleep,
 }
 
 func OpenOSLib(ls LkState) int {
@@ -32,19 +33,27 @@ func OpenOSLib(ls LkState) int {
 	return 1
 }
 
+func osSleep(ls LkState) int {
+	sec := ls.CheckInteger(1)
+	time.Sleep(time.Duration(sec) * time.Second)
+	return 0
+}
+
 func osDir(ls LkState) int {
 	dir := ls.CheckString(1)
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		ls.PushNil()
-		return 1
+		ls.PushString(err.Error())
+		return 2
 	}
-	ls.CreateTable(len(files), 0)
-	for i, file := range files {
-		ls.PushString(file.Name())
-		ls.SetI(-2, int64(i+1))
+	filenames := make([]any, 0, len(files))
+	for _, file := range files {
+		filenames = append(filenames, file.Name())
 	}
-	return 1
+	pushList(ls, filenames)
+	ls.PushNil()
+	return 2
 }
 
 func osRead(ls LkState) int {
@@ -52,10 +61,12 @@ func osRead(ls LkState) int {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		ls.PushNil()
-		return 1
+		ls.PushString(err.Error())
+		return 2
 	}
 	ls.PushString(string(data))
-	return 1
+	ls.PushNil()
+	return 2
 }
 
 func dirName(path string) string {
@@ -104,22 +115,6 @@ func osTime(ls LkState) int {
 	return 1
 }
 
-// lua-5.3.4/src/loslib.c#getfield()
-func _getField(ls LkState, key string, dft int64) int {
-	t := ls.GetField(-1, key) /* get field and its type */
-	res, isNum := ls.ToIntegerX(-1)
-	if !isNum { /* field is not an integer? */
-		if t != LUA_TNIL { /* some other value? */
-			return ls.Error2("field '%s' is not an integer", key)
-		} else if dft < 0 { /* absent field; no default? */
-			return ls.Error2("field '%s' missing in date table", key)
-		}
-		res = dft
-	}
-	ls.Pop(1)
-	return int(res)
-}
-
 // os.date ([format [, time]])
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.date
 // lua-5.3.4/src/loslib.c#os_date()
@@ -161,18 +156,26 @@ func _setField(ls LkState, key string, value int) {
 	ls.SetField(-2, key)
 }
 
-// os.remove (filename)
+// os.remove (filename, [rmdir])
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.remove
 func osRemove(ls LkState) int {
 	filename := ls.CheckString(1)
+	rmdir := ls.OptBool(2, false)
+	if rmdir {
+		err := os.RemoveAll(filename)
+		if err != nil {
+			ls.PushString(err.Error())
+			return 1
+		}
+		goto SUC
+	}
 	if err := os.Remove(filename); err != nil {
-		ls.PushNil()
 		ls.PushString(err.Error())
-		return 2
-	} else {
-		ls.PushBoolean(true)
 		return 1
 	}
+SUC:
+	ls.PushNil()
+	return 1
 }
 
 // os.rename (oldname, newname)
@@ -181,13 +184,11 @@ func osRename(ls LkState) int {
 	oldName := ls.CheckString(1)
 	newName := ls.CheckString(2)
 	if err := os.Rename(oldName, newName); err != nil {
-		ls.PushNil()
 		ls.PushString(err.Error())
-		return 2
-	} else {
-		ls.PushBoolean(true)
 		return 1
 	}
+	ls.PushNil()
+	return 1
 }
 
 // os.tmpname ()
@@ -220,29 +221,20 @@ func osExecute(ls LkState) int {
 	cmd := exec.Command(exe, args...)
 	out, err := cmd.Output()
 	if err != nil {
+		ls.PushNil()
 		ls.PushString(err.Error())
-		return 1
+		return 2
 	}
 	ls.PushString(string(out))
-	return 1
+	ls.PushNil()
+	return 2
 }
 
-// os.exit ([code [, close]])
+// os.exit ([code])
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.exit
 // lua-5.3.4/src/loslib.c#os_exit()
 func osExit(ls LkState) int {
-	if ls.IsBoolean(1) {
-		if ls.ToBoolean(1) {
-			os.Exit(0)
-		} else {
-			os.Exit(1) // todo
-		}
-	} else {
-		code := ls.OptInteger(1, 1)
-		os.Exit(int(code))
-	}
-	if ls.ToBoolean(2) {
-		//ls.Close()
-	}
+	code := ls.OptInteger(1, 0)
+	os.Exit(int(code))
 	return 0
 }

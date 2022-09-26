@@ -7,7 +7,7 @@ func(1!=2 and 3!=4)
 func(test2.add2(1))
 func(test2.add2(1))
 
-if #a >= 0 {
+if #a >= 0 and '' {
     print("hello", #a)
 }
 
