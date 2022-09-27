@@ -1,0 +1,9 @@
+shy code, resp = http.req(
+    'post', 
+    'http://httpbin.org/post', 
+    {'accept': 'application/json'}, 
+    '{"foo": "bar"}'
+)
+print(code, resp)
+
+print('json.foo:', json.get(resp, 'json.foo'))

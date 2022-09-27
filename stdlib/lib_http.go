@@ -85,7 +85,6 @@ func genReqTable(r *http.Request) (map[string]any, error) {
 	return map[string]any{
 		"method":  r.Method,
 		"url":     r.URL.String(),
-		"proto":   r.Proto,
 		"headers": headers,
 		"body":    string(body),
 	}, nil

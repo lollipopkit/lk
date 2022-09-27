@@ -1,0 +1,20 @@
+shy mt = {}
+
+shy fn vector(x, y) {
+    shy v = {'x': x, 'y': y}
+    setmetatable(v, mt)
+    rt v
+}
+
+mt.__add = fn(v1, v2) {
+    rt vector(v1.x + v2.x, v1.y + v2.y)
+}
+mt.__str = fn(v) {
+    rt 'vector(' .. v.x .. ', ' .. v.y .. ')'
+}
+
+shy v1 = vector(1, 2)
+shy v2 = vector(3, 5)
+shy v3 = v1 + v2
+print(v3.x, v3.y)
+print(string.format('%s + %s = %s', v1, v2, v3))

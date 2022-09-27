@@ -186,9 +186,9 @@ func (self *luaState) Len2(idx int) int64 {
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_tolstring
 func (self *luaState) ToString2(idx int) string {
-	if self.CallMeta(idx, "__tostring") { /* metafield? */
+	if self.CallMeta(idx, "__str") { /* metafield? */
 		if !self.IsString(-1) {
-			self.Error2("'__tostring' must return a string")
+			self.Error2("'__str' must return a string")
 		}
 	} else {
 		switch self.Type(idx) {

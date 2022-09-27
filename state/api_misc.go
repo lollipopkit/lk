@@ -45,7 +45,7 @@ func (self *luaState) Concat(n int) {
 				continue
 			}
 
-			panic("concatenation error!")
+			panic(fmt.Sprintf("concat error: <%#v> .. <%#v>", a, b))
 		}
 	}
 	// n == 1, do nothing

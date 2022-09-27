@@ -5,9 +5,17 @@
 **详细语法**可以查看[test](test)文件夹的内容
 #### 变量
 ```lua
-shy a = {a: "a", "b", 'c'}
+shy a = {'a': "a", "b", 'c'}
 ```
 `shy`表明为局部变量
+
+#### comment
+```go
+// 单行注释
+/*
+多行注释
+*/
+```
 
 #### function
 ```lua
@@ -31,27 +39,43 @@ for b,c in a {
 }
 ```
 
-#### http & json
+#### http & json & metatable
 ```lua
 shy code, resp = http.req(
     'post', 
     'http://httpbin.org/post', 
-    {accept: 'application/json'}, 
+    {'accept': 'application/json'}, 
     '{"foo": "bar"}'
 )
 print(code, resp)
 
 print('json.foo:', json.get(resp, 'json.foo'))
 
+
+
+shy headers = {}
+headers.__str = fn(a) {
+    shy s = ''
+    for k, v in a {
+        shy ss = ''
+        for _, vv in v {
+            ss = ss .. vv .. ';'
+        }
+        s = s .. k .. ': ' .. ss .. '\n'
+    }
+    rt s
+}
+
 shy fn handle(req) {
-    shy body = req.body
-    rt 200, body
+    setmetatable(req.headers, headers)
+    rt 200, string.format('%s %s\n\n%s\n%s', req.method, req.url, req.headers, req.body)
 }
 
 if http.listen(':8080', handle) != nil {
     error(err)
 }
 ```
+`req`包含属性`method`, `url`, `body`, `headers`
 
 ## CLI
 ```bash

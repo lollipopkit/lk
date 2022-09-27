@@ -1,0 +1,21 @@
+shy headers = {}
+headers.__str = fn(a) {
+    shy s = ''
+    for k, v in a {
+        shy ss = ''
+        for _, vv in v {
+            ss = ss .. vv .. ';'
+        }
+        s = s .. k .. ': ' .. ss .. '\n'
+    }
+    rt s
+}
+
+shy fn handle(req) {
+    setmetatable(req.headers, headers)
+    rt 200, string.format('%s %s\n\n%s\n%s', req.method, req.url, req.headers, req.body)
+}
+
+if http.listen(':8080', handle) != nil {
+    error(err)
+}

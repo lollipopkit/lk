@@ -169,7 +169,7 @@ func iPairsAux(ls LkState) int {
 // lua-5.3.4/src/lbaselib.c#luaB_pairs()
 func basePairs(ls LkState) int {
 	ls.CheckAny(1)
-	if ls.GetMetafield(1, "__pairs") == LUA_TNIL { /* no metamethod? */
+	if ls.GetMetafield(1, "__range") == LUA_TNIL { /* no metamethod? */
 		ls.PushGoFunction(baseNext) /* will return generator, */
 		ls.PushValue(1)             /* state, */
 		ls.PushNil()
