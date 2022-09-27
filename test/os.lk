@@ -1,7 +1,7 @@
 shy tmpDir = os.tmp()
 print('temp_dir: ', tmpDir)
 
-shy path = tmpDir .. 'test'
+shy path = tmpDir .. '/test'
 shy err = os.write(path, "test")
 print('write err: ', err)
 shy data, err = os.read(path)

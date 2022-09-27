@@ -1,6 +1,10 @@
 package state
 
-import "git.lolli.tech/lollipopkit/go-lang-lk/number"
+import (
+	"fmt"
+
+	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+)
 
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_len
@@ -14,7 +18,7 @@ func (self *luaState) Len(idx int) {
 	} else if t, ok := val.(*luaTable); ok {
 		self.stack.push(int64(t.len()))
 	} else {
-		panic("length error!")
+		panic(fmt.Sprintf("attempt to get length of %#v (a %T value)", val, val))
 	}
 }
 

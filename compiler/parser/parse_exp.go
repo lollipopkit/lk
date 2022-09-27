@@ -291,7 +291,7 @@ func _parseFieldList(lexer *Lexer) (ks, vs []Exp) {
 		ks = append(ks, k)
 		vs = append(vs, v)
 
-		for _isFieldSep(lexer.LookAhead()) {
+		for lexer.LookAhead() == TOKEN_SEP_COMMA {
 			lexer.NextToken()
 			if lexer.LookAhead() != TOKEN_SEP_RCURLY {
 				k, v := _parseField(lexer)
@@ -303,11 +303,6 @@ func _parseFieldList(lexer *Lexer) (ks, vs []Exp) {
 		}
 	}
 	return
-}
-
-// fieldsep ::= ‘,’ | ‘;’
-func _isFieldSep(tokenKind int) bool {
-	return tokenKind == TOKEN_SEP_COMMA || tokenKind == TOKEN_SEP_SEMI
 }
 
 // field ::= ‘[’ exp ‘]’ ‘=’ exp | Name ‘=’ exp | exp
