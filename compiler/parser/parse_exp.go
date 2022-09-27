@@ -305,7 +305,7 @@ func _parseFieldList(lexer *Lexer) (ks, vs []Exp) {
 	return
 }
 
-// field ::= ‘[’ exp ‘]’ ‘=’ exp | Name ‘=’ exp | exp
+// field ::= ‘[’ exp ‘]’ ‘:’ exp | Name ‘:’ exp | exp
 func _parseField(lexer *Lexer) (k, v Exp) {
 	if lexer.LookAhead() == TOKEN_SEP_LBRACK {
 		lexer.NextToken()                       // [
@@ -317,11 +317,11 @@ func _parseField(lexer *Lexer) (k, v Exp) {
 	}
 
 	exp := parseExp(lexer)
-	if nameExp, ok := exp.(*NameExp); ok {
+	if nameExp, ok := exp.(*StringExp); ok {
 		if lexer.LookAhead() == TOKEN_SEP_COLON {
 			// Name ‘:’ exp => ‘[’ LiteralString ‘]’ = exp
 			lexer.NextToken()
-			k = &StringExp{nameExp.Line, nameExp.Name}
+			k = &StringExp{nameExp.Line, nameExp.Str}
 			v = parseExp(lexer)
 			return
 		}

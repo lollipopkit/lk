@@ -259,7 +259,7 @@ func (self *Lexer) skipLongComment() {
 	self.next(2)
 	idx := strings.Index(self.chunk, "*/")
 	if idx < 0 {
-		self.error("unfinished long comment")
+		self.error("unfinished long comment at line: "+strconv.Itoa(self.line))
 	}
 	self.next(idx + 2)
 }

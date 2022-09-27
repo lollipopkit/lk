@@ -1,7 +1,7 @@
 shy code, resp = http.req(
     'post', 
     'http://httpbin.org/post', 
-    {accept: 'application/json'}, 
+    {'accept': 'application/json'}, 
     '{"foo": "bar"}'
 )
 print(code, resp)
