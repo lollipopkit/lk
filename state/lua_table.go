@@ -2,6 +2,7 @@ package state
 
 import (
 	"math"
+	"strconv"
 
 	"git.lolli.tech/lollipopkit/go-lang-lk/number"
 )
@@ -121,7 +122,11 @@ func (self *luaTable) nextKey(key luaValue) luaValue {
 
 	nextKey := self.keys[key]
 	if nextKey == nil && key != nil && key != self.lastKey {
-		panic("invalid key to 'next'")
+		intKey, err := strconv.ParseInt(key.(string), 10, 64)
+		if err != nil {
+			return nil
+		}
+		nextKey = self.keys[intKey]
 	}
 
 	return nextKey
