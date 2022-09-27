@@ -32,7 +32,11 @@ headers.__str = fn(a) {
     rt s
 }
 
-// 处理监听
+
+/*
+处理监听事件
+`req`包含属性`method`, `url`, `body`, `headers`
+*/
 shy fn handle(req) {
     setmetatable(req.headers, headers)
     rt 200, string.format('%s %s\n\n%s\n%s', req.method, req.url, req.headers, req.body)
@@ -43,7 +47,6 @@ if http.listen(':8080', handle) != nil {
     error(err)
 }
 ```
-`req`包含属性`method`, `url`, `body`, `headers`
 
 ## CLI
 ```bash
@@ -54,3 +57,18 @@ if http.listen(':8080', handle) != nil {
 # 也可以运行test/basic.lk（内部会先进行编译）
 ./go-lang-lk test/basic.lk
 ```
+
+## TODO
+- 语法
+  - [x] 注释`//` `/* */`
+  - [x] 去除`repeat` `until`
+  - [x] Raw String, `\``
+  - [x] 支持任意对象 Concat
+- 编译器
+  - [x] 自动添加`range` ( `paris` )
+- Table
+  - [ ] 索引从0开始 
+  - [x] key为StringExp，而不是NameExp
+  - [x] `=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
+- CLI
+  - [ ] 利用HASH，如果文件内容没变化，就不需要重新编译

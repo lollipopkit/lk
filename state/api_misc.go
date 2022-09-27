@@ -4,6 +4,11 @@ import (
 	"fmt"
 
 	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+	jsoniter "github.com/json-iterator/go"
+)
+
+var (
+	json = jsoniter.ConfigCompatibleWithStandardLibrary
 )
 
 // [-0, +1, e]
@@ -45,7 +50,15 @@ func (self *luaState) Concat(n int) {
 				continue
 			}
 
-			panic(fmt.Sprintf("concat error: <%#v> .. <%#v>", a, b))
+			bb, err := json.MarshalToString(b)
+			if err != nil {
+				panic(err)
+			}
+			ab, err := json.MarshalToString(a)
+			if err != nil {
+				panic(err)
+			}
+			self.stack.push(ab + bb)
 		}
 	}
 	// n == 1, do nothing
