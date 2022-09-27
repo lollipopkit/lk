@@ -129,14 +129,13 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 			return self.line, TOKEN_SEP_COLON, ":"
 		}
 	case '/':
-		if self.test("//") {
-			self.next(2)
-			return self.line, TOKEN_OP_IDIV, "//"
-		} else {
-			self.next(1)
-			return self.line, TOKEN_OP_DIV, "/"
-		}
+		self.next(1)
+		return self.line, TOKEN_OP_DIV, "/"
 	case '~':
+		if self.test("~/") {
+			self.next(2)
+			return self.line, TOKEN_OP_IDIV, "~/"
+		}
 		self.next(1)
 		return self.line, TOKEN_OP_WAVE, "~"
 	case '!':
@@ -229,8 +228,10 @@ func (self *Lexer) error(f string, a ...interface{}) {
 
 func (self *Lexer) skipWhiteSpaces() {
 	for len(self.chunk) > 0 {
-		if self.test("--") {
+		if self.test("//") {
 			self.skipComment()
+		} else if self.test("/*") {
+			self.skipLongComment()
 		} else if self.test("\r\n") || self.test("\n\r") {
 			self.next(2)
 			self.line += 1
@@ -246,20 +247,21 @@ func (self *Lexer) skipWhiteSpaces() {
 }
 
 func (self *Lexer) skipComment() {
-	self.next(2) // skip --
-
-	// long comment ?
-	if self.test("[") {
-		if reOpeningLongBracket.FindString(self.chunk) != "" {
-			self.scanLongString()
-			return
-		}
-	}
+	self.next(2) // skip `//`
 
 	// short comment
 	for len(self.chunk) > 0 && !isNewLine(self.chunk[0]) {
 		self.next(1)
 	}
+}
+
+func (self *Lexer) skipLongComment() {
+	self.next(2)
+	idx := strings.Index(self.chunk, "*/")
+	if idx < 0 {
+		self.error("unfinished long comment")
+	}
+	self.next(idx + 2)
 }
 
 func (self *Lexer) scanIdentifier() string {
