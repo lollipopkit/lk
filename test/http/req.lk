@@ -1,9 +1,14 @@
-shy code, resp = http.req(
-    'post', 
+shy _, resp = http.post(
     'http://httpbin.org/post', 
     {'accept': 'application/json'}, 
     '{"foo": "bar"}'
 )
-print(code, resp)
+print(resp)
 
-print('json.foo:', json.get(resp, 'json.foo'))
+shy code, resp = http.req(
+    'delete',
+    'http://httpbin.org/delete',
+    {'accept': 'application/json'},
+    '{"foo": "bar"}'
+)
+print(code, json.get(resp, 'json.foo'))

@@ -283,6 +283,7 @@ func (self *luaState) OpenLibs() {
 		"sync":   stdlib.OpenCoroutineLib,
 		"http":   stdlib.OpenHttpLib,
 		"json":   stdlib.OpenJsonLib,
+		"re":    stdlib.OpenReLib,
 	}
 
 	for name, fun := range libs {

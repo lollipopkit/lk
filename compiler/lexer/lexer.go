@@ -192,6 +192,8 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 			return self.line, TOKEN_STRING, self.scanLongString()
 		}
 		return self.line, TOKEN_STRING, self.scanShortString()
+	case '`':
+		return self.line, TOKEN_STRING, self.scanRawString()
 	}
 
 	c := self.chunk[0]
@@ -320,6 +322,18 @@ func (self *Lexer) scanShortString() string {
 	}
 	self.error("unfinished string")
 	return ""
+}
+
+func (self *Lexer) scanRawString() string {
+	self.next(1)
+	openIdx := strings.Index(self.chunk, "`")
+	if openIdx < 0 {
+		self.error("unfinished string")
+	}
+
+	str := self.chunk[:openIdx]
+	self.next(openIdx + 1)
+	return str
 }
 
 func (self *Lexer) escape(str string) string {

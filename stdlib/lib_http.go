@@ -16,6 +16,8 @@ var (
 	json    = jsoniter.ConfigCompatibleWithStandardLibrary
 	httpLib = map[string]GoFunction{
 		"req":    httpReq,
+		"get":    httpGet,
+		"post":   httpPost,
 		"listen": httpListen,
 	}
 )
@@ -25,10 +27,70 @@ func OpenHttpLib(ls LkState) int {
 	return 1
 }
 
+func httpDo(method, url string, headers map[string]any, body io.Reader) (int, string, error) {
+	request, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return 0, "", err
+	}
+
+	request.Header.Set("user-agent", "lk-http/"+string(consts.VERSION))
+	for k, v := range headers {
+		request.Header.Set(k, v.(string))
+	}
+
+	resp, err := client.Do(request)
+	if err != nil {
+		return 0, "", err
+	}
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, string(respBody), nil
+}
+
+func httpGet(ls LkState) int {
+	url := ls.CheckString(1)
+	headers := OptTable(ls, 2, map[string]any{})
+	code, data, err := httpDo("GET", url, headers, nil)
+	if err != nil {
+		ls.PushInteger(0)
+		ls.PushString(err.Error())
+		return 2
+	}
+	ls.PushInteger(int64(code))
+	ls.PushString(data)
+	return 2
+}
+
+func httpPost(ls LkState) int {
+	url := ls.CheckString(1)
+	headers := OptTable(ls, 2, map[string]any{})
+	bodyStr := ls.OptString(3, "")
+
+	body := func() io.Reader {
+		if bodyStr != "" {
+			return strings.NewReader(bodyStr)
+		}
+		return nil
+	}()
+
+	code, data, err := httpDo("POST", url, headers, body)
+	if err != nil {
+		ls.PushInteger(0)
+		ls.PushString(err.Error())
+		return 2
+	}
+	ls.PushInteger(int64(code))
+	ls.PushString(data)
+	return 2
+}
+
 // http.req (method, url [, headers, body])
 // return code, data
 func httpReq(ls LkState) int {
-	method := ls.CheckString(1)
+	method := strings.ToUpper(ls.CheckString(1))
 	url := ls.CheckString(2)
 	headers := OptTable(ls, 3, map[string]any{})
 	bodyStr := ls.OptString(4, "")
@@ -40,36 +102,15 @@ func httpReq(ls LkState) int {
 		return nil
 	}()
 
-	request, err := http.NewRequest(strings.ToUpper(method), url, body)
+	code, data, err := httpDo(method, url, headers, body)
 	if err != nil {
 		ls.PushInteger(0)
 		ls.PushString(err.Error())
 		return 2
 	}
 
-	request.Header.Set("user-agent", "lk-http/" + string(consts.VERSION))
-	for k, v := range headers {
-		request.Header.Set(k, v.(string))
-	}
-
-	resp, err := client.Do(request)
-	if err != nil {
-		ls.PushInteger(0)
-		ls.PushString(err.Error())
-		return 2
-	}
-
-	defer resp.Body.Close()
-
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		ls.PushInteger(0)
-		ls.PushString(err.Error())
-		return 2
-	}
-
-	ls.PushInteger(int64(resp.StatusCode))
-	ls.PushString(string(data))
+	ls.PushInteger(int64(code))
+	ls.PushString(data)
 	return 2
 }
 

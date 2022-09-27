@@ -2,57 +2,23 @@
 改编自Lua5.3，[luago](https://github.com/zxh0/luago-book)
 
 ## 速览
-**详细语法**可以查看[test](test)文件夹的内容
-#### 变量
-```lua
-shy a = {'a': "a", "b", 'c'}
-```
-`shy`表明为局部变量
+**详细语法**，可以查看[test](test)文件夹的内容
 
-#### comment
-```go
-// 单行注释
-/*
-多行注释
-*/
-```
-
-#### function
-```lua
-shy func = fn (e) {print(e)}
-
-fn hello() {
-    func('hello')
-}
-```
-
-#### if & for
-```lua
-if #a >= 0 {
-    print("hello")
-}
-for i = 0, #a {
-    print(a[i])
-}
-for b,c in a {
-    print(b,c)
-}
-```
-
-#### http & json & metatable
-```lua
-shy code, resp = http.req(
-    'post', 
+```js
+// 发送请求
+shy _, resp = http.post(
     'http://httpbin.org/post', 
     {'accept': 'application/json'}, 
     '{"foo": "bar"}'
 )
-print(code, resp)
+print(resp)
 
-print('json.foo:', json.get(resp, 'json.foo'))
+// json解析
+if json.get(resp, 'json.foo') != 'bar' {
+    error('mismatch result')
+}
 
-
-
+// 设置metatable
 shy headers = {}
 headers.__str = fn(a) {
     shy s = ''
@@ -66,11 +32,13 @@ headers.__str = fn(a) {
     rt s
 }
 
+// 处理监听
 shy fn handle(req) {
     setmetatable(req.headers, headers)
     rt 200, string.format('%s %s\n\n%s\n%s', req.method, req.url, req.headers, req.body)
 }
 
+// 监听
 if http.listen(':8080', handle) != nil {
     error(err)
 }
