@@ -67,8 +67,8 @@ func cgFuncDefExp(fi *funcInfo, node *FuncDefExp, a int) {
 	subFI := newFuncInfo(fi, node)
 	fi.subFuncs = append(fi.subFuncs, subFI)
 
-	for _, param := range node.ParList {
-		subFI.addLocVar(param, 0)
+	for i := range node.ParList {
+		subFI.addLocVar(node.ParList[i], 0)
 	}
 
 	cgBlock(subFI, node.Block)
@@ -81,8 +81,8 @@ func cgFuncDefExp(fi *funcInfo, node *FuncDefExp, a int) {
 
 func cgTableConstructorExp(fi *funcInfo, node *TableConstructorExp, a int) {
 	nArr := 0
-	for _, keyExp := range node.KeyExps {
-		if keyExp == nil {
+	for i := range node.KeyExps {
+		if node.KeyExps[i] == nil {
 			nArr++
 		}
 	}
@@ -93,10 +93,10 @@ func cgTableConstructorExp(fi *funcInfo, node *TableConstructorExp, a int) {
 	fi.emitNewTable(node.Line, a, nArr, nExps-nArr)
 
 	arrIdx := 0
-	for i, keyExp := range node.KeyExps {
+	for i := range node.KeyExps {
 		valExp := node.ValExps[i]
 
-		if keyExp == nil {
+		if node.KeyExps[i] == nil {
 			arrIdx++
 			tmp := fi.allocReg()
 			if i == nExps-1 && multRet {
@@ -124,7 +124,7 @@ func cgTableConstructorExp(fi *funcInfo, node *TableConstructorExp, a int) {
 		}
 
 		b := fi.allocReg()
-		cgExp(fi, keyExp, b, 1)
+		cgExp(fi, node.KeyExps[i], b, 1)
 		c := fi.allocReg()
 		cgExp(fi, valExp, c, 1)
 		fi.freeRegs(2)
@@ -172,9 +172,9 @@ func cgBinopExp(fi *funcInfo, node *BinopExp, a int) {
 
 // r[a] := exp1 .. exp2
 func cgConcatExp(fi *funcInfo, node *ConcatExp, a int) {
-	for _, subExp := range node.Exps {
+	for i := range node.Exps {
 		a := fi.allocReg()
-		cgExp(fi, subExp, a, 1)
+		cgExp(fi, node.Exps[i], a, 1)
 	}
 
 	c := fi.usedRegs - 1
@@ -238,13 +238,13 @@ func prepFuncCall(fi *funcInfo, node *FuncCallExp, a int) int {
 			fi.freeRegs(1)
 		}
 	}
-	for i, arg := range node.Args {
+	for i := range node.Args {
 		tmp := fi.allocReg()
-		if i == nArgs-1 && isVarargOrFuncCall(arg) {
+		if i == nArgs-1 && isVarargOrFuncCall(node.Args[i]) {
 			lastArgIsVarargOrFuncCall = true
-			cgExp(fi, arg, tmp, -1)
+			cgExp(fi, node.Args[i], tmp, -1)
 		} else {
-			cgExp(fi, arg, tmp, 1)
+			cgExp(fi, node.Args[i], tmp, 1)
 		}
 	}
 	fi.freeRegs(nArgs)

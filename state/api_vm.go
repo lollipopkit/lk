@@ -46,9 +46,9 @@ func (self *luaState) LoadProto(idx int) {
 	closure := newLuaClosure(subProto)
 	stack.push(closure)
 
-	for i, uvInfo := range subProto.Upvalues {
-		uvIdx := int(uvInfo.Idx)
-		if uvInfo.Instack == 1 {
+	for i := range subProto.Upvalues {
+		uvIdx := int(subProto.Upvalues[i].Idx)
+		if subProto.Upvalues[i].Instack == 1 {
 			if stack.openuvs == nil {
 				stack.openuvs = map[int]*upvalue{}
 			}
@@ -66,10 +66,10 @@ func (self *luaState) LoadProto(idx int) {
 }
 
 func (self *luaState) CloseUpvalues(a int) {
-	for i, openuv := range self.stack.openuvs {
+	for i := range self.stack.openuvs {
 		if i >= a-1 {
-			val := *openuv.val
-			openuv.val = &val
+			val := *self.stack.openuvs[i].val
+			self.stack.openuvs[i].val = &val
 			delete(self.stack.openuvs, i)
 		}
 	}

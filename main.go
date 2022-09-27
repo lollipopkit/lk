@@ -19,25 +19,47 @@ func main() {
 		panic("no input file")
 	}
 
-	if !*compile {
-		ls := state.New()
-		ls.OpenLibs()
-		ls.LoadFile(file)
-		ls.Call(0, -1)
-	} else {
+	compiledFile := strings.Replace(file, ".lk", ".lkc", 1)
+	compiledData, _ := ioutil.ReadFile(compiledFile)
+	
+	if !exist(compiledFile) || sourceChanged(file, compiledFile) {
 		data, err := ioutil.ReadFile(file)
 		if err != nil {
 			panic(err)
 		}
 		bin := compiler.Compile(string(data), file)
-		f, err := os.Create(strings.Replace(file, ".lk", ".lkc", 1))
+		f, err := os.Create(compiledFile)
 		if err != nil {
 			panic(err)
 		}
-		data, err = bin.Dump()
+		compiledData, err = bin.Dump()
 		if err != nil {
 			panic(err)
 		}
-		f.Write(data)
+		f.Write(compiledData)
 	}
+
+	if !*compile {
+		ls := state.New()
+		ls.OpenLibs()
+		ls.Load(compiledData, file, "bt")
+		ls.Call(0, -1)
+	}
+}
+
+func exist(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
+}
+
+func sourceChanged(source, compiled string) bool {
+	s, err := os.Stat(source)
+	if err != nil {
+		panic(err)
+	}
+	c, err := os.Stat(compiled)
+	if err != nil {
+		panic(err)
+	}
+	return s.ModTime().After(c.ModTime())
 }

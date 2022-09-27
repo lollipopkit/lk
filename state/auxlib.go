@@ -286,8 +286,8 @@ func (self *luaState) OpenLibs() {
 		"re":    stdlib.OpenReLib,
 	}
 
-	for name, fun := range libs {
-		self.RequireF(name, fun, true)
+	for name := range libs {
+		self.RequireF(name, libs[name], true)
 		self.Pop(1)
 	}
 }
@@ -329,12 +329,12 @@ func (self *luaState) NewLibTable(l FuncReg) {
 // http://www.lua.org/manual/5.3/manual.html#luaL_setfuncs
 func (self *luaState) SetFuncs(l FuncReg, nup int) {
 	self.CheckStack2(nup, "too many upvalues")
-	for name, fun := range l { /* fill the table with given functions */
+	for name := range l { /* fill the table with given functions */
 		for i := 0; i < nup; i++ { /* copy upvalues to the top */
 			self.PushValue(-nup)
 		}
 		// r[-(nup+2)][name]=fun
-		self.PushGoClosure(fun, nup) /* closure with those upvalues */
+		self.PushGoClosure(l[name], nup) /* closure with those upvalues */
 		self.SetField(-(nup + 2), name)
 	}
 	self.Pop(nup) /* remove upvalues */

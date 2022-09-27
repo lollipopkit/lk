@@ -161,8 +161,8 @@ func _encodeUtf8(codePoints []rune) string {
 	buf := make([]byte, 6)
 	str := make([]byte, 0, len(codePoints))
 
-	for _, cp := range codePoints {
-		n := utf8.EncodeRune(buf, cp)
+	for i := range codePoints {
+		n := utf8.EncodeRune(buf, codePoints[i])
 		str = append(str, buf[0:n]...)
 	}
 

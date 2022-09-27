@@ -62,8 +62,8 @@ func baseKV(ls LkState) int {
 		keys = append(keys, k)
 	}
 	values := make([]any, 0, len(tb))
-	for _, v := range tb {
-		values = append(values, v)
+	for k := range tb {
+		values = append(values, tb[k])
 	}
 	pushList(ls, keys)
 	pushList(ls, values)

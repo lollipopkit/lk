@@ -32,27 +32,27 @@ func toProto(fi *funcInfo) *Prototype {
 
 func toProtos(fis []*funcInfo) []*Prototype {
 	protos := make([]*Prototype, len(fis))
-	for i, fi := range fis {
-		protos[i] = toProto(fi)
+	for i := range fis {
+		protos[i] = toProto(fis[i])
 	}
 	return protos
 }
 
 func getConstants(fi *funcInfo) []interface{} {
 	consts := make([]interface{}, len(fi.constants))
-	for k, idx := range fi.constants {
-		consts[idx] = k
+	for k := range fi.constants {
+		consts[fi.constants[k]] = k
 	}
 	return consts
 }
 
 func getLocVars(fi *funcInfo) []LocVar {
 	locVars := make([]LocVar, len(fi.locVars))
-	for i, locVar := range fi.locVars {
+	for i := range fi.locVars {
 		locVars[i] = LocVar{
-			VarName: locVar.name,
-			StartPC: uint32(locVar.startPC),
-			EndPC:   uint32(locVar.endPC),
+			VarName: fi.locVars[i].name,
+			StartPC: uint32(fi.locVars[i].startPC),
+			EndPC:   uint32(fi.locVars[i].endPC),
 		}
 	}
 	return locVars
@@ -60,11 +60,11 @@ func getLocVars(fi *funcInfo) []LocVar {
 
 func getUpvalues(fi *funcInfo) []Upvalue {
 	upvals := make([]Upvalue, len(fi.upvalues))
-	for _, uv := range fi.upvalues {
-		if uv.locVarSlot >= 0 { // instack
-			upvals[uv.index] = Upvalue{1, byte(uv.locVarSlot)}
+	for i := range fi.upvalues {
+		if fi.upvalues[i].locVarSlot >= 0 { // instack
+			upvals[fi.upvalues[i].index] = Upvalue{1, byte(fi.upvalues[i].locVarSlot)}
 		} else {
-			upvals[uv.index] = Upvalue{0, byte(uv.upvalIndex)}
+			upvals[fi.upvalues[i].index] = Upvalue{0, byte(fi.upvalues[i].upvalIndex)}
 		}
 	}
 	return upvals
@@ -72,8 +72,8 @@ func getUpvalues(fi *funcInfo) []Upvalue {
 
 func getUpvalueNames(fi *funcInfo) []string {
 	names := make([]string, len(fi.upvalues))
-	for name, uv := range fi.upvalues {
-		names[uv.index] = name
+	for name := range fi.upvalues {
+		names[fi.upvalues[name].index] = name
 	}
 	return names
 }

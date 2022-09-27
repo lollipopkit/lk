@@ -3,8 +3,8 @@ package codegen
 import . "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
 
 func cgBlock(fi *funcInfo, node *Block) {
-	for _, stat := range node.Stats {
-		cgStat(fi, stat)
+	for k := range node.Stats {
+		cgStat(fi, node.Stats[k])
 	}
 
 	if node.RetExps != nil {
@@ -36,12 +36,12 @@ func cgRetStat(fi *funcInfo, exps []Exp, lastLine int) {
 	}
 
 	multRet := isVarargOrFuncCall(exps[nExps-1])
-	for i, exp := range exps {
+	for i := range exps {
 		r := fi.allocReg()
 		if i == nExps-1 && multRet {
-			cgExp(fi, exp, r, -1)
+			cgExp(fi, exps[i], r, -1)
 		} else {
-			cgExp(fi, exp, r, 1)
+			cgExp(fi, exps[i], r, 1)
 		}
 	}
 	fi.freeRegs(nExps)

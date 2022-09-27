@@ -135,14 +135,14 @@ func (self *luaTable) nextKey(key luaValue) luaValue {
 func (self *luaTable) initKeys() {
 	self.keys = make(map[luaValue]luaValue)
 	var key luaValue = nil
-	for i, v := range self.arr {
-		if v != nil {
+	for i := range self.arr {
+		if self.arr[i] != nil {
 			self.keys[key] = int64(i + 1)
 			key = int64(i + 1)
 		}
 	}
-	for k, v := range self._map {
-		if v != nil {
+	for k := range self._map {
+		if self._map[k] != nil {
 			self.keys[key] = k
 			key = k
 		}

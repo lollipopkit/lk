@@ -238,13 +238,13 @@ func strFormat(ls LkState) int {
 
 	argIdx := 1
 	arr := parseFmtStr(fmtStr)
-	for i, s := range arr {
-		if s[0] == '%' {
-			if s == "%%" {
+	for i := range arr {
+		if arr[i][0] == '%' {
+			if arr[i] == "%%" {
 				arr[i] = "%"
 			} else {
 				argIdx += 1
-				arr[i] = _fmtArg(s, ls, argIdx)
+				arr[i] = _fmtArg(arr[i], ls, argIdx)
 			}
 		}
 	}

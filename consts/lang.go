@@ -1,6 +1,6 @@
 package consts
 
 var (
-	VERSION   = []byte(`0.1`)
-	SIGNATURE = []byte(`LANG_LK`)
+	VERSION   = `0.0.1`
+	SIGNATURE = `LANG_LK`
 )

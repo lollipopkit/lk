@@ -1,17 +1,12 @@
 package binchunk
 
 import (
-	"bytes"
-	"math"
-	"strconv"
-
 	"git.lolli.tech/lollipopkit/go-lang-lk/consts"
 	jsoniter "github.com/json-iterator/go"
 )
 
 var (
 	json = jsoniter.ConfigCompatibleWithStandardLibrary
-	VERSION, _ = strconv.ParseFloat(string(consts.VERSION), 64)
 )
 
 const (
@@ -22,6 +17,13 @@ const (
 	TAG_SHORT_STR = 0x04
 	TAG_LONG_STR  = 0x14
 )
+
+type binaryChunk struct {
+	Version string		`json:"v"`
+	Sign string		`json:"si"`
+	Hash string			`json:"h"`
+	Proto *Prototype	`json:"p"`
+}
 
 // function prototype
 type Prototype struct {
@@ -52,31 +54,22 @@ type LocVar struct {
 }
 
 func IsJsonChunk(data []byte) (bool, *Prototype) {
-	if len(data) < 9 {
+	var bin binaryChunk
+	err := json.Unmarshal(data, &bin)
+	if err != nil {
 		return false, nil
 	}
-	if !bytes.HasPrefix(data, []byte{'\x1b'}) {
+	if bin.Sign != consts.SIGNATURE || bin.Version != consts.VERSION {
 		return false, nil
 	}
-	if data[1] != byte(math.Float64bits(VERSION)) {
-		panic("version not match!")
-	}
-	data = data[9:]
-	var proto Prototype
-	err := json.Unmarshal(data, &proto)
-	return err == nil, &proto
+	return err == nil, bin.Proto
 }
 
 func (proto *Prototype) Dump() ([]byte, error) {
-	data, err := json.Marshal(proto)
-	if err != nil {
-		return nil, err
+	bin := &binaryChunk{
+		Version: consts.VERSION,
+		Sign: consts.SIGNATURE,
+		Proto: proto,
 	}
-
-	v := math.Float64bits(VERSION)
-	by := []byte{'\x1b'}
-	by = append(by, byte(v))
-	by = append(by, consts.SIGNATURE...)
-	data = append(by, data...)
-	return data, err
+	return json.Marshal(bin)
 }

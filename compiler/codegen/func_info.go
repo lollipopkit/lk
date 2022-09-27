@@ -142,17 +142,17 @@ func (self *funcInfo) exitScope(endPC int) {
 	self.breaks = self.breaks[:len(self.breaks)-1]
 
 	a := self.getJmpArgA()
-	for _, pc := range pendingBreakJmps {
-		sBx := self.pc() - pc
+	for i := range pendingBreakJmps {
+		sBx := self.pc() - pendingBreakJmps[i]
 		i := (sBx+MAXARG_sBx)<<14 | a<<6 | OP_JMP
-		self.insts[pc] = uint32(i)
+		self.insts[pendingBreakJmps[i]] = uint32(i)
 	}
 
 	self.scopeLv--
-	for _, locVar := range self.locNames {
-		if locVar.scopeLv > self.scopeLv { // out of scope
-			locVar.endPC = endPC
-			self.removeLocVar(locVar)
+	for i := range self.locNames {
+		if self.locNames[i].scopeLv > self.scopeLv { // out of scope
+			self.locNames[i].endPC = endPC
+			self.removeLocVar(self.locNames[i])
 		}
 	}
 }
@@ -234,9 +234,9 @@ func (self *funcInfo) closeOpenUpvals(line int) {
 func (self *funcInfo) getJmpArgA() int {
 	hasCapturedLocVars := false
 	minSlotOfLocVars := self.maxRegs
-	for _, locVar := range self.locNames {
-		if locVar.scopeLv == self.scopeLv {
-			for v := locVar; v != nil && v.scopeLv == self.scopeLv; v = v.prev {
+	for i := range self.locNames {
+		if self.locNames[i].scopeLv == self.scopeLv {
+			for v := self.locNames[i]; v != nil && v.scopeLv == self.scopeLv; v = v.prev {
 				if v.captured {
 					hasCapturedLocVars = true
 				}

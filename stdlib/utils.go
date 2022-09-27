@@ -33,8 +33,10 @@ func pushValue(ls LkState, item any) {
 			return
 		case reflect.Map:
 			items := make(map[string]any)
-			for _, key := range v.MapKeys() {
-				items[key.String()] = v.MapIndex(key).Interface()
+			keys := v.MapKeys()
+			for idx := range keys {
+				key := &keys[idx]
+				items[(*key).String()] = v.MapIndex(*key).Interface()
 			}
 			pushTable(ls, items)
 			return
@@ -45,16 +47,16 @@ func pushValue(ls LkState, item any) {
 
 func pushList(ls LkState, items []any) {
 	ls.CreateTable(len(items), 0)
-	for i, item := range items {
-		pushValue(ls, item)
+	for i := range items {
+		pushValue(ls, items[i])
 		ls.SetI(-2, int64(i+1))
 	}
 }
 
 func pushTable(ls LkState, items map[string]any) {
 	ls.CreateTable(0, len(items)+1)
-	for k, v := range items {
-		pushValue(ls, v)
+	for k := range items {
+		pushValue(ls, items[k])
 		ls.SetField(-2, k)
 	}
 }

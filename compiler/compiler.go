@@ -15,7 +15,7 @@ func Compile(chunk, chunkName string) *binchunk.Prototype {
 
 func setSource(proto *binchunk.Prototype, chunkName string) {
 	proto.Source = chunkName
-	for _, f := range proto.Protos {
-		setSource(f, chunkName)
+	for k := range proto.Protos {
+		setSource(proto.Protos[k], chunkName)
 	}
 }

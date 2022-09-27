@@ -11,6 +11,8 @@ import (
 	jsoniter "github.com/json-iterator/go"
 )
 
+type luaMap map[string]any
+
 var (
 	client  = http.Client{}
 	json    = jsoniter.ConfigCompatibleWithStandardLibrary
@@ -27,15 +29,16 @@ func OpenHttpLib(ls LkState) int {
 	return 1
 }
 
-func httpDo(method, url string, headers map[string]any, body io.Reader) (int, string, error) {
+func httpDo(method, url string, headers luaMap, body io.Reader) (int, string, error) {
 	request, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return 0, "", err
 	}
 
-	request.Header.Set("user-agent", "lk-http/"+string(consts.VERSION))
-	for k, v := range headers {
-		request.Header.Set(k, v.(string))
+	request.Header.Set("user-agent", "lk-http/"+consts.VERSION)
+	// 仅遍历下标，性能更佳
+	for k := range headers {
+		request.Header.Set(k, headers[k].(string))
 	}
 
 	resp, err := client.Do(request)
@@ -52,7 +55,7 @@ func httpDo(method, url string, headers map[string]any, body io.Reader) (int, st
 
 func httpGet(ls LkState) int {
 	url := ls.CheckString(1)
-	headers := OptTable(ls, 2, map[string]any{})
+	headers := OptTable(ls, 2, luaMap{})
 	code, data, err := httpDo("GET", url, headers, nil)
 	if err != nil {
 		ls.PushInteger(0)
@@ -66,7 +69,7 @@ func httpGet(ls LkState) int {
 
 func httpPost(ls LkState) int {
 	url := ls.CheckString(1)
-	headers := OptTable(ls, 2, map[string]any{})
+	headers := OptTable(ls, 2, luaMap{})
 	bodyStr := ls.OptString(3, "")
 
 	body := func() io.Reader {
@@ -92,7 +95,7 @@ func httpPost(ls LkState) int {
 func httpReq(ls LkState) int {
 	method := strings.ToUpper(ls.CheckString(1))
 	url := ls.CheckString(2)
-	headers := OptTable(ls, 3, map[string]any{})
+	headers := OptTable(ls, 3, luaMap{})
 	bodyStr := ls.OptString(4, "")
 
 	body := func() io.Reader {
@@ -114,16 +117,16 @@ func httpReq(ls LkState) int {
 	return 2
 }
 
-func genReqTable(r *http.Request) (map[string]any, error) {
+func genReqTable(r *http.Request) (luaMap, error) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		return nil, err
 	}
-	headers := map[string]any{}
-	for k, v := range r.Header {
-		headers[k] = v
+	headers := luaMap{}
+	for k := range r.Header {
+		headers[k] = r.Header[k]
 	}
-	return map[string]any{
+	return luaMap{
 		"method":  r.Method,
 		"url":     r.URL.String(),
 		"headers": headers,

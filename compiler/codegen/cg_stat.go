@@ -85,16 +85,16 @@ func cgIfStat(fi *funcInfo, node *IfStat) {
 	pcJmpToEnds := make([]int, len(node.Exps))
 	pcJmpToNextExp := -1
 
-	for i, exp := range node.Exps {
+	for i := range node.Exps {
 		if pcJmpToNextExp >= 0 {
 			fi.fixSbx(pcJmpToNextExp, fi.pc()-pcJmpToNextExp)
 		}
 
 		oldRegs := fi.usedRegs
-		a, _ := expToOpArg(fi, exp, ARG_REG)
+		a, _ := expToOpArg(fi, node.Exps[i], ARG_REG)
 		fi.usedRegs = oldRegs
 
-		line := lastLineOf(exp)
+		line := lastLineOf(node.Exps[i])
 		fi.emitTest(line, a, 0)
 		pcJmpToNextExp = fi.emitJmp(line, 0, 0)
 
@@ -110,8 +110,8 @@ func cgIfStat(fi *funcInfo, node *IfStat) {
 		}
 	}
 
-	for _, pc := range pcJmpToEnds {
-		fi.fixSbx(pc, fi.pc()-pc)
+	for i := range pcJmpToEnds {
+		fi.fixSbx(pcJmpToEnds[i], fi.pc()-pcJmpToEnds[i])
 	}
 }
 
@@ -155,8 +155,8 @@ func cgForInStat(fi *funcInfo, node *ForInStat) {
 		NameList: []string{forGeneratorVar, forStateVar, forControlVar},
 		ExpList:  node.ExpList,
 	})
-	for _, name := range node.NameList {
-		fi.addLocVar(name, fi.pc()+2)
+	for i := range node.NameList {
+		fi.addLocVar(node.NameList[i], fi.pc()+2)
 	}
 
 	pcJmpToTFC := fi.emitJmp(node.LineOfDo, 0, 0)
@@ -182,30 +182,30 @@ func cgLocalVarDeclStat(fi *funcInfo, node *LocalVarDeclStat) {
 
 	oldRegs := fi.usedRegs
 	if nExps == nNames {
-		for _, exp := range exps {
+		for i := range exps {
 			a := fi.allocReg()
-			cgExp(fi, exp, a, 1)
+			cgExp(fi, exps[i], a, 1)
 		}
 	} else if nExps > nNames {
-		for i, exp := range exps {
+		for i := range exps {
 			a := fi.allocReg()
-			if i == nExps-1 && isVarargOrFuncCall(exp) {
-				cgExp(fi, exp, a, 0)
+			if i == nExps-1 && isVarargOrFuncCall(exps[i]) {
+				cgExp(fi, exps[i], a, 0)
 			} else {
-				cgExp(fi, exp, a, 1)
+				cgExp(fi, exps[i], a, 1)
 			}
 		}
 	} else { // nNames > nExps
 		multRet := false
-		for i, exp := range exps {
+		for i := range exps {
 			a := fi.allocReg()
-			if i == nExps-1 && isVarargOrFuncCall(exp) {
+			if i == nExps-1 && isVarargOrFuncCall(exps[i]) {
 				multRet = true
 				n := nNames - nExps + 1
-				cgExp(fi, exp, a, n)
+				cgExp(fi, exps[i], a, n)
 				fi.allocRegs(n - 1)
 			} else {
-				cgExp(fi, exp, a, 1)
+				cgExp(fi, exps[i], a, 1)
 			}
 		}
 		if !multRet {
@@ -217,8 +217,8 @@ func cgLocalVarDeclStat(fi *funcInfo, node *LocalVarDeclStat) {
 
 	fi.usedRegs = oldRegs
 	startPC := fi.pc() + 1
-	for _, name := range node.NameList {
-		fi.addLocVar(name, startPC)
+	for i := range node.NameList {
+		fi.addLocVar(node.NameList[i], startPC)
 	}
 }
 
@@ -232,14 +232,14 @@ func cgAssignStat(fi *funcInfo, node *AssignStat) {
 	vRegs := make([]int, nVars)
 	oldRegs := fi.usedRegs
 
-	for i, exp := range node.VarList {
-		if taExp, ok := exp.(*TableAccessExp); ok {
+	for i := range node.VarList {
+		if taExp, ok := node.VarList[i].(*TableAccessExp); ok {
 			tRegs[i] = fi.allocReg()
 			cgExp(fi, taExp.PrefixExp, tRegs[i], 1)
 			kRegs[i] = fi.allocReg()
 			cgExp(fi, taExp.KeyExp, kRegs[i], 1)
 		} else {
-			name := exp.(*NameExp).Name
+			name := node.VarList[i].(*NameExp).Name
 			if fi.slotOfLocVar(name) < 0 && fi.indexOfUpval(name) < 0 {
 				// global var
 				kRegs[i] = -1
@@ -254,25 +254,25 @@ func cgAssignStat(fi *funcInfo, node *AssignStat) {
 	}
 
 	if nExps >= nVars {
-		for i, exp := range exps {
+		for i := range exps {
 			a := fi.allocReg()
-			if i >= nVars && i == nExps-1 && isVarargOrFuncCall(exp) {
-				cgExp(fi, exp, a, 0)
+			if i >= nVars && i == nExps-1 && isVarargOrFuncCall(exps[i]) {
+				cgExp(fi, exps[i], a, 0)
 			} else {
-				cgExp(fi, exp, a, 1)
+				cgExp(fi, exps[i], a, 1)
 			}
 		}
 	} else { // nVars > nExps
 		multRet := false
-		for i, exp := range exps {
+		for i := range exps {
 			a := fi.allocReg()
-			if i == nExps-1 && isVarargOrFuncCall(exp) {
+			if i == nExps-1 && isVarargOrFuncCall(exps[i]) {
 				multRet = true
 				n := nVars - nExps + 1
-				cgExp(fi, exp, a, n)
+				cgExp(fi, exps[i], a, n)
 				fi.allocRegs(n - 1)
 			} else {
-				cgExp(fi, exp, a, 1)
+				cgExp(fi, exps[i], a, 1)
 			}
 		}
 		if !multRet {
@@ -283,8 +283,8 @@ func cgAssignStat(fi *funcInfo, node *AssignStat) {
 	}
 
 	lastLine := node.LastLine
-	for i, exp := range node.VarList {
-		if nameExp, ok := exp.(*NameExp); ok {
+	for i := range node.VarList {
+		if nameExp, ok := node.VarList[i].(*NameExp); ok {
 			varName := nameExp.Name
 			if a := fi.slotOfLocVar(varName); a >= 0 {
 				fi.emitMove(lastLine, a, vRegs[i])

@@ -48,8 +48,8 @@ func osDir(ls LkState) int {
 		return 2
 	}
 	filenames := make([]any, 0, len(files))
-	for _, file := range files {
-		filenames = append(filenames, file.Name())
+	for i := range files {
+		filenames = append(filenames, files[i].Name())
 	}
 	pushList(ls, filenames)
 	ls.PushNil()

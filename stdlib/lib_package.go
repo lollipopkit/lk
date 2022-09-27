@@ -66,9 +66,9 @@ func createSearchersTable(ls LkState) {
 	/* create 'searchers' table */
 	ls.CreateTable(len(searchers), 0)
 	/* fill it with predefined searchers */
-	for idx, searcher := range searchers {
+	for idx := range searchers {
 		ls.PushValue(-2) /* set 'package' as upvalue for all searchers */
-		ls.PushGoClosure(searcher, 1)
+		ls.PushGoClosure(searchers[idx], 1)
 		ls.RawSetI(-2, int64(idx+1))
 	}
 	ls.SetField(-2, "searchers") /* put it in field 'searchers' */

@@ -28,8 +28,8 @@ func Parse(chunk, chunkName string) *Block {
 }
 
 func beforeParse(chunk string) string {
-	for k, v := range replaceRules {
-		chunk = v.ReplaceAllString(chunk, k)
+	for k := range replaceRules {
+		chunk = replaceRules[k].ReplaceAllString(chunk, k)
 	}
 	return chunk
 }

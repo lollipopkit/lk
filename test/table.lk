@@ -1,4 +1,5 @@
 shy tb = {5, 'd': 4, 'c': num('2')}
+print(tb[1])
 
 shy keys, vals = kv(tb)
 for i, k in keys {
