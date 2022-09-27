@@ -4,11 +4,10 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 
 	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
-	"git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
+	"git.lolli.tech/lollipopkit/go-lang-lk/consts"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -31,9 +30,7 @@ func OpenHttpLib(ls LkState) int {
 func httpReq(ls LkState) int {
 	method := ls.CheckString(1)
 	url := ls.CheckString(2)
-	headers := OptTable(ls, 3, map[string]any{
-		"User-Agent": "lk/" + strconv.FormatFloat(binchunk.VERSION, 'f', 1, 64),
-	})
+	headers := OptTable(ls, 3, map[string]any{})
 	bodyStr := ls.OptString(4, "")
 
 	body := func() io.Reader {
@@ -50,6 +47,7 @@ func httpReq(ls LkState) int {
 		return 2
 	}
 
+	request.Header.Set("user-agent", "lk-http/" + string(consts.VERSION))
 	for k, v := range headers {
 		request.Header.Set(k, v.(string))
 	}

@@ -3,12 +3,15 @@ package binchunk
 import (
 	"bytes"
 	"math"
+	"strconv"
 
+	"git.lolli.tech/lollipopkit/go-lang-lk/consts"
 	jsoniter "github.com/json-iterator/go"
 )
 
 var (
 	json = jsoniter.ConfigCompatibleWithStandardLibrary
+	VERSION, _ = strconv.ParseFloat(string(consts.VERSION), 64)
 )
 
 const (
@@ -18,9 +21,6 @@ const (
 	TAG_INTEGER   = 0x13
 	TAG_SHORT_STR = 0x04
 	TAG_LONG_STR  = 0x14
-
-	VERSION   = 0.1
-	SIGNATURE = `LANG_LK`
 )
 
 // function prototype
@@ -76,7 +76,7 @@ func (proto *Prototype) Dump() ([]byte, error) {
 	v := math.Float64bits(VERSION)
 	by := []byte{'\x1b'}
 	by = append(by, byte(v))
-	by = append(by, bytes.NewBufferString(SIGNATURE).Bytes()...)
+	by = append(by, consts.SIGNATURE...)
 	data = append(by, data...)
 	return data, err
 }

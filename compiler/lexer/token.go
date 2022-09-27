@@ -21,7 +21,7 @@ const (
 	TOKEN_OP_ADD                       // +
 	TOKEN_OP_MUL                       // *
 	TOKEN_OP_DIV                       // /
-	TOKEN_OP_IDIV                      // //
+	TOKEN_OP_IDIV                      // ~/
 	TOKEN_OP_POW                       // ^
 	TOKEN_OP_MOD                       // %
 	TOKEN_OP_BAND                      // &
@@ -51,7 +51,6 @@ const (
 	TOKEN_KW_LOCAL                     // local
 	TOKEN_KW_NIL                       // nil
 	TOKEN_KW_RETURN                    // return
-	TOKEN_KW_THEN                      // then
 	TOKEN_KW_TRUE                      // true
 	TOKEN_KW_WHILE                     // while
 	TOKEN_IDENTIFIER                   // identifier
@@ -79,7 +78,6 @@ var keywords = map[string]int{
 	"not":   TOKEN_OP_NOT,
 	"or":    TOKEN_OP_OR,
 	"rt":    TOKEN_KW_RETURN,
-	"then":  TOKEN_KW_THEN,
 	"true":  TOKEN_KW_TRUE,
 	"while": TOKEN_KW_WHILE,
 }
