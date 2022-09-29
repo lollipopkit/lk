@@ -17,4 +17,4 @@ shy v1 = vector(1, 2)
 shy v2 = vector(3, 5)
 shy v3 = v1 + v2
 print(v3.x, v3.y)
-print(string.format('%s + %s = %s', v1, v2, v3))
+print(fmt('%s + %s = %s', v1, v2, v3))

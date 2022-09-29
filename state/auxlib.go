@@ -217,7 +217,13 @@ func (self *luaState) ToString2(idx int) string {
 				kind = self.TypeName2(idx)
 			}
 
-			self.PushString(fmt.Sprintf("%s: %p", kind, self.ToPointer(idx)))
+			tb, err := json.MarshalToString(self.ToPointer(idx))
+			if err != nil {
+				self.PushString(fmt.Sprintf("%s: %p", kind, self.ToPointer(idx)))
+			} else {
+				self.PushString(fmt.Sprintf("%s: %s", kind, tb))
+			}
+			
 			if tt != LUA_TNIL {
 				self.Remove(-2) /* remove '__name' */
 			}

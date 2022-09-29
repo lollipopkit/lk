@@ -20,15 +20,16 @@ func main() {
 		panic("no input file")
 	}
 
-	compiledFileName := getSHA256HashCode([]byte(file)) + ".lkc"
+	data, err := ioutil.ReadFile(file)
+	if err != nil {
+		panic(err)
+	}
+
+	compiledFileName := getSHA256HashCode(data) + ".lkc"
 	compiledFile := path.Join(os.TempDir(), compiledFileName)
 	compiledData, _ := ioutil.ReadFile(compiledFile)
 	
-	if !exist(compiledFile) || sourceChanged(file, compiledFile) {
-		data, err := ioutil.ReadFile(file)
-		if err != nil {
-			panic(err)
-		}
+	if !exist(compiledFile) {
 		bin := compiler.Compile(string(data), file)
 		f, err := os.Create(compiledFile)
 		if err != nil {
@@ -50,18 +51,6 @@ func main() {
 func exist(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
-}
-
-func sourceChanged(source, compiled string) bool {
-	s, err := os.Stat(source)
-	if err != nil {
-		panic(err)
-	}
-	c, err := os.Stat(compiled)
-	if err != nil {
-		panic(err)
-	}
-	return s.ModTime().After(c.ModTime())
 }
 
 func getSHA256HashCode(message []byte) string {

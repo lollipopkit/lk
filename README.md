@@ -48,16 +48,6 @@ if http.listen(':8080', handle) != nil {
 }
 ```
 
-## CLI
-```bash
-# 编译test/basic.lk，输出到test/basic.lkc
-./go-lang-lk -c test/basic.lk
-# 运行test/basic.lkc
-./go-lang-lk test/basic.lkc
-# 也可以运行test/basic.lk（内部会先进行编译）
-./go-lang-lk test/basic.lk
-```
-
 ## TODO
 - 语法
   - [x] 注释`//` `/* */`
@@ -72,3 +62,4 @@ if http.listen(':8080', handle) != nil {
   - [x] `=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
 - CLI
   - [x] 利用HASH，如果文件内容没变化，就不需要重新编译
+  - [ ] 支持传入参数

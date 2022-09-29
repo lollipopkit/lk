@@ -34,8 +34,8 @@ func OpenOSLib(ls LkState) int {
 }
 
 func osSleep(ls LkState) int {
-	sec := ls.CheckInteger(1)
-	time.Sleep(time.Duration(sec) * time.Second)
+	milliSec := ls.CheckInteger(1)
+	time.Sleep(time.Duration(milliSec) * time.Millisecond)
 	return 0
 }
 
