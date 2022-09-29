@@ -7,9 +7,7 @@ import (
 	"git.lolli.tech/lollipopkit/go-lang-lk/number"
 )
 
-type luaValue any
-
-func typeOf(val luaValue) LuaType {
+func typeOf(val any) LuaType {
 	switch val.(type) {
 	case nil:
 		return LUA_TNIL
@@ -30,7 +28,7 @@ func typeOf(val luaValue) LuaType {
 	}
 }
 
-func convertToBoolean(val luaValue) bool {
+func convertToBoolean(val any) bool {
 	switch x := val.(type) {
 	case nil:
 		return false
@@ -42,7 +40,7 @@ func convertToBoolean(val luaValue) bool {
 }
 
 // http://www.lua.org/manual/5.3/manual.html#3.4.3
-func convertToFloat(val luaValue) (float64, bool) {
+func convertToFloat(val any) (float64, bool) {
 	switch x := val.(type) {
 	case int64:
 		return float64(x), true
@@ -56,7 +54,7 @@ func convertToFloat(val luaValue) (float64, bool) {
 }
 
 // http://www.lua.org/manual/5.3/manual.html#3.4.3
-func convertToInteger(val luaValue) (int64, bool) {
+func convertToInteger(val any) (int64, bool) {
 	switch x := val.(type) {
 	case int64:
 		return x, true
@@ -81,7 +79,7 @@ func _stringToInteger(s string) (int64, bool) {
 
 /* metatable */
 
-func getMetatable(val luaValue, ls *luaState) *luaTable {
+func getMetatable(val any, ls *luaState) *luaTable {
 	if t, ok := val.(*luaTable); ok {
 		return t.metatable
 	}
@@ -92,7 +90,7 @@ func getMetatable(val luaValue, ls *luaState) *luaTable {
 	return nil
 }
 
-func setMetatable(val luaValue, mt *luaTable, ls *luaState) {
+func setMetatable(val any, mt *luaTable, ls *luaState) {
 	if t, ok := val.(*luaTable); ok {
 		t.metatable = mt
 		return
@@ -101,15 +99,15 @@ func setMetatable(val luaValue, mt *luaTable, ls *luaState) {
 	ls.registry.put(key, mt)
 }
 
-func getMetafield(val luaValue, fieldName string, ls *luaState) luaValue {
+func getMetafield(val any, fieldName string, ls *luaState) any {
 	if mt := getMetatable(val, ls); mt != nil {
 		return mt.get(fieldName)
 	}
 	return nil
 }
 
-func callMetamethod(a, b luaValue, mmName string, ls *luaState) (luaValue, bool) {
-	var mm luaValue
+func callMetamethod(a, b any, mmName string, ls *luaState) (any, bool) {
+	var mm any
 	if mm = getMetafield(a, mmName, ls); mm == nil {
 		if mm = getMetafield(b, mmName, ls); mm == nil {
 			return nil, false

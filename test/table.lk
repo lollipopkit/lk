@@ -16,4 +16,4 @@ pri(tb)
 tb['d'] = nil
 pri(tb)
 
-print(tb[0])
+print(tb[1])

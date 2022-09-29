@@ -1,6 +1,6 @@
 module git.lolli.tech/lollipopkit/go-lang-lk
 
-go 1.18
+go 1.19
 
 require (
 	git.lolli.tech/lollipopkit/go_lru_cacher v0.0.4

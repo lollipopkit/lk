@@ -1,6 +1,9 @@
 # Lang LK
 改编自Lua5.3，[luago](https://github.com/zxh0/luago-book)
 
+## 生态
+- Vscode插件：[高亮](https://git.lolli.tech/lollipopkit/vscode-lang-lk-highlight)
+
 ## 速览
 **详细语法**，可以查看[test](test)文件夹的内容
 
@@ -57,7 +60,6 @@ if http.listen(':8080', handle) != nil {
 - 编译器
   - [x] 自动添加`range` ( `paris` )
 - Table
-  - [ ] 索引从0开始 
   - [x] key为StringExp，而不是NameExp
   - [x] `=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
 - CLI

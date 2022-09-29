@@ -1,7 +1,7 @@
 import "test/import"
 
 shy func = fn (e) {print(e)}
-func(1!=2 and 3!=4)
+func(1!=2 and 3!=3)
 func(test2.add2(1))
 func(test2.add2(1))
 

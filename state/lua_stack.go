@@ -4,12 +4,12 @@ import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
 
 type luaStack struct {
 	/* virtual stack */
-	slots []luaValue
+	slots []any
 	top   int
 	/* call info */
 	state   *luaState
 	closure *closure
-	varargs []luaValue
+	varargs []any
 	openuvs map[int]*upvalue
 	pc      int
 	/* linked list */
@@ -18,7 +18,7 @@ type luaStack struct {
 
 func newLuaStack(size int, state *luaState) *luaStack {
 	return &luaStack{
-		slots: make([]luaValue, size),
+		slots: make([]any, size),
 		top:   0,
 		state: state,
 	}
@@ -31,7 +31,7 @@ func (self *luaStack) check(n int) {
 	}
 }
 
-func (self *luaStack) push(val luaValue) {
+func (self *luaStack) push(val any) {
 	if self.top == len(self.slots) {
 		panic("stack overflow!")
 	}
@@ -39,7 +39,7 @@ func (self *luaStack) push(val luaValue) {
 	self.top++
 }
 
-func (self *luaStack) pop() luaValue {
+func (self *luaStack) pop() any {
 	if self.top < 1 {
 		panic("stack underflow!")
 	}
@@ -49,7 +49,7 @@ func (self *luaStack) pop() luaValue {
 	return val
 }
 
-func (self *luaStack) pushN(vals []luaValue, n int) {
+func (self *luaStack) pushN(vals []any, n int) {
 	nVals := len(vals)
 	if n < 0 {
 		n = nVals
@@ -64,8 +64,8 @@ func (self *luaStack) pushN(vals []luaValue, n int) {
 	}
 }
 
-func (self *luaStack) popN(n int) []luaValue {
-	vals := make([]luaValue, n)
+func (self *luaStack) popN(n int) []any {
+	vals := make([]any, n)
 	for i := n - 1; i >= 0; i-- {
 		vals[i] = self.pop()
 	}
@@ -92,7 +92,7 @@ func (self *luaStack) isValid(idx int) bool {
 	return absIdx > 0 && absIdx <= self.top
 }
 
-func (self *luaStack) get(idx int) luaValue {
+func (self *luaStack) get(idx int) any {
 	if idx < LUA_REGISTRYINDEX { /* upvalues */
 		uvIdx := LUA_REGISTRYINDEX - idx - 1
 		c := self.closure
@@ -113,7 +113,7 @@ func (self *luaStack) get(idx int) luaValue {
 	return nil
 }
 
-func (self *luaStack) set(idx int, val luaValue) {
+func (self *luaStack) set(idx int, val any) {
 	if idx < LUA_REGISTRYINDEX { /* upvalues */
 		uvIdx := LUA_REGISTRYINDEX - idx - 1
 		c := self.closure

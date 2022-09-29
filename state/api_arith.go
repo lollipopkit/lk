@@ -56,7 +56,7 @@ var operators = []operator{
 // [-(2|1), +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_arith
 func (self *luaState) Arith(op ArithOp) {
-	var a, b luaValue // operands
+	var a, b any // operands
 	b = self.stack.pop()
 	if op != LUA_OPUNM && op != LUA_OPBNOT {
 		a = self.stack.pop()
@@ -79,7 +79,7 @@ func (self *luaState) Arith(op ArithOp) {
 	panic("arithmetic error!")
 }
 
-func _arith(a, b luaValue, op operator) luaValue {
+func _arith(a, b any, op operator) any {
 	if op.floatFunc == nil { // bitwise
 		if x, ok := convertToInteger(a); ok {
 			if y, ok := convertToInteger(b); ok {

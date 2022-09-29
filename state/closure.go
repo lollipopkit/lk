@@ -6,7 +6,7 @@ import (
 )
 
 type upvalue struct {
-	val *luaValue
+	val *any
 }
 
 type closure struct {

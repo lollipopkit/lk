@@ -48,7 +48,7 @@ func OpenBaseLib(ls LkState) int {
 	ls.PushValue(-1)
 	ls.SetField(-2, "_G")
 	/* set global _VERSION */
-	ls.PushString(consts.VERSION) // todo
+	ls.PushString(consts.VERSION)
 	ls.SetField(-2, "_VERSION")
 	return 1
 }

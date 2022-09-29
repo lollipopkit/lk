@@ -35,7 +35,7 @@ func (self *luaState) Compare(idx1, idx2 int, op CompareOp) bool {
 	}
 }
 
-func _eq(a, b luaValue, ls *luaState) bool {
+func _eq(a, b any, ls *luaState) bool {
 	switch x := a.(type) {
 	case nil:
 		return b == nil
@@ -75,7 +75,7 @@ func _eq(a, b luaValue, ls *luaState) bool {
 	}
 }
 
-func _lt(a, b luaValue, ls *luaState) bool {
+func _lt(a, b any, ls *luaState) bool {
 	switch x := a.(type) {
 	case string:
 		if y, ok := b.(string); ok {
@@ -104,7 +104,7 @@ func _lt(a, b luaValue, ls *luaState) bool {
 	}
 }
 
-func _le(a, b luaValue, ls *luaState) bool {
+func _le(a, b any, ls *luaState) bool {
 	switch x := a.(type) {
 	case string:
 		if y, ok := b.(string); ok {

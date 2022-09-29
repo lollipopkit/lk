@@ -73,7 +73,7 @@ func (self *luaState) GetMetatable(idx int) bool {
 }
 
 // push(t[k])
-func (self *luaState) getTable(t, k luaValue, raw bool) LuaType {
+func (self *luaState) getTable(t, k any, raw bool) LuaType {
 	if tbl, ok := t.(*luaTable); ok {
 		v := tbl.get(k)
 		if raw || v != nil || !tbl.hasMetafield("__index") {

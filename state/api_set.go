@@ -75,7 +75,7 @@ func (self *luaState) SetMetatable(idx int) {
 }
 
 // t[k]=v
-func (self *luaState) setTable(t, k, v luaValue, raw bool) {
+func (self *luaState) setTable(t, k, v any, raw bool) {
 	if tbl, ok := t.(*luaTable); ok {
 		if raw || tbl.get(k) != nil || !tbl.hasMetafield("__newindex") {
 			tbl.put(k, v)

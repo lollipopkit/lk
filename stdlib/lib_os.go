@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
@@ -69,21 +68,10 @@ func osRead(ls LkState) int {
 	return 2
 }
 
-func dirName(path string) string {
-	if strings.Contains(path, "/") {
-		return path[:strings.LastIndex(path, "/")]
-	}
-	return ""
-}
-
 func osWrite(ls LkState) int {
 	path := ls.CheckString(1)
 	data := ls.CheckString(2)
 	perm := fs.FileMode(ls.OptInteger(3, 0744))
-	dir := dirName(path)
-	if dir != "" {
-		os.MkdirAll(dir, perm)
-	}
 	if err := os.WriteFile(path, []byte(data), perm); err != nil {
 		ls.PushString(err.Error())
 		return 1

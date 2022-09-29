@@ -9,20 +9,20 @@ import (
 
 type luaTable struct {
 	metatable *luaTable
-	arr       []luaValue
-	_map      map[luaValue]luaValue
-	keys      map[luaValue]luaValue // used by next()
-	lastKey   luaValue              // used by next()
+	arr       []any
+	_map      map[any]any
+	keys      map[any]any // used by next()
+	lastKey   any              // used by next()
 	changed   bool                  // used by next()
 }
 
 func newLuaTable(nArr, nRec int) *luaTable {
 	t := &luaTable{}
 	if nArr > 0 {
-		t.arr = make([]luaValue, 0, nArr)
+		t.arr = make([]any, 0, nArr)
 	}
 	if nRec > 0 {
-		t._map = make(map[luaValue]luaValue, nRec)
+		t._map = make(map[any]any, nRec)
 	}
 	return t
 }
@@ -36,7 +36,7 @@ func (self *luaTable) len() int {
 	return len(self.arr)
 }
 
-func (self *luaTable) get(key luaValue) luaValue {
+func (self *luaTable) get(key any) any {
 	key = _floatToInteger(key)
 	if idx, ok := key.(int64); ok {
 		if idx >= 1 && idx <= int64(len(self.arr)) {
@@ -46,7 +46,7 @@ func (self *luaTable) get(key luaValue) luaValue {
 	return self._map[key]
 }
 
-func _floatToInteger(key luaValue) luaValue {
+func _floatToInteger(key any) any {
 	if f, ok := key.(float64); ok {
 		if i, ok := number.FloatToInteger(f); ok {
 			return i
@@ -55,7 +55,7 @@ func _floatToInteger(key luaValue) luaValue {
 	return key
 }
 
-func (self *luaTable) put(key, val luaValue) {
+func (self *luaTable) put(key, val any) {
 	if key == nil {
 		panic("table index is nil!")
 	}
@@ -85,7 +85,7 @@ func (self *luaTable) put(key, val luaValue) {
 	}
 	if val != nil {
 		if self._map == nil {
-			self._map = make(map[luaValue]luaValue, 8)
+			self._map = make(map[any]any, 8)
 		}
 		self._map[key] = val
 	} else {
@@ -114,7 +114,7 @@ func (self *luaTable) _expandArray() {
 	}
 }
 
-func (self *luaTable) nextKey(key luaValue) luaValue {
+func (self *luaTable) nextKey(key any) any {
 	if self.keys == nil || (key == nil && self.changed) {
 		self.initKeys()
 		self.changed = false
@@ -133,8 +133,8 @@ func (self *luaTable) nextKey(key luaValue) luaValue {
 }
 
 func (self *luaTable) initKeys() {
-	self.keys = make(map[luaValue]luaValue)
-	var key luaValue = nil
+	self.keys = make(map[any]any)
+	var key any = nil
 	for i := range self.arr {
 		if self.arr[i] != nil {
 			self.keys[key] = int64(i + 1)
