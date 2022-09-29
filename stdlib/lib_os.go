@@ -29,7 +29,18 @@ var sysLib = map[string]GoFunction{
 
 func OpenOSLib(ls LkState) int {
 	ls.NewLib(sysLib)
+	pushArgs(ls)
 	return 1
+}
+
+func pushArgs(ls LkState) {
+	args := os.Args
+	ags := make([]any, len(args))
+	for argIdx := range args {
+		ags = append(ags, args[argIdx])
+	}
+	pushList(ls, ags)
+	ls.SetField(-2, "args")
 }
 
 func osSleep(ls LkState) int {

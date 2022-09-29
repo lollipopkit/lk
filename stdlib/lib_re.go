@@ -9,9 +9,9 @@ import (
 
 var (
 	reCacher = glc.NewCacher(10)
-	reLib = map[string]GoFunction{
+	reLib    = map[string]GoFunction{
 		"have": reFound,
-		"find":  reFind,
+		"find": reFind,
 	}
 )
 
@@ -28,11 +28,11 @@ func getExp(pattern string) *regexp.Regexp {
 		if ok {
 			goto END
 		}
-		
+
 	}
 	exp = regexp.MustCompile(pattern)
 	reCacher.Set(pattern, exp)
-	END:
+END:
 	return exp
 }
 

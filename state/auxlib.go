@@ -223,7 +223,7 @@ func (self *luaState) ToString2(idx int) string {
 			} else {
 				self.PushString(fmt.Sprintf("%s: %s", kind, tb))
 			}
-			
+
 			if tt != LUA_TNIL {
 				self.Remove(-2) /* remove '__name' */
 			}
@@ -289,7 +289,7 @@ func (self *luaState) OpenLibs() {
 		"sync":   stdlib.OpenCoroutineLib,
 		"http":   stdlib.OpenHttpLib,
 		"json":   stdlib.OpenJsonLib,
-		"re":    stdlib.OpenReLib,
+		"re":     stdlib.OpenReLib,
 	}
 
 	for name := range libs {

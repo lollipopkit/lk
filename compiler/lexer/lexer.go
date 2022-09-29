@@ -6,7 +6,7 @@ import "regexp"
 import "strconv"
 import "strings"
 
-//var reSpaces = regexp.MustCompile(`^\s+`)
+// var reSpaces = regexp.MustCompile(`^\s+`)
 var reNewLine = regexp.MustCompile("\r\n|\n\r|\n|\r")
 var reIdentifier = regexp.MustCompile(`^[_\d\w]+`)
 var reNumber = regexp.MustCompile(`^0[xX][0-9a-fA-F]*(\.[0-9a-fA-F]*)?([pP][+\-]?[0-9]+)?|^[0-9]*(\.[0-9]*)?([eE][+\-]?[0-9]+)?`)
@@ -261,7 +261,7 @@ func (self *Lexer) skipLongComment() {
 	self.next(2)
 	idx := strings.Index(self.chunk, "*/")
 	if idx < 0 {
-		self.error("unfinished long comment at line: "+strconv.Itoa(self.line))
+		self.error("unfinished long comment at line: " + strconv.Itoa(self.line))
 	}
 	self.next(idx + 2)
 }

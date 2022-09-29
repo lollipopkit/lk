@@ -31,12 +31,13 @@ var baseFuncs = map[string]GoFunction{
 	"type":         baseType,
 	"str":          baseToString,
 	"num":          baseToNumber,
+	"int":          mathToInt,
 	"kv":           baseKV,
 	/* placeholders */
 	"_G":       nil,
 	"_VERSION": nil,
 	// string
-	"fmt":   strFormat,
+	"fmt": strFormat,
 }
 
 // lua-5.3.4/src/lbaselib.c#luaopen_base()
@@ -50,6 +51,19 @@ func OpenBaseLib(ls LkState) int {
 	/* set global _VERSION */
 	ls.PushString(consts.VERSION)
 	ls.SetField(-2, "_VERSION")
+	return 1
+}
+
+// int (x)
+// http://www.lua.org/manual/5.3/manual.html#pdf-math.tointeger
+// lua-5.3.4/src/lmathlib.c#math_toint()
+func mathToInt(ls LkState) int {
+	if i, ok := ls.ToIntegerX(1); ok {
+		ls.PushInteger(i)
+	} else {
+		ls.CheckAny(1)
+		ls.PushNil() /* value is not convertible to integer */
+	}
 	return 1
 }
 
@@ -67,7 +81,6 @@ func baseKV(ls LkState) int {
 	pushList(ls, values)
 	return 2
 }
-
 
 // format (formatstring, ···)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.format

@@ -40,7 +40,7 @@ func TestMain(m *testing.M) {
 	}
 	for idx := range files {
 		name := files[idx].Name()
-		if files[idx].IsDir() || contains(skipTestList, name){
+		if files[idx].IsDir() || contains(skipTestList, name) {
 			continue
 		}
 		println("=== " + name + " ===")

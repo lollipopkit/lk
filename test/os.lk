@@ -1,25 +1,34 @@
+shy fn pri(section, ...) {
+    print('===  ' .. section .. '  ===')
+    print(...)
+}
 shy tmpDir = os.tmp()
-print('temp_dir: ', tmpDir)
+pri('temp_dir: ', tmpDir)
 
 shy path = tmpDir .. '/test'
 shy err = os.write(path, "test")
-print('write err: ', err)
+pri('write err: ', err)
 shy data, err = os.read(path)
-print('write content: ', data, err)
+pri('write content: ', data, err)
 
 shy err = os.rm(path, false)
-print('rm err: ', err)
+pri('rm err: ', err)
 
 shy result, ok = os.exec('ls', '-l', 'test')
-print('ls result: ', ok, result)
+pri('ls result: ', ok, result)
 
-print('env HOME: ', os.env('HOME'))
-print('date: ', os.date())
+pri('env HOME: ', os.env('HOME'))
+pri('date: ', os.date())
 
 shy dirs, err = os.dir('test')
 for _, dir in dirs {
     print(dir)
 }
 
+pri('os.sleep(1)')
 os.sleep(1)
+pri('os.args')
+for k, v in os.args {
+    print(k, v)
+}
 os.exit()

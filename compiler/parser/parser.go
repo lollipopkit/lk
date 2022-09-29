@@ -8,11 +8,9 @@ import (
 )
 
 var (
-	forInRegexp = regexp.MustCompile(`for +(.*) +in +([_A-Za-z]+[A-Za-z0-9]*) *\{`)
-
 	replaceRules = map[string]*regexp.Regexp{
 		// for in：自动添加range
-		"for $1 in range($2) {": forInRegexp,
+		"for $1 in range($3) {": regexp.MustCompile(`for +(\S+(, {0,1}\S+)) +in +(\S*) *\{`),
 	}
 )
 

@@ -11,6 +11,7 @@ import (
 
 /*
 prefixexp ::= Name
+
 	| ‘(’ exp ‘)’
 	| prefixexp ‘[’ exp ‘]’
 	| prefixexp ‘.’ Name

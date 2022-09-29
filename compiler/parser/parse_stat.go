@@ -9,6 +9,7 @@ var _statEmpty = &EmptyStat{}
 
 /*
 stat ::=  ‘;’
+
 	| break
 	| ‘::’ Name ‘::’
 	| goto Name

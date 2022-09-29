@@ -44,13 +44,15 @@ func cgBreakStat(fi *funcInfo, node *BreakStat) {
 }
 
 /*
-           ______________
-          /  false? jmp  |
-         /               |
+	  ______________
+	 /  false? jmp  |
+	/               |
+
 while exp do block end <-'
-      ^           \
-      |___________/
-           jmp
+
+	^           \
+	|___________/
+	     jmp
 */
 func cgWhileStat(fi *funcInfo, node *WhileStat) {
 	pcBeforeExp := fi.pc()
@@ -73,13 +75,15 @@ func cgWhileStat(fi *funcInfo, node *WhileStat) {
 }
 
 /*
-         _________________       _________________       _____________
-        / false? jmp      |     / false? jmp      |     / false? jmp  |
-       /                  V    /                  V    /              V
+	  _________________       _________________       _____________
+	 / false? jmp      |     / false? jmp      |     / false? jmp  |
+	/                  V    /                  V    /              V
+
 if exp1 then block1 elseif exp2 then block2 elseif true then block3 end <-.
-                   \                       \                       \      |
-                    \_______________________\_______________________\_____|
-                    jmp                     jmp                     jmp
+
+	\                       \                       \      |
+	 \_______________________\_______________________\_____|
+	 jmp                     jmp                     jmp
 */
 func cgIfStat(fi *funcInfo, node *IfStat) {
 	pcJmpToEnds := make([]int, len(node.Exps))

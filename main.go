@@ -13,6 +13,7 @@ import (
 )
 
 func main() {
+	force := flag.Bool("f", false, "force to re-compile")
 	flag.Parse()
 
 	file := flag.Arg(0)
@@ -28,8 +29,8 @@ func main() {
 	compiledFileName := getSHA256HashCode(data) + ".lkc"
 	compiledFile := path.Join(os.TempDir(), compiledFileName)
 	compiledData, _ := ioutil.ReadFile(compiledFile)
-	
-	if !exist(compiledFile) {
+
+	if !exist(compiledFile) || *force {
 		bin := compiler.Compile(string(data), file)
 		f, err := os.Create(compiledFile)
 		if err != nil {

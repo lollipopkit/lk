@@ -19,10 +19,10 @@ const (
 )
 
 type binaryChunk struct {
-	Version string		`json:"v"`
-	Sign string		`json:"si"`
-	Hash string			`json:"h"`
-	Proto *Prototype	`json:"p"`
+	Version string     `json:"v"`
+	Sign    string     `json:"si"`
+	Hash    string     `json:"h"`
+	Proto   *Prototype `json:"p"`
 }
 
 // function prototype
@@ -68,8 +68,8 @@ func IsJsonChunk(data []byte) (bool, *Prototype) {
 func (proto *Prototype) Dump() ([]byte, error) {
 	bin := &binaryChunk{
 		Version: consts.VERSION,
-		Sign: consts.SIGNATURE,
-		Proto: proto,
+		Sign:    consts.SIGNATURE,
+		Proto:   proto,
 	}
 	return json.Marshal(bin)
 }

@@ -5,36 +5,12 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "httpjson",
+            "name": "debug",
             "type": "go",
             "request": "launch",
             "mode": "debug",
             "program": "main.go",
-            "args": ["test/httpjson.lk"]
-        },
-        {
-            "name": "table",
-            "type": "go",
-            "request": "launch",
-            "mode": "debug",
-            "program": "main.go",
-            "args": ["test/table.lk"]
-        },
-        {
-            "name": "os",
-            "type": "go",
-            "request": "launch",
-            "mode": "debug",
-            "program": "main.go",
-            "args": ["test/os.lk"]
-        },
-        {
-            "name": "basic",
-            "type": "go",
-            "request": "launch",
-            "mode": "debug",
-            "program": "main.go",
-            "args": ["test/basic.lk"]
+            "args": ["-f", "test/os.lk"]
         }
     ]
 }

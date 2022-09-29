@@ -9,34 +9,28 @@ import (
 )
 
 var mathLib = map[string]GoFunction{
-	"random":     mathRandom,
-	"randomseed": mathRandomSeed,
-	"max":        mathMax,
-	"min":        mathMin,
-	"exp":        mathExp,
-	"log":        mathLog,
-	"deg":        mathDeg,
-	"rad":        mathRad,
-	"sin":        mathSin,
-	"cos":        mathCos,
-	"tan":        mathTan,
-	"asin":       mathAsin,
-	"acos":       mathAcos,
-	"atan":       mathAtan,
-	"ceil":       mathCeil,
-	"floor":      mathFloor,
-	"fmod":       mathFmod,
-	"modf":       mathModf,
-	"abs":        mathAbs,
-	"sqrt":       mathSqrt,
-	"ult":        mathUlt,
-	"tointeger":  mathToInt,
-	"type":       mathType,
-	/* placeholders */
-	"pi":         nil,
-	"huge":       nil,
-	"maxinteger": nil,
-	"mininteger": nil,
+	"random": mathRandom,
+	"seed":   mathRandomSeed,
+	"max":    mathMax,
+	"min":    mathMin,
+	"exp":    mathExp,
+	"log":    mathLog,
+	"deg":    mathDeg,
+	"rad":    mathRad,
+	"sin":    mathSin,
+	"cos":    mathCos,
+	"tan":    mathTan,
+	"asin":   mathAsin,
+	"acos":   mathAcos,
+	"atan":   mathAtan,
+	"ceil":   mathCeil,
+	"floor":  mathFloor,
+	"fmod":   mathFmod,
+	"modf":   mathModf,
+	"abs":    mathAbs,
+	"sqrt":   mathSqrt,
+	"ult":    mathUlt,
+	"type":   mathType,
 }
 
 func OpenMathLib(ls LkState) int {
@@ -45,10 +39,10 @@ func OpenMathLib(ls LkState) int {
 	ls.SetField(-2, "pi")
 	ls.PushNumber(math.Inf(1))
 	ls.SetField(-2, "huge")
-	ls.PushInteger(math.MaxInt64)
-	ls.SetField(-2, "maxinteger")
-	ls.PushInteger(math.MinInt64)
-	ls.SetField(-2, "mininteger")
+	ls.PushInteger(math.MaxInt)
+	ls.SetField(-2, "maxint")
+	ls.PushInteger(math.MinInt)
+	ls.SetField(-2, "minint")
 	return 1
 }
 
@@ -59,7 +53,8 @@ func OpenMathLib(ls LkState) int {
 // lua-5.3.4/src/lmathlib.c#math_random()
 func mathRandom(ls LkState) int {
 	var low, up int64
-	switch ls.GetTop() { /* check number of arguments */
+	argsNum := ls.GetTop()
+	switch argsNum { /* check number of arguments */
 	case 0: /* no arguments */
 		ls.PushNumber(rand.Float64()) /* Number between 0 and 1 */
 		return 1
@@ -70,7 +65,7 @@ func mathRandom(ls LkState) int {
 		low = ls.CheckInteger(1)
 		up = ls.CheckInteger(2)
 	default:
-		return ls.Error2("wrong number of arguments")
+		return ls.Error2("number of arguments out of range[0, 3]: %d", argsNum)
 	}
 
 	/* random integer in the interval [low, up] */
@@ -342,19 +337,6 @@ func mathUlt(ls LkState) int {
 	m := ls.CheckInteger(1)
 	n := ls.CheckInteger(2)
 	ls.PushBoolean(uint64(m) < uint64(n))
-	return 1
-}
-
-// math.tointeger (x)
-// http://www.lua.org/manual/5.3/manual.html#pdf-math.tointeger
-// lua-5.3.4/src/lmathlib.c#math_toint()
-func mathToInt(ls LkState) int {
-	if i, ok := ls.ToIntegerX(1); ok {
-		ls.PushInteger(i)
-	} else {
-		ls.CheckAny(1)
-		ls.PushNil() /* value is not convertible to integer */
-	}
 	return 1
 }
 
