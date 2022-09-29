@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "debug",
             "program": "main.go",
-            "args": ["-f", "run", "test/re.lk"]
+            "args": ["-f", "test/re.lk"]
         }
     ]
 }

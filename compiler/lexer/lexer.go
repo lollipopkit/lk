@@ -54,7 +54,7 @@ func (self *Lexer) NextIdentifier() (line int, token string) {
 func (self *Lexer) NextTokenOfKind(kind int) (line int, token string) {
 	line, _kind, token := self.NextToken()
 	if kind != _kind {
-		self.error("syntax error near '%s', expect %d but %d", token, kind, _kind)
+		self.error("syntax error, expect '%s' but '%s'", tokenName(kind), tokenName(_kind))
 	}
 	return line, token
 }

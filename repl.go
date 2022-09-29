@@ -22,9 +22,9 @@ func repl() {
 
 	for {
 		os.Stdout.WriteString("> ")
-		ls.LoadString(readline());
-	
-		ls.PCall(0, -1, 0);
+		ls.LoadString(readline(), "stdin")
+		
+		ls.PCall(0, -1, 0)
 	}
 }
 

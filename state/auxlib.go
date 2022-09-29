@@ -139,8 +139,8 @@ func (self *luaState) DoFile(filename string) bool {
 
 // [-0, +?, –]
 // http://www.lua.org/manual/5.3/manual.html#luaL_dostring
-func (self *luaState) DoString(str string) bool {
-	return self.LoadString(str) != LUA_OK ||
+func (self *luaState) DoString(str, source string) bool {
+	return self.LoadString(str, source) != LUA_OK ||
 		self.PCall(0, LUA_MULTRET, 0) != LUA_OK
 }
 
@@ -161,8 +161,13 @@ func (self *luaState) LoadFileX(filename, mode string) int {
 
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#luaL_loadstring
-func (self *luaState) LoadString(s string) int {
-	return self.Load([]byte(s), s, "bt")
+func (self *luaState) LoadString(s, source string) int {
+	defer func() {
+		if err := recover(); err != nil {
+			println(fmt.Sprintf("%v", err))
+		}
+	}()
+	return self.Load([]byte(s), source, "bt")
 }
 
 // [-0, +0, –]

@@ -22,10 +22,10 @@ type AuxLib interface {
 	OptBool(arg int, d bool) bool
 	/* Load functions */
 	DoFile(filename string) bool
-	DoString(str string) bool
+	DoString(str, source string) bool
 	LoadFile(filename string) int
 	LoadFileX(filename, mode string) int
-	LoadString(s string) int
+	LoadString(s, source string) int
 	/* Other functions */
 	TypeName2(idx int) string
 	ToString2(idx int) string
