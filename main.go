@@ -1,17 +1,18 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"io/ioutil"
 	"os"
-	"strings"
+	"path"
 
 	"git.lolli.tech/lollipopkit/go-lang-lk/compiler"
 	"git.lolli.tech/lollipopkit/go-lang-lk/state"
 )
 
 func main() {
-	compile := flag.Bool("c", false, "compile, not run")
 	flag.Parse()
 
 	file := flag.Arg(0)
@@ -19,7 +20,8 @@ func main() {
 		panic("no input file")
 	}
 
-	compiledFile := strings.Replace(file, ".lk", ".lkc", 1)
+	compiledFileName := getSHA256HashCode([]byte(file)) + ".lkc"
+	compiledFile := path.Join(os.TempDir(), compiledFileName)
 	compiledData, _ := ioutil.ReadFile(compiledFile)
 	
 	if !exist(compiledFile) || sourceChanged(file, compiledFile) {
@@ -39,12 +41,10 @@ func main() {
 		f.Write(compiledData)
 	}
 
-	if !*compile {
-		ls := state.New()
-		ls.OpenLibs()
-		ls.Load(compiledData, file, "bt")
-		ls.Call(0, -1)
-	}
+	ls := state.New()
+	ls.OpenLibs()
+	ls.Load(compiledData, file, "bt")
+	ls.Call(0, -1)
 }
 
 func exist(path string) bool {
@@ -62,4 +62,10 @@ func sourceChanged(source, compiled string) bool {
 		panic(err)
 	}
 	return s.ModTime().After(c.ModTime())
+}
+
+func getSHA256HashCode(message []byte) string {
+	bytes := sha256.Sum256(message)
+	hashCode := hex.EncodeToString(bytes[:])
+	return hashCode
 }

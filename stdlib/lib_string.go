@@ -17,7 +17,6 @@ var strLib = map[string]GoFunction{
 	"byte":     strByte,
 	"char":     strChar,
 	"dump":     strDump,
-	"format":   strFormat,
 	"packsize": strPackSize,
 	"pack":     strPack,
 	"unpack":   strUnpack,
@@ -223,34 +222,6 @@ func strPack(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.unpack
 func strUnpack(ls LkState) int {
 	panic("todo: strUnpack!")
-}
-
-/* STRING FORMAT */
-
-// string.format (formatstring, ···)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.format
-func strFormat(ls LkState) int {
-	fmtStr := ls.CheckString(1)
-	if len(fmtStr) <= 1 || strings.IndexByte(fmtStr, '%') < 0 {
-		ls.PushString(fmtStr)
-		return 1
-	}
-
-	argIdx := 1
-	arr := parseFmtStr(fmtStr)
-	for i := range arr {
-		if arr[i][0] == '%' {
-			if arr[i] == "%%" {
-				arr[i] = "%"
-			} else {
-				argIdx += 1
-				arr[i] = _fmtArg(arr[i], ls, argIdx)
-			}
-		}
-	}
-
-	ls.PushString(strings.Join(arr, ""))
-	return 1
 }
 
 func _fmtArg(tag string, ls LkState, argIdx int) string {

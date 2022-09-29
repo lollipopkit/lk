@@ -13,7 +13,7 @@ headers.__str = fn(a) {
 
 shy fn handle(req) {
     setmetatable(req.headers, headers)
-    rt 200, string.format('%s %s\n\n%s\n%s', req.method, req.url, req.headers, req.body)
+    rt 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, req.headers, req.body)
 }
 
 if http.listen(':8080', handle) != nil {

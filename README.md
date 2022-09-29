@@ -39,7 +39,7 @@ headers.__str = fn(a) {
 */
 shy fn handle(req) {
     setmetatable(req.headers, headers)
-    rt 200, string.format('%s %s\n\n%s\n%s', req.method, req.url, req.headers, req.body)
+    rt 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, req.headers, req.body)
 }
 
 // 监听
@@ -71,4 +71,4 @@ if http.listen(':8080', handle) != nil {
   - [x] key为StringExp，而不是NameExp
   - [x] `=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
 - CLI
-  - [ ] 利用HASH，如果文件内容没变化，就不需要重新编译
+  - [x] 利用HASH，如果文件内容没变化，就不需要重新编译

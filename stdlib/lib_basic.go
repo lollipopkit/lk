@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+	"git.lolli.tech/lollipopkit/go-lang-lk/consts"
 )
 
 var baseFuncs = map[string]GoFunction{
@@ -39,6 +40,8 @@ var baseFuncs = map[string]GoFunction{
 	"insert": tabInsert,
 	"delete": tabRemove,
 	"sort":   tabSort,
+	// string
+	"fmt":   strFormat,
 }
 
 // lua-5.3.4/src/lbaselib.c#luaopen_base()
@@ -50,7 +53,7 @@ func OpenBaseLib(ls LkState) int {
 	ls.PushValue(-1)
 	ls.SetField(-2, "_G")
 	/* set global _VERSION */
-	ls.PushString("LK 5.3") // todo
+	ls.PushString(consts.VERSION) // todo
 	ls.SetField(-2, "_VERSION")
 	return 1
 }
@@ -68,6 +71,33 @@ func baseKV(ls LkState) int {
 	pushList(ls, keys)
 	pushList(ls, values)
 	return 2
+}
+
+
+// format (formatstring, ···)
+// http://www.lua.org/manual/5.3/manual.html#pdf-string.format
+func strFormat(ls LkState) int {
+	fmtStr := ls.CheckString(1)
+	if len(fmtStr) <= 1 || strings.IndexByte(fmtStr, '%') < 0 {
+		ls.PushString(fmtStr)
+		return 1
+	}
+
+	argIdx := 1
+	arr := parseFmtStr(fmtStr)
+	for i := range arr {
+		if arr[i][0] == '%' {
+			if arr[i] == "%%" {
+				arr[i] = "%"
+			} else {
+				argIdx += 1
+				arr[i] = _fmtArg(arr[i], ls, argIdx)
+			}
+		}
+	}
+
+	ls.PushString(strings.Join(arr, ""))
+	return 1
 }
 
 // print (···)
