@@ -31,10 +31,6 @@ func parseStat(lexer *Lexer) Stat {
 		return parseEmptyStat(lexer)
 	case TOKEN_KW_BREAK:
 		return parseBreakStat(lexer)
-	case TOKEN_SEP_LABEL:
-		return parseLabelStat(lexer)
-	case TOKEN_KW_GOTO:
-		return parseGotoStat(lexer)
 	case TOKEN_KW_WHILE:
 		return parseWhileStat(lexer)
 	case TOKEN_KW_IF:
@@ -60,21 +56,6 @@ func parseEmptyStat(lexer *Lexer) *EmptyStat {
 func parseBreakStat(lexer *Lexer) *BreakStat {
 	lexer.NextTokenOfKind(TOKEN_KW_BREAK)
 	return &BreakStat{lexer.Line()}
-}
-
-// ‘::’ Name ‘::’
-func parseLabelStat(lexer *Lexer) *LabelStat {
-	lexer.NextTokenOfKind(TOKEN_SEP_LABEL) // ::
-	_, name := lexer.NextIdentifier()      // name
-	lexer.NextTokenOfKind(TOKEN_SEP_LABEL) // ::
-	return &LabelStat{name}
-}
-
-// goto Name
-func parseGotoStat(lexer *Lexer) *GotoStat {
-	lexer.NextTokenOfKind(TOKEN_KW_GOTO) // goto
-	_, name := lexer.NextIdentifier()    // name
-	return &GotoStat{name}
 }
 
 // while exp do block end

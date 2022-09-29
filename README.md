@@ -54,14 +54,15 @@ if http.listen(':8080', handle) != nil {
 ## TODO
 - 语法
   - [x] 注释`//` `/* */`
-  - [x] 去除`repeat` `until`
+  - [x] 去除`repeat` `until` `goto`
   - [x] Raw String, `\``
   - [x] 支持任意对象 Concat
+  - Table
+    - [x] key为StringExp，而不是NameExp
+    - [x] `=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
+  - [ ] 改变 `metatable` 设置方式
 - 编译器
   - [x] 自动添加`range` ( `paris` )
-- Table
-  - [x] key为StringExp，而不是NameExp
-  - [x] `=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
 - CLI
-  - [x] 利用HASH，如果文件内容没变化，就不需要重新编译
-  - [ ] 支持传入参数
+  - [x] 利用HASH，文件无变化不编译
+  - [x] 支持传入参数

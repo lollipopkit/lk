@@ -121,13 +121,8 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 		self.next(1)
 		return self.line, TOKEN_OP_LEN, "#"
 	case ':':
-		if self.test("::") {
-			self.next(2)
-			return self.line, TOKEN_SEP_LABEL, "::"
-		} else {
-			self.next(1)
-			return self.line, TOKEN_SEP_COLON, ":"
-		}
+		self.next(1)
+		return self.line, TOKEN_SEP_COLON, ":"
 	case '/':
 		self.next(1)
 		return self.line, TOKEN_OP_DIV, "/"

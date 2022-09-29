@@ -8,7 +8,6 @@ const (
 	TOKEN_SEP_COMMA                    // ,
 	TOKEN_SEP_DOT                      // .
 	TOKEN_SEP_COLON                    // :
-	TOKEN_SEP_LABEL                    // ::
 	TOKEN_SEP_LPAREN                   // (
 	TOKEN_SEP_RPAREN                   // )
 	TOKEN_SEP_LBRACK                   // [
@@ -45,7 +44,6 @@ const (
 	TOKEN_KW_FALSE                     // false
 	TOKEN_KW_FOR                       // for
 	TOKEN_KW_FUNCTION                  // function
-	TOKEN_KW_GOTO                      // goto
 	TOKEN_KW_IF                        // if
 	TOKEN_KW_IN                        // in
 	TOKEN_KW_LOCAL                     // local
@@ -70,7 +68,6 @@ var keywords = map[string]int{
 	"false": TOKEN_KW_FALSE,
 	"for":   TOKEN_KW_FOR,
 	"fn":    TOKEN_KW_FUNCTION,
-	"goto":  TOKEN_KW_GOTO,
 	"if":    TOKEN_KW_IF,
 	"in":    TOKEN_KW_IN,
 	"shy":   TOKEN_KW_LOCAL,

@@ -22,8 +22,6 @@ func cgStat(fi *funcInfo, node Stat) {
 		cgLocalVarDeclStat(fi, stat)
 	case *LocalFuncDefStat:
 		cgLocalFuncDefStat(fi, stat)
-	case *LabelStat, *GotoStat:
-		panic("label and goto statements are not supported!")
 	}
 }
 
