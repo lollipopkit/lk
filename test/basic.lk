@@ -13,9 +13,6 @@ long comment
 shy long = '''
 abc
 '''
-goto SKIP
-error('never reached')
-::SKIP::
 
 if #long >= 0 and '' {
     print("hello", #long)

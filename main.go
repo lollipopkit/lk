@@ -15,8 +15,21 @@ import (
 func main() {
 	force := flag.Bool("f", false, "force to re-compile")
 	flag.Parse()
+	args := flag.Args()
+	if len(args) == 0 {
+		println("Usage: \n	lang-lk repl\n	lang-lk [options] run <file>")
+		return
+	}
 
-	file := flag.Arg(0)
+	switch args[0] {
+	case "repl":
+		repl()
+		return
+	case "run":
+		break
+	}
+
+	file := args[1]
 	if file == "" {
 		panic("no input file")
 	}

@@ -5,12 +5,15 @@ import (
 
 	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
 	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/lexer"
+	"git.lolli.tech/lollipopkit/go-lang-lk/consts"
 )
+
+
 
 var (
 	replaceRules = map[string]*regexp.Regexp{
 		// for in：自动添加range
-		"for $1 in range($3) {": regexp.MustCompile(`for +(\S+(, {0,1}\S+)) +in +(\S*) *\{`),
+		"for $1 in range($3) {": consts.ForInRe,
 	}
 )
 

@@ -66,3 +66,4 @@ if http.listen(':8080', handle) != nil {
 - CLI
   - [x] 利用HASH，文件无变化不编译
   - [x] 支持传入参数
+  - [x] REPL
