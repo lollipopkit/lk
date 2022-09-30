@@ -1,8 +1,5 @@
 package stdlib
 
-//#include <time.h>
-import "C"
-
 import (
 	"io/fs"
 	"os"

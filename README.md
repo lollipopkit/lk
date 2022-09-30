@@ -1,11 +1,29 @@
-# Lang LK
-改编自Lua5.3，[luago](https://github.com/zxh0/luago-book)
+<h1 align="center">Lang LK</h1>
 
-## 生态
+<p align="center">
+    <img alt="badge-lang" src="https://badgen.net/badge/Lang/LK/cyan">
+    <img alt="badge-lang" src="https://badgen.net/badge/Lk/0.1.1/blue">
+    <img alt="badge-lang" src="https://badgen.net/badge/Go/1.19/purple">
+</p>
+
+## 🌳 生态
 - Vscode插件：[高亮](https://git.lolli.tech/lollipopkit/vscode-lang-lk-highlight)
 
-## 速览
-**详细语法**，可以查看[test](test)文件夹的内容
+## ⌨️ 体验
+如果没有可执行文件，可以前往 [Release](https://github.com/LollipopKit/lang-lk/releases) 下载可执行文件。  
+或`go build .`生成可执行文件。
+#### REPL
+`./lk`
+
+#### 运行`.lk`
+```bash
+./lk <file>
+# 如果修改了.lk文件导致无法运行，可以尝试添加-f参数
+./lk -f <file>
+```
+
+## 📄 语法
+**详细语法**，可以查看 [test](test) 文件夹的内容
 
 ```js
 // 发送请求
@@ -51,19 +69,27 @@ if http.listen(':8080', handle) != nil {
 }
 ```
 
-## TODO
+## 🔖 TODO
 - 语法
-  - [x] 注释`//` `/* */`
-  - [x] 去除`repeat` `until` `goto`
-  - [x] Raw String, `\``
-  - [x] 支持任意对象 Concat
-  - Table
+  - [x] 注释：`//` `/* */`
+  - [x] 去除 `repeat` `until` `goto`
+  - [x] Raw String, 使用``` ` ```包裹字符
+  - [x] 支持任意对象 Concat `..`
+  - [ ] Table
     - [x] key为StringExp，而不是NameExp
     - [x] `=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
-  - [ ] 改变 `metatable` 设置方式
+    - [ ] 改变 `metatable` 设置方式
 - 编译器
   - [x] 自动添加`range` ( `paris` )
+  - [x] 支持`a++` `a+=b`等
 - CLI
   - [x] 利用HASH，文件无变化不编译
-  - [x] 支持传入参数
-  - [x] REPL
+  - [x] 支持传入参数 (`lk args.lk arg1` -> `.lk`内调用`os.args`)
+  - [x] REPL，直接运行`./lk`即可进入
+
+## 💌 致谢
+- Lua
+- [luago](https://github.com/zxh0/luago-book)
+
+## 📝 License
+`LollipopKit 2022 LGPL-3.0`
