@@ -1,9 +1,9 @@
 package parser
 
 import (
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/lexer"
-	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
+	. "git.lolli.tech/lollipopkit/lk/compiler/lexer"
+	"git.lolli.tech/lollipopkit/lk/number"
 )
 
 // explist ::= exp {‘,’ exp}

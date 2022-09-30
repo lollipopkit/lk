@@ -3,12 +3,10 @@ package parser
 import (
 	"regexp"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/lexer"
-	"git.lolli.tech/lollipopkit/go-lang-lk/consts"
+	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
+	. "git.lolli.tech/lollipopkit/lk/compiler/lexer"
+	"git.lolli.tech/lollipopkit/lk/consts"
 )
-
-
 
 var (
 	replaceRules = map[string]*regexp.Regexp{

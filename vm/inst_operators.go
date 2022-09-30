@@ -1,6 +1,6 @@
 package vm
 
-import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
+import . "git.lolli.tech/lollipopkit/lk/api"
 
 /* arith */
 

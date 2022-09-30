@@ -1,7 +1,7 @@
 package binchunk
 
 import (
-	"git.lolli.tech/lollipopkit/go-lang-lk/consts"
+	"git.lolli.tech/lollipopkit/lk/consts"
 	jsoniter "github.com/json-iterator/go"
 )
 

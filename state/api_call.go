@@ -3,10 +3,10 @@ package state
 import (
 	"fmt"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
-	"git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
-	"git.lolli.tech/lollipopkit/go-lang-lk/compiler"
-	"git.lolli.tech/lollipopkit/go-lang-lk/vm"
+	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/binchunk"
+	"git.lolli.tech/lollipopkit/lk/compiler"
+	"git.lolli.tech/lollipopkit/lk/vm"
 )
 
 // [-0, +1, –]

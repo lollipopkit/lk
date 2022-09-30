@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"time"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+	. "git.lolli.tech/lollipopkit/lk/api"
 )
 
 var sysLib = map[string]GoFunction{

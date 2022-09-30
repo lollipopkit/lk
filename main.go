@@ -8,8 +8,8 @@ import (
 	"os"
 	"path"
 
-	"git.lolli.tech/lollipopkit/go-lang-lk/compiler"
-	"git.lolli.tech/lollipopkit/go-lang-lk/state"
+	"git.lolli.tech/lollipopkit/lk/compiler"
+	"git.lolli.tech/lollipopkit/lk/state"
 )
 
 func main() {

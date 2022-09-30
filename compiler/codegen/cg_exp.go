@@ -1,10 +1,10 @@
 package codegen
 
 import (
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/lexer"
+	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
+	. "git.lolli.tech/lollipopkit/lk/compiler/lexer"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/vm"
+	. "git.lolli.tech/lollipopkit/lk/vm"
 )
 
 // kind of operands

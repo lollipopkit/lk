@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+	. "git.lolli.tech/lollipopkit/lk/api"
 )
 
 func pushValue(ls LkState, item any) {

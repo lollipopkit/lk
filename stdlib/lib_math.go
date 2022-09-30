@@ -4,8 +4,8 @@ import (
 	"math"
 	"math/rand"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
-	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/number"
 )
 
 var mathLib = map[string]GoFunction{

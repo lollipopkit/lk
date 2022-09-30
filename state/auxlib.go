@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io/ioutil"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
-	"git.lolli.tech/lollipopkit/go-lang-lk/stdlib"
+	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/stdlib"
 )
 
 // [-0, +0, v]
@@ -164,7 +164,7 @@ func (self *luaState) LoadFileX(filename, mode string) int {
 func (self *luaState) LoadString(s, source string) int {
 	defer func() {
 		if err := recover(); err != nil {
-			println(fmt.Sprintf("%v", err))
+			println(fmt.Sprintf("%v\n", err))
 		}
 	}()
 	return self.Load([]byte(s), source, "bt")

@@ -1,8 +1,8 @@
 package state
 
 import (
-	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
-	"git.lolli.tech/lollipopkit/go-lang-lk/binchunk"
+	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/binchunk"
 )
 
 type upvalue struct {

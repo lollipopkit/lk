@@ -1,8 +1,8 @@
 package parser
 
 import (
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/lexer"
+	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
+	. "git.lolli.tech/lollipopkit/lk/compiler/lexer"
 )
 
 // prefixexp ::= var | functioncall | ‘(’ exp ‘)’

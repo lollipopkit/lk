@@ -1,6 +1,6 @@
 package state
 
-import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
+import . "git.lolli.tech/lollipopkit/lk/api"
 
 // [-2, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_settable

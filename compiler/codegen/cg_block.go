@@ -1,6 +1,6 @@
 package codegen
 
-import . "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
+import . "git.lolli.tech/lollipopkit/lk/compiler/ast"
 
 func cgBlock(fi *funcInfo, node *Block) {
 	for k := range node.Stats {

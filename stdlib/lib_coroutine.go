@@ -1,6 +1,6 @@
 package stdlib
 
-import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
+import . "git.lolli.tech/lollipopkit/lk/api"
 
 var coFuncs = map[string]GoFunction{
 	"create":      coCreate,

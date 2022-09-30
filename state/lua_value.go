@@ -3,8 +3,8 @@ package state
 import (
 	"fmt"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
-	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/number"
 )
 
 func typeOf(val any) LuaType {

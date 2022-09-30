@@ -1,6 +1,6 @@
 package vm
 
-import "git.lolli.tech/lollipopkit/go-lang-lk/api"
+import "git.lolli.tech/lollipopkit/lk/api"
 
 const MAXARG_Bx = 1<<18 - 1       // 262143
 const MAXARG_sBx = MAXARG_Bx >> 1 // 131071

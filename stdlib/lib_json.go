@@ -1,8 +1,8 @@
 package stdlib
 
 import (
-	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
 	glc "git.lolli.tech/lollipopkit/go_lru_cacher"
+	. "git.lolli.tech/lollipopkit/lk/api"
 	"github.com/tidwall/gjson"
 )
 

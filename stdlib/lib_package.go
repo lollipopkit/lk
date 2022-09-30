@@ -4,7 +4,7 @@ import (
 	"os"
 	"strings"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/api"
+	. "git.lolli.tech/lollipopkit/lk/api"
 )
 
 /* key, in the registry, for table of loaded modules */

@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"git.lolli.tech/lollipopkit/go-lang-lk/state"
+	"git.lolli.tech/lollipopkit/lk/state"
 )
 
 const (

@@ -3,10 +3,10 @@ package parser
 import (
 	"math"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/ast"
-	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
+	"git.lolli.tech/lollipopkit/lk/number"
 
-	. "git.lolli.tech/lollipopkit/go-lang-lk/compiler/lexer"
+	. "git.lolli.tech/lollipopkit/lk/compiler/lexer"
 )
 
 func optimizeLogicalOr(exp *BinopExp) Exp {

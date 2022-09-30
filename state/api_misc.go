@@ -3,7 +3,7 @@ package state
 import (
 	"fmt"
 
-	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+	"git.lolli.tech/lollipopkit/lk/number"
 	jsoniter "github.com/json-iterator/go"
 )
 

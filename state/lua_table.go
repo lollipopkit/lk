@@ -4,7 +4,7 @@ import (
 	"math"
 	"strconv"
 
-	"git.lolli.tech/lollipopkit/go-lang-lk/number"
+	"git.lolli.tech/lollipopkit/lk/number"
 )
 
 type luaTable struct {

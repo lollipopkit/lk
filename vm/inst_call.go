@@ -1,6 +1,6 @@
 package vm
 
-import . "git.lolli.tech/lollipopkit/go-lang-lk/api"
+import . "git.lolli.tech/lollipopkit/lk/api"
 
 // R(A+1) := R(B); R(A) := R(B)[RK(C)]
 func self(i Instruction, vm LuaVM) {
