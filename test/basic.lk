@@ -10,12 +10,11 @@ func(test2.add2(1))
 long comment
 */
 
-shy long = '''
-abc
-'''
+shy long = `
+abc`
 
 if #long >= 0 and '' {
-    print("hello", #long)
+    print(long, #long)
 }
 
 print(6 ~/ 2, 6 & 2, 6 / 2)

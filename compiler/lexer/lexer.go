@@ -11,7 +11,6 @@ var reNewLine = regexp.MustCompile("\r\n|\n\r|\n|\r")
 var reIdentifier = regexp.MustCompile(`^[_\d\w]+`)
 var reNumber = regexp.MustCompile(`^0[xX][0-9a-fA-F]*(\.[0-9a-fA-F]*)?([pP][+\-]?[0-9]+)?|^[0-9]*(\.[0-9]*)?([eE][+\-]?[0-9]+)?`)
 var reShortStr = regexp.MustCompile(`(?s)(^'(\\\\|\\'|\\\n|\\z\s*|[^'\n])*')|(^"(\\\\|\\"|\\\n|\\z\s*|[^"\n])*")`)
-var reOpeningLongBracket = regexp.MustCompile(`^"""|'''`)
 
 var reDecEscapeSeq = regexp.MustCompile(`^\\[0-9]{1,3}`)
 var reHexEscapeSeq = regexp.MustCompile(`^\\x[0-9a-fA-F]{2}`)
@@ -183,9 +182,6 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 		self.next(1)
 		return self.line, TOKEN_SEP_LBRACK, "["
 	case '\'', '"':
-		if self.test("'''") || self.test(`"""`) {
-			return self.line, TOKEN_STRING, self.scanLongString()
-		}
 		return self.line, TOKEN_STRING, self.scanShortString()
 	case '`':
 		return self.line, TOKEN_STRING, self.scanRawString()
@@ -277,34 +273,6 @@ func (self *Lexer) scan(re *regexp.Regexp) string {
 	panic("unreachable!")
 }
 
-func (self *Lexer) scanLongString() string {
-	openingLongBracket := reOpeningLongBracket.FindString(self.chunk)
-	openIdx := strings.Index(self.chunk, openingLongBracket)
-	openLen := len(openingLongBracket)
-	if openingLongBracket == "" {
-		self.error("invalid long string delimiter near '%s'",
-			self.chunk[0:2])
-	}
-
-	skipLen := openIdx + openLen
-	closingLongBracketIdx := strings.Index(self.chunk[skipLen:], openingLongBracket)
-	if closingLongBracketIdx < 0 {
-		self.error("unfinished long string or comment")
-	}
-	closingLongBracketIdx = closingLongBracketIdx + skipLen
-
-	str := self.chunk[len(openingLongBracket):closingLongBracketIdx]
-	self.next(closingLongBracketIdx + len(openingLongBracket))
-
-	str = reNewLine.ReplaceAllString(str, "\n")
-	self.line += strings.Count(str, "\n")
-	if len(str) > 0 && str[0] == '\n' {
-		str = str[1:]
-	}
-
-	return str
-}
-
 func (self *Lexer) scanShortString() string {
 	if str := reShortStr.FindString(self.chunk); str != "" {
 		self.next(len(str))
@@ -327,6 +295,9 @@ func (self *Lexer) scanRawString() string {
 	}
 
 	str := self.chunk[:openIdx]
+	if len(str) > 0 && str[0] == '\n' {
+		str = str[1:]
+	}
 	self.next(openIdx + 1)
 	return str
 }
