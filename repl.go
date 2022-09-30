@@ -14,6 +14,11 @@ var (
 	linesHistory = []string{}
 )
 
+const (
+	prompt = "> "
+	promptLen = len(prompt)
+)
+
 func repl() {
 	ls := state.New()
 	ls.OpenLibs()
@@ -27,7 +32,7 @@ func repl() {
 	println("	    v" + consts.VERSION)
 
 	for {
-		os.Stdout.WriteString("> ")
+		os.Stdout.WriteString(prompt)
 
 		line := readline()
 		if line == "" {
@@ -60,6 +65,7 @@ func updateHistory(str string) {
 func readline() string {
 	str := ""
 	linesIdx := len(linesHistory)
+	cursorIdx := 0
 
 	keyboard.Listen(func(key keys.Key) (stop bool, err error) {
 		switch key.Code {
@@ -70,32 +76,45 @@ func readline() string {
 			s := string(runes)
 			str += s
 			print(s)
+			cursorIdx += len(s)
 		case keys.Enter:
 			println()
 			return true, nil
 		case keys.Backspace:
 			if len(str) > 0 {
-				str = str[:len(str)-1]
+				str = str[:cursorIdx-1] + str[cursorIdx:]
 				resetLine(str)
+				cursorIdx--
 			}
 		case keys.Left:
-			cursor.Left(1)
+			if cursorIdx > 0 {
+				cursorIdx--
+			}
 		case keys.Right:
-			cursor.Right(1)
+			if cursorIdx < len(str) {
+				cursorIdx++
+			}
 		case keys.Up:
 			if linesIdx > 0 {
 				linesIdx--
 				str = linesHistory[linesIdx]
 				resetLine(str)
+				cursorIdx = len(str)
 			}
 		case keys.Down:
 			if linesIdx < len(linesHistory)-1 {
 				linesIdx++
 				str = linesHistory[linesIdx]
 				resetLine(str)
+				cursorIdx = len(str)
 			}
+		case keys.Space:
+			str += " "
+			print(" ")
+			cursorIdx++
 		}
 
+		cursor.HorizontalAbsolute(cursorIdx + promptLen)
 		return false, nil
 	})
 	return str
@@ -104,5 +123,5 @@ func readline() string {
 func resetLine(str string) {
 	cursor.ClearLine()
 	cursor.StartOfLine()
-	print("> " + str)
+	print(prompt + str)
 }
