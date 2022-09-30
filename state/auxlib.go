@@ -214,6 +214,14 @@ func (self *luaState) ToString2(idx int) string {
 			}
 		case LUA_TNIL:
 			self.PushString("nil")
+		case LUA_TTABLE:
+			tb, ok := self.ToPointer(idx).(*luaTable)
+			if ok {
+				s, err := tb.String()
+				if err == nil {
+					self.PushString(s)
+				}
+			}
 		default:
 			tt := self.GetMetafield(idx, "__name") /* try name */
 			var kind string
@@ -223,12 +231,7 @@ func (self *luaState) ToString2(idx int) string {
 				kind = self.TypeName2(idx)
 			}
 
-			tb, err := json.MarshalToString(self.ToPointer(idx))
-			if err != nil {
-				self.PushString(fmt.Sprintf("%s: %p", kind, self.ToPointer(idx)))
-			} else {
-				self.PushString(fmt.Sprintf("%s: %s", kind, tb))
-			}
+			self.PushString(fmt.Sprintf("%s: %v", kind, self.ToPointer(idx)))
 
 			if tt != LUA_TNIL {
 				self.Remove(-2) /* remove '__name' */

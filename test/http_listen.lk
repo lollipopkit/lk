@@ -2,11 +2,7 @@ shy headers = {}
 headers.__str = fn(a) {
     shy s = ''
     for k, v in a {
-        shy ss = ''
-        for _, vv in v {
-            ss = ss .. vv .. ';'
-        }
-        s = s .. k .. ': ' .. ss .. '\n'
+        s = s .. k .. ': ' .. v .. '\n'
     }
     rt s
 }

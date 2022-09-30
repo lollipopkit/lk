@@ -13,6 +13,8 @@ func pushValue(ls LkState, item any) {
 		ls.PushString(i)
 	case int64:
 		ls.PushInteger(i)
+	case int:
+		ls.PushInteger(int64(i))
 	case float64:
 		ls.PushNumber(i)
 	case bool:

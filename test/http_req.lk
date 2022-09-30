@@ -1,14 +1,20 @@
-shy _, resp = http.post(
+shy resp, err = http.post(
     'http://httpbin.org/post', 
     {'accept': 'application/json'}, 
     '{"foo": "bar"}'
 )
-print(resp)
+if err == nil {
+    for k, v in resp.headers {
+        print(k, v)
+    }
+}
 
-shy code, resp = http.req(
+shy resp, _ = http.req(
     'delete',
     'http://httpbin.org/delete',
     {'accept': 'application/json'},
     '{"foo": "bar"}'
 )
-print(code, json.get(resp, 'json.foo'))
+if err == nil {
+    print(resp.code, json.get(resp.body, 'json.foo'))
+}

@@ -29,10 +29,27 @@ func OpenHttpLib(ls LkState) int {
 	return 1
 }
 
-func httpDo(method, url string, headers luaMap, body io.Reader) (int, string, error) {
+func genHeaderMap(h *http.Header) luaMap {
+	m := luaMap{}
+	for k := range *h {
+		v := strings.Join((*h)[k], ";")
+		m[k] = v
+	}
+	return m
+}
+
+func genReturn(code int, body string, header *http.Header) luaMap {
+	return luaMap{
+		"code": code,
+		"body": body,
+		"headers": genHeaderMap(header),
+	}
+}
+
+func httpDo(method, url string, headers luaMap, body io.Reader) (int, string, http.Header, error) {
 	request, err := http.NewRequest(method, url, body)
 	if err != nil {
-		return 0, "", err
+		return 0, "", nil, err
 	}
 
 	request.Header.Set("user-agent", "lk-http/"+consts.VERSION)
@@ -43,27 +60,27 @@ func httpDo(method, url string, headers luaMap, body io.Reader) (int, string, er
 
 	resp, err := client.Do(request)
 	if err != nil {
-		return 0, "", err
+		return 0, "", nil, err
 	}
 	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return 0, "", err
+		return 0, "", nil, err
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode, string(respBody), nil
+	return resp.StatusCode, string(respBody), resp.Header, nil
 }
 
 func httpGet(ls LkState) int {
 	url := ls.CheckString(1)
 	headers := OptTable(ls, 2, luaMap{})
-	code, data, err := httpDo("GET", url, headers, nil)
+	code, data, respHeader, err := httpDo("GET", url, headers, nil)
 	if err != nil {
-		ls.PushInteger(0)
+		ls.PushNil()
 		ls.PushString(err.Error())
 		return 2
 	}
-	ls.PushInteger(int64(code))
-	ls.PushString(data)
+	pushTable(ls, genReturn(code, data, &respHeader))
+	ls.PushNil()
 	return 2
 }
 
@@ -79,14 +96,14 @@ func httpPost(ls LkState) int {
 		return nil
 	}()
 
-	code, data, err := httpDo("POST", url, headers, body)
+	code, data, respHeader, err := httpDo("POST", url, headers, body)
 	if err != nil {
-		ls.PushInteger(0)
+		ls.PushNil()
 		ls.PushString(err.Error())
 		return 2
 	}
-	ls.PushInteger(int64(code))
-	ls.PushString(data)
+	pushTable(ls, genReturn(code, data, &respHeader))
+	ls.PushNil()
 	return 2
 }
 
@@ -105,27 +122,27 @@ func httpReq(ls LkState) int {
 		return nil
 	}()
 
-	code, data, err := httpDo(method, url, headers, body)
+	code, data, respHeader, err := httpDo(method, url, headers, body)
 	if err != nil {
-		ls.PushInteger(0)
+		ls.PushNil()
 		ls.PushString(err.Error())
 		return 2
 	}
 
-	ls.PushInteger(int64(code))
+	pushTable(ls, genReturn(code, data, &respHeader))
 	ls.PushString(data)
 	return 2
 }
+
+
+
 
 func genReqTable(r *http.Request) (luaMap, error) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		return nil, err
 	}
-	headers := luaMap{}
-	for k := range r.Header {
-		headers[k] = r.Header[k]
-	}
+	headers := genHeaderMap(&r.Header)
 	return luaMap{
 		"method":  r.Method,
 		"url":     r.URL.String(),

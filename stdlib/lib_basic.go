@@ -386,7 +386,7 @@ func baseType(ls LkState) int {
 	return 1
 }
 
-// tostring (v)
+// str (v)
 // http://www.lua.org/manual/5.3/manual.html#pdf-tostring
 // lua-5.3.4/src/lbaselib.c#luaB_tostring()
 func baseToString(ls LkState) int {
@@ -395,7 +395,7 @@ func baseToString(ls LkState) int {
 	return 1
 }
 
-// tonumber (e [, base])
+// num (e [, base])
 // http://www.lua.org/manual/5.3/manual.html#pdf-tonumber
 // lua-5.3.4/src/lbaselib.c#luaB_tonumber()
 func baseToNumber(ls LkState) int {

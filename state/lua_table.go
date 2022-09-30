@@ -16,6 +16,14 @@ type luaTable struct {
 	changed   bool        // used by next()
 }
 
+func (self *luaTable) String() (string, error) {
+	m := map[string]any{
+		"arr": self.arr,
+		"map": self._map,
+	}
+	return json.MarshalToString(m)
+}
+
 func newLuaTable(nArr, nRec int) *luaTable {
 	t := &luaTable{}
 	if nArr > 0 {
