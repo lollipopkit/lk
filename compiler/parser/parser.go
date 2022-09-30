@@ -12,6 +12,18 @@ var (
 	replaceRules = map[string]*regexp.Regexp{
 		// for in：自动添加range
 		"for $1 in range($3) {": consts.ForInRe,
+		"$1 = $1 + 1":           consts.NameExpPPRe,
+		"$1 = $1 - 1":           consts.NameExpMMRe,
+		"$1 = $1 + $2":          consts.NameExpAddRe,
+		"$1 = $1 - $2":          consts.NameExpSubRe,
+		"$1 = $1 * $2":          consts.NameExpMulRe,
+		"$1 = $1 / $2":          consts.NameExpDivRe,
+		"$1 = $1 % $2":          consts.NameExpModRe,
+		"$1 = $1 ^ $2":          consts.NameExpPowRe,
+		"$1 = $1 & $2":          consts.NameExpAndRe,
+		"$1 = $1 | $2":          consts.NameExpOrRe,
+		"$1 = $1 << $2":         consts.NameExpLShiftRe,
+		"$1 = $1 >> $2":         consts.NameExpRShiftRe,
 	}
 )
 

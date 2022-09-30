@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"regexp"
+	"strings"
 
 	"atomicgo.dev/cursor"
 	"atomicgo.dev/keyboard"
@@ -11,26 +13,30 @@ import (
 )
 
 var (
-	linesHistory = []string{}
+	linesHistory  = []string{}
+	blockStartReg = regexp.MustCompile(strings.Join([]string{
+		consts.ForInReStr,
+		consts.FnReStr,
+		consts.WhileReStr,
+		consts.IfReStr,
+		consts.ElseIfReStr,
+		consts.ElseReStr,
+	}, "|"))
 )
 
 const (
-	prompt = "> "
+	prompt    = "> "
 	promptLen = len(prompt)
 )
 
 func repl() {
 	ls := state.New()
 	ls.OpenLibs()
-	println(` 
- _     _      ____            _ 
-| |   | | __ |  _ \ ___ _ __ | |
-| |   | |/ / | |_) / _ \ '_ \| |
-| |___|   <  |  _ <  __/ |_) | |
-|_____|_|\_\ |_| \_\___| .__/|_|
-                       |_|      `)
-	println("	    v" + consts.VERSION)
+	println("REPL - Lang LK (v" + consts.VERSION + ")")
 
+	blockStr := ""
+	blockStartCount := 0
+	blockEndCount := 0
 	for {
 		os.Stdout.WriteString(prompt)
 
@@ -38,12 +44,32 @@ func repl() {
 		if line == "" {
 			continue
 		}
+		if blockStartReg.MatchString(line) {
+			blockStartCount++
+		}
+		if strings.HasSuffix(line, "}") {
+			blockStr += line + "\n"
+			blockEndCount++
+		}
+
+		cmd := ""
+		if blockStartCount > 0 && blockStartCount == blockEndCount {
+			blockStartCount = 0
+			blockEndCount = 0
+			cmd = blockStr
+			blockStr = ""
+		} else if blockStartCount > 0 {
+			blockStr += line + "\n"
+			continue
+		} else {
+			cmd = line
+		}
 
 		// 更新历史记录
-		updateHistory(line)
+		updateHistory(cmd)
 
 		// 加载line，调用
-		ls.LoadString(line, "stdin")
+		ls.LoadString(cmd, "stdin")
 		ls.PCall(0, -1, 0)
 	}
 }
@@ -74,9 +100,9 @@ func readline() string {
 		case keys.RuneKey:
 			runes := key.Runes
 			s := string(runes)
-			str += s
-			print(s)
+			str = str[:cursorIdx] + s + str[cursorIdx:]
 			cursorIdx += len(s)
+			resetLine(str)
 		case keys.Enter:
 			println()
 			return true, nil
@@ -112,6 +138,15 @@ func readline() string {
 			str += " "
 			print(" ")
 			cursorIdx++
+		case keys.Tab:
+			str += "  "
+			print("  ")
+			cursorIdx += 2
+		case keys.Delete:
+			if cursorIdx < len(str) {
+				str = str[:cursorIdx] + str[cursorIdx+1:]
+				resetLine(str)
+			}
 		}
 
 		cursor.HorizontalAbsolute(cursorIdx + promptLen)

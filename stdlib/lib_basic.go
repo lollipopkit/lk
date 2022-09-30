@@ -21,7 +21,6 @@ var baseFuncs = map[string]GoFunction{
 	"loadfile":     baseLoadFile,
 	"dofile":       baseDoFile,
 	"pcall":        basePCall,
-	"xpcall":       baseXPCall,
 	"getmetatable": baseGetMetatable,
 	"setmetatable": baseSetMetatable,
 	"rawequal":     baseRawEqual,
@@ -301,12 +300,6 @@ func basePCall(ls LkState) int {
 	ls.PushBoolean(status == LUA_OK)
 	ls.Insert(1)
 	return ls.GetTop()
-}
-
-// xpcall (f, msgh [, arg1, ···])
-// http://www.lua.org/manual/5.3/manual.html#pdf-xpcall
-func baseXPCall(ls LkState) int {
-	panic("todo!")
 }
 
 // getmetatable (object)

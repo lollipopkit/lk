@@ -61,7 +61,7 @@ const (
 )
 
 var tokenNames = map[int]string{
-	TOKEN_EOF:         "end-of-file",
+	TOKEN_EOF:         "EOF",
 	TOKEN_VARARG:      "...",
 	TOKEN_SEP_SEMI:    ";",
 	TOKEN_SEP_COMMA:   ",",
