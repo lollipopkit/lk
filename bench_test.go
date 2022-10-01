@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"git.lolli.tech/lollipopkit/lk/state"
@@ -40,7 +41,7 @@ func TestMain(m *testing.M) {
 	}
 	for idx := range files {
 		name := files[idx].Name()
-		if files[idx].IsDir() || contains(skipTestList, name) {
+		if files[idx].IsDir() || contains(skipTestList, name) || !strings.HasSuffix(name, ".lk") {
 			continue
 		}
 		println("=== " + name + " ===")

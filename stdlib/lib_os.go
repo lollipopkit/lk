@@ -22,6 +22,7 @@ var sysLib = map[string]GoFunction{
 	"read":  osRead,
 	"write": osWrite,
 	"sleep": osSleep,
+	"mkdir": osMkdir,
 }
 
 func OpenOSLib(ls LkState) int {
@@ -106,7 +107,7 @@ func osWrite(ls LkState) int {
 	return 1
 }
 
-// os.time ([table])
+// os.time ([table, isUTC])
 // http://www.lua.org/manual/5.3/manual.html#pdf-os.time
 // lua-5.3.4/src/loslib.c#os_time()
 func osTime(ls LkState) int {
@@ -115,15 +116,21 @@ func osTime(ls LkState) int {
 		ls.PushInteger(t)
 	} else {
 		ls.CheckType(1, LUA_TTABLE)
+		isUTC := ls.OptBool(2, false)
 		sec := _getField(ls, "sec", 0)
 		min := _getField(ls, "min", 0)
 		hour := _getField(ls, "hour", 12)
 		day := _getField(ls, "day", -1)
 		month := _getField(ls, "month", -1)
 		year := _getField(ls, "year", -1)
-		// todo: isdst
+		loc := func()*time.Location{
+			if isUTC {
+				return time.UTC
+			}
+			return time.Local
+		}()
 		t := time.Date(year, time.Month(month), day,
-			hour, min, sec, 0, time.Local).Unix()
+			hour, min, sec, 0, loc).Unix()
 		ls.PushInteger(t)
 	}
 	return 1

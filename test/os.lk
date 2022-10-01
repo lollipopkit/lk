@@ -26,12 +26,10 @@ for _, dir in dirs {
 }
 
 shy err = os.mkdir('test', true)
-if err {
-    pri('mkdir err: ', err)
-}
+pri('mkdir err: ', err)
 
-pri('os.sleep(1)')
-os.sleep(1)
+pri('os.sleep(1)', os.sleep(1))
+
 pri('os.args')
 for k, v in os.args {
     print(k, v)
