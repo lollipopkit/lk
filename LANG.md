@@ -1,7 +1,7 @@
 # Lang LK
 ## 第一行代码
 ```js
-print("Hello World!")
+print("Hello World!")  // 我是注释
 ```
 以上内容在屏幕上打印出 `Hello World!`。  
 `String` 除了可以用 `'` `"` 包裹，还可以用 `` ` `` 包裹（表示这是个 `Raw String` ），这样可以避免转义字符的问题。
@@ -10,10 +10,11 @@ print("Hello World!")
 ## 基本类型
 ```js
 a = 1      // num
-a = '1'    // str
+b = '1'    // str
 a = false  // bool
 a = {}     // table
-a = nil     // nil
+c = nil    // nil
+/* 我是多行注释 */
 ```
 `LK`中的基本类型有`num` `str` `bool` `nil` `table`。
 
@@ -24,7 +25,13 @@ print(a == b)  // false <-> num != str
 不同类型间比较，不会先转化为同类型。
 
 ```js
+shy a = `
+😊`
+print(a)  // 😊
 ```
+使用 `str` 时可能会遇到需要转义的情况，这时使用 ``` ` ``` 包裹字符，构造一个 `Raw String` 就可以避免内部字符被转义。  
+⚠️ 如果使用 `Raw String` 构造字符，且第一个字符为换行 ( `\n` )，这**一个**换行会被忽略。
+
 
 ## 变量
 ```js
@@ -59,13 +66,13 @@ for i = 0, 10 {
     // ...
 }
 ```
-等同于: `for i = 0; i <= 10; i++ {}`
+等同于 `for i = 0; i <= 10; i++ {}`
 ```js
 for i = 0, 10, 2 {
     // ...
 }
 ```
-等同于: `for i = 0; i <= 10; i = i + 2 {}`
+等同于 `for i = 0; i <= 10; i = i + 2 {}`
 
 ## 流程控制
 ```py
@@ -93,7 +100,7 @@ c = a / b
 print("Line 4 - c 的值为 ", c)
 c = a % b
 print("Line 5 - c 的值为 ", c)
-c = a^2
+c = a ^ 2
 print("Line 6 - c 的值为 ", c)
 c = -a
 print("Line 7 - c 的值为 ", c)
@@ -108,6 +115,7 @@ Line 5 - c 的值为     1
 Line 6 - c 的值为     441
 Line 7 - c 的值为     -21
 ```
+同时，也支持 `a++` `a+=1` 等
 ### 关系运算符
 ```js
 a = 21
@@ -303,11 +311,76 @@ test.func3()
 
 
 ## 标准库
-### `string`
-### `utf8`
+`[]`代表可选参数，`...`代表可变参数。
 ### `os`
-### `math`
+- `os.exit([code])`
+退出程序，`code` 为退出码，默认为 0。无返回值。
+- `os.exec (exe, [args...])`
+执行一个外部程序，`exe` 为可执行文件路径，`args` 为可选参数，为可执行文件的参数。
+返回两个值：`output` `err`，分别为输出和错误信息。  
+- `os.env(name)`
+获取环境变量，`name` 为环境变量名。
+返回值一个：`value`，为环境变量值。  
+如果当前环境不存在该环境变量，则返回 `nil`。
+- `os.tmp()`
+获取临时文件夹路径。无返回值。
+- `os.mv(src, dst)`
+移动文件或文件夹，`src` 为源文件或文件夹路径，`dst` 为目标文件或文件夹路径。
+返回值一个：`err`，为错误信息。
+- `os.link(src, dst)`
+创建文件或文件夹的硬链接，`src` 为源文件或文件夹路径，`dst` 为目标文件或文件夹路径。
+返回值一个：`err`，为错误信息。
+- `os.ls(path)`
+获取文件夹下的文件列表，`path` 为文件夹路径。
+返回值两个：`files` `err`，为文件列表、错误信息。
+- `os.mkdir(path, [rescursive])`
+创建文件夹，`path` 为文件夹路径，`rescursive` 为可选参数，为是否递归创建，默认为 `false`。
+返回值一个：`err`，为错误信息。
+- `os.rm(path, [rescursive])`
+删除文件或文件夹，`path` 为文件或文件夹路径，`rescursive` 为可选参数，为是否递归删除，默认为 `false`。
+返回值一个：`err`，为错误信息。
+- `os.sleep(ms)`
+休眠，`ms` 为休眠时间，单位为毫秒。
+- `os.time([time, isUTC])`
+获取当前时间戳，`time` 为可选参数，为时间戳，`isUTC` 为可选参数，为是否使用 UTC 时间，默认为 `false`。
+返回值一个：`time`，为时间戳。
+- `os.date([format, time])`
+获取当前时间，`format` 为可选参数，为时间格式，`time` 为可选参数，为时间戳。
+返回值一个：`date`，为时间字符串。
+- `os.read(file)`
+读取文件内容，`file` 为文件路径。
+返回值两个：`content` `err`，为文件内容(`str`)、错误信息。
+- `os.write(file, content)`
+写入文件内容，`file` 为文件路径，`content` 为文件内容。
+返回值一个：`err`，为错误信息。
+
 ### `re`
+- `re.have(pattern, str)`
+判断字符串是否匹配正则表达式，`pattern` 为正则表达式，`str` 为字符串。
+返回值一个：`have`，为是否匹配。
+- `re.find(pattern, str)`
+匹配字符串，`pattern` 为正则表达式，`str` 为字符串。
+返回值一个：`list`，为匹配结果列表。如果没有匹配结果，则返回`nil`。
+
 ### `http`
+- `http.get(url, [headers])`
+发送 GET 请求，`url` 为请求地址，`headers` 为可选参数，为请求头。
+返回值两个：`body` `err`，为响应内容(`table`)、错误信息。
+- `http.post(url, data, [headers])`
+发送 POST 请求，`url` 为请求地址，`data` 为请求数据，`headers` 为可选参数，为请求头。
+返回值两个：`body` `err`，为响应内容(`table`)、错误信息。
+- `http.req(method, url, [headers, body])`
+发送请求，`method` 为请求方法，`url` 为请求地址，`headers` 为可选参数，为请求头，`body` 为可选参数，为请求数据。
+返回值两个：`body` `err`，为响应内容(`table`)、错误信息。
+- `http.listen(addr, [ fn (req) ])`
+监听 HTTP 请求，`addr` 为监听地址，`fn` 为可选参数，为回调函数，`req` 为请求对象。
+`req`包含属性`method`、`url`、`headers`、`body`，分别为请求方法、请求地址、请求头、请求数据。
+返回值一个：`err`，为错误信息。
 ### `json`
-### `sync`
+- `json.get(source, path)`
+获取 JSON 数据，`source` 为 JSON 数据，`path` 为路径。
+`path`遵循`gjson`规则。详情请查看[gjson](https://github.com/tidwall/gjson)。
+### 其他
+- `string` https://www.runoob.com/lua/lua-strings.html
+- `utf8` https://www.jianshu.com/p/dcbb6b47bb32
+- `sync` https://www.runoob.com/lua/lua-coroutine.html

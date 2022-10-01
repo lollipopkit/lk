@@ -152,7 +152,7 @@ func genReqTable(r *http.Request) (luaMap, error) {
 }
 
 // Lua eg:
-// http.listen(port, fn(req) {rt code, data})
+// http.listen(addr, fn(req) {rt code, data})
 // return err
 func httpListen(ls LkState) int {
 	addr := ls.CheckString(1)

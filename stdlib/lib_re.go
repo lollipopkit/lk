@@ -47,6 +47,10 @@ func reFind(ls LkState) int {
 	pattern := ls.CheckString(1)
 	text := ls.CheckString(2)
 	matches := getExp(pattern).FindStringSubmatch(text)
+	if len(matches) == 0 {
+		ls.PushNil()
+		return 1
+	}
 	ms := make([]any, len(matches))
 	for idx := 0; idx < len(matches); idx++ {
 		ms[idx] = matches[idx]

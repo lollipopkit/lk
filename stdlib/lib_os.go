@@ -14,6 +14,7 @@ var sysLib = map[string]GoFunction{
 	"date":  osDate,
 	"rm":    osRemove,
 	"mv":    osRename,
+	"link": osLink,
 	"tmp":   osTmpName,
 	"env":   osGetEnv,
 	"exec":  osExecute,
@@ -39,6 +40,17 @@ func pushArgs(ls LkState) {
 	}
 	pushList(ls, ags)
 	ls.SetField(-2, "args")
+}
+
+func osLink(ls LkState) int {
+	src := ls.CheckString(1)
+	dst := ls.CheckString(2)
+	if err := os.Link(src, dst); err != nil {
+		ls.PushString(err.Error())
+		return 1
+	}
+	ls.PushNil()
+	return 1
 }
 
 func osMkdir(ls LkState) int {
