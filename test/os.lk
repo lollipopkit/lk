@@ -20,9 +20,14 @@ pri('ls result: ', ok, result)
 pri('env HOME: ', os.env('HOME'))
 pri('date: ', os.date())
 
-shy dirs, err = os.dir('test')
+shy dirs, err = os.ls('test')
 for _, dir in dirs {
     print(dir)
+}
+
+shy err = os.mkdir('test', true)
+if err {
+    pri('mkdir err: ', err)
 }
 
 pri('os.sleep(1)')

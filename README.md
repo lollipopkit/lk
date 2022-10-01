@@ -22,20 +22,23 @@
 ./lk -f <file>
 ```
 
-## 📄 语法
+## 📄 速览
 **详细语法**，可以查看 [test](test) 文件夹的内容
 
 ```js
 // 发送请求
-shy _, resp = http.post(
+shy resp, err = http.post(
     'http://httpbin.org/post', 
     {'accept': 'application/json'}, 
     '{"foo": "bar"}'
 )
-print(resp)
+if err != nil {
+    error(err)
+}
+print(resp.code, resp.body)
 
 // json解析
-if json.get(resp, 'json.foo') != 'bar' {
+if json.get(resp.body, 'json.foo') != 'bar' {
     error('mismatch result')
 }
 

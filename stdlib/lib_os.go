@@ -18,7 +18,7 @@ var sysLib = map[string]GoFunction{
 	"env":   osGetEnv,
 	"exec":  osExecute,
 	"exit":  osExit,
-	"dir":   osDir,
+	"ls":   osLs,
 	"read":  osRead,
 	"write": osWrite,
 	"sleep": osSleep,
@@ -40,13 +40,31 @@ func pushArgs(ls LkState) {
 	ls.SetField(-2, "args")
 }
 
+func osMkdir(ls LkState) int {
+	path := ls.CheckString(1)
+	rescusive := ls.OptBool(2, false)
+	perm := fs.FileMode(ls.OptInteger(3, 0744))
+	if rescusive {
+		err := os.MkdirAll(path, perm)
+		if err != nil {
+			ls.PushString(err.Error())
+			return 1
+		}
+	} else if err := os.Mkdir(path, perm); err != nil {
+		ls.PushString(err.Error())
+		return 1
+	}
+	ls.PushNil()
+	return 1
+}
+
 func osSleep(ls LkState) int {
 	milliSec := ls.CheckInteger(1)
 	time.Sleep(time.Duration(milliSec) * time.Millisecond)
 	return 0
 }
 
-func osDir(ls LkState) int {
+func osLs(ls LkState) int {
 	dir := ls.CheckString(1)
 	files, err := os.ReadDir(dir)
 	if err != nil {
