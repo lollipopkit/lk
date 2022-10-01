@@ -268,6 +268,35 @@ shy add = fn (a, b) {
 ```
 除去常规的函数声明，`LK` 还可以将函数赋值给变量，这样可以实现匿名函数。
 
+## 面向对象
+```js
+// 定义一个对象Rect
+Rect = {}
+
+// 定义一个函数，可以用来构造Rect
+fn Rect:new() {
+    o = {}
+    for k, v in Rect {
+      o[k] = v
+    }
+    rt o
+}
+
+// 给Rect对象添加一个函数，可以用来打印Rect的信息
+fn Rect:printArea() {
+    print("Rect area: ", self.width * self.height)
+}
+
+fn Rect:set(width, height) {
+    self.width = width
+    self.height = height
+}
+
+shy rect = Rect:new()
+rect:set(10, 20)
+rect:printArea()  // Rect area: 200
+```
+
 
 ## 包
 ```js

@@ -1,18 +1,25 @@
-Rectangle = {'area': 0, 'length': 0, 'breadth': 0}
+Rect = {'width': 0, 'height': 0}
 
-fn Rectangle:new(o,length,breadth) {
-  o = o or {}
-  setmetatable(o, self)
-  self.__index = self
-  self.length = length or 0
-  self.breadth = breadth or 0
-  self.area = length*breadth;
-  rt o
+fn Rect:new() {
+    o = {}
+    for k, v in Rect {
+      o[k] = v
+    }
+    rt o
 }
 
-fn Rectangle:printArea() {
-    print("矩形面积为 ", self.area)
+fn Rect:square(len) {
+    o = self:new()
+    o.width = len
+    o.height = len
+    rt o
 }
 
-shy rect = Rectangle:new(nil, 10, 20)
-rect:printArea()
+fn Rect:printArea() {
+    print("Rect area: ", self.width * self.height)
+}
+
+fn Rect:set(width, height) {
+    self.width = width
+    self.height = height
+}
