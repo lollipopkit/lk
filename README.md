@@ -6,27 +6,26 @@
     <img alt="badge-lang" src="https://badgen.net/badge/Go/1.19/purple">
 </p>
 
-## 🌳 生态
-- Vscode插件：[高亮](https://git.lolli.tech/lollipopkit/vscode-lang-lk-highlight)
+
 
 ## ⌨️ 体验
-可以前往 [Release](https://github.com/LollipopKit/lang-lk/releases) 下载 `LK CLI`，或使用`go build .`生成。
-#### REPL交互解释器
-`./lk`
+`LK CLI`，可前往 [Release](https://github.com/LollipopKit/lang-lk/releases) 下载，或使用 `go build .` 生成。
 
-#### 运行`.lk`
 ```bash
+# 进入REPL交互式解释器
+./lk
+# 执行.lk文件
 ./lk <file>
 # 如果修改了.lk文件导致无法运行，可以尝试添加-f参数
 ./lk -f <file>
 ```
 
 ## 📄 语法
-### 详细语法
+#### 详细语法
 - [LANG.md](LANG.md)
 - [测试集](test)
 
-### 速览
+#### 速览
 ```js
 // 发送请求
 shy resp, err = http.post(
@@ -94,7 +93,7 @@ if http.listen(':8080', handle) != nil {
   - [x] REPL
     - [x] 直接运行 `./lk` 即可进入
     - [x] 支持方向键
-    - [ ] 识别代码块，并自动缩进
+    - [x] 识别代码块
 - [x] 资源
     - [x] 文档
       - [x] `CHANGELOG.md`
@@ -102,6 +101,9 @@ if http.listen(':8080', handle) != nil {
     - [x] 测试集，位于 `test` 文件夹
     - [x] IDE
       - [x] VSCode高亮  
+
+## 🌳 生态
+- Vscode插件：[高亮](https://git.lolli.tech/lollipopkit/vscode-lang-lk-highlight)
 
 ## 💌 致谢
 - Lua

@@ -1,6 +1,10 @@
 package state
 
-import . "git.lolli.tech/lollipopkit/lk/api"
+import (
+	"fmt"
+
+	. "git.lolli.tech/lollipopkit/lk/api"
+)
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_newtable
@@ -98,5 +102,5 @@ func (self *luaState) getTable(t, k any, raw bool) LuaType {
 		}
 	}
 
-	panic("index error!")
+	panic(fmt.Sprintf("'%v' is not a table and has no '__index' metafield, cannot get '%v'", t, k))
 }

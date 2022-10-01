@@ -162,12 +162,6 @@ func (self *luaState) LoadFileX(filename, mode string) int {
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#luaL_loadstring
 func (self *luaState) LoadString(s, source string) int {
-	// 捕获错误
-	defer func() {
-		if err := recover(); err != nil {
-			println(fmt.Sprintf("%v", err))
-		}
-	}()
 	return self.Load([]byte(s), source, "bt")
 }
 

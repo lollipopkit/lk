@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"atomicgo.dev/cursor"
 	"atomicgo.dev/keyboard"
 	"atomicgo.dev/keyboard/keys"
+	"git.lolli.tech/lollipopkit/lk/api"
 	"git.lolli.tech/lollipopkit/lk/consts"
 	"git.lolli.tech/lollipopkit/lk/state"
 )
@@ -69,9 +71,24 @@ func repl() {
 		updateHistory(cmd)
 
 		// 加载line，调用
-		ls.LoadString(cmd, "stdin")
+		protectedLoadString(&ls, cmd)
 		ls.PCall(0, -1, 0)
 	}
+}
+
+func catchErr(ls *api.LkState, first *bool, cmd string) {
+	if err := recover(); err != nil && *first {
+		cmd = fmt.Sprintf("print(%s)", cmd)
+		*first = false
+		(*ls).LoadString(cmd, "stdin")
+	}
+}
+
+func protectedLoadString(ls *api.LkState, cmd string) {
+	first := true
+	// 捕获错误
+	defer catchErr(ls, &first, cmd)
+	(*ls).LoadString(cmd, "stdin")
 }
 
 func updateHistory(str string) {

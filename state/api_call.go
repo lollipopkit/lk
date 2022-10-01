@@ -137,6 +137,7 @@ func (self *luaState) PCall(nArgs, nResults, msgh int) (status int) {
 				self.popLuaStack()
 			}
 			self.stack.push(err)
+			fmt.Printf("%v\n", err)
 		}
 	}()
 

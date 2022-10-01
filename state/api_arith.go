@@ -76,7 +76,7 @@ func (self *luaState) Arith(op ArithOp) {
 		return
 	}
 
-	panic("arithmetic error!")
+	self.PushNil()
 }
 
 func _arith(a, b any, op operator) any {
