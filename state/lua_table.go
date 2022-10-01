@@ -47,8 +47,8 @@ func (self *luaTable) len() int {
 func (self *luaTable) get(key any) any {
 	key = _floatToInteger(key)
 	if idx, ok := key.(int64); ok {
-		if idx >= 1 && idx <= int64(len(self.arr)) {
-			return self.arr[idx-1]
+		if idx >= 0 && idx < int64(len(self.arr)) {
+			return self.arr[idx]
 		}
 	}
 	return self._map[key]
@@ -73,16 +73,16 @@ func (self *luaTable) put(key, val any) {
 
 	self.changed = true
 	key = _floatToInteger(key)
-	if idx, ok := key.(int64); ok && idx >= 1 {
+	if idx, ok := key.(int64); ok && idx >= 0 {
 		arrLen := int64(len(self.arr))
-		if idx <= arrLen {
-			self.arr[idx-1] = val
-			if idx == arrLen && val == nil {
+		if idx < arrLen {
+			self.arr[idx] = val
+			if idx == arrLen - 1 && val == nil {
 				self._shrinkArray()
 			}
 			return
 		}
-		if idx == arrLen+1 {
+		if idx == arrLen {
 			delete(self._map, key)
 			if val != nil {
 				self.arr = append(self.arr, val)
@@ -145,8 +145,8 @@ func (self *luaTable) initKeys() {
 	var key any = nil
 	for i := range self.arr {
 		if self.arr[i] != nil {
-			self.keys[key] = int64(i + 1)
-			key = int64(i + 1)
+			self.keys[key] = int64(i)
+			key = int64(i)
 		}
 	}
 	for k := range self._map {

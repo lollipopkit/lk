@@ -51,7 +51,7 @@ func pushList(ls LkState, items []any) {
 	ls.CreateTable(len(items), 0)
 	for i := range items {
 		pushValue(ls, items[i])
-		ls.SetI(-2, int64(i+1))
+		ls.SetI(-2, int64(i))
 	}
 }
 

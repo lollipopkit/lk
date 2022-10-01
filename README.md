@@ -77,7 +77,8 @@ if http.listen(':8080', handle) != nil {
   - [x] 支持任意对象 Concat `..`
   - [ ] Table
     - [x] key为StringExp，而不是NameExp
-    - [x] `=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
+    - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
+    - [x] 索引从 `0` 开始
     - [ ] 改变 `metatable` 设置方式
 - 编译器
   - [x] 自动添加`range` ( `paris` )
