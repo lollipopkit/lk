@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"math"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
@@ -53,6 +54,41 @@ var operators = []operator{
 	{"__bnot", bnot, nil},
 }
 
+func ArithName(a ArithOp) string {
+	switch a {
+	case LUA_OPADD:
+		return "add"
+	case LUA_OPSUB:
+		return "sub"
+	case LUA_OPMUL:
+		return "mul"
+	case LUA_OPMOD:
+		return "mod"
+	case LUA_OPPOW:
+		return "pow"
+	case LUA_OPDIV:
+		return "div"
+	case LUA_OPIDIV:
+		return "idiv"
+	case LUA_OPBAND:
+		return "band"
+	case LUA_OPBOR:
+		return "bor"
+	case LUA_OPBXOR:
+		return "bxor"
+	case LUA_OPSHL:
+		return "shl"
+	case LUA_OPSHR:
+		return "shr"
+	case LUA_OPUNM:
+		return "unm"
+	case LUA_OPBNOT:
+		return "bnot"
+	default:
+		panic("invalid arith op")
+	}
+}
+
 // [-(2|1), +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_arith
 func (self *luaState) Arith(op ArithOp) {
@@ -76,7 +112,14 @@ func (self *luaState) Arith(op ArithOp) {
 		return
 	}
 
-	self.PushNil()
+	if a == nil && b == nil {
+		self.PushNil()
+		return
+	}
+
+	self.stack.push(a)
+	self.stack.push(b)
+	panic(fmt.Sprintf("invalid arith: %v <%v> %v", self.TypeName(-3), ArithName(op), self.TypeName(-2)))
 }
 
 func _arith(a, b any, op operator) any {
