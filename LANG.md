@@ -51,7 +51,6 @@ print(tb['a'])  // 1
 ## 变量
 ```js
 a = 1
-b = '1'
 if true {
     shy a = 3
     print(a)  // 3
@@ -87,7 +86,7 @@ for i = 0, 10, 2 {
     // ...
 }
 ```
-等同于 `for i = 0; i <= 10; i = i + 2 {}`
+等同于 `for i = 0; i <= 10; i += 2 {}`
 
 ## 流程控制
 ```py
@@ -254,7 +253,7 @@ for i, n in square, 3, 0 {
 #### 有状态迭代器
 ```js
 fn iter (a, i)
-    i = i + 1
+    i++
     shy v = a[i]
     if v {
        rt i, v
@@ -271,7 +270,7 @@ fn ipairs (a) {
 ## 函数
 ```js
 shy fn (a, b) {
-    return a + b
+    rt a + b
 }
 print(add(1, 2))  // 3
 ```
@@ -279,10 +278,62 @@ print(add(1, 2))  // 3
 
 ```js
 shy add = fn (a, b) {
-    return a + b
+    rt a + b
 }
 ```
 除去常规的函数声明，`LK` 还可以将函数赋值给变量，这样可以实现匿名函数。
+
+
+## 元表
+```js
+class mt {}
+
+mt.__add = fn(v1, v2) {
+    rt vector(v1.x + v2.x, v1.y + v2.y)
+}
+mt.__str = fn(v) {
+    rt 'vector(' + v.x + ', ' + v.y + ')'
+}
+
+shy fn vector(x, y) {
+    shy v = {'x': x, 'y': y}
+    setmetatable(v, mt)
+    rt v
+}
+
+shy v1 = vector(1, 2)
+shy v2 = vector(3, 5)
+shy v3 = v1 + v2
+print(v3.x, v3.y)
+print(fmt('%s + %s = %s', v1, v2, v3))
+```
+在 `print` 时，如果是非 `str` 类型，会调用 `__str` 方法。  
+`vector` 没有内置的 `+` 方法，所以会调用 `mt` 的 `__add` 方法。  
+以下是可以拓展的元方法表：
+|操作符/作用|metatable|
+|-|-|
+|`+`|`__add`|
+|`-`|`__sub`|
+|`*`|`__mul`|
+|`/`|`__div`|
+|`%`|`__mod`|
+|`^`|`__pow`|
+|`-`|`__unm`|
+|`..`|`__concat`|
+|`~/`|`__idiv`|
+|`#`|`__len`|
+|`==`|`__eq`|
+|`<`|`__lt`|
+|`<=`|`__le`|
+|`>`|`__gt`|
+|索引|`__index`|
+|新索引|`__newindex`|
+|转为`str`|`__str`|
+|调用方法|`__call`|
+|获取名称|`__name`|
+|迭代器|`__range`|
+|元表|`__metatable`|
+
 
 ## 面向对象
 ```js
@@ -314,7 +365,7 @@ rect:printArea()  // Rect area: 200
 ```js
 // 文件名为 module.lua
 // 定义一个名为 module 的模块
-module = {}
+class module {}
  
 // 定义一个常量
 module.constant = "这是一个常量"
@@ -331,8 +382,6 @@ shy fn func2() {
 fn module.func3() {
     func2()
 }
- 
-rt module
 ```
 如上定义了一个包，然后在另一个文件中导入：
 ```js
@@ -345,9 +394,12 @@ import "test"
 导入后如下使用：
 ```js
 test.func1()
-// test.func2() 不可直接使用，因为时局部函数，但可以通过 module.func3() 调用
+// test.func2() 不可直接使用，因为是局部函数，但可以通过 module.func3() 调用
 test.func3()
 ```
+
+## 多线程
+待完成
 
 
 ## 标准库

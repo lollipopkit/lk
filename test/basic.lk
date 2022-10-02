@@ -7,6 +7,7 @@ test2:add()
 func(test2.b)
 test2:add()
 func(test2.b)
+func(test2.const)
 
 // comment
 /* 

@@ -3,6 +3,8 @@ class test2 {
     'b': 2
 }
 
+test2.const = 'const'
+
 shy fn add(n) {
     a += n
 }
