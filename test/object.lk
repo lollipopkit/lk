@@ -1,18 +1,12 @@
-Rect = {'width': 0, 'height': 0}
-
-fn Rect:new() {
-    o = {}
-    for k, v in Rect {
-      o[k] = v
-    }
-    rt o
+class Rect {
+    'width': 0, 
+    'height': 0
 }
 
 fn Rect:square(len) {
-    o = self:new()
-    o.width = len
-    o.height = len
-    rt o
+    self.width = len
+    self.height = len
+    rt self
 }
 
 fn Rect:printArea() {

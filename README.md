@@ -43,28 +43,31 @@ if json.get(resp.body, 'json.foo') != 'bar' {
     error('mismatch result')
 }
 
-// 设置metatable
-shy headers = {}
-headers.__str = fn(a) {
+
+class Header {}
+
+fn Header:fromTable(h) {
+    for k, v in h {
+        self[k] = v
+    }
+    rt self
+}
+
+fn Header:toString() {
     shy s = ''
-    for k, v in a {
-        shy ss = ''
-        for _, vv in v {
-            ss = ss .. vv .. ';'
-        }
-        s = s .. k .. ': ' .. ss .. '\n'
+    for k, v in self {
+        s = s .. k .. ': ' .. v .. '\n'
     }
     rt s
 }
-
 
 /*
 处理监听事件
 `req`包含属性`method`, `url`, `body`, `headers`
 */
 shy fn handle(req) {
-    setmetatable(req.headers, headers)
-    rt 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, req.headers, req.body)
+    shy h = Header:fromTable(req.headers)
+    rt 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, h:toString(), req.body)
 }
 
 // 监听
@@ -79,11 +82,12 @@ if http.listen(':8080', handle) != nil {
   - [x] 去除 `repeat` `until` `goto`
   - [x] Raw String, 使用 ``` ` ``` 包裹字符
   - [x] 支持任意对象拼接( `concat` )，使用语法 `..`
+  - [x] 面向对象
   - [ ] Table
     - [x] key为StringExp，而不是NameExp
     - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
     - [x] 索引从 `0` 开始
-    - [ ] 改变 `metatable` 设置方式
+    - [x] 改变 `metatable` 设置方式
 - 编译器
   - [x] 自动添加 `range` ( `paris` )
   - [x] 支持 `a++` `a+=b` 等

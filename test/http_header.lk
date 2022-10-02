@@ -1,0 +1,16 @@
+class Header {}
+
+fn Header:fromTable(h) {
+    for k, v in h {
+        self[k] = v
+    }
+    rt self
+}
+
+fn Header:toString() {
+    shy s = ''
+    for k, v in self {
+        s = s .. k .. ': ' .. v .. '\n'
+    }
+    rt s
+}

@@ -41,6 +41,8 @@ func parseStat(lexer *Lexer) Stat {
 		return parseFuncDefStat(lexer)
 	case TOKEN_KW_LOCAL:
 		return parseLocalAssignOrFuncDefStat(lexer)
+	case TOKEN_KW_CLASS:
+		return parseClassDefStat(lexer)
 	default:
 		return parseAssignOrFuncCallStat(lexer)
 	}
@@ -282,4 +284,11 @@ func _parseFuncName(lexer *Lexer) (exp Exp, hasColon bool) {
 		exp = &TableAccessExp{line, exp, idx}
 	}
 	return
+}
+
+func parseClassDefStat(lexer *Lexer) *AssignStat {
+	lexer.NextTokenOfKind(TOKEN_KW_CLASS) // class
+	line, name := lexer.NextIdentifier()  // Name
+	tb := parseTableConstructorExp(lexer) // tableconstructor
+	return &AssignStat{line, []Exp{&NameExp{line, name}}, []Exp{tb}}
 }

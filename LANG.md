@@ -270,16 +270,10 @@ shy add = fn (a, b) {
 
 ## 面向对象
 ```js
-// 定义一个对象Rect
-Rect = {}
-
-// 定义一个函数，可以用来构造Rect
-fn Rect:new() {
-    o = {}
-    for k, v in Rect {
-      o[k] = v
-    }
-    rt o
+// 定义一个对象Rect，为其内部属性赋值初始值
+class Rect {
+    'width': 0,
+    'height': 0
 }
 
 // 给Rect对象添加一个函数，可以用来打印Rect的信息
@@ -293,6 +287,8 @@ fn Rect:set(width, height) {
 }
 
 shy rect = Rect:new()
+// 因为还没有赋值宽高，所以面积为0
+rect:printArea()  // Rect area: 0
 rect:set(10, 20)
 rect:printArea()  // Rect area: 200
 ```

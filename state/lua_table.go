@@ -77,7 +77,7 @@ func (self *luaTable) put(key, val any) {
 		arrLen := int64(len(self.arr))
 		if idx < arrLen {
 			self.arr[idx] = val
-			if idx == arrLen - 1 && val == nil {
+			if idx == arrLen-1 && val == nil {
 				self._shrinkArray()
 			}
 			return
@@ -130,7 +130,11 @@ func (self *luaTable) nextKey(key any) any {
 
 	nextKey := self.keys[key]
 	if nextKey == nil && key != nil && key != self.lastKey {
-		intKey, err := strconv.ParseInt(key.(string), 10, 64)
+		k, ok := key.(string)
+		if !ok {
+			return nil
+		}
+		intKey, err := strconv.ParseInt(k, 10, 64)
 		if err != nil {
 			return nil
 		}

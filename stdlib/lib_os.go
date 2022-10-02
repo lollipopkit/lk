@@ -14,12 +14,12 @@ var sysLib = map[string]GoFunction{
 	"date":  osDate,
 	"rm":    osRemove,
 	"mv":    osRename,
-	"link": osLink,
+	"link":  osLink,
 	"tmp":   osTmpName,
 	"env":   osGetEnv,
 	"exec":  osExecute,
 	"exit":  osExit,
-	"ls":   osLs,
+	"ls":    osLs,
 	"read":  osRead,
 	"write": osWrite,
 	"sleep": osSleep,
@@ -135,7 +135,7 @@ func osTime(ls LkState) int {
 		day := _getField(ls, "day", -1)
 		month := _getField(ls, "month", -1)
 		year := _getField(ls, "year", -1)
-		loc := func()*time.Location{
+		loc := func() *time.Location {
 			if isUTC {
 				return time.UTC
 			}

@@ -54,10 +54,11 @@ const (
 	TOKEN_IDENTIFIER
 	TOKEN_NUMBER
 	TOKEN_STRING
-	TOKEN_OP_UNM  = TOKEN_OP_MINUS
-	TOKEN_OP_SUB  = TOKEN_OP_MINUS
-	TOKEN_OP_BNOT = TOKEN_OP_WAVE
-	TOKEN_OP_BXOR = TOKEN_OP_WAVE
+	TOKEN_OP_UNM   = TOKEN_OP_MINUS
+	TOKEN_OP_SUB   = TOKEN_OP_MINUS
+	TOKEN_OP_BNOT  = TOKEN_OP_WAVE
+	TOKEN_OP_BXOR  = TOKEN_OP_WAVE
+	TOKEN_KW_CLASS = 52
 )
 
 var tokenNames = map[int]string{
@@ -113,6 +114,7 @@ var tokenNames = map[int]string{
 	TOKEN_IDENTIFIER:  "identifier",
 	TOKEN_NUMBER:      "number literal",
 	TOKEN_STRING:      "string literal",
+	TOKEN_KW_CLASS:    "class",
 }
 
 func tokenName(token int) string {
@@ -140,4 +142,5 @@ var keywords = map[string]int{
 	"rt":    TOKEN_KW_RETURN,
 	"true":  TOKEN_KW_TRUE,
 	"while": TOKEN_KW_WHILE,
+	"class": TOKEN_KW_CLASS,
 }

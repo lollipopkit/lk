@@ -40,8 +40,8 @@ func genHeaderMap(h *http.Header) luaMap {
 
 func genReturn(code int, body string, header *http.Header) luaMap {
 	return luaMap{
-		"code": code,
-		"body": body,
+		"code":    code,
+		"body":    body,
 		"headers": genHeaderMap(header),
 	}
 }
@@ -133,9 +133,6 @@ func httpReq(ls LkState) int {
 	ls.PushString(data)
 	return 2
 }
-
-
-
 
 func genReqTable(r *http.Request) (luaMap, error) {
 	body, err := ioutil.ReadAll(r.Body)

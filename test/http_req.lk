@@ -1,12 +1,14 @@
+import 'test/http_header'
+
 shy resp, err = http.post(
     'http://httpbin.org/post', 
     {'accept': 'application/json'}, 
     '{"foo": "bar"}'
 )
+
 if err == nil {
-    for k, v in resp.headers {
-        print(k, v)
-    }
+    shy h = Header:fromTable(resp.headers)
+    print(h:toString())
 }
 
 shy resp, _ = http.req(

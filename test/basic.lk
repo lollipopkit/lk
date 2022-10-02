@@ -22,8 +22,9 @@ print(6 ~/ 2, 6 & 2, 6 / 2)
 print({'a'} .. '', 1 .. 2, _VERSION, math.pi)
 print(str({5, 'd': false}))
 
-shy square = Rect:square(10)
-shy rect = Rect:new()
+shy square = new(Rect)
+square:square(10)
+shy rect = new(Rect)
 rect:set(10, 20)
 
 square:printArea()

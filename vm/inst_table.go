@@ -53,7 +53,7 @@ func setList(i Instruction, vm LuaVM) {
 	}
 
 	vm.CheckStack(1)
-	idx := int64(c * LFIELDS_PER_FLUSH) - 1
+	idx := int64(c*LFIELDS_PER_FLUSH) - 1
 	for j := 1; j <= b; j++ {
 		idx++
 		vm.PushValue(a + j)

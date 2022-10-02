@@ -10,6 +10,7 @@ import (
 )
 
 var baseFuncs = map[string]GoFunction{
+	"new":          baseNew,
 	"print":        basePrint,
 	"assert":       baseAssert,
 	"error":        baseError,
@@ -50,6 +51,19 @@ func OpenBaseLib(ls LkState) int {
 	/* set global _VERSION */
 	ls.PushString(consts.VERSION)
 	ls.SetField(-2, "_VERSION")
+	return 1
+}
+
+func baseNew(ls LkState) int {
+	ls.CheckType(1, LUA_TTABLE)
+	ls.CreateTable(0, 0)
+	ls.PushNil()
+	for ls.Next(1) {
+		ls.PushValue(-2)
+		ls.PushValue(-2)
+		ls.SetTable(-5)
+		ls.Pop(1)
+	}
 	return 1
 }
 
