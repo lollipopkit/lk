@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 
+	"git.lolli.tech/lollipopkit/lk/logger"
 	"git.lolli.tech/lollipopkit/lk/number"
 	jsoniter "github.com/json-iterator/go"
 )
@@ -50,6 +51,7 @@ func (self *luaState) Concat(n int) {
 				continue
 			}
 
+			logger.W("[state.Concat] between %v and %v", a, b)
 			self.stack.push("")
 		}
 	}

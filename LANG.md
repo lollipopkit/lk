@@ -194,7 +194,7 @@ a = "Hello "
 b = "World"
 
 // 连接字符串 a 和 b
-print(a..b)  // Hello World
+print(a + b)  // Hello World
 // b 字符串长度
 print(#b)   // 5
 ```

@@ -1,6 +1,10 @@
 package state
 
-import . "git.lolli.tech/lollipopkit/lk/api"
+import (
+	"fmt"
+
+	. "git.lolli.tech/lollipopkit/lk/api"
+)
 
 // [-2, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_settable
@@ -70,7 +74,7 @@ func (self *luaState) SetMetatable(idx int) {
 	} else if mt, ok := mtVal.(*luaTable); ok {
 		setMetatable(val, mt, self)
 	} else {
-		panic("table expected!") // todo
+		panic("table expected, got " + fmt.Sprintf("%v", mtVal))
 	}
 }
 
@@ -100,5 +104,5 @@ func (self *luaState) setTable(t, k, v any, raw bool) {
 		}
 	}
 
-	panic("index error!")
+	panic("expect table, got "+fmt.Sprintf("%v", t))
 }

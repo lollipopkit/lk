@@ -12,7 +12,7 @@ fn Header:fromTable(h) {
 fn Header:toString() {
     shy s = ''
     for k, v in self.items {
-        s = s .. k .. ': ' .. v .. '\n'
+        s = s + k + ': ' + v + '\n'
     }
     rt s
 }

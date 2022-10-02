@@ -1,5 +1,5 @@
 shy fn pri(section, ...) {
-    print('===  ' .. section .. '  ===')
+    print('===  ' + section + '  ===')
     print(...)
 }
 shy tmpDir = os.tmp()

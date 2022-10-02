@@ -22,8 +22,8 @@
 
 ## 📄 语法
 #### 详细语法
-- [LANG.md](LANG.md)
-- [测试集](test)
+- `Step by step` ➜ [LANG.md](LANG.md)
+- `By examples` ➜ [测试集](test)
 
 #### 速览
 ```js
@@ -58,7 +58,7 @@ fn Header:fromTable(h) {
 fn Header:toString() {
     shy s = ''
     for k, v in self.items {
-        s = s .. k .. ': ' .. v .. '\n'
+        s = fmt('%s%s: %s\n', s, k, v)
     }
     rt s
 }

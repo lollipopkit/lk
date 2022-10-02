@@ -25,11 +25,11 @@ var (
 		consts.ElseReStr,
 		consts.ClassDefReStr,
 	}, "|"))
+	promptLen = len([]rune(prompt))
 )
 
 const (
-	prompt    = "> "
-	promptLen = len(prompt)
+	prompt = "➜ "
 )
 
 func repl() {

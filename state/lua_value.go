@@ -24,7 +24,7 @@ func typeOf(val any) LuaType {
 	case *luaState:
 		return LUA_TTHREAD
 	default:
-		panic("todo!")
+		panic(fmt.Sprintf("invalid type: %T<%v>", val, val))
 	}
 }
 

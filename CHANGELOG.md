@@ -1,6 +1,9 @@
 # CHANGELOG
 **仅包含语言LK的变化**
 
+## 0.1.4
+- `+` 支持 `String`
+
 ## 0.1.3
 - 添加`prefixexp : Name args`的语法
 - 支持面向对象

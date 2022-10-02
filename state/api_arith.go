@@ -5,6 +5,7 @@ import (
 	"math"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/logger"
 	"git.lolli.tech/lollipopkit/lk/number"
 )
 
@@ -85,7 +86,7 @@ func ArithName(a ArithOp) string {
 	case LUA_OPBNOT:
 		return "bnot"
 	default:
-		panic("invalid arith op")
+		panic("invalid arith op: "+fmt.Sprint(a))
 	}
 }
 
@@ -103,6 +104,13 @@ func (self *luaState) Arith(op ArithOp) {
 	operator := operators[op]
 	if result := _arith(a, b, operator); result != nil {
 		self.stack.push(result)
+		return
+	}
+
+	aa, oka := a.(string)
+	bb, okb := b.(string)
+	if oka && okb {
+		self.stack.push(aa + bb)
 		return
 	}
 
@@ -143,5 +151,6 @@ func _arith(a, b any, op operator) any {
 			}
 		}
 	}
+	logger.W("arith failed: %v %v %v", a, op.metamethod, b)
 	return nil
 }

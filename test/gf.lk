@@ -1,0 +1,10 @@
+class Girlfriend { 'name': 'nobody' }
+
+fn Girlfriend:herName(name) {
+    self.name = name
+}
+
+fn Girlfriend:hello() {
+  print(fmt('My honey %s ~', self.name))
+}
+
