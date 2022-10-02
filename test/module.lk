@@ -1,0 +1,13 @@
+shy a = 1
+class test2 {
+    'b': 2
+}
+
+shy fn add(n) {
+    a += n
+}
+
+fn test2:add() {
+    add(self.b)
+    self.b += a
+}

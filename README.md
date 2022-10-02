@@ -27,7 +27,7 @@
 
 #### 速览
 ```js
-// 发送请求
+// http发送请求示例
 shy resp, err = http.post(
     'http://httpbin.org/post', 
     {'accept': 'application/json'}, 
@@ -43,19 +43,21 @@ if json.get(resp.body, 'json.foo') != 'bar' {
     error('mismatch result')
 }
 
-
-class Header {}
+// 以下是http监听部分
+class Header {
+    'items': {}
+}
 
 fn Header:fromTable(h) {
     for k, v in h {
-        self[k] = v
+        self.items[k] = v
     }
     rt self
 }
 
 fn Header:toString() {
     shy s = ''
-    for k, v in self {
+    for k, v in self.items {
         s = s .. k .. ': ' .. v .. '\n'
     }
     rt s

@@ -23,6 +23,7 @@ var (
 		consts.IfReStr,
 		consts.ElseIfReStr,
 		consts.ElseReStr,
+		consts.ClassDefReStr,
 	}, "|"))
 )
 

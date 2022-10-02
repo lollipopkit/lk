@@ -9,6 +9,7 @@ const (
 	IfReStr     = `if +(\S+ )+ *\{`
 	ElseIfReStr = `elif +(\S+ ) *\{`
 	ElseReStr   = `else *\{`
+	ClassDefReStr = `class +(\S+) *\{`
 
 	// a++
 	NameExpPPReStr = `(\S+)\+\+`
@@ -43,6 +44,7 @@ var (
 	IfRe     = _re(IfReStr)
 	ElseIfRe = _re(ElseIfReStr)
 	ElseRe   = _re(ElseReStr)
+	ClassDefRe = _re(ClassDefReStr)
 
 	NameExpPPRe     = _re(NameExpPPReStr)
 	NameExpMMRe     = _re(NameExpMMReStr)

@@ -1,10 +1,12 @@
-import "test/import"
+import "test/module"
 import "test/object"
 
 shy func = fn (e) {print(e)}
 func(1!=2 and 3!=3)
-func(test2.add2(1))
-func(test2.add2(1))
+test2:add()
+func(test2.b)
+test2:add()
+func(test2.b)
 
 // comment
 /* 
@@ -19,7 +21,7 @@ if #long >= 0 and '' {
 }
 
 print(6 ~/ 2, 6 & 2, 6 / 2)
-print({'a'} .. '', 1 .. 2, _VERSION, math.pi)
+print(1 .. 2, _VERSION, math.pi)
 print(str({5, 'd': false}))
 
 shy square = new(Rect)

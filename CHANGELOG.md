@@ -5,6 +5,7 @@
 - 添加`prefixexp : Name args`的语法
 - 支持面向对象
 - `REPL`支持自动添加`print`
+- 不再支持任意对象 `concat`，如不能拼接则会返回 `""`
 
 ## 0.1.2
 - `Table`索引从`0`开始

@@ -50,15 +50,7 @@ func (self *luaState) Concat(n int) {
 				continue
 			}
 
-			bb, err := json.MarshalToString(b)
-			if err != nil {
-				panic(err)
-			}
-			ab, err := json.MarshalToString(a)
-			if err != nil {
-				panic(err)
-			}
-			self.stack.push(ab + bb)
+			self.stack.push("")
 		}
 	}
 	// n == 1, do nothing
