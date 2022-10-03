@@ -16,6 +16,12 @@ type luaTable struct {
 }
 
 func (self *luaTable) String() (string, error) {
+	if len(self._map) == 0 {
+		return json.MarshalToString(self.arr)
+	}
+	if len(self.arr) == 0 {
+		return json.MarshalToString(self._map)
+	}
 	m := map[string]any{
 		"arr": self.arr,
 		"map": self._map,
