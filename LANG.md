@@ -298,6 +298,7 @@ fn Vector.new(x, y) {
     rt v
 }
 
+// 为 `Vector` 设置 `__add` 元方法，实现 `+` 运算符
 fn Vector.__add(v1, v2) {
     v = new(Vector)
     v.x = v1.x + v2.x
@@ -305,11 +306,15 @@ fn Vector.__add(v1, v2) {
     rt v
 }
 
+// `Object:function(...)` = `Object.function(self, ...)`
+// 这里：`Vector:set(x, y)` = `Vector.set(self, x, y)`
 fn Vector:set(x, y) {
     self.x = x
     self.y = y
 }
 
+// 为 `Vector` 设置 `__str` 元方法，`print` `Vector` 对象时会调用此方法
+// 如果不实现此方法，会使用内置的转换为 `str` 的方法
 fn Vector:__str() {
     rt 'Vector(' + str(self.x) + ', ' + str(self.y) + ')'
 }
@@ -324,10 +329,10 @@ shy v2 = Vector.new(3, 4)
 v1:set(1, 2)
 shy v3 = v1 + v2
 print(v3.x, v3.y)  // 4       6
+
+// 上面实现了 `Vector:__str()` 方法，此处会调用
 print(fmt('%s + %s = %s', v1, v2, v3))  // Vector(1, 2) + Vector(3, 4) = Vector(4, 6)
-```
-在 `print` 时，如果是非 `str` 类型，会调用 `__str` 方法。  
-`vector` 没有内置的 `+` 方法，所以会调用 `mt` 的 `__add` 方法。  
+``` 
 
 以下是可以拓展的元方法表：  
 
