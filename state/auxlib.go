@@ -134,14 +134,14 @@ func (self *luaState) OptBool(arg int, def bool) bool {
 // http://www.lua.org/manual/5.3/manual.html#luaL_dofile
 func (self *luaState) DoFile(filename string) bool {
 	return self.LoadFile(filename) != LUA_OK ||
-		self.PCall(0, LUA_MULTRET, 0) != LUA_OK
+		self.PCall(0, LUA_MULTRET, 0, false) != LUA_OK
 }
 
 // [-0, +?, –]
 // http://www.lua.org/manual/5.3/manual.html#luaL_dostring
 func (self *luaState) DoString(str, source string) bool {
 	return self.LoadString(str, source) != LUA_OK ||
-		self.PCall(0, LUA_MULTRET, 0) != LUA_OK
+		self.PCall(0, LUA_MULTRET, 0, false) != LUA_OK
 }
 
 // [-0, +1, m]

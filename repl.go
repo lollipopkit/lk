@@ -73,7 +73,7 @@ func repl() {
 
 		// 加载line，调用
 		protectedLoadString(&ls, cmd)
-		ls.PCall(0, -1, 0)
+		ls.PCall(0, -1, 0, true)
 	}
 }
 

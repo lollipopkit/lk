@@ -127,7 +127,7 @@ func (self *luaState) Arith(op ArithOp) {
 
 	self.stack.push(a)
 	self.stack.push(b)
-	panic(fmt.Sprintf("invalid arith: %T<%#v> %s %T<%#v>", a, a, opSymbol(mm), b, b))
+	panic(fmt.Sprintf("invalid arith: %T %s %T", a, opSymbol(mm), b))
 }
 
 func _arith(a, b any, op operator) any {

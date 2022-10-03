@@ -125,7 +125,7 @@ func (self *luaState) runLuaClosure() {
 
 // Calls a function in protected mode.
 // http://www.lua.org/manual/5.3/manual.html#lua_pcall
-func (self *luaState) PCall(nArgs, nResults, msgh int) (status int) {
+func (self *luaState) PCall(nArgs, nResults, msgh int, print bool) (status int) {
 	caller := self.stack
 	status = LUA_ERRRUN
 
@@ -139,7 +139,9 @@ func (self *luaState) PCall(nArgs, nResults, msgh int) (status int) {
 				self.popLuaStack()
 			}
 			self.stack.push(err)
-			fmt.Printf("%v\n", err)
+			if print {
+				fmt.Printf("%v\n", err)
+			}
 		}
 	}()
 

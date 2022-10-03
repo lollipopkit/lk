@@ -300,7 +300,7 @@ func baseDoFile(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-pcall
 func basePCall(ls LkState) int {
 	nArgs := ls.GetTop() - 1
-	status := ls.PCall(nArgs, -1, 0)
+	status := ls.PCall(nArgs, -1, 0, false)
 	ls.PushBoolean(status == LUA_OK)
 	ls.Insert(1)
 	return ls.GetTop()

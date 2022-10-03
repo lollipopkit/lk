@@ -25,7 +25,7 @@ func (self *luaState) Resume(from LkState, nArgs int) int {
 		self.coChan = make(chan int)
 		self.coCaller = lsFrom
 		go func() {
-			self.coStatus = self.PCall(nArgs, -1, 0)
+			self.coStatus = self.PCall(nArgs, -1, 0, false)
 			lsFrom.coChan <- 1
 		}()
 	} else {
