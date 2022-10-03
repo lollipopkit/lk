@@ -8,7 +8,7 @@ shy resp, err = http.post(
 
 if err == nil {
     shy h = Header:fromTable(resp.headers)
-    print(h:toString())
+    print(h)
 }
 
 shy resp, _ = http.req(

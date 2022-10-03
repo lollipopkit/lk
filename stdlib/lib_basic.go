@@ -22,8 +22,6 @@ var baseFuncs = map[string]GoFunction{
 	"loadfile":     baseLoadFile,
 	"dofile":       baseDoFile,
 	"pcall":        basePCall,
-	"getmetatable": baseGetMetatable,
-	"setmetatable": baseSetMetatable,
 	"rawequal":     baseRawEqual,
 	"rawlen":       baseRawLen,
 	"rawget":       baseRawGet,
@@ -126,19 +124,11 @@ func strFormat(ls LkState) int {
 // lua-5.3.4/src/lbaselib.c#luaB_print()
 func basePrint(ls LkState) int {
 	n := ls.GetTop() /* number of arguments */
-	ls.GetGlobal("str")
 	for i := 1; i <= n; i++ {
-		ls.PushValue(-1) /* function to be called */
-		ls.PushValue(i)  /* value to print */
-		ls.Call(1, 1)
-		s, ok := ls.ToStringX(-1) /* get result */
-		if !ok {
-			return ls.Error2("'str' must return a string to 'print'")
-		}
 		if i > 1 {
 			fmt.Print("\t")
 		}
-		fmt.Print(s)
+		fmt.Print(ls.ToString2(i))
 		ls.Pop(1) /* pop result */
 	}
 	fmt.Println()
@@ -314,36 +304,6 @@ func basePCall(ls LkState) int {
 	ls.PushBoolean(status == LUA_OK)
 	ls.Insert(1)
 	return ls.GetTop()
-}
-
-// getmetatable (object)
-// http://www.lua.org/manual/5.3/manual.html#pdf-getmetatable
-// lua-5.3.4/src/lbaselib.c#luaB_getmetatable()
-func baseGetMetatable(ls LkState) int {
-	ls.CheckAny(1)
-	if !ls.GetMetatable(1) {
-		ls.PushNil()
-		return 1 /* no metatable */
-	}
-	ls.GetMetafield(1, "__metatable")
-	return 1 /* returns either __metatable field (if present) or metatable */
-
-}
-
-// setmetatable (table, metatable)
-// http://www.lua.org/manual/5.3/manual.html#pdf-setmetatable
-// lua-5.3.4/src/lbaselib.c#luaB_setmetatable()
-func baseSetMetatable(ls LkState) int {
-	t := ls.Type(2)
-	ls.CheckType(1, LUA_TTABLE)
-	ls.ArgCheck(t == LUA_TNIL || t == LUA_TTABLE, 2,
-		"nil or table expected")
-	if ls.GetMetafield(1, "__metatable") != LUA_TNIL {
-		return ls.Error2("cannot change a protected metatable")
-	}
-	ls.SetTop(2)
-	ls.SetMetatable(1)
-	return 1
 }
 
 // rawequal (v1, v2)

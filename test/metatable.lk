@@ -1,20 +1,31 @@
-shy mt = {}
+class Vector { 'x': 0, 'y': 0 }
 
-shy fn vector(x, y) {
-    shy v = {'x': x, 'y': y}
-    setmetatable(v, mt)
+fn Vector.new(x, y) {
+    shy v = new(Vector)
+    v.x = x
+    v.y = y
     rt v
 }
 
-mt.__add = fn(v1, v2) {
-    rt vector(v1.x + v2.x, v1.y + v2.y)
-}
-mt.__str = fn(v) {
-    rt 'vector(' + v.x + ', ' + v.y + ')'
+fn Vector.__add(v1, v2) {
+    v = new(Vector)
+    v.x = v1.x + v2.x
+    v.y = v1.y + v2.y
+    rt v
 }
 
-shy v1 = vector(1, 2)
-shy v2 = vector(3, 5)
+fn Vector:set(x, y) {
+    self.x = x
+    self.y = y
+}
+
+fn Vector:__str() {
+    rt 'Vector(' + str(self.x) + ', ' + str(self.y) + ')'
+}
+
+shy v1 = new(Vector)
+shy v2 = Vector.new(3, 4)
+v1:set(1, 2)
 shy v3 = v1 + v2
 print(v3.x, v3.y)
 print(fmt('%s + %s = %s', v1, v2, v3))

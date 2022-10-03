@@ -2,7 +2,6 @@
 
 <p align="center">
     <img alt="badge-lang" src="https://badgen.net/badge/Lang/LK/cyan">
-    <img alt="badge-lang" src="https://badgen.net/badge/Lk/0.1.1/blue">
     <img alt="badge-lang" src="https://badgen.net/badge/Go/1.19/purple">
 </p>
 
@@ -55,7 +54,8 @@ fn Header:fromTable(h) {
     rt self
 }
 
-fn Header:toString() {
+// 对象在被`print`时，如果非`string`类型，会调用`__str`方法
+fn Header:__str() {
     shy s = ''
     for k, v in self.items {
         s = fmt('%s%s: %s\n', s, k, v)
@@ -69,7 +69,7 @@ fn Header:toString() {
 */
 shy fn handle(req) {
     shy h = Header:fromTable(req.headers)
-    rt 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, h:toString(), req.body)
+    rt 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, h, req.body)
 }
 
 // 监听
@@ -85,7 +85,7 @@ if http.listen(':8080', handle) != nil {
   - [x] Raw String, 使用 ``` ` ``` 包裹字符
   - [x] 支持任意对象拼接( `concat` )，使用语法 `..`
   - [x] 面向对象
-  - [ ] Table
+  - [x] Table
     - [x] key为StringExp，而不是NameExp
     - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
     - [x] 索引从 `0` 开始

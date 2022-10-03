@@ -284,32 +284,53 @@ shy add = fn (a, b) {
 除去常规的函数声明，`LK` 还可以将函数赋值给变量，这样可以实现匿名函数。
 
 
-## 元表
+## 面向对象 & 元表
 ```js
-class mt {}
+// 定义一个类，包含其默认属性值（x = 0, y = 0）
+class Vector { 'x': 0, 'y': 0 }
 
-mt.__add = fn(v1, v2) {
-    rt vector(v1.x + v2.x, v1.y + v2.y)
-}
-mt.__str = fn(v) {
-    rt 'vector(' + v.x + ', ' + v.y + ')'
-}
-
-shy fn vector(x, y) {
-    shy v = {'x': x, 'y': y}
-    setmetatable(v, mt)
+// 创建一个 Vector 对象，调用这个方法可以在初始化对象时，为内部属性赋值
+// 如果使用`new(Vector)`，则会使用默认值（x = 0, y = 0）
+fn Vector.new(x, y) {
+    shy v = new(Vector)
+    v.x = x
+    v.y = y
     rt v
 }
 
-shy v1 = vector(1, 2)
-shy v2 = vector(3, 5)
+fn Vector.__add(v1, v2) {
+    v = new(Vector)
+    v.x = v1.x + v2.x
+    v.y = v1.y + v2.y
+    rt v
+}
+
+fn Vector:set(x, y) {
+    self.x = x
+    self.y = y
+}
+
+fn Vector:__str() {
+    rt 'Vector(' + str(self.x) + ', ' + str(self.y) + ')'
+}
+
+// 使用的`mew(Object)`，所以使用的默认属性值
+// 此时 x = 0, y = 0
+shy v1 = new(Vector)
+// 带值的初始化对象
+// 此时x = 3, y = 4
+shy v2 = Vector.new(3, 4)
+// 调用Vector:set(x, y)方法，修改v1的值
+v1:set(1, 2)
 shy v3 = v1 + v2
-print(v3.x, v3.y)
-print(fmt('%s + %s = %s', v1, v2, v3))
+print(v3.x, v3.y)  // 4       6
+print(fmt('%s + %s = %s', v1, v2, v3))  // Vector(1, 2) + Vector(3, 4) = Vector(4, 6)
 ```
 在 `print` 时，如果是非 `str` 类型，会调用 `__str` 方法。  
 `vector` 没有内置的 `+` 方法，所以会调用 `mt` 的 `__add` 方法。  
-以下是可以拓展的元方法表：
+
+以下是可以拓展的元方法表：  
+
 |操作符/作用|metatable|
 |-|-|
 |`+`|`__add`|
@@ -332,33 +353,6 @@ print(fmt('%s + %s = %s', v1, v2, v3))
 |调用方法|`__call`|
 |获取名称|`__name`|
 |迭代器|`__range`|
-|元表|`__metatable`|
-
-
-## 面向对象
-```js
-// 定义一个class Rect，为其内部属性赋值初始值
-class Rect {
-    'width': 0,
-    'height': 0
-}
-
-// 给class Rect添加一个函数，可以用来打印Rect的信息
-fn Rect:printArea() {
-    print("Rect area: ", self.width * self.height)
-}
-
-fn Rect:set(width, height) {
-    self.width = width
-    self.height = height
-}
-
-shy rect = new(Rect)
-// 因为还没有赋值宽高，所以面积为0
-rect:printArea()  // Rect area: 0
-rect:set(10, 20)
-rect:printArea()  // Rect area: 200
-```
 
 
 ## 包

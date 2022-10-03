@@ -77,7 +77,6 @@ type BasicAPI interface {
 	GetI(idx int, i int64) LuaType
 	RawGet(idx int) LuaType
 	RawGetI(idx int, i int64) LuaType
-	GetMetatable(idx int) bool
 	GetGlobal(name string) LuaType
 	/* set functions (stack -> Lua) */
 	SetTable(idx int)
@@ -85,7 +84,6 @@ type BasicAPI interface {
 	SetI(idx int, i int64)
 	RawSet(idx int)
 	RawSetI(idx int, i int64)
-	SetMetatable(idx int)
 	SetGlobal(name string)
 	Register(name string, f GoFunction)
 	/* 'load' and 'call' functions (load and run Lua code) */

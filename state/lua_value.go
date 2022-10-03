@@ -81,22 +81,13 @@ func _stringToInteger(s string) (int64, bool) {
 
 func getMetatable(val any, ls *luaState) *luaTable {
 	if t, ok := val.(*luaTable); ok {
-		return t.metatable
+		return t
 	}
 	key := fmt.Sprintf("_MT%d", typeOf(val))
 	if mt := ls.registry.get(key); mt != nil {
 		return mt.(*luaTable)
 	}
 	return nil
-}
-
-func setMetatable(val any, mt *luaTable, ls *luaState) {
-	if t, ok := val.(*luaTable); ok {
-		t.metatable = mt
-		return
-	}
-	key := fmt.Sprintf("_MT%d", typeOf(val))
-	ls.registry.put(key, mt)
 }
 
 func getMetafield(val any, fieldName string, ls *luaState) any {

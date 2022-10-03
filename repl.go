@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -26,6 +25,7 @@ var (
 		consts.ClassDefReStr,
 	}, "|"))
 	promptLen = len([]rune(prompt))
+	printReg = regexp.MustCompile(`print\(.*\)`)
 )
 
 const (
@@ -79,7 +79,6 @@ func repl() {
 
 func catchErr(ls *api.LkState, first *bool, cmd string) {
 	if err := recover(); err != nil && *first {
-		cmd = fmt.Sprintf("print(%s)", cmd)
 		*first = false
 		(*ls).LoadString(cmd, "stdin")
 	}
@@ -89,7 +88,13 @@ func protectedLoadString(ls *api.LkState, cmd string) {
 	first := true
 	// 捕获错误
 	defer catchErr(ls, &first, cmd)
-	(*ls).LoadString(cmd, "stdin")
+	addedPrintCmd := func() string {
+		if printReg.MatchString(cmd) {
+			return cmd
+		}
+		return "print(" + cmd + ")"
+	}()
+	(*ls).LoadString(addedPrintCmd, "stdin")
 }
 
 func updateHistory(str string) {

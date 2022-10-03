@@ -1,7 +1,7 @@
 import 'test/http_header'
 
 shy fn handle(req) {
-    rt 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header:fromTable(req.headers):toString(), req.body)
+    rt 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header:fromTable(req.headers), req.body)
 }
 
 if http.listen(':8080', handle) != nil {

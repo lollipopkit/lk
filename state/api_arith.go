@@ -55,38 +55,38 @@ var operators = []operator{
 	{"__bnot", bnot, nil},
 }
 
-func ArithName(a ArithOp) string {
-	switch a {
-	case LUA_OPADD:
-		return "add"
-	case LUA_OPSUB:
-		return "sub"
-	case LUA_OPMUL:
-		return "mul"
-	case LUA_OPMOD:
-		return "mod"
-	case LUA_OPPOW:
-		return "pow"
-	case LUA_OPDIV:
-		return "div"
-	case LUA_OPIDIV:
-		return "idiv"
-	case LUA_OPBAND:
-		return "band"
-	case LUA_OPBOR:
-		return "bor"
-	case LUA_OPBXOR:
-		return "bxor"
-	case LUA_OPSHL:
-		return "shl"
-	case LUA_OPSHR:
-		return "shr"
-	case LUA_OPUNM:
-		return "unm"
-	case LUA_OPBNOT:
-		return "bnot"
+func opSymbol(opName string) string {
+	switch opName {
+	case "__add":
+		return "+"
+	case "__sub":
+		return "-"
+	case "__mul":
+		return "*"
+	case "__mod":
+		return "%"
+	case "__pow":
+		return "^"
+	case "__div":
+		return "/"
+	case "__idiv":
+		return "~/"
+	case "__band":
+		return "and"
+	case "__bor":
+		return "or"
+	case "__bxor":
+		return "xor"
+	case "__shl":
+		return "<<"
+	case "__shr":
+		return ">>"
+	case "__unm":
+		return "-"
+	case "__bnot":
+		return "not"
 	default:
-		panic("invalid arith op: "+fmt.Sprint(a))
+		return opName
 	}
 }
 
@@ -127,7 +127,7 @@ func (self *luaState) Arith(op ArithOp) {
 
 	self.stack.push(a)
 	self.stack.push(b)
-	panic(fmt.Sprintf("invalid arith: %v <%v> %v", self.TypeName(-3), ArithName(op), self.TypeName(-2)))
+	panic(fmt.Sprintf("invalid arith: %T<%#v> %s %T<%#v>", a, a, opSymbol(mm), b, b))
 }
 
 func _arith(a, b any, op operator) any {
