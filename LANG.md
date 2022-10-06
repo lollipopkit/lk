@@ -300,7 +300,7 @@ fn Vector.new(x, y) {
 
 // 为 `Vector` 设置 `__add` 元方法，实现 `+` 运算符
 fn Vector.__add(v1, v2) {
-    v = new(Vector)
+    shy v = new(Vector)
     v.x = v1.x + v2.x
     v.y = v1.y + v2.y
     rt v
@@ -323,9 +323,9 @@ fn Vector:__str() {
 // 此时 x = 0, y = 0
 shy v1 = new(Vector)
 // 带值的初始化对象
-// 此时x = 3, y = 4
+// 此时 x = 3, y = 4
 shy v2 = Vector.new(3, 4)
-// 调用Vector:set(x, y)方法，修改v1的值
+// 调用 `Vector:set(x, y)` 方法，修改v1的值
 v1:set(1, 2)
 shy v3 = v1 + v2
 print(v3.x, v3.y)  // 4       6

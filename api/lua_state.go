@@ -53,7 +53,6 @@ type BasicAPI interface {
 	ToGoFunction(idx int) GoFunction
 	ToThread(idx int) LkState
 	ToPointer(idx int) interface{}
-	RawLen(idx int) uint
 	/* push functions (Go -> stack) */
 	PushNil()
 	PushBoolean(b bool)
@@ -68,7 +67,6 @@ type BasicAPI interface {
 	/* Comparison and arithmetic functions */
 	Arith(op ArithOp)
 	Compare(idx1, idx2 int, op CompareOp) bool
-	RawEqual(idx1, idx2 int) bool
 	/* get functions (Lua -> stack) */
 	NewTable()
 	CreateTable(nArr, nRec int)

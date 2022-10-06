@@ -8,7 +8,7 @@ fn Vector.new(x, y) {
 }
 
 fn Vector.__add(v1, v2) {
-    v = new(Vector)
+    shy v = new(Vector)
     v.x = v1.x + v2.x
     v.y = v1.y + v2.y
     rt v

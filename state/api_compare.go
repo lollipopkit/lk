@@ -2,18 +2,6 @@ package state
 
 import . "git.lolli.tech/lollipopkit/lk/api"
 
-// [-0, +0, –]
-// http://www.lua.org/manual/5.3/manual.html#lua_rawequal
-func (self *luaState) RawEqual(idx1, idx2 int) bool {
-	if !self.stack.isValid(idx1) || !self.stack.isValid(idx2) {
-		return false
-	}
-
-	a := self.stack.get(idx1)
-	b := self.stack.get(idx2)
-	return _eq(a, b, nil)
-}
-
 // [-0, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_compare
 func (self *luaState) Compare(idx1, idx2 int, op CompareOp) bool {

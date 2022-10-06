@@ -22,18 +22,13 @@ var baseFuncs = map[string]GoFunction{
 	"loadfile":     baseLoadFile,
 	"dofile":       baseDoFile,
 	"pcall":        basePCall,
-	"rawequal":     baseRawEqual,
-	"rawlen":       baseRawLen,
-	"rawget":       baseRawGet,
-	"rawset":       baseRawSet,
+	// "rawget":       baseRawGet,
+	// "rawset":       baseRawSet,
 	"type":         baseType,
 	"str":          baseToString,
 	"num":          baseToNumber,
 	"int":          mathToInt,
 	"kv":           baseKV,
-	/* placeholders */
-	"_G":       nil,
-	"_VERSION": nil,
 	// string
 	"fmt": strFormat,
 }
@@ -304,27 +299,6 @@ func basePCall(ls LkState) int {
 	ls.PushBoolean(status == LUA_OK)
 	ls.Insert(1)
 	return ls.GetTop()
-}
-
-// rawequal (v1, v2)
-// http://www.lua.org/manual/5.3/manual.html#pdf-rawequal
-// lua-5.3.4/src/lbaselib.c#luaB_rawequal()
-func baseRawEqual(ls LkState) int {
-	ls.CheckAny(1)
-	ls.CheckAny(2)
-	ls.PushBoolean(ls.RawEqual(1, 2))
-	return 1
-}
-
-// rawlen (v)
-// http://www.lua.org/manual/5.3/manual.html#pdf-rawlen
-// lua-5.3.4/src/lbaselib.c#luaB_rawlen()
-func baseRawLen(ls LkState) int {
-	t := ls.Type(1)
-	ls.ArgCheck(t == LUA_TTABLE || t == LUA_TSTRING, 1,
-		"table or string expected")
-	ls.PushInteger(int64(ls.RawLen(1)))
-	return 1
 }
 
 // rawget (table, index)

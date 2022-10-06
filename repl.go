@@ -24,6 +24,7 @@ var (
 		consts.ElseReStr,
 		consts.ClassDefReStr,
 	}, "|"))
+	blockEndReg = regexp.MustCompile("} *$")
 	promptLen = len([]rune(prompt))
 	printReg = regexp.MustCompile(`print\(.*\)`)
 )
@@ -50,9 +51,13 @@ func repl() {
 		if blockStartReg.MatchString(line) {
 			blockStartCount++
 		}
-		if strings.HasSuffix(line, "}") {
-			blockStr += line + "\n"
+		if blockEndReg.MatchString(line) {
 			blockEndCount++
+		}
+
+		blockStr += line
+		if blockStartCount != blockEndCount {
+			blockStr += "\n"
 		}
 
 		cmd := ""
@@ -62,11 +67,12 @@ func repl() {
 			cmd = blockStr
 			blockStr = ""
 		} else if blockStartCount > 0 {
-			blockStr += line + "\n"
 			continue
 		} else {
+			blockStr = ""
 			cmd = line
 		}
+		// println("==", cmd, "==")
 
 		// 更新历史记录
 		updateHistory(cmd)
