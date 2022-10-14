@@ -20,7 +20,7 @@ func OpenJsonLib(ls LkState) int {
 }
 
 // json.get (source, path)
-// return bool, result
+// return result
 func jsonGet(ls LkState) int {
 	source := ls.CheckString(1)
 	path := ls.CheckString(2)
