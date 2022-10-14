@@ -362,7 +362,7 @@ print(fmt('%s + %s = %s', v1, v2, v3))  // Vector(1, 2) + Vector(3, 4) = Vector(
 
 ## 包
 ```js
-// 文件名为 module.lua
+// 文件名为 module.lk
 // 定义一个名为 module 的模块
 class module {}
  
@@ -384,17 +384,17 @@ fn module.func3() {
 ```
 如上定义了一个包，然后在另一个文件中导入：
 ```js
-import "test"
+import "module"
 ```
 可以通过 `import` 关键字导入包，导入的包会在当前文件作用域中有效。  
-导入路径 `test` 为当前文件的相对路径。  
+导入路径 `module` 为当前文件的相对路径。  
 例如`import "a/b/c"`，会尝试导入：`./a/b/c.lk` `./a/b/c/init.lk`。  
 
 导入后如下使用：
 ```js
-test.func1()
+module.func1()
 // test.func2() 不可直接使用，因为是局部函数，但可以通过 module.func3() 调用
-test.func3()
+module.func3()
 ```
 
 ## 多线程

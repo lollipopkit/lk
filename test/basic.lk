@@ -1,12 +1,14 @@
 import "test/module"
 import 'test/gf'
 
-shy func = fn (e) {print(e)}
+shy func = fn (...) {
+    print(fmt('[args: %d]\t', #{...}), ...)
+}
 func(1!=2 and 3!=3)
 test2:add()
 func(test2.b)
 test2:add()
-func(test2.b)
+func(test2['b'])
 func(test2.const)
 
 // comment
@@ -18,12 +20,12 @@ shy long = `
 abc`
 
 if #long >= 0 and '' {
-    print(long, #long)
+    func(long, #long)
 }
 
-print(6 ~/ 2, 6 & 2, 6 / 2)
-print(_VERSION, math.pi)
-print(str({5, 'd': false}))
+func(6 ~/ 2, 6 & 2, 6 / 2)
+func(_VERSION, math.pi)
+func(str({5, 'd': false, 1}))
 
 shy gf = new(Girlfriend)
 gf:herName('lxy')

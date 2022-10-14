@@ -89,5 +89,5 @@ func (self *luaState) setTable(t, k, v any, raw bool) {
 		}
 	}
 
-	panic("expect table, got "+fmt.Sprintf("%v", t))
+	panic("expect table, got " + fmt.Sprintf("%v", t))
 }

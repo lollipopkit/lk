@@ -25,8 +25,8 @@ var (
 		consts.ClassDefReStr,
 	}, "|"))
 	blockEndReg = regexp.MustCompile("} *$")
-	promptLen = len([]rune(prompt))
-	printReg = regexp.MustCompile(`print\(.*\)`)
+	promptLen   = len([]rune(prompt))
+	printReg    = regexp.MustCompile(`print\(.*\)`)
 )
 
 const (

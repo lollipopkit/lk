@@ -10,25 +10,24 @@ import (
 )
 
 var baseFuncs = map[string]GoFunction{
-	"new":          baseNew,
-	"print":        basePrint,
-	"assert":       baseAssert,
-	"error":        baseError,
-	"select":       baseSelect,
-	"irange":       baseIPairs,
-	"range":        basePairs,
-	"next":         baseNext,
-	"load":         baseLoad,
-	"loadfile":     baseLoadFile,
-	"dofile":       baseDoFile,
-	"pcall":        basePCall,
+	"new":      baseNew,
+	"print":    basePrint,
+	"assert":   baseAssert,
+	"error":    baseError,
+	"irange":   baseIPairs,
+	"range":    basePairs,
+	"next":     baseNext,
+	"load":     baseLoad,
+	"loadfile": baseLoadFile,
+	"dofile":   baseDoFile,
+	"pcall":    basePCall,
 	// "rawget":       baseRawGet,
 	// "rawset":       baseRawSet,
-	"type":         baseType,
-	"str":          baseToString,
-	"num":          baseToNumber,
-	"int":          mathToInt,
-	"kv":           baseKV,
+	"type": baseType,
+	"str":  baseToString,
+	"num":  baseToNumber,
+	"int":  mathToInt,
+	"kv":   baseKV,
 	// string
 	"fmt": strFormat,
 }
@@ -157,26 +156,6 @@ func baseError(ls LkState) int {
 		// ls.Concat(2)
 	}
 	return ls.Error()
-}
-
-// select (index, ···)
-// http://www.lua.org/manual/5.3/manual.html#pdf-select
-// lua-5.3.4/src/lbaselib.c#luaB_select()
-func baseSelect(ls LkState) int {
-	n := int64(ls.GetTop())
-	if ls.Type(1) == LUA_TSTRING && ls.CheckString(1) == "#" {
-		ls.PushInteger(n - 1)
-		return 1
-	} else {
-		i := ls.CheckInteger(1)
-		if i < 0 {
-			i = n + i
-		} else if i > n {
-			i = n
-		}
-		ls.ArgCheck(1 <= i, 1, "index out of range")
-		return int(n - i)
-	}
 }
 
 // ipairs (t)

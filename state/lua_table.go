@@ -8,11 +8,11 @@ import (
 )
 
 type luaTable struct {
-	arr       []any
-	_map      map[any]any
-	keys      map[any]any // used by next()
-	lastKey   any         // used by next()
-	changed   bool        // used by next()
+	arr     []any
+	_map    map[any]any
+	keys    map[any]any // used by next()
+	lastKey any         // used by next()
+	changed bool        // used by next()
 }
 
 func (self *luaTable) String() (string, error) {
