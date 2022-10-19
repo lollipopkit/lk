@@ -1,9 +1,16 @@
+/*
+导入路径为文件的路径：`test/module`
+实际调用得使用class名称：`test2`
+*/
 import "test/module"
 import 'test/gf'
 
 shy func = fn (...) {
+    // `#`获取长度，`...`为变长参数，`{}`构造Table
+    // `#{...}`即获取变长参数的长度（有多少个参数）
     print(fmt('[args: %d]\t', #{...}), ...)
 }
+
 func(1!=2 and 3!=3)
 test2:add()
 func(test2.b)
@@ -11,11 +18,8 @@ test2:add()
 func(test2['b'])
 func(test2.const)
 
-// comment
-/* 
-long comment
-*/
-
+// "`" 包裹的str，为原始字符串，不会被转义
+// 如果第一个字符为换行符`\n`，则第一个`\n`会被忽略
 shy long = `
 abc`
 
@@ -25,7 +29,8 @@ if #long >= 0 and '' {
 
 func(6 ~/ 2, 6 & 2, 6 / 2)
 func(_VERSION, math.pi)
-func(str({5, 'd': false, 1}))
+// 与js类似，大部分类型都可转为json str
+func(str(test2))
 
 shy gf = new(Girlfriend)
 gf:herName('lxy')

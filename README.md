@@ -28,12 +28,12 @@
 ```js
 // http发送请求示例
 shy resp, err = http.post(
-    'http://httpbin.org/post', 
-    {'accept': 'application/json'}, 
-    '{"foo": "bar"}'
+    'http://httpbin.org/post', // URL
+    {'accept': 'application/json'}, // Headers
+    '{"foo": "bar"}' // Body
 )
 if err != nil {
-    error(err)
+    error(err) // 内置的error方法
 }
 print(resp.code, resp.body)
 
@@ -54,7 +54,8 @@ fn Header:fromTable(h) {
     rt self
 }
 
-// 对象在被`print`时，如果非`string`类型，会调用`__str`方法
+// `print`的参数，如果非`str`类型，会调用`__str`方法
+// 这里`Header`类实现了`__str`方法
 fn Header:__str() {
     shy s = ''
     for k, v in self.items {

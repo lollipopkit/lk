@@ -18,7 +18,8 @@ c = nil    // nil
 `LK`中的基本类型有`num` `str` `bool` `nil` `table`。
 
 ```js
-print(a == b)  // false <-> num != str
+// num != str
+print(a == b) // false
 ```
 如上所示，虽然 `LK` 不需要明确指出变量的类型，但不意味着是弱类型语言。  
 不同类型间比较，不会先转化为同类型。
@@ -69,6 +70,29 @@ print(a, b)  // 1 nil
 如果右边的变量个数少于左边的变量个数，那么多余的变量会被赋值为 `nil`。  
 
 
+## 函数
+```js
+// 支持以变量方式声明函数
+// 和变量一致，`shy` 表示局部函数
+shy add2 = fn (a, b) {
+    rt a + b
+}
+print(add2(1, 2))  // 3
+
+// `...` 为变长参数，表明0个或更多个参数
+// 可以使用 `{...}` 来构造参数列表
+// 再使用 `for in` 获取每一个参数 
+fn addN(...) {
+    sum = 0
+    for _, i in {...} {
+        sum += i
+    }
+    rt sum
+}
+addN(1, 2, 3, 4, 5)  // 15
+```
+
+
 ## 循环
 ```js
 while condition {
@@ -89,13 +113,22 @@ for i = 0, 10, 2 {
 等同于 `for i = 0; i <= 10; i += 2 {}`
 
 ## 流程控制
-```py
+```js
 if condition {
     // ...
 } elif condition {
     // ...
 } else {
     // ...
+}
+
+// 在 `if` 判断时，只有 `nil` 和 `false` 会被判断为 `false`
+if '' and {} and 0 {
+    if nil or false {
+        print('never print')
+    } else {
+        print('only `nil` and `false` is false')
+    }
 }
 ```
 
@@ -137,25 +170,25 @@ b = 10
 
 if (a == b) {
    print("Line 1 - a 等于 b")
-else
+else {
    print("Line 1 - a 不等于 b")
 }
 
 if (a != b) {
    print("Line 2 - a 不等于 b")
-else
+else {
    print("Line 2 - a 等于 b")
 }
 
 if (a < b) {
    print("Line 3 - a 小于 b")
-else
+else {
    print("Line 3 - a 大于等于 b")
 }
 
 if (a > b) {
    print("Line 4 - a 大于 b")
-else
+else {
    print("Line 5 - a 小于等于 b")
 }
 
@@ -196,6 +229,14 @@ b = "World"
 print(a + b)  // Hello World
 // b 字符串长度
 print(#b)   // 5
+
+fn varagsLen(...) {
+    // `#`获取长度，`...`为变长参数，`{}`构造Table
+    // `#{...}`即获取变长参数的长度（有多少个参数）
+    print(#{...})
+}
+
+varagsLen(1, 2, 3, 4, 5)  // 5
 ```
 
 ### 运算符优先级
@@ -267,23 +308,6 @@ fn ipairs (a) {
 如上，实现了虚拟机内置的默认迭代器
 
 
-## 函数
-```js
-shy fn (a, b) {
-    rt a + b
-}
-print(add(1, 2))  // 3
-```
-函数同样可以使用 `shy` 关键字表明为局部函数，仅在当前作用域内有效。
-
-```js
-shy add = fn (a, b) {
-    rt a + b
-}
-```
-除去常规的函数声明，`LK` 还可以将函数赋值给变量，这样可以实现匿名函数。
-
-
 ## 面向对象 & 元表
 ```js
 // 定义一个类，包含其默认属性值（x = 0, y = 0）
@@ -351,7 +375,6 @@ print(fmt('%s + %s = %s', v1, v2, v3))  // Vector(1, 2) + Vector(3, 4) = Vector(
 |`==`|`__eq`|
 |`<`|`__lt`|
 |`<=`|`__le`|
-|`>`|`__gt`|
 |索引|`__index`|
 |新索引|`__newindex`|
 |转为`str`|`__str`|
@@ -362,8 +385,7 @@ print(fmt('%s + %s = %s', v1, v2, v3))  // Vector(1, 2) + Vector(3, 4) = Vector(
 
 ## 包
 ```js
-// 文件名为 module.lk
-// 定义一个名为 module 的模块
+// 文件名为 mod.lk
 class module {}
  
 // 定义一个常量
@@ -384,21 +406,46 @@ fn module.func3() {
 ```
 如上定义了一个包，然后在另一个文件中导入：
 ```js
-import "module"
+import "mod"
 ```
 可以通过 `import` 关键字导入包，导入的包会在当前文件作用域中有效。  
-导入路径 `module` 为当前文件的相对路径。  
+导入路径 `mod` 为当前文件的相对路径。  
 例如`import "a/b/c"`，会尝试导入：`./a/b/c.lk` `./a/b/c/init.lk`。  
 
 导入后如下使用：
 ```js
 module.func1()
-// test.func2() 不可直接使用，因为是局部函数，但可以通过 module.func3() 调用
+// module.func2() 不可直接使用，因为是局部函数，但可以通过 module.func3() 调用
 module.func3()
 ```
 
-## 多线程
-待完成
+## 协程
+```js
+fn foo(a) {
+    print("foo 函数输出", a)
+    rt sync.yield(2 * a) // 返回 2*a 的值
+}
+ 
+co = sync.create(fn (a , b) {
+    print("第一次协同程序执行输出", a, b) // co-body 1 10
+    shy r = foo(a + 1)
+     
+    print("第二次协同程序执行输出", r)
+    shy r, s = sync.yield(a + b, a - b)  // a，b的值为第一次调用协同程序时传入
+     
+    print("第三次协同程序执行输出", r, s)
+    rt b, "结束协同程序"  // b的值为第二次调用协同程序时传入
+})
+       
+print("main", sync.resume(co, 1, 10)) // true, 4
+print()
+print("main", sync.resume(co, "r")) // true 11 -9
+print()
+print("main", sync.resume(co, "x", "y")) // true 10 end
+print()
+print("main", sync.resume(co, "x", "y")) // cannot resume dead sync
+print()
+```
 
 
 ## 标准库
