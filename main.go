@@ -9,12 +9,17 @@ import (
 	"path"
 
 	"git.lolli.tech/lollipopkit/lk/compiler"
+	"git.lolli.tech/lollipopkit/lk/consts"
 	"git.lolli.tech/lollipopkit/lk/state"
 )
 
 func main() {
 	force := flag.Bool("f", false, "force to re-compile")
+	debug := flag.Bool("d", false, "debug mode")
 	flag.Parse()
+
+	consts.Debug = *debug
+	
 	args := flag.Args()
 	if len(args) == 0 {
 		repl()
