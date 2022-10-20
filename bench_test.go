@@ -36,7 +36,7 @@ func TestMain(m *testing.M) {
 			continue
 		}
 		println("=== " + name + " ===")
-		run("test/" + name, false)
+		run("test/" + name)
 		println()
 	}
 }
@@ -44,13 +44,13 @@ func TestMain(m *testing.M) {
 func BenchmarkRun(b *testing.B) {
 	f := file + ".lk"
 	for i := 0; i < b.N; i++ {
-		run(f, false)
+		run(f)
 	}
 }
 
 func BenchmarkRunCompiled(b *testing.B) {
 	f := file + ".lkc"
 	for i := 0; i < b.N; i++ {
-		run(f, true)
+		run(f)
 	}
 }

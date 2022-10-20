@@ -1,0 +1,20 @@
+shy path = 'test/module'
+
+shy fn bench(func) {
+    shy t1 = os.time()
+    for i = 0, 10000 {
+        func()
+    }
+    shy t2 = os.time()
+    rt t2 - t1
+}
+
+shy t1 = bench(fn() {
+    dofile(path + '.lk')
+})
+
+shy t2 = bench(fn() {
+    dofile(path + '.lkc')
+})
+
+print(fmt("Using %s.lk(c)\nSource: %d ms, Compiled: %d ms, %d times", path, t1, t2, t1 / t2))

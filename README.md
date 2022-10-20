@@ -13,16 +13,18 @@
 ```bash
 # 进入REPL交互式解释器
 ./lk
-# 执行.lk文件
+# 执行.lk(c)文件
 ./lk <file>
 # 如果修改了.lk文件导致无法运行，可以尝试添加-f参数
 ./lk -f <file>
+# 编译.lk文件
+./lk compile <file>
 ```
+**尽量**编译以后再执行，可以大幅提高速度。具体表现可以执行 `./lk test/bench.lk` 来对比。
 
 ## 📄 语法
 #### 详细语法
-- `Step by step` ➜ [LANG.md](LANG.md)
-- `By examples` ➜ [测试集](test)
+**Step by step** ➜ [LANG.md](LANG.md)
 
 #### 速览
 ```js

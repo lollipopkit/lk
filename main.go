@@ -2,22 +2,37 @@ package main
 
 import (
 	"flag"
+	"strings"
 
 	"git.lolli.tech/lollipopkit/lk/consts"
 )
 
+var (
+	force *bool
+	debug *bool
+	args []string
+)
+
 func main() {
-	force := flag.Bool("f", false, "force to re-compile")
-	debug := flag.Bool("d", false, "debug mode")
+	force = flag.Bool("f", false, "force to re-compile")
+	debug = flag.Bool("d", false, "debug mode")
 	flag.Parse()
 
 	consts.Debug = *debug
-	
-	args := flag.Args()
-	switch len(args) {
-	case 0:
+
+	args = flag.Args()
+	if len(args) == 0 {
 		repl()
+		return
+	}
+	switch args[0] {
+	case "compile":
+		compile(args[1], args[2])
 	default:
-		run(args[0], *force)
+		if strings.Contains(args[0], ".lk") {
+			run(args[0])
+		} else {
+			print("Unknown command: " + args[0])
+		}
 	}
 }

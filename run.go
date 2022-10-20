@@ -11,20 +11,45 @@ import (
 	"git.lolli.tech/lollipopkit/lk/state"
 )
 
+func compile(source, output string) {
+	if !exist(source) {
+		panic("file not found")
+	}
 
-func run(file string, force bool) {
+	data, err := ioutil.ReadFile(source)
+	if err != nil {
+		panic(err)
+	}
+
+	bin := compiler.Compile(string(data), source)
+	f, err := os.Create(output)
+	if err != nil {
+		panic(err)
+	}
+	compiledData, err := bin.Dump()
+	if err != nil {
+		panic(err)
+	}
+	f.Write(compiledData)
+}
+
+func run(file string) {
+	if !exist(file) {
+		panic("file not found")
+	}
+
 	data, err := ioutil.ReadFile(file)
 	if err != nil {
 		panic(err)
 	}
 
 	compiledFileName := getSHA256HashCode(data) + ".lkc"
-	compiledFile := path.Join(os.TempDir(), compiledFileName)
-	compiledData, _ := ioutil.ReadFile(compiledFile)
+	compiledFilePath := path.Join(os.TempDir(), compiledFileName)
+	compiledData, _ := ioutil.ReadFile(compiledFilePath)
 
-	if !exist(compiledFile) || force {
+	if !exist(compiledFilePath) || *force {
 		bin := compiler.Compile(string(data), file)
-		f, err := os.Create(compiledFile)
+		f, err := os.Create(compiledFilePath)
 		if err != nil {
 			panic(err)
 		}
