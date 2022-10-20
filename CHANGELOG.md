@@ -1,17 +1,22 @@
 # CHANGELOG
 **仅包含语言LK的变化**
 
+## 0.1.5
+- `CLI` 增加 `-d` 开启调试模式
+- `os.time()` 返回毫秒时间戳
+- 去除 `select` ，使用 `#{...}` 替代
+
 ## 0.1.4
 - `+` 支持 `String`
+- 去除 `metatable` 属性，直接将其置于 `luaTable` 对象中
+- `PCall` 仅在 `REPL` 输出错误
+- 优化 `luaTable` 默认 `print` 格式
 
 ## 0.1.3
 - 添加`prefixexp : Name args`的语法
 - 支持面向对象
 - `REPL`支持自动添加`print`
 - 不再支持任意对象 `concat`，如不能拼接则会返回 `""`
-- 去除 `metatable` 属性，直接将其置于 `luaTable` 对象中
-- 优化 `luaTable` 默认 `print` 格式
-- `PCall` 仅在 `REPL` 输出错误
 
 ## 0.1.2
 - `Table`索引从`0`开始

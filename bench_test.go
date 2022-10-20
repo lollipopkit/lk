@@ -4,8 +4,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"git.lolli.tech/lollipopkit/lk/state"
 )
 
 const (
@@ -17,13 +15,6 @@ var (
 		"http_listen.lk",
 	}
 )
-
-func run(f string) {
-	ls := state.New()
-	ls.OpenLibs()
-	ls.LoadFile(f)
-	ls.Call(0, -1)
-}
 
 func contains[T string](list []T, item T) bool {
 	for idx := range list {
@@ -45,7 +36,7 @@ func TestMain(m *testing.M) {
 			continue
 		}
 		println("=== " + name + " ===")
-		run("test/" + name)
+		run("test/" + name, false)
 		println()
 	}
 }
@@ -53,13 +44,13 @@ func TestMain(m *testing.M) {
 func BenchmarkRun(b *testing.B) {
 	f := file + ".lk"
 	for i := 0; i < b.N; i++ {
-		run(f)
+		run(f, false)
 	}
 }
 
 func BenchmarkRunCompiled(b *testing.B) {
 	f := file + ".lkc"
 	for i := 0; i < b.N; i++ {
-		run(f)
+		run(f, true)
 	}
 }

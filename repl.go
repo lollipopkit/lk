@@ -136,7 +136,7 @@ func readline() string {
 			println()
 			return true, nil
 		case keys.Backspace:
-			if len(str) > 0 {
+			if len(str) > 0 && cursorIdx > 0 {
 				str = str[:cursorIdx-1] + str[cursorIdx:]
 				resetLine(str)
 				cursorIdx--
@@ -162,6 +162,10 @@ func readline() string {
 				str = linesHistory[linesIdx]
 				resetLine(str)
 				cursorIdx = len(str)
+			} else if linesIdx == len(linesHistory)-1 {
+				str = ""
+				resetLine("")
+				cursorIdx = 0
 			}
 		case keys.Space:
 			str += " "
