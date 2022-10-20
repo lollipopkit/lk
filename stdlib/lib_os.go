@@ -36,7 +36,7 @@ func pushArgs(ls LkState) {
 	args := os.Args
 	ags := make([]any, len(args))
 	for argIdx := range args {
-		ags = append(ags, args[argIdx])
+		ags[argIdx] = args[argIdx]
 	}
 	pushList(ls, ags)
 	ls.SetField(-2, "args")
