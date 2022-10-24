@@ -13,21 +13,21 @@ import (
 )
 
 var sysLib = map[string]GoFunction{
-	"time":  osTime,
-	"date":  osDate,
-	"rm":    osRemove,
-	"mv":    osRename,
-	"link":  osLink,
-	"tmp":   osTmpName,
-	"getenv":   osGetEnv,
+	"time":   osTime,
+	"date":   osDate,
+	"rm":     osRemove,
+	"mv":     osRename,
+	"link":   osLink,
+	"tmp":    osTmpName,
+	"getenv": osGetEnv,
 	"setenv": osSetEnv,
-	"exec":  osExecute,
-	"exit":  osExit,
-	"ls":    osLs,
-	"read":  osRead,
-	"write": osWrite,
-	"sleep": osSleep,
-	"mkdir": osMkdir,
+	"exec":   osExecute,
+	"exit":   osExit,
+	"ls":     osLs,
+	"read":   osRead,
+	"write":  osWrite,
+	"sleep":  osSleep,
+	"mkdir":  osMkdir,
 }
 
 func OpenOSLib(ls LkState) int {
@@ -263,7 +263,7 @@ func osSetEnv(ls LkState) int {
 func osExecute(ls LkState) int {
 	script := ls.CheckString(1)
 	tempDir := os.TempDir()
-	path := path.Join(tempDir, "lkscript" + utils.Md5([]byte(script)))
+	path := path.Join(tempDir, "lkscript"+utils.Md5([]byte(script)))
 	err := ioutil.WriteFile(path, []byte(script), 0744)
 	if err != nil {
 		ls.PushNil()

@@ -247,14 +247,14 @@ func parseNumberExp(lexer *Lexer) Exp {
 // functiondef ::= fn funcbody
 // funcbody ::= ‘(’ [parlist] ‘)’ `{` block `}`
 func parseFuncDefExp(lexer *Lexer) *FuncDefExp {
-	line := lexer.Line()                                   // fn
-	lexer.NextTokenOfKind(TOKEN_SEP_LPAREN)                // (
-	parList, isVararg := _parseParList(lexer)              // [parlist]
-	lexer.NextTokenOfKind(TOKEN_SEP_RPAREN)                // )
+	line := lexer.Line()                      // fn
+	lexer.NextTokenOfKind(TOKEN_SEP_LPAREN)   // (
+	parList, isVararg := _parseParList(lexer) // [parlist]
+	lexer.NextTokenOfKind(TOKEN_SEP_RPAREN)   // )
 	if lexer.LookAhead() == TOKEN_OP_ARROW {
 		lexer.NextToken() // ->
 		return &FuncDefExp{line, line, parList, isVararg, &Block{
-			Stats: []Stat{},
+			Stats:    []Stat{},
 			RetExps:  parseExpList(lexer),
 			LastLine: line,
 		}}

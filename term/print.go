@@ -6,12 +6,12 @@ import (
 )
 
 const (
-	RED = "\033[31m"
-	GREEN = "\033[32m"
-	YELLOW = "\033[33m"
-	BLUE = "\033[34m"
-	CYAN = "\033[36m"
-	WHITE = "\033[37m"
+	RED     = "\033[31m"
+	GREEN   = "\033[32m"
+	YELLOW  = "\033[33m"
+	BLUE    = "\033[34m"
+	CYAN    = "\033[36m"
+	WHITE   = "\033[37m"
 	NOCOLOR = "\033[0m"
 )
 
@@ -21,7 +21,7 @@ func print(s string) {
 
 func addBorder(s, title string) string {
 	lines := strings.Split(s, "\n")
-	longest := 0
+	longest := 4
 	for idx := range lines {
 		if len(lines[idx]) > longest {
 			longest = len(lines[idx])
@@ -33,10 +33,10 @@ func addBorder(s, title string) string {
 	if w < titleW {
 		w = titleW
 	}
-	result := "╔═" + title + strings.Repeat("═", w - titleW - 1) + "╗\n"
+	result := "╔═ " + title + " " + strings.Repeat("═", w-titleW-3) + "╗\n"
 	for idx := range lines {
 		blankWidth := w - len(lines[idx])
-		blank := strings.Repeat(" ", blankWidth / 2)
+		blank := strings.Repeat(" ", blankWidth/2)
 		result += "║" + blank + lines[idx] + blank + "║\n"
 	}
 	result += "╚" + strings.Repeat("═", w) + "╝\n"

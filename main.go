@@ -9,7 +9,7 @@ import (
 
 var (
 	debug = flag.Bool("d", false, "debug mode")
-	args = []string{}
+	args  = []string{}
 )
 
 func main() {
