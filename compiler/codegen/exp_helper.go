@@ -47,8 +47,6 @@ func lineOf(exp Exp) int {
 		return x.Line
 	case *TableAccessExp:
 		return lineOf(x.PrefixExp)
-	case *ConcatExp:
-		return lineOf(x.Exps[0])
 	case *BinopExp:
 		return lineOf(x.Exp1)
 	case *TernaryExp:
@@ -84,8 +82,6 @@ func lastLineOf(exp Exp) int {
 		return x.LastLine
 	case *TableAccessExp:
 		return x.LastLine
-	case *ConcatExp:
-		return lastLineOf(x.Exps[len(x.Exps)-1])
 	case *BinopExp:
 		return lastLineOf(x.Exp2)
 	case *UnopExp:

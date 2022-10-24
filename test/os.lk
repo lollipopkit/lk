@@ -5,7 +5,7 @@ shy fn pri(section, ...) {
 shy tmpDir = os.tmp()
 pri('temp_dir: ', tmpDir)
 
-shy path = tmpDir .. '/test'
+shy path = tmpDir + '/test'
 shy err = os.write(path, "test")
 pri('write err: ', err)
 shy data, err = os.read(path)

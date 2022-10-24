@@ -97,6 +97,7 @@ addN(1, 2, 3, 4, 5)  // 15
 ```js
 while condition {
     // ...
+    break
 }
 ```
 ```js
@@ -237,6 +238,9 @@ fn varagsLen(...) {
 }
 
 varagsLen(1, 2, 3, 4, 5)  // 5
+
+// 三元操作符
+print(true ? 'support ternary exp' : 'unreachable')
 ```
 
 ### 运算符优先级
@@ -369,7 +373,6 @@ print(fmt('%s + %s = %s', v1, v2, v3))  // Vector(1, 2) + Vector(3, 4) = Vector(
 |`%`|`__mod`|
 |`^`|`__pow`|
 |`-`|`__unm`|
-|`..`|`__concat`|
 |`~/`|`__idiv`|
 |`#`|`__len`|
 |`==`|`__eq`|
@@ -518,7 +521,7 @@ print()
 - `json.get(source, path)`
 获取 JSON 数据，`source` 为 JSON 数据，`path` 为路径。
 `path`遵循`gjson`规则。详情请查看[gjson](https://github.com/tidwall/gjson)。
+
 ### 其他
 - `string` https://www.runoob.com/lua/lua-strings.html
 - `utf8` https://www.jianshu.com/p/dcbb6b47bb32
-- `sync` https://www.runoob.com/lua/lua-coroutine.html

@@ -171,9 +171,6 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 		if self.test("...") {
 			self.next(3)
 			return self.line, TOKEN_VARARG, "..."
-		} else if self.test("..") {
-			self.next(2)
-			return self.line, TOKEN_OP_CONCAT, ".."
 		} else if len(self.chunk) == 1 || !isDigit(self.chunk[1]) {
 			self.next(1)
 			return self.line, TOKEN_SEP_DOT, "."

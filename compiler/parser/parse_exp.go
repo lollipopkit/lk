@@ -127,33 +127,17 @@ func parseExp7(lexer *Lexer) Exp {
 
 // shift
 func parseExp6(lexer *Lexer) Exp {
-	exp := parseExp5(lexer)
+	exp := parseExp4(lexer)
 	for {
 		switch lexer.LookAhead() {
 		case TOKEN_OP_SHL, TOKEN_OP_SHR:
 			line, op, _ := lexer.NextToken()
-			shx := &BinopExp{line, op, exp, parseExp5(lexer)}
+			shx := &BinopExp{line, op, exp, parseExp4(lexer)}
 			exp = optimizeBitwiseBinaryOp(shx)
 		default:
 			return exp
 		}
 	}
-}
-
-// a .. b
-func parseExp5(lexer *Lexer) Exp {
-	exp := parseExp4(lexer)
-	if lexer.LookAhead() != TOKEN_OP_CONCAT {
-		return exp
-	}
-
-	line := 0
-	exps := []Exp{exp}
-	for lexer.LookAhead() == TOKEN_OP_CONCAT {
-		line, _, _ = lexer.NextToken()
-		exps = append(exps, parseExp4(lexer))
-	}
-	return &ConcatExp{line, exps}
 }
 
 // x +/- y

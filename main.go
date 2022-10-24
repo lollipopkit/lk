@@ -8,14 +8,12 @@ import (
 )
 
 var (
-	force *bool
-	debug *bool
-	args []string
+	force = flag.Bool("f", false, "force to re-compile")
+	debug = flag.Bool("d", false, "debug mode")
+	args = []string{}
 )
 
 func main() {
-	force = flag.Bool("f", false, "force to re-compile")
-	debug = flag.Bool("d", false, "debug mode")
 	flag.Parse()
 
 	consts.Debug = *debug

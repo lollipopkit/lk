@@ -3,8 +3,6 @@ package codegen
 import (
 	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
 	. "git.lolli.tech/lollipopkit/lk/compiler/lexer"
-
-	. "git.lolli.tech/lollipopkit/lk/vm"
 )
 
 // kind of operands
@@ -46,8 +44,6 @@ func cgExp(fi *funcInfo, node Exp, a, n int) {
 		cgBinopExp(fi, exp, a)
 	case *TernaryExp:
 		cgTernaryExp(fi, exp, a)
-	case *ConcatExp:
-		cgConcatExp(fi, exp, a)
 	case *NameExp:
 		cgNameExp(fi, exp, a)
 	case *TableAccessExp:
@@ -192,19 +188,6 @@ func cgTernaryExp(fi *funcInfo, node *TernaryExp, a int) {
 	fi.emitMove(node.Line, a, b)
 
 	fi.fixSbx(pcOfJmp2, fi.pc()-pcOfJmp2)
-}
-
-// r[a] := exp1 .. exp2
-func cgConcatExp(fi *funcInfo, node *ConcatExp, a int) {
-	for i := range node.Exps {
-		a := fi.allocReg()
-		cgExp(fi, node.Exps[i], a, 1)
-	}
-
-	c := fi.usedRegs - 1
-	b := c - len(node.Exps) + 1
-	fi.freeRegs(c - b + 1)
-	fi.emitABC(node.Line, OP_CONCAT, a, b, c)
 }
 
 // r[a] := name

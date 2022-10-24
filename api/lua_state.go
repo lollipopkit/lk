@@ -90,7 +90,6 @@ type BasicAPI interface {
 	PCall(nArgs, nResults, msgh int, print bool) int
 	/* miscellaneous functions */
 	Len(idx int)
-	Concat(n int)
 	Next(idx int) bool
 	Error() int
 	StringToNumber(s string) bool

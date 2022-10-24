@@ -27,7 +27,6 @@ const (
 	TOKEN_OP_BOR
 	TOKEN_OP_SHR
 	TOKEN_OP_SHL
-	TOKEN_OP_CONCAT
 	TOKEN_OP_LT
 	TOKEN_OP_LE
 	TOKEN_OP_GT
@@ -88,7 +87,6 @@ var tokenNames = map[int]string{
 	TOKEN_OP_BOR:      "|",
 	TOKEN_OP_SHR:      ">>",
 	TOKEN_OP_SHL:      "<<",
-	TOKEN_OP_CONCAT:   "..",
 	TOKEN_OP_LT:       "<",
 	TOKEN_OP_LE:       "<=",
 	TOKEN_OP_GT:       ">",

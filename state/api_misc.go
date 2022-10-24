@@ -3,7 +3,6 @@ package state
 import (
 	"fmt"
 
-	"git.lolli.tech/lollipopkit/lk/logger"
 	"git.lolli.tech/lollipopkit/lk/number"
 	jsoniter "github.com/json-iterator/go"
 )
@@ -26,36 +25,6 @@ func (self *luaState) Len(idx int) {
 	} else {
 		panic(fmt.Sprintf("attempt to get length of %#v (a %T value)", val, val))
 	}
-}
-
-// [-n, +1, e]
-// http://www.lua.org/manual/5.3/manual.html#lua_concat
-func (self *luaState) Concat(n int) {
-	if n == 0 {
-		self.stack.push("")
-	} else if n >= 2 {
-		for i := 1; i < n; i++ {
-			if self.IsString(-1) && self.IsString(-2) {
-				s2 := self.ToString(-1)
-				s1 := self.ToString(-2)
-				self.stack.pop()
-				self.stack.pop()
-				self.stack.push(s1 + s2)
-				continue
-			}
-
-			b := self.stack.pop()
-			a := self.stack.pop()
-			if result, ok := callMetamethod(a, b, "__concat", self); ok {
-				self.stack.push(result)
-				continue
-			}
-
-			logger.W("[state.Concat] between %v and %v", a, b)
-			self.stack.push("")
-		}
-	}
-	// n == 1, do nothing
 }
 
 // [-1, +(2|0), e]
