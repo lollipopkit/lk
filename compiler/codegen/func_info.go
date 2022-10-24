@@ -142,10 +142,10 @@ func (self *funcInfo) exitScope(endPC int) {
 	self.breaks = self.breaks[:len(self.breaks)-1]
 
 	a := self.getJmpArgA()
-	for i := range pendingBreakJmps {
-		sBx := self.pc() - pendingBreakJmps[i]
+	for idx := range pendingBreakJmps {
+		sBx := self.pc() - pendingBreakJmps[idx]
 		i := (sBx+MAXARG_sBx)<<14 | a<<6 | OP_JMP
-		self.insts[pendingBreakJmps[i]] = uint32(i)
+		self.insts[pendingBreakJmps[idx]] = uint32(i)
 	}
 
 	self.scopeLv--
