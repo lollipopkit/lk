@@ -7,11 +7,12 @@ import (
 	"os"
 	"path"
 
+	"git.lolli.tech/lollipopkit/lk/binchunk"
 	"git.lolli.tech/lollipopkit/lk/compiler"
 	"git.lolli.tech/lollipopkit/lk/state"
 )
 
-func compile(source, output string) {
+func compile(source string) {
 	if !exist(source) {
 		panic("file not found")
 	}
@@ -22,7 +23,7 @@ func compile(source, output string) {
 	}
 
 	bin := compiler.Compile(string(data), source)
-	f, err := os.Create(output)
+	f, err := os.Create(source + "c")
 	if err != nil {
 		panic(err)
 	}
@@ -47,7 +48,10 @@ func run(file string) {
 	compiledFilePath := path.Join(os.TempDir(), compiledFileName)
 	compiledData, _ := ioutil.ReadFile(compiledFilePath)
 
-	if !exist(compiledFilePath) || *force {
+	isJChunk, _ := binchunk.IsJsonChunk(data)
+	if isJChunk {
+		compiledData = data
+	} else if !exist(compiledFilePath) || *force {
 		bin := compiler.Compile(string(data), file)
 		f, err := os.Create(compiledFilePath)
 		if err != nil {

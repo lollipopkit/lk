@@ -25,7 +25,7 @@ func main() {
 	}
 	switch args[0] {
 	case "compile":
-		compile(args[1], args[2])
+		compile(args[1])
 	default:
 		if strings.Contains(args[0], ".lk") {
 			run(args[0])

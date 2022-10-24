@@ -81,7 +81,7 @@ if http.listen(':8080', handle) != nil {
 ```
 
 ## 🔖 TODO
-- 语法
+- [ ] 语法
   - [x] 注释：`//` `/* */`
   - [x] 去除 `repeat`, `until`, `goto`, `..` (`concat`)
   - [x] Raw String, 使用 ``` ` ``` 包裹字符
@@ -94,10 +94,10 @@ if http.listen(':8080', handle) != nil {
     - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
     - [x] 索引从 `0` 开始
     - [x] 改变 `metatable` 设置方式
-- 编译器
+- [x] 编译器
   - [x] 自动添加 `range` ( `paris` )
   - [x] 支持 `a++` `a+=b` 等
-- CLI
+- [x] CLI
   - [x] 利用HASH，文件无变化不编译
   - [x] 支持传入参数 ( `lk args.lk arg1` -> `.lk`内调用`os.args` )
   - [x] REPL，直接运行 `./lk` 即可进入

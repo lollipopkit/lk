@@ -60,7 +60,7 @@ func IsJsonChunk(data []byte) (bool, *Prototype) {
 		return false, nil
 	}
 	if bin.Sign != consts.SIGNATURE || bin.Version != consts.VERSION {
-		return false, nil
+		panic("mismatch version or signature")
 	}
 	return err == nil, bin.Proto
 }
