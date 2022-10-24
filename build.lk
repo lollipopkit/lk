@@ -1,0 +1,25 @@
+args := os.args
+if #args < 2 {
+    print("Usage: lk build.lk <version>")
+    os.exit(1) 
+}
+    
+version := args[2]
+
+archs = {'arm64', 'amd64'}
+platforms = {'darwin', 'linux', 'windows'}
+
+for _, arch in archs {
+    for _, platform in platforms {
+        suffix := platform == 'windows' ? '.exe' : ''
+        prefix := fmt('GOOS=%s GOARCH=%s', platform, arch)
+        output := fmt('releases/lk-%s-%s-v%s%s', platform, arch, version, suffix)
+        cmd = fmt('%s go build -o %s', prefix, output)
+        _, err := os.exec(cmd)
+        if err != nil {
+            print(fmt('Failed to build %s-%s', platform, arch))
+            os.exit()
+        }
+        print(fmt('Successfully built %s-%s', platform, arch))
+    }
+}

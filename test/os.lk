@@ -17,7 +17,8 @@ pri('rm err: ', err)
 result, ok := os.exec('ls', '-l', 'test')
 pri('ls result: ', ok, result)
 
-pri('env HOME: ', os.env('HOME'))
+pri('set env: ', os.setenv('LKTEST', 'test'))
+pri('env HOME: ', os.getenv('LKTEST'))
 pri('date: ', os.date())
 
 dirs, err := os.ls('test')

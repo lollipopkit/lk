@@ -472,13 +472,16 @@ print()
 ### `os`
 - `os.exit([code])`
 退出程序，`code` 为退出码，默认为 0。无返回值。
-- `os.exec (exe, [args...])`
-执行一个外部程序，`exe` 为可执行文件路径，`args` 为可选参数，为可执行文件的参数。
+- `os.exec(script)`
+执行脚本，`script` 为脚本内容。
 返回两个值：`output` `err`，分别为输出和错误信息。  
-- `os.env(name)`
+- `os.getenv(name)`
 获取环境变量，`name` 为环境变量名。
 返回值一个：`value`，为环境变量值。  
 如果当前环境不存在该环境变量，则返回 `nil`。
+- `os.setenv(key, value)`
+设置环境变量，`key` 为环境变量名，`value` 为环境变量值。
+返回值一个：`err`，如果没有错误则为 `nil`。
 - `os.tmp()`
 获取临时文件夹路径。无返回值。
 - `os.mv(src, dst)`

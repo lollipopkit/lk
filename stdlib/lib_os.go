@@ -2,11 +2,14 @@ package stdlib
 
 import (
 	"io/fs"
+	"io/ioutil"
 	"os"
 	"os/exec"
+	"path"
 	"time"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
 var sysLib = map[string]GoFunction{
@@ -16,7 +19,8 @@ var sysLib = map[string]GoFunction{
 	"mv":    osRename,
 	"link":  osLink,
 	"tmp":   osTmpName,
-	"env":   osGetEnv,
+	"getenv":   osGetEnv,
+	"setenv": osSetEnv,
 	"exec":  osExecute,
 	"exit":  osExit,
 	"ls":    osLs,
@@ -244,22 +248,37 @@ func osGetEnv(ls LkState) int {
 	return 1
 }
 
-// os.exec (exe, [args...])
-func osExecute(ls LkState) int {
-	exe := ls.CheckString(1)
-	args := make([]string, 0, ls.GetTop()-1)
-	for i := 2; i <= ls.GetTop(); i++ {
-		args = append(args, ls.CheckString(i))
+func osSetEnv(ls LkState) int {
+	key := ls.CheckString(1)
+	value := ls.CheckString(2)
+	if err := os.Setenv(key, value); err != nil {
+		ls.PushString(err.Error())
+		return 1
 	}
-	cmd := exec.Command(exe, args...)
-	out, err := cmd.Output()
+	ls.PushNil()
+	return 1
+}
+
+// os.exec (script)
+func osExecute(ls LkState) int {
+	script := ls.CheckString(1)
+	tempDir := os.TempDir()
+	path := path.Join(tempDir, "lkscript" + utils.Md5([]byte(script)))
+	err := ioutil.WriteFile(path, []byte(script), 0744)
 	if err != nil {
 		ls.PushNil()
 		ls.PushString(err.Error())
 		return 2
 	}
-	ls.PushString(string(out))
-	ls.PushNil()
+	cmd := exec.Command("bash", path)
+	out, err := cmd.Output()
+	if err != nil {
+		ls.PushNil()
+		ls.PushString(err.Error())
+	} else {
+		ls.PushString(string(out))
+		ls.PushNil()
+	}
 	return 2
 }
 
