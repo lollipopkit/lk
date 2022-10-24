@@ -14,7 +14,7 @@ import (
 // http://www.lua.org/manual/5.3/manual.html#lua_load
 func (self *luaState) Load(chunk []byte, chunkName, mode string) int {
 	var proto *binchunk.Prototype
-	isJson, prot := binchunk.IsJsonChunk(chunk)
+	isJson, prot := binchunk.Verify(chunk)
 	logger.I("[state.Load] Using compiled chunk: %v", isJson)
 	if isJson {
 		proto = prot

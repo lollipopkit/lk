@@ -69,10 +69,7 @@ fn Header:__str() {
 处理监听事件
 `req`包含属性`method`, `url`, `body`, `headers`
 */
-shy fn handle(req) {
-    shy h = Header:fromTable(req.headers)
-    rt 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, h, req.body)
-}
+handle := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header:fromTable(req.headers), req.body)
 
 // 监听
 if http.listen(':8080', handle) != nil {
@@ -100,7 +97,6 @@ if http.listen(':8080', handle) != nil {
   - [x] 自动添加 `range` ( `paris` )
   - [x] 支持 `a++` `a+=b` 等
 - [x] CLI
-  - [x] 利用HASH，文件无变化不编译
   - [x] 支持传入参数 ( `lk args.lk arg1` -> `.lk`内调用`os.args` )
   - [x] REPL，直接运行 `./lk` 即可进入
     - [x] 支持方向键

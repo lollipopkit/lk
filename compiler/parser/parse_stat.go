@@ -218,9 +218,9 @@ func parseAssignStat(lexer *Lexer, var0 Exp) Stat {
 	if lexer.LookAhead() == TOKEN_OP_ASSIGNSHY {
 		lexer.NextToken()             // :=
 		expList := parseExpList(lexer) // explist
-		strExps := make([]string, len(expList))
-		for i, exp := range varList {
-			name, ok := exp.(*NameExp)
+		strExps := make([]string, len(varList))
+		for i := range varList {
+			name, ok := varList[i].(*NameExp)
 			if !ok {
 				panic("invalid assignment")
 			}

@@ -8,7 +8,6 @@ import (
 )
 
 var (
-	force = flag.Bool("f", false, "force to re-compile")
 	debug = flag.Bool("d", false, "debug mode")
 	args = []string{}
 )

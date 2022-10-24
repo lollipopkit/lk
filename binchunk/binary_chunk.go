@@ -53,14 +53,15 @@ type LocVar struct {
 	EndPC   uint32 `json:"epc"`
 }
 
-func IsJsonChunk(data []byte) (bool, *Prototype) {
+func Verify(data []byte) (bool, *Prototype) {
 	var bin binaryChunk
 	err := json.Unmarshal(data, &bin)
 	if err != nil {
 		return false, nil
 	}
 	if bin.Sign != consts.SIGNATURE || bin.Version != consts.VERSION {
-		panic("mismatch version or signature")
+		println("mismatch version or signature\n")
+		return false, nil
 	}
 	return err == nil, bin.Proto
 }

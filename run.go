@@ -1,18 +1,15 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"io/ioutil"
 	"os"
-	"path"
 
 	"git.lolli.tech/lollipopkit/lk/binchunk"
 	"git.lolli.tech/lollipopkit/lk/compiler"
 	"git.lolli.tech/lollipopkit/lk/state"
 )
 
-func compile(source string) {
+func compile(source string) []byte {
 	if !exist(source) {
 		panic("file not found")
 	}
@@ -32,6 +29,7 @@ func compile(source string) {
 		panic(err)
 	}
 	f.Write(compiledData)
+	return compiledData
 }
 
 func run(file string) {
@@ -44,24 +42,14 @@ func run(file string) {
 		panic(err)
 	}
 
-	compiledFileName := getSHA256HashCode(data) + ".lkc"
-	compiledFilePath := path.Join(os.TempDir(), compiledFileName)
+	compiledFilePath := file + "c"
 	compiledData, _ := ioutil.ReadFile(compiledFilePath)
 
-	isJChunk, _ := binchunk.IsJsonChunk(data)
-	if isJChunk {
+	valid, _ := binchunk.Verify(data)
+	if valid {
 		compiledData = data
-	} else if !exist(compiledFilePath) || *force {
-		bin := compiler.Compile(string(data), file)
-		f, err := os.Create(compiledFilePath)
-		if err != nil {
-			panic(err)
-		}
-		compiledData, err = bin.Dump()
-		if err != nil {
-			panic(err)
-		}
-		f.Write(compiledData)
+	} else {
+		compile(file)
 	}
 
 	ls := state.New()
@@ -73,10 +61,4 @@ func run(file string) {
 func exist(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
-}
-
-func getSHA256HashCode(message []byte) string {
-	bytes := sha256.Sum256(message)
-	hashCode := hex.EncodeToString(bytes[:])
-	return hashCode
 }
