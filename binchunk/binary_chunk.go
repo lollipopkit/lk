@@ -1,12 +1,16 @@
 package binchunk
 
 import (
+	"errors"
+	"strings"
+
 	"git.lolli.tech/lollipopkit/lk/consts"
 	jsoniter "github.com/json-iterator/go"
 )
 
 var (
 	json = jsoniter.ConfigCompatibleWithStandardLibrary
+	ErrInvalidVersionFormat = errors.New("invalid version format")
 )
 
 const (
@@ -53,17 +57,28 @@ type LocVar struct {
 	EndPC   uint32 `json:"epc"`
 }
 
-func Verify(data []byte) (bool, *Prototype) {
+func Verify(data []byte) (*Prototype, error) {
 	var bin binaryChunk
 	err := json.Unmarshal(data, &bin)
 	if err != nil {
-		return false, nil
+		return nil, err
 	}
-	if bin.Sign != consts.SIGNATURE || bin.Version != consts.VERSION {
-		println("mismatch version or signature\n")
-		return false, nil
+	if bin.Sign != consts.SIGNATURE {
+		return nil, errors.New("invalid signature: "+bin.Sign)
 	}
-	return err == nil, bin.Proto
+	return bin.Proto, passVersion(bin.Version)
+}
+
+func passVersion(v string) error {
+	vs := strings.Split(v, ".")
+	if len(vs) != 3 {
+		return ErrInvalidVersionFormat
+	}
+
+	if strings.Compare(v, consts.VERSION) >= 0 {
+		return nil
+	}
+	return errors.New("LK VM version "+consts.VERSION+" is required, but "+v+" is provided")
 }
 
 func (proto *Prototype) Dump() ([]byte, error) {

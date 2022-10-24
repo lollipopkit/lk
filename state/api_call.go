@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"strings"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
 	"git.lolli.tech/lollipopkit/lk/binchunk"
@@ -14,11 +15,11 @@ import (
 // http://www.lua.org/manual/5.3/manual.html#lua_load
 func (self *luaState) Load(chunk []byte, chunkName, mode string) int {
 	var proto *binchunk.Prototype
-	isJson, prot := binchunk.Verify(chunk)
-	logger.I("[state.Load] Using compiled chunk: %v", isJson)
-	if isJson {
+	prot, err := binchunk.Verify(chunk)
+	logger.I("[state.Load] Using compiled chunk: %v", err)
+	if err == nil {
 		proto = prot
-	} else {
+	} else if strings.HasSuffix(chunkName, ".lk") {
 		proto = compiler.Compile(string(chunk), chunkName)
 	}
 

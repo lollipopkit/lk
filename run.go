@@ -3,30 +3,33 @@ package main
 import (
 	"io/ioutil"
 	"os"
+	"strings"
 
 	"git.lolli.tech/lollipopkit/lk/binchunk"
 	"git.lolli.tech/lollipopkit/lk/compiler"
 	"git.lolli.tech/lollipopkit/lk/state"
+	"git.lolli.tech/lollipopkit/lk/term"
 )
 
 func compile(source string) []byte {
 	if !exist(source) {
-		panic("file not found")
+		term.Error("[compile] file not found: " + source)
 	}
 
 	data, err := ioutil.ReadFile(source)
 	if err != nil {
-		panic(err)
+		term.Error("[compile] can't read file: " + err.Error())
 	}
 
 	bin := compiler.Compile(string(data), source)
 	f, err := os.Create(source + "c")
 	if err != nil {
-		panic(err)
+		term.Error("[compile] can't create file: " + err.Error())
 	}
+
 	compiledData, err := bin.Dump()
 	if err != nil {
-		panic(err)
+		term.Error("[compile] dump file failed: " + err.Error())
 	}
 	f.Write(compiledData)
 	return compiledData
@@ -34,22 +37,23 @@ func compile(source string) []byte {
 
 func run(file string) {
 	if !exist(file) {
-		panic("file not found")
+		term.Error("[run] file not found: " + file)
 	}
 
 	data, err := ioutil.ReadFile(file)
 	if err != nil {
-		panic(err)
+		term.Error("[run] can't read file: " + err.Error())
 	}
 
-	compiledFilePath := file + "c"
-	compiledData, _ := ioutil.ReadFile(compiledFilePath)
+	var compiledData []byte
 
-	valid, _ := binchunk.Verify(data)
-	if valid {
+	_, err = binchunk.Verify(data)
+	if err == nil {
 		compiledData = data
+	} else if strings.HasSuffix(file, ".lk") {
+		compiledData = compile(file)
 	} else {
-		compile(file)
+		term.Error("[run] can't compile: " + err.Error())
 	}
 
 	ls := state.New()
