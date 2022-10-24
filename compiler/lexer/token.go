@@ -60,6 +60,7 @@ const (
 	TOKEN_KW_CLASS = iota - 4
 	TOKEN_OP_QUESTION
 	TOKEN_OP_NILCOALESCING // ??
+	TOKEN_OP_ASSIGNSHY	 // :=
 )
 
 var tokenNames = map[int]string{
@@ -117,6 +118,7 @@ var tokenNames = map[int]string{
 	TOKEN_KW_CLASS:    "class",
 	TOKEN_OP_QUESTION: "?",
 	TOKEN_OP_NILCOALESCING: "??",
+	TOKEN_OP_ASSIGNSHY: ":=",
 }
 
 func tokenName(token int) string {

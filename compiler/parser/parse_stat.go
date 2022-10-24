@@ -213,8 +213,17 @@ func parseAssignOrFuncCallStat(lexer *Lexer) Stat {
 }
 
 // varlist ‘=’ explist |
-func parseAssignStat(lexer *Lexer, var0 Exp) *AssignStat {
+func parseAssignStat(lexer *Lexer, var0 Exp) Stat {
 	varList := _finishVarList(lexer, var0) // varlist
+	if lexer.LookAhead() == TOKEN_OP_ASSIGNSHY {
+		lexer.NextToken()             // :=
+		expList := parseExpList(lexer) // explist
+		strExps := make([]string, len(expList))
+		for i, exp := range varList {
+			strExps[i] = exp.(*NameExp).Name
+		}
+		return &LocalVarDeclStat{lexer.Line(), strExps, expList}
+	}
 	lexer.NextTokenOfKind(TOKEN_OP_ASSIGN) // =
 	expList := parseExpList(lexer)         // explist
 	lastLine := lexer.Line()
