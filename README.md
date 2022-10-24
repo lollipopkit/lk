@@ -90,6 +90,7 @@ if http.listen(':8080', handle) != nil {
     - [x] 三元操作符 `a ? b : c`
     - [x] `a == nil ? b : a` -> `a ?? b`
     - [x] `shy a = b` -> `a := b`
+    - [x] `shy a = fn(b) {rt c}` -> `shy a = fn(b) => c`
   - [x] Table
     - [x] key为StringExp，而不是NameExp
     - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`

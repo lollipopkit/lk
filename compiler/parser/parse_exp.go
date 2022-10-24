@@ -251,6 +251,14 @@ func parseFuncDefExp(lexer *Lexer) *FuncDefExp {
 	lexer.NextTokenOfKind(TOKEN_SEP_LPAREN)                // (
 	parList, isVararg := _parseParList(lexer)              // [parlist]
 	lexer.NextTokenOfKind(TOKEN_SEP_RPAREN)                // )
+	if lexer.LookAhead() == TOKEN_OP_ARROW {
+		lexer.NextToken() // ->
+		return &FuncDefExp{line, line, parList, isVararg, &Block{
+			Stats: []Stat{},
+			RetExps:  parseExpList(lexer),
+			LastLine: line,
+		}}
+	}
 	lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)                // {
 	block := parseBlock(lexer)                             // block
 	lastLine, _ := lexer.NextTokenOfKind(TOKEN_SEP_RCURLY) // }

@@ -220,7 +220,11 @@ func parseAssignStat(lexer *Lexer, var0 Exp) Stat {
 		expList := parseExpList(lexer) // explist
 		strExps := make([]string, len(expList))
 		for i, exp := range varList {
-			strExps[i] = exp.(*NameExp).Name
+			name, ok := exp.(*NameExp)
+			if !ok {
+				panic("invalid assignment")
+			}
+			strExps[i] = name.Name
 		}
 		return &LocalVarDeclStat{lexer.Line(), strExps, expList}
 	}

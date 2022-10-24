@@ -145,6 +145,9 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 		if self.test("==") {
 			self.next(2)
 			return self.line, TOKEN_OP_EQ, "=="
+		} else if self.test("=>") {
+			self.next(2)
+			return self.line, TOKEN_OP_ARROW, "=>"
 		} else {
 			self.next(1)
 			return self.line, TOKEN_OP_ASSIGN, "="

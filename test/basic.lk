@@ -37,6 +37,10 @@ while true {
     long = nil
 }
 
+// 等于 `shy a = fn(b) {rt 3 ^ b, 2 ^ b}
+a := fn(b) => 3 ^ b, 2 ^ b
+func(a(2))
+
 func('' and true and 1 ? 'support ternary exp' : 'unreachable')
 func(6 ~/ 2, 6 & 2, 6 / 2)
 func(_VERSION, math.pi)
