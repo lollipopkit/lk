@@ -9,6 +9,7 @@ import (
 	"git.lolli.tech/lollipopkit/lk/compiler"
 	"git.lolli.tech/lollipopkit/lk/state"
 	"git.lolli.tech/lollipopkit/lk/term"
+	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
 func compile(source string) []byte {
@@ -22,44 +23,85 @@ func compile(source string) []byte {
 	}
 
 	bin := compiler.Compile(string(data), source)
-	f, err := os.Create(source + "c")
-	if err != nil {
-		term.Error("[compile] can't create file: " + err.Error())
-	}
 
-	compiledData, err := bin.Dump()
+	compiledData, err := bin.Dump(utils.Md5(data))
 	if err != nil {
 		term.Error("[compile] dump file failed: " + err.Error())
 	}
-	f.Write(compiledData)
+	err = ioutil.WriteFile(source+"c", compiledData, 0744)
+	if err != nil {
+		term.Error("[compile] write file failed: " + err.Error())
+	}
 	return compiledData
 }
 
-func run(file string) {
-	if !exist(file) {
-		term.Error("[run] file not found: " + file)
+func runVM(data []byte, source string) {
+	ls := state.New()
+	ls.OpenLibs()
+	ls.Load(data, source, "bt")
+	ls.Call(0, -1)
+}
+
+func runlk(source string) {
+	lkc := source + "c"
+	if exist(lkc) {
+		runlkc(lkc)
+	} else {
+		data := compile(source)
+		runVM(data, source)
+	}
+}
+
+func runlkc(source string) {
+	if !exist(source) {
+		term.Error("[run] file not found: " + source)
 	}
 
-	data, err := ioutil.ReadFile(file)
+	data, err := ioutil.ReadFile(source)
 	if err != nil {
 		term.Error("[run] can't read file: " + err.Error())
 	}
 
-	var compiledData []byte
-
-	_, err = binchunk.Verify(data)
-	if err == nil {
-		compiledData = data
-	} else if strings.HasSuffix(file, ".lk") {
-		compiledData = compile(file)
-	} else {
-		term.Error("[run] can't compile: " + err.Error())
+	lkPath := source[:len(source)-1]
+	lkData := make([]byte, 0)
+	lkExist := exist(lkPath)
+	if lkExist {
+		lkData, err = ioutil.ReadFile(lkPath)
+		if err != nil {
+			term.Error("[run] can't read file: " + err.Error())
+		}
 	}
 
-	ls := state.New()
-	ls.OpenLibs()
-	ls.Load(compiledData, file, "bt")
-	ls.Call(0, -1)
+	_, err = binchunk.Verify(data, lkData)
+	if err != nil {
+		if err == binchunk.ErrMismatchedHash {
+			if lkExist {
+				term.Info("[run] source changed, recompiling " + lkPath)
+				data = compile(lkPath)
+			} else {
+				term.Warn("[run] source not found: " + lkPath)
+			}
+		} else if strings.HasPrefix(err.Error(), binchunk.MismatchVersionPrefix) {
+			if lkExist {
+				term.Info("[run] mismatch version, recompiling " + lkPath)
+				data = compile(lkPath)
+			} else {
+				term.Error("[run] mismatch version and source not found: " + lkPath)
+			}
+		} else {
+			term.Error("[run] chunk verify failed: " + err.Error())
+		}
+	}
+
+	runVM(data, source)
+}
+
+func run(file string) {
+	if strings.HasSuffix(file, ".lk") {
+		runlk(file)
+	} else if strings.HasSuffix(file, ".lkc") {
+		runlkc(file)
+	}
 }
 
 func exist(path string) bool {

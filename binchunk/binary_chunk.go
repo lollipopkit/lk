@@ -5,12 +5,18 @@ import (
 	"strings"
 
 	"git.lolli.tech/lollipopkit/lk/consts"
+	"git.lolli.tech/lollipopkit/lk/utils"
 	jsoniter "github.com/json-iterator/go"
 )
 
+const (
+	MismatchVersionPrefix = "mismatch LK VM version: "
+)
+
 var (
-	json = jsoniter.ConfigCompatibleWithStandardLibrary
+	json                    = jsoniter.ConfigCompatibleWithStandardLibrary
 	ErrInvalidVersionFormat = errors.New("invalid version format")
+	ErrMismatchedHash       = errors.New("mismatched hash")
 )
 
 const (
@@ -25,7 +31,7 @@ const (
 type binaryChunk struct {
 	Version string     `json:"v"`
 	Sign    string     `json:"si"`
-	Hash    string     `json:"h"`
+	Md5     string     `json:"m"`
 	Proto   *Prototype `json:"p"`
 }
 
@@ -57,15 +63,19 @@ type LocVar struct {
 	EndPC   uint32 `json:"epc"`
 }
 
-func Verify(data []byte) (*Prototype, error) {
+func Verify(data, sourceData []byte) (*Prototype, error) {
 	var bin binaryChunk
 	err := json.Unmarshal(data, &bin)
 	if err != nil {
 		return nil, err
 	}
 	if bin.Sign != consts.SIGNATURE {
-		return nil, errors.New("invalid signature: "+bin.Sign)
+		return nil, errors.New("invalid signature: " + bin.Sign)
 	}
+	if len(sourceData) != 0 && bin.Md5 != utils.Md5(sourceData) {
+		return nil, ErrMismatchedHash
+	}
+
 	return bin.Proto, passVersion(bin.Version)
 }
 
@@ -78,14 +88,15 @@ func passVersion(v string) error {
 	if strings.Compare(v, consts.VERSION) >= 0 {
 		return nil
 	}
-	return errors.New("LK VM version "+consts.VERSION+" is required, but "+v+" is provided")
+	return errors.New(MismatchVersionPrefix + consts.VERSION + " is required, but " + v + " is provided")
 }
 
-func (proto *Prototype) Dump() ([]byte, error) {
+func (proto *Prototype) Dump(md5 string) ([]byte, error) {
 	bin := &binaryChunk{
 		Version: consts.VERSION,
 		Sign:    consts.SIGNATURE,
 		Proto:   proto,
+		Md5:     md5,
 	}
 	return json.Marshal(bin)
 }
