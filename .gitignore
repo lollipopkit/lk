@@ -2,3 +2,4 @@ lk
 releases
 */*.lkc
 */*.ast.json
+test/test.lk

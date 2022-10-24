@@ -45,7 +45,7 @@ const (
 	TOKEN_KW_FUNCTION
 	TOKEN_KW_IF
 	TOKEN_KW_IN
-	TOKEN_KW_LOCAL
+	TOKEN_KW_SHY
 	TOKEN_KW_NIL
 	TOKEN_KW_RETURN
 	TOKEN_KW_TRUE
@@ -59,6 +59,7 @@ const (
 	TOKEN_OP_BXOR  = TOKEN_OP_WAVE
 	TOKEN_KW_CLASS = iota - 4
 	TOKEN_OP_QUESTION
+	TOKEN_OP_NILCOALESCING // ??
 )
 
 var tokenNames = map[int]string{
@@ -105,7 +106,7 @@ var tokenNames = map[int]string{
 	TOKEN_KW_FUNCTION: "fn",
 	TOKEN_KW_IF:       "if",
 	TOKEN_KW_IN:       "in",
-	TOKEN_KW_LOCAL:    "shy",
+	TOKEN_KW_SHY:      "shy",
 	TOKEN_KW_NIL:      "nil",
 	TOKEN_KW_RETURN:   "rt",
 	TOKEN_KW_TRUE:     "true",
@@ -115,6 +116,7 @@ var tokenNames = map[int]string{
 	TOKEN_STRING:      "string literal",
 	TOKEN_KW_CLASS:    "class",
 	TOKEN_OP_QUESTION: "?",
+	TOKEN_OP_NILCOALESCING: "??",
 }
 
 func tokenName(token int) string {
@@ -135,7 +137,7 @@ var keywords = map[string]int{
 	"fn":    TOKEN_KW_FUNCTION,
 	"if":    TOKEN_KW_IF,
 	"in":    TOKEN_KW_IN,
-	"shy":   TOKEN_KW_LOCAL,
+	"shy":   TOKEN_KW_SHY,
 	"nil":   TOKEN_KW_NIL,
 	"not":   TOKEN_OP_NOT,
 	"or":    TOKEN_OP_OR,

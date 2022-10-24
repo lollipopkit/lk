@@ -88,7 +88,7 @@ if http.listen(':8080', handle) != nil {
   - [x] 面向对象
   - [ ] 语法糖
     - [x] 三元操作符 `a ? b : c`
-    - [ ] `shy a = fn (b) {rt b}` -> `shy a = (b) => b`
+    - [ ] `a == nil ? b : a` -> `a ?? b`
   - [x] Table
     - [x] key为StringExp，而不是NameExp
     - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`

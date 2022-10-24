@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "debug",
             "program": ".",
-            "args": ["-f", "test/table.lk"]
+            "args": ["-f", "test/test.lk"]
         }
     ]
 }

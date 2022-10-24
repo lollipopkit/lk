@@ -11,17 +11,13 @@ var _statEmpty = &EmptyStat{}
 stat ::=  ‘;’
 
 	| break
-	| ‘::’ Name ‘::’
-	| goto Name
-	| do block end
-	| while exp do block end
-	| repeat block until exp
-	| if exp then block {elseif exp then block} [else block] end
-	| for Name ‘=’ exp ‘,’ exp [‘,’ exp] do block end
-	| for namelist in explist do block end
+	| while exp '{' block '}'
+	| if exp '{' block {elif exp '{' block '}' } [else block] '}'
+	| for Name ‘=’ exp ‘,’ exp [‘,’ exp] '{' block '}'
+	| for namelist in explist '{' block '}'
 	| function funcname funcbody
-	| local function Name funcbody
-	| local namelist [‘=’ explist]
+	| shy function Name funcbody
+	| shy namelist [‘=’ explist]
 	| varlist ‘=’ explist
 	| functioncall
 */
@@ -39,7 +35,7 @@ func parseStat(lexer *Lexer) Stat {
 		return parseForStat(lexer)
 	case TOKEN_KW_FUNCTION:
 		return parseFuncDefStat(lexer)
-	case TOKEN_KW_LOCAL:
+	case TOKEN_KW_SHY:
 		return parseLocalAssignOrFuncDefStat(lexer)
 	case TOKEN_KW_CLASS:
 		return parseClassDefStat(lexer)
@@ -162,7 +158,7 @@ func _finishNameList(lexer *Lexer, name0 string) []string {
 // local function Name funcbody
 // local namelist [‘=’ explist]
 func parseLocalAssignOrFuncDefStat(lexer *Lexer) Stat {
-	lexer.NextTokenOfKind(TOKEN_KW_LOCAL)
+	lexer.NextTokenOfKind(TOKEN_KW_SHY)
 	if lexer.LookAhead() == TOKEN_KW_FUNCTION {
 		return _finishLocalFuncDefStat(lexer)
 	} else {

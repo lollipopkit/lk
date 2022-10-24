@@ -22,8 +22,9 @@ exp ::=  nil | false | true | Numeral | LiteralString | ‘...’ | functiondef 
 	 prefixexp | tableconstructor | exp binop exp | unop exp
 */
 /*
-exp   ::= exp13
-exp13 ::= exp12 ? exp12 : exp12
+exp   ::= exp14
+exp14 ::= exp13 {'??' exp13}
+exp13 ::= exp12 {'?' exp12 : exp12}
 exp12 ::= exp11 {or exp11}
 exp11 ::= exp10 {and exp10}
 exp10 ::= exp9 {(‘<’ | ‘>’ | ‘<=’ | ‘>=’ | ‘!=’ | ‘==’) exp9}
@@ -38,9 +39,21 @@ exp2  ::= {(‘not’ | ‘#’ | ‘-’ | ‘~’)} exp1
 exp1  ::= exp0 {‘^’ exp2}
 exp0  ::= nil | false | true | Numeral | LiteralString
 		| ‘...’ | functiondef | prefixexp | tableconstructor
+		| closure
+closure ::= ‘(’ explist ‘)’ ‘=>’ exp
 */
 func parseExp(lexer *Lexer) Exp {
-	return parseExp13(lexer)
+	return parseExp14(lexer)
+}
+
+func parseExp14(lexer *Lexer) Exp {
+	exp := parseExp13(lexer)
+	for lexer.LookAhead() == TOKEN_OP_NILCOALESCING {
+		line, _, _ := lexer.NextToken()
+		exp2 := parseExp13(lexer)
+		exp = &TernaryExp{line, &BinopExp{line, TOKEN_OP_EQ, exp, &NilExp{}}, exp2, exp}
+	}
+	return exp
 }
 
 func parseExp13(lexer *Lexer) Exp {
