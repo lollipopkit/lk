@@ -44,6 +44,8 @@ func cgExp(fi *funcInfo, node Exp, a, n int) {
 		cgUnopExp(fi, exp, a)
 	case *BinopExp:
 		cgBinopExp(fi, exp, a)
+	case *TernaryExp:
+		cgTernaryExp(fi, exp, a)
 	case *ConcatExp:
 		cgConcatExp(fi, exp, a)
 	case *NameExp:
@@ -168,6 +170,28 @@ func cgBinopExp(fi *funcInfo, node *BinopExp, a int) {
 		fi.emitBinaryOp(node.Line, node.Op, a, b, c)
 		fi.usedRegs = oldRegs
 	}
+}
+
+// r[a] := exp1 ? exp2 : exp3
+func cgTernaryExp(fi *funcInfo, node *TernaryExp, a int) {
+	oldRegs := fi.usedRegs
+
+	b, _ := expToOpArg(fi, node.Exp1, ARG_REG)
+	fi.usedRegs = oldRegs
+	fi.emitTestSet(node.Line, a, b, 0)
+	pcOfJmp := fi.emitJmp(node.Line, 0, 0)
+
+	b, _ = expToOpArg(fi, node.Exp2, ARG_REG)
+	fi.usedRegs = oldRegs
+	fi.emitMove(node.Line, a, b)
+	pcOfJmp2 := fi.emitJmp(node.Line, 0, 0)
+
+	fi.fixSbx(pcOfJmp, fi.pc()-pcOfJmp)
+	b, _ = expToOpArg(fi, node.Exp3, ARG_REG)
+	fi.usedRegs = oldRegs
+	fi.emitMove(node.Line, a, b)
+
+	fi.fixSbx(pcOfJmp2, fi.pc()-pcOfJmp2)
 }
 
 // r[a] := exp1 .. exp2

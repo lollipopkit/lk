@@ -49,6 +49,14 @@ type BinopExp struct {
 	Exp2 Exp
 }
 
+// exp1 ? exp2 : exp3
+type TernaryExp struct {
+	Line int // line of operator
+	Exp1 Exp
+	Exp2 Exp
+	Exp3 Exp
+}
+
 type ConcatExp struct {
 	Line int // line of last ..
 	Exps []Exp

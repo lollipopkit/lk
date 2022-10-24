@@ -51,6 +51,8 @@ func lineOf(exp Exp) int {
 		return lineOf(x.Exps[0])
 	case *BinopExp:
 		return lineOf(x.Exp1)
+	case *TernaryExp:
+		return lineOf(x.Line)
 	default:
 		panic("unreachable!")
 	}
@@ -88,6 +90,8 @@ func lastLineOf(exp Exp) int {
 		return lastLineOf(x.Exp2)
 	case *UnopExp:
 		return lastLineOf(x.Exp)
+	case *TernaryExp:
+		return lastLineOf(x.Exp3)
 	default:
 		panic("unreachable!")
 	}

@@ -22,10 +22,11 @@ exp ::=  nil | false | true | Numeral | LiteralString | ‘...’ | functiondef 
 	 prefixexp | tableconstructor | exp binop exp | unop exp
 */
 /*
-exp   ::= exp12
+exp   ::= exp13
+exp13 ::= exp12 ? exp12 : exp12
 exp12 ::= exp11 {or exp11}
 exp11 ::= exp10 {and exp10}
-exp10 ::= exp9 {(‘<’ | ‘>’ | ‘<=’ | ‘>=’ | ‘~=’ | ‘==’) exp9}
+exp10 ::= exp9 {(‘<’ | ‘>’ | ‘<=’ | ‘>=’ | ‘!=’ | ‘==’) exp9}
 exp9  ::= exp8 {‘|’ exp8}
 exp8  ::= exp7 {‘~’ exp7}
 exp7  ::= exp6 {‘&’ exp6}
@@ -39,7 +40,19 @@ exp0  ::= nil | false | true | Numeral | LiteralString
 		| ‘...’ | functiondef | prefixexp | tableconstructor
 */
 func parseExp(lexer *Lexer) Exp {
-	return parseExp12(lexer)
+	return parseExp13(lexer)
+}
+
+func parseExp13(lexer *Lexer) Exp {
+	exp1 := parseExp12(lexer)
+	if lexer.LookAhead() == TOKEN_OP_QUESTION {
+		line, _, _ := lexer.NextToken()
+		exp2 := parseExp12(lexer)
+		lexer.NextTokenOfKind(TOKEN_SEP_COLON)
+		exp3 := parseExp12(lexer)
+		return &TernaryExp{line, exp1, exp2, exp3}
+	}
+	return exp1
 }
 
 // x or y

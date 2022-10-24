@@ -58,7 +58,8 @@ const (
 	TOKEN_OP_SUB   = TOKEN_OP_MINUS
 	TOKEN_OP_BNOT  = TOKEN_OP_WAVE
 	TOKEN_OP_BXOR  = TOKEN_OP_WAVE
-	TOKEN_KW_CLASS = 52
+	TOKEN_KW_CLASS = iota - 4
+	TOKEN_OP_QUESTION
 )
 
 var tokenNames = map[int]string{
@@ -115,6 +116,7 @@ var tokenNames = map[int]string{
 	TOKEN_NUMBER:      "number literal",
 	TOKEN_STRING:      "string literal",
 	TOKEN_KW_CLASS:    "class",
+	TOKEN_OP_QUESTION: "?",
 }
 
 func tokenName(token int) string {

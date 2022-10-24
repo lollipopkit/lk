@@ -181,6 +181,9 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 	case '[':
 		self.next(1)
 		return self.line, TOKEN_SEP_LBRACK, "["
+	case '?':
+		self.next(1)
+		return self.line, TOKEN_OP_QUESTION, "?"
 	case '\'', '"':
 		return self.line, TOKEN_STRING, self.scanShortString()
 	case '`':

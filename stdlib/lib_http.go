@@ -130,7 +130,7 @@ func httpReq(ls LkState) int {
 	}
 
 	pushTable(ls, genReturn(code, data, &respHeader))
-	ls.PushString(data)
+	ls.PushNil()
 	return 2
 }
 

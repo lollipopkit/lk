@@ -8,23 +8,22 @@
 
 
 ## ⌨️ 体验
-`LK CLI`，可前往 [Release](https://github.com/LollipopKit/lang-lk/releases) 下载，或使用 `go build .` 生成。
+`LK CLI`，可前往 [Release](https://github.com/LollipopKit/lang-lk/releases) 下载，或使用 `go build` 生成。
 
 ```bash
 # 进入REPL交互式解释器
 ./lk
 # 执行.lk(c)文件
 ./lk <file>
-# 如果修改了.lk文件导致无法运行，可以尝试添加-f参数
-./lk -f <file>
 # 编译.lk文件
 ./lk compile <file>
 ```
 **尽量**编译以后再执行，可以大幅提高速度。具体表现可以执行 `./lk test/bench.lk` 来对比。
 
 ## 📄 语法
-#### 详细语法
-**Step by step** ➜ [LANG.md](LANG.md)
+#### 详细
+- **Step by step** ➜ [LANG.md](LANG.md)
+- **By examples** ➜ [测试集](test)
 
 #### 速览
 ```js
@@ -88,6 +87,9 @@ if http.listen(':8080', handle) != nil {
   - [x] Raw String, 使用 ``` ` ``` 包裹字符
   - [x] 支持任意对象拼接( `concat` )，使用语法 `..`
   - [x] 面向对象
+  - [ ] 语法糖
+    - [x] 三元操作符 `a ? b : c`
+    - [ ] `shy a = fn (b) {rt b}` -> `shy a = (b) => b`
   - [x] Table
     - [x] key为StringExp，而不是NameExp
     - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
@@ -99,8 +101,7 @@ if http.listen(':8080', handle) != nil {
 - CLI
   - [x] 利用HASH，文件无变化不编译
   - [x] 支持传入参数 ( `lk args.lk arg1` -> `.lk`内调用`os.args` )
-  - [x] REPL
-    - [x] 直接运行 `./lk` 即可进入
+  - [x] REPL，直接运行 `./lk` 即可进入
     - [x] 支持方向键
     - [x] 识别代码块
 - [x] 资源
