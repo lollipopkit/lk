@@ -1,6 +1,6 @@
-shy path = 'test/module'
+path := 'test/module'
 
-shy fn bench(func) {
+bench := fn(func) {
     shy t1 = os.time()
     for i = 0, 10000 {
         func()
@@ -9,12 +9,8 @@ shy fn bench(func) {
     rt t2 - t1
 }
 
-shy t1 = bench(fn() {
-    dofile(path + '.lk')
-})
+t1 := bench(fn() => dofile(path + '.lk'))
 
-shy t2 = bench(fn() {
-    dofile(path + '.lkc')
-})
+t2 := bench(fn() => dofile(path + '.lkc'))
 
 print(fmt("Using %s.lk(c)\nSource: %d ms, Compiled: %d ms, %d times", path, t1, t2, t1 / t2))

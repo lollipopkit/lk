@@ -5,7 +5,7 @@
 import "test/module"
 import 'test/gf'
 
-shy func = fn (...) {
+func := fn (...) {
     // `#`获取长度，`...`为变长参数，`{}`构造Table
     // `#{...}`即获取变长参数的长度（有多少个参数）
     print(fmt('[args: %d]\t', #{...}), ...)
@@ -20,7 +20,7 @@ func(test2.const)
 
 // "`" 包裹的str，为原始字符串，不会被转义
 // 如果第一个字符为换行符`\n`，则第一个`\n`会被忽略
-shy long = `
+long := `
 abc`
 
 if #long >= 0 and '' {
@@ -47,6 +47,6 @@ func(_VERSION, math.pi)
 // 与js类似，大部分类型都可转为json str
 func(str(test2))
 
-shy gf = new(Girlfriend)
+gf := new(Girlfriend)
 gf:herName('lxy')
 gf:hello()

@@ -23,9 +23,9 @@ fn Vector:__str() {
     rt 'Vector(' + str(self.x) + ', ' + str(self.y) + ')'
 }
 
-shy v1 = new(Vector)
-shy v2 = Vector.new(3, 4)
+v1 := new(Vector)
+v2 := Vector.new(3, 4)
 v1:set(1, 2)
-shy v3 = v1 + v2
+v3 := v1 + v2
 print(v3.x, v3.y)
 print(fmt('%s + %s = %s', v1, v2, v3))

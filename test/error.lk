@@ -1,4 +1,4 @@
-shy fn div0(a, b) {
+div0 := fn(a, b) {
     if b == 0 {
         error("DIV BY ZERO !")
     } else {
@@ -6,9 +6,9 @@ shy fn div0(a, b) {
     }
 }
 
-shy fn div1(a, b) {rt div0(a, b)}
-shy fn div2(a, b) {rt div1(a, b)}
+div1 := fn(a, b) => div0(a, b)
+div2 := fn(a, b) => div1(a, b)
 
-shy ok, result = pcall(div2, 4, 2); print(ok, result)
-shy ok, err = pcall(div2, 5, 0);    print(ok, err)
-shy ok, err = pcall(div2, {}, {});  print(ok, err)
+ok, result := pcall(div2, 4, 2); print(ok, result)
+ok, err := pcall(div2, 5, 0);    print(ok, err)
+ok, err := pcall(div2, {}, {});  print(ok, err)

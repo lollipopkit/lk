@@ -1,6 +1,6 @@
-shy pattern = `([A-Za-z0-9]+).*(\*).*(\[\])`
-shy text = 'foo9 * []'
-shy matches = re.find(pattern, text)
+pattern := `([A-Za-z0-9]+).*(\*).*(\[\])`
+text := 'foo9 * []'
+matches := re.find(pattern, text)
 for k, v in matches {
     print(k, v)
 }

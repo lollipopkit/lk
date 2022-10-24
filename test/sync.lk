@@ -1,9 +1,9 @@
-fn foo(a) {
+shy fn foo(a) {
     print("foo 函数输出", a)
     rt sync.yield(2 * a) // 返回 2*a 的值
 }
  
-co = sync.create(fn (a , b) {
+co := sync.create(fn (a , b) {
     print("第一次协同程序执行输出", a, b) // co-body 1 10
     shy r = foo(a + 1)
      

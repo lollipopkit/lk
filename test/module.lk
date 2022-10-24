@@ -1,4 +1,4 @@
-shy a = 1
+a := 1
 class test2 {
     'b': 2
 }

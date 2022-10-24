@@ -1,11 +1,11 @@
-shy pri = fn (tb) {
+pri := fn (tb) {
     for key, value in tb {
         print(key, value, type(value))
     }
     print()
 }
 
-shy tb = {5, 'd': str(4), 'c': false}
+tb := {5, 'd': str(4), 'c': false}
 pri(tb)
 
 // 赋值
