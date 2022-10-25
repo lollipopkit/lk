@@ -5,7 +5,6 @@ import (
 	"math"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/logger"
 	"git.lolli.tech/lollipopkit/lk/number"
 )
 
@@ -151,6 +150,5 @@ func _arith(a, b any, op operator) any {
 			}
 		}
 	}
-	logger.W("arith failed: %v %v %v", a, op.metamethod, b)
 	return nil
 }

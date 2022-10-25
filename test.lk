@@ -1,0 +1,23 @@
+dir := 'test/'
+files := os.ls(dir)
+skip_files := {
+    'http_listen.lk'
+}
+
+contains := fn(name) {
+    for _, f in skip_files {
+        if f == name {
+            rt true
+        }
+    }
+    rt false
+}
+
+for _, file in files {
+    if string.sub(file, #file - 3) != '.lkc' {
+        if not contains(file) {
+            print(fmt('====== %s ======', file))
+            dofile(dir + file)
+        }
+    }
+}

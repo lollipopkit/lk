@@ -1,8 +1,6 @@
 package parser
 
 import (
-	"encoding/json"
-	"io/ioutil"
 	"regexp"
 
 	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
@@ -37,13 +35,11 @@ func Parse(chunk, chunkName string) *Block {
 	lexer := NewLexer(chunk, chunkName)
 	block := parseBlock(lexer)
 
-	if consts.Debug {
-		data, err := json.MarshalIndent(block, "", "  ")
-		if err != nil {
-			panic(err)
-		}
-		ioutil.WriteFile(chunkName+".ast.json", data, 0644)
-	}
+	// data, err := json.MarshalIndent(block, "", "  ")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// ioutil.WriteFile(chunkName+".ast.json", data, 0644)
 
 	lexer.NextTokenOfKind(TOKEN_EOF)
 	return block

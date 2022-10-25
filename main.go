@@ -4,19 +4,15 @@ import (
 	"flag"
 	"strings"
 
-	"git.lolli.tech/lollipopkit/lk/consts"
 	"git.lolli.tech/lollipopkit/lk/state"
 )
 
 var (
-	debug = flag.Bool("d", false, "debug mode")
 	args  = []string{}
 )
 
 func main() {
 	flag.Parse()
-
-	consts.Debug = *debug
 
 	args = flag.Args()
 	if len(args) == 0 {
