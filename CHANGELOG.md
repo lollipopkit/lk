@@ -8,6 +8,9 @@
 - 支持三元操作符 `a ? b : c`
 - 去除 `concat`
 - 修复 `os.args` 索引错误
+- 支持 `shy a = b` -> `a := b` 语法糖
+- 支持 `a := fn(b) => c` 语法
+- 优化 `stdlib_os`
 
 ## 0.1.4
 - `+` 支持 `String`

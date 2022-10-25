@@ -84,9 +84,12 @@ func repl() {
 }
 
 func catchErr(ls *api.LkState, first *bool, cmd string) {
-	if err := recover(); err != nil && *first {
-		*first = false
-		(*ls).LoadString(cmd, "stdin")
+	if err := recover(); err != nil {
+		defer catchErr(ls, first, cmd)
+		if *first {
+			*first = false
+			(*ls).LoadString(cmd, "stdin")
+		}
 	}
 }
 
