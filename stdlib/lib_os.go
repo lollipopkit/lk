@@ -14,13 +14,14 @@ import (
 
 var sysLib = map[string]GoFunction{
 	"time":   osTime,
+	"stat":  osStat,
 	"date":   osDate,
 	"rm":     osRemove,
 	"mv":     osRename,
 	"link":   osLink,
 	"tmp":    osTmpName,
-	"getenv": osGetEnv,
-	"setenv": osSetEnv,
+	"get_env": osGetEnv,
+	"set_env": osSetEnv,
 	"exec":   osExecute,
 	"exit":   osExit,
 	"ls":     osLs,
@@ -44,6 +45,26 @@ func pushArgs(ls LkState) {
 	}
 	pushList(ls, ags)
 	ls.SetField(-2, "args")
+}
+
+func osStat(ls LkState) int {
+	path := ls.CheckString(1)
+	info, err := os.Stat(path)
+	if err != nil {
+		ls.PushNil()
+		ls.PushString(err.Error())
+		return 2
+	}
+	stat := luaMap{
+		"size": info.Size(),
+		"mode": info.Mode().String(),
+		"time":  info.ModTime().UnixMilli(),
+		"name": info.Name(),
+		"is_dir": info.IsDir(),
+	}
+	pushTable(ls, stat)
+	ls.PushNil()
+	return 2
 }
 
 func osLink(ls LkState) int {

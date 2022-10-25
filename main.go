@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	args  = []string{}
+	args = []string{}
 )
 
 func main() {

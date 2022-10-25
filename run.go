@@ -2,7 +2,7 @@ package main
 
 import (
 	"io/ioutil"
-	
+
 	"git.lolli.tech/lollipopkit/lk/state"
 	"git.lolli.tech/lollipopkit/lk/term"
 )

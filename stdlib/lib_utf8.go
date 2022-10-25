@@ -14,7 +14,7 @@ const MAX_UNICODE = 0x10FFFF
 var utf8Lib = map[string]GoFunction{
 	"len":       utfLen,
 	"offset":    utfByteOffset,
-	"codepoint": utfCodePoint,
+	"code_point": utfCodePoint,
 	"char":      utfChar,
 	"codes":     utfIterCodes,
 	/* placeholders */

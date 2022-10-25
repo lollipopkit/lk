@@ -7,7 +7,7 @@ var coFuncs = map[string]GoFunction{
 	"resume":      coResume,
 	"yield":       coYield,
 	"status":      coStatus,
-	"isyieldable": coYieldable,
+	"is_yieldable": coYieldable,
 	"running":     coRunning,
 	"wrap":        coWrap,
 }

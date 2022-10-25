@@ -33,7 +33,6 @@ func TestMain(m *testing.M) {
 	for idx := range files {
 		name := files[idx].Name()
 		if files[idx].IsDir() || contains(skipTestList, name) || !strings.HasSuffix(name, ".lk") {
-			println("====================================skip", name)
 			continue
 		}
 		println("=== " + name + " ===")

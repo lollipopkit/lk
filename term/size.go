@@ -10,7 +10,7 @@ import (
 
 type termSize struct {
 	Height int
-	Width int
+	Width  int
 }
 
 var (
@@ -43,6 +43,6 @@ func Size() (*termSize, error) {
 
 	return &termSize{
 		Height: int(height),
-		Width: int(width),
+		Width:  int(width),
 	}, nil
 }
