@@ -8,6 +8,7 @@ import (
 	"git.lolli.tech/lollipopkit/lk/binchunk"
 	"git.lolli.tech/lollipopkit/lk/compiler"
 	"git.lolli.tech/lollipopkit/lk/logger"
+	"git.lolli.tech/lollipopkit/lk/term"
 	"git.lolli.tech/lollipopkit/lk/vm"
 )
 
@@ -15,12 +16,16 @@ import (
 // http://www.lua.org/manual/5.3/manual.html#lua_load
 func (self *luaState) Load(chunk []byte, chunkName, mode string) int {
 	var proto *binchunk.Prototype
-	prot, err := binchunk.Verify(chunk, []byte{})
-	logger.I("[state.Load] Using compiled chunk: %v", err)
-	if err == nil {
-		proto = prot
-	} else if strings.HasSuffix(chunkName, ".lk") {
+	if chunkName == "stdin" {
 		proto = compiler.Compile(string(chunk), chunkName)
+	} else {
+		prot, err := binchunk.Verify(chunk, []byte{})
+		logger.I("[state.Load] Using compiled chunk: %v", err)
+		if err == nil {
+			proto = prot
+		} else if strings.HasSuffix(chunkName, ".lkc") {
+			term.Error("[state.Load] can't recompile '.lkc' file: " + chunkName)
+		}
 	}
 
 	c := newLuaClosure(proto)
