@@ -72,7 +72,7 @@ func Verify(data, sourceData []byte) (*Prototype, error) {
 	if bin.Sign != consts.SIGNATURE {
 		return nil, errors.New("invalid signature: " + bin.Sign)
 	}
-	if len(sourceData) != 0 && bin.Md5 != utils.Md5(sourceData) {
+	if sourceData != nil && bin.Md5 != utils.Md5(sourceData) {
 		return nil, ErrMismatchedHash
 	}
 

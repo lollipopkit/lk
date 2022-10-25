@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"git.lolli.tech/lollipopkit/lk/consts"
+	"git.lolli.tech/lollipopkit/lk/state"
 )
 
 var (
@@ -24,10 +25,10 @@ func main() {
 	}
 	switch args[0] {
 	case "compile":
-		compile(args[1])
+		state.Compile(args[1])
 	default:
 		if strings.Contains(args[0], ".lk") {
-			run(args[0])
+			runVM(args[0])
 		} else {
 			print("Unknown command: " + args[0])
 		}
