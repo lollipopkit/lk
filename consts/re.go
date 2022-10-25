@@ -4,7 +4,7 @@ import "regexp"
 
 const (
 	ForInReStr    = `for +(\S+(, *\S+)*) +in +(\S+) *\{`
-	FnReStr       = `fn +(\S*)\((\S*(, *\S+)*)\) *\{`
+	FnReStr       = `fn *(\S*)\((\S*(, *\S+)*)\) *\{`
 	WhileReStr    = `while +(\S+ ) *\{`
 	IfReStr       = `if +(\S+ )+ *\{`
 	ElseIfReStr   = `elif +(\S+ ) *\{`

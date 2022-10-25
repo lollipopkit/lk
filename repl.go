@@ -106,7 +106,7 @@ func protectedLoadString(ls *api.LkState, cmd string) {
 	(*ls).LoadString(addedPrintCmd, "stdin")
 }
 
-func updateHistory(str string) {
+func _updateHistory(str string) {
 	idx := -1
 	for i := range linesHistory {
 		if linesHistory[i] == str {
@@ -118,6 +118,14 @@ func updateHistory(str string) {
 		linesHistory = append(linesHistory[:idx], linesHistory[idx+1:]...)
 	}
 	linesHistory = append(linesHistory, str)
+}
+
+func updateHistory(str string) {
+	str = strings.Trim(str, "\n")
+	strs := strings.Split(str, "\n")
+	for idx := range strs {
+		_updateHistory(strs[idx])
+	}
 }
 
 func readline() string {
