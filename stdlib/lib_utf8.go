@@ -12,11 +12,11 @@ const UTF8PATT = "[\x00-\x7F\xC2-\xF4][\x80-\xBF]*"
 const MAX_UNICODE = 0x10FFFF
 
 var utf8Lib = map[string]GoFunction{
-	"len":       utfLen,
-	"offset":    utfByteOffset,
+	"len":        utfLen,
+	"offset":     utfByteOffset,
 	"code_point": utfCodePoint,
-	"char":      utfChar,
-	"codes":     utfIterCodes,
+	"char":       utfChar,
+	"codes":      utfIterCodes,
 	/* placeholders */
 	"charpattern": nil,
 }

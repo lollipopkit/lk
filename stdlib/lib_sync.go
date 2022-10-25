@@ -3,13 +3,13 @@ package stdlib
 import . "git.lolli.tech/lollipopkit/lk/api"
 
 var coFuncs = map[string]GoFunction{
-	"create":      coCreate,
-	"resume":      coResume,
-	"yield":       coYield,
-	"status":      coStatus,
+	"create":       coCreate,
+	"resume":       coResume,
+	"yield":        coYield,
+	"status":       coStatus,
 	"is_yieldable": coYieldable,
-	"running":     coRunning,
-	"wrap":        coWrap,
+	"running":      coRunning,
+	"wrap":         coWrap,
 }
 
 func OpenCoroutineLib(ls LkState) int {

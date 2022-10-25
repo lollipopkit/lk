@@ -293,6 +293,7 @@ func (self *luaState) OpenLibs() {
 		"http":   stdlib.OpenHttpLib,
 		"json":   stdlib.OpenJsonLib,
 		"re":     stdlib.OpenReLib,
+		"rand":   stdlib.OpenRandLib,
 	}
 
 	for name := range libs {

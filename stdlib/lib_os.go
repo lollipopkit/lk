@@ -13,22 +13,22 @@ import (
 )
 
 var sysLib = map[string]GoFunction{
-	"time":   osTime,
-	"stat":  osStat,
-	"date":   osDate,
-	"rm":     osRemove,
-	"mv":     osRename,
-	"link":   osLink,
-	"tmp":    osTmpName,
+	"time":    osTime,
+	"stat":    osStat,
+	"date":    osDate,
+	"rm":      osRemove,
+	"mv":      osRename,
+	"link":    osLink,
+	"tmp":     osTmpName,
 	"get_env": osGetEnv,
 	"set_env": osSetEnv,
-	"exec":   osExecute,
-	"exit":   osExit,
-	"ls":     osLs,
-	"read":   osRead,
-	"write":  osWrite,
-	"sleep":  osSleep,
-	"mkdir":  osMkdir,
+	"exec":    osExecute,
+	"exit":    osExit,
+	"ls":      osLs,
+	"read":    osRead,
+	"write":   osWrite,
+	"sleep":   osSleep,
+	"mkdir":   osMkdir,
 }
 
 func OpenOSLib(ls LkState) int {
@@ -56,10 +56,10 @@ func osStat(ls LkState) int {
 		return 2
 	}
 	stat := luaMap{
-		"size": info.Size(),
-		"mode": info.Mode().String(),
-		"time":  info.ModTime().UnixMilli(),
-		"name": info.Name(),
+		"size":   info.Size(),
+		"mode":   info.Mode().String(),
+		"time":   info.ModTime().UnixMilli(),
+		"name":   info.Name(),
 		"is_dir": info.IsDir(),
 	}
 	pushTable(ls, stat)
