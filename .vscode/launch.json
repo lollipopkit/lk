@@ -20,7 +20,7 @@
             "request": "launch",
             "mode": "debug",
             "program": ".",
-            "args": ["test/basic.lk"]
+            "args": ["test/test.lk"]
         },
 
     ]

@@ -212,7 +212,7 @@ func parseAssignOrFuncCallStat(lexer *Lexer) Stat {
 	}
 }
 
-// varlist ‘=’ explist |
+// varlist ‘=’ explist
 func parseAssignStat(lexer *Lexer, var0 Exp) Stat {
 	varList := _finishVarList(lexer, var0) // varlist
 	if lexer.LookAhead() == TOKEN_OP_ASSIGNSHY {

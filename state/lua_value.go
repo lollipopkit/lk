@@ -97,6 +97,27 @@ func getMetafield(val any, fieldName string, ls *luaState) any {
 	return nil
 }
 
+func SetExtension(typ, fnName string, c *closure, ls *luaState) {
+	key := fmt.Sprintf("_EXT|%s", typ)
+	if ext, ok := ls.registry.get(key).(*luaTable); ok {
+		ext.put(fnName, c)
+	} else {
+		ext = newLuaTable(0, 0)
+		ext.put(fnName, c)
+		ls.registry.put(key, ext)
+	}
+}
+
+func GetExtension(typ, fnName string, ls *luaState) *closure {
+	key := fmt.Sprintf("_EXT|%s", typ)
+	if ext, ok := ls.registry.get(key).(*luaTable); ok {
+		if c, ok := ext.get(fnName).(*closure); ok {
+			return c
+		}
+	}
+	return nil
+}
+
 func callMetamethod(a, b any, mmName string, ls *luaState) (any, bool) {
 	var mm any
 	if mm = getMetafield(a, mmName, ls); mm == nil {

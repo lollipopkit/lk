@@ -9,21 +9,13 @@ import (
 
 var strLib = map[string]GoFunction{
 	"len":      strLen,
-	"rep":      strRep,
+	"repeat":      strRep,
 	"reverse":  strReverse,
 	"lower":    strLower,
 	"upper":    strUpper,
 	"sub":      strSub,
 	"byte":     strByte,
 	"char":     strChar,
-	"dump":     strDump,
-	"packsize": strPackSize,
-	"pack":     strPack,
-	"unpack":   strUnpack,
-	"find":     strFind,
-	"match":    strMatch,
-	"gsub":     strGsub,
-	"gmatch":   strGmatch,
 }
 
 func OpenStringLib(ls LkState) int {
@@ -174,44 +166,6 @@ func strChar(ls LkState) int {
 	return 1
 }
 
-// string.dump (function [, strip])
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.dump
-// lua-5.3.4/src/lstrlib.c#str_dump()
-func strDump(ls LkState) int {
-	// strip := ls.ToBoolean(2)
-	// ls.CheckType(1, LUA_TFUNCTION)
-	// ls.SetTop(1)
-	// ls.PushString(string(ls.Dump(strip)))
-	// return 1
-	panic("todo: strDump!")
-}
-
-/* PACK/UNPACK */
-
-// string.packsize (fmt)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.packsize
-func strPackSize(ls LkState) int {
-	fmt := ls.CheckString(1)
-	if fmt == "j" {
-		ls.PushInteger(8) // todo
-	} else {
-		panic("todo: strPackSize!")
-	}
-	return 1
-}
-
-// string.pack (fmt, v1, v2, ···)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.pack
-func strPack(ls LkState) int {
-	panic("todo: strPack!")
-}
-
-// string.unpack (fmt, s [, pos])
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.unpack
-func strUnpack(ls LkState) int {
-	panic("todo: strUnpack!")
-}
-
 func _fmtArg(tag string, ls LkState, argIdx int) string {
 	switch tag[len(tag)-1] { // specifier
 	case 'c': // character
@@ -232,113 +186,5 @@ func _fmtArg(tag string, ls LkState, argIdx int) string {
 		return fmt.Sprintf(tag, ls.ToString2(argIdx))
 	default:
 		panic("todo! tag=" + tag)
-	}
-}
-
-/* PATTERN MATCHING */
-
-// string.find (s, pattern [, init [, plain]])
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.find
-func strFind(ls LkState) int {
-	s := ls.CheckString(1)
-	sLen := len(s)
-	pattern := ls.CheckString(2)
-	init := posRelat(ls.OptInteger(3, 1), sLen)
-	if init < 1 {
-		init = 1
-	} else if init > sLen+1 { /* start after string's end? */
-		ls.PushNil()
-		return 1
-	}
-	plain := ls.ToBoolean(4)
-
-	start, end := find(s, pattern, init, plain)
-
-	if start < 0 {
-		ls.PushNil()
-		return 1
-	}
-	ls.PushInteger(int64(start))
-	ls.PushInteger(int64(end))
-	return 2
-}
-
-// string.match (s, pattern [, init])
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.match
-func strMatch(ls LkState) int {
-	s := ls.CheckString(1)
-	sLen := len(s)
-	pattern := ls.CheckString(2)
-	init := posRelat(ls.OptInteger(3, 1), sLen)
-	if init < 1 {
-		init = 1
-	} else if init > sLen+1 { /* start after string's end? */
-		ls.PushNil()
-		return 1
-	}
-
-	captures := match(s, pattern, init)
-
-	if captures == nil {
-		ls.PushNil()
-		return 1
-	} else {
-		for i := 0; i < len(captures); i += 2 {
-			capture := s[captures[i]:captures[i+1]]
-			ls.PushString(capture)
-		}
-		return len(captures) / 2
-	}
-}
-
-// string.gsub (s, pattern, repl [, n])
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.gsub
-func strGsub(ls LkState) int {
-	s := ls.CheckString(1)
-	pattern := ls.CheckString(2)
-	repl := ls.CheckString(3) // todo
-	n := int(ls.OptInteger(4, -1))
-
-	newStr, nMatches := gsub(s, pattern, repl, n)
-	ls.PushString(newStr)
-	ls.PushInteger(int64(nMatches))
-	return 2
-}
-
-// string.gmatch (s, pattern)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.gmatch
-func strGmatch(ls LkState) int {
-	s := ls.CheckString(1)
-	pattern := ls.CheckString(2)
-
-	gmatchAux := func(ls LkState) int {
-		captures := match(s, pattern, 1)
-		if captures != nil {
-			for i := 0; i < len(captures); i += 2 {
-				capture := s[captures[i]:captures[i+1]]
-				ls.PushString(capture)
-			}
-			s = s[captures[len(captures)-1]:]
-			return len(captures) / 2
-		} else {
-			return 0
-		}
-	}
-
-	ls.PushGoFunction(gmatchAux)
-	return 1
-}
-
-/* helper */
-
-/* translate a relative string position: negative means back from end */
-func posRelat(pos int64, _len int) int {
-	_pos := int(pos)
-	if _pos >= 0 {
-		return _pos
-	} else if -_pos > _len {
-		return 0
-	} else {
-		return _len + _pos + 1
 	}
 }

@@ -39,8 +39,6 @@ exp2  ::= {(‘not’ | ‘#’ | ‘-’ | ‘~’)} exp1
 exp1  ::= exp0 {‘^’ exp2}
 exp0  ::= nil | false | true | Numeral | LiteralString
 		| ‘...’ | functiondef | prefixexp | tableconstructor
-		| closure
-closure ::= ‘(’ explist ‘)’ ‘=>’ exp
 */
 func parseExp(lexer *Lexer) Exp {
 	return parseExp14(lexer)
