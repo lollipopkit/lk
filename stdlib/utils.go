@@ -47,7 +47,7 @@ func pushValue(ls LkState, item any) {
 	}
 }
 
-func pushList(ls LkState, items []any) {
+func pushList[T string | int | int64 | float64 | any](ls LkState, items []T) {
 	ls.CreateTable(len(items), 0)
 	for i := range items {
 		pushValue(ls, items[i])
@@ -55,7 +55,7 @@ func pushList(ls LkState, items []any) {
 	}
 }
 
-func pushTable(ls LkState, items map[string]any) {
+func pushTable[T string | int | int64 | float64 | any](ls LkState, items map[string]T) {
 	ls.CreateTable(0, len(items)+1)
 	for k := range items {
 		pushValue(ls, items[k])

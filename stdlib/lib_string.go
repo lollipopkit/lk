@@ -8,14 +8,15 @@ import (
 )
 
 var strLib = map[string]GoFunction{
-	"len":      strLen,
-	"repeat":      strRep,
-	"reverse":  strReverse,
-	"lower":    strLower,
-	"upper":    strUpper,
-	"sub":      strSub,
-	"byte":     strByte,
-	"char":     strChar,
+	"len":     strLen,
+	"repeat":  strRep,
+	"reverse": strReverse,
+	"lower":   strLower,
+	"upper":   strUpper,
+	"sub":     strSub,
+	"byte":    strByte,
+	"char":    strChar,
+	"split":   strSplit,
 }
 
 func OpenStringLib(ls LkState) int {
@@ -24,6 +25,13 @@ func OpenStringLib(ls LkState) int {
 }
 
 /* Basic String Functions */
+
+func strSplit(ls LkState) int {
+	s := ls.CheckString(1)
+	sep := ls.CheckString(2)
+	pushList(ls, strings.Split(s, sep))
+	return 1
+}
 
 // string.len (s)
 // http://www.lua.org/manual/5.3/manual.html#pdf-string.len

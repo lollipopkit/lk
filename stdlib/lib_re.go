@@ -51,10 +51,6 @@ func reFind(ls LkState) int {
 		ls.PushNil()
 		return 1
 	}
-	ms := make([]any, len(matches))
-	for idx := 0; idx < len(matches); idx++ {
-		ms[idx] = matches[idx]
-	}
-	pushList(ls, ms)
+	pushList(ls, matches)
 	return 1
 }

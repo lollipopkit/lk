@@ -38,12 +38,7 @@ func OpenOSLib(ls LkState) int {
 }
 
 func pushArgs(ls LkState) {
-	args := os.Args
-	ags := make([]any, len(args))
-	for argIdx := range args {
-		ags[argIdx] = args[argIdx]
-	}
-	pushList(ls, ags)
+	pushList(ls, os.Args)
 	ls.SetField(-2, "args")
 }
 

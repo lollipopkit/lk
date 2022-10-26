@@ -15,7 +15,7 @@ err := os.rm(path, false)
 pri('rm err: ', err)
 
 result, ok := os.exec('ls', '-l', 'test')
-pri('ls result: ', ok, fmt('result length', #result))
+pri('ls result: ', ok, fmt('result length: %d', #result))
 
 pri('set env: ', os.set_env('LKTEST', 'test'))
 pri('env HOME: ', os.get_env('LKTEST'))

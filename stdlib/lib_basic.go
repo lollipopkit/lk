@@ -1,7 +1,6 @@
 package stdlib
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -120,12 +119,12 @@ func basePrint(ls LkState) int {
 	n := ls.GetTop() /* number of arguments */
 	for i := 1; i <= n; i++ {
 		if i > 1 {
-			fmt.Print("\t")
+			print("\t")
 		}
-		fmt.Print(ls.ToString2(i))
+		print(ls.ToString2(i))
 		ls.Pop(1) /* pop result */
 	}
-	fmt.Println()
+	println()
 	return 0
 }
 
