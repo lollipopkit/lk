@@ -5,7 +5,7 @@ import (
 	"math"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/number"
+	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
 type operator struct {
@@ -21,17 +21,17 @@ var (
 	fsub  = func(a, b float64) float64 { return a - b }
 	imul  = func(a, b int64) int64 { return a * b }
 	fmul  = func(a, b float64) float64 { return a * b }
-	imod  = number.IMod
-	fmod  = number.FMod
+	imod  = utils.IMod
+	fmod  = utils.FMod
 	pow   = math.Pow
 	div   = func(a, b float64) float64 { return a / b }
-	iidiv = number.IFloorDiv
-	fidiv = number.FFloorDiv
+	iidiv = utils.IFloorDiv
+	fidiv = utils.FFloorDiv
 	band  = func(a, b int64) int64 { return a & b }
 	bor   = func(a, b int64) int64 { return a | b }
 	bxor  = func(a, b int64) int64 { return a ^ b }
-	shl   = number.ShiftLeft
-	shr   = number.ShiftRight
+	shl   = utils.ShiftLeft
+	shr   = utils.ShiftRight
 	iunm  = func(a, _ int64) int64 { return -a }
 	funm  = func(a, _ float64) float64 { return -a }
 	bnot  = func(a, _ int64) int64 { return ^a }

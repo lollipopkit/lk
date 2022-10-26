@@ -4,7 +4,7 @@ import (
 	"math"
 	"strconv"
 
-	"git.lolli.tech/lollipopkit/lk/number"
+	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
 type luaTable struct {
@@ -60,7 +60,7 @@ func (self *luaTable) get(key any) any {
 
 func _floatToInteger(key any) any {
 	if f, ok := key.(float64); ok {
-		if i, ok := number.FloatToInteger(f); ok {
+		if i, ok := utils.FloatToInteger(f); ok {
 			return i
 		}
 	}

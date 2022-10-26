@@ -6,7 +6,7 @@ import (
 	"time"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/number"
+	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
 var mathLib = map[string]GoFunction{
@@ -52,7 +52,7 @@ func OpenMathLib(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.max
 // lua-5.3.4/src/lmathlib.c#math_max()
 func mathMax(ls LkState) int {
-	n := ls.GetTop() /* number of arguments */
+	n := ls.GetTop() /* utils of arguments */
 	imax := 1        /* index of current maximum value */
 	ls.ArgCheck(n >= 1, 1, "value expected")
 	for i := 2; i <= n; i++ {
@@ -68,7 +68,7 @@ func mathMax(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.min
 // lua-5.3.4/src/lmathlib.c#math_min()
 func mathMin(ls LkState) int {
-	n := ls.GetTop() /* number of arguments */
+	n := ls.GetTop() /* utils of arguments */
 	imin := 1        /* index of current minimum value */
 	ls.ArgCheck(n >= 1, 1, "value expected")
 	for i := 2; i <= n; i++ {
@@ -246,7 +246,7 @@ func mathFmod(ls LkState) int {
 // lua-5.3.4/src/lmathlib.c#math_modf()
 func mathModf(ls LkState) int {
 	if ls.IsInteger(1) {
-		ls.SetTop(1)     /* number is its own integer part */
+		ls.SetTop(1)     /* utils is its own integer part */
 		ls.PushNumber(0) /* no fractional part */
 	} else {
 		x := ls.CheckNumber(1)
@@ -315,7 +315,7 @@ func mathType(ls LkState) int {
 }
 
 func _pushNumInt(ls LkState, d float64) {
-	if i, ok := number.FloatToInteger(d); ok { /* does 'd' fit in an integer? */
+	if i, ok := utils.FloatToInteger(d); ok { /* does 'd' fit in an integer? */
 		ls.PushInteger(i) /* result is integer */
 	} else {
 		ls.PushNumber(d) /* result is float */

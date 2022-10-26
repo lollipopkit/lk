@@ -1,9 +1,11 @@
-package number
+package utils
 
-import "math"
-import "regexp"
-import "strings"
-import "strconv"
+import (
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
+)
 
 var reInteger = regexp.MustCompile(`^[+-]?[0-9]+$|^-?0x[0-9a-f]+$`)
 var reHexFloat = regexp.MustCompile(`^([0-9a-f]+(\.[0-9a-f]*)?|([0-9a-f]*\.[0-9a-f]+))(p[+\-]?[0-9]+)?$`)

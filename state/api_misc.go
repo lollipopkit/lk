@@ -3,7 +3,7 @@ package state
 import (
 	"fmt"
 
-	"git.lolli.tech/lollipopkit/lk/number"
+	"git.lolli.tech/lollipopkit/lk/utils"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -51,13 +51,13 @@ func (self *luaState) Error() int {
 }
 
 // [-0, +1, –]
-// http://www.lua.org/manual/5.3/manual.html#lua_stringtonumber
+// http://www.lua.org/manual/5.3/manual.html#lua_stringtoutils
 func (self *luaState) StringToNumber(s string) bool {
-	if n, ok := number.ParseInteger(s); ok {
+	if n, ok := utils.ParseInteger(s); ok {
 		self.PushInteger(n)
 		return true
 	}
-	if n, ok := number.ParseFloat(s); ok {
+	if n, ok := utils.ParseFloat(s); ok {
 		self.PushNumber(n)
 		return true
 	}

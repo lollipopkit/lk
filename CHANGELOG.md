@@ -5,6 +5,7 @@
 - 支持 `shy a = b` -> `a := b` 语法糖
 - 支持 `a := fn(b) => c` 语法
 - 优化 `stdlib_os`
+- 新增 `stdlib_rand`
 
 ## 0.1.5
 - `CLI` 增加 `-d` 开启调试模式

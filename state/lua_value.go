@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/number"
+	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
 func typeOf(val any) LuaType {
@@ -47,7 +47,7 @@ func convertToFloat(val any) (float64, bool) {
 	case float64:
 		return x, true
 	case string:
-		return number.ParseFloat(x)
+		return utils.ParseFloat(x)
 	default:
 		return 0, false
 	}
@@ -59,7 +59,7 @@ func convertToInteger(val any) (int64, bool) {
 	case int64:
 		return x, true
 	case float64:
-		return number.FloatToInteger(x)
+		return utils.FloatToInteger(x)
 	case string:
 		return _stringToInteger(x)
 	default:
@@ -68,11 +68,11 @@ func convertToInteger(val any) (int64, bool) {
 }
 
 func _stringToInteger(s string) (int64, bool) {
-	if i, ok := number.ParseInteger(s); ok {
+	if i, ok := utils.ParseInteger(s); ok {
 		return i, true
 	}
-	if f, ok := number.ParseFloat(s); ok {
-		return number.FloatToInteger(f)
+	if f, ok := utils.ParseFloat(s); ok {
+		return utils.FloatToInteger(f)
 	}
 	return 0, false
 }

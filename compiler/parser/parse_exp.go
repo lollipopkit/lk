@@ -3,7 +3,7 @@ package parser
 import (
 	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
 	. "git.lolli.tech/lollipopkit/lk/compiler/lexer"
-	"git.lolli.tech/lollipopkit/lk/number"
+	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
 // explist ::= exp {‘,’ exp}
@@ -235,12 +235,12 @@ func parseExp0(lexer *Lexer) Exp {
 
 func parseNumberExp(lexer *Lexer) Exp {
 	line, _, token := lexer.NextToken()
-	if i, ok := number.ParseInteger(token); ok {
+	if i, ok := utils.ParseInteger(token); ok {
 		return &IntegerExp{line, i}
-	} else if f, ok := number.ParseFloat(token); ok {
+	} else if f, ok := utils.ParseFloat(token); ok {
 		return &FloatExp{line, f}
 	} else { // todo
-		panic("not a number: " + token)
+		panic("not a utils: " + token)
 	}
 }
 
