@@ -18,6 +18,7 @@ var sysLib = map[string]GoFunction{
 	"date":    osDate,
 	"rm":      osRemove,
 	"mv":      osRename,
+	"cp":      osCp,
 	"link":    osLink,
 	"tmp":     osTmpName,
 	"get_env": osGetEnv,
@@ -40,6 +41,17 @@ func OpenOSLib(ls LkState) int {
 func pushArgs(ls LkState) {
 	pushList(&ls, os.Args)
 	ls.SetField(-2, "args")
+}
+
+func osCp(ls LkState) int {
+	src := ls.CheckString(1)
+	dst := ls.CheckString(2)
+	if err := utils.Copy(src, dst); err != nil {
+		ls.PushString(err.Error())
+		return 1
+	}
+	ls.PushNil()
+	return 1
 }
 
 func osStat(ls LkState) int {

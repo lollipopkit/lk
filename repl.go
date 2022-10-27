@@ -26,7 +26,6 @@ var (
 	printReg    = regexp.MustCompile(`print\(.*\)`)
 )
 
-
 func repl(wg *sync.WaitGroup) {
 	ls := state.New()
 	ls.OpenLibs()
@@ -36,7 +35,7 @@ func repl(wg *sync.WaitGroup) {
 	blockStartCount := 0
 	blockEndCount := 0
 	wg.Wait()
-	
+
 	for {
 		line := term.ReadLine(linesHistory)
 		if line == "" {

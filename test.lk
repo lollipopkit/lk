@@ -14,7 +14,7 @@ contains := fn(name) {
 }
 
 for _, file in files {
-    if string.sub(file, #file - 3) != '.lkc' {
+    if strs.sub(file, #file - 3) != '.lkc' {
         if not contains(file) {
             print(fmt('====== %s ======', file))
             do_file(dir + file)

@@ -8,16 +8,17 @@ import (
 )
 
 var strLib = map[string]GoFunction{
-	"len":     strLen,
-	"repeat":  strRep,
-	"reverse": strReverse,
-	"lower":   strLower,
-	"upper":   strUpper,
-	"sub":     strSub,
-	"byte":    strByte,
-	"char":    strChar,
-	"split":   strSplit,
-	"join":    strJoin,
+	"len":      strLen,
+	"repeat":   strRep,
+	"reverse":  strReverse,
+	"lower":    strLower,
+	"upper":    strUpper,
+	"sub":      strSub,
+	"byte":     strByte,
+	"char":     strChar,
+	"split":    strSplit,
+	"join":     strJoin,
+	"contains": strContains,
 }
 
 func OpenStringLib(ls LkState) int {
@@ -26,6 +27,13 @@ func OpenStringLib(ls LkState) int {
 }
 
 /* Basic String Functions */
+
+func strContains(ls LkState) int {
+	s := ls.CheckString(1)
+	sub := ls.CheckString(2)
+	ls.PushBoolean(strings.Contains(s, sub))
+	return 1
+}
 
 func strJoin(ls LkState) int {
 	list := CheckList(&ls, 1)

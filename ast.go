@@ -20,7 +20,7 @@ func WriteAst(path string) {
 	if err != nil {
 		term.Error(err.Error())
 	}
-	
+
 	err = ioutil.WriteFile(path+".ast.json", j, 0644)
 	if err != nil {
 		term.Error(err.Error())

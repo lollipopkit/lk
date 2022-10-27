@@ -12,7 +12,7 @@ import (
 var baseFuncs = map[string]GoFunction{
 	"new":       baseNew,
 	"print":     basePrint,
-	"input":    baseInput,
+	"input":     baseInput,
 	"assert":    baseAssert,
 	"error":     baseError,
 	"irange":    baseIPairs,

@@ -26,13 +26,11 @@ func getExp(pattern string) *regexp.Regexp {
 	if ok {
 		exp, ok = cache.(*regexp.Regexp)
 		if ok {
-			goto END
+			return exp
 		}
-
 	}
 	exp = regexp.MustCompile(pattern)
 	reCacher.Set(pattern, exp)
-END:
 	return exp
 }
 
@@ -51,11 +49,6 @@ func reFind(ls LkState) int {
 		ls.PushNil()
 		return 1
 	}
-	tb := make(map[string]string, len(matches))
-	names := getExp(pattern).SubexpNames()
-	for idx := range names {
-		tb[names[idx]] = matches[idx]
-	}
-	pushTable(&ls, tb)
+	pushList(&ls, matches)
 	return 1
 }

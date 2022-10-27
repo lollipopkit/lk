@@ -13,7 +13,7 @@ const (
 )
 
 var (
-	promptLen   = len([]rune(prompt))
+	promptLen = len([]rune(prompt))
 )
 
 func ReadLine(linesHistory []string) string {

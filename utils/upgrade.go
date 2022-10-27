@@ -47,7 +47,6 @@ func CheckUpgrade(wg *sync.WaitGroup) {
 		return
 	}
 
-
 	resp, err := client.Get(consts.ReleaseApiUrl)
 	if err != nil {
 		return
