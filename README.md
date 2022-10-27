@@ -22,7 +22,7 @@
 ## 📄 语法
 #### 详细
 - **Step by step** ➜ [LANG.md](LANG.md)
-- **By examples** ➜ [测试集](test)
+- **By examples** ➜ [脚本](scripts) or [测试集](test)
 
 #### 速览
 ```js
