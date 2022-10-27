@@ -1,22 +1,28 @@
 <h1 align="center">Lang LK</h1>
 
 <p align="center">
-    <img alt="badge-lang" src="https://badgen.net/badge/Lang/LK/cyan">
+    <img alt="badge-lang" src="https://badgen.net/badge/LK/0.2.0/cyan">
     <img alt="badge-lang" src="https://badgen.net/badge/Go/1.19/purple">
 </p>
 
 
-
 ## ⌨️ 体验
-`LK CLI`，可前往 [Release](https://github.com/LollipopKit/lang-lk/releases) 下载，或使用 `go build` 生成。
+#### 获取 
+- 一键安装：`go install git.lolli.tech/lollipopkit/lk@latest`
+- [Release](https://github.com/LollipopKit/lang-lk/releases) 下载
+- 克隆后，`go build` 生成
 
+
+#### CLI
 ```bash
 # 进入REPL交互式解释器
-./lk
+lk
 # 执行.lk(c)文件
-./lk <file>
+lk <file>
 # 编译.lk文件
-./lk compile <file>
+lk compile <file>
+# 为.lk文件，生成语法树
+lk ast <file>
 ```
 
 ## 📄 语法
@@ -24,7 +30,7 @@
 - **Step by step** ➜ [LANG.md](LANG.md)
 - **By examples** ➜ [脚本](scripts) or [测试集](test)
 
-#### 速览
+#### 示例
 ```js
 // http发送请求示例
 resp, err := http.post(
