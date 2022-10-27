@@ -4,6 +4,7 @@ import (
 	"flag"
 	"strings"
 
+	"git.lolli.tech/lollipopkit/lk/mods"
 	"git.lolli.tech/lollipopkit/lk/state"
 )
 
@@ -11,9 +12,12 @@ var (
 	args = []string{}
 )
 
+func init() {
+	go mods.InitMods()
+}
+
 func main() {
 	flag.Parse()
-
 	args = flag.Args()
 	if len(args) == 0 {
 		repl()

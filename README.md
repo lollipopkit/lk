@@ -27,7 +27,7 @@
 #### 速览
 ```js
 // http发送请求示例
-shy resp, err = http.post(
+resp, err := http.post(
     'http://httpbin.org/post', // URL
     {'accept': 'application/json'}, // Headers
     '{"foo": "bar"}' // Body

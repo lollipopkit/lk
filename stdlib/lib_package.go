@@ -2,9 +2,11 @@ package stdlib
 
 import (
 	"os"
+	"path"
 	"strings"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/mods"
 )
 
 /* key, in the registry, for table of loaded modules */
@@ -39,7 +41,8 @@ func OpenPackageLib(ls LkState) int {
 	ls.NewLib(pkgFuncs) /* create 'package' table */
 	createSearchersTable(ls)
 	/* set paths */
-	ls.PushString("./?.lk;./?/init.lk")
+	lkEnv := mods.LkEnv
+	ls.PushString("./?.lk;./?/init.lk;" + path.Join(lkEnv, "?.lk") + ";" + path.Join(lkEnv, "?/init.lk"))
 	ls.SetField(-2, "path")
 	/* store config information */
 	ls.PushString(LUA_DIRSEP + "\n" + LUA_PATH_SEP + "\n" +

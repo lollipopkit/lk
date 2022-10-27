@@ -17,7 +17,7 @@ var strLib = map[string]GoFunction{
 	"byte":    strByte,
 	"char":    strChar,
 	"split":   strSplit,
-	"join":	strJoin,
+	"join":    strJoin,
 }
 
 func OpenStringLib(ls LkState) int {

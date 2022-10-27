@@ -71,6 +71,6 @@ func (self Instruction) Execute(vm api.LuaVM) {
 	if action != nil {
 		action(self, vm)
 	} else {
-		panic("No instruction: "+self.OpName())
+		panic("No instruction: " + self.OpName())
 	}
 }

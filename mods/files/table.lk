@@ -1,0 +1,18 @@
+class table {}
+
+fn table.contains(tb, item) {
+    for _, v in tb {
+        if v == item {
+            rt true
+        }
+    }
+    rt false
+}
+
+fn table.len(tb) {
+    i := 0
+    for _, _ in tb {
+        i += 1
+    }
+    rt i
+}

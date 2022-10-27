@@ -3,7 +3,6 @@ package state
 import (
 	"fmt"
 	"io/ioutil"
-	"os"
 	"strings"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
@@ -19,7 +18,7 @@ func Compile(source string) *binchunk.Prototype {
 		source = source[1:]
 	}
 
-	if !exist(source) {
+	if !utils.Exist(source) {
 		term.Error("[compile] file not found: " + source)
 	}
 
@@ -41,21 +40,16 @@ func Compile(source string) *binchunk.Prototype {
 	return bin
 }
 
-func exist(path string) bool {
-	_, err := os.Stat(path)
-	return !os.IsNotExist(err)
-}
-
 func loadlk(source string) *binchunk.Prototype {
 	lkc := source + "c"
-	if exist(lkc) {
+	if utils.Exist(lkc) {
 		return loadlkc(lkc)
 	}
 	return Compile(source)
 }
 
 func loadlkc(source string) *binchunk.Prototype {
-	if !exist(source) {
+	if !utils.Exist(source) {
 		term.Error("[run] file not found: " + source)
 	}
 
@@ -66,7 +60,7 @@ func loadlkc(source string) *binchunk.Prototype {
 
 	lkPath := source[:len(source)-1]
 	var lkData []byte
-	lkExist := exist(lkPath)
+	lkExist := utils.Exist(lkPath)
 	if lkExist {
 		lkData, err = ioutil.ReadFile(lkPath)
 		if err != nil {
