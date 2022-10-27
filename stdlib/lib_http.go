@@ -72,21 +72,21 @@ func httpDo(method, url string, headers luaMap, body io.Reader) (int, string, ht
 
 func httpGet(ls LkState) int {
 	url := ls.CheckString(1)
-	headers := OptTable(ls, 2, luaMap{})
+	headers := OptTable(&ls, 2, luaMap{})
 	code, data, respHeader, err := httpDo("GET", url, headers, nil)
 	if err != nil {
 		ls.PushNil()
 		ls.PushString(err.Error())
 		return 2
 	}
-	pushTable(ls, genReturn(code, data, &respHeader))
+	pushTable(&ls, genReturn(code, data, &respHeader))
 	ls.PushNil()
 	return 2
 }
 
 func httpPost(ls LkState) int {
 	url := ls.CheckString(1)
-	headers := OptTable(ls, 2, luaMap{})
+	headers := OptTable(&ls, 2, luaMap{})
 	bodyStr := ls.OptString(3, "")
 
 	body := func() io.Reader {
@@ -102,7 +102,7 @@ func httpPost(ls LkState) int {
 		ls.PushString(err.Error())
 		return 2
 	}
-	pushTable(ls, genReturn(code, data, &respHeader))
+	pushTable(&ls, genReturn(code, data, &respHeader))
 	ls.PushNil()
 	return 2
 }
@@ -112,7 +112,7 @@ func httpPost(ls LkState) int {
 func httpReq(ls LkState) int {
 	method := strings.ToUpper(ls.CheckString(1))
 	url := ls.CheckString(2)
-	headers := OptTable(ls, 3, luaMap{})
+	headers := OptTable(&ls, 3, luaMap{})
 	bodyStr := ls.OptString(4, "")
 
 	body := func() io.Reader {
@@ -129,7 +129,7 @@ func httpReq(ls LkState) int {
 		return 2
 	}
 
-	pushTable(ls, genReturn(code, data, &respHeader))
+	pushTable(&ls, genReturn(code, data, &respHeader))
 	ls.PushNil()
 	return 2
 }
@@ -162,7 +162,7 @@ func httpListen(ls LkState) int {
 			return
 		}
 		ls.PushValue(-1)
-		pushTable(ls, req)
+		pushTable(&ls, req)
 		ls.Call(1, 2)
 		code := ls.ToInteger(-2)
 		data := ls.ToString(-1)

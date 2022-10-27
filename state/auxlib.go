@@ -213,7 +213,11 @@ func (self *luaState) ToString2(idx int) string {
 			if ok {
 				s, err := tb.String()
 				if err == nil {
-					self.PushString(s)
+					if s == "null" {
+						self.PushString("{}")
+					} else {
+						self.PushString(s)
+					}
 				}
 			}
 		default:

@@ -38,7 +38,7 @@ func OpenOSLib(ls LkState) int {
 }
 
 func pushArgs(ls LkState) {
-	pushList(ls, os.Args)
+	pushList(&ls, os.Args)
 	ls.SetField(-2, "args")
 }
 
@@ -57,7 +57,7 @@ func osStat(ls LkState) int {
 		"name":   info.Name(),
 		"is_dir": info.IsDir(),
 	}
-	pushTable(ls, stat)
+	pushTable(&ls, stat)
 	ls.PushNil()
 	return 2
 }
@@ -109,7 +109,7 @@ func osLs(ls LkState) int {
 	for i := range files {
 		filenames = append(filenames, files[i].Name())
 	}
-	pushList(ls, filenames)
+	pushList(&ls, filenames)
 	ls.PushNil()
 	return 2
 }

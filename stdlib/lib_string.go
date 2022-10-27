@@ -17,6 +17,7 @@ var strLib = map[string]GoFunction{
 	"byte":    strByte,
 	"char":    strChar,
 	"split":   strSplit,
+	"join":	strJoin,
 }
 
 func OpenStringLib(ls LkState) int {
@@ -26,10 +27,21 @@ func OpenStringLib(ls LkState) int {
 
 /* Basic String Functions */
 
+func strJoin(ls LkState) int {
+	list := CheckList(&ls, 1)
+	sep := ls.CheckString(2)
+	l := make([]string, len(list))
+	for i := range list {
+		l[i] = list[i].(string)
+	}
+	ls.PushString(strings.Join(l, sep))
+	return 1
+}
+
 func strSplit(ls LkState) int {
 	s := ls.CheckString(1)
 	sep := ls.CheckString(2)
-	pushList(ls, strings.Split(s, sep))
+	pushList(&ls, strings.Split(s, sep))
 	return 1
 }
 

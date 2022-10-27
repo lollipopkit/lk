@@ -153,14 +153,6 @@ func (self *luaState) Call(nArgs, nResults int) {
 			self.callGoClosure(nArgs, nResults, c)
 		}
 	} else {
-		env := func() any {
-			c := self.stack.closure
-			if c.goFunc == nil {
-				return c.proto
-			}
-			return c.goFunc
-		}()
-		term.Blue(fmt.Sprintf("%#v\n", env))
 		panic(fmt.Sprintf("attempt to call on %#v", val))
 	}
 }

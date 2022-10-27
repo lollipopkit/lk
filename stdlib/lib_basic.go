@@ -72,7 +72,7 @@ func mathToInt(ls LkState) int {
 }
 
 func baseKV(ls LkState) int {
-	tb := getTable(ls, 1)
+	tb := getTable(&ls, 1)
 	keys := make([]any, 0, len(tb))
 	for k := range tb {
 		keys = append(keys, k)
@@ -81,8 +81,8 @@ func baseKV(ls LkState) int {
 	for k := range tb {
 		values = append(values, tb[k])
 	}
-	pushList(ls, keys)
-	pushList(ls, values)
+	pushList(&ls, keys)
+	pushList(&ls, values)
 	return 2
 }
 

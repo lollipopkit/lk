@@ -62,10 +62,7 @@ func repl() {
 
 		cmd := ""
 		if blockStartCount > 0 && blockStartCount == blockEndCount {
-			blockStartCount = 0
-			blockEndCount = 0
 			cmd = blockStr
-			blockStr = ""
 		} else if blockStartCount > 0 {
 			continue
 		} else {
@@ -80,6 +77,9 @@ func repl() {
 		// 加载line，调用
 		protectedLoadString(&ls, cmd)
 		ls.PCall(0, -1, 0, true)
+		blockStartCount = 0
+		blockEndCount = 0
+		blockStr = ""
 	}
 }
 

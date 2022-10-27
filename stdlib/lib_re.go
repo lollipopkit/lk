@@ -51,6 +51,11 @@ func reFind(ls LkState) int {
 		ls.PushNil()
 		return 1
 	}
-	pushList(ls, matches)
+	tb := make(map[string]string, len(matches))
+	names := getExp(pattern).SubexpNames()
+	for idx := range names {
+		tb[names[idx]] = matches[idx]
+	}
+	pushTable(&ls, tb)
 	return 1
 }

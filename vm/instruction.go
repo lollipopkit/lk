@@ -1,6 +1,8 @@
 package vm
 
-import "git.lolli.tech/lollipopkit/lk/api"
+import (
+	"git.lolli.tech/lollipopkit/lk/api"
+)
 
 const MAXARG_Bx = 1<<18 - 1       // 262143
 const MAXARG_sBx = MAXARG_Bx >> 1 // 131071
@@ -69,6 +71,6 @@ func (self Instruction) Execute(vm api.LuaVM) {
 	if action != nil {
 		action(self, vm)
 	} else {
-		panic(self.OpName())
+		panic("No instruction: "+self.OpName())
 	}
 }
