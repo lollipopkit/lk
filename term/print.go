@@ -37,7 +37,8 @@ func addBorder(s, title string) string {
 	for idx := range lines {
 		blankWidth := w - len(lines[idx])
 		blank := strings.Repeat(" ", blankWidth/2)
-		result += "║" + blank + lines[idx] + blank + "║\n"
+		moreBlank := strings.Repeat(" ", blankWidth%2)
+		result += "║" + blank + lines[idx] + blank + moreBlank + "║\n"
 	}
 	result += "╚" + strings.Repeat("═", w) + "╝\n"
 	return result

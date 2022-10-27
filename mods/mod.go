@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"sync"
 
 	"git.lolli.tech/lollipopkit/lk/consts"
 	"git.lolli.tech/lollipopkit/lk/term"
@@ -15,21 +16,23 @@ import (
 var (
 	//go:embed index.json files
 	ModFiles embed.FS
-	LkEnv    = os.Getenv("LK_PATH")
 
-	indexFilePath    = path.Join(LkEnv, "index.json")
+	indexFilePath    = path.Join(consts.LkPath, "index.json")
 	builtInIndexPath = "index.json"
 	builtInFilesPath = "files"
 )
 
 func init() {
-	if LkEnv == "" {
+	if consts.LkPath == "" {
 		term.Warn("env LK_PATH not set. \nCan't use built-in modules.")
 	}
 }
 
-func InitMods() {
-	if LkEnv == "" {
+func InitMods(wg *sync.WaitGroup) {
+	wg.Add(1)
+	defer wg.Done()
+
+	if consts.LkPath == "" {
 		return
 	}
 	if utils.Exist(indexFilePath) {
@@ -76,7 +79,7 @@ func extract() {
 		if err != nil {
 			term.Error("can't read file: " + err.Error())
 		}
-		err = os.WriteFile(path.Join(LkEnv, files[idx].Name()), data, 0644)
+		err = os.WriteFile(path.Join(consts.LkPath, files[idx].Name()), data, 0644)
 		if err != nil {
 			term.Error("can't write file: " + err.Error())
 		}

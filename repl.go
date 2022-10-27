@@ -4,6 +4,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"atomicgo.dev/cursor"
 	"atomicgo.dev/keyboard"
@@ -33,7 +34,7 @@ const (
 	prompt = "➜ "
 )
 
-func repl() {
+func repl(wg *sync.WaitGroup) {
 	ls := state.New()
 	ls.OpenLibs()
 	println("REPL - Lang LK (v" + consts.VERSION + ")")
@@ -41,6 +42,7 @@ func repl() {
 	blockStr := ""
 	blockStartCount := 0
 	blockEndCount := 0
+	wg.Wait()
 	for {
 		os.Stdout.WriteString(prompt)
 

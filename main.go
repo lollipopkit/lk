@@ -3,24 +3,28 @@ package main
 import (
 	"flag"
 	"strings"
+	"sync"
 
 	"git.lolli.tech/lollipopkit/lk/mods"
 	"git.lolli.tech/lollipopkit/lk/state"
+	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
 var (
 	args = []string{}
+	wg   = new(sync.WaitGroup)
 )
 
 func init() {
-	go mods.InitMods()
+	go mods.InitMods(wg)
+	go utils.CheckUpgrade(wg)
 }
 
 func main() {
 	flag.Parse()
 	args = flag.Args()
 	if len(args) == 0 {
-		repl()
+		repl(wg)
 		return
 	}
 	switch args[0] {
