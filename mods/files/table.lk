@@ -16,3 +16,5 @@ fn table.len(tb) {
     }
     rt i
 }
+
+rt table

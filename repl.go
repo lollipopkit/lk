@@ -1,17 +1,14 @@
 package main
 
 import (
-	"os"
 	"regexp"
 	"strings"
 	"sync"
 
-	"atomicgo.dev/cursor"
-	"atomicgo.dev/keyboard"
-	"atomicgo.dev/keyboard/keys"
 	"git.lolli.tech/lollipopkit/lk/api"
 	"git.lolli.tech/lollipopkit/lk/consts"
 	"git.lolli.tech/lollipopkit/lk/state"
+	"git.lolli.tech/lollipopkit/lk/term"
 )
 
 var (
@@ -26,13 +23,9 @@ var (
 		consts.ClassDefReStr,
 	}, "|"))
 	blockEndReg = regexp.MustCompile("} *$")
-	promptLen   = len([]rune(prompt))
 	printReg    = regexp.MustCompile(`print\(.*\)`)
 )
 
-const (
-	prompt = "➜ "
-)
 
 func repl(wg *sync.WaitGroup) {
 	ls := state.New()
@@ -43,10 +36,9 @@ func repl(wg *sync.WaitGroup) {
 	blockStartCount := 0
 	blockEndCount := 0
 	wg.Wait()
+	
 	for {
-		os.Stdout.WriteString(prompt)
-
-		line := readline()
+		line := term.ReadLine(linesHistory)
 		if line == "" {
 			continue
 		}
@@ -128,81 +120,4 @@ func updateHistory(str string) {
 	for idx := range strs {
 		_updateHistory(strs[idx])
 	}
-}
-
-func readline() string {
-	str := ""
-	linesIdx := len(linesHistory)
-	cursorIdx := 0
-
-	keyboard.Listen(func(key keys.Key) (stop bool, err error) {
-		switch key.Code {
-		case keys.CtrlC, keys.Escape:
-			os.Exit(0)
-		case keys.RuneKey:
-			runes := key.Runes
-			s := string(runes)
-			str = str[:cursorIdx] + s + str[cursorIdx:]
-			cursorIdx += len(s)
-			resetLine(str)
-		case keys.Enter:
-			println()
-			return true, nil
-		case keys.Backspace:
-			if len(str) > 0 && cursorIdx > 0 {
-				str = str[:cursorIdx-1] + str[cursorIdx:]
-				resetLine(str)
-				cursorIdx--
-			}
-		case keys.Left:
-			if cursorIdx > 0 {
-				cursorIdx--
-			}
-		case keys.Right:
-			if cursorIdx < len(str) {
-				cursorIdx++
-			}
-		case keys.Up:
-			if linesIdx > 0 {
-				linesIdx--
-				str = linesHistory[linesIdx]
-				resetLine(str)
-				cursorIdx = len(str)
-			}
-		case keys.Down:
-			if linesIdx < len(linesHistory)-1 {
-				linesIdx++
-				str = linesHistory[linesIdx]
-				resetLine(str)
-				cursorIdx = len(str)
-			} else if linesIdx == len(linesHistory)-1 {
-				str = ""
-				resetLine("")
-				cursorIdx = 0
-			}
-		case keys.Space:
-			str += " "
-			print(" ")
-			cursorIdx++
-		case keys.Tab:
-			str += "  "
-			print("  ")
-			cursorIdx += 2
-		case keys.Delete:
-			if cursorIdx < len(str) {
-				str = str[:cursorIdx] + str[cursorIdx+1:]
-				resetLine(str)
-			}
-		}
-
-		cursor.HorizontalAbsolute(cursorIdx + promptLen)
-		return false, nil
-	})
-	return str
-}
-
-func resetLine(str string) {
-	cursor.ClearLine()
-	cursor.StartOfLine()
-	print(prompt + str)
 }

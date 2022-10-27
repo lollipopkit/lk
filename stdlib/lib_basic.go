@@ -6,11 +6,13 @@ import (
 
 	. "git.lolli.tech/lollipopkit/lk/api"
 	"git.lolli.tech/lollipopkit/lk/consts"
+	"git.lolli.tech/lollipopkit/lk/term"
 )
 
 var baseFuncs = map[string]GoFunction{
 	"new":       baseNew,
 	"print":     basePrint,
+	"input":    baseInput,
 	"assert":    baseAssert,
 	"error":     baseError,
 	"irange":    baseIPairs,
@@ -55,6 +57,11 @@ func baseNew(ls LkState) int {
 		ls.SetTable(-5)
 		ls.Pop(1)
 	}
+	return 1
+}
+
+func baseInput(ls LkState) int {
+	ls.PushString(term.ReadLine([]string{}))
 	return 1
 }
 

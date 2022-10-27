@@ -35,11 +35,7 @@ func Parse(chunk, chunkName string) *Block {
 	lexer := NewLexer(chunk, chunkName)
 	block := parseBlock(lexer)
 
-	// data, err := json.MarshalIndent(block, "", "  ")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// ioutil.WriteFile(chunkName+".ast.json", data, 0644)
+	
 
 	lexer.NextTokenOfKind(TOKEN_EOF)
 	return block
