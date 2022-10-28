@@ -1,6 +1,8 @@
 package api
 
-import "math/bits"
+import (
+	"math/bits"
+)
 
 const LUA_MINSTACK = 20
 const LUAI_MAXSTACK = 1000000

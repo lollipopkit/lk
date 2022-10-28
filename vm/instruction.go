@@ -66,7 +66,7 @@ func (self Instruction) CMode() byte {
 	return opcodes[self.Opcode()].argCMode
 }
 
-func (self Instruction) Execute(vm api.LuaVM) {
+func (self Instruction) Execute(vm api.LkVM) {
 	action := opcodes[self.Opcode()].action
 	if action != nil {
 		action(self, vm)

@@ -7,7 +7,7 @@ import (
 	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
-func typeOf(val any) LuaType {
+func typeOf(val any) LkType {
 	switch val.(type) {
 	case nil:
 		return LUA_TNIL
@@ -17,11 +17,11 @@ func typeOf(val any) LuaType {
 		return LUA_TNUMBER
 	case string:
 		return LUA_TSTRING
-	case *luaTable:
+	case *lkTable:
 		return LUA_TTABLE
 	case *closure:
 		return LUA_TFUNCTION
-	case *luaState:
+	case *lkState:
 		return LUA_TTHREAD
 	default:
 		panic(fmt.Sprintf("invalid type: %T<%v>", val, val))
@@ -79,27 +79,27 @@ func _stringToInteger(s string) (int64, bool) {
 
 /* metatable */
 
-func getMetatable(val any, ls *luaState) *luaTable {
-	if t, ok := val.(*luaTable); ok {
+func getMetatable(val any, ls *lkState) *lkTable {
+	if t, ok := val.(*lkTable); ok {
 		return t
 	}
 	key := fmt.Sprintf("_MT%d", typeOf(val))
 	if mt := ls.registry.get(key); mt != nil {
-		return mt.(*luaTable)
+		return mt.(*lkTable)
 	}
 	return nil
 }
 
-func getMetafield(val any, fieldName string, ls *luaState) any {
+func getMetafield(val any, fieldName string, ls *lkState) any {
 	if mt := getMetatable(val, ls); mt != nil {
 		return mt.get(fieldName)
 	}
 	return nil
 }
 
-func SetExtension(typ, fnName string, c *closure, ls *luaState) {
+func SetExtension(typ, fnName string, c *closure, ls *lkState) {
 	key := fmt.Sprintf("_EXT|%s", typ)
-	if ext, ok := ls.registry.get(key).(*luaTable); ok {
+	if ext, ok := ls.registry.get(key).(*lkTable); ok {
 		ext.put(fnName, c)
 	} else {
 		ext = newLuaTable(0, 0)
@@ -108,9 +108,9 @@ func SetExtension(typ, fnName string, c *closure, ls *luaState) {
 	}
 }
 
-func GetExtension(typ, fnName string, ls *luaState) *closure {
+func GetExtension(typ, fnName string, ls *lkState) *closure {
 	key := fmt.Sprintf("_EXT|%s", typ)
-	if ext, ok := ls.registry.get(key).(*luaTable); ok {
+	if ext, ok := ls.registry.get(key).(*lkTable); ok {
 		if c, ok := ext.get(fnName).(*closure); ok {
 			return c
 		}
@@ -118,7 +118,7 @@ func GetExtension(typ, fnName string, ls *luaState) *closure {
 	return nil
 }
 
-func callMetamethod(a, b any, mmName string, ls *luaState) (any, bool) {
+func callMetamethod(a, b any, mmName string, ls *lkState) (any, bool) {
 	var mm any
 	if mm = getMetafield(a, mmName, ls); mm == nil {
 		if mm = getMetafield(b, mmName, ls); mm == nil {

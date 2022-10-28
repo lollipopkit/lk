@@ -2,17 +2,17 @@ package state
 
 import . "git.lolli.tech/lollipopkit/lk/api"
 
-type luaState struct {
-	registry *luaTable
-	stack    *luaStack
+type lkState struct {
+	registry *lkTable
+	stack    *lkStack
 	/* coroutine */
 	coStatus int
-	coCaller *luaState
+	coCaller *lkState
 	coChan   chan int
 }
 
 func New() LkState {
-	ls := &luaState{}
+	ls := &lkState{}
 
 	registry := newLuaTable(8, 0)
 	registry.put(LUA_RIDX_MAINTHREAD, ls)
@@ -23,16 +23,16 @@ func New() LkState {
 	return ls
 }
 
-func (self *luaState) isMainThread() bool {
+func (self *lkState) isMainThread() bool {
 	return self.registry.get(LUA_RIDX_MAINTHREAD) == self
 }
 
-func (self *luaState) pushLuaStack(stack *luaStack) {
+func (self *lkState) pushLuaStack(stack *lkStack) {
 	stack.prev = self.stack
 	self.stack = stack
 }
 
-func (self *luaState) popLuaStack() {
+func (self *lkState) popLuaStack() {
 	stack := self.stack
 	self.stack = stack.prev
 	stack.prev = nil

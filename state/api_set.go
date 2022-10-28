@@ -8,7 +8,7 @@ import (
 
 // [-2, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_settable
-func (self *luaState) SetTable(idx int) {
+func (self *lkState) SetTable(idx int) {
 	t := self.stack.get(idx)
 	v := self.stack.pop()
 	k := self.stack.pop()
@@ -17,7 +17,7 @@ func (self *luaState) SetTable(idx int) {
 
 // [-1, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_setfield
-func (self *luaState) SetField(idx int, k string) {
+func (self *lkState) SetField(idx int, k string) {
 	t := self.stack.get(idx)
 	v := self.stack.pop()
 	self.setTable(t, k, v, false)
@@ -25,7 +25,7 @@ func (self *luaState) SetField(idx int, k string) {
 
 // [-1, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_seti
-func (self *luaState) SetI(idx int, i int64) {
+func (self *lkState) SetI(idx int, i int64) {
 	t := self.stack.get(idx)
 	v := self.stack.pop()
 	self.setTable(t, i, v, false)
@@ -33,7 +33,7 @@ func (self *luaState) SetI(idx int, i int64) {
 
 // [-2, +0, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_rawset
-func (self *luaState) RawSet(idx int) {
+func (self *lkState) RawSet(idx int) {
 	t := self.stack.get(idx)
 	v := self.stack.pop()
 	k := self.stack.pop()
@@ -42,7 +42,7 @@ func (self *luaState) RawSet(idx int) {
 
 // [-1, +0, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_rawseti
-func (self *luaState) RawSetI(idx int, i int64) {
+func (self *lkState) RawSetI(idx int, i int64) {
 	t := self.stack.get(idx)
 	v := self.stack.pop()
 	self.setTable(t, i, v, true)
@@ -50,7 +50,7 @@ func (self *luaState) RawSetI(idx int, i int64) {
 
 // [-1, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_setglobal
-func (self *luaState) SetGlobal(name string) {
+func (self *lkState) SetGlobal(name string) {
 	t := self.registry.get(LUA_RIDX_GLOBALS)
 	v := self.stack.pop()
 	self.setTable(t, name, v, false)
@@ -58,14 +58,14 @@ func (self *luaState) SetGlobal(name string) {
 
 // [-0, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_register
-func (self *luaState) Register(name string, f GoFunction) {
+func (self *lkState) Register(name string, f GoFunction) {
 	self.PushGoFunction(f)
 	self.SetGlobal(name)
 }
 
 // t[k]=v
-func (self *luaState) setTable(t, k, v any, raw bool) {
-	if tbl, ok := t.(*luaTable); ok {
+func (self *lkState) setTable(t, k, v any, raw bool) {
+	if tbl, ok := t.(*lkTable); ok {
 		if raw || tbl.get(k) != nil || !tbl.hasMetafield("__newindex") {
 			tbl.put(k, v)
 			return
@@ -75,7 +75,7 @@ func (self *luaState) setTable(t, k, v any, raw bool) {
 	if !raw {
 		if mf := getMetafield(t, "__newindex", self); mf != nil {
 			switch x := mf.(type) {
-			case *luaTable:
+			case *lkTable:
 				self.setTable(x, k, v, false)
 				return
 			case *closure:

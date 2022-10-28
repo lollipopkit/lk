@@ -1,6 +1,6 @@
 package api
 
-type LuaVM interface {
+type LkVM interface {
 	LkState
 	PC() int
 	AddPC(n int)

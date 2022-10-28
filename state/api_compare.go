@@ -4,7 +4,7 @@ import . "git.lolli.tech/lollipopkit/lk/api"
 
 // [-0, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_compare
-func (self *luaState) Compare(idx1, idx2 int, op CompareOp) bool {
+func (self *lkState) Compare(idx1, idx2 int, op CompareOp) bool {
 	if !self.stack.isValid(idx1) || !self.stack.isValid(idx2) {
 		return false
 	}
@@ -23,7 +23,7 @@ func (self *luaState) Compare(idx1, idx2 int, op CompareOp) bool {
 	}
 }
 
-func _eq(a, b any, ls *luaState) bool {
+func _eq(a, b any, ls *lkState) bool {
 	switch x := a.(type) {
 	case nil:
 		return b == nil
@@ -51,8 +51,8 @@ func _eq(a, b any, ls *luaState) bool {
 		default:
 			return false
 		}
-	case *luaTable:
-		if y, ok := b.(*luaTable); ok && x != y && ls != nil {
+	case *lkTable:
+		if y, ok := b.(*lkTable); ok && x != y && ls != nil {
 			if result, ok := callMetamethod(x, y, "__eq", ls); ok {
 				return convertToBoolean(result)
 			}
@@ -63,7 +63,7 @@ func _eq(a, b any, ls *luaState) bool {
 	}
 }
 
-func _lt(a, b any, ls *luaState) bool {
+func _lt(a, b any, ls *lkState) bool {
 	switch x := a.(type) {
 	case string:
 		if y, ok := b.(string); ok {
@@ -92,7 +92,7 @@ func _lt(a, b any, ls *luaState) bool {
 	}
 }
 
-func _le(a, b any, ls *luaState) bool {
+func _le(a, b any, ls *lkState) bool {
 	switch x := a.(type) {
 	case string:
 		if y, ok := b.(string); ok {

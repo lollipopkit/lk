@@ -10,21 +10,21 @@ import (
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_error
-func (self *luaState) Error2(fmt string, a ...interface{}) int {
+func (self *lkState) Error2(fmt string, a ...interface{}) int {
 	self.PushFString(fmt, a...) // todo
 	return self.Error()
 }
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_argerror
-func (self *luaState) ArgError(arg int, extraMsg string) int {
+func (self *lkState) ArgError(arg int, extraMsg string) int {
 	// bad argument #arg to 'funcname' (extramsg)
 	return self.Error2("bad argument #%d (%s)", arg, extraMsg) // todo
 }
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_checkstack
-func (self *luaState) CheckStack2(sz int, msg string) {
+func (self *lkState) CheckStack2(sz int, msg string) {
 	if !self.CheckStack(sz) {
 		if msg != "" {
 			self.Error2("stack overflow (%s)", msg)
@@ -36,7 +36,7 @@ func (self *luaState) CheckStack2(sz int, msg string) {
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_argcheck
-func (self *luaState) ArgCheck(cond bool, arg int, extraMsg string) {
+func (self *lkState) ArgCheck(cond bool, arg int, extraMsg string) {
 	if !cond {
 		self.ArgError(arg, extraMsg)
 	}
@@ -44,7 +44,7 @@ func (self *luaState) ArgCheck(cond bool, arg int, extraMsg string) {
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_checkany
-func (self *luaState) CheckAny(arg int) {
+func (self *lkState) CheckAny(arg int) {
 	if self.Type(arg) == LUA_TNONE {
 		self.ArgError(arg, "value expected")
 	}
@@ -52,7 +52,7 @@ func (self *luaState) CheckAny(arg int) {
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_checktype
-func (self *luaState) CheckType(arg int, t LuaType) {
+func (self *lkState) CheckType(arg int, t LkType) {
 	if self.Type(arg) != t {
 		self.tagError(arg, t)
 	}
@@ -60,7 +60,7 @@ func (self *luaState) CheckType(arg int, t LuaType) {
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_checkinteger
-func (self *luaState) CheckInteger(arg int) int64 {
+func (self *lkState) CheckInteger(arg int) int64 {
 	i, ok := self.ToIntegerX(arg)
 	if !ok {
 		self.intError(arg)
@@ -70,7 +70,7 @@ func (self *luaState) CheckInteger(arg int) int64 {
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_checknumber
-func (self *luaState) CheckNumber(arg int) float64 {
+func (self *lkState) CheckNumber(arg int) float64 {
 	f, ok := self.ToNumberX(arg)
 	if !ok {
 		self.tagError(arg, LUA_TNUMBER)
@@ -81,7 +81,7 @@ func (self *luaState) CheckNumber(arg int) float64 {
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_checkstring
 // http://www.lua.org/manual/5.3/manual.html#luaL_checklstring
-func (self *luaState) CheckString(arg int) string {
+func (self *lkState) CheckString(arg int) string {
 	s, ok := self.ToStringX(arg)
 	if !ok {
 		self.tagError(arg, LUA_TSTRING)
@@ -89,7 +89,7 @@ func (self *luaState) CheckString(arg int) string {
 	return s
 }
 
-func (self *luaState) CheckBool(arg int) bool {
+func (self *lkState) CheckBool(arg int) bool {
 	if self.Type(arg) != LUA_TBOOLEAN {
 		self.tagError(arg, LUA_TBOOLEAN)
 	}
@@ -98,7 +98,7 @@ func (self *luaState) CheckBool(arg int) bool {
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_optinteger
-func (self *luaState) OptInteger(arg int, def int64) int64 {
+func (self *lkState) OptInteger(arg int, def int64) int64 {
 	if self.IsNoneOrNil(arg) {
 		return def
 	}
@@ -107,7 +107,7 @@ func (self *luaState) OptInteger(arg int, def int64) int64 {
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_optnumber
-func (self *luaState) OptNumber(arg int, def float64) float64 {
+func (self *lkState) OptNumber(arg int, def float64) float64 {
 	if self.IsNoneOrNil(arg) {
 		return def
 	}
@@ -116,14 +116,14 @@ func (self *luaState) OptNumber(arg int, def float64) float64 {
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_optstring
-func (self *luaState) OptString(arg int, def string) string {
+func (self *lkState) OptString(arg int, def string) string {
 	if self.IsNoneOrNil(arg) {
 		return def
 	}
 	return self.CheckString(arg)
 }
 
-func (self *luaState) OptBool(arg int, def bool) bool {
+func (self *lkState) OptBool(arg int, def bool) bool {
 	if self.IsNoneOrNil(arg) {
 		return def
 	}
@@ -132,27 +132,27 @@ func (self *luaState) OptBool(arg int, def bool) bool {
 
 // [-0, +?, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_dofile
-func (self *luaState) DoFile(filename string) bool {
+func (self *lkState) DoFile(filename string) bool {
 	return self.LoadFile(filename) != LUA_OK ||
 		self.PCall(0, LUA_MULTRET, 0, false) != LUA_OK
 }
 
 // [-0, +?, –]
 // http://www.lua.org/manual/5.3/manual.html#luaL_dostring
-func (self *luaState) DoString(str, source string) bool {
+func (self *lkState) DoString(str, source string) bool {
 	return self.LoadString(str, source) != LUA_OK ||
 		self.PCall(0, LUA_MULTRET, 0, false) != LUA_OK
 }
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#luaL_loadfile
-func (self *luaState) LoadFile(filename string) int {
+func (self *lkState) LoadFile(filename string) int {
 	return self.LoadFileX(filename, "bt")
 }
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#luaL_loadfilex
-func (self *luaState) LoadFileX(filename, mode string) int {
+func (self *lkState) LoadFileX(filename, mode string) int {
 	if data, err := ioutil.ReadFile(filename); err == nil {
 		return self.Load(data, "@"+filename, mode)
 	}
@@ -161,19 +161,19 @@ func (self *luaState) LoadFileX(filename, mode string) int {
 
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#luaL_loadstring
-func (self *luaState) LoadString(s, source string) int {
+func (self *lkState) LoadString(s, source string) int {
 	return self.Load([]byte(s), source, "bt")
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#luaL_typename
-func (self *luaState) TypeName2(idx int) string {
+func (self *lkState) TypeName2(idx int) string {
 	return self.TypeName(self.Type(idx))
 }
 
 // [-0, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_len
-func (self *luaState) Len2(idx int) int64 {
+func (self *lkState) Len2(idx int) int64 {
 	self.Len(idx)
 	i, isNum := self.ToIntegerX(-1)
 	if !isNum {
@@ -185,7 +185,7 @@ func (self *luaState) Len2(idx int) int64 {
 
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_tolstring
-func (self *luaState) ToString2(idx int) string {
+func (self *lkState) ToString2(idx int) string {
 	if self.CallMeta(idx, "__str") { /* metafield? */
 		if !self.IsString(-1) {
 			self.Error2("'__str' must return a string")
@@ -209,7 +209,7 @@ func (self *luaState) ToString2(idx int) string {
 		case LUA_TNIL:
 			self.PushString("nil")
 		case LUA_TTABLE:
-			tb, ok := self.ToPointer(idx).(*luaTable)
+			tb, ok := self.ToPointer(idx).(*lkTable)
 			if ok {
 				s, err := tb.String()
 				if err == nil {
@@ -241,7 +241,7 @@ func (self *luaState) ToString2(idx int) string {
 
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_getsubtable
-func (self *luaState) GetSubTable(idx int, fname string) bool {
+func (self *lkState) GetSubTable(idx int, fname string) bool {
 	if self.GetField(idx, fname) == LUA_TTABLE {
 		return true /* table already there */
 	}
@@ -255,7 +255,7 @@ func (self *luaState) GetSubTable(idx int, fname string) bool {
 
 // [-0, +(0|1), m]
 // http://www.lua.org/manual/5.3/manual.html#luaL_getmetafield
-func (self *luaState) GetMetafield(obj int, event string) LuaType {
+func (self *lkState) GetMetafield(obj int, event string) LkType {
 	if !self.GetMetatable(obj) { /* no metatable? */
 		return LUA_TNIL
 	}
@@ -272,7 +272,7 @@ func (self *luaState) GetMetafield(obj int, event string) LuaType {
 
 // [-0, +(0|1), e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_callmeta
-func (self *luaState) CallMeta(obj int, event string) bool {
+func (self *lkState) CallMeta(obj int, event string) bool {
 	obj = self.AbsIndex(obj)
 	if self.GetMetafield(obj, event) == LUA_TNIL { /* no metafield? */
 		return false
@@ -285,7 +285,7 @@ func (self *luaState) CallMeta(obj int, event string) bool {
 
 // [-0, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_openlibs
-func (self *luaState) OpenLibs() {
+func (self *lkState) OpenLibs() {
 	libs := map[string]GoFunction{
 		"_G":   stdlib.OpenBaseLib,
 		"math": stdlib.OpenMathLib,
@@ -308,7 +308,7 @@ func (self *luaState) OpenLibs() {
 
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_requiref
-func (self *luaState) RequireF(modname string, openf GoFunction, glb bool) {
+func (self *lkState) RequireF(modname string, openf GoFunction, glb bool) {
 	self.GetSubTable(LUA_REGISTRYINDEX, "_LOADED")
 	self.GetField(-1, modname) /* LOADED[modname] */
 	if !self.ToBoolean(-1) {   /* package not already loaded? */
@@ -328,20 +328,20 @@ func (self *luaState) RequireF(modname string, openf GoFunction, glb bool) {
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#luaL_newlib
-func (self *luaState) NewLib(l FuncReg) {
+func (self *lkState) NewLib(l FuncReg) {
 	self.NewLibTable(l)
 	self.SetFuncs(l, 0)
 }
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#luaL_newlibtable
-func (self *luaState) NewLibTable(l FuncReg) {
+func (self *lkState) NewLibTable(l FuncReg) {
 	self.CreateTable(0, len(l))
 }
 
 // [-nup, +0, m]
 // http://www.lua.org/manual/5.3/manual.html#luaL_setfuncs
-func (self *luaState) SetFuncs(l FuncReg, nup int) {
+func (self *lkState) SetFuncs(l FuncReg, nup int) {
 	self.CheckStack2(nup, "too many upvalues")
 	for name := range l { /* fill the table with given functions */
 		for i := 0; i < nup; i++ { /* copy upvalues to the top */
@@ -354,7 +354,7 @@ func (self *luaState) SetFuncs(l FuncReg, nup int) {
 	self.Pop(nup) /* remove upvalues */
 }
 
-func (self *luaState) intError(arg int) {
+func (self *lkState) intError(arg int) {
 	if self.IsNumber(arg) {
 		self.ArgError(arg, "number has no integer representation")
 	} else {
@@ -362,11 +362,11 @@ func (self *luaState) intError(arg int) {
 	}
 }
 
-func (self *luaState) tagError(arg int, tag LuaType) {
-	self.typeError(arg, self.TypeName(LuaType(tag)))
+func (self *lkState) tagError(arg int, tag LkType) {
+	self.typeError(arg, self.TypeName(LkType(tag)))
 }
 
-func (self *luaState) typeError(arg int, tname string) int {
+func (self *lkState) typeError(arg int, tname string) int {
 	var typeArg string /* name for the type of the actual argument */
 	if self.GetMetafield(arg, "__name") == LUA_TSTRING {
 		typeArg = self.ToString(-1) /* use the given type name */

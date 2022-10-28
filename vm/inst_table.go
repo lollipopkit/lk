@@ -6,7 +6,7 @@ import . "git.lolli.tech/lollipopkit/lk/api"
 const LFIELDS_PER_FLUSH = 50
 
 // R(A) := {} (size = B,C)
-func newTable(i Instruction, vm LuaVM) {
+func newTable(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 
@@ -15,7 +15,7 @@ func newTable(i Instruction, vm LuaVM) {
 }
 
 // R(A) := R(B)[RK(C)]
-func getTable(i Instruction, vm LuaVM) {
+func getTable(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 	b += 1
@@ -26,7 +26,7 @@ func getTable(i Instruction, vm LuaVM) {
 }
 
 // R(A)[RK(B)] := RK(C)
-func setTable(i Instruction, vm LuaVM) {
+func setTable(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 
@@ -36,7 +36,7 @@ func setTable(i Instruction, vm LuaVM) {
 }
 
 // R(A)[(C-1)*FPF+i] := R(A+i), 1 <= i <= B
-func setList(i Instruction, vm LuaVM) {
+func setList(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 

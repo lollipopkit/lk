@@ -2,36 +2,36 @@ package state
 
 import . "git.lolli.tech/lollipopkit/lk/api"
 
-type luaStack struct {
+type lkStack struct {
 	/* virtual stack */
 	slots []any
 	top   int
 	/* call info */
-	state   *luaState
+	state   *lkState
 	closure *closure
 	varargs []any
-	openuvs map[int]*upvalue
+	openuvs map[int]*any
 	pc      int
 	/* linked list */
-	prev *luaStack
+	prev *lkStack
 }
 
-func newLuaStack(size int, state *luaState) *luaStack {
-	return &luaStack{
+func newLuaStack(size int, state *lkState) *lkStack {
+	return &lkStack{
 		slots: make([]any, size),
 		top:   0,
 		state: state,
 	}
 }
 
-func (self *luaStack) check(n int) {
+func (self *lkStack) check(n int) {
 	free := len(self.slots) - self.top
 	for i := free; i < n; i++ {
 		self.slots = append(self.slots, nil)
 	}
 }
 
-func (self *luaStack) push(val any) {
+func (self *lkStack) push(val any) {
 	if self.top == len(self.slots) {
 		panic("stack overflow!")
 	}
@@ -39,7 +39,7 @@ func (self *luaStack) push(val any) {
 	self.top++
 }
 
-func (self *luaStack) pop() any {
+func (self *lkStack) pop() any {
 	if self.top < 1 {
 		panic("stack underflow!")
 	}
@@ -49,7 +49,7 @@ func (self *luaStack) pop() any {
 	return val
 }
 
-func (self *luaStack) pushN(vals []any, n int) {
+func (self *lkStack) pushN(vals []any, n int) {
 	nVals := len(vals)
 	if n < 0 {
 		n = nVals
@@ -64,7 +64,7 @@ func (self *luaStack) pushN(vals []any, n int) {
 	}
 }
 
-func (self *luaStack) popN(n int) []any {
+func (self *lkStack) popN(n int) []any {
 	vals := make([]any, n)
 	for i := n - 1; i >= 0; i-- {
 		vals[i] = self.pop()
@@ -72,14 +72,14 @@ func (self *luaStack) popN(n int) []any {
 	return vals
 }
 
-func (self *luaStack) absIndex(idx int) int {
+func (self *lkStack) absIndex(idx int) int {
 	if idx >= 0 || idx <= LUA_REGISTRYINDEX {
 		return idx
 	}
 	return idx + self.top + 1
 }
 
-func (self *luaStack) isValid(idx int) bool {
+func (self *lkStack) isValid(idx int) bool {
 	if idx < LUA_REGISTRYINDEX { /* upvalues */
 		uvIdx := LUA_REGISTRYINDEX - idx - 1
 		c := self.closure
@@ -92,14 +92,14 @@ func (self *luaStack) isValid(idx int) bool {
 	return absIdx > 0 && absIdx <= self.top
 }
 
-func (self *luaStack) get(idx int) any {
+func (self *lkStack) get(idx int) any {
 	if idx < LUA_REGISTRYINDEX { /* upvalues */
 		uvIdx := LUA_REGISTRYINDEX - idx - 1
 		c := self.closure
 		if c == nil || uvIdx >= len(c.upvals) {
 			return nil
 		}
-		return *(c.upvals[uvIdx].val)
+		return *(c.upvals[uvIdx])
 	}
 
 	if idx == LUA_REGISTRYINDEX {
@@ -113,18 +113,18 @@ func (self *luaStack) get(idx int) any {
 	return nil
 }
 
-func (self *luaStack) set(idx int, val any) {
+func (self *lkStack) set(idx int, val any) {
 	if idx < LUA_REGISTRYINDEX { /* upvalues */
 		uvIdx := LUA_REGISTRYINDEX - idx - 1
 		c := self.closure
 		if c != nil && uvIdx < len(c.upvals) {
-			*(c.upvals[uvIdx].val) = val
+			c.upvals[uvIdx] = &val
 		}
 		return
 	}
 
 	if idx == LUA_REGISTRYINDEX {
-		self.state.registry = val.(*luaTable)
+		self.state.registry = val.(*lkTable)
 		return
 	}
 
@@ -136,7 +136,7 @@ func (self *luaStack) set(idx int, val any) {
 	panic("invalid index!")
 }
 
-func (self *luaStack) reverse(from, to int) {
+func (self *lkStack) reverse(from, to int) {
 	slots := self.slots
 	for from < to {
 		slots[from], slots[to] = slots[to], slots[from]

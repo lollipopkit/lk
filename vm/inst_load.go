@@ -3,7 +3,7 @@ package vm
 import . "git.lolli.tech/lollipopkit/lk/api"
 
 // R(A), R(A+1), ..., R(A+B) := nil
-func loadNil(i Instruction, vm LuaVM) {
+func loadNil(i Instruction, vm LkVM) {
 	a, b, _ := i.ABC()
 	a += 1
 
@@ -15,7 +15,7 @@ func loadNil(i Instruction, vm LuaVM) {
 }
 
 // R(A) := (bool)B; if (C) pc++
-func loadBool(i Instruction, vm LuaVM) {
+func loadBool(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 
@@ -28,7 +28,7 @@ func loadBool(i Instruction, vm LuaVM) {
 }
 
 // R(A) := Kst(Bx)
-func loadK(i Instruction, vm LuaVM) {
+func loadK(i Instruction, vm LkVM) {
 	a, bx := i.ABx()
 	a += 1
 
@@ -37,7 +37,7 @@ func loadK(i Instruction, vm LuaVM) {
 }
 
 // R(A) := Kst(extra arg)
-func loadKx(i Instruction, vm LuaVM) {
+func loadKx(i Instruction, vm LkVM) {
 	a, _ := i.ABx()
 	a += 1
 	ax := Instruction(vm.Fetch()).Ax()

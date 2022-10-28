@@ -5,8 +5,8 @@ import . "git.lolli.tech/lollipopkit/lk/api"
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_newthread
 // lua-5.3.4/src/lstate.c#lua_newthread()
-func (self *luaState) NewThread() LkState {
-	t := &luaState{registry: self.registry}
+func (self *lkState) NewThread() LkState {
+	t := &lkState{registry: self.registry}
 	t.pushLuaStack(newLuaStack(LUA_MINSTACK, t))
 	self.stack.push(t)
 	return t
@@ -14,8 +14,8 @@ func (self *luaState) NewThread() LkState {
 
 // [-?, +?, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_resume
-func (self *luaState) Resume(from LkState, nArgs int) int {
-	lsFrom := from.(*luaState)
+func (self *lkState) Resume(from LkState, nArgs int) int {
+	lsFrom := from.(*lkState)
 	if lsFrom.coChan == nil {
 		lsFrom.coChan = make(chan int)
 	}
@@ -44,7 +44,7 @@ func (self *luaState) Resume(from LkState, nArgs int) int {
 
 // [-?, +?, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_yield
-func (self *luaState) Yield(nResults int) int {
+func (self *lkState) Yield(nResults int) int {
 	if self.coCaller == nil { // todo
 		panic("attempt to yield from outside a coroutine")
 	}
@@ -56,7 +56,7 @@ func (self *luaState) Yield(nResults int) int {
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isyieldable
-func (self *luaState) IsYieldable() bool {
+func (self *lkState) IsYieldable() bool {
 	if self.isMainThread() {
 		return false
 	}
@@ -66,11 +66,11 @@ func (self *luaState) IsYieldable() bool {
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_status
 // lua-5.3.4/src/lapi.c#lua_status()
-func (self *luaState) Status() int {
+func (self *lkState) Status() int {
 	return self.coStatus
 }
 
 // debug
-func (self *luaState) GetStack() bool {
+func (self *lkState) GetStack() bool {
 	return self.stack.prev != nil
 }

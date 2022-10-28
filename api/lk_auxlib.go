@@ -11,7 +11,7 @@ type AuxLib interface {
 	CheckStack2(sz int, msg string)
 	ArgCheck(cond bool, arg int, extraMsg string)
 	CheckAny(arg int)
-	CheckType(arg int, t LuaType)
+	CheckType(arg int, t LkType)
 	CheckInteger(arg int) int64
 	CheckNumber(arg int) float64
 	CheckString(arg int) string
@@ -31,7 +31,7 @@ type AuxLib interface {
 	ToString2(idx int) string
 	Len2(idx int) int64
 	GetSubTable(idx int, fname string) bool
-	GetMetafield(obj int, e string) LuaType
+	GetMetafield(obj int, e string) LkType
 	CallMeta(obj int, e string) bool
 	OpenLibs()
 	RequireF(modname string, openf GoFunction, glb bool)

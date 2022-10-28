@@ -8,7 +8,7 @@ import (
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_typename
-func (self *luaState) TypeName(tp LuaType) string {
+func (self *lkState) TypeName(tp LkType) string {
 	switch tp {
 	case LUA_TNONE:
 		return "none"
@@ -33,7 +33,7 @@ func (self *luaState) TypeName(tp LuaType) string {
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_type
-func (self *luaState) Type(idx int) LuaType {
+func (self *lkState) Type(idx int) LkType {
 	if self.stack.isValid(idx) {
 		val := self.stack.get(idx)
 		return typeOf(val)
@@ -43,63 +43,63 @@ func (self *luaState) Type(idx int) LuaType {
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isnone
-func (self *luaState) IsNone(idx int) bool {
+func (self *lkState) IsNone(idx int) bool {
 	return self.Type(idx) == LUA_TNONE
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isnil
-func (self *luaState) IsNil(idx int) bool {
+func (self *lkState) IsNil(idx int) bool {
 	return self.Type(idx) == LUA_TNIL
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isnoneornil
-func (self *luaState) IsNoneOrNil(idx int) bool {
+func (self *lkState) IsNoneOrNil(idx int) bool {
 	return self.Type(idx) <= LUA_TNIL
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isboolean
-func (self *luaState) IsBoolean(idx int) bool {
+func (self *lkState) IsBoolean(idx int) bool {
 	return self.Type(idx) == LUA_TBOOLEAN
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_istable
-func (self *luaState) IsTable(idx int) bool {
+func (self *lkState) IsTable(idx int) bool {
 	return self.Type(idx) == LUA_TTABLE
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isfunction
-func (self *luaState) IsFunction(idx int) bool {
+func (self *lkState) IsFunction(idx int) bool {
 	return self.Type(idx) == LUA_TFUNCTION
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isthread
-func (self *luaState) IsThread(idx int) bool {
+func (self *lkState) IsThread(idx int) bool {
 	return self.Type(idx) == LUA_TTHREAD
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isstring
-func (self *luaState) IsString(idx int) bool {
+func (self *lkState) IsString(idx int) bool {
 	t := self.Type(idx)
 	return t == LUA_TSTRING || t == LUA_TNUMBER
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isnumber
-func (self *luaState) IsNumber(idx int) bool {
+func (self *lkState) IsNumber(idx int) bool {
 	_, ok := self.ToNumberX(idx)
 	return ok
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isinteger
-func (self *luaState) IsInteger(idx int) bool {
+func (self *lkState) IsInteger(idx int) bool {
 	val := self.stack.get(idx)
 	_, ok := val.(int64)
 	return ok
@@ -107,7 +107,7 @@ func (self *luaState) IsInteger(idx int) bool {
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_iscfunction
-func (self *luaState) IsGoFunction(idx int) bool {
+func (self *lkState) IsGoFunction(idx int) bool {
 	val := self.stack.get(idx)
 	if c, ok := val.(*closure); ok {
 		return c.goFunc != nil
@@ -117,47 +117,47 @@ func (self *luaState) IsGoFunction(idx int) bool {
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_toboolean
-func (self *luaState) ToBoolean(idx int) bool {
+func (self *lkState) ToBoolean(idx int) bool {
 	val := self.stack.get(idx)
 	return convertToBoolean(val)
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_tointeger
-func (self *luaState) ToInteger(idx int) int64 {
+func (self *lkState) ToInteger(idx int) int64 {
 	i, _ := self.ToIntegerX(idx)
 	return i
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_tointegerx
-func (self *luaState) ToIntegerX(idx int) (int64, bool) {
+func (self *lkState) ToIntegerX(idx int) (int64, bool) {
 	val := self.stack.get(idx)
 	return convertToInteger(val)
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_tonumber
-func (self *luaState) ToNumber(idx int) float64 {
+func (self *lkState) ToNumber(idx int) float64 {
 	n, _ := self.ToNumberX(idx)
 	return n
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_tonumberx
-func (self *luaState) ToNumberX(idx int) (float64, bool) {
+func (self *lkState) ToNumberX(idx int) (float64, bool) {
 	val := self.stack.get(idx)
 	return convertToFloat(val)
 }
 
 // [-0, +0, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_tostring
-func (self *luaState) ToString(idx int) string {
+func (self *lkState) ToString(idx int) string {
 	s, _ := self.ToStringX(idx)
 	return s
 }
 
-func (self *luaState) ToStringX(idx int) (string, bool) {
+func (self *lkState) ToStringX(idx int) (string, bool) {
 	val := self.stack.get(idx)
 
 	switch x := val.(type) {
@@ -174,7 +174,7 @@ func (self *luaState) ToStringX(idx int) (string, bool) {
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_tocfunction
-func (self *luaState) ToGoFunction(idx int) GoFunction {
+func (self *lkState) ToGoFunction(idx int) GoFunction {
 	val := self.stack.get(idx)
 	if c, ok := val.(*closure); ok {
 		return c.goFunc
@@ -184,10 +184,10 @@ func (self *luaState) ToGoFunction(idx int) GoFunction {
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_tothread
-func (self *luaState) ToThread(idx int) LkState {
+func (self *lkState) ToThread(idx int) LkState {
 	val := self.stack.get(idx)
 	if val != nil {
-		if ls, ok := val.(*luaState); ok {
+		if ls, ok := val.(*lkState); ok {
 			return ls
 		}
 	}
@@ -196,7 +196,7 @@ func (self *luaState) ToThread(idx int) LkState {
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_topointer
-func (self *luaState) ToPointer(idx int) interface{} {
+func (self *lkState) ToPointer(idx int) interface{} {
 	// todo
 	return self.stack.get(idx)
 }

@@ -89,7 +89,7 @@ func preloadSearcher(ls LkState) int {
 
 func luaSearcher(ls LkState) int {
 	name := ls.CheckString(1)
-	ls.GetField(LuaUpvalueIndex(1), "path")
+	ls.GetField(LkUpvalueIndex(1), "path")
 	path, ok := ls.ToStringX(-1)
 	if !ok {
 		ls.Error2("'package.path' must be a string")
@@ -173,7 +173,7 @@ func pkgImport(ls LkState) int {
 
 func _findLoader(ls LkState, name string) {
 	/* push 'package.searchers' to index 3 in the stack */
-	if ls.GetField(LuaUpvalueIndex(1), "searchers") != LUA_TTABLE {
+	if ls.GetField(LkUpvalueIndex(1), "searchers") != LUA_TTABLE {
 		ls.Error2("'package.searchers' must be a table")
 	}
 

@@ -1,12 +1,12 @@
 package api
 
-type LuaType = int
+type LkType = int
 type ArithOp = int
 type CompareOp = int
 
 type GoFunction func(LkState) int
 
-func LuaUpvalueIndex(i int) int {
+func LkUpvalueIndex(i int) int {
 	return LUA_REGISTRYINDEX - i
 }
 
@@ -30,8 +30,8 @@ type BasicAPI interface {
 	SetTop(idx int)
 	XMove(to LkState, n int)
 	/* access functions (stack -> Go) */
-	TypeName(tp LuaType) string
-	Type(idx int) LuaType
+	TypeName(tp LkType) string
+	Type(idx int) LkType
 	IsNone(idx int) bool
 	IsNil(idx int) bool
 	IsNoneOrNil(idx int) bool
@@ -70,12 +70,12 @@ type BasicAPI interface {
 	/* get functions (Lua -> stack) */
 	NewTable()
 	CreateTable(nArr, nRec int)
-	GetTable(idx int) LuaType
-	GetField(idx int, k string) LuaType
-	GetI(idx int, i int64) LuaType
-	RawGet(idx int) LuaType
-	RawGetI(idx int, i int64) LuaType
-	GetGlobal(name string) LuaType
+	GetTable(idx int) LkType
+	GetField(idx int, k string) LkType
+	GetI(idx int, i int64) LkType
+	RawGet(idx int) LkType
+	RawGetI(idx int, i int64) LkType
+	GetGlobal(name string) LkType
 	/* set functions (stack -> Lua) */
 	SetTable(idx int)
 	SetField(idx int, k string)

@@ -3,40 +3,40 @@ package vm
 import . "git.lolli.tech/lollipopkit/lk/api"
 
 // R(A) := UpValue[B]
-func getUpval(i Instruction, vm LuaVM) {
+func getUpval(i Instruction, vm LkVM) {
 	a, b, _ := i.ABC()
 	a += 1
 	b += 1
 
-	vm.Copy(LuaUpvalueIndex(b), a)
+	vm.Copy(LkUpvalueIndex(b), a)
 }
 
 // UpValue[B] := R(A)
-func setUpval(i Instruction, vm LuaVM) {
+func setUpval(i Instruction, vm LkVM) {
 	a, b, _ := i.ABC()
 	a += 1
 	b += 1
 
-	vm.Copy(a, LuaUpvalueIndex(b))
+	vm.Copy(a, LkUpvalueIndex(b))
 }
 
 // R(A) := UpValue[B][RK(C)]
-func getTabUp(i Instruction, vm LuaVM) {
+func getTabUp(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 	b += 1
 
 	vm.GetRK(c)
-	vm.GetTable(LuaUpvalueIndex(b))
+	vm.GetTable(LkUpvalueIndex(b))
 	vm.Replace(a)
 }
 
 // UpValue[A][RK(B)] := RK(C)
-func setTabUp(i Instruction, vm LuaVM) {
+func setTabUp(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 
 	vm.GetRK(b)
 	vm.GetRK(c)
-	vm.SetTable(LuaUpvalueIndex(a))
+	vm.SetTable(LkUpvalueIndex(a))
 }

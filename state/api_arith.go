@@ -91,7 +91,7 @@ func opSymbol(opName string) string {
 
 // [-(2|1), +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_arith
-func (self *luaState) Arith(op ArithOp) {
+func (self *lkState) Arith(op ArithOp) {
 	var a, b any // operands
 	b = self.stack.pop()
 	if op != LUA_OPUNM && op != LUA_OPBNOT {

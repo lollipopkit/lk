@@ -49,6 +49,7 @@ replace_lang_ver := fn(path, re_exp) {
 
 replace_lang_ver(mods_index_path, mods_re_exp)
 replace_lang_ver(consts_ver_path, consts_re_exp)
+print("Versions replaced.")
 
 // Git push & tag
 if git {
@@ -58,7 +59,7 @@ if git {
         os.exit(1)
     }
 
-    _, err := os.exec('git commit -m "v' + version + '"')
+    _, err := os.exec('git commit -m "`v' + version + '`"')
     if err != nil {
         print("Error git commit: " + err)
         os.exit(1)
@@ -69,20 +70,21 @@ if git {
         print("Error git push: " + err)
         os.exit(1)
     }
+    print("Git push done.")
 
     _, err := os.exec("git tag -a v" + version + " -m 'v" + version + "'")
     if err != nil {
         print("Error tagging: " + err)
         os.exit(1)
     }
-    print("Tagged v" + version)
+    print(fmt("Tagged v%s."))
 
     _, err := os.exec("git push origin v"+version)
     if err != nil {
         print("Error pushing tag: " + err)
         os.exit(1)
     }
-    print("Tag pushed")
+    print("Tag pushed.")
 }
 
 // 编译部分
@@ -107,3 +109,5 @@ for _, arch in archs {
         print(fmt('Successfully built %s-%s', platform, arch))
     }
 }
+
+print("All done.")

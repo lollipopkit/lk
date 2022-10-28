@@ -76,7 +76,7 @@ type opcode struct {
 	argCMode byte // C arg mode
 	opMode   byte // op mode
 	name     string
-	action   func(i Instruction, vm api.LuaVM)
+	action   func(i Instruction, vm api.LkVM)
 }
 
 var opcodes = []opcode{

@@ -7,7 +7,7 @@ import (
 	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
-type luaTable struct {
+type lkTable struct {
 	arr     []any
 	_map    map[any]any
 	keys    map[any]any // used by next()
@@ -15,7 +15,7 @@ type luaTable struct {
 	changed bool        // used by next()
 }
 
-func (self *luaTable) String() (string, error) {
+func (self *lkTable) String() (string, error) {
 	if len(self._map) == 0 {
 		return json.MarshalToString(self.arr)
 	}
@@ -29,8 +29,8 @@ func (self *luaTable) String() (string, error) {
 	return json.MarshalToString(m)
 }
 
-func newLuaTable(nArr, nRec int) *luaTable {
-	t := &luaTable{}
+func newLuaTable(nArr, nRec int) *lkTable {
+	t := &lkTable{}
 	if nArr > 0 {
 		t.arr = make([]any, 0, nArr)
 	}
@@ -40,15 +40,15 @@ func newLuaTable(nArr, nRec int) *luaTable {
 	return t
 }
 
-func (self *luaTable) hasMetafield(fieldName string) bool {
+func (self *lkTable) hasMetafield(fieldName string) bool {
 	return self.get(fieldName) != nil
 }
 
-func (self *luaTable) len() int {
+func (self *lkTable) len() int {
 	return len(self.arr)
 }
 
-func (self *luaTable) get(key any) any {
+func (self *lkTable) get(key any) any {
 	key = _floatToInteger(key)
 	if idx, ok := key.(int64); ok {
 		if idx >= 0 && idx < int64(len(self.arr)) {
@@ -67,7 +67,7 @@ func _floatToInteger(key any) any {
 	return key
 }
 
-func (self *luaTable) put(key, val any) {
+func (self *lkTable) put(key, val any) {
 	if key == nil {
 		panic("table index is nil!")
 	}
@@ -105,7 +105,7 @@ func (self *luaTable) put(key, val any) {
 	}
 }
 
-func (self *luaTable) _shrinkArray() {
+func (self *lkTable) _shrinkArray() {
 	for i := len(self.arr) - 1; i >= 0; i-- {
 		if self.arr[i] == nil {
 			self.arr = self.arr[0:i]
@@ -115,7 +115,7 @@ func (self *luaTable) _shrinkArray() {
 	}
 }
 
-func (self *luaTable) _expandArray() {
+func (self *lkTable) _expandArray() {
 	for idx := int64(len(self.arr)) + 1; true; idx++ {
 		if val, found := self._map[idx]; found {
 			delete(self._map, idx)
@@ -126,7 +126,7 @@ func (self *luaTable) _expandArray() {
 	}
 }
 
-func (self *luaTable) nextKey(key any) any {
+func (self *lkTable) nextKey(key any) any {
 	if self.keys == nil || (key == nil && self.changed) {
 		self.initKeys()
 		self.changed = false
@@ -148,7 +148,7 @@ func (self *luaTable) nextKey(key any) any {
 	return nextKey
 }
 
-func (self *luaTable) initKeys() {
+func (self *lkTable) initKeys() {
 	self.keys = make(map[any]any)
 	var key any = nil
 	for i := range self.arr {

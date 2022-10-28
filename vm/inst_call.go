@@ -3,7 +3,7 @@ package vm
 import . "git.lolli.tech/lollipopkit/lk/api"
 
 // R(A+1) := R(B); R(A) := R(B)[RK(C)]
-func self(i Instruction, vm LuaVM) {
+func self(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 	b += 1
@@ -15,7 +15,7 @@ func self(i Instruction, vm LuaVM) {
 }
 
 // R(A) := closure(KPROTO[Bx])
-func closure(i Instruction, vm LuaVM) {
+func closure(i Instruction, vm LkVM) {
 	a, bx := i.ABx()
 	a += 1
 
@@ -24,7 +24,7 @@ func closure(i Instruction, vm LuaVM) {
 }
 
 // R(A), R(A+1), ..., R(A+B-2) = vararg
-func vararg(i Instruction, vm LuaVM) {
+func vararg(i Instruction, vm LkVM) {
 	a, b, _ := i.ABC()
 	a += 1
 
@@ -35,7 +35,7 @@ func vararg(i Instruction, vm LuaVM) {
 }
 
 // R(A+3), ... ,R(A+2+C) := R(A)(R(A+1), R(A+2));
-func tForCall(i Instruction, vm LuaVM) {
+func tForCall(i Instruction, vm LkVM) {
 	a, _, c := i.ABC()
 	a += 1
 
@@ -45,7 +45,7 @@ func tForCall(i Instruction, vm LuaVM) {
 }
 
 // return R(A)(R(A+1), ... ,R(A+B-1))
-func tailCall(i Instruction, vm LuaVM) {
+func tailCall(i Instruction, vm LkVM) {
 	a, b, _ := i.ABC()
 	a += 1
 
@@ -57,7 +57,7 @@ func tailCall(i Instruction, vm LuaVM) {
 }
 
 // R(A), ... ,R(A+C-2) := R(A)(R(A+1), ... ,R(A+B-1))
-func call(i Instruction, vm LuaVM) {
+func call(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 
@@ -67,7 +67,7 @@ func call(i Instruction, vm LuaVM) {
 	_popResults(a, c, vm)
 }
 
-func _pushFuncAndArgs(a, b int, vm LuaVM) (nArgs int) {
+func _pushFuncAndArgs(a, b int, vm LkVM) (nArgs int) {
 	if b >= 1 {
 		vm.CheckStack(b)
 		for i := a; i < a+b; i++ {
@@ -80,7 +80,7 @@ func _pushFuncAndArgs(a, b int, vm LuaVM) (nArgs int) {
 	}
 }
 
-func _fixStack(a int, vm LuaVM) {
+func _fixStack(a int, vm LkVM) {
 	x := int(vm.ToInteger(-1))
 	vm.Pop(1)
 
@@ -91,7 +91,7 @@ func _fixStack(a int, vm LuaVM) {
 	vm.Rotate(vm.RegisterCount()+1, x-a)
 }
 
-func _popResults(a, c int, vm LuaVM) {
+func _popResults(a, c int, vm LkVM) {
 	if c == 1 {
 		// no results
 	} else if c > 1 {
@@ -106,7 +106,7 @@ func _popResults(a, c int, vm LuaVM) {
 }
 
 // return R(A), ... ,R(A+B-2)
-func _return(i Instruction, vm LuaVM) {
+func _return(i Instruction, vm LkVM) {
 	a, b, _ := i.ABC()
 	a += 1
 

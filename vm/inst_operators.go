@@ -4,23 +4,23 @@ import . "git.lolli.tech/lollipopkit/lk/api"
 
 /* arith */
 
-func add(i Instruction, vm LuaVM)  { _binaryArith(i, vm, LUA_OPADD) }  // +
-func sub(i Instruction, vm LuaVM)  { _binaryArith(i, vm, LUA_OPSUB) }  // -
-func mul(i Instruction, vm LuaVM)  { _binaryArith(i, vm, LUA_OPMUL) }  // *
-func mod(i Instruction, vm LuaVM)  { _binaryArith(i, vm, LUA_OPMOD) }  // %
-func pow(i Instruction, vm LuaVM)  { _binaryArith(i, vm, LUA_OPPOW) }  // ^
-func div(i Instruction, vm LuaVM)  { _binaryArith(i, vm, LUA_OPDIV) }  // /
-func idiv(i Instruction, vm LuaVM) { _binaryArith(i, vm, LUA_OPIDIV) } // //
-func band(i Instruction, vm LuaVM) { _binaryArith(i, vm, LUA_OPBAND) } // &
-func bor(i Instruction, vm LuaVM)  { _binaryArith(i, vm, LUA_OPBOR) }  // |
-func bxor(i Instruction, vm LuaVM) { _binaryArith(i, vm, LUA_OPBXOR) } // ~
-func shl(i Instruction, vm LuaVM)  { _binaryArith(i, vm, LUA_OPSHL) }  // <<
-func shr(i Instruction, vm LuaVM)  { _binaryArith(i, vm, LUA_OPSHR) }  // >>
-func unm(i Instruction, vm LuaVM)  { _unaryArith(i, vm, LUA_OPUNM) }   // -
-func bnot(i Instruction, vm LuaVM) { _unaryArith(i, vm, LUA_OPBNOT) }  // ~
+func add(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPADD) }  // +
+func sub(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPSUB) }  // -
+func mul(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPMUL) }  // *
+func mod(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPMOD) }  // %
+func pow(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPPOW) }  // ^
+func div(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPDIV) }  // /
+func idiv(i Instruction, vm LkVM) { _binaryArith(i, vm, LUA_OPIDIV) } // //
+func band(i Instruction, vm LkVM) { _binaryArith(i, vm, LUA_OPBAND) } // &
+func bor(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPBOR) }  // |
+func bxor(i Instruction, vm LkVM) { _binaryArith(i, vm, LUA_OPBXOR) } // ~
+func shl(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPSHL) }  // <<
+func shr(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPSHR) }  // >>
+func unm(i Instruction, vm LkVM)  { _unaryArith(i, vm, LUA_OPUNM) }   // -
+func bnot(i Instruction, vm LkVM) { _unaryArith(i, vm, LUA_OPBNOT) }  // ~
 
 // R(A) := RK(B) op RK(C)
-func _binaryArith(i Instruction, vm LuaVM, op ArithOp) {
+func _binaryArith(i Instruction, vm LkVM, op ArithOp) {
 	a, b, c := i.ABC()
 	a += 1
 
@@ -31,7 +31,7 @@ func _binaryArith(i Instruction, vm LuaVM, op ArithOp) {
 }
 
 // R(A) := op R(B)
-func _unaryArith(i Instruction, vm LuaVM, op ArithOp) {
+func _unaryArith(i Instruction, vm LkVM, op ArithOp) {
 	a, b, _ := i.ABC()
 	a += 1
 	b += 1
@@ -43,12 +43,12 @@ func _unaryArith(i Instruction, vm LuaVM, op ArithOp) {
 
 /* compare */
 
-func eq(i Instruction, vm LuaVM) { _compare(i, vm, LUA_OPEQ) } // ==
-func lt(i Instruction, vm LuaVM) { _compare(i, vm, LUA_OPLT) } // <
-func le(i Instruction, vm LuaVM) { _compare(i, vm, LUA_OPLE) } // <=
+func eq(i Instruction, vm LkVM) { _compare(i, vm, LUA_OPEQ) } // ==
+func lt(i Instruction, vm LkVM) { _compare(i, vm, LUA_OPLT) } // <
+func le(i Instruction, vm LkVM) { _compare(i, vm, LUA_OPLE) } // <=
 
 // if ((RK(B) op RK(C)) ~= A) then pc++
-func _compare(i Instruction, vm LuaVM, op CompareOp) {
+func _compare(i Instruction, vm LkVM, op CompareOp) {
 	a, b, c := i.ABC()
 
 	vm.GetRK(b)
@@ -62,7 +62,7 @@ func _compare(i Instruction, vm LuaVM, op CompareOp) {
 /* logical */
 
 // R(A) := not R(B)
-func not(i Instruction, vm LuaVM) {
+func not(i Instruction, vm LkVM) {
 	a, b, _ := i.ABC()
 	a += 1
 	b += 1
@@ -72,7 +72,7 @@ func not(i Instruction, vm LuaVM) {
 }
 
 // if not (R(A) <=> C) then pc++
-func test(i Instruction, vm LuaVM) {
+func test(i Instruction, vm LkVM) {
 	a, _, c := i.ABC()
 	a += 1
 
@@ -82,7 +82,7 @@ func test(i Instruction, vm LuaVM) {
 }
 
 // if (R(B) <=> C) then R(A) := R(B) else pc++
-func testSet(i Instruction, vm LuaVM) {
+func testSet(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 	b += 1
@@ -97,7 +97,7 @@ func testSet(i Instruction, vm LuaVM) {
 /* len & concat */
 
 // R(A) := length of R(B)
-func length(i Instruction, vm LuaVM) {
+func length(i Instruction, vm LkVM) {
 	a, b, _ := i.ABC()
 	a += 1
 	b += 1

@@ -8,20 +8,20 @@ import (
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_newtable
-func (self *luaState) NewTable() {
+func (self *lkState) NewTable() {
 	self.CreateTable(0, 0)
 }
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_createtable
-func (self *luaState) CreateTable(nArr, nRec int) {
+func (self *lkState) CreateTable(nArr, nRec int) {
 	t := newLuaTable(nArr, nRec)
 	self.stack.push(t)
 }
 
 // [-1, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_gettable
-func (self *luaState) GetTable(idx int) LuaType {
+func (self *lkState) GetTable(idx int) LkType {
 	t := self.stack.get(idx)
 	k := self.stack.pop()
 	return self.getTable(t, k, false)
@@ -29,21 +29,21 @@ func (self *luaState) GetTable(idx int) LuaType {
 
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_getfield
-func (self *luaState) GetField(idx int, k string) LuaType {
+func (self *lkState) GetField(idx int, k string) LkType {
 	t := self.stack.get(idx)
 	return self.getTable(t, k, false)
 }
 
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_geti
-func (self *luaState) GetI(idx int, i int64) LuaType {
+func (self *lkState) GetI(idx int, i int64) LkType {
 	t := self.stack.get(idx)
 	return self.getTable(t, i, false)
 }
 
 // [-1, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_rawget
-func (self *luaState) RawGet(idx int) LuaType {
+func (self *lkState) RawGet(idx int) LkType {
 	t := self.stack.get(idx)
 	k := self.stack.pop()
 	return self.getTable(t, k, true)
@@ -51,21 +51,21 @@ func (self *luaState) RawGet(idx int) LuaType {
 
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_rawgeti
-func (self *luaState) RawGetI(idx int, i int64) LuaType {
+func (self *lkState) RawGetI(idx int, i int64) LkType {
 	t := self.stack.get(idx)
 	return self.getTable(t, i, true)
 }
 
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_getglobal
-func (self *luaState) GetGlobal(name string) LuaType {
+func (self *lkState) GetGlobal(name string) LkType {
 	t := self.registry.get(LUA_RIDX_GLOBALS)
 	return self.getTable(t, name, false)
 }
 
 // [-0, +(0|1), –]
 // http://www.lua.org/manual/5.3/manual.html#lua_getmetatable
-func (self *luaState) GetMetatable(idx int) bool {
+func (self *lkState) GetMetatable(idx int) bool {
 	val := self.stack.get(idx)
 
 	if mt := getMetatable(val, self); mt != nil {
@@ -77,8 +77,8 @@ func (self *luaState) GetMetatable(idx int) bool {
 }
 
 // push(t[k])
-func (self *luaState) getTable(t, k any, raw bool) LuaType {
-	if tbl, ok := t.(*luaTable); ok {
+func (self *lkState) getTable(t, k any, raw bool) LkType {
+	if tbl, ok := t.(*lkTable); ok {
 		v := tbl.get(k)
 		if raw || v != nil || !tbl.hasMetafield("__index") {
 			self.stack.push(v)
@@ -89,7 +89,7 @@ func (self *luaState) getTable(t, k any, raw bool) LuaType {
 	if !raw {
 		if mf := getMetafield(t, "__index", self); mf != nil {
 			switch x := mf.(type) {
-			case *luaTable:
+			case *lkTable:
 				return self.getTable(x, k, false)
 			case *closure:
 				self.stack.push(mf)
