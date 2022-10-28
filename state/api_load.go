@@ -48,12 +48,12 @@ func loadlk(source string) *binchunk.Prototype {
 
 func loadlkc(source string) *binchunk.Prototype {
 	if !utils.Exist(source) {
-		term.Error("[run] file not found: " + source)
+		term.Error("[run] file not found: \n" + source)
 	}
 
 	data, err := ioutil.ReadFile(source)
 	if err != nil {
-		term.Error("[run] can't read file: " + err.Error())
+		term.Error("[run] can't read file: \n" + err.Error())
 	}
 
 	lkPath := source[:len(source)-1]
@@ -62,7 +62,7 @@ func loadlkc(source string) *binchunk.Prototype {
 	if lkExist {
 		lkData, err = ioutil.ReadFile(lkPath)
 		if err != nil {
-			term.Error("[run] can't read file: " + err.Error())
+			term.Error("[run] can't read file: \n" + err.Error())
 		}
 	}
 
@@ -70,20 +70,20 @@ func loadlkc(source string) *binchunk.Prototype {
 	if err != nil {
 		if err == binchunk.ErrMismatchedHash {
 			if lkExist {
-				term.Info("[run] source changed, recompiling " + lkPath)
+				term.Info("[run] source changed\nrecompiling " + lkPath)
 				proto = Compile(lkPath)
 			} else {
-				term.Warn("[run] source not found: " + lkPath)
+				term.Warn("[run] source not found: \n" + lkPath)
 			}
 		} else if strings.HasPrefix(err.Error(), binchunk.MismatchVersionPrefix) {
 			if lkExist {
-				term.Info("[run] mismatch version, recompiling " + lkPath)
+				term.Info("[run] mismatch version\nrecompiling " + lkPath)
 				proto = Compile(lkPath)
 			} else {
-				term.Error("[run] mismatch version and source not found: " + lkPath)
+				term.Error("[run] mismatch version and source not found: \n" + lkPath)
 			}
 		} else {
-			term.Error("[run] chunk verify failed: " + err.Error())
+			term.Error("[run] chunk verify failed: \n" + err.Error())
 		}
 	}
 
@@ -99,7 +99,7 @@ func load(file string) *binchunk.Prototype {
 	} else if strings.HasSuffix(file, ".lkc") {
 		return loadlkc(file)
 	}
-	term.Error("[run] unknown file type: " + file)
+	term.Error("[run] unknown file type: \n" + file)
 	return nil
 }
 

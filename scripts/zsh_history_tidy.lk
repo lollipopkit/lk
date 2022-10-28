@@ -107,7 +107,7 @@ for _, line in lines {
     }
 }
 
-err := os.write(zsh_history_path, strs.join(lines_result, '\n'))
+err := os.write(zsh_history_path, strs.join(lines_result, '\n') + '\n')
 if err != nil {
     print(err)
     os.exit(1)
