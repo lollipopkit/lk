@@ -14,15 +14,16 @@
 
 
 #### CLI
+详细说明可以运行 `lk --help` 查看
 ```bash
 # 进入REPL交互式解释器
 lk
 # 执行.lk(c)文件
 lk <file>
 # 编译.lk文件
-lk compile <file>
+lk -c <file>
 # 为.lk文件，生成语法树
-lk ast <file>
+lk -a <file>
 ```
 
 ## 📄 语法
@@ -83,24 +84,23 @@ if http.listen(':8080', handle) != nil {
 ```
 
 ## 🔖 TODO
-- [ ] 语法
+- [x] 语法
   - [x] 注释：`//` `/* */`
   - [x] 去除 `repeat`, `until`, `goto`, `..` (`concat`)
   - [x] Raw String, 使用 ``` ` ``` 包裹字符
   - [x] 面向对象
-  - [ ] 语法糖
+  - [x] 自动添加 `range` ( `paris` )
+  - [x] 语法糖
     - [x] 三元操作符 `a ? b : c`
     - [x] `a == nil ? b : a` -> `a ?? b`
     - [x] `shy a = b` -> `a := b`
     - [x] `shy a = fn(b) {rt c}` -> `shy a = fn(b) => c`
+    - [x] 支持 `a++` `a+=b` 等
   - [x] Table
     - [x] key为StringExp，而不是NameExp
     - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
     - [x] 索引从 `0` 开始
     - [x] 改变 `metatable` 设置方式
-- [x] 编译器
-  - [x] 自动添加 `range` ( `paris` )
-  - [x] 支持 `a++` `a+=b` 等
 - [x] CLI
   - [x] 支持传入参数 ( `lk args.lk arg1` -> `.lk`内调用`os.args` )
   - [x] REPL，直接运行 `./lk` 即可进入
