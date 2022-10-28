@@ -19,6 +19,7 @@ var strLib = map[string]GoFunction{
 	"split":    strSplit,
 	"join":     strJoin,
 	"contains": strContains,
+	"replace": strReplace,
 }
 
 func OpenStringLib(ls LkState) int {
@@ -26,7 +27,14 @@ func OpenStringLib(ls LkState) int {
 	return 1
 }
 
-/* Basic String Functions */
+func strReplace(ls LkState) int {
+	s := ls.CheckString(1)
+	old := ls.CheckString(2)
+	new := ls.CheckString(3)
+	times := ls.OptInteger(4, -1)
+	ls.PushString(strings.Replace(s, old, new, int(times)))
+	return 1
+}
 
 func strContains(ls LkState) int {
 	s := ls.CheckString(1)

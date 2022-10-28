@@ -1,10 +1,52 @@
 args := os.args
-if #args < 2 {
-    print("Usage: lk build.lk <version>")
+if #args < 3 {
+    print("Usage: lk build.lk <version> [-compile]")
     os.exit(1) 
 }
     
-version := args[2]
+version = args[2]
+if not re.have(`^\d+\.\d+\.\d+$`, version) {
+    print("Invalid version: %s", version)
+    os.exit(1)
+}
+compile := args[3] == "-compile"
+
+mods_index_path := "mods/index.json"
+consts_ver_path := 'consts/lang.go'
+mods_re_exp := `"vm": "(.*)"`
+consts_re_exp := `VERSION *= *"(.*)"`
+
+replace_lang_ver := fn(path, re_exp) {
+    content, err := os.read(path)
+    if err != nil {
+        print("Error reading "+path)
+        os.exit(1)
+    }
+
+    old_ver := re.find(re_exp, content)
+    if old_ver == nil {
+        print("Error finding version in "+path)
+        os.exit(1)
+    }
+
+    old_ver = old_ver[1]
+
+    if old_ver != version {
+        content = strs.replace(content, old_ver, version)
+        err := os.write(path, content)
+        if err != nil {
+            print("Error writing "+path)
+            os.exit(1)
+        }
+    }
+}
+
+replace_lang_ver(mods_index_path, mods_re_exp)
+replace_lang_ver(consts_ver_path, consts_re_exp)
+
+if not compile {
+    os.exit()
+}
 
 archs = {'arm64', 'amd64'}
 platforms = {'darwin', 'linux', 'windows'}
@@ -17,7 +59,7 @@ for _, arch in archs {
         cmd = fmt('%s go build -o %s', prefix, output)
         _, err := os.exec(cmd)
         if err != nil {
-            print(fmt('Failed to build %s-%s', platform, arch))
+            print(fmt('Failed to build %s-%s: ', platform, arch, err))
             os.exit()
         }
         print(fmt('Successfully built %s-%s', platform, arch))
