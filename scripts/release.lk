@@ -1,16 +1,22 @@
+// 读取参数
 args := os.args
 if #args < 3 {
-    print("Usage: lk build.lk <version> [-compile]")
+    print("Usage: lk release.lk <version> ['-compile|-git']")
     os.exit(1) 
 }
     
 version = args[2]
+// 验证版本号
 if not re.have(`^\d+\.\d+\.\d+$`, version) {
     print("Invalid version: %s", version)
     os.exit(1)
 }
-compile := args[3] == "-compile"
 
+// 是否带有[-compile, -tag]选项
+compile := strs.contains(args[3], '-compile')
+git := strs.contains(args[3], '-git')
+
+// 开始替换新版本号
 mods_index_path := "mods/index.json"
 consts_ver_path := 'consts/lang.go'
 mods_re_exp := `"vm": "(.*)"`
@@ -44,6 +50,42 @@ replace_lang_ver := fn(path, re_exp) {
 replace_lang_ver(mods_index_path, mods_re_exp)
 replace_lang_ver(consts_ver_path, consts_re_exp)
 
+// Git push & tag
+if git {
+    _, err := os.exec('git add .')
+    if err != nil {
+        print("Error git add .: " + err)
+        os.exit(1)
+    }
+
+    _, err := os.exec('git commit -m "v' + version + '"')
+    if err != nil {
+        print("Error git commit: " + err)
+        os.exit(1)
+    }
+
+    _, err := os.exec('git push')
+    if err != nil {
+        print("Error git push: " + err)
+        os.exit(1)
+    }
+
+    _, err := os.exec("git tag -a v" + version + " -m 'v" + version + "'")
+    if err != nil {
+        print("Error tagging: " + err)
+        os.exit(1)
+    }
+    print("Tagged v" + version)
+
+    _, err := os.exec("git push origin v"+version)
+    if err != nil {
+        print("Error pushing tag: " + err)
+        os.exit(1)
+    }
+    print("Tag pushed")
+}
+
+// 编译部分
 if not compile {
     os.exit()
 }
