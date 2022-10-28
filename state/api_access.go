@@ -11,19 +11,19 @@ import (
 func (self *luaState) TypeName(tp LuaType) string {
 	switch tp {
 	case LUA_TNONE:
-		return "no value"
+		return "none"
 	case LUA_TNIL:
 		return "nil"
 	case LUA_TBOOLEAN:
-		return "boolean"
+		return "bool"
 	case LUA_TNUMBER:
-		return "number"
+		return "num"
 	case LUA_TSTRING:
-		return "string"
+		return "str"
 	case LUA_TTABLE:
 		return "table"
 	case LUA_TFUNCTION:
-		return "function"
+		return "func"
 	case LUA_TTHREAD:
 		return "thread"
 	default:

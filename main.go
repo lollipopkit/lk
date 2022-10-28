@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"io/ioutil"
 	"strings"
 	"sync"
 
+	"git.lolli.tech/lollipopkit/lk/compiler/parser"
 	"git.lolli.tech/lollipopkit/lk/mods"
 	"git.lolli.tech/lollipopkit/lk/state"
 	"git.lolli.tech/lollipopkit/lk/term"
@@ -43,4 +46,34 @@ func main() {
 			term.Warn("Can't run file without suffix '.lk':\n" + args[0])
 		}
 	}
+}
+
+func WriteAst(path string) {
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		term.Error(err.Error())
+	}
+
+	block := parser.Parse(string(data), path)
+
+	j, err := json.MarshalIndent(block, "", "  ")
+	if err != nil {
+		term.Error(err.Error())
+	}
+
+	err = ioutil.WriteFile(path+".ast.json", j, 0644)
+	if err != nil {
+		term.Error(err.Error())
+	}
+}
+
+func runVM(path string) {
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		term.Error("[run] can't read file: " + err.Error())
+	}
+	ls := state.New()
+	ls.OpenLibs()
+	ls.Load(data, path, "bt")
+	ls.Call(0, -1)
 }

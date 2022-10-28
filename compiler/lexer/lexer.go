@@ -1,10 +1,14 @@
 package lexer
 
-import "bytes"
-import "fmt"
-import "regexp"
-import "strconv"
-import "strings"
+import (
+	"bytes"
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"git.lolli.tech/lollipopkit/lk/term"
+)
 
 // var reSpaces = regexp.MustCompile(`^\s+`)
 var reNewLine = regexp.MustCompile("\r\n|\n\r|\n|\r")
@@ -311,6 +315,7 @@ func (self *Lexer) scanRawString() string {
 		str = str[1:]
 	}
 	self.next(openIdx + 1)
+	term.Info(str)
 	return str
 }
 
