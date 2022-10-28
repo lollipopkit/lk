@@ -98,18 +98,44 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 		self.next(1)
 		return self.line, TOKEN_SEP_RCURLY, "}"
 	case '+':
+		if self.test("++") {
+			self.next(2)
+			return self.line, TOKEN_OP_INC, "++"
+		} else if self.test("+=") {
+			self.next(2)
+			return self.line, TOKEN_OP_ADD_EQ, "+="
+		}
 		self.next(1)
 		return self.line, TOKEN_OP_ADD, "+"
 	case '-':
+		if self.test("--") {
+			self.next(2)
+			return self.line, TOKEN_OP_DEC, "--"
+		} else if self.test("-=") {
+			self.next(2)
+			return self.line, TOKEN_OP_MINUS_EQ, "-="
+		}
 		self.next(1)
 		return self.line, TOKEN_OP_MINUS, "-"
 	case '*':
+		if self.test("*=") {
+			self.next(2)
+			return self.line, TOKEN_OP_MUL_EQ, "*="
+		}
 		self.next(1)
 		return self.line, TOKEN_OP_MUL, "*"
 	case '^':
+		if self.test("^=") {
+			self.next(2)
+			return self.line, TOKEN_OP_POW_EQ, "^="
+		}
 		self.next(1)
 		return self.line, TOKEN_OP_POW, "^"
 	case '%':
+		if self.test("%=") {
+			self.next(2)
+			return self.line, TOKEN_OP_MOD_EQ, "%="
+		}
 		self.next(1)
 		return self.line, TOKEN_OP_MOD, "%"
 	case '&':
@@ -129,6 +155,10 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 		self.next(1)
 		return self.line, TOKEN_SEP_COLON, ":"
 	case '/':
+		if self.test("/=") {
+			self.next(2)
+			return self.line, TOKEN_OP_DIV_EQ, "/="
+		}
 		self.next(1)
 		return self.line, TOKEN_OP_DIV, "/"
 	case '~':
@@ -143,6 +173,8 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 			self.next(2)
 			return self.line, TOKEN_OP_NE, "!="
 		}
+		self.next(1)
+		return self.line, TOKEN_OP_NOT, "!"
 	case '=':
 		if self.test("==") {
 			self.next(2)

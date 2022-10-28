@@ -65,7 +65,41 @@ const (
 	TOKEN_OP_ASSIGNSHY
 	// =>
 	TOKEN_OP_ARROW
+	// -=
+	TOKEN_OP_MINUS_EQ
+	// +=
+	TOKEN_OP_ADD_EQ
+	// *=
+	TOKEN_OP_MUL_EQ
+	// /=
+	TOKEN_OP_DIV_EQ
+	// ^=
+	TOKEN_OP_POW_EQ
+	// %=
+	TOKEN_OP_MOD_EQ
+	// ++
+	TOKEN_OP_INC
+	// --
+	TOKEN_OP_DEC
 )
+
+var tokenOpEq = map[int]int{
+	TOKEN_OP_MINUS_EQ: TOKEN_OP_MINUS,
+	TOKEN_OP_ADD_EQ:   TOKEN_OP_ADD,
+	TOKEN_OP_MUL_EQ:   TOKEN_OP_MUL,
+	TOKEN_OP_DIV_EQ:   TOKEN_OP_DIV,
+	TOKEN_OP_POW_EQ:   TOKEN_OP_POW,
+	TOKEN_OP_MOD_EQ:   TOKEN_OP_MOD,
+	TOKEN_OP_INC:      TOKEN_OP_ADD,
+	TOKEN_OP_DEC:      TOKEN_OP_MINUS,
+}
+
+func SourceOp(op int) int {
+	if op, ok := tokenOpEq[op]; ok {
+		return op
+	}
+	return op
+}
 
 var tokenNames = map[int]string{
 	TOKEN_EOF:              "EOF",
@@ -124,6 +158,14 @@ var tokenNames = map[int]string{
 	TOKEN_OP_NILCOALESCING: "??",
 	TOKEN_OP_ASSIGNSHY:     ":=",
 	TOKEN_OP_ARROW:         "=>",
+	TOKEN_OP_MINUS_EQ:      "-=",
+	TOKEN_OP_ADD_EQ:        "+=",
+	TOKEN_OP_MUL_EQ:        "*=",
+	TOKEN_OP_DIV_EQ:        "/=",
+	TOKEN_OP_POW_EQ:        "^=",
+	TOKEN_OP_MOD_EQ:        "%=",
+	TOKEN_OP_INC:           "++",
+	TOKEN_OP_DEC:           "--",
 }
 
 func tokenName(token int) string {

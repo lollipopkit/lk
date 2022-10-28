@@ -238,6 +238,18 @@ func parseAssignStat(lexer *Lexer, var0 Exp) Stat {
 		}
 		return &LocalVarDeclStat{lexer.Line(), strExps, expList}
 	}
+	switch lexer.LookAhead() {
+	case TOKEN_OP_MINUS_EQ, TOKEN_OP_ADD_EQ, 
+		TOKEN_OP_MUL_EQ, TOKEN_OP_DIV_EQ, 
+		TOKEN_OP_MOD_EQ, TOKEN_OP_POW_EQ:
+		line, op, _ := lexer.NextToken()
+		expList := []Exp{&BinopExp{line, SourceOp(op), varList[0], parseExp(lexer)}}
+		return &AssignStat{line, varList, expList}
+	case TOKEN_OP_INC, TOKEN_OP_DEC:
+		line, op, _ := lexer.NextToken()
+		expList := []Exp{&BinopExp{line, SourceOp(op), varList[0], &IntegerExp{line, 1}}}
+		return &AssignStat{line, varList, expList}
+	}
 	lexer.NextTokenOfKind(TOKEN_OP_ASSIGN) // =
 	expList := parseExpList(lexer)         // explist
 	lastLine := lexer.Line()

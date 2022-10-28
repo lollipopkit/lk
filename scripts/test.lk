@@ -12,8 +12,8 @@ skip_files := {
 }
 
 for _, file in files {
-    if not strs.contains(file, '.lkc') {
-        if not table.contains(skip_files, file) {
+    if !strs.contains(file, '.lkc') {
+        if !table.contains(skip_files, file) {
             print(fmt('====== %s ======', file))
             do_file(dir + file)
         }

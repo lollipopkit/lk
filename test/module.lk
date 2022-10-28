@@ -6,10 +6,10 @@ class test2 {
 test2.const = 'const'
 
 shy fn add(n) {
-    a += n
+    a = n + a
 }
 
 fn test2:add() {
     add(self.b)
-    self.b += a
+    self.b = a + self.b
 }

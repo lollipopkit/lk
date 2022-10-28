@@ -22,7 +22,9 @@ exp ::=  nil | false | true | Numeral | LiteralString | ‘...’ | functiondef 
 	 prefixexp | tableconstructor | exp binop exp | unop exp
 */
 /*
-exp   ::= exp14
+exp   ::= exp16
+exp16 ::= exp15 {'++' | '--'}
+exp15 ::= exp14 {'+=' | '-=' | '*=' | '/=' | '%=' | '^=' exp14}
 exp14 ::= exp13 {'??' exp13}
 exp13 ::= exp12 {'?' exp12 : exp12}
 exp12 ::= exp11 {or exp11}
