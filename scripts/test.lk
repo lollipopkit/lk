@@ -1,21 +1,19 @@
+import 'table'
+
 dir := 'test/'
-files := os.ls(dir)
+files, err := os.ls(dir)
+if err != nil {
+    print(err)
+    os.exit(1)
+}
+
 skip_files := {
     'http_listen.lk'
 }
 
-contains := fn(name) {
-    for _, f in skip_files {
-        if f == name {
-            rt true
-        }
-    }
-    rt false
-}
-
 for _, file in files {
-    if strs.sub(file, #file - 3) != '.lkc' {
-        if not contains(file) {
+    if not strs.contains(file, '.lkc') {
+        if not table.contains(skip_files, file) {
             print(fmt('====== %s ======', file))
             do_file(dir + file)
         }

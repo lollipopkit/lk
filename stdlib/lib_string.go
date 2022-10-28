@@ -19,7 +19,7 @@ var strLib = map[string]GoFunction{
 	"split":    strSplit,
 	"join":     strJoin,
 	"contains": strContains,
-	"replace": strReplace,
+	"replace":  strReplace,
 }
 
 func OpenStringLib(ls LkState) int {

@@ -141,6 +141,16 @@ func _finishForInStat(lexer *Lexer, name0 string) *ForInStat {
 	lineOfDo, _ := lexer.NextTokenOfKind(TOKEN_SEP_LCURLY) // {
 	block := parseBlock(lexer)                             // block
 	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)                // }
+	if len(expList) == 1 {
+		e := expList[0]
+		expList[0] = &FuncCallExp{
+			Line: lineOfDo, 
+			LastLine: lineOfDo, 
+			PrefixExp: &NameExp{lineOfDo, "range"}, 
+			NameExp: nil, 
+			Args: []Exp{e},
+		}
+	}
 	return &ForInStat{lineOfDo, nameList, expList, block}
 }
 
