@@ -1,8 +1,6 @@
 package state
 
 import (
-	"fmt"
-
 	. "git.lolli.tech/lollipopkit/lk/api"
 )
 
@@ -82,19 +80,20 @@ func (self *lkState) GetMetatable(idx int) bool {
 
 // push(t[k])
 func (self *lkState) getTable(t, k any, raw bool) LkType {
+	mf := getMetafield(t, "__index", self)
 	if tbl, ok := t.(*lkTable); ok {
 		v := tbl.get(k)
-		if raw || v != nil || !tbl.hasMetafield("__index") {
+		if raw || v != nil || !tbl.hasMetafield("__index") && mf == nil {
 			self.stack.push(v)
 			return typeOf(v)
 		}
 	}
 
 	if !raw {
-		if mf := getMetafield(t, "__index", self); mf != nil {
+		if mf != nil {
 			switch x := mf.(type) {
 			case *lkTable:
-				return self.getTable(x, k, false)
+				return self.getTable(x, k, true)
 			case *closure:
 				self.stack.push(mf)
 				self.stack.push(t)
@@ -106,5 +105,6 @@ func (self *lkState) getTable(t, k any, raw bool) LkType {
 		}
 	}
 
-	panic(fmt.Sprintf("'%v' is not a table and has no '__index' metafield, cannot get '%v'", t, k))
+	self.PushNil()
+	return LUA_TNIL
 }
