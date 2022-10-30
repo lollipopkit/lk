@@ -14,7 +14,7 @@ var strLib = map[string]GoFunction{
 	"lower":    strLower,
 	"upper":    strUpper,
 	"sub":      strSub,
-	"byte":     strByte,
+	"bytes":     strByte,
 	"char":     strChar,
 	"split":    strSplit,
 	"join":     strJoin,
@@ -167,30 +167,13 @@ func strSub(ls LkState) int {
 func strByte(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
-	i := posRelat(ls.OptInteger(2, 1), sLen)
-	j := posRelat(ls.OptInteger(3, int64(i)), sLen)
 
-	if i < 1 {
-		i = 1
+	list := make([]int64, sLen)
+	for k := 0; k < sLen; k++ {
+		list[k] = int64(s[k])
 	}
-	if j > sLen {
-		j = sLen
-	}
-
-	if i > j {
-		return 0 /* empty interval; return no values */
-	}
-	//if (j - i >= INT_MAX) { /* arithmetic overflow? */
-	//  return ls.Error2("string slice too long")
-	//}
-
-	n := j - i + 1
-	ls.CheckStack2(n, "string slice too long")
-
-	for k := 0; k < n; k++ {
-		ls.PushInteger(int64(s[i+k-1]))
-	}
-	return n
+	pushList(&ls, list)
+	return 1
 }
 
 // string.char (···)

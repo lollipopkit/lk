@@ -100,16 +100,16 @@ func (self *lkState) Arith(op ArithOp) {
 		a = b
 	}
 
-	operator := operators[op]
-	if result := _arith(a, b, operator); result != nil {
-		self.stack.push(result)
-		return
-	}
-
 	aa, oka := a.(string)
 	bb, okb := b.(string)
 	if oka && okb {
 		self.stack.push(aa + bb)
+		return
+	}
+
+	operator := operators[op]
+	if result := _arith(a, b, operator); result != nil {
+		self.stack.push(result)
 		return
 	}
 

@@ -299,6 +299,7 @@ func (self *lkState) OpenLibs() {
 		"re":   stdlib.OpenReLib,
 		"rand": stdlib.OpenRandLib,
 		"table":stdlib.OpenTableLib,
+		"nums": stdlib.OpenNumLib,
 	}
 
 	for name := range libs {
