@@ -1,0 +1,37 @@
+class bytes {
+    'data': {},
+}
+
+hex_map := {
+    '0': 0, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
+    '8': 8, '9': 9, 'a': 10, 'b': 11, 'c': 12, 'd': 13, 'e': 14, 'f': 15
+}
+
+fn bytes:from_hex(s) {
+    self.data = {}
+    for _, v in s:lower():bytes() {
+        if v <= 102 and v >= 97 or v >= 48 and v <= 57 {
+            self.data[#self.data] = hex_map[v:char()]
+        } else {
+            error('invalid hex str: ' + v:char())
+        }
+    }
+}
+
+shy fn hex(n) {
+    if n < 0 or n > 15 {
+        error('invalid hex number: ' + n)
+    }
+    for k, v in hex_map {
+        if v == n {
+            rt k
+        }
+    }
+    rt '0'
+}
+
+fn bytes:__str() {
+    rt str(self.data)
+}
+
+rt bytes

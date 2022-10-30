@@ -65,7 +65,7 @@ func pushTable[T string | int | int64 | float64 | any](ls *LkState, items map[st
 
 func getTable(ls *LkState, idx int) map[string]any {
 	(*ls).CheckType(idx, LUA_TTABLE)
-	table := make(map[string]any)
+	table := make(luaMap)
 	(*ls).PushNil()
 	for (*ls).Next(idx) {
 		key := (*ls).ToString(-2)
