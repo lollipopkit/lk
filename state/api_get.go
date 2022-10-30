@@ -67,9 +67,13 @@ func (self *lkState) GetGlobal(name string) LkType {
 // http://www.lua.org/manual/5.3/manual.html#lua_getmetatable
 func (self *lkState) GetMetatable(idx int) bool {
 	val := self.stack.get(idx)
+	mt, gmt := getMetatable(val, self)
 
-	if mt := getMetatable(val, self); mt != nil {
+	if mt != nil {
 		self.stack.push(mt)
+		return true
+	} else if gmt != nil {
+		self.stack.push(gmt)
 		return true
 	} else {
 		return false

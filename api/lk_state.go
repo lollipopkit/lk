@@ -79,6 +79,7 @@ type BasicAPI interface {
 	/* set functions (stack -> Lua) */
 	SetTable(idx int)
 	SetField(idx int, k string)
+	SetMetatable(idx int)
 	SetI(idx int, i int64)
 	RawSet(idx int)
 	RawSetI(idx int, i int64)

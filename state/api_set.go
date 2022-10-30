@@ -63,6 +63,21 @@ func (self *lkState) Register(name string, f GoFunction) {
 	self.SetGlobal(name)
 }
 
+// [-1, +0, –]
+// http://www.lua.org/manual/5.3/manual.html#lua_setmetatable
+func (self *lkState) SetMetatable(idx int) {
+	val := self.stack.get(idx)
+	mtVal := self.stack.pop()
+
+	if mtVal == nil {
+		setMetatable(val, nil, self)
+	} else if mt, ok := mtVal.(*lkTable); ok {
+		setMetatable(val, mt, self)
+	} else {
+		panic("table expected!") // todo
+	}
+}
+
 // t[k]=v
 func (self *lkState) setTable(t, k, v any, raw bool) {
 	if tbl, ok := t.(*lkTable); ok {

@@ -298,6 +298,7 @@ func (self *lkState) OpenLibs() {
 		"json": stdlib.OpenJsonLib,
 		"re":   stdlib.OpenReLib,
 		"rand": stdlib.OpenRandLib,
+		"table":stdlib.OpenTableLib,
 	}
 
 	for name := range libs {

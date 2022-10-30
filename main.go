@@ -11,7 +11,6 @@ import (
 	"git.lolli.tech/lollipopkit/lk/mods"
 	"git.lolli.tech/lollipopkit/lk/state"
 	"git.lolli.tech/lollipopkit/lk/term"
-	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
 var (
@@ -21,7 +20,7 @@ var (
 
 func init() {
 	go mods.InitMods(wg)
-	go utils.CheckUpgrade(wg)
+	//go utils.CheckUpgrade(wg)
 }
 
 func main() {

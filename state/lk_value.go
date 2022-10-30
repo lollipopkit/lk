@@ -79,41 +79,34 @@ func _stringToInteger(s string) (int64, bool) {
 
 /* metatable */
 
-func getMetatable(val any, ls *lkState) *lkTable {
+func getMetatable(val any, ls *lkState) (mt, global *lkTable) {
+	key := fmt.Sprintf("_MT%d", typeOf(val))
+	if gmt := ls.registry.get(key); gmt != nil {
+		global = gmt.(*lkTable)
+	}
+	mt, _ = val.(*lkTable)
+	return
+}
+
+func setMetatable(val any, mt *lkTable, ls *lkState) {
 	if t, ok := val.(*lkTable); ok {
-		return t
+		t.combine(mt)
+		//return
 	}
 	key := fmt.Sprintf("_MT%d", typeOf(val))
-	if mt := ls.registry.get(key); mt != nil {
-		return mt.(*lkTable)
-	}
-	return nil
+	ls.registry.put(key, mt)
 }
 
 func getMetafield(val any, fieldName string, ls *lkState) any {
-	if mt := getMetatable(val, ls); mt != nil {
-		return mt.get(fieldName)
-	}
-	return nil
-}
-
-func SetExtension(typ, fnName string, c *closure, ls *lkState) {
-	key := fmt.Sprintf("_EXT|%s", typ)
-	if ext, ok := ls.registry.get(key).(*lkTable); ok {
-		ext.put(fnName, c)
-	} else {
-		ext = newLuaTable(0, 0)
-		ext.put(fnName, c)
-		ls.registry.put(key, ext)
-	}
-}
-
-func GetExtension(typ, fnName string, ls *lkState) *closure {
-	key := fmt.Sprintf("_EXT|%s", typ)
-	if ext, ok := ls.registry.get(key).(*lkTable); ok {
-		if c, ok := ext.get(fnName).(*closure); ok {
-			return c
+	mt, gmt := getMetatable(val, ls)
+	if mt != nil {
+		f := mt.get(fieldName)
+		if f != nil {
+			return f
 		}
+	}
+	if gmt != nil {
+		return gmt.get(fieldName)
 	}
 	return nil
 }

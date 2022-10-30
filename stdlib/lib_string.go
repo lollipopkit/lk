@@ -24,6 +24,14 @@ var strLib = map[string]GoFunction{
 
 func OpenStringLib(ls LkState) int {
 	ls.NewLib(strLib)
+	ls.CreateTable(0, 1)       /* table to be metatable for strings */
+	ls.PushString("dummy")     /* dummy string */
+	ls.PushValue(-2)           /* copy table */
+	ls.SetMetatable(-2)        /* set table as metatable for strings */
+	ls.Pop(1)                  /* pop dummy string */
+	ls.PushValue(-2)           /* get string library */
+	ls.SetField(-2, "__index") /* metatable.__index = string */
+	ls.Pop(1)
 	return 1
 }
 

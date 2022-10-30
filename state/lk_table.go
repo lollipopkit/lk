@@ -29,6 +29,18 @@ func (self *lkTable) String() (string, error) {
 	return json.MarshalToString(m)
 }
 
+func (self *lkTable) combine(t *lkTable) {
+	if t == nil {
+		return
+	}
+	for i := range t.arr {
+		self.put(int64(i), t.arr[i])
+	}
+	for k := range t._map {
+		self.put(k, t._map[k])
+	}
+}
+
 func newLuaTable(nArr, nRec int) *lkTable {
 	t := &lkTable{}
 	if nArr > 0 {
