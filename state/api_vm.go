@@ -54,13 +54,13 @@ func (self *lkState) LoadProto(idx int) {
 			}
 
 			if openuv, found := stack.openuvs[uvIdx]; found {
-				closure.upvals[i] = openuv
+				closure.upVals[i] = openuv
 			} else {
-				closure.upvals[i] = &stack.slots[uvIdx]
-				stack.openuvs[uvIdx] = closure.upvals[i]
+				closure.upVals[i] = &stack.slots[uvIdx]
+				stack.openuvs[uvIdx] = closure.upVals[i]
 			}
 		} else {
-			closure.upvals[i] = stack.closure.upvals[uvIdx]
+			closure.upVals[i] = stack.closure.upVals[uvIdx]
 		}
 	}
 }

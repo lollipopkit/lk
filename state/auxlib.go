@@ -218,6 +218,8 @@ func (self *lkState) ToString2(idx int) string {
 					} else {
 						self.PushString(s)
 					}
+				} else {
+					panic(err)
 				}
 			}
 		default:

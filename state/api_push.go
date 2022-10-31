@@ -55,7 +55,7 @@ func (self *lkState) PushGoClosure(f GoFunction, n int) {
 	closure := newGoClosure(f, n)
 	for i := n; i > 0; i-- {
 		val := self.stack.pop()
-		closure.upvals[i-1] = &val
+		closure.upVals[i-1] = &val
 	}
 	self.stack.push(closure)
 }

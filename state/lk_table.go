@@ -7,6 +7,10 @@ import (
 	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
+// var (
+// 	_closureRe = regexp.MustCompile(`"((GoFunc|LkFunc)@0x[0-9a-f]+)"`)
+// )
+
 type lkTable struct {
 	arr     []any
 	_map    map[any]any
@@ -16,17 +20,36 @@ type lkTable struct {
 }
 
 func (self *lkTable) String() (string, error) {
-	if len(self._map) == 0 {
-		return json.MarshalToString(self.arr)
+	return json.MarshalToString(self.Json())
+	// if err != nil {
+	// 	return "", err
+	// }
+	
+	// return _closureRe.ReplaceAllString(s, "$1"), nil
+}
+
+func (t *lkTable) Json() any {
+	tb := t
+	for i := range tb.arr {
+		switch v := tb.arr[i].(type) {
+		case *closure:
+			tb.arr[i] = v.String()
+		case *lkTable:
+			tb.arr[i] = v.Json()
+		}
 	}
-	if len(self.arr) == 0 {
-		return json.MarshalToString(self._map)
+	for k := range tb._map {
+		switch v := tb._map[k].(type) {
+		case *closure:
+			tb._map[k] = v.String()
+		case *lkTable:
+			tb._map[k] = v.Json()
+		}
 	}
-	m := map[string]any{
-		"arr": self.arr,
-		"map": self._map,
+	if len(tb._map) == 0 {
+		return tb.arr
 	}
-	return json.MarshalToString(m)
+	return tb._map
 }
 
 func (self *lkTable) combine(t *lkTable) {

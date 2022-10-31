@@ -83,7 +83,7 @@ func (self *lkStack) isValid(idx int) bool {
 	if idx < LUA_REGISTRYINDEX { /* upvalues */
 		uvIdx := LUA_REGISTRYINDEX - idx - 1
 		c := self.closure
-		return c != nil && uvIdx < len(c.upvals)
+		return c != nil && uvIdx < len(c.upVals)
 	}
 	if idx == LUA_REGISTRYINDEX {
 		return true
@@ -96,10 +96,10 @@ func (self *lkStack) get(idx int) any {
 	if idx < LUA_REGISTRYINDEX { /* upvalues */
 		uvIdx := LUA_REGISTRYINDEX - idx - 1
 		c := self.closure
-		if c == nil || uvIdx >= len(c.upvals) {
+		if c == nil || uvIdx >= len(c.upVals) {
 			return nil
 		}
-		return *(c.upvals[uvIdx])
+		return *(c.upVals[uvIdx])
 	}
 
 	if idx == LUA_REGISTRYINDEX {
@@ -117,8 +117,8 @@ func (self *lkStack) set(idx int, val any) {
 	if idx < LUA_REGISTRYINDEX { /* upvalues */
 		uvIdx := LUA_REGISTRYINDEX - idx - 1
 		c := self.closure
-		if c != nil && uvIdx < len(c.upvals) {
-			c.upvals[uvIdx] = &val
+		if c != nil && uvIdx < len(c.upVals) {
+			c.upVals[uvIdx] = &val
 		}
 		return
 	}
