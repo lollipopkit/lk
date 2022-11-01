@@ -94,7 +94,7 @@ func opSymbol(opName string) string {
 func (self *lkState) Arith(op ArithOp) {
 	var a, b any // operands
 	b = self.stack.pop()
-	if op != LUA_OPUNM && op != LUA_OPBNOT {
+	if op != LK_OPUNM && op != LK_OPBNOT {
 		a = self.stack.pop()
 	} else {
 		a = b

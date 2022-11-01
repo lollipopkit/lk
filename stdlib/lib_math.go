@@ -56,7 +56,7 @@ func mathMax(ls LkState) int {
 	imax := 1        /* index of current maximum value */
 	ls.ArgCheck(n >= 1, 1, "value expected")
 	for i := 2; i <= n; i++ {
-		if ls.Compare(imax, i, LUA_OPLT) {
+		if ls.Compare(imax, i, LK_OPLT) {
 			imax = i
 		}
 	}
@@ -72,7 +72,7 @@ func mathMin(ls LkState) int {
 	imin := 1        /* index of current minimum value */
 	ls.ArgCheck(n >= 1, 1, "value expected")
 	for i := 2; i <= n; i++ {
-		if ls.Compare(i, imin, LUA_OPLT) {
+		if ls.Compare(i, imin, LK_OPLT) {
 			imin = i
 		}
 	}
@@ -301,7 +301,7 @@ func mathUlt(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-math.type
 // lua-5.3.4/src/lmathlib.c#math_type()
 func mathType(ls LkState) int {
-	if ls.Type(1) == LUA_TNUMBER {
+	if ls.Type(1) == LK_TNUMBER {
 		if ls.IsInteger(1) {
 			ls.PushString("integer")
 		} else {

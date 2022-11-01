@@ -105,7 +105,7 @@ func load(file string) *binchunk.Prototype {
 
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_load
-func (self *lkState) Load(chunk []byte, chunkName, mode string) int {
+func (self *lkState) Load(chunk []byte, chunkName, mode string) LkStatus {
 	var proto *binchunk.Prototype
 	if chunkName == "stdin" {
 		proto = compiler.Compile(string(chunk), chunkName)
@@ -116,8 +116,8 @@ func (self *lkState) Load(chunk []byte, chunkName, mode string) int {
 	c := newLuaClosure(proto)
 	self.stack.push(c)
 	if len(proto.Upvalues) > 0 {
-		env := self.registry.get(LUA_RIDX_GLOBALS)
+		env := self.registry.get(LK_RIDX_GLOBALS)
 		c.upVals[0] = &env
 	}
-	return LUA_OK
+	return LK_OK
 }

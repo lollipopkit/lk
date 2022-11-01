@@ -48,7 +48,7 @@ func OpenBaseLib(ls LkState) int {
 }
 
 func baseNew(ls LkState) int {
-	ls.CheckType(1, LUA_TTABLE)
+	ls.CheckType(1, LK_TTABLE)
 	ls.CreateTable(0, 0)
 	ls.PushNil()
 	for ls.Next(1) {
@@ -79,7 +79,7 @@ func mathToInt(ls LkState) int {
 }
 
 func baseKV(ls LkState) int {
-	tb := getTable(&ls, 1)
+	tb := getTable(ls, 1)
 	keys := make([]any, 0, len(tb))
 	for k := range tb {
 		keys = append(keys, k)
@@ -88,8 +88,8 @@ func baseKV(ls LkState) int {
 	for k := range tb {
 		values = append(values, tb[k])
 	}
-	pushList(&ls, keys)
-	pushList(&ls, values)
+	pushList(ls, keys)
+	pushList(ls, values)
 	return 2
 }
 
@@ -156,7 +156,7 @@ func baseAssert(ls LkState) int {
 func baseError(ls LkState) int {
 	level := int(ls.OptInteger(2, 1))
 	ls.SetTop(1)
-	if ls.Type(1) == LUA_TSTRING && level > 0 {
+	if ls.Type(1) == LK_TSTRING && level > 0 {
 		// ls.Where(level) /* add extra information */
 		// ls.PushValue(1)
 		// ls.Concat(2)
@@ -178,7 +178,7 @@ func baseIPairs(ls LkState) int {
 func iPairsAux(ls LkState) int {
 	i := ls.CheckInteger(2) + 1
 	ls.PushInteger(i)
-	if ls.GetI(1, i) == LUA_TNIL {
+	if ls.GetI(1, i) == LK_TNIL {
 		return 1
 	} else {
 		return 2
@@ -190,7 +190,7 @@ func iPairsAux(ls LkState) int {
 // lua-5.3.4/src/lbaselib.c#luaB_pairs()
 func basePairs(ls LkState) int {
 	ls.CheckAny(1)
-	if ls.GetMetafield(1, "__range") == LUA_TNIL { /* no metamethod? */
+	if ls.GetMetafield(1, "__range") == LK_TNIL { /* no metamethod? */
 		ls.PushGoFunction(baseNext) /* will return generator, */
 		ls.PushValue(1)             /* state, */
 		ls.PushNil()
@@ -205,7 +205,7 @@ func basePairs(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-next
 // lua-5.3.4/src/lbaselib.c#luaB_next()
 func baseNext(ls LkState) int {
-	ls.CheckType(1, LUA_TTABLE)
+	ls.CheckType(1, LK_TTABLE)
 	ls.SetTop(2) /* create a 2nd argument if there isn't one */
 	if ls.Next(1) {
 		return 2
@@ -219,7 +219,7 @@ func baseNext(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-load
 // lua-5.3.4/src/lbaselib.c#luaB_load()
 func baseLoad(ls LkState) int {
-	var status int
+	var status LkStatus
 	chunk, isStr := ls.ToStringX(1)
 	mode := ls.OptString(3, "bt")
 	env := 0 /* 'env' index or 0 if no 'env' */
@@ -236,8 +236,8 @@ func baseLoad(ls LkState) int {
 }
 
 // lua-5.3.4/src/lbaselib.c#load_aux()
-func loadAux(ls LkState, status, envIdx int) int {
-	if status == LUA_OK {
+func loadAux(ls LkState, status LkStatus, envIdx int) int {
+	if status == LK_OK {
 		if envIdx != 0 { /* 'env' parameter? */
 			panic("todo!")
 		}
@@ -269,10 +269,10 @@ func baseLoadFile(ls LkState) int {
 func baseDoFile(ls LkState) int {
 	fname := ls.OptString(1, "bt")
 	ls.SetTop(1)
-	if ls.LoadFile(fname) != LUA_OK {
+	if ls.LoadFile(fname) != LK_OK {
 		return ls.Error()
 	}
-	ls.Call(0, LUA_MULTRET)
+	ls.Call(0, LK_MULTRET)
 	return ls.GetTop() - 1
 }
 
@@ -280,8 +280,8 @@ func baseDoFile(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-pcall
 func basePCall(ls LkState) int {
 	nArgs := ls.GetTop() - 1
-	status := ls.PCall(nArgs, -1, 0, false)
-	ls.PushBoolean(status == LUA_OK)
+	status := ls.PCall(nArgs, -1, 0)
+	ls.PushBoolean(status == LK_OK)
 	ls.Insert(1)
 	return ls.GetTop()
 }
@@ -290,7 +290,7 @@ func basePCall(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-rawget
 // lua-5.3.4/src/lbaselib.c#luaB_rawget()
 func baseRawGet(ls LkState) int {
-	ls.CheckType(1, LUA_TTABLE)
+	ls.CheckType(1, LK_TTABLE)
 	ls.CheckAny(2)
 	ls.SetTop(2)
 	ls.RawGet(1)
@@ -301,7 +301,7 @@ func baseRawGet(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-rawset
 // lua-5.3.4/src/lbaselib.c#luaB_rawset()
 func baseRawSet(ls LkState) int {
-	ls.CheckType(1, LUA_TTABLE)
+	ls.CheckType(1, LK_TTABLE)
 	ls.CheckAny(2)
 	ls.CheckAny(3)
 	ls.SetTop(3)
@@ -314,7 +314,7 @@ func baseRawSet(ls LkState) int {
 // lua-5.3.4/src/lbaselib.c#luaB_type()
 func baseType(ls LkState) int {
 	t := ls.Type(1)
-	ls.ArgCheck(t != LUA_TNONE, 1, "value expected")
+	ls.ArgCheck(t != LK_TNONE, 1, "value expected")
 	ls.PushString(ls.TypeName(t))
 	return 1
 }
@@ -334,7 +334,7 @@ func baseToString(ls LkState) int {
 func baseToNumber(ls LkState) int {
 	if ls.IsNoneOrNil(2) { /* standard conversion? */
 		ls.CheckAny(1)
-		if ls.Type(1) == LUA_TNUMBER { /* already a number? */
+		if ls.Type(1) == LK_TNUMBER { /* already a number? */
 			ls.SetTop(1) /* yes; return it */
 			return 1
 		} else {
@@ -345,7 +345,7 @@ func baseToNumber(ls LkState) int {
 			}
 		}
 	} else {
-		ls.CheckType(1, LUA_TSTRING) /* no numbers as strings */
+		ls.CheckType(1, LK_TSTRING) /* no numbers as strings */
 		s := strings.TrimSpace(ls.ToString(1))
 		base := int(ls.CheckInteger(2))
 		ls.ArgCheck(2 <= base && base <= 36, 2, "base out of range")

@@ -39,7 +39,7 @@ func OpenOSLib(ls LkState) int {
 }
 
 func pushArgs(ls LkState) {
-	pushList(&ls, os.Args)
+	pushList(ls, os.Args)
 	ls.SetField(-2, "args")
 }
 
@@ -62,14 +62,14 @@ func osStat(ls LkState) int {
 		ls.PushString(err.Error())
 		return 2
 	}
-	stat := luaMap{
+	stat := lkMap{
 		"size":   info.Size(),
 		"mode":   info.Mode().String(),
 		"time":   info.ModTime().UnixMilli(),
 		"name":   info.Name(),
 		"is_dir": info.IsDir(),
 	}
-	pushTable(&ls, stat)
+	pushTable(ls, stat)
 	ls.PushNil()
 	return 2
 }
@@ -121,7 +121,7 @@ func osLs(ls LkState) int {
 	for i := range files {
 		filenames = append(filenames, files[i].Name())
 	}
-	pushList(&ls, filenames)
+	pushList(ls, filenames)
 	ls.PushNil()
 	return 2
 }
@@ -159,7 +159,7 @@ func osTime(ls LkState) int {
 		t := time.Now().UnixMilli() /* get current time */
 		ls.PushInteger(t)
 	} else {
-		ls.CheckType(1, LUA_TTABLE)
+		ls.CheckType(1, LK_TTABLE)
 		isUTC := ls.OptBool(2, false)
 		sec := _getField(ls, "sec", 0)
 		min := _getField(ls, "min", 0)

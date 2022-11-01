@@ -51,7 +51,7 @@ func (self *lkState) RawSetI(idx int, i int64) {
 // [-1, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_setglobal
 func (self *lkState) SetGlobal(name string) {
-	t := self.registry.get(LUA_RIDX_GLOBALS)
+	t := self.registry.get(LK_RIDX_GLOBALS)
 	v := self.stack.pop()
 	self.setTable(t, name, v, false)
 }

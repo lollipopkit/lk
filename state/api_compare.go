@@ -12,11 +12,11 @@ func (self *lkState) Compare(idx1, idx2 int, op CompareOp) bool {
 	a := self.stack.get(idx1)
 	b := self.stack.get(idx2)
 	switch op {
-	case LUA_OPEQ:
+	case LK_OPEQ:
 		return _eq(a, b, self)
-	case LUA_OPLT:
+	case LK_OPLT:
 		return _lt(a, b, self)
-	case LUA_OPLE:
+	case LK_OPLE:
 		return _le(a, b, self)
 	default:
 		panic("invalid compare op!")

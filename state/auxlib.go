@@ -45,7 +45,7 @@ func (self *lkState) ArgCheck(cond bool, arg int, extraMsg string) {
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_checkany
 func (self *lkState) CheckAny(arg int) {
-	if self.Type(arg) == LUA_TNONE {
+	if self.Type(arg) == LK_TNONE {
 		self.ArgError(arg, "value expected")
 	}
 }
@@ -73,7 +73,7 @@ func (self *lkState) CheckInteger(arg int) int64 {
 func (self *lkState) CheckNumber(arg int) float64 {
 	f, ok := self.ToNumberX(arg)
 	if !ok {
-		self.tagError(arg, LUA_TNUMBER)
+		self.tagError(arg, LK_TNUMBER)
 	}
 	return f
 }
@@ -84,14 +84,14 @@ func (self *lkState) CheckNumber(arg int) float64 {
 func (self *lkState) CheckString(arg int) string {
 	s, ok := self.ToStringX(arg)
 	if !ok {
-		self.tagError(arg, LUA_TSTRING)
+		self.tagError(arg, LK_TSTRING)
 	}
 	return s
 }
 
 func (self *lkState) CheckBool(arg int) bool {
-	if self.Type(arg) != LUA_TBOOLEAN {
-		self.tagError(arg, LUA_TBOOLEAN)
+	if self.Type(arg) != LK_TBOOLEAN {
+		self.tagError(arg, LK_TBOOLEAN)
 	}
 	return self.ToBoolean(arg)
 }
@@ -133,35 +133,35 @@ func (self *lkState) OptBool(arg int, def bool) bool {
 // [-0, +?, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_dofile
 func (self *lkState) DoFile(filename string) bool {
-	return self.LoadFile(filename) != LUA_OK ||
-		self.PCall(0, LUA_MULTRET, 0, false) != LUA_OK
+	return self.LoadFile(filename) != LK_OK ||
+		self.PCall(0, LK_MULTRET, 0) != LK_OK
 }
 
 // [-0, +?, –]
 // http://www.lua.org/manual/5.3/manual.html#luaL_dostring
 func (self *lkState) DoString(str, source string) bool {
-	return self.LoadString(str, source) != LUA_OK ||
-		self.PCall(0, LUA_MULTRET, 0, false) != LUA_OK
+	return self.LoadString(str, source) != LK_OK ||
+		self.PCall(0, LK_MULTRET, 0) != LK_OK
 }
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#luaL_loadfile
-func (self *lkState) LoadFile(filename string) int {
+func (self *lkState) LoadFile(filename string) LkStatus {
 	return self.LoadFileX(filename, "bt")
 }
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#luaL_loadfilex
-func (self *lkState) LoadFileX(filename, mode string) int {
+func (self *lkState) LoadFileX(filename, mode string) LkStatus {
 	if data, err := ioutil.ReadFile(filename); err == nil {
 		return self.Load(data, "@"+filename, mode)
 	}
-	return LUA_ERRFILE
+	return LK_ERRFILE
 }
 
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#luaL_loadstring
-func (self *lkState) LoadString(s, source string) int {
+func (self *lkState) LoadString(s, source string) LkStatus {
 	return self.Load([]byte(s), source, "bt")
 }
 
@@ -192,23 +192,23 @@ func (self *lkState) ToString2(idx int) string {
 		}
 	} else {
 		switch self.Type(idx) {
-		case LUA_TNUMBER:
+		case LK_TNUMBER:
 			if self.IsInteger(idx) {
 				self.PushString(fmt.Sprintf("%d", self.ToInteger(idx))) // todo
 			} else {
 				self.PushString(fmt.Sprintf("%g", self.ToNumber(idx))) // todo
 			}
-		case LUA_TSTRING:
+		case LK_TSTRING:
 			self.PushValue(idx)
-		case LUA_TBOOLEAN:
+		case LK_TBOOLEAN:
 			if self.ToBoolean(idx) {
 				self.PushString("true")
 			} else {
 				self.PushString("false")
 			}
-		case LUA_TNIL:
+		case LK_TNIL:
 			self.PushString("nil")
-		case LUA_TTABLE:
+		case LK_TTABLE:
 			tb, ok := self.ToPointer(idx).(*lkTable)
 			if ok {
 				s, err := tb.String()
@@ -225,7 +225,7 @@ func (self *lkState) ToString2(idx int) string {
 		default:
 			tt := self.GetMetafield(idx, "__name") /* try name */
 			var kind string
-			if tt == LUA_TSTRING {
+			if tt == LK_TSTRING {
 				kind = self.CheckString(-1)
 			} else {
 				kind = self.TypeName2(idx)
@@ -233,7 +233,7 @@ func (self *lkState) ToString2(idx int) string {
 
 			self.PushString(fmt.Sprintf("%s: %v", kind, self.ToPointer(idx)))
 
-			if tt != LUA_TNIL {
+			if tt != LK_TNIL {
 				self.Remove(-2) /* remove '__name' */
 			}
 		}
@@ -244,7 +244,7 @@ func (self *lkState) ToString2(idx int) string {
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_getsubtable
 func (self *lkState) GetSubTable(idx int, fname string) bool {
-	if self.GetField(idx, fname) == LUA_TTABLE {
+	if self.GetField(idx, fname) == LK_TTABLE {
 		return true /* table already there */
 	}
 	self.Pop(1) /* remove previous result */
@@ -259,12 +259,12 @@ func (self *lkState) GetSubTable(idx int, fname string) bool {
 // http://www.lua.org/manual/5.3/manual.html#luaL_getmetafield
 func (self *lkState) GetMetafield(obj int, event string) LkType {
 	if !self.GetMetatable(obj) { /* no metatable? */
-		return LUA_TNIL
+		return LK_TNIL
 	}
 
 	self.PushString(event)
 	tt := self.RawGet(-2)
-	if tt == LUA_TNIL { /* is metafield nil? */
+	if tt == LK_TNIL { /* is metafield nil? */
 		self.Pop(2) /* remove metatable and metafield */
 	} else {
 		self.Remove(-2) /* remove only metatable */
@@ -276,7 +276,7 @@ func (self *lkState) GetMetafield(obj int, event string) LkType {
 // http://www.lua.org/manual/5.3/manual.html#luaL_callmeta
 func (self *lkState) CallMeta(obj int, event string) bool {
 	obj = self.AbsIndex(obj)
-	if self.GetMetafield(obj, event) == LUA_TNIL { /* no metafield? */
+	if self.GetMetafield(obj, event) == LK_TNIL { /* no metafield? */
 		return false
 	}
 
@@ -313,7 +313,7 @@ func (self *lkState) OpenLibs() {
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_requiref
 func (self *lkState) RequireF(modname string, openf GoFunction, glb bool) {
-	self.GetSubTable(LUA_REGISTRYINDEX, "_LOADED")
+	self.GetSubTable(LK_REGISTRYINDEX, "_LOADED")
 	self.GetField(-1, modname) /* LOADED[modname] */
 	if !self.ToBoolean(-1) {   /* package not already loaded? */
 		self.Pop(1) /* remove field */
@@ -362,7 +362,7 @@ func (self *lkState) intError(arg int) {
 	if self.IsNumber(arg) {
 		self.ArgError(arg, "number has no integer representation")
 	} else {
-		self.tagError(arg, LUA_TNUMBER)
+		self.tagError(arg, LK_TNUMBER)
 	}
 }
 
@@ -372,9 +372,9 @@ func (self *lkState) tagError(arg int, tag LkType) {
 
 func (self *lkState) typeError(arg int, tname string) int {
 	var typeArg string /* name for the type of the actual argument */
-	if self.GetMetafield(arg, "__name") == LUA_TSTRING {
+	if self.GetMetafield(arg, "__name") == LK_TSTRING {
 		typeArg = self.ToString(-1) /* use the given type name */
-	} else if self.Type(arg) == LUA_TLIGHTUSERDATA {
+	} else if self.Type(arg) == LK_TLIGHTUSERDATA {
 		typeArg = "light userdata" /* special name for messages */
 	} else {
 		typeArg = self.TypeName2(arg) /* standard name */

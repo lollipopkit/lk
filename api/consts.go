@@ -4,66 +4,70 @@ import (
 	"math/bits"
 )
 
-const LUA_MINSTACK = 20
-const LUAI_MAXSTACK = 1000000
-const LUA_REGISTRYINDEX = -LUAI_MAXSTACK - 1000
-const LUA_RIDX_MAINTHREAD int64 = 1
-const LUA_RIDX_GLOBALS int64 = 2
-const LUA_MULTRET = -1
+const LK_MINSTACK = 20
+const LKI_MAXSTACK = 1000000
+const LK_REGISTRYINDEX = -LKI_MAXSTACK - 1000
+const LK_RIDX_MAINTHREAD int64 = 1
+const LK_RIDX_GLOBALS int64 = 2
+const LK_MULTRET = -1
 
 const (
-	offset         = bits.UintSize - 1
-	LUA_MAXINTEGER = 1<<offset - 1
-	LUA_MININTEGER = -1 << offset
+	offset        = bits.UintSize - 1
+	LK_MAXINTEGER = 1<<offset - 1
+	LK_MININTEGER = -1 << offset
 )
 
 /* basic types */
+type LkType = int
 const (
-	LUA_TNONE = iota - 1 // -1
-	LUA_TNIL
-	LUA_TBOOLEAN
-	LUA_TLIGHTUSERDATA
-	LUA_TNUMBER
-	LUA_TSTRING
-	LUA_TTABLE
-	LUA_TFUNCTION
-	LUA_TUSERDATA
-	LUA_TTHREAD
+	LK_TNONE LkType = iota - 1 // -1
+	LK_TNIL
+	LK_TBOOLEAN
+	LK_TLIGHTUSERDATA
+	LK_TNUMBER
+	LK_TSTRING
+	LK_TTABLE
+	LK_TFUNCTION
+	LK_TUSERDATA
+	LK_TTHREAD
 )
 
 /* arithmetic functions */
+type ArithOp = int
 const (
-	LUA_OPADD  = iota // +
-	LUA_OPSUB         // -
-	LUA_OPMUL         // *
-	LUA_OPMOD         // %
-	LUA_OPPOW         // ^
-	LUA_OPDIV         // /
-	LUA_OPIDIV        // //
-	LUA_OPBAND        // &
-	LUA_OPBOR         // |
-	LUA_OPBXOR        // ~
-	LUA_OPSHL         // <<
-	LUA_OPSHR         // >>
-	LUA_OPUNM         // -
-	LUA_OPBNOT        // ~
+	LK_OPADD ArithOp = iota // +
+	LK_OPSUB         // -
+	LK_OPMUL         // *
+	LK_OPMOD         // %
+	LK_OPPOW         // ^
+	LK_OPDIV         // /
+	LK_OPIDIV        // //
+	LK_OPBAND        // &
+	LK_OPBOR         // |
+	LK_OPBXOR        // ~
+	LK_OPSHL         // <<
+	LK_OPSHR         // >>
+	LK_OPUNM         // -
+	LK_OPBNOT        // ~
 )
 
 /* comparison functions */
+type CompareOp = int
 const (
-	LUA_OPEQ = iota // ==
-	LUA_OPLT        // <
-	LUA_OPLE        // <=
+	LK_OPEQ CompareOp = iota // ==
+	LK_OPLT        // <
+	LK_OPLE        // <=
 )
 
 /* thread status */
+type LkStatus int
 const (
-	LUA_OK = iota
-	LUA_YIELD
-	LUA_ERRRUN
-	LUA_ERRSYNTAX
-	LUA_ERRMEM
-	LUA_ERRGCMM
-	LUA_ERRERR
-	LUA_ERRFILE
+	LK_OK LkStatus= iota
+	LK_YIELD
+	LK_ERRRUN
+	LK_ERRSYNTAX
+	LK_ERRMEM
+	LK_ERRGCMM
+	LK_ERRERR
+	LK_ERRFILE
 )

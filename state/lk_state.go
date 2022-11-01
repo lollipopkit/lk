@@ -6,7 +6,7 @@ type lkState struct {
 	registry *lkTable
 	stack    *lkStack
 	/* coroutine */
-	coStatus int
+	coStatus LkStatus
 	coCaller *lkState
 	coChan   chan int
 }
@@ -14,17 +14,17 @@ type lkState struct {
 func New() LkState {
 	ls := &lkState{}
 
-	registry := newLuaTable(8, 0)
-	registry.put(LUA_RIDX_MAINTHREAD, ls)
-	registry.put(LUA_RIDX_GLOBALS, newLuaTable(0, 20))
+	registry := newLkTable(8, 0)
+	registry.put(LK_RIDX_MAINTHREAD, ls)
+	registry.put(LK_RIDX_GLOBALS, newLkTable(0, 20))
 
 	ls.registry = registry
-	ls.pushLuaStack(newLuaStack(LUA_MINSTACK, ls))
+	ls.pushLuaStack(newLuaStack(LK_MINSTACK, ls))
 	return ls
 }
 
 func (self *lkState) isMainThread() bool {
-	return self.registry.get(LUA_RIDX_MAINTHREAD) == self
+	return self.registry.get(LK_RIDX_MAINTHREAD) == self
 }
 
 func (self *lkState) pushLuaStack(stack *lkStack) {

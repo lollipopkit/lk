@@ -21,7 +21,7 @@ func OpenCoroutineLib(ls LkState) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-coroutine.create
 // lua-5.3.4/src/lcorolib.c#luaB_cocreate()
 func coCreate(ls LkState) int {
-	ls.CheckType(1, LUA_TFUNCTION)
+	ls.CheckType(1, LK_TFUNCTION)
 	ls2 := ls.NewThread()
 	ls.PushValue(1)  /* move function to top */
 	ls.XMove(ls2, 1) /* move function from ls to ls2 */
@@ -51,13 +51,13 @@ func _auxResume(ls, co LkState, narg int) int {
 		ls.PushString("too many arguments to resume")
 		return -1 /* error flag */
 	}
-	if co.Status() == LUA_OK && co.GetTop() == 0 {
+	if co.Status() == LK_OK && co.GetTop() == 0 {
 		ls.PushString("cannot resume dead coroutine")
 		return -1 /* error flag */
 	}
 	ls.XMove(co, narg)
 	status := co.Resume(ls, narg)
-	if status == LUA_OK || status == LUA_YIELD {
+	if status == LK_OK || status == LK_YIELD {
 		nres := co.GetTop()
 		if !ls.CheckStack(nres + 1) {
 			co.Pop(nres) /* remove results anyway */
@@ -76,7 +76,7 @@ func _auxResume(ls, co LkState, narg int) int {
 // http://www.lua.org/manual/5.3/manual.html#pdf-coroutine.yield
 // lua-5.3.4/src/lcorolib.c#luaB_yield()
 func coYield(ls LkState) int {
-	return ls.Yield(ls.GetTop())
+	return int(ls.Yield(ls.GetTop()))
 }
 
 // coroutine.status (co)
@@ -89,9 +89,9 @@ func coStatus(ls LkState) int {
 		ls.PushString("running")
 	} else {
 		switch co.Status() {
-		case LUA_YIELD:
+		case LK_YIELD:
 			ls.PushString("suspended")
-		case LUA_OK:
+		case LK_OK:
 			if co.GetStack() { /* does it have frames? */
 				ls.PushString("normal") /* it is running */
 			} else if co.GetTop() == 0 {

@@ -49,6 +49,6 @@ func reFind(ls LkState) int {
 		ls.PushNil()
 		return 1
 	}
-	pushList(&ls, matches)
+	pushList(ls, matches)
 	return 1
 }

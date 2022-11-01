@@ -73,19 +73,19 @@ func (self *lkStack) popN(n int) []any {
 }
 
 func (self *lkStack) absIndex(idx int) int {
-	if idx >= 0 || idx <= LUA_REGISTRYINDEX {
+	if idx >= 0 || idx <= LK_REGISTRYINDEX {
 		return idx
 	}
 	return idx + self.top + 1
 }
 
 func (self *lkStack) isValid(idx int) bool {
-	if idx < LUA_REGISTRYINDEX { /* upvalues */
-		uvIdx := LUA_REGISTRYINDEX - idx - 1
+	if idx < LK_REGISTRYINDEX { /* upvalues */
+		uvIdx := LK_REGISTRYINDEX - idx - 1
 		c := self.closure
 		return c != nil && uvIdx < len(c.upVals)
 	}
-	if idx == LUA_REGISTRYINDEX {
+	if idx == LK_REGISTRYINDEX {
 		return true
 	}
 	absIdx := self.absIndex(idx)
@@ -93,8 +93,8 @@ func (self *lkStack) isValid(idx int) bool {
 }
 
 func (self *lkStack) get(idx int) any {
-	if idx < LUA_REGISTRYINDEX { /* upvalues */
-		uvIdx := LUA_REGISTRYINDEX - idx - 1
+	if idx < LK_REGISTRYINDEX { /* upvalues */
+		uvIdx := LK_REGISTRYINDEX - idx - 1
 		c := self.closure
 		if c == nil || uvIdx >= len(c.upVals) {
 			return nil
@@ -102,7 +102,7 @@ func (self *lkStack) get(idx int) any {
 		return *(c.upVals[uvIdx])
 	}
 
-	if idx == LUA_REGISTRYINDEX {
+	if idx == LK_REGISTRYINDEX {
 		return self.state.registry
 	}
 
@@ -114,8 +114,8 @@ func (self *lkStack) get(idx int) any {
 }
 
 func (self *lkStack) set(idx int, val any) {
-	if idx < LUA_REGISTRYINDEX { /* upvalues */
-		uvIdx := LUA_REGISTRYINDEX - idx - 1
+	if idx < LK_REGISTRYINDEX { /* upvalues */
+		uvIdx := LK_REGISTRYINDEX - idx - 1
 		c := self.closure
 		if c != nil && uvIdx < len(c.upVals) {
 			c.upVals[uvIdx] = &val
@@ -123,7 +123,7 @@ func (self *lkStack) set(idx int, val any) {
 		return
 	}
 
-	if idx == LUA_REGISTRYINDEX {
+	if idx == LK_REGISTRYINDEX {
 		self.state.registry = val.(*lkTable)
 		return
 	}

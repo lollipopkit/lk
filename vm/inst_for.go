@@ -7,22 +7,22 @@ func forPrep(i Instruction, vm LkVM) {
 	a, sBx := i.AsBx()
 	a += 1
 
-	if vm.Type(a) == LUA_TSTRING {
+	if vm.Type(a) == LK_TSTRING {
 		vm.PushNumber(vm.ToNumber(a))
 		vm.Replace(a)
 	}
-	if vm.Type(a+1) == LUA_TSTRING {
+	if vm.Type(a+1) == LK_TSTRING {
 		vm.PushNumber(vm.ToNumber(a + 1))
 		vm.Replace(a + 1)
 	}
-	if vm.Type(a+2) == LUA_TSTRING {
+	if vm.Type(a+2) == LK_TSTRING {
 		vm.PushNumber(vm.ToNumber(a + 2))
 		vm.Replace(a + 2)
 	}
 
 	vm.PushValue(a)
 	vm.PushValue(a + 2)
-	vm.Arith(LUA_OPSUB)
+	vm.Arith(LK_OPSUB)
 	vm.Replace(a)
 	vm.AddPC(sBx)
 }
@@ -39,12 +39,12 @@ func forLoop(i Instruction, vm LkVM) {
 	// R(A)+=R(A+2);
 	vm.PushValue(a + 2)
 	vm.PushValue(a)
-	vm.Arith(LUA_OPADD)
+	vm.Arith(LK_OPADD)
 	vm.Replace(a)
 
 	isPositiveStep := vm.ToNumber(a+2) >= 0
-	if isPositiveStep && vm.Compare(a, a+1, LUA_OPLE) ||
-		!isPositiveStep && vm.Compare(a+1, a, LUA_OPLE) {
+	if isPositiveStep && vm.Compare(a, a+1, LK_OPLE) ||
+		!isPositiveStep && vm.Compare(a+1, a, LK_OPLE) {
 
 		// pc+=sBx; R(A+3)=R(A)
 		vm.AddPC(sBx)

@@ -4,20 +4,20 @@ import . "git.lolli.tech/lollipopkit/lk/api"
 
 /* arith */
 
-func add(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPADD) }  // +
-func sub(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPSUB) }  // -
-func mul(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPMUL) }  // *
-func mod(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPMOD) }  // %
-func pow(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPPOW) }  // ^
-func div(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPDIV) }  // /
-func idiv(i Instruction, vm LkVM) { _binaryArith(i, vm, LUA_OPIDIV) } // //
-func band(i Instruction, vm LkVM) { _binaryArith(i, vm, LUA_OPBAND) } // &
-func bor(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPBOR) }  // |
-func bxor(i Instruction, vm LkVM) { _binaryArith(i, vm, LUA_OPBXOR) } // ~
-func shl(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPSHL) }  // <<
-func shr(i Instruction, vm LkVM)  { _binaryArith(i, vm, LUA_OPSHR) }  // >>
-func unm(i Instruction, vm LkVM)  { _unaryArith(i, vm, LUA_OPUNM) }   // -
-func bnot(i Instruction, vm LkVM) { _unaryArith(i, vm, LUA_OPBNOT) }  // ~
+func add(i Instruction, vm LkVM)  { _binaryArith(i, vm, LK_OPADD) }  // +
+func sub(i Instruction, vm LkVM)  { _binaryArith(i, vm, LK_OPSUB) }  // -
+func mul(i Instruction, vm LkVM)  { _binaryArith(i, vm, LK_OPMUL) }  // *
+func mod(i Instruction, vm LkVM)  { _binaryArith(i, vm, LK_OPMOD) }  // %
+func pow(i Instruction, vm LkVM)  { _binaryArith(i, vm, LK_OPPOW) }  // ^
+func div(i Instruction, vm LkVM)  { _binaryArith(i, vm, LK_OPDIV) }  // /
+func idiv(i Instruction, vm LkVM) { _binaryArith(i, vm, LK_OPIDIV) } // //
+func band(i Instruction, vm LkVM) { _binaryArith(i, vm, LK_OPBAND) } // &
+func bor(i Instruction, vm LkVM)  { _binaryArith(i, vm, LK_OPBOR) }  // |
+func bxor(i Instruction, vm LkVM) { _binaryArith(i, vm, LK_OPBXOR) } // ~
+func shl(i Instruction, vm LkVM)  { _binaryArith(i, vm, LK_OPSHL) }  // <<
+func shr(i Instruction, vm LkVM)  { _binaryArith(i, vm, LK_OPSHR) }  // >>
+func unm(i Instruction, vm LkVM)  { _unaryArith(i, vm, LK_OPUNM) }   // -
+func bnot(i Instruction, vm LkVM) { _unaryArith(i, vm, LK_OPBNOT) }  // ~
 
 // R(A) := RK(B) op RK(C)
 func _binaryArith(i Instruction, vm LkVM, op ArithOp) {
@@ -43,9 +43,9 @@ func _unaryArith(i Instruction, vm LkVM, op ArithOp) {
 
 /* compare */
 
-func eq(i Instruction, vm LkVM) { _compare(i, vm, LUA_OPEQ) } // ==
-func lt(i Instruction, vm LkVM) { _compare(i, vm, LUA_OPLT) } // <
-func le(i Instruction, vm LkVM) { _compare(i, vm, LUA_OPLE) } // <=
+func eq(i Instruction, vm LkVM) { _compare(i, vm, LK_OPEQ) } // ==
+func lt(i Instruction, vm LkVM) { _compare(i, vm, LK_OPLT) } // <
+func le(i Instruction, vm LkVM) { _compare(i, vm, LK_OPLE) } // <=
 
 // if ((RK(B) op RK(C)) ~= A) then pc++
 func _compare(i Instruction, vm LkVM, op CompareOp) {

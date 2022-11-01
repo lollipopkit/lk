@@ -52,7 +52,7 @@ func strContains(ls LkState) int {
 }
 
 func strJoin(ls LkState) int {
-	list := CheckList(&ls, 1)
+	list := CheckList(ls, 1)
 	sep := ls.CheckString(2)
 	l := make([]string, len(list))
 	for i := range list {
@@ -65,7 +65,7 @@ func strJoin(ls LkState) int {
 func strSplit(ls LkState) int {
 	s := ls.CheckString(1)
 	sep := ls.CheckString(2)
-	pushList(&ls, strings.Split(s, sep))
+	pushList(ls, strings.Split(s, sep))
 	return 1
 }
 
@@ -172,7 +172,7 @@ func strByte(ls LkState) int {
 	for k := 0; k < sLen; k++ {
 		list[k] = int64(s[k])
 	}
-	pushList(&ls, list)
+	pushList(ls, list)
 	return 1
 }
 

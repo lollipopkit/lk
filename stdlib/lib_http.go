@@ -11,8 +11,6 @@ import (
 	jsoniter "github.com/json-iterator/go"
 )
 
-type luaMap map[string]any
-
 var (
 	client  = http.Client{}
 	json    = jsoniter.ConfigCompatibleWithStandardLibrary
@@ -29,8 +27,8 @@ func OpenHttpLib(ls LkState) int {
 	return 1
 }
 
-func genHeaderMap(h *http.Header) luaMap {
-	m := luaMap{}
+func genHeaderMap(h *http.Header) lkMap {
+	m := lkMap{}
 	for k := range *h {
 		v := strings.Join((*h)[k], ";")
 		m[k] = v
@@ -38,15 +36,15 @@ func genHeaderMap(h *http.Header) luaMap {
 	return m
 }
 
-func genReturn(code int, body string, header *http.Header) luaMap {
-	return luaMap{
+func genReturn(code int, body string, header *http.Header) lkMap {
+	return lkMap{
 		"code":    code,
 		"body":    body,
 		"headers": genHeaderMap(header),
 	}
 }
 
-func httpDo(method, url string, headers luaMap, body io.Reader) (int, string, http.Header, error) {
+func httpDo(method, url string, headers lkMap, body io.Reader) (int, string, http.Header, error) {
 	request, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return 0, "", nil, err
@@ -72,21 +70,21 @@ func httpDo(method, url string, headers luaMap, body io.Reader) (int, string, ht
 
 func httpGet(ls LkState) int {
 	url := ls.CheckString(1)
-	headers := OptTable(&ls, 2, luaMap{})
+	headers := OptTable(ls, 2, lkMap{})
 	code, data, respHeader, err := httpDo("GET", url, headers, nil)
 	if err != nil {
 		ls.PushNil()
 		ls.PushString(err.Error())
 		return 2
 	}
-	pushTable(&ls, genReturn(code, data, &respHeader))
+	pushTable(ls, genReturn(code, data, &respHeader))
 	ls.PushNil()
 	return 2
 }
 
 func httpPost(ls LkState) int {
 	url := ls.CheckString(1)
-	headers := OptTable(&ls, 2, luaMap{})
+	headers := OptTable(ls, 2, lkMap{})
 	bodyStr := ls.OptString(3, "")
 
 	body := func() io.Reader {
@@ -102,7 +100,7 @@ func httpPost(ls LkState) int {
 		ls.PushString(err.Error())
 		return 2
 	}
-	pushTable(&ls, genReturn(code, data, &respHeader))
+	pushTable(ls, genReturn(code, data, &respHeader))
 	ls.PushNil()
 	return 2
 }
@@ -112,7 +110,7 @@ func httpPost(ls LkState) int {
 func httpReq(ls LkState) int {
 	method := strings.ToUpper(ls.CheckString(1))
 	url := ls.CheckString(2)
-	headers := OptTable(&ls, 3, luaMap{})
+	headers := OptTable(ls, 3, lkMap{})
 	bodyStr := ls.OptString(4, "")
 
 	body := func() io.Reader {
@@ -129,18 +127,18 @@ func httpReq(ls LkState) int {
 		return 2
 	}
 
-	pushTable(&ls, genReturn(code, data, &respHeader))
+	pushTable(ls, genReturn(code, data, &respHeader))
 	ls.PushNil()
 	return 2
 }
 
-func genReqTable(r *http.Request) (luaMap, error) {
+func genReqTable(r *http.Request) (lkMap, error) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		return nil, err
 	}
 	headers := genHeaderMap(&r.Header)
-	return luaMap{
+	return lkMap{
 		"method":  r.Method,
 		"url":     r.URL.String(),
 		"headers": headers,
@@ -153,7 +151,7 @@ func genReqTable(r *http.Request) (luaMap, error) {
 // return err
 func httpListen(ls LkState) int {
 	addr := ls.CheckString(1)
-	ls.CheckType(2, LUA_TFUNCTION)
+	ls.CheckType(2, LK_TFUNCTION)
 	err := http.ListenAndServe(addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req, err := genReqTable(r)
 		if err != nil {
@@ -162,7 +160,7 @@ func httpListen(ls LkState) int {
 			return
 		}
 		ls.PushValue(-1)
-		pushTable(&ls, req)
+		pushTable(ls, req)
 		ls.Call(1, 2)
 		code := ls.ToInteger(-2)
 		data := ls.ToString(-1)

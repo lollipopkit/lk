@@ -36,7 +36,7 @@ func (self *lkState) Call(nArgs, nResults int) {
 
 func (self *lkState) callGoClosure(nArgs, nResults int, c *closure) {
 	// create new lua stack
-	newStack := newLuaStack(nArgs+LUA_MINSTACK, self)
+	newStack := newLuaStack(nArgs+LK_MINSTACK, self)
 	newStack.closure = c
 
 	// pass args, pop func
@@ -65,7 +65,7 @@ func (self *lkState) callLuaClosure(nArgs, nResults int, c *closure) {
 	isVararg := c.proto.IsVararg == 1
 
 	// create new lua stack
-	newStack := newLuaStack(nRegs+LUA_MINSTACK, self)
+	newStack := newLuaStack(nRegs+LK_MINSTACK, self)
 	newStack.closure = c
 
 	// pass args, pop func
@@ -101,9 +101,9 @@ func (self *lkState) runLuaClosure() {
 
 // Calls a function in protected mode.
 // http://www.lua.org/manual/5.3/manual.html#lua_pcall
-func (self *lkState) PCall(nArgs, nResults, msgh int, print bool) (status int) {
+func (self *lkState) PCall(nArgs, nResults, msgh int) (status LkStatus) {
 	caller := self.stack
-	status = LUA_ERRRUN
+	status = LK_ERRRUN
 
 	// catch error
 	defer func() {
@@ -115,13 +115,10 @@ func (self *lkState) PCall(nArgs, nResults, msgh int, print bool) (status int) {
 				self.popLuaStack()
 			}
 			self.stack.push(err)
-			if print {
-				fmt.Printf("%v\n", err)
-			}
 		}
 	}()
 
 	self.Call(nArgs, nResults)
-	status = LUA_OK
+	status = LK_OK
 	return
 }

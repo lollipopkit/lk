@@ -119,7 +119,7 @@ func utfCodePoint(ls LkState) int {
 	if i > j {
 		return 0 /* empty interval; return no values */
 	}
-	if j-i >= LUA_MAXINTEGER { /* (lua_Integer -> int) overflow? */
+	if j-i >= LK_MAXINTEGER { /* (lua_Integer -> int) overflow? */
 		return ls.Error2("string slice too long")
 	}
 	n := j - i + 1

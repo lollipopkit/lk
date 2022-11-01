@@ -50,10 +50,10 @@ func OpenPackageLib(ls LkState) int {
 		LUA_PATH_MARK + "\n" + LUA_EXEC_DIR + "\n" + LUA_IGMARK + "\n")
 	ls.SetField(-2, "config")
 	/* set field 'loaded' */
-	ls.GetSubTable(LUA_REGISTRYINDEX, LUA_LOADED_TABLE)
+	ls.GetSubTable(LK_REGISTRYINDEX, LUA_LOADED_TABLE)
 	ls.SetField(-2, "loaded")
 	/* set field 'preload' */
-	ls.GetSubTable(LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE)
+	ls.GetSubTable(LK_REGISTRYINDEX, LUA_PRELOAD_TABLE)
 	ls.SetField(-2, "preload")
 	ls.PushGlobalTable()
 	ls.PushValue(-2)        /* set 'package' as upvalue for next lib */
@@ -80,8 +80,8 @@ func createSearchersTable(ls LkState) {
 
 func preloadSearcher(ls LkState) int {
 	name := ls.CheckString(1)
-	ls.GetField(LUA_REGISTRYINDEX, "_PRELOAD")
-	if ls.GetField(-1, name) == LUA_TNIL { /* not found? */
+	ls.GetField(LK_REGISTRYINDEX, "_PRELOAD")
+	if ls.GetField(-1, name) == LK_TNIL { /* not found? */
 		ls.PushString("\n\tno field package.preload['" + name + "']")
 	}
 	return 1
@@ -101,7 +101,7 @@ func luaSearcher(ls LkState) int {
 		return 1
 	}
 
-	if ls.LoadFile(filename) == LUA_OK { /* module loaded successfully? */
+	if ls.LoadFile(filename) == LK_OK { /* module loaded successfully? */
 		ls.PushString(filename) /* will be 2nd argument to module */
 		return 2                /* return open function and file name */
 	} else {
@@ -149,7 +149,7 @@ func _searchPath(name, path, sep, dirSep string) (filename, errMsg string) {
 func pkgImport(ls LkState) int {
 	name := ls.CheckString(1)
 	ls.SetTop(1) /* LOADED table will be at index 2 */
-	ls.GetField(LUA_REGISTRYINDEX, LUA_LOADED_TABLE)
+	ls.GetField(LK_REGISTRYINDEX, LUA_LOADED_TABLE)
 	ls.GetField(2, name)  /* LOADED[name] */
 	if ls.ToBoolean(-1) { /* is it there? */
 		return 1 /* package is already loaded */
@@ -163,7 +163,7 @@ func pkgImport(ls LkState) int {
 	if !ls.IsNil(-1) {  /* non-nil return? */
 		ls.SetField(2, name) /* LOADED[name] = returned value */
 	}
-	if ls.GetField(2, name) == LUA_TNIL { /* module set no value? */
+	if ls.GetField(2, name) == LK_TNIL { /* module set no value? */
 		ls.PushBoolean(true) /* use true as result */
 		ls.PushValue(-1)     /* extra copy to be returned */
 		ls.SetField(2, name) /* LOADED[name] = true */
@@ -173,7 +173,7 @@ func pkgImport(ls LkState) int {
 
 func _findLoader(ls LkState, name string) {
 	/* push 'package.searchers' to index 3 in the stack */
-	if ls.GetField(LkUpvalueIndex(1), "searchers") != LUA_TTABLE {
+	if ls.GetField(LkUpvalueIndex(1), "searchers") != LK_TTABLE {
 		ls.Error2("'package.searchers' must be a table")
 	}
 
@@ -182,7 +182,7 @@ func _findLoader(ls LkState, name string) {
 
 	/*  iterate over available searchers to find a loader */
 	for i := int64(1); ; i++ {
-		if ls.RawGetI(3, i) == LUA_TNIL { /* no more searchers? */
+		if ls.RawGetI(3, i) == LK_TNIL { /* no more searchers? */
 			ls.Pop(1)         /* remove nil */
 			ls.Error2(errMsg) /* create error message */
 		}

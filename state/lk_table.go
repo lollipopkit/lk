@@ -64,7 +64,7 @@ func (self *lkTable) combine(t *lkTable) {
 	}
 }
 
-func newLuaTable(nArr, nRec int) *lkTable {
+func newLkTable(nArr, nRec int) *lkTable {
 	t := &lkTable{}
 	if nArr > 0 {
 		t.arr = make([]any, 0, nArr)

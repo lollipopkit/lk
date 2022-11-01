@@ -13,7 +13,7 @@ func (self *lkState) NewTable() {
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_createtable
 func (self *lkState) CreateTable(nArr, nRec int) {
-	t := newLuaTable(nArr, nRec)
+	t := newLkTable(nArr, nRec)
 	self.stack.push(t)
 }
 
@@ -57,7 +57,7 @@ func (self *lkState) RawGetI(idx int, i int64) LkType {
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_getglobal
 func (self *lkState) GetGlobal(name string) LkType {
-	t := self.registry.get(LUA_RIDX_GLOBALS)
+	t := self.registry.get(LK_RIDX_GLOBALS)
 	return self.getTable(t, name, false)
 }
 
@@ -106,5 +106,5 @@ func (self *lkState) getTable(t, k any, raw bool) LkType {
 	}
 
 	self.PushNil()
-	return LUA_TNIL
+	return LK_TNIL
 }

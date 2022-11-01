@@ -7,14 +7,14 @@ import . "git.lolli.tech/lollipopkit/lk/api"
 // lua-5.3.4/src/lstate.c#lua_newthread()
 func (self *lkState) NewThread() LkState {
 	t := &lkState{registry: self.registry}
-	t.pushLuaStack(newLuaStack(LUA_MINSTACK, t))
+	t.pushLuaStack(newLuaStack(LK_MINSTACK, t))
 	self.stack.push(t)
 	return t
 }
 
 // [-?, +?, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_resume
-func (self *lkState) Resume(from LkState, nArgs int) int {
+func (self *lkState) Resume(from LkState, nArgs int) LkStatus {
 	lsFrom := from.(*lkState)
 	if lsFrom.coChan == nil {
 		lsFrom.coChan = make(chan int)
@@ -25,16 +25,16 @@ func (self *lkState) Resume(from LkState, nArgs int) int {
 		self.coChan = make(chan int)
 		self.coCaller = lsFrom
 		go func() {
-			self.coStatus = self.PCall(nArgs, -1, 0, false)
+			self.coStatus = self.PCall(nArgs, -1, 0)
 			lsFrom.coChan <- 1
 		}()
 	} else {
 		// resume coroutine
-		if self.coStatus != LUA_YIELD { // todo
+		if self.coStatus != LK_YIELD { // todo
 			self.stack.push("cannot resume non-suspended coroutine")
-			return LUA_ERRRUN
+			return LK_ERRRUN
 		}
-		self.coStatus = LUA_OK
+		self.coStatus = LK_OK
 		self.coChan <- 1
 	}
 
@@ -44,14 +44,14 @@ func (self *lkState) Resume(from LkState, nArgs int) int {
 
 // [-?, +?, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_yield
-func (self *lkState) Yield(nResults int) int {
+func (self *lkState) Yield(nResults int) LkStatus {
 	if self.coCaller == nil { // todo
 		panic("attempt to yield from outside a coroutine")
 	}
-	self.coStatus = LUA_YIELD
+	self.coStatus = LK_YIELD
 	self.coCaller.coChan <- 1
 	<-self.coChan
-	return self.GetTop()
+	return LkStatus(self.GetTop())
 }
 
 // [-0, +0, –]
@@ -60,13 +60,13 @@ func (self *lkState) IsYieldable() bool {
 	if self.isMainThread() {
 		return false
 	}
-	return self.coStatus != LUA_YIELD // todo
+	return self.coStatus != LK_YIELD // todo
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_status
 // lua-5.3.4/src/lapi.c#lua_status()
-func (self *lkState) Status() int {
+func (self *lkState) Status() LkStatus {
 	return self.coStatus
 }
 

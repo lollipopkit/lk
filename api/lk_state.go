@@ -1,13 +1,9 @@
 package api
 
-type LkType = int
-type ArithOp = int
-type CompareOp = int
-
 type GoFunction func(LkState) int
 
 func LkUpvalueIndex(i int) int {
-	return LUA_REGISTRYINDEX - i
+	return LK_REGISTRYINDEX - i
 }
 
 type LkState interface {
@@ -86,9 +82,9 @@ type BasicAPI interface {
 	SetGlobal(name string)
 	Register(name string, f GoFunction)
 	/* 'load' and 'call' functions (load and run Lua code) */
-	Load(chunk []byte, chunkName, mode string) int
+	Load(chunk []byte, chunkName, mode string) LkStatus
 	Call(nArgs, nResults int)
-	PCall(nArgs, nResults, msgh int, print bool) int
+	PCall(nArgs, nResults, msgh int) LkStatus
 	/* miscellaneous functions */
 	Len(idx int)
 	Next(idx int) bool
@@ -96,9 +92,9 @@ type BasicAPI interface {
 	StringToNumber(s string) bool
 	/* coroutine functions */
 	NewThread() LkState
-	Resume(from LkState, nArgs int) int
-	Yield(nResults int) int
-	Status() int
+	Resume(from LkState, nArgs int) LkStatus
+	Yield(nResults int) LkStatus
+	Status() LkStatus
 	IsYieldable() bool
 	GetStack() bool // debug
 }

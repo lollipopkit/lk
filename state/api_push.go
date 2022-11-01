@@ -63,7 +63,7 @@ func (self *lkState) PushGoClosure(f GoFunction, n int) {
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_pushglobaltable
 func (self *lkState) PushGlobalTable() {
-	global := self.registry.get(LUA_RIDX_GLOBALS)
+	global := self.registry.get(LK_RIDX_GLOBALS)
 	self.stack.push(global)
 }
 

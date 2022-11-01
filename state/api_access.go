@@ -10,21 +10,21 @@ import (
 // http://www.lua.org/manual/5.3/manual.html#lua_typename
 func (self *lkState) TypeName(tp LkType) string {
 	switch tp {
-	case LUA_TNONE:
+	case LK_TNONE:
 		return "none"
-	case LUA_TNIL:
+	case LK_TNIL:
 		return "nil"
-	case LUA_TBOOLEAN:
+	case LK_TBOOLEAN:
 		return "bool"
-	case LUA_TNUMBER:
+	case LK_TNUMBER:
 		return "num"
-	case LUA_TSTRING:
+	case LK_TSTRING:
 		return "str"
-	case LUA_TTABLE:
+	case LK_TTABLE:
 		return "table"
-	case LUA_TFUNCTION:
+	case LK_TFUNCTION:
 		return "func"
-	case LUA_TTHREAD:
+	case LK_TTHREAD:
 		return "thread"
 	default:
 		return "userdata"
@@ -38,56 +38,56 @@ func (self *lkState) Type(idx int) LkType {
 		val := self.stack.get(idx)
 		return typeOf(val)
 	}
-	return LUA_TNONE
+	return LK_TNONE
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isnone
 func (self *lkState) IsNone(idx int) bool {
-	return self.Type(idx) == LUA_TNONE
+	return self.Type(idx) == LK_TNONE
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isnil
 func (self *lkState) IsNil(idx int) bool {
-	return self.Type(idx) == LUA_TNIL
+	return self.Type(idx) == LK_TNIL
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isnoneornil
 func (self *lkState) IsNoneOrNil(idx int) bool {
-	return self.Type(idx) <= LUA_TNIL
+	return self.Type(idx) <= LK_TNIL
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isboolean
 func (self *lkState) IsBoolean(idx int) bool {
-	return self.Type(idx) == LUA_TBOOLEAN
+	return self.Type(idx) == LK_TBOOLEAN
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_istable
 func (self *lkState) IsTable(idx int) bool {
-	return self.Type(idx) == LUA_TTABLE
+	return self.Type(idx) == LK_TTABLE
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isfunction
 func (self *lkState) IsFunction(idx int) bool {
-	return self.Type(idx) == LUA_TFUNCTION
+	return self.Type(idx) == LK_TFUNCTION
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isthread
 func (self *lkState) IsThread(idx int) bool {
-	return self.Type(idx) == LUA_TTHREAD
+	return self.Type(idx) == LK_TTHREAD
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isstring
 func (self *lkState) IsString(idx int) bool {
 	t := self.Type(idx)
-	return t == LUA_TSTRING || t == LUA_TNUMBER
+	return t == LK_TSTRING || t == LK_TNUMBER
 }
 
 // [-0, +0, –]

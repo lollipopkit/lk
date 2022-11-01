@@ -10,19 +10,19 @@ import (
 func typeOf(val any) LkType {
 	switch val.(type) {
 	case nil:
-		return LUA_TNIL
+		return LK_TNIL
 	case bool:
-		return LUA_TBOOLEAN
+		return LK_TBOOLEAN
 	case int64, float64:
-		return LUA_TNUMBER
+		return LK_TNUMBER
 	case string:
-		return LUA_TSTRING
+		return LK_TSTRING
 	case *lkTable:
-		return LUA_TTABLE
+		return LK_TTABLE
 	case *closure:
-		return LUA_TFUNCTION
+		return LK_TFUNCTION
 	case *lkState:
-		return LUA_TTHREAD
+		return LK_TTHREAD
 	default:
 		panic(fmt.Sprintf("invalid type: %T<%v>", val, val))
 	}
