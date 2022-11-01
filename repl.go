@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -29,7 +30,13 @@ var (
 func repl(wg *sync.WaitGroup) {
 	ls := state.New()
 	ls.OpenLibs()
-	println("REPL - Lang LK (v" + consts.VERSION + ")")
+
+	println(` _     _  __  ____  _____ ____  _     
+| |   | |/ / |  _ \| ____|  _ \| |    
+| |   | ' /  | |_) |  _| | |_) | |    
+| |___| . \  |  _ <| |___|  __/| |___ 
+|_____|_|\_\ |_| \_\_____|_|   |_____|`)
+	println("               v" + consts.VERSION)
 
 	blockStr := ""
 	blockStartCount := 0
@@ -64,39 +71,41 @@ func repl(wg *sync.WaitGroup) {
 		}
 		// println("==", cmd, "==")
 
-		// 更新历史记录
-		updateHistory(cmd)
-
 		// 加载line，调用
-		protectedLoadString(&ls, cmd)
-		ls.PCall(0, -1, 0, true)
+		protectedCall(ls, cmd)
+
 		blockStartCount = 0
 		blockEndCount = 0
 		blockStr = ""
 	}
 }
 
-func catchErr(ls *api.LkState, first *bool, cmd string) {
+func loadString(ls api.LkState, cmd string) {
+	ls.LoadString(cmd, "stdin")
+}
+
+func catchErr(ls api.LkState, first *bool, cmd string) {
 	if err := recover(); err != nil {
-		defer catchErr(ls, first, cmd)
 		if *first {
 			*first = false
-			(*ls).LoadString(cmd, "stdin")
+			addPrintCmd := "print(" + cmd + ")"
+			defer catchErr(ls, first, addPrintCmd)
+			loadString(ls, addPrintCmd)
+		} else {
+			term.Warn(fmt.Sprintf("%v", err))
 		}
+	} else {
+		// 更新历史记录
+		updateHistory(cmd)
 	}
 }
 
-func protectedLoadString(ls *api.LkState, cmd string) {
+func protectedCall(ls api.LkState, cmd string) {
 	first := true
 	// 捕获错误
 	defer catchErr(ls, &first, cmd)
-	addedPrintCmd := func() string {
-		if printReg.MatchString(cmd) {
-			return cmd
-		}
-		return "print(" + cmd + ")"
-	}()
-	(*ls).LoadString(addedPrintCmd, "stdin")
+	loadString(ls, cmd)
+	ls.PCall(0, api.LK_MULTRET, 0)
 }
 
 func _updateHistory(str string) {
