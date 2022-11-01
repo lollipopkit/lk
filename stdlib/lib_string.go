@@ -14,7 +14,7 @@ var strLib = map[string]GoFunction{
 	"lower":    strLower,
 	"upper":    strUpper,
 	"sub":      strSub,
-	"bytes":     strByte,
+	"bytes":    strByte,
 	"char":     strChar,
 	"split":    strSplit,
 	"join":     strJoin,

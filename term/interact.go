@@ -78,9 +78,15 @@ func ReadLine(linesHistory []string) string {
 				cursorIdx++
 			}
 		case keys.Tab:
-			str += "  "
-			print("  ")
-			cursorIdx += 2
+			if cursorIdx == len(str) {
+				str += "  "
+				print("  ")
+				cursorIdx += 2
+			} else {
+				str = str[:cursorIdx] + "  " + str[cursorIdx:]
+				resetLine(str)
+				cursorIdx += 2
+			}
 		case keys.Delete:
 			if cursorIdx < len(str) {
 				str = str[:cursorIdx] + str[cursorIdx+1:]

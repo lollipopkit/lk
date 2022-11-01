@@ -144,11 +144,11 @@ func _finishForInStat(lexer *Lexer, name0 string) *ForInStat {
 	if len(expList) == 1 {
 		e := expList[0]
 		expList[0] = &FuncCallExp{
-			Line: lineOfDo, 
-			LastLine: lineOfDo, 
-			PrefixExp: &NameExp{lineOfDo, "range"}, 
-			NameExp: nil, 
-			Args: []Exp{e},
+			Line:      lineOfDo,
+			LastLine:  lineOfDo,
+			PrefixExp: &NameExp{lineOfDo, "range"},
+			NameExp:   nil,
+			Args:      []Exp{e},
 		}
 	}
 	return &ForInStat{lineOfDo, nameList, expList, block}
@@ -239,8 +239,8 @@ func parseAssignStat(lexer *Lexer, var0 Exp) Stat {
 		return &LocalVarDeclStat{lexer.Line(), strExps, expList}
 	}
 	switch lexer.LookAhead() {
-	case TOKEN_OP_MINUS_EQ, TOKEN_OP_ADD_EQ, 
-		TOKEN_OP_MUL_EQ, TOKEN_OP_DIV_EQ, 
+	case TOKEN_OP_MINUS_EQ, TOKEN_OP_ADD_EQ,
+		TOKEN_OP_MUL_EQ, TOKEN_OP_DIV_EQ,
 		TOKEN_OP_MOD_EQ, TOKEN_OP_POW_EQ:
 		line, op, _ := lexer.NextToken()
 		expList := []Exp{&BinopExp{line, SourceOp(op), varList[0], parseExp(lexer)}}

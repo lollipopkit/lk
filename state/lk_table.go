@@ -24,7 +24,7 @@ func (self *lkTable) String() (string, error) {
 	// if err != nil {
 	// 	return "", err
 	// }
-	
+
 	// return _closureRe.ReplaceAllString(s, "$1"), nil
 }
 

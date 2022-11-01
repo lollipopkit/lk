@@ -1,0 +1,47 @@
+class List {
+    'items': {}
+}
+
+fn List:add(item) {
+    self.items[#self.items] = item
+}
+
+fn List:remove(item) {
+    for i in self.items {
+        if self.items[i] == item {
+            self.items[i] = nil
+        }
+    }
+}
+
+fn List:contains(item) {
+    for i in self.items {
+        if self.items[i] == item {
+            rt true
+        }
+    }
+    rt false
+}
+
+fn List:insert(item, idx) {
+    for i = idx, #self.items {
+        self.items[i + 1] = self.items[i]
+    }
+    self.items[idx] = item
+}
+
+fn List:remove_at(idx) {
+    for i = idx, #self.items {
+        self.items[i] = self.items[i + 1]
+    }
+}
+
+fn List:clear() {
+    self.items = {}
+}
+
+fn List:__str() {
+    rt str(self.items)
+}
+
+rt List

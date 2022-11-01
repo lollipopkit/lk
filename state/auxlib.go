@@ -289,19 +289,19 @@ func (self *lkState) CallMeta(obj int, event string) bool {
 // http://www.lua.org/manual/5.3/manual.html#luaL_openlibs
 func (self *lkState) OpenLibs() {
 	libs := map[string]GoFunction{
-		"_G":   stdlib.OpenBaseLib,
-		"math": stdlib.OpenMathLib,
-		"strs": stdlib.OpenStringLib,
-		"utf8": stdlib.OpenUTF8Lib,
-		"os":   stdlib.OpenOSLib,
-		"pkg":  stdlib.OpenPackageLib,
-		"sync": stdlib.OpenCoroutineLib,
-		"http": stdlib.OpenHttpLib,
-		"json": stdlib.OpenJsonLib,
-		"re":   stdlib.OpenReLib,
-		"rand": stdlib.OpenRandLib,
-		"table":stdlib.OpenTableLib,
-		"nums": stdlib.OpenNumLib,
+		"_G":    stdlib.OpenBaseLib,
+		"math":  stdlib.OpenMathLib,
+		"strs":  stdlib.OpenStringLib,
+		"utf8":  stdlib.OpenUTF8Lib,
+		"os":    stdlib.OpenOSLib,
+		"pkg":   stdlib.OpenPackageLib,
+		"sync":  stdlib.OpenCoroutineLib,
+		"http":  stdlib.OpenHttpLib,
+		"json":  stdlib.OpenJsonLib,
+		"re":    stdlib.OpenReLib,
+		"rand":  stdlib.OpenRandLib,
+		"table": stdlib.OpenTableLib,
+		"nums":  stdlib.OpenNumLib,
 	}
 
 	for name := range libs {

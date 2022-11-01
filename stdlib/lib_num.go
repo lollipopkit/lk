@@ -8,7 +8,7 @@ import (
 
 var numLib = map[string]GoFunction{
 	"abs":  numAbs,
-	"len": numLen,
+	"len":  numLen,
 	"char": numChar,
 }
 

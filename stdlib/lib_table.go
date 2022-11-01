@@ -5,10 +5,10 @@ import (
 )
 
 var tableLib = map[string]GoFunction{
-	"len": tableLen,
-	"keys": tableKeys,
-	"values": tableValues,
-	"have": tableHave,
+	"len":      tableLen,
+	"keys":     tableKeys,
+	"values":   tableValues,
+	"contains": tableHave,
 }
 
 func OpenTableLib(ls LkState) int {
