@@ -101,11 +101,11 @@ func (self *lkState) runLuaClosure() {
 }
 
 func (self *lkState) CatchAndPrint() {
-	stack := self.stack
-	for stack.closure.proto == nil {
-		stack = stack.prev
-	}
 	if err := recover(); err != nil {
+		stack := self.stack
+		for stack.closure == nil {
+			stack = stack.prev
+		}
 		errStr := fmt.Sprintf("[line %d]: %v", stack.closure.proto.LineInfo[stack.pc - 1], err)
 		term.Error(errStr, true)
 	}

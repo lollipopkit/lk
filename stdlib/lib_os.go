@@ -1,11 +1,13 @@
 package stdlib
 
 import (
+	"bytes"
 	"io/fs"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 	"time"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
@@ -299,12 +301,16 @@ func osExecute(ls LkState) int {
 		return 2
 	}
 	cmd := exec.Command("bash", path)
-	out, err := cmd.Output()
+	cmdOut := new(bytes.Buffer)
+	cmdErr := new(bytes.Buffer)
+	cmd.Stdout = cmdOut
+	cmd.Stderr = cmdErr
+	err = cmd.Run()
 	if err != nil {
 		ls.PushNil()
-		ls.PushString(err.Error())
+		ls.PushString(strings.Trim(cmdErr.String(), "\n"))
 	} else {
-		ls.PushString(string(out))
+		ls.PushString(strings.Trim(cmdOut.String(), "\n"))
 		ls.PushNil()
 	}
 	return 2
