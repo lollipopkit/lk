@@ -102,11 +102,17 @@ func (self *lkState) runLuaClosure() {
 
 func (self *lkState) CatchAndPrint() {
 	if err := recover(); err != nil {
+		times := 0
 		stack := self.stack
 		for stack.closure == nil {
 			stack = stack.prev
+			times++
+			if times > LK_MAXSTACK {
+				panic("can't find stack")
+			}
 		}
-		errStr := fmt.Sprintf("[line %d]: %v", stack.closure.proto.LineInfo[stack.pc - 1], err)
+		line := stack.closure.proto.LineInfo[stack.lastPC]
+		errStr := fmt.Sprintf("[%s:%d]: %v", stack.closure.proto.Source, line, err)
 		term.Error(errStr, true)
 	}
 }

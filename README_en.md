@@ -103,13 +103,12 @@ if http.listen(':8080', handle) != nil {
     - [x] REPL, run directly `lk` to enter
     - [x] Support direction keys
     - [x] Identification code block
-    - [x] Resources
-- [x] Documentation
-  - [x] `CHANGELOG.md`
-  - [x] `LANG.md` 
-  - [x] Test set, located in the `test` folder
-- [x] IDE
-  - [x] VSCode highlights
+- [x] Resources
+    - [x] Documentation
+      - [x] `LANG.md` 
+    - [x] Test set, located in the `test` folder
+    - [x] IDE
+      - [x] VSCode highlights
 
 ## 🌳 Ecology
 - VSCode plugin: [highlight](https://git.lolli.tech/lollipopkit/vscode-lang-lk-highlight)

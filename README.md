@@ -110,7 +110,6 @@ if http.listen(':8080', handle) != nil {
     - [x] 识别代码块
 - [x] 资源
     - [x] 文档
-      - [x] `CHANGELOG.md`
       - [x] `LANG.md` 
     - [x] 测试集，位于 `test` 文件夹
     - [x] IDE

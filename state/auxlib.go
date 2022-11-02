@@ -367,7 +367,7 @@ func (self *lkState) intError(arg int) {
 }
 
 func (self *lkState) tagError(arg int, tag LkType) {
-	self.typeError(arg, self.TypeName(LkType(tag)))
+	self.typeError(arg, self.TypeName(tag))
 }
 
 func (self *lkState) typeError(arg int, tname string) int {

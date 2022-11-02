@@ -5,11 +5,13 @@ func (self *lkState) PC() int {
 }
 
 func (self *lkState) AddPC(n int) {
+	self.stack.lastPC = self.stack.pc
 	self.stack.pc += n
 }
 
 func (self *lkState) Fetch() uint32 {
 	i := self.stack.closure.proto.Code[self.stack.pc]
+	self.stack.lastPC = self.stack.pc
 	self.stack.pc++
 	return i
 }

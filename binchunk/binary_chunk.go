@@ -37,19 +37,19 @@ type binaryChunk struct {
 
 // function prototype
 type Prototype struct {
-	Source          string        `json:"s"` // debug
-	LineDefined     uint32        `json:"ld"`
-	LastLineDefined uint32        `json:"lld"`
-	NumParams       byte          `json:"np"`
-	IsVararg        byte          `json:"iv"`
-	MaxStackSize    byte          `json:"ms"`
-	Code            []uint32      `json:"c"`
-	Constants       []interface{} `json:"cs"`
-	Upvalues        []Upvalue     `json:"us"`
-	Protos          []*Prototype  `json:"ps"`
-	LineInfo        []uint32      `json:"li"`  // debug
-	LocVars         []LocVar      `json:"lvs"` // debug
-	UpvalueNames    []string      `json:"uns"` // debug
+	Source          string       `json:"s"` // debug
+	LineDefined     uint32       `json:"ld"`
+	LastLineDefined uint32       `json:"lld"`
+	NumParams       byte         `json:"np"`
+	IsVararg        byte         `json:"iv"`
+	MaxStackSize    byte         `json:"ms"`
+	Code            []uint32     `json:"c"`
+	Constants       []any        `json:"cs"`
+	Upvalues        []Upvalue    `json:"us"`
+	Protos          []*Prototype `json:"ps"`
+	LineInfo        []uint32     `json:"li"`  // debug
+	LocVars         []LocVar     `json:"lvs"` // debug
+	UpvalueNames    []string     `json:"uns"` // debug
 }
 
 type Upvalue struct {

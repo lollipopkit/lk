@@ -56,27 +56,8 @@ replace_lang_ver('README.md', readme_re_exp)
 replace_lang_ver('README_en.md', readme_re_exp)
 print("Versions replaced.")
 
-// Git push & tag
+// Git tag
 if git {
-    _, err := os.exec('git add .')
-    if err != nil {
-        print("Error git add .: " + err)
-        os.exit(1)
-    }
-
-    _, err := os.exec('git commit -m "`v' + version + '`"')
-    if err != nil {
-        print("Error git commit: " + err)
-        os.exit(1)
-    }
-
-    _, err := os.exec('git push')
-    if err != nil {
-        print("Error git push: " + err)
-        os.exit(1)
-    }
-    print("Git push done.")
-
     _, err := os.exec("git tag -a v" + version + " -m 'v" + version + "'")
     if err != nil {
         print("Error tagging: " + err)

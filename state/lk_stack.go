@@ -14,6 +14,8 @@ type lkStack struct {
 	pc      int
 	/* linked list */
 	prev *lkStack
+
+	lastPC int
 }
 
 func newLuaStack(size int, state *lkState) *lkStack {
