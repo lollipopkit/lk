@@ -23,14 +23,31 @@ fn List:contains(item) {
     rt false
 }
 
-fn List:insert(item, idx) {
-    for i = idx, #self.items {
-        self.items[i + 1] = self.items[i]
+fn List:insert(idx, item) {
+    typ := type(idx)
+    if typ != 'num' {
+        error('arg#1: expected num, got ' + typ)
     }
-    self.items[idx] = item
+    length := #self.items
+    if idx >= length {
+        if idx > length {
+            error(fmt("Index %d out of bounds: [0,%d]", idx, length))
+        } else {
+            self:add(item)
+        }
+    } else {
+        for i = idx, length - 1 {
+            self.items[i + 1] = self.items[i]
+        }
+        self.items[idx] = item
+    }
 }
 
 fn List:remove_at(idx) {
+    if type(idx) != 'num' {
+        error(fmt("Index %s is not a number", idx))
+    }
+
     for i = idx, #self.items {
         self.items[i] = self.items[i + 1]
     }
@@ -42,6 +59,27 @@ fn List:clear() {
 
 fn List:__str() {
     rt str(self.items)
+}
+
+fn List:__len() {
+    rt #self.items
+}
+
+fn List:__index(idx) {
+    if idx >= #self.items {
+        error(fmt("Index %d out of bounds: [0,%d]", idx, #self.items))
+    }
+    rt self.items[idx]
+}
+
+fn List:__newindex(idx, value) {
+    if type(idx) != 'num' {
+        error(fmt("Index %s is not a number", idx))
+    }
+    if idx >= #self.items {
+        error(fmt("Index %d out of bounds: [0,%d]", idx, #self.items))
+    }
+    self.items[idx] = value
 }
 
 rt List

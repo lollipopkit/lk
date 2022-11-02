@@ -24,7 +24,7 @@ var (
 
 func init() {
 	if consts.LkPath == "" {
-		term.Warn("env LK_PATH not set. \nCan't use built-in modules.")
+		term.Yellow("env LK_PATH not set. \nCan't use built-in modules.")
 	}
 }
 
@@ -38,14 +38,14 @@ func InitMods(wg *sync.WaitGroup) {
 	if utils.Exist(indexFilePath) {
 		indexBytes, err := ioutil.ReadFile(indexFilePath)
 		if err != nil {
-			term.Error("can't read index.json: " + err.Error())
+			term.Red("[mod] can't read index.json: " + err.Error())
 		}
 		index := gjson.ParseBytes(indexBytes).Map()
 		sameVM := index["vm"].String() == consts.VERSION
 		version := index["version"].Int()
 		bulitInIndexBytes, err := ModFiles.ReadFile(builtInIndexPath)
 		if err != nil {
-			term.Error("can't read built-in index.json: " + err.Error())
+			term.Red("[mod] can't read built-in index.json: " + err.Error())
 		}
 		builtInIndex := gjson.ParseBytes(bulitInIndexBytes).Map()
 		builtInVersion := builtInIndex["version"].Int()
@@ -57,18 +57,17 @@ func InitMods(wg *sync.WaitGroup) {
 }
 
 func extract() {
-	term.Info("Extracting built-in modules...")
 	index, err := ModFiles.ReadFile(builtInIndexPath)
 	if err != nil {
-		term.Error("can't read index.json: " + err.Error())
+		term.Red("[mod] can't read index.json: " + err.Error())
 	}
 	err = os.WriteFile(indexFilePath, index, 0644)
 	if err != nil {
-		term.Error("can't write index.json: " + err.Error())
+		term.Red("[mod] can't write index.json: " + err.Error())
 	}
 	files, err := ModFiles.ReadDir(builtInFilesPath)
 	if err != nil {
-		term.Error("can't read files: " + err.Error())
+		term.Red("[mod] can't read files: " + err.Error())
 	}
 
 	for idx := range files {
@@ -77,11 +76,11 @@ func extract() {
 		}
 		data, err := ModFiles.ReadFile(path.Join(builtInFilesPath, files[idx].Name()))
 		if err != nil {
-			term.Error("can't read file: " + err.Error())
+			term.Red("[mod] can't read file: " + err.Error())
 		}
 		err = os.WriteFile(path.Join(consts.LkPath, files[idx].Name()), data, 0644)
 		if err != nil {
-			term.Error("can't write file: " + err.Error())
+			term.Red("[mod] can't write file: " + err.Error())
 		}
 	}
 }

@@ -117,18 +117,26 @@ func (self *lkState) Arith(op ArithOp) {
 		return
 	}
 
-	aa, oka := a.(string)
-	bb, okb := b.(string)
+	as, oka := a.(string)
+	bs, okb := b.(string)
 	if oka && okb {
 		switch op {
 		case LK_OPADD:
-			self.stack.push(aa + bb)
+			self.stack.push(as + bs)
 			return
 		}
 	}
 
-	self.stack.push(a)
-	self.stack.push(b)
+	at, oka := a.(*lkTable)
+	bt, okb := b.(*lkTable)
+	if oka && okb {
+		switch op {
+		case LK_OPADD:
+			at.combine(bt)
+			self.stack.push(at)
+			return
+		}
+	}
 	panic(fmt.Sprintf("invalid arith: %T %s %T", a, opSymbol(mm), b))
 }
 
