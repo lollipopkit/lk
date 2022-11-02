@@ -23,6 +23,7 @@ mods_index_path := "mods/index.json"
 consts_ver_path := 'consts/lang.go'
 mods_re_exp := `"vm": "(.*)"`
 consts_re_exp := `VERSION *= *"(.*)"`
+readme_re_exp := `https:\/\/badgen\.net\/badge\/LK\/([0-9]+\.[0-9]+\.[0-9]+)\/cyan`
 
 replace_lang_ver := fn(path, re_exp) {
     content, err := os.read(path)
@@ -40,7 +41,7 @@ replace_lang_ver := fn(path, re_exp) {
     old_ver = old_ver[1]
 
     if old_ver != version {
-        content = strs.replace(content, old_ver, version)
+        content = content:replace(old_ver, version)
         err := os.write(path, content)
         if err != nil {
             print("Error writing "+path)
@@ -51,6 +52,8 @@ replace_lang_ver := fn(path, re_exp) {
 
 replace_lang_ver(mods_index_path, mods_re_exp)
 replace_lang_ver(consts_ver_path, consts_re_exp)
+replace_lang_ver('README.md', readme_re_exp)
+replace_lang_ver('README_en.md', readme_re_exp)
 print("Versions replaced.")
 
 // Git push & tag
