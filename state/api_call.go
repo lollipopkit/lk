@@ -113,7 +113,7 @@ func (self *lkState) CatchAndPrint() {
 		}
 		line := stack.closure.proto.LineInfo[stack.lastPC]
 		errStr := fmt.Sprintf("[%s:%d]: %v", stack.closure.proto.Source, line, err)
-		term.Error(errStr, true)
+		term.Red(errStr, true)
 	}
 }
 

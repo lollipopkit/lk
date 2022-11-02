@@ -31,12 +31,7 @@ func repl(wg *sync.WaitGroup) {
 	ls := state.New()
 	ls.OpenLibs()
 
-	println(` _     _  __  ____  _____ ____  _     
-| |   | |/ / |  _ \| ____|  _ \| |    
-| |   | ' /  | |_) |  _| | |_) | |    
-| |___| . \  |  _ <| |___|  __/| |___ 
-|_____|_|\_\ |_| \_\_____|_|   |_____|`)
-	println("               v" + consts.VERSION)
+	term.Cyan("REPL - Lang LK v" + consts.VERSION + "\n")
 
 	blockStr := ""
 	blockStartCount := 0
@@ -82,18 +77,12 @@ func repl(wg *sync.WaitGroup) {
 
 func loadString(ls api.LkState, cmd string) {
 	ls.LoadString(cmd, "stdin")
+	ls.Call(0, api.LK_MULTRET)
 }
 
-func catchErr(ls api.LkState, first *bool, cmd string) {
+func catchErr(ls api.LkState, cmd string) {
 	if err := recover(); err != nil {
-		if *first {
-			*first = false
-			addPrintCmd := "print(" + cmd + ")"
-			defer catchErr(ls, first, addPrintCmd)
-			loadString(ls, addPrintCmd)
-		} else {
-			term.Warn(fmt.Sprintf("%v", err))
-		}
+		term.Red(fmt.Sprintf("%v\n", err), true)
 	} else {
 		// 更新历史记录
 		updateHistory(cmd)
@@ -101,11 +90,9 @@ func catchErr(ls api.LkState, first *bool, cmd string) {
 }
 
 func protectedCall(ls api.LkState, cmd string) {
-	first := true
 	// 捕获错误
-	defer catchErr(ls, &first, cmd)
+	defer catchErr(ls, cmd)
 	loadString(ls, cmd)
-	ls.PCall(0, api.LK_MULTRET, 0)
 }
 
 func _updateHistory(str string) {

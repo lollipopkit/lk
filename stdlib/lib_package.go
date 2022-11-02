@@ -43,7 +43,7 @@ func OpenPackageLib(ls LkState) int {
 	/* set paths */
 	ls.PushString("./?.lk;./?/init.lk;" +
 		path.Join(consts.LkPath, "?.lk;") +
-		path.Join(consts.LkPath, "?/init.lk;"))
+		path.Join(consts.LkPath, "?/init.lk"))
 	ls.SetField(-2, "path")
 	/* store config information */
 	ls.PushString(LUA_DIRSEP + "\n" + LUA_PATH_SEP + "\n" +

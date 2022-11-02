@@ -20,7 +20,6 @@ var (
 
 func init() {
 	go mods.InitMods(wg)
-	//go utils.CheckUpgrade(wg)
 }
 
 func main() {
@@ -42,7 +41,7 @@ func main() {
 		if strings.Contains(args[0], ".lk") {
 			runVM(args[0])
 		} else {
-			term.Warn("Can't run file without suffix '.lk':\n" + args[0])
+			term.Yellow("Can't run file without suffix '.lk':\n" + args[0])
 		}
 	}
 }
@@ -50,26 +49,26 @@ func main() {
 func WriteAst(path string) {
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		term.Error(err.Error())
+		term.Red("[ast] read file err: " + err.Error())
 	}
 
 	block := parser.Parse(string(data), path)
 
 	j, err := json.MarshalIndent(block, "", "  ")
 	if err != nil {
-		term.Error(err.Error())
+		term.Red("[ast] json encode err: " + err.Error())
 	}
 
 	err = ioutil.WriteFile(path+".ast.json", j, 0644)
 	if err != nil {
-		term.Error(err.Error())
+		term.Red("[ast] write file err: " + err.Error())
 	}
 }
 
 func runVM(path string) {
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		term.Error("[run] can't read file: " + err.Error())
+		term.Red("[run] can't read file: " + err.Error())
 	}
 	ls := state.New()
 	defer ls.CatchAndPrint()
