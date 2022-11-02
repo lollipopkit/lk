@@ -1,9 +1,11 @@
 <h1 align="center">Lang LK</h1>
 
 <p align="center">
-    <img alt="badge-lang" src="https://badgen.net/badge/LK/0.2.0/cyan">
+    <img alt="badge-lang" src="https://badgen.net/badge/LK/0.2.2/cyan">
     <img alt="badge-lang" src="https://badgen.net/badge/Go/1.19/purple">
 </p>
+
+简体中文 | [English](README_en.md)
 
 
 ## ⌨️ 体验
@@ -122,4 +124,4 @@ if http.listen(':8080', handle) != nil {
 - [luago](https://github.com/zxh0/luago-book)
 
 ## 📝 License
-`LollipopKit 2022 LGPL-3.0`
+`lollipopkit 2022 LGPL-3.0`
