@@ -300,6 +300,7 @@ func (self *Lexer) skipLongComment() {
 	if idx < 0 {
 		self.error("unfinished long comment at line: " + strconv.Itoa(self.line))
 	}
+	self.line += len(reNewLine.FindAllString(self.chunk[:idx], -1))
 	self.next(idx + 2)
 }
 
@@ -341,6 +342,7 @@ func (self *Lexer) scanRawString() string {
 	}
 
 	str := self.chunk[:openIdx]
+	self.line += len(reNewLine.FindAllString(str, -1))
 	if len(str) > 0 && str[0] == '\n' {
 		str = str[1:]
 	}

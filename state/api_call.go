@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/term"
 	"git.lolli.tech/lollipopkit/lk/vm"
 )
 
@@ -96,6 +97,17 @@ func (self *lkState) runLuaClosure() {
 		if inst.Opcode() == vm.OP_RETURN {
 			break
 		}
+	}
+}
+
+func (self *lkState) CatchAndPrint() {
+	stack := self.stack
+	for stack.closure.proto == nil {
+		stack = stack.prev
+	}
+	if err := recover(); err != nil {
+		errStr := fmt.Sprintf("[line %d]: %v", stack.closure.proto.LineInfo[stack.pc - 1], err)
+		term.Error(errStr, true)
 	}
 }
 

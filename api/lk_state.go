@@ -97,4 +97,6 @@ type BasicAPI interface {
 	Status() LkStatus
 	IsYieldable() bool
 	GetStack() bool // debug
+
+	CatchAndPrint()
 }

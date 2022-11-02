@@ -48,9 +48,11 @@ func Warn(s string) {
 	Yellow(addBorder(s, "Warn"))
 }
 
-func Error(s string) {
+func Error(s string, noPanic ...bool) {
 	Red(addBorder(s, "Error"))
-	panic(s)
+	if len(noPanic) > 0 && !noPanic[0] {
+		panic(s)
+	}
 }
 
 func Info(s string) {

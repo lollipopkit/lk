@@ -5,16 +5,18 @@ if #args < 3 {
     os.exit(1) 
 }
     
-version = args[2]
+version := args[2]
 // 验证版本号
 if not re.have(`^\d+\.\d+\.\d+$`, version) {
     print("Invalid version: %s", version)
     os.exit(1)
 }
 
+options := args[3] == nil ? '' : args[3]
+
 // 是否带有[-compile, -tag]选项
-compile := strs.contains(args[3], '-compile')
-git := strs.contains(args[3], '-git')
+compile := options:contains('-compile')
+git := options:contains('-git')
 
 // 开始替换新版本号
 mods_index_path := "mods/index.json"

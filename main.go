@@ -72,6 +72,7 @@ func runVM(path string) {
 		term.Error("[run] can't read file: " + err.Error())
 	}
 	ls := state.New()
+	defer ls.CatchAndPrint()
 	ls.OpenLibs()
 	ls.Load(data, path, "bt")
 	ls.Call(0, -1)
