@@ -31,7 +31,7 @@ func newGoClosure(f GoFunction, nUpvals int) *closure {
 
 func (c *closure) String() string {
 	if c.goFunc != nil {
-		return fmt.Sprintf("GoFunc: %p", c.goFunc)
+		return fmt.Sprintf("%p", c.goFunc)
 	}
-	return fmt.Sprintf("LkFunc: %p", c.proto)
+	return fmt.Sprintf("%p", c.proto)
 }

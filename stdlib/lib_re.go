@@ -3,7 +3,7 @@ package stdlib
 import (
 	"regexp"
 
-	glc "git.lolli.tech/lollipopkit/go_lru_cacher"
+	glc "git.lolli.tech/lollipopkit/go-lru-cacher"
 	. "git.lolli.tech/lollipopkit/lk/api"
 )
 

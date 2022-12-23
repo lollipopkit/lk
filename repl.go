@@ -31,12 +31,7 @@ func repl(wg *sync.WaitGroup) {
 	ls := state.New()
 	ls.OpenLibs()
 
-	println(` _     _  __  ____  _____ ____  _     
-| |   | |/ / |  _ \| ____|  _ \| |    
-| |   | ' /  | |_) |  _| | |_) | |    
-| |___| . \  |  _ <| |___|  __/| |___ 
-|_____|_|\_\ |_| \_\_____|_|   |_____|`)
-	println("               v" + consts.VERSION)
+	term.Cyan("LK REPL (v" + consts.VERSION + ")\n")
 
 	blockStr := ""
 	blockStartCount := 0
@@ -44,7 +39,7 @@ func repl(wg *sync.WaitGroup) {
 	wg.Wait()
 
 	for {
-		line := term.ReadLine(linesHistory)
+		line := term.ReadLine(linesHistory, _genPrompt(_max(blockStartCount-blockEndCount, 0)))
 		if line == "" {
 			continue
 		}
@@ -91,12 +86,15 @@ func catchErr(ls api.LkState, first *bool, cmd string) {
 			addPrintCmd := "print(" + cmd + ")"
 			defer catchErr(ls, first, addPrintCmd)
 			loadString(ls, addPrintCmd)
+			ls.PCall(0, api.LK_MULTRET, 0)
 		} else {
 			term.Warn(fmt.Sprintf("%v", err))
 		}
 	} else {
 		// 更新历史记录
-		updateHistory(cmd)
+		if *first {
+			updateHistory(cmd)
+		}
 	}
 }
 
@@ -128,4 +126,15 @@ func updateHistory(str string) {
 	for idx := range strs {
 		_updateHistory(strs[idx])
 	}
+}
+
+func _genPrompt(times int) string {
+	return strings.Repeat(consts.REPLPrompt, times + 1) + " "
+}
+
+func _max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -14,11 +14,11 @@ import (
 )
 
 var (
-	//go:embed index.json files
+	//go:embed index.json files/*.lk
 	ModFiles embed.FS
 
-	indexFilePath    = path.Join(consts.LkPath, "index.json")
 	builtInIndexPath = "index.json"
+	indexFilePath    = path.Join(consts.LkPath, builtInIndexPath)
 	builtInFilesPath = "files"
 )
 
