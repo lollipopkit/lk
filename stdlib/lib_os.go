@@ -11,7 +11,12 @@ import (
 	"time"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
+	"git.lolli.tech/lollipopkit/lk/term"
 	"git.lolli.tech/lollipopkit/lk/utils"
+)
+
+var (
+	emptyStrList = []string{}
 )
 
 var sysLib = map[string]GoFunction{
@@ -31,6 +36,7 @@ var sysLib = map[string]GoFunction{
 	"read":    osRead,
 	"write":   osWrite,
 	"sleep":   osSleep,
+	"input":   osInput,
 	"mkdir":   osMkdir,
 }
 
@@ -43,6 +49,11 @@ func OpenOSLib(ls LkState) int {
 func pushArgs(ls LkState) {
 	pushList(ls, os.Args)
 	ls.SetField(-2, "args")
+}
+
+func osInput(ls LkState) int {
+	ls.PushString(term.ReadLineSimple(ls.OptString(1, "")))
+	return 1
 }
 
 func osCp(ls LkState) int {

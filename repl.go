@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -14,19 +13,18 @@ import (
 )
 
 var (
-	linesHistory  = []string{}
-	printReg    = regexp.MustCompile(`print\(.*\)`)
-	errStringNotClosed = errors.New("string not closed")
+	linesHistory       = []string{}
+	printReg           = regexp.MustCompile(`print\(.*\)`)
 )
 
 func repl(wg *sync.WaitGroup) {
 	ls := state.New()
 	ls.OpenLibs()
+	wg.Wait()
 
 	term.Cyan("LK REPL (v" + consts.VERSION + ")\n")
 
 	blockStr := ""
-	wg.Wait()
 
 	for {
 		line := term.ReadLine(linesHistory)
@@ -35,12 +33,7 @@ func repl(wg *sync.WaitGroup) {
 		}
 
 		blockStr += line + "\n"
-		end, err := _isBlockEnd(blockStr)
-		if err != nil {
-			term.Warn(err.Error())
-		}
-
-		if !end {
+		if !_isBlockEnd(blockStr) {
 			continue
 		}
 
@@ -102,27 +95,30 @@ func updateHistory(str string) {
 	}
 }
 
-func _isBlockEnd(block string) (bool, error) {
+func _isBlockEnd(block string) bool {
 	start := 0
 	end := 0
 	inStr := false
 	for idx, c := range block {
-		if inStr {
-			continue
-		}
 		switch c {
 		case '{':
+			if inStr {
+				continue
+			}
 			start++
 		case '}':
+			if inStr {
+				continue
+			}
 			end++
 		case '\'', '"', '`':
-			if block[idx - 1] != '\\' {
+			if idx == 0 || block[idx-1] != '\\' {
 				inStr = !inStr
 			}
 		}
 	}
 	if inStr {
-		return false, errStringNotClosed
+		return false
 	}
-	return start == end, nil
+	return start == end
 }

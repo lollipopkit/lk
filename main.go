@@ -20,7 +20,6 @@ var (
 
 func init() {
 	go mods.InitMods(wg)
-	//go utils.CheckUpgrade(wg)
 }
 
 func main() {

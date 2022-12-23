@@ -59,13 +59,16 @@ checks := {
     },
 }
 
+zsh_history_path := os.get_env('HOME') + '/.zsh_history'
+zsh_history_bak_path := zsh_history_path + '.bak'
+
 if #args < 3 {
     print(fmt("Usage: %s <mode> [options]\n", cmd_prefix))
     help_str := ''
     for k, v in helps {
         help_str += fmt('<%s> : \n%s\n', k, v)
     }
-    print('以下是可选的模式：\n'+help_str)
+    print('以下是可选的模式：\n' + help_str + '\n执行清理前会进行备份，位置为 '+ zsh_history_bak_path)
     os.exit()
 }
 
@@ -80,11 +83,11 @@ if not checks[mode]() {
 func := modes[args[2]]
 
 now = os.time() / 1000
-zsh_history_path := os.get_env('HOME') + '/.zsh_history'
-err := os.cp(zsh_history_path, zsh_history_path + '.bak')
+err := os.cp(zsh_history_path, zsh_history_bak_path)
 if err != nil {
+    print(err)
     print('备份失败, 是否继续？(y/n)')
-    continue := input()
+    continue := os.input()
     if continue != 'y' {
         os.exit()
     }
