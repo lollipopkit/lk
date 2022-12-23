@@ -8,7 +8,15 @@ import (
 	"atomicgo.dev/keyboard/keys"
 )
 
-func ReadLine(linesHistory []string, prompt string) string {
+const (
+	prompt = "➜ "
+)
+
+var (
+	promptLen = len([]rune(prompt))
+)
+
+func ReadLine(linesHistory []string) string {
 	os.Stdout.WriteString(prompt)
 	str := ""
 	linesIdx := len(linesHistory)
@@ -23,14 +31,14 @@ func ReadLine(linesHistory []string, prompt string) string {
 			s := string(runes)
 			str = str[:cursorIdx] + s + str[cursorIdx:]
 			cursorIdx += len(s)
-			resetLine(str, prompt)
+			resetLine(str)
 		case keys.Enter:
 			println()
 			return true, nil
 		case keys.Backspace:
 			if len(str) > 0 && cursorIdx > 0 {
 				str = str[:cursorIdx-1] + str[cursorIdx:]
-				resetLine(str, prompt)
+				resetLine(str)
 				cursorIdx--
 			}
 		case keys.Left:
@@ -45,18 +53,18 @@ func ReadLine(linesHistory []string, prompt string) string {
 			if linesIdx > 0 {
 				linesIdx--
 				str = linesHistory[linesIdx]
-				resetLine(str, prompt)
+				resetLine(str)
 				cursorIdx = len(str)
 			}
 		case keys.Down:
 			if linesIdx < len(linesHistory)-1 {
 				linesIdx++
 				str = linesHistory[linesIdx]
-				resetLine(str, prompt)
+				resetLine(str)
 				cursorIdx = len(str)
 			} else if linesIdx == len(linesHistory)-1 {
 				str = ""
-				resetLine("", prompt)
+				resetLine("")
 				cursorIdx = 0
 			}
 		case keys.Space:
@@ -66,7 +74,7 @@ func ReadLine(linesHistory []string, prompt string) string {
 				cursorIdx++
 			} else {
 				str = str[:cursorIdx] + " " + str[cursorIdx:]
-				resetLine(str, prompt)
+				resetLine(str)
 				cursorIdx++
 			}
 		case keys.Tab:
@@ -76,24 +84,23 @@ func ReadLine(linesHistory []string, prompt string) string {
 				cursorIdx += 2
 			} else {
 				str = str[:cursorIdx] + "  " + str[cursorIdx:]
-				resetLine(str, prompt)
+				resetLine(str)
 				cursorIdx += 2
 			}
 		case keys.Delete:
 			if cursorIdx < len(str) {
 				str = str[:cursorIdx] + str[cursorIdx+1:]
-				resetLine(str, prompt)
+				resetLine(str)
 			}
 		}
 
-		promptLen := len([]rune(prompt))
 		cursor.HorizontalAbsolute(cursorIdx + promptLen)
 		return false, nil
 	})
 	return str
 }
 
-func resetLine(str, prompt string) {
+func resetLine(str string) {
 	cursor.ClearLine()
 	cursor.StartOfLine()
 	print(prompt + str)

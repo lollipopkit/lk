@@ -5,6 +5,4 @@ const (
 	SIGNATURE = "LANG_LK"
 
 	ReleaseApiUrl = "https://api.github.com/repos/lollipopkit/lang-lk/releases/latest"
-
-	REPLPrompt = "➜"
 )

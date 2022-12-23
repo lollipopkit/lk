@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -14,17 +15,8 @@ import (
 
 var (
 	linesHistory  = []string{}
-	blockStartReg = regexp.MustCompile(strings.Join([]string{
-		consts.ForInReStr,
-		consts.FnReStr,
-		consts.WhileReStr,
-		consts.IfReStr,
-		consts.ElseIfReStr,
-		consts.ElseReStr,
-		consts.ClassDefReStr,
-	}, "|"))
-	blockEndReg = regexp.MustCompile("} *$")
 	printReg    = regexp.MustCompile(`print\(.*\)`)
+	errStringNotClosed = errors.New("string not closed")
 )
 
 func repl(wg *sync.WaitGroup) {
@@ -34,76 +26,58 @@ func repl(wg *sync.WaitGroup) {
 	term.Cyan("LK REPL (v" + consts.VERSION + ")\n")
 
 	blockStr := ""
-	blockStartCount := 0
-	blockEndCount := 0
 	wg.Wait()
 
 	for {
-		line := term.ReadLine(linesHistory, _genPrompt(_max(blockStartCount-blockEndCount, 0)))
+		line := term.ReadLine(linesHistory)
 		if line == "" {
 			continue
 		}
-		if blockStartReg.MatchString(line) {
-			blockStartCount++
-		}
-		if blockEndReg.MatchString(line) {
-			blockEndCount++
+
+		blockStr += line + "\n"
+		end, err := _isBlockEnd(blockStr)
+		if err != nil {
+			term.Warn(err.Error())
 		}
 
-		blockStr += line
-		if blockStartCount != blockEndCount {
-			blockStr += "\n"
-		}
-
-		cmd := ""
-		if blockStartCount > 0 && blockStartCount == blockEndCount {
-			cmd = blockStr
-		} else if blockStartCount > 0 {
+		if !end {
 			continue
-		} else {
-			blockStr = ""
-			cmd = line
 		}
-		// println("==", cmd, "==")
 
 		// 加载line，调用
-		protectedCall(ls, cmd)
+		protectedCall(ls, blockStr)
 
-		blockStartCount = 0
-		blockEndCount = 0
 		blockStr = ""
 	}
 }
 
 func loadString(ls api.LkState, cmd string) {
+	// term.Green(cmd + "\n")
 	ls.LoadString(cmd, "stdin")
 }
 
 func catchErr(ls api.LkState, first *bool, cmd string) {
-	if err := recover(); err != nil {
+	err := recover()
+	if err != nil {
 		if *first {
 			*first = false
-			addPrintCmd := "print(" + cmd + ")"
-			defer catchErr(ls, first, addPrintCmd)
-			loadString(ls, addPrintCmd)
+			defer catchErr(ls, first, cmd)
+			loadString(ls, cmd)
 			ls.PCall(0, api.LK_MULTRET, 0)
 		} else {
 			term.Warn(fmt.Sprintf("%v", err))
-		}
-	} else {
-		// 更新历史记录
-		if *first {
-			updateHistory(cmd)
 		}
 	}
 }
 
 func protectedCall(ls api.LkState, cmd string) {
-	first := true
+	first := !printReg.MatchString(cmd)
 	// 捕获错误
 	defer catchErr(ls, &first, cmd)
-	loadString(ls, cmd)
+	addPrintCmd := "print(" + cmd + ")"
+	loadString(ls, addPrintCmd)
 	ls.PCall(0, api.LK_MULTRET, 0)
+	updateHistory(cmd)
 }
 
 func _updateHistory(str string) {
@@ -128,13 +102,27 @@ func updateHistory(str string) {
 	}
 }
 
-func _genPrompt(times int) string {
-	return strings.Repeat(consts.REPLPrompt, times + 1) + " "
-}
-
-func _max(a, b int) int {
-	if a > b {
-		return a
+func _isBlockEnd(block string) (bool, error) {
+	start := 0
+	end := 0
+	inStr := false
+	for idx, c := range block {
+		if inStr {
+			continue
+		}
+		switch c {
+		case '{':
+			start++
+		case '}':
+			end++
+		case '\'', '"', '`':
+			if block[idx - 1] != '\\' {
+				inStr = !inStr
+			}
+		}
 	}
-	return b
+	if inStr {
+		return false, errStringNotClosed
+	}
+	return start == end, nil
 }

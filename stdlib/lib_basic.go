@@ -61,7 +61,7 @@ func baseNew(ls LkState) int {
 }
 
 func baseInput(ls LkState) int {
-	ls.PushString(term.ReadLine([]string{}, consts.REPLPrompt))
+	ls.PushString(term.ReadLine([]string{}))
 	return 1
 }
 
