@@ -105,6 +105,7 @@ func _isBlockEnd(block string) bool {
 	start := 0
 	end := 0
 	inStr := false
+	var lastPairChar rune
 	for idx, c := range block {
 		switch c {
 		case '{':
@@ -119,7 +120,12 @@ func _isBlockEnd(block string) bool {
 			end++
 		case '\'', '"', '`':
 			if idx == 0 || block[idx-1] != '\\' {
-				inStr = !inStr
+				if lastPairChar == c {
+					inStr = !inStr
+				} else if !inStr {
+					inStr = true
+					lastPairChar = c
+				}
 			}
 		}
 	}
