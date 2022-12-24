@@ -86,9 +86,8 @@ now = os.time() / 1000
 err := os.cp(zsh_history_path, zsh_history_bak_path)
 if err != nil {
     print(err)
-    print('备份失败, 是否继续？(y/n)')
-    continue := os.input()
-    if continue != 'y' {
+    continue := os.input('备份失败, 是否继续？(Y/n) : ')
+    if continue:lower() != 'y' {
         os.exit()
     }
 }

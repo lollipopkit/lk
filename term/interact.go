@@ -2,25 +2,34 @@ package term
 
 import (
 	"os"
+	"regexp"
 
 	"atomicgo.dev/cursor"
 	"atomicgo.dev/keyboard"
 	"atomicgo.dev/keyboard/keys"
 )
 
-const (
-	prompt = "➜ "
-)
-
 var (
-	promptLen = len([]rune(prompt))
+	doubleByteCharacterRegexp = regexp.MustCompile(`[^\x00-\xff]`)
+	EmptyStringList = []string{}
 )
 
-func ReadLine(linesHistory []string) string {
-	os.Stdout.WriteString(prompt)
-	str := ""
+const (
+	prompt = "> "
+)
+
+func ReadLine(linesHistory []string, optionalPrompt ...string) string {
+	p := ""
+	if len(optionalPrompt) > 0 {
+		p = optionalPrompt[0]
+	} else {
+		p = prompt
+	}
+
+	os.Stdout.WriteString(p)
+	rs := []rune{}
 	linesIdx := len(linesHistory)
-	cursorIdx := 0
+	runeIdx := 0
 
 	keyboard.Listen(func(key keys.Key) (stop bool, err error) {
 		switch key.Code {
@@ -28,136 +37,101 @@ func ReadLine(linesHistory []string) string {
 			os.Exit(0)
 		case keys.RuneKey:
 			runes := key.Runes
-			s := string(runes)
-			str = str[:cursorIdx] + s + str[cursorIdx:]
-			cursorIdx += len(s)
-			resetLine(str, prompt)
+			rs = append(rs[:runeIdx], append(runes, rs[runeIdx:]...)...)
+			runeIdx += len(runes)
+			resetLine(rs, p)
 		case keys.Enter:
 			println()
 			return true, nil
 		case keys.Backspace:
-			if len(str) > 0 && cursorIdx > 0 {
-				str = str[:cursorIdx-1] + str[cursorIdx:]
-				resetLine(str, prompt)
-				cursorIdx--
+			if len(rs) > 0 && runeIdx > 0 {
+				rs = append(rs[:runeIdx-1], rs[runeIdx:]...)
+				resetLine(rs, p)
+				runeIdx--
 			}
 		case keys.Left:
-			if cursorIdx > 0 {
-				cursorIdx--
+			if runeIdx > 0 {
+				runeIdx--
 			}
 		case keys.Right:
-			if cursorIdx < len(str) {
-				cursorIdx++
+			if runeIdx < len(rs) {
+				runeIdx++
 			}
 		case keys.Up:
 			if linesIdx > 0 {
 				linesIdx--
-				str = linesHistory[linesIdx]
-				resetLine(str, prompt)
-				cursorIdx = len(str)
+				rs = []rune(linesHistory[linesIdx])
+				resetLine(rs, p)
+				runeIdx = len(rs)
 			}
 		case keys.Down:
 			if linesIdx < len(linesHistory)-1 {
 				linesIdx++
-				str = linesHistory[linesIdx]
-				resetLine(str, prompt)
-				cursorIdx = len(str)
+				rs = []rune(linesHistory[linesIdx])
+				resetLine(rs, p)
+				runeIdx = len(rs)
 			} else if linesIdx == len(linesHistory)-1 {
-				str = ""
-				resetLine("", prompt)
-				cursorIdx = 0
+				rs = []rune("")
+				resetLine(rs, p)
+				runeIdx = 0
 			}
 		case keys.Space:
-			if cursorIdx == len(str) {
-				str += " "
+			if runeIdx == len(rs) {
+				rs = append(rs, ' ')
 				print(" ")
-				cursorIdx++
+				runeIdx++
 			} else {
-				str = str[:cursorIdx] + " " + str[cursorIdx:]
-				resetLine(str, prompt)
-				cursorIdx++
+				rs = append(rs[:runeIdx], append([]rune(" "), rs[runeIdx:]...)...)
+				resetLine(rs, p)
+				runeIdx++
 			}
 		case keys.Tab:
-			if cursorIdx == len(str) {
-				str += "  "
-				print("  ")
-				cursorIdx += 2
+			if runeIdx == len(rs) {
+				rs = append(rs, '\t')
+				print("\t")
+				runeIdx++
 			} else {
-				str = str[:cursorIdx] + "  " + str[cursorIdx:]
-				resetLine(str, prompt)
-				cursorIdx += 2
+				rs = append(rs[:runeIdx], append([]rune("\t"), rs[runeIdx:]...)...)
+				resetLine(rs, p)
+				runeIdx++
 			}
 		case keys.Delete:
-			if cursorIdx < len(str) {
-				str = str[:cursorIdx] + str[cursorIdx+1:]
-				resetLine(str, prompt)
+			if runeIdx < len(rs) {
+				rs = append(rs[:runeIdx], rs[runeIdx+1:]...)
+				resetLine(rs, p)
 			}
 		}
 
-		cursor.HorizontalAbsolute(cursorIdx + promptLen)
+		idx := calcIdx(rs, runeIdx)
+		rP := []rune(p)
+		pIdx := calcIdx(rP, len(rP))
+		cursor.HorizontalAbsolute(idx + pIdx)
 		return false, nil
 	})
-	return str
+	return string(rs)
 }
 
-func ReadLineSimple(p string) string {
-	os.Stdout.WriteString(p)
-	str := ""
-	cursorIdx := 0
-	promptLen := len(p)
-
-	keyboard.Listen(func(key keys.Key) (stop bool, err error) {
-		switch key.Code {
-		case keys.CtrlC, keys.Escape:
-			os.Exit(0)
-		case keys.RuneKey:
-			runes := key.Runes
-			s := string(runes)
-			str = str[:cursorIdx] + s + str[cursorIdx:]
-			cursorIdx += len(s)
-			resetLine(str, p)
-		case keys.Enter:
-			println()
-			return true, nil
-		case keys.Backspace:
-			if len(str) > 0 && cursorIdx > 0 {
-				str = str[:cursorIdx-1] + str[cursorIdx:]
-				resetLine(str, p)
-				cursorIdx--
-			}
-		case keys.Left:
-			if cursorIdx > 0 {
-				cursorIdx--
-			}
-		case keys.Right:
-			if cursorIdx < len(str) {
-				cursorIdx++
-			}
-		case keys.Space:
-			if cursorIdx == len(str) {
-				str += " "
-				print(" ")
-				cursorIdx++
-			} else {
-				str = str[:cursorIdx] + " " + str[cursorIdx:]
-				resetLine(str, p)
-				cursorIdx++
-			}
-		case keys.Delete:
-			if cursorIdx < len(str) {
-				str = str[:cursorIdx] + str[cursorIdx+1:]
-				resetLine(str, p)
-			}
-		}
-
-		cursor.HorizontalAbsolute(cursorIdx + promptLen)
-		return false, nil
-	})
-	return str
-}
-
-func resetLine(str, prompt string) {
+func resetLine(rs []rune, prompt string) {
 	cursor.ClearLine()
 	cursor.StartOfLine()
-	print(prompt + str)
+	print(prompt + string(rs))
+}
+
+func calcIdx(rs []rune, runeIdx int) int {
+	idx := 0
+	for rIdx, r := range rs {
+		if rIdx >= runeIdx {
+			break
+		}
+		if isHan(r) {
+			idx += 2
+		} else {
+			idx++
+		}
+	}
+	return idx
+}
+
+func isHan(r rune) bool {
+	return doubleByteCharacterRegexp.MatchString(string(r))
 }

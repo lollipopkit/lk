@@ -64,11 +64,17 @@ func catchErr(ls api.LkState, first *bool, cmd string) {
 }
 
 func protectedCall(ls api.LkState, cmd string) {
-	first := !printReg.MatchString(cmd)
+	havePrint := printReg.MatchString(cmd)
+	first := !havePrint
 	// 捕获错误
 	defer catchErr(ls, &first, cmd)
-	addPrintCmd := "print(" + cmd + ")"
-	loadString(ls, addPrintCmd)
+	
+	if havePrint {
+		loadString(ls, cmd)
+	} else {
+		loadString(ls, "print(" + cmd + ")")
+	}
+	
 	ls.PCall(0, api.LK_MULTRET, 0)
 	updateHistory(cmd)
 }

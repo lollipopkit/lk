@@ -52,7 +52,7 @@ func pushArgs(ls LkState) {
 }
 
 func osInput(ls LkState) int {
-	ls.PushString(term.ReadLineSimple(ls.OptString(1, "")))
+	ls.PushString(term.ReadLine(term.EmptyStringList, ls.OptString(1, "")))
 	return 1
 }
 
