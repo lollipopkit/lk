@@ -77,10 +77,10 @@ fn Header:__str() {
 处理监听事件
 `req`包含属性`method`, `url`, `body`, `headers`
 */
-handle := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header:fromTable(req.headers), req.body)
+handler := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header:fromTable(req.headers), req.body)
 
 // 监听
-if http.listen(':8080', handle) != nil {
+if http.listen(':8080', handler) != nil {
     error(err)
 }
 ```

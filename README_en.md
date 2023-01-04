@@ -73,10 +73,10 @@ fn Header:__ str() {
 Processing listening events
 'req' contains attributes 'method', 'url', 'body', 'headers'
 */
-handle := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header:fromTable(req.headers), req.body)
+handler := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header:fromTable(req.headers), req.body)
 
 // Monitoring on 8080
-if http.listen(':8080', handle) != nil {
+if http.listen(':8080', handler) != nil {
     error(err)
 }
 ```
