@@ -93,7 +93,7 @@ func (self *lkState) setTable(t, k, v any, raw bool) {
 			case *lkTable:
 				self.setTable(x, k, v, false)
 				return
-			case *closure:
+			case *lkClosure:
 				self.stack.push(mf)
 				self.stack.push(t)
 				self.stack.push(k)

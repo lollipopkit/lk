@@ -32,7 +32,7 @@ func (t *lkTable) Json() any {
 	tb := t
 	for i := range tb.arr {
 		switch v := tb.arr[i].(type) {
-		case *closure:
+		case *lkClosure:
 			tb.arr[i] = v.String()
 		case *lkTable:
 			tb.arr[i] = v.Json()
@@ -40,7 +40,7 @@ func (t *lkTable) Json() any {
 	}
 	for k := range tb._map {
 		switch v := tb._map[k].(type) {
-		case *closure:
+		case *lkClosure:
 			tb._map[k] = v.String()
 		case *lkTable:
 			tb._map[k] = v.Json()

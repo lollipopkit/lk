@@ -13,10 +13,10 @@ import (
 func (self *lkState) Call(nArgs, nResults int) {
 	val := self.stack.get(-(nArgs + 1))
 
-	c, ok := val.(*closure)
+	c, ok := val.(*lkClosure)
 	if !ok {
 		if mf := getMetafield(val, "__call", self); mf != nil {
-			if c, ok = mf.(*closure); ok {
+			if c, ok = mf.(*lkClosure); ok {
 				self.stack.push(val)
 				self.Insert(-(nArgs + 2))
 				nArgs += 1
@@ -35,7 +35,7 @@ func (self *lkState) Call(nArgs, nResults int) {
 	}
 }
 
-func (self *lkState) callGoClosure(nArgs, nResults int, c *closure) {
+func (self *lkState) callGoClosure(nArgs, nResults int, c *lkClosure) {
 	// create new lua stack
 	newStack := newLuaStack(nArgs+LK_MINSTACK, self)
 	newStack.closure = c
@@ -60,7 +60,7 @@ func (self *lkState) callGoClosure(nArgs, nResults int, c *closure) {
 	}
 }
 
-func (self *lkState) callLuaClosure(nArgs, nResults int, c *closure) {
+func (self *lkState) callLuaClosure(nArgs, nResults int, c *lkClosure) {
 	nRegs := int(c.proto.MaxStackSize)
 	nParams := int(c.proto.NumParams)
 	isVararg := c.proto.IsVararg == 1

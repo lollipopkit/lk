@@ -8,7 +8,7 @@ type lkStack struct {
 	top   int
 	/* call info */
 	state   *lkState
-	closure *closure
+	closure *lkClosure
 	varargs []any
 	openuvs map[int]*any
 	pc      int

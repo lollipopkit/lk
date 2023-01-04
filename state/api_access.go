@@ -109,7 +109,7 @@ func (self *lkState) IsInteger(idx int) bool {
 // http://www.lua.org/manual/5.3/manual.html#lua_iscfunction
 func (self *lkState) IsGoFunction(idx int) bool {
 	val := self.stack.get(idx)
-	if c, ok := val.(*closure); ok {
+	if c, ok := val.(*lkClosure); ok {
 		return c.goFunc != nil
 	}
 	return false
@@ -176,7 +176,7 @@ func (self *lkState) ToStringX(idx int) (string, bool) {
 // http://www.lua.org/manual/5.3/manual.html#lua_tocfunction
 func (self *lkState) ToGoFunction(idx int) GoFunction {
 	val := self.stack.get(idx)
-	if c, ok := val.(*closure); ok {
+	if c, ok := val.(*lkClosure); ok {
 		return c.goFunc
 	}
 	return nil

@@ -7,29 +7,29 @@ import (
 	"git.lolli.tech/lollipopkit/lk/binchunk"
 )
 
-type closure struct {
+type lkClosure struct {
 	proto  *binchunk.Prototype // lua closure
 	goFunc GoFunction          // go closure
 	upVals []*any
 }
 
-func newLuaClosure(proto *binchunk.Prototype) *closure {
-	c := &closure{proto: proto}
+func newLuaClosure(proto *binchunk.Prototype) *lkClosure {
+	c := &lkClosure{proto: proto}
 	if nUpvals := len(proto.Upvalues); nUpvals > 0 {
 		c.upVals = make([]*any, nUpvals)
 	}
 	return c
 }
 
-func newGoClosure(f GoFunction, nUpvals int) *closure {
-	c := &closure{goFunc: f}
+func newGoClosure(f GoFunction, nUpvals int) *lkClosure {
+	c := &lkClosure{goFunc: f}
 	if nUpvals > 0 {
 		c.upVals = make([]*any, nUpvals)
 	}
 	return c
 }
 
-func (c *closure) String() string {
+func (c *lkClosure) String() string {
 	if c.goFunc != nil {
 		return fmt.Sprintf("%p", c.goFunc)
 	}

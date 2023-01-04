@@ -19,7 +19,7 @@ func typeOf(val any) LkType {
 		return LK_TSTRING
 	case *lkTable:
 		return LK_TTABLE
-	case *closure:
+	case *lkClosure:
 		return LK_TFUNCTION
 	case *lkState:
 		return LK_TTHREAD

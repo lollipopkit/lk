@@ -94,7 +94,7 @@ func (self *lkState) getTable(t, k any, raw bool) LkType {
 			switch x := mf.(type) {
 			case *lkTable:
 				return self.getTable(x, k, true)
-			case *closure:
+			case *lkClosure:
 				self.stack.push(mf)
 				self.stack.push(t)
 				self.stack.push(k)
