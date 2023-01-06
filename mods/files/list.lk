@@ -4,6 +4,7 @@ class List {
 
 fn List:add(item) {
     self.items[#self.items] = item
+    rt self
 }
 
 fn List:remove(item) {
@@ -12,6 +13,7 @@ fn List:remove(item) {
             self.items[i] = nil
         }
     }
+    rt self
 }
 
 fn List:contains(item) {
@@ -28,16 +30,19 @@ fn List:insert(item, idx) {
         self.items[i + 1] = self.items[i]
     }
     self.items[idx] = item
+    rt self
 }
 
 fn List:remove_at(idx) {
     for i = idx, #self.items {
         self.items[i] = self.items[i + 1]
     }
+    rt self
 }
 
 fn List:clear() {
     self.items = {}
+    rt self
 }
 
 fn List:reverse() {
@@ -51,7 +56,7 @@ fn List:reverse() {
             i++
         }
     }
-   
+    rt self
 }
 
 fn List:__str() {

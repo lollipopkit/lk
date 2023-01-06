@@ -14,13 +14,14 @@ import (
 var (
 	linesHistory       = []string{}
 	printReg           = regexp.MustCompile(`print\(.*\)`)
+	isImportReg = regexp.MustCompile(`import\(['"]\S+['"]\)|import +['"]\S+['"]$`)
 )
 
 func repl() {
 	ls := state.New()
 	ls.OpenLibs()
 
-	term.Cyan("LK REPL (v" + consts.VERSION + ")\n")
+	term.Cyan("LK REPL (v" + consts.VERSION + ")")
 
 	blockStr := ""
 
@@ -50,13 +51,13 @@ func loadString(ls api.LkState, cmd string) {
 func catchErr(ls api.LkState, first *bool, cmd string) {
 	err := recover()
 	if err != nil {
-		if *first {
+		if *first || isImportReg.MatchString(cmd) {
 			*first = false
-			defer catchErr(ls, first, cmd)
+			defer ls.CatchAndPrint()
 			loadString(ls, cmd)
-			ls.PCall(0, api.LK_MULTRET, 0)
+			ls.Call(0, api.LK_MULTRET)
 		} else {
-			term.Warn(fmt.Sprintf("%v", err))
+			term.Red(fmt.Sprintf("%v", err))
 		}
 	}
 }
@@ -73,7 +74,7 @@ func protectedCall(ls api.LkState, cmd string) {
 		loadString(ls, "print(" + cmd + ")")
 	}
 	
-	ls.PCall(0, api.LK_MULTRET, 0)
+	ls.Call(0, api.LK_MULTRET)
 	updateHistory(cmd)
 }
 
