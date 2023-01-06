@@ -5,22 +5,15 @@ import (
 	"flag"
 	"io/ioutil"
 	"strings"
-	"sync"
 
 	"git.lolli.tech/lollipopkit/lk/compiler/parser"
-	"git.lolli.tech/lollipopkit/lk/mods"
 	"git.lolli.tech/lollipopkit/lk/state"
 	"git.lolli.tech/lollipopkit/lk/term"
 )
 
 var (
 	args = []string{}
-	wg   = new(sync.WaitGroup)
 )
-
-func init() {
-	go mods.InitMods(wg)
-}
 
 func main() {
 	ast := flag.Bool("a", false, "Write AST Tree Json")
@@ -29,7 +22,7 @@ func main() {
 	flag.Parse()
 	args = flag.Args()
 	if len(args) == 0 {
-		repl(wg)
+		repl()
 		return
 	}
 

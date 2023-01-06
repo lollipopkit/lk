@@ -40,6 +40,20 @@ fn List:clear() {
     self.items = {}
 }
 
+fn List:reverse() {
+    maxIdx := #self.items - 1
+    if maxIdx > 0 {
+        i := 0
+        while i < maxIdx {
+            tmp = self.items[i]
+            self.items[i] = self.items[maxIdx - i]
+            self.items[maxIdx - i] = tmp
+            i++
+        }
+    }
+   
+}
+
 fn List:__str() {
     rt str(self.items)
 }

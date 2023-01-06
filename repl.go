@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"sync"
 
 	"git.lolli.tech/lollipopkit/lk/api"
 	"git.lolli.tech/lollipopkit/lk/consts"
@@ -17,10 +16,9 @@ var (
 	printReg           = regexp.MustCompile(`print\(.*\)`)
 )
 
-func repl(wg *sync.WaitGroup) {
+func repl() {
 	ls := state.New()
 	ls.OpenLibs()
-	wg.Wait()
 
 	term.Cyan("LK REPL (v" + consts.VERSION + ")\n")
 

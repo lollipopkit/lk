@@ -12,10 +12,6 @@ import (
 )
 
 func Compile(source string) *binchunk.Prototype {
-	if strings.HasPrefix(source, "@") {
-		source = source[1:]
-	}
-
 	if !utils.Exist(source) {
 		term.Error("[compile] file not found: " + source)
 	}
@@ -38,77 +34,18 @@ func Compile(source string) *binchunk.Prototype {
 	return bin
 }
 
-func loadlk(source string) *binchunk.Prototype {
-	lkc := source + "c"
-	if utils.Exist(lkc) {
-		return loadlkc(lkc)
-	}
-	return Compile(source)
-}
-
-func loadlkc(source string) *binchunk.Prototype {
-	if !utils.Exist(source) {
-		term.Error("[run] file not found: \n" + source)
-	}
-
-	data, err := ioutil.ReadFile(source)
-	if err != nil {
-		term.Error("[run] can't read file: \n" + err.Error())
-	}
-
-	lkPath := source[:len(source)-1]
-	var lkData []byte
-	lkExist := utils.Exist(lkPath)
-	if lkExist {
-		lkData, err = ioutil.ReadFile(lkPath)
-		if err != nil {
-			term.Error("[run] can't read file: \n" + err.Error())
-		}
-	}
-
-	proto, err := binchunk.Verify(data, lkData)
-	if err != nil {
-		if err == binchunk.ErrMismatchedHash {
-			if lkExist {
-				proto = Compile(lkPath)
-			} else {
-				term.Warn("[run] source not found: \n" + lkPath)
-			}
-		} else if strings.HasPrefix(err.Error(), binchunk.MismatchVersionPrefix) {
-			if lkExist {
-				proto = Compile(lkPath)
-			} else {
-				term.Error("[run] mismatch version and source not found: \n" + lkPath)
-			}
-		} else {
-			term.Error("[run] chunk verify failed: \n" + err.Error())
-		}
-	}
-
-	return proto
-}
-
-func load(file string) *binchunk.Prototype {
-	if strings.HasPrefix(file, "@") {
-		file = file[1:]
-	}
-	if strings.HasSuffix(file, ".lk") {
-		return loadlk(file)
-	} else if strings.HasSuffix(file, ".lkc") {
-		return loadlkc(file)
-	}
-	term.Error("[run] unknown file type: \n" + file)
-	return nil
-}
-
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_load
 func (self *lkState) Load(chunk []byte, chunkName, mode string) LkStatus {
 	var proto *binchunk.Prototype
-	if chunkName == "stdin" {
+	if chunkName == "stdin" || strings.HasSuffix(chunkName, ".lk") {
 		proto = compiler.Compile(string(chunk), chunkName)
 	} else {
-		proto = load(chunkName)
+		var err error
+		proto, err = binchunk.Load(chunk)
+		if err != nil {
+			term.Error("[load] load chunk failed: " + err.Error())
+		}
 	}
 
 	c := newLuaClosure(proto)

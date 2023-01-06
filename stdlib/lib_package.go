@@ -2,11 +2,10 @@ package stdlib
 
 import (
 	"os"
-	"path"
 	"strings"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/consts"
+	"git.lolli.tech/lollipopkit/lk/mods"
 )
 
 /* key, in the registry, for table of loaded modules */
@@ -24,7 +23,7 @@ const (
 )
 
 var pkgFuncs = map[string]GoFunction{
-	"searchpath": pkgSearchPath,
+	"search": pkgSearchPath,
 	/* placeholders */
 	"preload":   nil,
 	"cpath":     nil,
@@ -41,9 +40,7 @@ func OpenPackageLib(ls LkState) int {
 	ls.NewLib(pkgFuncs) /* create 'package' table */
 	createSearchersTable(ls)
 	/* set paths */
-	ls.PushString("./?.lk;./?/init.lk;" +
-		path.Join(consts.LkPath, "?.lk;") +
-		path.Join(consts.LkPath, "?/init.lk;"))
+	ls.PushString("?.lk;?/init.lk")
 	ls.SetField(-2, "path")
 	/* store config information */
 	ls.PushString(LUA_DIRSEP + "\n" + LUA_PATH_SEP + "\n" +
@@ -82,7 +79,7 @@ func preloadSearcher(ls LkState) int {
 	name := ls.CheckString(1)
 	ls.GetField(LK_REGISTRYINDEX, "_PRELOAD")
 	if ls.GetField(-1, name) == LK_TNIL { /* not found? */
-		ls.PushString("\n\tno field package.preload['" + name + "']")
+		ls.PushString("\n\tno field pkg.preload['" + name + "']")
 	}
 	return 1
 }
@@ -92,16 +89,16 @@ func lkSearcher(ls LkState) int {
 	ls.GetField(LkUpvalueIndex(1), "path")
 	path, ok := ls.ToStringX(-1)
 	if !ok {
-		ls.Error2("'package.path' must be a string")
+		ls.Error2("'pkg.path' must be a string")
 	}
 
-	filename, errMsg := _searchPath(name, path, ".", LUA_DIRSEP)
+	c, filename, errMsg := _searchPath(name, path, ".", LUA_DIRSEP)
 	if errMsg != "" {
 		ls.PushString(errMsg)
 		return 1
 	}
 
-	if ls.LoadFile(filename) == LK_OK { /* module loaded successfully? */
+	if ls.Load(c, filename, "bt") == LK_OK { /* module loaded successfully? */
 		ls.PushString(filename) /* will be 2nd argument to module */
 		return 2                /* return open function and file name */
 	} else {
@@ -118,7 +115,7 @@ func pkgSearchPath(ls LkState) int {
 	path := ls.CheckString(2)
 	sep := ls.OptString(3, ".")
 	rep := ls.OptString(4, LUA_DIRSEP)
-	if filename, errMsg := _searchPath(name, path, sep, rep); errMsg == "" {
+	if _, filename, errMsg := _searchPath(name, path, sep, rep); errMsg == "" {
 		ls.PushString(filename)
 		return 1
 	} else {
@@ -128,7 +125,7 @@ func pkgSearchPath(ls LkState) int {
 	}
 }
 
-func _searchPath(name, path, sep, dirSep string) (filename, errMsg string) {
+func _searchPath(name, path, sep, dirSep string) (content []byte, fname, errMsg string) {
 	if sep != "" {
 		name = strings.Replace(name, sep, dirSep, -1)
 	}
@@ -136,12 +133,22 @@ func _searchPath(name, path, sep, dirSep string) (filename, errMsg string) {
 	for _, filename := range strings.Split(path, LUA_PATH_SEP) {
 		filename = strings.Replace(filename, LUA_PATH_MARK, name, -1)
 		if _, err := os.Stat(filename); !os.IsNotExist(err) {
-			return filename, ""
+			c, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, filename, err.Error()
+			}
+			return c, filename, ""
 		}
+
+		// 在内置mods内搜索
+		if c, err := mods.ModFiles.ReadFile("files/" + filename); !os.IsNotExist(err) {
+			return c, filename, ""
+		}
+		
 		errMsg += "\n\tno file '" + filename + "'"
 	}
 
-	return "", errMsg
+	return nil, "", errMsg
 }
 
 // require (modname)

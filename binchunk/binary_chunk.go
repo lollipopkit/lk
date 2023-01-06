@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"git.lolli.tech/lollipopkit/lk/consts"
-	"git.lolli.tech/lollipopkit/lk/utils"
 	jsoniter "github.com/json-iterator/go"
 )
 
@@ -16,7 +15,6 @@ const (
 var (
 	json                    = jsoniter.ConfigCompatibleWithStandardLibrary
 	ErrInvalidVersionFormat = errors.New("invalid version format")
-	ErrMismatchedHash       = errors.New("mismatched hash")
 )
 
 const (
@@ -63,7 +61,7 @@ type LocVar struct {
 	EndPC   uint32 `json:"epc"`
 }
 
-func Verify(data, sourceData []byte) (*Prototype, error) {
+func Load(data []byte) (*Prototype, error) {
 	var bin binaryChunk
 	err := json.Unmarshal(data, &bin)
 	if err != nil {
@@ -71,9 +69,6 @@ func Verify(data, sourceData []byte) (*Prototype, error) {
 	}
 	if bin.Sign != consts.SIGNATURE {
 		return nil, errors.New("invalid signature: " + bin.Sign)
-	}
-	if sourceData != nil && bin.Md5 != utils.Md5(sourceData) {
-		return nil, ErrMismatchedHash
 	}
 
 	return bin.Proto, passVersion(bin.Version)
