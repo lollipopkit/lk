@@ -11,7 +11,8 @@ import (
 // [-(nargs+1), +nresults, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_call
 func (self *lkState) Call(nArgs, nResults int) {
-	val := self.stack.get(-(nArgs + 1))
+	idx := -(nArgs + 1)
+	val := self.stack.get(idx)
 
 	c, ok := val.(*lkClosure)
 	if !ok {
@@ -31,7 +32,7 @@ func (self *lkState) Call(nArgs, nResults int) {
 			self.callGoClosure(nArgs, nResults, c)
 		}
 	} else {
-		panic(fmt.Sprintf("attempt to call on %#v", val))
+		panic(fmt.Sprintf("attempt to call on %s", self.ToString2(idx)))
 	}
 }
 
@@ -106,8 +107,14 @@ func (self *lkState) CatchAndPrint() {
 		for stack.closure == nil {
 			stack = stack.prev
 		}
-		errStr := fmt.Sprintf("[line %d]: %v", stack.closure.proto.LineInfo[stack.pc-1], err)
-		term.Error(errStr, true)
+		line := func() uint32 {
+			if stack.pc > 0 {
+				return stack.closure.proto.LineInfo[stack.pc-1]
+			}
+			return 0
+		}()
+		errStr := fmt.Sprintf("[line %d]: %v", line, err)
+		term.Red(errStr)
 	}
 }
 
