@@ -16,7 +16,7 @@ var reShortStr = regexp.MustCompile(`(?s)(^'(\\\\|\\'|\\\n|\\z\s*|[^'\n])*')|(^"
 
 var reDecEscapeSeq = regexp.MustCompile(`^\\[0-9]{1,3}`)
 var reHexEscapeSeq = regexp.MustCompile(`^\\x[0-9a-fA-F]{2}`)
-var reUnicodeEscapeSeq = regexp.MustCompile(`^\\u\{[0-9a-fA-F]+\}`)
+var reUnicodeEscapeSeq = regexp.MustCompile(`^\\u[0-9a-fA-F]+`)
 
 type Lexer struct {
 	chunk         string // source code
@@ -407,7 +407,7 @@ func (self *Lexer) escape(str string) string {
 			continue
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9': // \ddd
 			if found := reDecEscapeSeq.FindString(str); found != "" {
-				d, _ := strconv.ParseInt(found[1:], 10, 32)
+				d, _ := strconv.ParseInt(found[1:], 8, 32)
 				if d <= 0xFF {
 					buf.WriteByte(byte(d))
 					str = str[len(found):]
@@ -424,7 +424,7 @@ func (self *Lexer) escape(str string) string {
 			}
 		case 'u': // \u{XXX}
 			if found := reUnicodeEscapeSeq.FindString(str); found != "" {
-				d, err := strconv.ParseInt(found[3:len(found)-1], 16, 32)
+				d, err := strconv.ParseInt(found[2:], 16, 32)
 				if err == nil && d <= 0x10FFFF {
 					buf.WriteRune(rune(d))
 					str = str[len(found):]
