@@ -1,9 +1,10 @@
 /*
 导入路径为文件的路径：`test/module`
-实际调用得使用class名称：`test2`
+如果未设置别名，实际调用得使用class名称：`test2`
 */
 import "test/module"
-import 'test/gf'
+// 为导入的包设置别名
+GF := import('test/gf')
 
 func := fn (...) {
     // `#`获取长度，`...`为变长参数，`{}`构造Table
@@ -47,6 +48,6 @@ func(_VERSION, math.pi)
 // 与js类似，大部分类型都可转为json str
 func(str(test2))
 
-gf := new(Girlfriend)
+gf := new(GF)
 gf:herName('lxy')
 gf:hello()

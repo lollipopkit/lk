@@ -360,7 +360,7 @@ fn Vector:__str() {
     rt 'Vector(' + str(self.x) + ', ' + str(self.y) + ')'
 }
 
-// 使用的`mew(Object)`，所以使用的默认属性值
+// 使用的`new(Object)`，所以使用的默认属性值
 // 此时 x = 0, y = 0
 shy v1 = new(Vector)
 // 带值的初始化对象
@@ -419,6 +419,8 @@ shy fn func2() {
 fn module.func3() {
     func2()
 }
+
+rt module
 ```
 如上定义了一个包，然后在另一个文件中导入：
 ```js
@@ -434,6 +436,13 @@ module.func1()
 // module.func2() 不可直接使用，因为是局部函数，但可以通过 module.func3() 调用
 module.func3()
 ```
+
+```js
+// 设置别名，方便调用
+m := import('mod')
+m.func1()
+```
+需要注意，`class module` 在最后 `rt module`，如果不 `rt`，则导入时无法设置别名。
 
 ## 协程
 ```js

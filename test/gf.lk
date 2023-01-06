@@ -7,3 +7,5 @@ fn Girlfriend:herName(name) {
 fn Girlfriend:hello() {
   print(fmt('My honey %s ~', self.name))
 }
+
+rt Girlfriend

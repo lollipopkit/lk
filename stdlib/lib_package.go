@@ -65,7 +65,7 @@ func OpenPackageLib(ls LkState) int {
 func createSearchersTable(ls LkState) {
 	searchers := []GoFunction{
 		preloadSearcher,
-		luaSearcher,
+		lkSearcher,
 	}
 	/* create 'searchers' table */
 	ls.CreateTable(len(searchers), 0)
@@ -87,7 +87,7 @@ func preloadSearcher(ls LkState) int {
 	return 1
 }
 
-func luaSearcher(ls LkState) int {
+func lkSearcher(ls LkState) int {
 	name := ls.CheckString(1)
 	ls.GetField(LkUpvalueIndex(1), "path")
 	path, ok := ls.ToStringX(-1)

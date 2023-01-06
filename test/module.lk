@@ -13,3 +13,5 @@ fn test2:add() {
     add(self.b)
     self.b = a + self.b
 }
+
+rt test2
