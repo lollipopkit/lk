@@ -34,6 +34,7 @@ func ReadLine(linesHistory []string, optionalPrompt ...string) string {
 	keyboard.Listen(func(key keys.Key) (stop bool, err error) {
 		switch key.Code {
 		case keys.CtrlC, keys.Escape:
+			Green("Bye!")
 			os.Exit(0)
 		case keys.RuneKey:
 			runes := key.Runes

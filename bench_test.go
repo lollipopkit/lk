@@ -47,9 +47,3 @@ func BenchmarkRun(b *testing.B) {
 	}
 }
 
-func BenchmarkRunCompiled(b *testing.B) {
-	f := file + ".lkc"
-	for i := 0; i < b.N; i++ {
-		runVM(f)
-	}
-}

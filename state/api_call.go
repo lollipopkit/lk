@@ -108,7 +108,7 @@ func (self *lkState) CatchAndPrint() {
 			stack = stack.prev
 		}
 		line := func() uint32 {
-			if stack.pc > 0 {
+			if stack.closure.proto.LineInfo != nil && stack.pc > 0 {
 				return stack.closure.proto.LineInfo[stack.pc-1]
 			}
 			return 0
