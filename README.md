@@ -1,7 +1,7 @@
 <h1 align="center">Lang LK</h1>
 
 <p align="center">
-    <img alt="badge-lang" src="https://badgen.net/badge/LK/0.2.2/cyan">
+    <img alt="badge-lang" src="https://badgen.net/badge/LK/0.3.0/cyan">
     <img alt="badge-lang" src="https://badgen.net/badge/Go/1.19/purple">
 </p>
 
