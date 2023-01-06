@@ -24,16 +24,16 @@ modes := {
             lines_result[#lines_result] = line
         }
     },
-    'key': fn(line, _, cmd) {
+    're': fn(line, _, cmd) {
         if not re.find(args[3], cmd) {
             lines_result[#lines_result] = line
         }
     }
 }
 helps := {
-    "duplicate": fmt('清理重复的命令历史，eg: %s duplicate', cmd_prefix),
-    'old': fmt('清理过期的历史，eg: %s old 86400 -> 清理一天前的历史, 86400 = 60 * 70 * 24', cmd_prefix),
-    'key': fmt('正则匹配，eg: %s key "cd [A-Z]" -> 符合正则的行会被清理', cmd_prefix)
+    "duplicate": fmt('清理重复的命令历史\n%s duplicate', cmd_prefix),
+    'old': fmt('清理过期的历史\n%s old 86400 -> 清理一天前的历史, 86400 = 60 * 60 * 24', cmd_prefix),
+    're': fmt('正则匹配\n%s re "cd [A-Z]" -> 符合正则的行会被清理', cmd_prefix)
 }
 checks := {
     'duplicate': fn() {
@@ -50,7 +50,7 @@ checks := {
         }
         rt true
     },
-    'key': fn() {
+    're': fn() {
         pass := #args == 4
         if not pass {
             print(fmt('参数过少: \n%s', helps['key']))
@@ -64,11 +64,15 @@ zsh_history_bak_path := zsh_history_path + '.bak'
 
 if #args < 3 {
     print(fmt("Usage: %s <mode> [options]\n", cmd_prefix))
+    cyan := '\033[96m'
+    nocolor := '\033[0m'
+    green := '\033[92m'
     help_str := ''
     for k, v in helps {
-        help_str += fmt('<%s> : \n%s\n', k, v)
+        help_str += fmt('%s%s%s: %s\n\n', cyan, k, nocolor, v)
     }
-    print('以下是可选的模式：\n' + help_str + '\n执行清理前会进行备份，位置为 '+ zsh_history_bak_path)
+    print('以下是可选的模式：\n' + help_str)
+    print('执行清理前会进行备份，位置为 ' + green + zsh_history_bak_path + nocolor)
     os.exit()
 }
 
@@ -80,7 +84,7 @@ if not checks[mode]() {
     os.exit()
 }
 
-func := modes[args[2]]
+func := modes[mode]
 
 now = os.time() / 1000
 err := os.cp(zsh_history_path, zsh_history_bak_path)

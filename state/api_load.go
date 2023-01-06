@@ -70,14 +70,12 @@ func loadlkc(source string) *binchunk.Prototype {
 	if err != nil {
 		if err == binchunk.ErrMismatchedHash {
 			if lkExist {
-				term.Info("[run] source changed\nrecompiling " + lkPath)
 				proto = Compile(lkPath)
 			} else {
 				term.Warn("[run] source not found: \n" + lkPath)
 			}
 		} else if strings.HasPrefix(err.Error(), binchunk.MismatchVersionPrefix) {
 			if lkExist {
-				term.Info("[run] mismatch version\nrecompiling " + lkPath)
 				proto = Compile(lkPath)
 			} else {
 				term.Error("[run] mismatch version and source not found: \n" + lkPath)
