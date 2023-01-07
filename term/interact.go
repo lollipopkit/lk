@@ -11,7 +11,7 @@ import (
 
 var (
 	doubleByteCharacterRegexp = regexp.MustCompile(`[^\x00-\xff]`)
-	EmptyStringList = []string{}
+	EmptyStringList           = []string{}
 )
 
 const (
@@ -33,9 +33,11 @@ func ReadLine(linesHistory []string, optionalPrompt ...string) string {
 
 	keyboard.Listen(func(key keys.Key) (stop bool, err error) {
 		switch key.Code {
-		case keys.CtrlC, keys.Escape:
+		case keys.CtrlC:
 			Green("Bye!")
 			os.Exit(0)
+		case keys.Escape:
+			return true, nil
 		case keys.RuneKey:
 			runes := key.Runes
 			rs = append(rs[:runeIdx], append(runes, rs[runeIdx:]...)...)
@@ -72,6 +74,7 @@ func ReadLine(linesHistory []string, optionalPrompt ...string) string {
 				resetLine(rs, p)
 				runeIdx = len(rs)
 			} else if linesIdx == len(linesHistory)-1 {
+				linesIdx++
 				rs = []rune("")
 				resetLine(rs, p)
 				runeIdx = 0
