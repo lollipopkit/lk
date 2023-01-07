@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/mods"
+	"git.lolli.tech/lollipopkit/lk/__builtins__"
 )
 
 /* key, in the registry, for table of loaded modules */
@@ -40,7 +40,7 @@ func OpenPackageLib(ls LkState) int {
 	ls.NewLib(pkgFuncs) /* create 'package' table */
 	createSearchersTable(ls)
 	/* set paths */
-	ls.PushString("?.lk;?/init.lk")
+	ls.PushString("?.lk;?.lkc;?/init.lk")
 	ls.SetField(-2, "path")
 	/* store config information */
 	ls.PushString(LUA_DIRSEP + "\n" + LUA_PATH_SEP + "\n" +
@@ -141,10 +141,10 @@ func _searchPath(name, path, sep, dirSep string) (content []byte, fname, errMsg 
 		}
 
 		// 在内置mods内搜索
-		if c, err := mods.ModFiles.ReadFile("files/" + filename); !os.IsNotExist(err) {
+		if c, err := builtins.Files.ReadFile(filename); !os.IsNotExist(err) {
 			return c, filename, ""
 		}
-		
+
 		errMsg += "\n\tno file '" + filename + "'"
 	}
 

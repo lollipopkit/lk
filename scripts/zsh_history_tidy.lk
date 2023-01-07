@@ -64,15 +64,12 @@ zsh_history_bak_path := zsh_history_path + '.bak'
 
 if #args < 3 {
     print(fmt("Usage: %s <mode> [options]\n", cmd_prefix))
-    cyan := '\033[96m'
-    nocolor := '\033[0m'
-    green := '\033[92m'
     help_str := ''
     for k, v in helps {
-        help_str += fmt('%s%s%s: %s\n\n', cyan, k, nocolor, v)
+        help_str += fmt('%s%s%s: %s\n\n', term.cyan, k, term.nocolor, v)
     }
     print('以下是可选的模式：\n' + help_str)
-    print('执行清理前会进行备份，位置为 ' + green + zsh_history_bak_path + nocolor)
+    print('执行清理前会进行备份，位置为 ' + term.green + zsh_history_bak_path + term.nocolor)
     os.exit()
 }
 
@@ -90,7 +87,7 @@ now = os.time() / 1000
 err := os.cp(zsh_history_path, zsh_history_bak_path)
 if err != nil {
     print(err)
-    continue := os.input('备份失败, 是否继续？(Y/n) : ')
+    continue := term.input('备份失败, 是否继续？(y/N) : ')
     if continue:lower() != 'y' {
         os.exit()
     }
@@ -118,5 +115,8 @@ if err != nil {
     print(err)
     os.exit(1)
 } else {
-    print(fmt('清理完成，原有 %d 条，现有 %d 条，共清理 %d 条历史', #lines, #lines_result, #lines - #lines_result))
+    origin := fmt('原有 %s%d%s 条', term.cyan, #lines, term.nocolor)
+    now := fmt('现有 %s%d%s 条', term.green, #lines_result, term.nocolor)
+    clean := fmt('共清理 %s%d%s 条历史', term.red, #lines - #lines_result, term.nocolor)
+    print(fmt('清理完成，%s，%s，%s', origin, now, clean))
 }

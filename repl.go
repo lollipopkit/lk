@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	linesHistory       = []string{}
-	printReg           = regexp.MustCompile(`print\(.*\)`)
+	linesHistory = []string{}
+	printReg     = regexp.MustCompile(`print\(.*\)`)
 )
 
 func repl() {
@@ -67,13 +67,13 @@ func protectedCall(ls api.LkState, cmd string) {
 	first := !havePrint
 	// 捕获错误
 	defer catchErr(ls, &first, cmd)
-	
+
 	if havePrint {
 		loadString(ls, cmd)
 	} else {
-		loadString(ls, "print(" + cmd + ")")
+		loadString(ls, "print("+cmd+")")
 	}
-	
+
 	ls.PCall(0, api.LK_MULTRET, 0)
 	updateHistory(cmd)
 }

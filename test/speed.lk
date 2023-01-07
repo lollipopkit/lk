@@ -1,8 +1,12 @@
-fn t(func) {
+class speed {
+    'times': 100,
+}
+
+fn spedd:test(func) {
     times := 0
     t1 := os.time()
     
-    while times < 1000 * 1000 {
+    while times < self.times {
         func()
         times++
     }
@@ -10,7 +14,3 @@ fn t(func) {
     t2 := os.time()
     print(fmt('time: %d', t2 - t1))
 }
-
-t(fn() {
-    rt math.log(math.sqrt(math.pi))
-})

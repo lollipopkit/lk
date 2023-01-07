@@ -1,11 +1,16 @@
-class Girlfriend { 'name': 'nobody' }
+class Girlfriend {
+  'name': 'nobody',
+  'hello': fn(self) {
+    if self.name == 'nobody' {
+      print('No girfriend to hello ~')
+      rt
+    }
+    print(fmt('My honey %s ~', self.name))
+  }
+}
 
 fn Girlfriend:herName(name) {
     self.name = name
-}
-
-fn Girlfriend:hello() {
-  print(fmt('My honey %s ~', self.name))
 }
 
 rt Girlfriend

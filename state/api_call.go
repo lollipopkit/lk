@@ -116,7 +116,19 @@ func (self *lkState) CatchAndPrint() {
 			}
 			return 0
 		}()
-		errStr := fmt.Sprintf("[%s:%d]: %v", stack.closure.proto.Source, line, err)
+		source := func() string {
+			if stack == nil || stack.closure == nil || stack.closure.proto == nil {
+				return ""
+			}
+			return stack.closure.proto.Source
+		}()
+		tip := func() string {
+			if source != "" && line != 0 {
+				return fmt.Sprintf("[%s:%d] ", source, line)
+			}
+			return ""
+		}()
+		errStr := fmt.Sprintf("%s%v", tip, err)
 		term.Red(errStr)
 	}
 }

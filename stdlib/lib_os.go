@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io/fs"
 	"io/ioutil"
+	"math"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path"
@@ -11,7 +13,6 @@ import (
 	"time"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/term"
 	"git.lolli.tech/lollipopkit/lk/utils"
 )
 
@@ -20,24 +21,25 @@ var (
 )
 
 var sysLib = map[string]GoFunction{
-	"time":    osTime,
-	"stat":    osStat,
-	"date":    osDate,
-	"rm":      osRemove,
-	"mv":      osRename,
-	"cp":      osCp,
-	"link":    osLink,
-	"tmp":     osTmpName,
-	"get_env": osGetEnv,
-	"set_env": osSetEnv,
-	"exec":    osExecute,
-	"exit":    osExit,
-	"ls":      osLs,
-	"read":    osRead,
-	"write":   osWrite,
-	"sleep":   osSleep,
-	"input":   osInput,
-	"mkdir":   osMkdir,
+	"time":      osTime,
+	"stat":      osStat,
+	"date":      osDate,
+	"rm":        osRemove,
+	"mv":        osRename,
+	"cp":        osCp,
+	"link":      osLink,
+	"tmp":       osTmpName,
+	"get_env":   osGetEnv,
+	"set_env":   osSetEnv,
+	"exec":      osExecute,
+	"exit":      osExit,
+	"ls":        osLs,
+	"read":      osRead,
+	"write":     osWrite,
+	"sleep":     osSleep,
+	"mkdir":     osMkdir,
+	"rand":      randRandom,
+	"rand_seed": randSeed,
 }
 
 func OpenOSLib(ls LkState) int {
@@ -49,11 +51,6 @@ func OpenOSLib(ls LkState) int {
 func pushArgs(ls LkState) {
 	pushList(ls, os.Args)
 	ls.SetField(-2, "args")
-}
-
-func osInput(ls LkState) int {
-	ls.PushString(term.ReadLine(term.EmptyStringList, ls.OptString(1, "")))
-	return 1
 }
 
 func osCp(ls LkState) int {
@@ -333,5 +330,46 @@ func osExecute(ls LkState) int {
 func osExit(ls LkState) int {
 	code := ls.OptInteger(1, 0)
 	os.Exit(int(code))
+	return 0
+}
+
+// rand.random ([m [, n]])
+// http://www.lua.org/manual/5.3/manual.html#pdf-math.random
+// lua-5.3.4/src/lmathlib.c#math_random()
+func randRandom(ls LkState) int {
+	var low, up int64
+	argsNum := ls.GetTop()
+	switch argsNum { /* check number of arguments */
+	case 0: /* no arguments */
+		ls.PushNumber(rand.Float64()) /* Number between 0 and 1 */
+		return 1
+	case 1: /* only upper limit */
+		low = 1
+		up = ls.CheckInteger(1)
+	case 2: /* lower and upper limits */
+		low = ls.CheckInteger(1)
+		up = ls.CheckInteger(2)
+	default:
+		return ls.Error2("number of arguments out of range[0, 3]: %d", argsNum)
+	}
+
+	/* random integer in the interval [low, up] */
+	ls.ArgCheck(low <= up, 1, "interval is empty")
+	ls.ArgCheck(low >= 0 || up <= math.MaxInt64+low, 1,
+		"interval too large")
+	if up-low == math.MaxInt64 {
+		ls.PushInteger(low + rand.Int63())
+	} else {
+		ls.PushInteger(low + rand.Int63n(up-low+1))
+	}
+	return 1
+}
+
+// rand.seed (x)
+// http://www.lua.org/manual/5.3/manual.html#pdf-math.randomseed
+// lua-5.3.4/src/lmathlib.c#math_randomseed()
+func randSeed(ls LkState) int {
+	x := ls.CheckNumber(1)
+	rand.Seed(int64(x))
 	return 0
 }
