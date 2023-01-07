@@ -20,7 +20,7 @@ func repl() {
 	ls := state.New()
 	ls.OpenLibs()
 
-	term.Cyan("LK REPL (v" + consts.VERSION + ")")
+	term.Cyan("REPL for LK (v" + consts.VERSION + ")")
 
 	blockStr := ""
 
@@ -30,7 +30,7 @@ func repl() {
 			continue
 		}
 
-		blockStr += line + "\n"
+		blockStr += line
 		if !_isBlockEnd(blockStr) {
 			continue
 		}
@@ -43,6 +43,7 @@ func repl() {
 }
 
 func loadString(ls api.LkState, cmd string) {
+	//term.Green(">>> " + cmd)
 	ls.LoadString(cmd, "stdin")
 }
 
@@ -54,6 +55,7 @@ func catchErr(ls api.LkState, first *bool, cmd string) {
 			defer catchErr(ls, first, cmd)
 			loadString(ls, cmd)
 			ls.PCall(0, api.LK_MULTRET, 0)
+			updateHistory(cmd)
 		} else {
 			term.Red(fmt.Sprintf("%v", err))
 		}

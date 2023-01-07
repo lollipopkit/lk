@@ -56,7 +56,8 @@ class Header {
     'items': {}
 }
 
-fn Header:fromTable(h) {
+fn Header.fromTable(h) {
+    self := new(Header)
     for k, v in h {
         self.items[k] = v
     }
@@ -77,7 +78,7 @@ fn Header:__str() {
 处理监听事件
 `req`包含属性`method`, `url`, `body`, `headers`
 */
-handler := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header:fromTable(req.headers), req.body)
+handler := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header.fromTable(req.headers), req.body)
 
 // 监听
 if http.listen(':8080', handler) != nil {

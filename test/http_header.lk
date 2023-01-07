@@ -2,7 +2,8 @@ class Header {
     'items': {}
 }
 
-fn Header:fromTable(h) {
+fn Header.fromTable(h) {
+    self = new(Header)
     for k, v in h {
         self.items[k] = v
     }

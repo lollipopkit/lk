@@ -7,7 +7,7 @@ resp, err := http.post(
 )
 
 if err == nil {
-    print(Header:fromTable(resp.headers))
+    print(Header.fromTable(resp.headers))
 }
 
 resp, _ := http.req(

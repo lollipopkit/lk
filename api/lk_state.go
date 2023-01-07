@@ -60,6 +60,8 @@ type BasicAPI interface {
 	PushGoClosure(f GoFunction, n int)
 	PushGlobalTable()
 	PushThread() bool
+	Push(item any)
+	PushCopyTable(idx int)
 	/* Comparison and arithmetic functions */
 	Arith(op ArithOp)
 	Compare(idx1, idx2 int, op CompareOp) bool

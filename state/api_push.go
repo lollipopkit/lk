@@ -73,3 +73,11 @@ func (self *lkState) PushThread() bool {
 	self.stack.push(self)
 	return self.isMainThread()
 }
+
+func (self *lkState) Push(item any) {
+	self.stack.push(item)
+}
+
+func (self *lkState) PushCopyTable(idx int) {
+	self.stack.push(self.stack.get(idx).(*lkTable).copy())
+}

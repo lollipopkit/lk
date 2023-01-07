@@ -108,12 +108,15 @@ func (self *lkState) CatchAndPrint() {
 			stack = stack.prev
 		}
 		line := func() uint32 {
+			if stack == nil || stack.closure == nil || stack.closure.proto == nil {
+				return 0
+			}
 			if stack.closure.proto.LineInfo != nil && stack.pc > 0 {
 				return stack.closure.proto.LineInfo[stack.pc-1]
 			}
 			return 0
 		}()
-		errStr := fmt.Sprintf("[line %d]: %v", line, err)
+		errStr := fmt.Sprintf("[%s:%d]: %v", stack.closure.proto.Source, line, err)
 		term.Red(errStr)
 	}
 }

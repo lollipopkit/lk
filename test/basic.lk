@@ -49,5 +49,7 @@ func(_VERSION, math.pi)
 func(str(test2))
 
 gf := new(GF)
+gf2 := new(GF)
 gf:herName('lxy')
+gf2:hello()
 gf:hello()

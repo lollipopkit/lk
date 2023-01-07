@@ -51,7 +51,11 @@ func baseNew(ls LkState) int {
 	ls.PushNil()
 	for ls.Next(1) {
 		ls.PushValue(-2)
-		ls.PushValue(-2)
+		if ls.IsTable(-2) {
+			ls.PushCopyTable(-2)
+		} else {
+			ls.PushValue(-2)
+		}
 		ls.SetTable(-5)
 		ls.Pop(1)
 	}
