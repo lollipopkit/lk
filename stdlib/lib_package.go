@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/__builtins__"
+	"git.lolli.tech/lollipopkit/lk/mods"
 )
 
 /* key, in the registry, for table of loaded modules */
@@ -21,6 +21,8 @@ const (
 	LUA_EXEC_DIR  = "!"
 	LUA_IGMARK    = "-"
 )
+
+const builtinPrefix = "builtin/"
 
 var pkgFuncs = map[string]GoFunction{
 	"search": pkgSearchPath,
@@ -141,8 +143,8 @@ func _searchPath(name, path, sep, dirSep string) (content []byte, fname, errMsg 
 		}
 
 		// 在内置mods内搜索
-		if c, err := builtins.Files.ReadFile(filename); !os.IsNotExist(err) {
-			return c, filename, ""
+		if c, err := mods.Files.ReadFile(filename); !os.IsNotExist(err) {
+			return c, builtinPrefix + filename, ""
 		}
 
 		errMsg += "\n\tno file '" + filename + "'"

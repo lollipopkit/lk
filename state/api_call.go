@@ -104,7 +104,7 @@ func (self *lkState) runLuaClosure() {
 func (self *lkState) CatchAndPrint() {
 	if err := recover(); err != nil {
 		stack := self.stack
-		for stack.closure == nil {
+		for stack != nil && stack.closure == nil {
 			stack = stack.prev
 		}
 		line := func() uint32 {

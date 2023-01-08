@@ -22,7 +22,7 @@ func repl() {
 
 	term.Cyan("REPL for LK (v" + consts.VERSION + ")")
 
-	blockStr := ""
+	blockLines := []string{}
 
 	for {
 		line := term.ReadLine(linesHistory)
@@ -30,7 +30,8 @@ func repl() {
 			continue
 		}
 
-		blockStr += line
+		blockLines = append(blockLines, line)
+		blockStr := strings.Join(blockLines, "\n")
 		if !_isBlockEnd(blockStr) {
 			continue
 		}
@@ -38,7 +39,7 @@ func repl() {
 		// 加载line，调用
 		protectedCall(ls, blockStr)
 
-		blockStr = ""
+		blockLines = []string{}
 	}
 }
 

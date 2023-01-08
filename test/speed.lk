@@ -2,7 +2,7 @@ class speed {
     'times': 100,
 }
 
-fn spedd:test(func) {
+fn speed:test(func) {
     times := 0
     t1 := os.time()
     
@@ -12,5 +12,5 @@ fn spedd:test(func) {
     }
 
     t2 := os.time()
-    print(fmt('time: %d', t2 - t1))
+    print(fmt('time: %d ms', t2 - t1))
 }
