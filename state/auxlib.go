@@ -299,9 +299,9 @@ func (self *lkState) OpenLibs() {
 		"http":  stdlib.OpenHttpLib,
 		"json":  stdlib.OpenJsonLib,
 		"re":    stdlib.OpenReLib,
-		"rand":  stdlib.OpenRandLib,
 		"table": stdlib.OpenTableLib,
 		"nums":  stdlib.OpenNumLib,
+		"term":  stdlib.OpenTermLib,
 	}
 
 	for name := range libs {

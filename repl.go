@@ -12,17 +12,17 @@ import (
 )
 
 var (
-	linesHistory       = []string{}
-	printReg           = regexp.MustCompile(`print\(.*\)`)
+	linesHistory = []string{}
+	printReg     = regexp.MustCompile(`print\(.*\)`)
 )
 
 func repl() {
 	ls := state.New()
 	ls.OpenLibs()
 
-	term.Cyan("LK REPL (v" + consts.VERSION + ")")
+	term.Cyan("REPL for LK (v" + consts.VERSION + ")")
 
-	blockStr := ""
+	blockLines := []string{}
 
 	for {
 		line := term.ReadLine(linesHistory)
@@ -30,7 +30,8 @@ func repl() {
 			continue
 		}
 
-		blockStr += line + "\n"
+		blockLines = append(blockLines, line)
+		blockStr := strings.Join(blockLines, "\n")
 		if !_isBlockEnd(blockStr) {
 			continue
 		}
@@ -38,11 +39,12 @@ func repl() {
 		// 加载line，调用
 		protectedCall(ls, blockStr)
 
-		blockStr = ""
+		blockLines = []string{}
 	}
 }
 
 func loadString(ls api.LkState, cmd string) {
+	//term.Green(">>> " + cmd)
 	ls.LoadString(cmd, "stdin")
 }
 
@@ -54,6 +56,7 @@ func catchErr(ls api.LkState, first *bool, cmd string) {
 			defer catchErr(ls, first, cmd)
 			loadString(ls, cmd)
 			ls.PCall(0, api.LK_MULTRET, 0)
+			updateHistory(cmd)
 		} else {
 			term.Red(fmt.Sprintf("%v", err))
 		}
@@ -65,13 +68,13 @@ func protectedCall(ls api.LkState, cmd string) {
 	first := !havePrint
 	// 捕获错误
 	defer catchErr(ls, &first, cmd)
-	
+
 	if havePrint {
 		loadString(ls, cmd)
 	} else {
-		loadString(ls, "print(" + cmd + ")")
+		loadString(ls, "print("+cmd+")")
 	}
-	
+
 	ls.PCall(0, api.LK_MULTRET, 0)
 	updateHistory(cmd)
 }

@@ -104,16 +104,31 @@ func (self *lkState) runLuaClosure() {
 func (self *lkState) CatchAndPrint() {
 	if err := recover(); err != nil {
 		stack := self.stack
-		for stack.closure == nil {
+		for stack != nil && stack.closure == nil {
 			stack = stack.prev
 		}
 		line := func() uint32 {
+			if stack == nil || stack.closure == nil || stack.closure.proto == nil {
+				return 0
+			}
 			if stack.closure.proto.LineInfo != nil && stack.pc > 0 {
 				return stack.closure.proto.LineInfo[stack.pc-1]
 			}
 			return 0
 		}()
-		errStr := fmt.Sprintf("[line %d]: %v", line, err)
+		source := func() string {
+			if stack == nil || stack.closure == nil || stack.closure.proto == nil {
+				return ""
+			}
+			return stack.closure.proto.Source
+		}()
+		tip := func() string {
+			if source != "" && line != 0 {
+				return fmt.Sprintf("[%s:%d] ", source, line)
+			}
+			return ""
+		}()
+		errStr := fmt.Sprintf("%s%v", tip, err)
 		term.Red(errStr)
 	}
 }

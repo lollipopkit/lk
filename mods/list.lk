@@ -1,0 +1,87 @@
+class list {
+    'items': {}
+}
+
+// ...: 插入的元素
+fn list:add(...) {
+    for _, v in {...} {
+        self.items[#self.items] = v
+    }
+    rt self
+}
+
+// idx: 删除的位置
+fn list:remove_at(idx) {
+    len := #self.items
+    if idx >= len {
+        error(fmt("Index %d out of range %d", idx, len))
+    }
+    for i = idx, len - 1 {
+        self.items[i] = self.items[i + 1]
+    }
+    rt self
+}
+
+// ...: 删除的元素
+fn list:remove(...) {
+    for _, v in {...} {
+        for i in self.items {
+            if self.items[i] == v {
+                self:remove_at(i)
+                break
+            }
+        }
+    }
+    rt self
+}
+
+// item: 包含的元素
+fn list:contains(item) {
+    for i in self.items {
+        if self.items[i] == item {
+            rt true
+        }
+    }
+    rt false
+}
+
+// idx: 插入位置
+// item: 插入的元素
+fn list:insert(idx, item) {
+    len := #self.items
+    if idx > len {
+        error(fmt("Index %d out of range %d", idx, len))
+    }
+    for i = len - 1, idx, -1 {
+        self.items[i + 1] = self.items[i]
+    }
+    self.items[idx] = item
+    rt self
+}
+
+// 清空
+fn list:clear() {
+    self.items = {}
+    rt self
+}
+
+// 反转
+fn list:reverse() {
+    maxIdx := #self.items - 1
+    if maxIdx > 0 {
+        i := 0
+        while i < maxIdx {
+            tmp = self.items[i]
+            self.items[i] = self.items[maxIdx - i]
+            self.items[maxIdx - i] = tmp
+            i++
+        }
+    }
+    rt self
+}
+
+fn list:__str() {
+    rt str(self.items)
+}
+
+rt list

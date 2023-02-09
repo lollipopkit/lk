@@ -46,4 +46,3 @@ func BenchmarkRun(b *testing.B) {
 		runVM(f)
 	}
 }
-

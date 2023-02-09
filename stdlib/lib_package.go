@@ -22,6 +22,8 @@ const (
 	LUA_IGMARK    = "-"
 )
 
+const builtinPrefix = "builtin/"
+
 var pkgFuncs = map[string]GoFunction{
 	"search": pkgSearchPath,
 	/* placeholders */
@@ -40,7 +42,7 @@ func OpenPackageLib(ls LkState) int {
 	ls.NewLib(pkgFuncs) /* create 'package' table */
 	createSearchersTable(ls)
 	/* set paths */
-	ls.PushString("?.lk;?/init.lk")
+	ls.PushString("?.lk;?.lkc;?/init.lk")
 	ls.SetField(-2, "path")
 	/* store config information */
 	ls.PushString(LUA_DIRSEP + "\n" + LUA_PATH_SEP + "\n" +
@@ -141,10 +143,10 @@ func _searchPath(name, path, sep, dirSep string) (content []byte, fname, errMsg 
 		}
 
 		// 在内置mods内搜索
-		if c, err := mods.ModFiles.ReadFile("files/" + filename); !os.IsNotExist(err) {
-			return c, filename, ""
+		if c, err := mods.Files.ReadFile(filename); !os.IsNotExist(err) {
+			return c, builtinPrefix + filename, ""
 		}
-		
+
 		errMsg += "\n\tno file '" + filename + "'"
 	}
 

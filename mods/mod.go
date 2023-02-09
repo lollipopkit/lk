@@ -5,7 +5,6 @@ import (
 )
 
 var (
-	//go:embed files/*.lk
-	ModFiles embed.FS
+	//go:embed *.lk
+	Files embed.FS
 )
-

@@ -19,6 +19,12 @@ type lkTable struct {
 	changed bool        // used by next()
 }
 
+func (self *lkTable) copy() *lkTable {
+	t := newLkTable(len(self.arr), len(self._map))
+	t.combine(self)
+	return t
+}
+
 func (self *lkTable) String() (string, error) {
 	return json.MarshalToString(self.Json())
 	// if err != nil {
