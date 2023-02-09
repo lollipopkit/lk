@@ -5,6 +5,10 @@
     <img alt="badge-lang" src="https://badgen.net/badge/Go/1.19/purple">
 </p>
 
+<div align="center">
+💌  <a href="https://www.lua.org">lua</a> - <a href="https://github.com/zxh0/luago-book">luago</a>
+</div>
+
 ## ⌨️ Experience
 #### Get
 - One click installation: `go install git.lolli.tech/lollipopkit/lk@latest`
@@ -114,8 +118,8 @@ if http.listen(':8080', handler) != nil {
 ## 🌳 Ecology
 - VSCode plugin: [highlight](https://git.lolli.tech/lollipopkit/vscode-lang-lk-highlight)
 
-## 💌 Thanks
-- Lua
-- [luago](https://github.com/zxh0/luago-book)
 ## 📝 License
-`lollipopkit 2022 LGPL-3.0`
+```
+Xiuhong Zhang 2018 MIT
+lollipopkit 2022 MIT
+```

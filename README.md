@@ -5,7 +5,12 @@
     <img alt="badge-lang" src="https://badgen.net/badge/Go/1.19/purple">
 </p>
 
+<div align="center">
+💌 致谢 - <a href="https://www.lua.org">lua</a> - <a href="https://github.com/zxh0/luago-book">luago</a>
+
 简体中文 | [English](README_en.md)
+</div>
+
 
 
 ## ⌨️ 体验
@@ -119,9 +124,8 @@ if http.listen(':8080', handler) != nil {
 ## 🌳 生态
 - Vscode插件：[高亮](https://git.lolli.tech/lollipopkit/vscode-lang-lk-highlight)
 
-## 💌 致谢
-- Lua
-- [luago](https://github.com/zxh0/luago-book)
-
 ## 📝 License
-`lollipopkit 2022 LGPL-3.0`
+```
+Xiuhong Zhang 2018 MIT
+lollipopkit 2022 MIT
+```
