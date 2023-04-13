@@ -117,7 +117,7 @@ if http.listen(':8080', handler) != nil {
   - [x] VSCode highlights
 
 ## 🌳 Ecology
-- VSCode plugin: [highlight](https://git.lolli.tech/lollipopkit/vscode-lang-lk-highlight)
+- VSCode plugin: [highlight](https://github.com,/lollipopkit/vscode-lk-highlight)
 
 ## 📝 License
 ```

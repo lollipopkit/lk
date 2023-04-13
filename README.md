@@ -123,7 +123,7 @@ if http.listen(':8080', handler) != nil {
       - [x] VSCode高亮  
 
 ## 🌳 生态
-- Vscode插件：[高亮](https://git.lolli.tech/lollipopkit/vscode-lang-lk-highlight)
+- Vscode插件：[高亮](https://github.com,/lollipopkit/vscode-lk-highlight)
 
 ## 📝 License
 ```
