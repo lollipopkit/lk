@@ -1,8 +1,8 @@
 package codegen
 
 import (
-	. "git.lolli.tech/lollipopkit/lk/binchunk"
-	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
+	. "github.com/lollipopkit/lk/binchunk"
+	. "github.com/lollipopkit/lk/compiler/ast"
 )
 
 func GenProto(chunk *Block) *Prototype {

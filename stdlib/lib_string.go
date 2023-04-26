@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
+	. "github.com/lollipopkit/lk/api"
 )
 
 var strLib = map[string]GoFunction{

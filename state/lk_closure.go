@@ -3,8 +3,8 @@ package state
 import (
 	"fmt"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/binchunk"
+	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/binchunk"
 )
 
 type lkClosure struct {

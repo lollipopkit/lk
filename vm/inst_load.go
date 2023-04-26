@@ -1,6 +1,6 @@
 package vm
 
-import . "git.lolli.tech/lollipopkit/lk/api"
+import . "github.com/lollipopkit/lk/api"
 
 // R(A), R(A+1), ..., R(A+B) := nil
 func loadNil(i Instruction, vm LkVM) {

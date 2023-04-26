@@ -1,6 +1,6 @@
 package state
 
-import . "git.lolli.tech/lollipopkit/lk/api"
+import . "github.com/lollipopkit/lk/api"
 
 type lkState struct {
 	registry *lkTable

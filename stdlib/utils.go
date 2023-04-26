@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
+	. "github.com/lollipopkit/lk/api"
 )
 
 // type lkMapKey interface {

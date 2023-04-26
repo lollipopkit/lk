@@ -1,10 +1,10 @@
 package codegen
 
 import (
-	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
-	. "git.lolli.tech/lollipopkit/lk/compiler/lexer"
+	. "github.com/lollipopkit/lk/compiler/ast"
+	. "github.com/lollipopkit/lk/compiler/lexer"
 
-	. "git.lolli.tech/lollipopkit/lk/vm"
+	. "github.com/lollipopkit/lk/vm"
 )
 
 var arithAndBitwiseBinops = map[int]int{

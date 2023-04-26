@@ -3,9 +3,9 @@ package state
 import (
 	"fmt"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/term"
-	"git.lolli.tech/lollipopkit/lk/vm"
+	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/term"
+	"github.com/lollipopkit/lk/vm"
 )
 
 // [-(nargs+1), +nresults, e]

@@ -5,10 +5,10 @@ import (
 	"regexp"
 	"strings"
 
-	"git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/consts"
-	"git.lolli.tech/lollipopkit/lk/state"
-	"git.lolli.tech/lollipopkit/lk/term"
+	"github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/consts"
+	"github.com/lollipopkit/lk/state"
+	"github.com/lollipopkit/lk/term"
 )
 
 var (
@@ -55,7 +55,7 @@ func catchErr(ls api.LkState, first *bool, cmd string) {
 			*first = false
 			defer catchErr(ls, first, cmd)
 			loadString(ls, cmd)
-			ls.PCall(0, api.LK_MULTRET, 0)
+			ls.PCall(0, api.LK_MULTRET, 1)
 			updateHistory(cmd)
 		} else {
 			term.Red(fmt.Sprintf("%v", err))
@@ -75,7 +75,7 @@ func protectedCall(ls api.LkState, cmd string) {
 		loadString(ls, "print("+cmd+")")
 	}
 
-	ls.PCall(0, api.LK_MULTRET, 0)
+	ls.PCall(0, api.LK_MULTRET, 1)
 	updateHistory(cmd)
 }
 

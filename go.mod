@@ -1,4 +1,4 @@
-module git.lolli.tech/lollipopkit/lk
+module github.com/lollipopkit/lk
 
 go 1.19
 

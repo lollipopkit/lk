@@ -3,8 +3,8 @@ package state
 import (
 	"fmt"
 
-	"git.lolli.tech/lollipopkit/lk/utils"
 	jsoniter "github.com/json-iterator/go"
+	"github.com/lollipopkit/lk/utils"
 )
 
 var (

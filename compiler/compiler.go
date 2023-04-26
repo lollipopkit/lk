@@ -1,9 +1,9 @@
 package compiler
 
 import (
-	"git.lolli.tech/lollipopkit/lk/binchunk"
-	"git.lolli.tech/lollipopkit/lk/compiler/codegen"
-	"git.lolli.tech/lollipopkit/lk/compiler/parser"
+	"github.com/lollipopkit/lk/binchunk"
+	"github.com/lollipopkit/lk/compiler/codegen"
+	"github.com/lollipopkit/lk/compiler/parser"
 )
 
 func Compile(chunk, chunkName string) *binchunk.Prototype {

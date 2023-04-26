@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/consts"
+	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/consts"
 )
 
 var baseFuncs = map[string]GoFunction{

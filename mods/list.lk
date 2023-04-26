@@ -80,6 +80,17 @@ fn list:reverse() {
     rt self
 }
 
+fn list:__add(other) {
+    mix := new(list)
+    for _, i in other.items {
+        mix:add(i)
+    }
+    for _, i in self.items {
+        mix:add(i)
+    }
+    rt mix
+}
+
 fn list:__str() {
     rt str(self.items)
 }

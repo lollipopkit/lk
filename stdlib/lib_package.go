@@ -4,8 +4,8 @@ import (
 	"os"
 	"strings"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/mods"
+	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/mods"
 )
 
 /* key, in the registry, for table of loaded modules */

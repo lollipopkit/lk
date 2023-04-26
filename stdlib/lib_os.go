@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/utils"
+	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/utils"
 )
 
 var (

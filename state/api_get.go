@@ -1,7 +1,7 @@
 package state
 
 import (
-	. "git.lolli.tech/lollipopkit/lk/api"
+	. "github.com/lollipopkit/lk/api"
 )
 
 // [-0, +1, m]

@@ -1,6 +1,6 @@
 package state
 
-import . "git.lolli.tech/lollipopkit/lk/api"
+import . "github.com/lollipopkit/lk/api"
 
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_newthread

@@ -1,6 +1,6 @@
 package vm
 
-import "git.lolli.tech/lollipopkit/lk/api"
+import "github.com/lollipopkit/lk/api"
 
 /* OpMode */
 /* basic instruction format */
@@ -80,7 +80,9 @@ type opcode struct {
 }
 
 var opcodes = []opcode{
-	/*     T  A    B       C     mode         name       action */
+	/*
+	 T  A    B       C     mode         name       action
+	*/
 	{0, 1, OpArgR, OpArgN, IABC /* */, "MOVE    ", move},     // R(A) := R(B)
 	{0, 1, OpArgK, OpArgN, IABx /* */, "LOADK   ", loadK},    // R(A) := Kst(Bx)
 	{0, 1, OpArgN, OpArgN, IABx /* */, "LOADKX  ", loadKx},   // R(A) := Kst(extra arg)

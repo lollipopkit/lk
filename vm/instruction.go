@@ -1,7 +1,7 @@
 package vm
 
 import (
-	"git.lolli.tech/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/api"
 )
 
 const MAXARG_Bx = 1<<18 - 1       // 262143

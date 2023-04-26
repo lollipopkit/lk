@@ -11,7 +11,7 @@
 
 ## ⌨️ Experience
 #### Get
-- One click installation: `go install git.lolli.tech/lollipopkit/lk@latest`
+- One click installation: `go install github.com/lollipopkit/lk@latest`
 - Download from [Release](https://github.com/LollipopKit/lang-lk/releases)
 - After cloning, uses `go build` to generates
 
@@ -121,6 +121,5 @@ if http.listen(':8080', handler) != nil {
 
 ## 📝 License
 ```
-Xiuhong Zhang 2018 MIT
-lollipopkit 2022 MIT
+lollipopkit 2023 GPL v3
 ```

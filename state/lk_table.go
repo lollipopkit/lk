@@ -4,7 +4,7 @@ import (
 	"math"
 	"strconv"
 
-	"git.lolli.tech/lollipopkit/lk/utils"
+	"github.com/lollipopkit/lk/utils"
 )
 
 // var (

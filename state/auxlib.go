@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io/ioutil"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/stdlib"
+	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/stdlib"
 )
 
 // [-0, +0, v]

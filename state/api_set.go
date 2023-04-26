@@ -3,7 +3,7 @@ package state
 import (
 	"fmt"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
+	. "github.com/lollipopkit/lk/api"
 )
 
 // [-2, +0, e]

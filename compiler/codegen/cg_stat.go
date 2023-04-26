@@ -1,6 +1,6 @@
 package codegen
 
-import . "git.lolli.tech/lollipopkit/lk/compiler/ast"
+import . "github.com/lollipopkit/lk/compiler/ast"
 
 func cgStat(fi *funcInfo, node Stat) {
 	switch stat := node.(type) {

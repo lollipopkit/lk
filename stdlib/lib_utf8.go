@@ -3,7 +3,7 @@ package stdlib
 import (
 	"unicode/utf8"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
+	. "github.com/lollipopkit/lk/api"
 )
 
 /* pattern to match a single UTF-8 character */

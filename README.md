@@ -15,7 +15,7 @@
 
 ## ⌨️ 体验
 #### 获取 
-- 一键安装：`go install git.lolli.tech/lollipopkit/lk@latest`
+- 一键安装：`go install github.com/lollipopkit/lk@latest`
 - [Release](https://github.com/LollipopKit/lang-lk/releases) 下载
 - 克隆后，`go build` 生成
 
@@ -127,6 +127,5 @@ if http.listen(':8080', handler) != nil {
 
 ## 📝 License
 ```
-Xiuhong Zhang 2018 MIT
-lollipopkit 2022 MIT
+lollipopkit 2023 GPL v3
 ```

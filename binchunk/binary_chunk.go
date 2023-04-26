@@ -4,8 +4,8 @@ import (
 	"errors"
 	"strings"
 
-	"git.lolli.tech/lollipopkit/lk/consts"
 	jsoniter "github.com/json-iterator/go"
+	"github.com/lollipopkit/lk/consts"
 )
 
 const (

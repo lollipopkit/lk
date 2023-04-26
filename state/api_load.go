@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/binchunk"
-	"git.lolli.tech/lollipopkit/lk/compiler"
-	"git.lolli.tech/lollipopkit/lk/term"
-	"git.lolli.tech/lollipopkit/lk/utils"
+	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/binchunk"
+	"github.com/lollipopkit/lk/compiler"
+	"github.com/lollipopkit/lk/term"
+	"github.com/lollipopkit/lk/utils"
 )
 
 func Compile(source string) *binchunk.Prototype {

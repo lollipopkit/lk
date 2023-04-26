@@ -26,5 +26,9 @@ a:reverse()
 if str(a) != '["7",1]' {
     fail(a)
 }
+b := new(list)
+if a != a + b {
+    fail(a)
+}
 pass()
 

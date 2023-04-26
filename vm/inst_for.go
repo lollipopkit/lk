@@ -1,6 +1,6 @@
 package vm
 
-import . "git.lolli.tech/lollipopkit/lk/api"
+import . "github.com/lollipopkit/lk/api"
 
 // R(A)-=R(A+2); pc+=sBx
 func forPrep(i Instruction, vm LkVM) {

@@ -1,6 +1,6 @@
 package vm
 
-import . "git.lolli.tech/lollipopkit/lk/api"
+import . "github.com/lollipopkit/lk/api"
 
 // R(A) := R(B)
 func move(i Instruction, vm LkVM) {

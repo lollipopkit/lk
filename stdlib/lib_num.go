@@ -3,7 +3,7 @@ package stdlib
 import (
 	"strconv"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
+	. "github.com/lollipopkit/lk/api"
 )
 
 var numLib = map[string]GoFunction{

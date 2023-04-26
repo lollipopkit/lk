@@ -1,8 +1,8 @@
 package codegen
 
 import (
-	. "git.lolli.tech/lollipopkit/lk/compiler/ast"
-	. "git.lolli.tech/lollipopkit/lk/compiler/lexer"
+	. "github.com/lollipopkit/lk/compiler/ast"
+	. "github.com/lollipopkit/lk/compiler/lexer"
 )
 
 // kind of operands

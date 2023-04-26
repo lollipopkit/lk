@@ -2,7 +2,7 @@ package stdlib
 
 import (
 	glc "git.lolli.tech/lollipopkit/go-lru-cacher"
-	. "git.lolli.tech/lollipopkit/lk/api"
+	. "github.com/lollipopkit/lk/api"
 	"github.com/tidwall/gjson"
 )
 

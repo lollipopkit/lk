@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"git.lolli.tech/lollipopkit/lk/compiler/parser"
-	"git.lolli.tech/lollipopkit/lk/state"
-	"git.lolli.tech/lollipopkit/lk/term"
+	"github.com/lollipopkit/lk/compiler/parser"
+	"github.com/lollipopkit/lk/state"
+	"github.com/lollipopkit/lk/term"
 )
 
 var (

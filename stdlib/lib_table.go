@@ -1,7 +1,7 @@
 package stdlib
 
 import (
-	. "git.lolli.tech/lollipopkit/lk/api"
+	. "github.com/lollipopkit/lk/api"
 )
 
 var tableLib = map[string]GoFunction{

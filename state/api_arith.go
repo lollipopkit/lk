@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	. "git.lolli.tech/lollipopkit/lk/api"
-	"git.lolli.tech/lollipopkit/lk/utils"
+	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/utils"
 )
 
 type operator struct {
@@ -54,41 +54,6 @@ var operators = []operator{
 	{"__bnot", bnot, nil},
 }
 
-func opSymbol(opName string) string {
-	switch opName {
-	case "__add":
-		return "+"
-	case "__sub":
-		return "-"
-	case "__mul":
-		return "*"
-	case "__mod":
-		return "%"
-	case "__pow":
-		return "^"
-	case "__div":
-		return "/"
-	case "__idiv":
-		return "~/"
-	case "__band":
-		return "and"
-	case "__bor":
-		return "or"
-	case "__bxor":
-		return "xor"
-	case "__shl":
-		return "<<"
-	case "__shr":
-		return ">>"
-	case "__unm":
-		return "-"
-	case "__bnot":
-		return "not"
-	default:
-		return opName
-	}
-}
-
 // [-(2|1), +1, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_arith
 func (self *lkState) Arith(op ArithOp) {
@@ -98,13 +63,6 @@ func (self *lkState) Arith(op ArithOp) {
 		a = self.stack.pop()
 	} else {
 		a = b
-	}
-
-	aa, oka := a.(string)
-	bb, okb := b.(string)
-	if oka && okb {
-		self.stack.push(aa + bb)
-		return
 	}
 
 	operator := operators[op]
@@ -119,14 +77,14 @@ func (self *lkState) Arith(op ArithOp) {
 		return
 	}
 
-	if a == nil && b == nil {
-		self.PushNil()
+	aa, oka := a.(string)
+	bb, okb := b.(string)
+	if oka && okb {
+		self.stack.push(aa + bb)
 		return
 	}
 
-	self.stack.push(a)
-	self.stack.push(b)
-	panic(fmt.Sprintf("invalid arith: %T %s %T", a, opSymbol(mm), b))
+	panic(fmt.Sprintf("invalid arith: %T %s %T", a, mm, b))
 }
 
 func _arith(a, b any, op operator) any {
