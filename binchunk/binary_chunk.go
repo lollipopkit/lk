@@ -1,10 +1,10 @@
 package binchunk
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 
-	jsoniter "github.com/json-iterator/go"
 	"github.com/lollipopkit/lk/consts"
 )
 
@@ -13,7 +13,6 @@ const (
 )
 
 var (
-	json                    = jsoniter.ConfigCompatibleWithStandardLibrary
 	ErrInvalidVersionFormat = errors.New("invalid version format")
 )
 

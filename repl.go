@@ -2,13 +2,14 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
+	"github.com/lollipopkit/gommon/term"
 	"github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
 	"github.com/lollipopkit/lk/state"
-	"github.com/lollipopkit/lk/term"
 )
 
 var (
@@ -20,12 +21,14 @@ func repl() {
 	ls := state.New()
 	ls.OpenLibs()
 
-	term.Cyan("REPL for LK (v" + consts.VERSION + ")")
+	term.Cyan("REPL for LK (v" + consts.VERSION + ")\n")
 
 	blockLines := []string{}
 
 	for {
-		line := term.ReadLine(linesHistory)
+		line := term.ReadLine(linesHistory, func() {
+			os.Exit(0)
+		}, "> ")
 		if line == "" {
 			continue
 		}
@@ -58,7 +61,7 @@ func catchErr(ls api.LkState, first *bool, cmd string) {
 			ls.PCall(0, api.LK_MULTRET, 1)
 			updateHistory(cmd)
 		} else {
-			term.Red(fmt.Sprintf("%v", err))
+			term.Red(fmt.Sprintf("%v\n", err))
 		}
 	}
 }

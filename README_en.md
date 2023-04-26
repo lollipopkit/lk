@@ -110,7 +110,6 @@ if http.listen(':8080', handler) != nil {
     - [x] Identification code block
     - [x] Resources
 - [x] Documentation
-  - [x] `CHANGELOG.md`
   - [x] `LANG.md` 
   - [x] Test set, located in the `test` folder
 - [x] IDE

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"math"
 	"strconv"
 
@@ -26,7 +27,8 @@ func (self *lkTable) copy() *lkTable {
 }
 
 func (self *lkTable) String() (string, error) {
-	return json.MarshalToString(self.Json())
+	s, err := json.Marshal(self.Json())
+	return string(s), err
 	// if err != nil {
 	// 	return "", err
 	// }

@@ -2,7 +2,7 @@ package stdlib
 
 import (
 	. "github.com/lollipopkit/lk/api"
-	"github.com/lollipopkit/lk/term"
+	"github.com/lollipopkit/gommon/term"
 )
 
 var termLib = map[string]GoFunction{
@@ -25,6 +25,6 @@ func OpenTermLib(ls LkState) int {
 }
 
 func termInput(ls LkState) int {
-	ls.PushString(term.ReadLine(term.EmptyStringList, ls.OptString(1, "")))
+	ls.PushString(term.ReadLine([]string{}, func() {}, ls.OptString(1, "")))
 	return 1
 }

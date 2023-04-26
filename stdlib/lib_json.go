@@ -1,7 +1,7 @@
 package stdlib
 
 import (
-	glc "git.lolli.tech/lollipopkit/go-lru-cacher"
+	glc "github.com/lollipopkit/go-lru-cacher"
 	. "github.com/lollipopkit/lk/api"
 	"github.com/tidwall/gjson"
 )
@@ -11,7 +11,7 @@ var (
 		"get": jsonGet,
 	}
 	// 缓存gjson加载结果
-	gjsonCacher = glc.NewCacher(10)
+	gjsonCacher = glc.NewCacher[gjson.Result](10)
 )
 
 func OpenJsonLib(ls LkState) int {
@@ -26,17 +26,11 @@ func jsonGet(ls LkState) int {
 	path := ls.CheckString(2)
 
 	// 从缓存中获取gjson.Result
-	var gjsonResult gjson.Result
-	gjsonCache, ok := gjsonCacher.Get(source)
+	gjsonResult, ok := gjsonCacher.Get(source)
 	if !ok {
-		gjsonResult = gjson.Parse(source)
+		a := gjson.Parse(source)
+		gjsonResult = &a
 		gjsonCacher.Set(source, gjsonResult)
-	} else {
-		gjsonResult, ok = gjsonCache.(gjson.Result)
-		if !ok {
-			ls.PushNil()
-			return 1
-		}
 	}
 
 	// 从gjson.Result中获取结果

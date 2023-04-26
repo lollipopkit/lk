@@ -6,14 +6,12 @@ import (
 	"net/http"
 	"strings"
 
-	jsoniter "github.com/json-iterator/go"
 	. "github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
 )
 
 var (
 	client  = http.Client{}
-	json    = jsoniter.ConfigCompatibleWithStandardLibrary
 	httpLib = map[string]GoFunction{
 		"req":    httpReq,
 		"get":    httpGet,

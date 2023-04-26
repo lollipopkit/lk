@@ -8,7 +8,7 @@ import (
 	. "github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/binchunk"
 	"github.com/lollipopkit/lk/compiler"
-	"github.com/lollipopkit/lk/term"
+	"github.com/lollipopkit/gommon/term"
 	"github.com/lollipopkit/lk/utils"
 )
 

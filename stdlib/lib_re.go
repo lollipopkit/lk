@@ -3,12 +3,12 @@ package stdlib
 import (
 	"regexp"
 
-	glc "git.lolli.tech/lollipopkit/go-lru-cacher"
+	glc "github.com/lollipopkit/go-lru-cacher"
 	. "github.com/lollipopkit/lk/api"
 )
 
 var (
-	reCacher = glc.NewCacher(10)
+	reCacher = glc.NewCacher[*regexp.Regexp](10)
 	reLib    = map[string]GoFunction{
 		"have": reFound,
 		"find": reFind,
@@ -21,16 +21,12 @@ func OpenReLib(ls LkState) int {
 }
 
 func getExp(pattern string) *regexp.Regexp {
-	var exp *regexp.Regexp
 	cache, ok := reCacher.Get(pattern)
 	if ok {
-		exp, ok = cache.(*regexp.Regexp)
-		if ok {
-			return exp
-		}
+		return *cache
 	}
-	exp = regexp.MustCompile(pattern)
-	reCacher.Set(pattern, exp)
+	exp := regexp.MustCompile(pattern)
+	reCacher.Set(pattern, &exp)
 	return exp
 }
 

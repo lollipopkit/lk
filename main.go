@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/lollipopkit/gommon/term"
 	"github.com/lollipopkit/lk/compiler/parser"
 	"github.com/lollipopkit/lk/state"
-	"github.com/lollipopkit/lk/term"
 )
 
 var (

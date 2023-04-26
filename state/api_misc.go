@@ -3,12 +3,7 @@ package state
 import (
 	"fmt"
 
-	jsoniter "github.com/json-iterator/go"
 	"github.com/lollipopkit/lk/utils"
-)
-
-var (
-	json = jsoniter.ConfigCompatibleWithStandardLibrary
 )
 
 // [-0, +1, e]

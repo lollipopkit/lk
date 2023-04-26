@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	. "github.com/lollipopkit/lk/api"
-	"github.com/lollipopkit/lk/term"
+	"github.com/lollipopkit/gommon/term"
 	"github.com/lollipopkit/lk/vm"
 )
 
@@ -128,7 +128,7 @@ func (self *lkState) CatchAndPrint() {
 			}
 			return ""
 		}()
-		errStr := fmt.Sprintf("%s%v", tip, err)
+		errStr := fmt.Sprintf("%s%v\n", tip, err)
 		term.Red(errStr)
 	}
 }
