@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
-	"regexp"
+	"os"
 	"strings"
 
+	"atomicgo.dev/keyboard/keys"
 	"github.com/lollipopkit/gommon/log"
 	"github.com/lollipopkit/gommon/term"
 	"github.com/lollipopkit/lk/api"
@@ -14,20 +15,34 @@ import (
 
 var (
 	linesHistory = []string{}
-	printReg     = regexp.MustCompile(`print\(.*\)`)
+	helpMsgs = []string{
+		"`Ctrl + c` / `esc`: Exit REPL",
+		"`Ctrl + b`: Wrap current line with `print()`",
+		"`Ctrl + n`: Wrap current line with `printf()`",
+		"`Tab`: Add 2 spaces",
+	}
+	printRunesPre = []rune("print(")
+	printfRunesPre = []rune("printf(")
+	printRunesSuf = []rune(")")
 )
 
 func repl() {
 	ls := state.New()
 	ls.OpenLibs()
+	ls.Register("help", func(ls api.LkState) int {
+		print(strings.Join(helpMsgs, "\n") + "\n")
+		return 0
+	})
 
-	log.Cyan("REPL for LK (v" + consts.VERSION + ")\n")
+	log.Cyan("REPL for lk (v" + consts.VERSION + ") - ")
+	print("enter `help()` for help\n")
 
 	blockLines := []string{}
 
 	for {
 		line := term.ReadLine(term.ReadLineConfig{
 			History: linesHistory,
+			KeyFunc: handleKeyboard,
 		})
 		if line == "" {
 			continue
@@ -35,7 +50,7 @@ func repl() {
 
 		blockLines = append(blockLines, line)
 		blockStr := strings.Join(blockLines, "\n")
-		if !_isBlockEnd(blockStr) {
+		if _blockNotEndCount(blockStr) != 0 {
 			continue
 		}
 
@@ -64,6 +79,24 @@ func protectedCall(ls api.LkState, cmd string) {
 	updateHistory(cmd)
 }
 
+func handleKeyboard(key keys.Key, rs *[]rune, rIdx *int, lIdx *int) (bool, bool, error) {
+	switch key.Code {
+	// wrap with `print()``
+	case keys.CtrlB:
+		*rs = append(printRunesPre, append(*rs, printRunesSuf...)...)
+		*rIdx = len(*rs)
+		return false, true, nil
+	// wrap with `printf`
+	case keys.CtrlN:
+		*rs = append(printfRunesPre, append(*rs, printRunesSuf...)...)
+		*rIdx = len(*rs)
+		return false, true, nil
+	case keys.Esc:
+		os.Exit(0)
+	}
+	return false, false, nil
+}
+
 func _updateHistory(str string) {
 	idx := -1
 	for i := range linesHistory {
@@ -86,7 +119,7 @@ func updateHistory(str string) {
 	}
 }
 
-func _isBlockEnd(block string) bool {
+func _blockNotEndCount(block string) int {
 	start := 0
 	end := 0
 	inStr := false
@@ -114,8 +147,5 @@ func _isBlockEnd(block string) bool {
 			}
 		}
 	}
-	if inStr {
-		return false
-	}
-	return start == end
+	return start - end
 }
