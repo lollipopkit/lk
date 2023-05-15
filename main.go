@@ -6,10 +6,10 @@ import (
 	"os"
 	"strings"
 
+	jsoniter "github.com/json-iterator/go"
 	"github.com/lollipopkit/gommon/log"
 	"github.com/lollipopkit/lk/compiler/parser"
 	"github.com/lollipopkit/lk/state"
-	jsoniter "github.com/json-iterator/go"
 )
 
 var (

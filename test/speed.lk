@@ -12,5 +12,5 @@ fn speed:test(func) {
     }
 
     t2 := os.time()
-    print(fmt('time: %d ms', t2 - t1))
+    printf('time: %d ms', t2 - t1)
 }

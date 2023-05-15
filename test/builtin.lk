@@ -5,10 +5,13 @@ fn fail(...) {
 
 import 'list'
 a := new(list)
-a:add(1, 2, 3, 4)
-a:remove(2, 3)
+a:add(1, 2, 2, 4)
+a:remove(2)
 a:remove_at(1)
 a:insert(1, '7')
+for i, v in a {
+    print(i, v)
+}
 a:reverse()
 if a[0] != '7' {
     fail(a[0])

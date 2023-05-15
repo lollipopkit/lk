@@ -1,6 +1,10 @@
 package state
 
-import . "github.com/lollipopkit/lk/api"
+import (
+	"fmt"
+
+	. "github.com/lollipopkit/lk/api"
+)
 
 // [-0, +0, e]
 // http://www.lua.org/manual/5.3/manual.html#lua_compare
@@ -88,7 +92,7 @@ func _lt(a, b any, ls *lkState) bool {
 	if result, ok := callMetamethod(a, b, "__lt", ls); ok {
 		return convertToBoolean(result)
 	} else {
-		panic("comparison error!")
+		panic(fmt.Sprintf("invalid cmp: %v < %v", a, b))
 	}
 }
 
@@ -119,6 +123,6 @@ func _le(a, b any, ls *lkState) bool {
 	} else if result, ok := callMetamethod(b, a, "__lt", ls); ok {
 		return !convertToBoolean(result)
 	} else {
-		panic("comparison error!")
+		panic(fmt.Sprintf("invalid cmp: %v <= %v", a, b))
 	}
 }

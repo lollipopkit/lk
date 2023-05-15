@@ -56,7 +56,7 @@ func catchErr(ls api.LkState, cmd string) {
 func protectedCall(ls api.LkState, cmd string) {
 	// 捕获错误
 	defer catchErr(ls, cmd)
-	
+
 	//log.Green(">>> " + cmd)
 	ls.LoadString(cmd, "stdin")
 

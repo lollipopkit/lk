@@ -11,6 +11,8 @@ import (
 var baseFuncs = map[string]GoFunction{
 	"new":       baseNew,
 	"print":     basePrint,
+	"fmt":       strFormat,
+	"printf":    basePrintf,
 	"assert":    baseAssert,
 	"error":     baseError,
 	"irange":    baseIPairs,
@@ -27,8 +29,6 @@ var baseFuncs = map[string]GoFunction{
 	"num":  baseToNumber,
 	"int":  mathToInt,
 	"kv":   baseKV,
-	// string
-	"fmt": strFormat,
 }
 
 // lua-5.3.4/src/lbaselib.c#luaopen_base()
@@ -99,20 +99,7 @@ func strFormat(ls LkState) int {
 		return 1
 	}
 
-	argIdx := 1
-	arr := parseFmtStr(fmtStr)
-	for i := range arr {
-		if arr[i][0] == '%' {
-			if arr[i] == "%%" {
-				arr[i] = "%"
-			} else {
-				argIdx += 1
-				arr[i] = _fmtArg(arr[i], ls, argIdx)
-			}
-		}
-	}
-
-	ls.PushString(strings.Join(arr, ""))
+	ls.PushString(_fmt(fmtStr, ls))
 	return 1
 }
 
@@ -129,6 +116,21 @@ func basePrint(ls LkState) int {
 		ls.Pop(1) /* pop result */
 	}
 	println()
+	return 0
+}
+
+func basePrintf(ls LkState) int {
+	n := ls.GetTop()
+	if n == 0 {
+		return 0
+	}
+	fmtStr := ls.CheckString(1)
+	if len(fmtStr) <= 1 || strings.IndexByte(fmtStr, '%') < 0 {
+		print(fmtStr)
+		return 0
+	}
+
+	print(_fmt(fmtStr, ls))
 	return 0
 }
 
@@ -187,7 +189,7 @@ func iPairsAux(ls LkState) int {
 // lua-5.3.4/src/lbaselib.c#luaB_pairs()
 func basePairs(ls LkState) int {
 	ls.CheckAny(1)
-	if ls.GetMetafield(1, "__range") == LK_TNIL { /* no metamethod? */
+	if ls.GetMetafield(1, "__iter") == LK_TNIL { /* no metamethod? */
 		ls.PushGoFunction(baseNext) /* will return generator, */
 		ls.PushValue(1)             /* state, */
 		ls.PushNil()

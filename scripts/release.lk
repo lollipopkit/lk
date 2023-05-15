@@ -82,7 +82,7 @@ if git {
         print("Error tagging: " + err)
         os.exit(1)
     }
-    print(fmt("Tagged v%s."))
+    printf("Tagged v%s.")
 
     _, err := os.exec("git push origin v"+version)
     if err != nil {
@@ -108,10 +108,10 @@ for _, arch in archs {
         cmd = fmt('%s go build -o %s', prefix, output)
         _, err := os.exec(cmd)
         if err != nil {
-            print(fmt('Failed to build %s-%s: ', platform, arch, err))
+            printf('Failed to build %s-%s: ', platform, arch, err)
             os.exit()
         }
-        print(fmt('Successfully built %s-%s', platform, arch))
+        printf('Successfully built %s-%s', platform, arch)
     }
 }
 

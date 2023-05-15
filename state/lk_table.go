@@ -1,13 +1,12 @@
 package state
 
 import (
+	jsoniter "github.com/json-iterator/go"
 	"math"
 	"strconv"
-	jsoniter "github.com/json-iterator/go"
 
 	"github.com/lollipopkit/lk/utils"
 )
-
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 

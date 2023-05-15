@@ -10,39 +10,50 @@ fn list:add(...) {
     rt self
 }
 
-// idx: 删除的位置
-fn list:remove_at(idx) {
+// ...: 删除的位置
+fn list:remove_at(...) {
     len := #self.items
-    if idx >= len {
-        error(fmt("Index %d out of range %d", idx, len))
+    idxs := new(list)
+    idxs:add(...)
+    idxs:sort()
+    for _, idx in idxs {
+        if idx >= len {
+            error(fmt("index %d >= length %d", idx, len))
+        }
+        for i = idx, len - 1 {
+            self.items[i] = self.items[i + 1]
+        }
     }
-    for i = idx, len - 1 {
-        self.items[i] = self.items[i + 1]
-    }
-    rt self
 }
 
 // ...: 删除的元素
 fn list:remove(...) {
+    idxs := {}
     for _, v in {...} {
-        for i in self.items {
-            if self.items[i] == v {
-                self:remove_at(i)
-                break
+        for idx = #self.items - 1, 0, -1 {
+            if self.items[idx] == v {
+                self:remove_at(idx)
+                // 不能 break，list 不是 set，可能有相同的元素
             }
         }
     }
-    rt self
 }
 
-// item: 包含的元素
-fn list:contains(item) {
-    for i in self.items {
-        if self.items[i] == item {
-            rt true
+// ...: 包含的元素
+fn list:contains(...) {
+    for _, v in {...} {
+        have := false
+        for _, vv in self.items {
+            if vv == v {
+                have = true
+                break
+            }
+        }
+        if !have {
+            rt false
         }
     }
-    rt false
+    rt true
 }
 
 // idx: 插入位置
@@ -56,13 +67,11 @@ fn list:insert(idx, item) {
         self.items[i + 1] = self.items[i]
     }
     self.items[idx] = item
-    rt self
 }
 
 // 清空
 fn list:clear() {
     self.items = {}
-    rt self
 }
 
 // 反转
@@ -77,7 +86,26 @@ fn list:reverse() {
             i++
         }
     }
-    rt self
+}
+
+fn list:sort(func) {
+    if func == nil {
+        func = fn(a, b) {
+            rt a < b
+        }
+    }
+    len := #self.items
+    if len > 1 {
+        for i = 0, len - 1 {
+            for j = i + 1, len {
+                if func(self.items[i], self.items[j]) {
+                    tmp = self.items[i]
+                    self.items[i] = self.items[j]
+                    self.items[j] = tmp
+                }
+            }
+        }
+    }
 }
 
 fn list:__add(other) {
@@ -97,6 +125,18 @@ fn list:__str() {
 
 fn list:__index(idx) {
     rt self.items[idx]
+}
+
+shy fn iter(a, i) {
+    i++
+    v := a[i]
+    if v {
+       rt i, v
+    }
+}
+
+fn list:__iter() {
+    rt iter, self.items, -1
 }
 
 fn list:__eq(other) {

@@ -41,7 +41,7 @@ checks := {
     },
     'old': fn() {
         if #args != 4 {
-            print(fmt('参数过少: \n%s', helps['old']))
+            printf('参数过少: \n%s', helps['old'])
             rt false
         }
         if not re.have('^[0-9]+$', args[3]) {
@@ -53,7 +53,7 @@ checks := {
     're': fn() {
         pass := #args == 4
         if not pass {
-            print(fmt('参数过少: \n%s', helps['re']))
+            printf('参数过少: \n%s', helps['re'])
         }
         rt pass
     },
@@ -63,7 +63,7 @@ zsh_history_path := os.get_env('HOME') + '/.zsh_history'
 zsh_history_bak_path := zsh_history_path + '.bak'
 
 if #args < 3 {
-    print(fmt("Usage: %s <mode> [options]\n", cmd_prefix))
+    printf("Usage: %s <mode> [options]\n", cmd_prefix)
     help_str := ''
     for k, v in helps {
         help_str += fmt('%s%s%s: %s\n\n', term.cyan, k, term.nocolor, v)
@@ -118,5 +118,5 @@ if err != nil {
     origin := fmt('原有 %s%d%s 条', term.cyan, #lines, term.nocolor)
     now := fmt('现有 %s%d%s 条', term.green, #lines_result, term.nocolor)
     clean := fmt('共清理 %s%d%s 条历史', term.red, #lines - #lines_result, term.nocolor)
-    print(fmt('清理完成，%s，%s，%s', origin, now, clean))
+    printf('清理完成，%s，%s，%s', origin, now, clean)
 }

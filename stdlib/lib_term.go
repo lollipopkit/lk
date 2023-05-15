@@ -1,9 +1,9 @@
 package stdlib
 
 import (
-	. "github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/gommon/res"
 	"github.com/lollipopkit/gommon/term"
+	. "github.com/lollipopkit/lk/api"
 )
 
 var termLib = map[string]GoFunction{

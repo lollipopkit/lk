@@ -15,7 +15,7 @@ for _, file in files {
     if not file:contains('.lkc') {
         _, have_val := skip_files:contains(file)
         if not have_val {
-            print(fmt('====== %s ======', file))
+            printf('====== %s ======\n', file)
             do_file(dir + file)
         }
     }

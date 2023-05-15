@@ -1,7 +1,6 @@
 package stdlib
 
 import (
-	"fmt"
 	"strings"
 
 	. "github.com/lollipopkit/lk/api"
@@ -193,25 +192,3 @@ func strChar(ls LkState) int {
 	return 1
 }
 
-func _fmtArg(tag string, ls LkState, argIdx int) string {
-	switch tag[len(tag)-1] { // specifier
-	case 'c': // character
-		return string([]byte{byte(ls.ToInteger(argIdx))})
-	case 'i':
-		tag = tag[:len(tag)-1] + "d" // %i -> %d
-		return fmt.Sprintf(tag, ls.ToInteger(argIdx))
-	case 'd', 'o': // integer, octal
-		return fmt.Sprintf(tag, ls.ToInteger(argIdx))
-	case 'u': // unsigned integer
-		tag = tag[:len(tag)-1] + "d" // %u -> %d
-		return fmt.Sprintf(tag, uint(ls.ToInteger(argIdx)))
-	case 'x', 'X': // hex integer
-		return fmt.Sprintf(tag, uint(ls.ToInteger(argIdx)))
-	case 'f': // float
-		return fmt.Sprintf(tag, ls.ToNumber(argIdx))
-	case 's', 'q': // string
-		return fmt.Sprintf(tag, ls.ToString2(argIdx))
-	default:
-		panic("todo! tag=" + tag)
-	}
-}

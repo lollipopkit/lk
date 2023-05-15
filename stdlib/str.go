@@ -1,7 +1,12 @@
 package stdlib
 
-import "regexp"
-import "strings"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+
+	. "github.com/lollipopkit/lk/api"
+)
 
 // tag = %[flags][width][.precision]specifier
 var tagPattern = regexp.MustCompile(`%[ #+-0]?[0-9]*(\.[0-9]+)?[cdeEfgGioqsuxX%]`)
@@ -34,6 +39,46 @@ func parseFmtStr(fmt string) []string {
 		fmt = tail
 	}
 	return parsed
+}
+
+
+func _fmt(fmtStr string, ls LkState) string {
+	argIdx := 1
+	arr := parseFmtStr(fmtStr)
+	for i := range arr {
+		if arr[i][0] == '%' {
+			if arr[i] == "%%" {
+				arr[i] = "%"
+			} else {
+				argIdx += 1
+				arr[i] = _fmtArg(arr[i], ls, argIdx)
+			}
+		}
+	}
+	return strings.Join(arr, "")
+}
+
+func _fmtArg(tag string, ls LkState, argIdx int) string {
+	switch tag[len(tag)-1] { // specifier
+	case 'c': // character
+		return string([]byte{byte(ls.ToInteger(argIdx))})
+	case 'i':
+		tag = tag[:len(tag)-1] + "d" // %i -> %d
+		return fmt.Sprintf(tag, ls.ToInteger(argIdx))
+	case 'd', 'o': // integer, octal
+		return fmt.Sprintf(tag, ls.ToInteger(argIdx))
+	case 'u': // unsigned integer
+		tag = tag[:len(tag)-1] + "d" // %u -> %d
+		return fmt.Sprintf(tag, uint(ls.ToInteger(argIdx)))
+	case 'x', 'X': // hex integer
+		return fmt.Sprintf(tag, uint(ls.ToInteger(argIdx)))
+	case 'f': // float
+		return fmt.Sprintf(tag, ls.ToNumber(argIdx))
+	case 's', 'q': // string
+		return fmt.Sprintf(tag, ls.ToString2(argIdx))
+	default:
+		panic("todo! tag=" + tag)
+	}
 }
 
 /* helper */
