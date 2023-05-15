@@ -1,19 +1,20 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"io/ioutil"
 	"os"
 	"strings"
 
-	"github.com/lollipopkit/gommon/term"
+	"github.com/lollipopkit/gommon/log"
 	"github.com/lollipopkit/lk/compiler/parser"
 	"github.com/lollipopkit/lk/state"
+	jsoniter "github.com/json-iterator/go"
 )
 
 var (
 	args = []string{}
+	json = jsoniter.ConfigCompatibleWithStandardLibrary
 )
 
 func main() {
@@ -35,7 +36,7 @@ func main() {
 		if strings.Contains(args[0], ".lk") {
 			runVM(args[0])
 		} else {
-			term.Yellow("Can't run file without suffix '.lk':\n" + args[0])
+			log.Yellow("Can't run file without suffix '.lk':\n" + args[0])
 		}
 	}
 }
@@ -43,7 +44,7 @@ func main() {
 func WriteAst(path string) {
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		term.Red(err.Error())
+		log.Red(err.Error())
 		os.Exit(1)
 	}
 
@@ -51,13 +52,13 @@ func WriteAst(path string) {
 
 	j, err := json.MarshalIndent(block, "", "  ")
 	if err != nil {
-		term.Red(err.Error())
+		log.Red(err.Error())
 		os.Exit(1)
 	}
 
 	err = ioutil.WriteFile(path+".ast.json", j, 0644)
 	if err != nil {
-		term.Red(err.Error())
+		log.Red(err.Error())
 		os.Exit(1)
 	}
 }
@@ -65,7 +66,7 @@ func WriteAst(path string) {
 func runVM(path string) {
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
-		term.Red("[run] can't read file: " + err.Error())
+		log.Red("[run] can't read file: " + err.Error())
 		os.Exit(1)
 	}
 	ls := state.New()

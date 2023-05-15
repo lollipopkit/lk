@@ -95,4 +95,24 @@ fn list:__str() {
     rt str(self.items)
 }
 
+fn list:__index(idx) {
+    rt self.items[idx]
+}
+
+fn list:__eq(other) {
+    if #self.items != #other.items {
+        rt false
+    }
+    for idx, i in self.items {
+        if i != other.items[idx] {
+            rt false
+        }
+    }
+    rt true
+}
+
+// fn list:__newindex(idx, val) {
+//     self.items[idx] = val
+// }
+
 rt list

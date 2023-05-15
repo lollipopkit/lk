@@ -2,10 +2,10 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 
+	"github.com/lollipopkit/gommon/log"
 	"github.com/lollipopkit/gommon/term"
 	"github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
@@ -21,14 +21,14 @@ func repl() {
 	ls := state.New()
 	ls.OpenLibs()
 
-	term.Cyan("REPL for LK (v" + consts.VERSION + ")\n")
+	log.Cyan("REPL for LK (v" + consts.VERSION + ")\n")
 
 	blockLines := []string{}
 
 	for {
-		line := term.ReadLine(linesHistory, func() {
-			os.Exit(0)
-		}, "> ")
+		line := term.ReadLine(term.ReadLineConfig{
+			History: linesHistory,
+		})
 		if line == "" {
 			continue
 		}
@@ -46,37 +46,19 @@ func repl() {
 	}
 }
 
-func loadString(ls api.LkState, cmd string) {
-	//term.Green(">>> " + cmd)
-	ls.LoadString(cmd, "stdin")
-}
-
-func catchErr(ls api.LkState, first *bool, cmd string) {
+func catchErr(ls api.LkState, cmd string) {
 	err := recover()
 	if err != nil {
-		if *first {
-			*first = false
-			defer catchErr(ls, first, cmd)
-			loadString(ls, cmd)
-			ls.PCall(0, api.LK_MULTRET, 1)
-			updateHistory(cmd)
-		} else {
-			term.Red(fmt.Sprintf("%v\n", err))
-		}
+		log.Red(fmt.Sprintf("%v\n", err))
 	}
 }
 
 func protectedCall(ls api.LkState, cmd string) {
-	havePrint := printReg.MatchString(cmd)
-	first := !havePrint
 	// 捕获错误
-	defer catchErr(ls, &first, cmd)
-
-	if havePrint {
-		loadString(ls, cmd)
-	} else {
-		loadString(ls, "print("+cmd+")")
-	}
+	defer catchErr(ls, cmd)
+	
+	//log.Green(">>> " + cmd)
+	ls.LoadString(cmd, "stdin")
 
 	ls.PCall(0, api.LK_MULTRET, 1)
 	updateHistory(cmd)

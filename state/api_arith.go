@@ -12,6 +12,7 @@ type operator struct {
 	metamethod  string
 	integerFunc func(int64, int64) int64
 	floatFunc   func(float64, float64) float64
+	symbol string
 }
 
 var (
@@ -38,20 +39,20 @@ var (
 )
 
 var operators = []operator{
-	{"__add", iadd, fadd},
-	{"__sub", isub, fsub},
-	{"__mul", imul, fmul},
-	{"__mod", imod, fmod},
-	{"__pow", nil, pow},
-	{"__div", nil, div},
-	{"__idiv", iidiv, fidiv},
-	{"__band", band, nil},
-	{"__bor", bor, nil},
-	{"__bxor", bxor, nil},
-	{"__shl", shl, nil},
-	{"__shr", shr, nil},
-	{"__unm", iunm, funm},
-	{"__bnot", bnot, nil},
+	{"__add", iadd, fadd, "+"},
+	{"__sub", isub, fsub, "-"},
+	{"__mul", imul, fmul, "*"},
+	{"__mod", imod, fmod, "%"},
+	{"__pow", nil, pow, "^"},
+	{"__div", nil, div, "/"},
+	{"__idiv", iidiv, fidiv, "~/"},
+	{"__band", band, nil, "&"},
+	{"__bor", bor, nil, "|"},
+	{"__bxor", bxor, nil, "^"},
+	{"__shl", shl, nil, "<<"},
+	{"__shr", shr, nil, ">>"},
+	{"__unm", iunm, funm, "-"},
+	{"__bnot", bnot, nil, "~"},
 }
 
 // [-(2|1), +1, e]
@@ -84,7 +85,7 @@ func (self *lkState) Arith(op ArithOp) {
 		return
 	}
 
-	panic(fmt.Sprintf("invalid arith: %T %s %T", a, mm, b))
+	panic(fmt.Sprintf("invalid arith: %v %s %v", a, operator.symbol, b))
 }
 
 func _arith(a, b any, op operator) any {

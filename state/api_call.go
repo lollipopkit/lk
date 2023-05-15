@@ -3,8 +3,8 @@ package state
 import (
 	"fmt"
 
+	"github.com/lollipopkit/gommon/log"
 	. "github.com/lollipopkit/lk/api"
-	"github.com/lollipopkit/gommon/term"
 	"github.com/lollipopkit/lk/vm"
 )
 
@@ -32,7 +32,7 @@ func (self *lkState) Call(nArgs, nResults int) {
 			self.callGoClosure(nArgs, nResults, c)
 		}
 	} else {
-		panic(fmt.Sprintf("attempt to call on %s", self.ToString2(idx)))
+		panic(fmt.Sprintf("attempt to call on %#v", val))
 	}
 }
 
@@ -129,7 +129,7 @@ func (self *lkState) CatchAndPrint() {
 			return ""
 		}()
 		errStr := fmt.Sprintf("%s%v\n", tip, err)
-		term.Red(errStr)
+		log.Red(errStr)
 	}
 }
 

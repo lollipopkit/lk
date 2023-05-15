@@ -1,12 +1,15 @@
 package state
 
 import (
-	"encoding/json"
 	"math"
 	"strconv"
+	jsoniter "github.com/json-iterator/go"
 
 	"github.com/lollipopkit/lk/utils"
 )
+
+
+var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // var (
 // 	_closureRe = regexp.MustCompile(`"((GoFunc|LkFunc)@0x[0-9a-f]+)"`)
