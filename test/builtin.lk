@@ -4,7 +4,7 @@ fn fail(...) {
 }
 
 import 'list'
-a := new(list)
+a := new(List)
 a:add(1, 2, 2, 4)
 a:remove(2)
 a:remove_at(1)
@@ -16,7 +16,7 @@ a:reverse()
 if a[0] != '7' {
     fail(a[0])
 }
-b := new(list)
+b := new(List)
 if a != a + b {
     fail(a, a + b)
 }

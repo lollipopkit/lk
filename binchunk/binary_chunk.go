@@ -1,11 +1,11 @@
 package binchunk
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 
 	"github.com/lollipopkit/lk/consts"
+	. "github.com/lollipopkit/lk/json"
 )
 
 const (
@@ -62,7 +62,7 @@ type LocVar struct {
 
 func Load(data []byte) (*Prototype, error) {
 	var bin binaryChunk
-	err := json.Unmarshal(data, &bin)
+	err := Json.Unmarshal(data, &bin)
 	if err != nil {
 		return nil, err
 	}
@@ -92,5 +92,5 @@ func (proto *Prototype) Dump(md5 string) ([]byte, error) {
 		Proto:   proto,
 		Md5:     md5,
 	}
-	return json.Marshal(bin)
+	return Json.Marshal(bin)
 }

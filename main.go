@@ -6,15 +6,15 @@ import (
 	"os"
 	"strings"
 
-	jsoniter "github.com/json-iterator/go"
 	"github.com/lollipopkit/gommon/log"
 	"github.com/lollipopkit/lk/compiler/parser"
+	"github.com/lollipopkit/lk/repl"
 	"github.com/lollipopkit/lk/state"
+	. "github.com/lollipopkit/lk/json"
 )
 
 var (
 	args = []string{}
-	json = jsoniter.ConfigCompatibleWithStandardLibrary
 )
 
 func main() {
@@ -24,24 +24,25 @@ func main() {
 	flag.Parse()
 	args = flag.Args()
 	if len(args) == 0 {
-		repl()
+		repl.Repl()
 		return
 	}
 
+	fPath := args[0]
 	if *ast {
-		WriteAst(args[0])
+		writeAst(fPath)
 	} else if *compile {
-		state.Compile(args[0])
+		state.Compile(fPath)
 	} else {
-		if strings.Contains(args[0], ".lk") {
-			runVM(args[0])
+		if strings.HasSuffix(fPath, ".lk") || strings.HasSuffix(fPath, ".lkc") {
+			runVM(fPath)
 		} else {
-			log.Yellow("Can't run file without suffix '.lk':\n" + args[0])
+			log.Yellow("Can't run file without suffix '.lk(c)':\n" + fPath)
 		}
 	}
 }
 
-func WriteAst(path string) {
+func writeAst(path string) {
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		log.Red(err.Error())
@@ -50,7 +51,7 @@ func WriteAst(path string) {
 
 	block := parser.Parse(string(data), path)
 
-	j, err := json.MarshalIndent(block, "", "  ")
+	j, err := Json.MarshalIndent(block, "", "  ")
 	if err != nil {
 		log.Red(err.Error())
 		os.Exit(1)

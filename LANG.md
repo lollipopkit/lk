@@ -378,7 +378,7 @@ print(v3.x, v3.y)  // 4       6
 printf('%s + %s = %s', v1, v2, v3)  // Vector(1, 2) + Vector(3, 4) = Vector(4, 6)
 ``` 
 
-以下是可以拓展的元方法表：  
+以下是部分可以拓展的元方法表：  
 
 |操作符/作用|metatable|
 |-|-|

@@ -1,32 +1,39 @@
-package main
+package repl
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"atomicgo.dev/keyboard/keys"
 	"github.com/lollipopkit/gommon/log"
+	"github.com/lollipopkit/gommon/res"
 	"github.com/lollipopkit/gommon/term"
+	"github.com/lollipopkit/gommon/util"
 	"github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
 	"github.com/lollipopkit/lk/state"
+	. "github.com/lollipopkit/lk/json"
 )
 
 var (
 	linesHistory = []string{}
-	helpMsgs = []string{
-		"`Ctrl + c` / `esc`: Exit REPL",
+	helpMsgs     = []string{
+		"`esc`: Exit REPL",
 		"`Ctrl + b`: Wrap current line with `print()`",
 		"`Ctrl + n`: Wrap current line with `printf()`",
+		"`Ctrl + m`: Clear REPL hiistory",
 		"`Tab`: Add 2 spaces",
 	}
-	printRunesPre = []rune("print(")
+	printRunesPre  = []rune("print(")
 	printfRunesPre = []rune("printf(")
-	printRunesSuf = []rune(")")
+	printRunesSuf  = []rune(")")
+	historyPath    = filepath.Join(os.Getenv("HOME"), ".config", "lk_history.json")
 )
 
-func repl() {
+func Repl() {
+	loadHistory()
 	ls := state.New()
 	ls.OpenLibs()
 	ls.Register("help", func(ls api.LkState) int {
@@ -34,8 +41,11 @@ func repl() {
 		return 0
 	})
 
-	log.Cyan("REPL for lk (v" + consts.VERSION + ") - ")
-	print("enter `help()` for help\n")
+	fmt.Printf(
+		"REPL for lk (v%s) - enter %s for help\n",
+		res.CYAN+consts.VERSION+res.NOCOLOR,
+		res.GREEN+"`help()`"+res.NOCOLOR,
+	)
 
 	blockLines := []string{}
 
@@ -93,6 +103,9 @@ func handleKeyboard(key keys.Key, rs *[]rune, rIdx *int, lIdx *int) (bool, bool,
 		return false, true, nil
 	case keys.Esc:
 		os.Exit(0)
+	case keys.CtrlM:
+		linesHistory = []string{}
+		writeHistory()
 	}
 	return false, false, nil
 }
@@ -117,6 +130,7 @@ func updateHistory(str string) {
 	for idx := range strs {
 		_updateHistory(strs[idx])
 	}
+	writeHistory()
 }
 
 func _blockNotEndCount(block string) int {
@@ -148,4 +162,29 @@ func _blockNotEndCount(block string) int {
 		}
 	}
 	return start - end
+}
+
+func writeHistory() {
+	data, err := Json.Marshal(linesHistory)
+	if err != nil {
+		log.Warn("[REPL] marshal history failed")
+	}
+	if err := os.WriteFile(historyPath, data, 0644); err != nil {
+		log.Warn("[REPL] write history failed")
+	}
+}
+
+func loadHistory() {
+	if util.Exist(historyPath) {
+		data, err := os.ReadFile(historyPath)
+		if err != nil {
+			log.Warn("[REPL] read history failed")
+		}
+		err = Json.Unmarshal(data, &linesHistory)
+		if err != nil {
+			log.Warn("[REPL] unmarshal history failed")
+		}
+	} else {
+		writeHistory()
+	}
 }

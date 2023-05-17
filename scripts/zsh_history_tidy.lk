@@ -74,10 +74,12 @@ if #args < 3 {
 }
 
 mode := args[2]
-if modes[mode] == nil {
+if !modes[mode] {
     print('Unkown mode: '+mode)
+    os.exit()
 }
-if not checks[mode]() {
+if !checks[mode]() {
+    print(helps[mode])
     os.exit()
 }
 

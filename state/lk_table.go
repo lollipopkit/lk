@@ -1,14 +1,13 @@
 package state
 
 import (
-	jsoniter "github.com/json-iterator/go"
 	"math"
 	"strconv"
 
 	"github.com/lollipopkit/lk/utils"
+	. "github.com/lollipopkit/lk/json"
 )
 
-var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // var (
 // 	_closureRe = regexp.MustCompile(`"((GoFunc|LkFunc)@0x[0-9a-f]+)"`)
@@ -29,7 +28,7 @@ func (self *lkTable) copy() *lkTable {
 }
 
 func (self *lkTable) String() (string, error) {
-	s, err := json.Marshal(self.Json())
+	s, err := Json.Marshal(self.Json())
 	return string(s), err
 	// if err != nil {
 	// 	return "", err
