@@ -2,31 +2,12 @@ package binchunk
 
 import (
 	"errors"
-	"strings"
 
 	"github.com/lollipopkit/lk/consts"
 	. "github.com/lollipopkit/lk/json"
 )
 
-const (
-	MismatchVersionPrefix = "mismatch LK VM version: "
-)
-
-var (
-	ErrInvalidVersionFormat = errors.New("invalid version format")
-)
-
-const (
-	TAG_NIL       = 0x00
-	TAG_BOOLEAN   = 0x01
-	TAG_NUMBER    = 0x03
-	TAG_INTEGER   = 0x13
-	TAG_SHORT_STR = 0x04
-	TAG_LONG_STR  = 0x14
-)
-
 type binaryChunk struct {
-	Version string     `json:"v"`
 	Sign    string     `json:"si"`
 	Md5     string     `json:"m"`
 	Proto   *Prototype `json:"p"`
@@ -70,24 +51,11 @@ func Load(data []byte) (*Prototype, error) {
 		return nil, errors.New("invalid signature: " + bin.Sign)
 	}
 
-	return bin.Proto, passVersion(bin.Version)
-}
-
-func passVersion(v string) error {
-	vs := strings.Split(v, ".")
-	if len(vs) != 3 {
-		return ErrInvalidVersionFormat
-	}
-
-	if strings.Compare(v, consts.VERSION) >= 0 {
-		return nil
-	}
-	return errors.New(MismatchVersionPrefix + consts.VERSION + " is required, but " + v + " is provided")
+	return bin.Proto, nil
 }
 
 func (proto *Prototype) Dump(md5 string) ([]byte, error) {
 	bin := &binaryChunk{
-		Version: consts.VERSION,
 		Sign:    consts.SIGNATURE,
 		Proto:   proto,
 		Md5:     md5,

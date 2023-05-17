@@ -1,6 +1,8 @@
 package stdlib
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 
 	. "github.com/lollipopkit/lk/api"
@@ -18,6 +20,7 @@ var strLib = map[string]GoFunction{
 	"split":    strSplit,
 	"join":     strJoin,
 	"contains": strContains,
+	"match": strMatch,
 	"replace":  strReplace,
 }
 
@@ -48,6 +51,29 @@ func strContains(ls LkState) int {
 	sub := ls.CheckString(2)
 	ls.PushBoolean(strings.Contains(s, sub))
 	return 1
+}
+
+// strMatch returns a Map of matches: {"GROUP": "MATCH"}
+func strMatch(ls LkState) int {
+	s := ls.CheckString(1)
+	pattern := ls.CheckString(2)
+	exp, err := regexp.Compile(pattern)
+	if err != nil {
+		ls.PushNil()
+		ls.PushString(err.Error())
+	} else {
+		matchesMap := map[string]string{}
+		matches := exp.FindStringSubmatch(s)
+		for i, name := range exp.SubexpNames() {
+			if len(name) == 0 {
+				name = strconv.Itoa(i)
+			}
+			matchesMap[name] = matches[i]
+		}
+		pushTable(ls, matchesMap)
+		ls.PushNil()
+	}
+	return 2
 }
 
 func strJoin(ls LkState) int {
