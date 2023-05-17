@@ -21,33 +21,45 @@ var (
 	linesHistory = []string{}
 	helpMsgs     = []string{
 		"`esc`: Exit REPL",
+		"`Tab`: Add 2 spaces",
+		"",
 		"`Ctrl + b`: Wrap current line with `print()`",
 		"`Ctrl + n`: Wrap current line with `printf()`",
-		"`Ctrl + m`: Clear REPL hiistory",
-		"`Tab`: Add 2 spaces",
+		"`Ctrl + m`: Clear REPL history",
+		"",
+		"`reset()`: Reset REPL state",
 	}
 	printRunesPre  = []rune("print(")
 	printfRunesPre = []rune("printf(")
 	printRunesSuf  = []rune(")")
 	historyPath    = filepath.Join(os.Getenv("HOME"), ".config", "lk_history.json")
+	ls api.LkState
+	blockLines = []string{}
 )
 
-func Repl() {
-	loadHistory()
-	ls := state.New()
+func newState() {
+	ls = state.New()
 	ls.OpenLibs()
 	ls.Register("help", func(ls api.LkState) int {
 		print(strings.Join(helpMsgs, "\n") + "\n")
 		return 0
 	})
+	ls.Register("reset", func(_ api.LkState) int{
+		newState()
+		return 0
+	})
+	blockLines = []string{}
+}
 
+func Repl() {
 	fmt.Printf(
 		"REPL for lk (v%s) - enter %s for help\n",
 		res.CYAN+consts.VERSION+res.NOCOLOR,
 		res.GREEN+"`help()`"+res.NOCOLOR,
 	)
 
-	blockLines := []string{}
+	loadHistory()
+	newState()
 
 	for {
 		line := term.ReadLine(term.ReadLineConfig{
@@ -71,16 +83,9 @@ func Repl() {
 	}
 }
 
-func catchErr(ls api.LkState, cmd string) {
-	err := recover()
-	if err != nil {
-		log.Red(fmt.Sprintf("%v\n", err))
-	}
-}
-
 func protectedCall(ls api.LkState, cmd string) {
 	// 捕获错误
-	defer catchErr(ls, cmd)
+	defer ls.CatchAndPrint()
 
 	//log.Green(">>> " + cmd)
 	ls.LoadString(cmd, "stdin")
@@ -165,12 +170,12 @@ func _blockNotEndCount(block string) int {
 }
 
 func writeHistory() {
-	data, err := Json.Marshal(linesHistory)
+	data, err := Json.MarshalIndent(linesHistory, "", "  ")
 	if err != nil {
-		log.Warn("[REPL] marshal history failed")
+		log.Warn("[REPL] marshal history failed: %v", err)
 	}
 	if err := os.WriteFile(historyPath, data, 0644); err != nil {
-		log.Warn("[REPL] write history failed")
+		log.Warn("[REPL] write history failed: %v", err)
 	}
 }
 
@@ -178,11 +183,11 @@ func loadHistory() {
 	if util.Exist(historyPath) {
 		data, err := os.ReadFile(historyPath)
 		if err != nil {
-			log.Warn("[REPL] read history failed")
+			log.Warn("[REPL] read history failed: %v", err)
 		}
 		err = Json.Unmarshal(data, &linesHistory)
 		if err != nil {
-			log.Warn("[REPL] unmarshal history failed")
+			log.Warn("[REPL] unmarshal history failed: %v", err)
 		}
 	} else {
 		writeHistory()

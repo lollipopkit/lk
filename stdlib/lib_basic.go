@@ -269,6 +269,7 @@ func baseDoFile(ls LkState) int {
 	fname := ls.OptString(1, "bt")
 	ls.SetTop(1)
 	if ls.LoadFile(fname) != LK_OK {
+		ls.PushFString("cannot read file: %s", fname)
 		return ls.Error()
 	}
 	ls.Call(0, LK_MULTRET)

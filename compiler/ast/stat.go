@@ -21,8 +21,6 @@ type Stat interface{}
 
 type EmptyStat struct{}              // ‘;’
 type BreakStat struct{ Line int }    // break
-type LabelStat struct{ Name string } // ‘::’ Name ‘::’
-type GotoStat struct{ Name string }  // goto Name
 type FuncCallStat = FuncCallExp      // functioncall
 
 // if exp then block {elseif exp then block} [else block] end

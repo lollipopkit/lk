@@ -38,7 +38,7 @@ func (self *lkTable) String() (string, error) {
 }
 
 func (t *lkTable) Json() any {
-	tb := t
+	tb := t.copy()
 	for i := range tb.arr {
 		switch v := tb.arr[i].(type) {
 		case *lkClosure:
