@@ -8,8 +8,6 @@ require (
 	github.com/lollipopkit/gommon v0.3.3
 )
 
-replace github.com/lollipopkit/gommon => ../go-common
-
 require (
 	github.com/containerd/console v1.0.3 // indirect
 	golang.org/x/sys v0.8.0 // indirect
