@@ -41,7 +41,6 @@ func parseFmtStr(fmt string) []string {
 	return parsed
 }
 
-
 func _fmt(fmtStr string, ls LkState) string {
 	argIdx := 1
 	arr := parseFmtStr(fmtStr)

@@ -8,9 +8,9 @@ import (
 )
 
 type binaryChunk struct {
-	Sign    string     `json:"si"`
-	Md5     string     `json:"m"`
-	Proto   *Prototype `json:"p"`
+	Sign  string     `json:"si"`
+	Md5   string     `json:"m"`
+	Proto *Prototype `json:"p"`
 }
 
 // function prototype
@@ -56,9 +56,9 @@ func Load(data []byte) (*Prototype, error) {
 
 func (proto *Prototype) Dump(md5 string) ([]byte, error) {
 	bin := &binaryChunk{
-		Sign:    consts.SIGNATURE,
-		Proto:   proto,
-		Md5:     md5,
+		Sign:  consts.SIGNATURE,
+		Proto: proto,
+		Md5:   md5,
 	}
 	return Json.Marshal(bin)
 }

@@ -20,7 +20,7 @@ var strLib = map[string]GoFunction{
 	"split":    strSplit,
 	"join":     strJoin,
 	"contains": strContains,
-	"match": strMatch,
+	"match":    strMatch,
 	"replace":  strReplace,
 }
 
@@ -217,4 +217,3 @@ func strChar(ls LkState) int {
 	ls.PushString(string(s))
 	return 1
 }
-

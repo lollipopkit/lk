@@ -15,6 +15,7 @@ var baseFuncs = map[string]GoFunction{
 	"printf":    basePrintf,
 	"assert":    baseAssert,
 	"error":     baseError,
+	"errorf":    baseErrorf,
 	"irange":    baseIPairs,
 	"range":     basePairs,
 	"next":      baseNext,
@@ -160,6 +161,12 @@ func baseError(ls LkState) int {
 		// ls.PushValue(1)
 		// ls.Concat(2)
 	}
+	return ls.Error()
+}
+
+func baseErrorf(ls LkState) int {
+	fmtStr := ls.CheckString(1)
+	ls.PushString(_fmt(fmtStr, ls))
 	return ls.Error()
 }
 

@@ -19,9 +19,9 @@ stat ::=  ‘;’ |
 */
 type Stat interface{}
 
-type EmptyStat struct{}              // ‘;’
-type BreakStat struct{ Line int }    // break
-type FuncCallStat = FuncCallExp      // functioncall
+type EmptyStat struct{}           // ‘;’
+type BreakStat struct{ Line int } // break
+type FuncCallStat = FuncCallExp   // functioncall
 
 // if exp then block {elseif exp then block} [else block] end
 type IfStat struct {

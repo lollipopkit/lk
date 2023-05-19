@@ -8,9 +8,9 @@ import (
 
 	"github.com/lollipopkit/gommon/log"
 	"github.com/lollipopkit/lk/compiler/parser"
+	. "github.com/lollipopkit/lk/json"
 	"github.com/lollipopkit/lk/repl"
 	"github.com/lollipopkit/lk/state"
-	. "github.com/lollipopkit/lk/json"
 )
 
 var (

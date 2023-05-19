@@ -267,7 +267,9 @@ func (self *Lexer) error(f string, a ...interface{}) {
 
 func (self *Lexer) skipWhiteSpaces() {
 	for len(self.chunk) > 0 {
-		if self.test("//") {
+		if self.test("#!/") {
+			self.skipShebang()
+		} else if self.test("//") {
 			self.skipComment()
 		} else if self.test("/*") {
 			self.skipLongComment()
@@ -289,6 +291,15 @@ func (self *Lexer) skipComment() {
 	self.next(2) // skip `//`
 
 	// short comment
+	for len(self.chunk) > 0 && !isNewLine(self.chunk[0]) {
+		self.next(1)
+	}
+}
+
+func (self *Lexer) skipShebang() {
+	self.next(2) // skip `#!`
+
+	// shebang line
 	for len(self.chunk) > 0 && !isNewLine(self.chunk[0]) {
 		self.next(1)
 	}

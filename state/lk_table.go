@@ -4,10 +4,9 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/lollipopkit/lk/utils"
 	. "github.com/lollipopkit/lk/json"
+	"github.com/lollipopkit/lk/utils"
 )
-
 
 // var (
 // 	_closureRe = regexp.MustCompile(`"((GoFunc|LkFunc)@0x[0-9a-f]+)"`)

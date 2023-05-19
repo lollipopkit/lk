@@ -13,8 +13,8 @@ import (
 	"github.com/lollipopkit/gommon/util"
 	"github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
-	"github.com/lollipopkit/lk/state"
 	. "github.com/lollipopkit/lk/json"
+	"github.com/lollipopkit/lk/state"
 )
 
 var (
@@ -33,8 +33,8 @@ var (
 	printfRunesPre = []rune("printf(")
 	printRunesSuf  = []rune(")")
 	historyPath    = filepath.Join(os.Getenv("HOME"), ".config", "lk_history.json")
-	ls api.LkState
-	blockLines = []string{}
+	ls             api.LkState
+	blockLines     = []string{}
 )
 
 func newState() {
@@ -44,7 +44,7 @@ func newState() {
 		print(strings.Join(helpMsgs, "\n") + "\n")
 		return 0
 	})
-	ls.Register("reset", func(_ api.LkState) int{
+	ls.Register("reset", func(_ api.LkState) int {
 		newState()
 		return 0
 	})
