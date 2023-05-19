@@ -20,12 +20,12 @@ import (
 var (
 	linesHistory = []string{}
 	helpMsgs     = []string{
-		"`esc`: Exit REPL",
+		"`Esc`: Exit REPL",
 		"`Tab`: Add 2 spaces",
 		"",
 		"`Ctrl + b`: Wrap current line with `print()`",
 		"`Ctrl + n`: Wrap current line with `printf()`",
-		"`Ctrl + m`: Clear REPL history",
+		"`Ctrl + a`: Clear REPL history",
 		"",
 		"`reset()`: Reset REPL state",
 	}
@@ -108,7 +108,7 @@ func handleKeyboard(key keys.Key, rs *[]rune, rIdx *int, lIdx *int) (bool, bool,
 		return false, true, nil
 	case keys.Esc:
 		os.Exit(0)
-	case keys.CtrlM:
+	case keys.CtrlA:
 		linesHistory = []string{}
 		writeHistory()
 	}
