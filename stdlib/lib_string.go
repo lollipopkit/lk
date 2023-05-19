@@ -70,7 +70,11 @@ func strMatch(ls LkState) int {
 			}
 			matchesMap[name] = matches[i]
 		}
-		pushTable(ls, matchesMap)
+		if len(matchesMap) == 0 {
+			ls.PushNil()
+		} else {
+			pushTable(ls, matchesMap)
+		}
 		ls.PushNil()
 	}
 	return 2

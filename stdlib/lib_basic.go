@@ -6,6 +6,7 @@ import (
 
 	. "github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
+	. "github.com/lollipopkit/lk/json"
 )
 
 var baseFuncs = map[string]GoFunction{
@@ -30,6 +31,7 @@ var baseFuncs = map[string]GoFunction{
 	"num":  baseToNumber,
 	"int":  mathToInt,
 	"kv":   baseKV,
+	"table": baseToTable,
 }
 
 // lua-5.3.4/src/lbaselib.c#luaopen_base()
@@ -363,4 +365,18 @@ func baseToNumber(ls LkState) int {
 	} /* else not a number */
 	ls.PushNil() /* not a number */
 	return 1
+}
+
+// convert (json)str to table
+func baseToTable(ls LkState) int {
+	str := ls.CheckString(1)
+	var item any
+	if err := Json.Unmarshal([]byte(str), &item); err != nil {
+		ls.PushNil()
+		ls.PushString(err.Error())
+		return 2
+	}
+	pushValue(ls, item)
+	ls.PushNil()
+	return 2
 }

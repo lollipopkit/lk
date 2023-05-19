@@ -297,7 +297,6 @@ func (self *lkState) OpenLibs() {
 		"pkg":   stdlib.OpenPackageLib,
 		"sync":  stdlib.OpenCoroutineLib,
 		"http":  stdlib.OpenHttpLib,
-		"json":  stdlib.OpenJsonLib,
 		"table": stdlib.OpenTableLib,
 		"nums":  stdlib.OpenNumLib,
 		"term":  stdlib.OpenTermLib,
