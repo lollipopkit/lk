@@ -21,11 +21,11 @@ type VarargExp struct{ Line int } // ...
 // Numeral
 type IntegerExp struct {
 	Line int
-	Val  int64
+	Int  int64
 }
 type FloatExp struct {
-	Line int
-	Val  float64
+	Line  int
+	Float float64
 }
 
 // LiteralString
@@ -38,23 +38,23 @@ type StringExp struct {
 type UnopExp struct {
 	Line int // line of operator
 	Op   int // operator
-	Exp  Exp
+	Unop Exp
 }
 
 // exp1 op exp2
 type BinopExp struct {
-	Line int // line of operator
-	Op   int // operator
-	Exp1 Exp
-	Exp2 Exp
+	Line  int // line of operator
+	Op    int // operator
+	Left  Exp
+	Right Exp
 }
 
 // exp1 ? exp2 : exp3
 type TernaryExp struct {
-	Line int // line of operator
-	Exp1 Exp
-	Exp2 Exp
-	Exp3 Exp
+	Line  int // line of operator
+	Cond  Exp
+	True  Exp
+	False Exp
 }
 
 // tableconstructor ::= ‘{’ [fieldlist] ‘}’

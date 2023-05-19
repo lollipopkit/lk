@@ -48,7 +48,7 @@ func lineOf(exp Exp) int {
 	case *TableAccessExp:
 		return lineOf(x.PrefixExp)
 	case *BinopExp:
-		return lineOf(x.Exp1)
+		return lineOf(x.Left)
 	case *TernaryExp:
 		return lineOf(x.Line)
 	default:
@@ -83,11 +83,11 @@ func lastLineOf(exp Exp) int {
 	case *TableAccessExp:
 		return x.LastLine
 	case *BinopExp:
-		return lastLineOf(x.Exp2)
+		return lastLineOf(x.Right)
 	case *UnopExp:
-		return lastLineOf(x.Exp)
+		return lastLineOf(x.Unop)
 	case *TernaryExp:
-		return lastLineOf(x.Exp3)
+		return lastLineOf(x.False)
 	default:
 		panic("unreachable!")
 	}

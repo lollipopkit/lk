@@ -25,9 +25,9 @@ func cgExp(fi *funcInfo, node Exp, a, n int) {
 	case *TrueExp:
 		fi.emitLoadBool(exp.Line, a, 1, 0)
 	case *IntegerExp:
-		fi.emitLoadK(exp.Line, a, exp.Val)
+		fi.emitLoadK(exp.Line, a, exp.Int)
 	case *FloatExp:
-		fi.emitLoadK(exp.Line, a, exp.Val)
+		fi.emitLoadK(exp.Line, a, exp.Float)
 	case *StringExp:
 		fi.emitLoadK(exp.Line, a, exp.Str)
 	case *ParensExp:
@@ -135,7 +135,7 @@ func cgTableConstructorExp(fi *funcInfo, node *TableConstructorExp, a int) {
 // r[a] := op exp
 func cgUnopExp(fi *funcInfo, node *UnopExp, a int) {
 	oldRegs := fi.usedRegs
-	b, _ := expToOpArg(fi, node.Exp, ARG_REG)
+	b, _ := expToOpArg(fi, node.Unop, ARG_REG)
 	fi.emitUnaryOp(node.Line, node.Op, a, b)
 	fi.usedRegs = oldRegs
 }
@@ -146,7 +146,7 @@ func cgBinopExp(fi *funcInfo, node *BinopExp, a int) {
 	case TOKEN_OP_AND, TOKEN_OP_OR:
 		oldRegs := fi.usedRegs
 
-		b, _ := expToOpArg(fi, node.Exp1, ARG_REG)
+		b, _ := expToOpArg(fi, node.Left, ARG_REG)
 		fi.usedRegs = oldRegs
 		if node.Op == TOKEN_OP_AND {
 			fi.emitTestSet(node.Line, a, b, 0)
@@ -155,14 +155,14 @@ func cgBinopExp(fi *funcInfo, node *BinopExp, a int) {
 		}
 		pcOfJmp := fi.emitJmp(node.Line, 0, 0)
 
-		b, _ = expToOpArg(fi, node.Exp2, ARG_REG)
+		b, _ = expToOpArg(fi, node.Right, ARG_REG)
 		fi.usedRegs = oldRegs
 		fi.emitMove(node.Line, a, b)
 		fi.fixSbx(pcOfJmp, fi.pc()-pcOfJmp)
 	default:
 		oldRegs := fi.usedRegs
-		b, _ := expToOpArg(fi, node.Exp1, ARG_RK)
-		c, _ := expToOpArg(fi, node.Exp2, ARG_RK)
+		b, _ := expToOpArg(fi, node.Left, ARG_RK)
+		c, _ := expToOpArg(fi, node.Right, ARG_RK)
 		fi.emitBinaryOp(node.Line, node.Op, a, b, c)
 		fi.usedRegs = oldRegs
 	}
@@ -172,18 +172,18 @@ func cgBinopExp(fi *funcInfo, node *BinopExp, a int) {
 func cgTernaryExp(fi *funcInfo, node *TernaryExp, a int) {
 	oldRegs := fi.usedRegs
 
-	b, _ := expToOpArg(fi, node.Exp1, ARG_REG)
+	b, _ := expToOpArg(fi, node.Cond, ARG_REG)
 	fi.usedRegs = oldRegs
 	fi.emitTestSet(node.Line, a, b, 0)
 	pcOfJmp := fi.emitJmp(node.Line, 0, 0)
 
-	b, _ = expToOpArg(fi, node.Exp2, ARG_REG)
+	b, _ = expToOpArg(fi, node.True, ARG_REG)
 	fi.usedRegs = oldRegs
 	fi.emitMove(node.Line, a, b)
 	pcOfJmp2 := fi.emitJmp(node.Line, 0, 0)
 
 	fi.fixSbx(pcOfJmp, fi.pc()-pcOfJmp)
-	b, _ = expToOpArg(fi, node.Exp3, ARG_REG)
+	b, _ = expToOpArg(fi, node.False, ARG_REG)
 	fi.usedRegs = oldRegs
 	fi.emitMove(node.Line, a, b)
 
@@ -278,9 +278,9 @@ func expToOpArg(fi *funcInfo, node Exp, argKinds int) (arg, argKind int) {
 		case *TrueExp:
 			idx = fi.indexOfConstant(true)
 		case *IntegerExp:
-			idx = fi.indexOfConstant(x.Val)
+			idx = fi.indexOfConstant(x.Int)
 		case *FloatExp:
-			idx = fi.indexOfConstant(x.Val)
+			idx = fi.indexOfConstant(x.Float)
 		case *StringExp:
 			idx = fi.indexOfConstant(x.Str)
 		}

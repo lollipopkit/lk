@@ -10,28 +10,28 @@ import (
 )
 
 func optimizeLogicalOr(exp *BinopExp) Exp {
-	if isTrue(exp.Exp1) {
-		return exp.Exp1 // true or x => true
+	if isTrue(exp.Left) {
+		return exp.Left // true or x => true
 	}
-	if isFalse(exp.Exp1) && !isVarargOrFuncCall(exp.Exp2) {
-		return exp.Exp2 // false or x => x
+	if isFalse(exp.Left) && !isVarargOrFuncCall(exp.Right) {
+		return exp.Right // false or x => x
 	}
 	return exp
 }
 
 func optimizeLogicalAnd(exp *BinopExp) Exp {
-	if isFalse(exp.Exp1) {
-		return exp.Exp1 // false and x => false
+	if isFalse(exp.Left) {
+		return exp.Left // false and x => false
 	}
-	if isTrue(exp.Exp1) && !isVarargOrFuncCall(exp.Exp2) {
-		return exp.Exp2 // true and x => x
+	if isTrue(exp.Left) && !isVarargOrFuncCall(exp.Right) {
+		return exp.Right // true and x => x
 	}
 	return exp
 }
 
 func optimizeBitwiseBinaryOp(exp *BinopExp) Exp {
-	if i, ok := castToInt(exp.Exp1); ok {
-		if j, ok := castToInt(exp.Exp2); ok {
+	if i, ok := castToInt(exp.Left); ok {
+		if j, ok := castToInt(exp.Right); ok {
 			switch exp.Op {
 			case TOKEN_OP_BAND:
 				return &IntegerExp{exp.Line, i & j}
@@ -50,28 +50,28 @@ func optimizeBitwiseBinaryOp(exp *BinopExp) Exp {
 }
 
 func optimizeArithBinaryOp(exp *BinopExp) Exp {
-	if x, ok := exp.Exp1.(*IntegerExp); ok {
-		if y, ok := exp.Exp2.(*IntegerExp); ok {
+	if x, ok := exp.Left.(*IntegerExp); ok {
+		if y, ok := exp.Right.(*IntegerExp); ok {
 			switch exp.Op {
 			case TOKEN_OP_ADD:
-				return &IntegerExp{exp.Line, x.Val + y.Val}
+				return &IntegerExp{exp.Line, x.Int + y.Int}
 			case TOKEN_OP_SUB:
-				return &IntegerExp{exp.Line, x.Val - y.Val}
+				return &IntegerExp{exp.Line, x.Int - y.Int}
 			case TOKEN_OP_MUL:
-				return &IntegerExp{exp.Line, x.Val * y.Val}
+				return &IntegerExp{exp.Line, x.Int * y.Int}
 			case TOKEN_OP_IDIV:
-				if y.Val != 0 {
-					return &IntegerExp{exp.Line, utils.IFloorDiv(x.Val, y.Val)}
+				if y.Int != 0 {
+					return &IntegerExp{exp.Line, utils.IFloorDiv(x.Int, y.Int)}
 				}
 			case TOKEN_OP_MOD:
-				if y.Val != 0 {
-					return &IntegerExp{exp.Line, utils.IMod(x.Val, y.Val)}
+				if y.Int != 0 {
+					return &IntegerExp{exp.Line, utils.IMod(x.Int, y.Int)}
 				}
 			}
 		}
 	}
-	if f, ok := castToFloat(exp.Exp1); ok {
-		if g, ok := castToFloat(exp.Exp2); ok {
+	if f, ok := castToFloat(exp.Left); ok {
+		if g, ok := castToFloat(exp.Right); ok {
 			switch exp.Op {
 			case TOKEN_OP_ADD:
 				return &FloatExp{exp.Line, f + g}
@@ -102,7 +102,7 @@ func optimizeArithBinaryOp(exp *BinopExp) Exp {
 func optimizePow(exp Exp) Exp {
 	if binop, ok := exp.(*BinopExp); ok {
 		if binop.Op == TOKEN_OP_POW {
-			binop.Exp2 = optimizePow(binop.Exp2)
+			binop.Right = optimizePow(binop.Right)
 		}
 		return optimizeArithBinaryOp(binop)
 	}
@@ -123,13 +123,13 @@ func optimizeUnaryOp(exp *UnopExp) Exp {
 }
 
 func optimizeUnm(exp *UnopExp) Exp {
-	switch x := exp.Exp.(type) { // utils?
+	switch x := exp.Unop.(type) { // utils?
 	case *IntegerExp:
-		x.Val = -x.Val
+		x.Int = -x.Int
 		return x
 	case *FloatExp:
-		if x.Val != 0 {
-			x.Val = -x.Val
+		if x.Float != 0 {
+			x.Float = -x.Float
 			return x
 		}
 	}
@@ -137,7 +137,7 @@ func optimizeUnm(exp *UnopExp) Exp {
 }
 
 func optimizeNot(exp *UnopExp) Exp {
-	switch exp.Exp.(type) {
+	switch exp.Unop.(type) {
 	case *NilExp, *FalseExp: // false
 		return &TrueExp{exp.Line}
 	case *TrueExp, *IntegerExp, *FloatExp, *StringExp: // true
@@ -148,12 +148,12 @@ func optimizeNot(exp *UnopExp) Exp {
 }
 
 func optimizeBnot(exp *UnopExp) Exp {
-	switch x := exp.Exp.(type) { // utils?
+	switch x := exp.Unop.(type) { // utils?
 	case *IntegerExp:
-		x.Val = ^x.Val
+		x.Int = ^x.Int
 		return x
 	case *FloatExp:
-		if i, ok := utils.FloatToInteger(x.Val); ok {
+		if i, ok := utils.FloatToInteger(x.Float); ok {
 			return &IntegerExp{x.Line, ^i}
 		}
 	}
@@ -190,9 +190,9 @@ func isVarargOrFuncCall(exp Exp) bool {
 func castToInt(exp Exp) (int64, bool) {
 	switch x := exp.(type) {
 	case *IntegerExp:
-		return x.Val, true
+		return x.Int, true
 	case *FloatExp:
-		return utils.FloatToInteger(x.Val)
+		return utils.FloatToInteger(x.Float)
 	default:
 		return 0, false
 	}
@@ -201,9 +201,9 @@ func castToInt(exp Exp) (int64, bool) {
 func castToFloat(exp Exp) (float64, bool) {
 	switch x := exp.(type) {
 	case *IntegerExp:
-		return float64(x.Val), true
+		return float64(x.Int), true
 	case *FloatExp:
-		return x.Val, true
+		return x.Float, true
 	default:
 		return 0, false
 	}
