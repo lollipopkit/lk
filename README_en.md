@@ -103,6 +103,7 @@ if http.listen(':8080', handler) != nil {
         - [x] Construction method: `=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
         - [x] Index starts from `0`
         - [x] Change the setting method of `metatable`
+        - [x] Support `a.0` (equals to `a[0]`) 
 - [x] CLI
     - [x] Support incoming parameters (`lk args.lk arg1` -> calling `os.args` to get args)
     - [x] REPL, run directly `lk` to enter

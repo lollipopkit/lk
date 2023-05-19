@@ -109,6 +109,7 @@ if http.listen(':8080', handler) != nil {
     - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
     - [x] 索引从 `0` 开始
     - [x] 改变 `metatable` 设置方式
+    - [x] 支持 `a.0` (等同于 `a[0]`) 
 - [x] CLI
   - [x] 支持传入参数 ( `lk args.lk arg1` -> `.lk`内调用`os.args` )
   - [x] REPL，直接运行 `./lk` 即可进入

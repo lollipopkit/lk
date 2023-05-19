@@ -1,6 +1,9 @@
 package parser
 
 import (
+	"strconv"
+	"strings"
+
 	. "github.com/lollipopkit/lk/compiler/ast"
 	. "github.com/lollipopkit/lk/compiler/lexer"
 )
@@ -55,6 +58,16 @@ func _finishPrefixExp(lexer *Lexer, exp Exp) Exp {
 			line, name := lexer.NextIdentifier() // Name
 			keyExp := &StringExp{line, name}
 			exp = &TableAccessExp{line, exp, keyExp}
+		case TOKEN_NUMBER:
+			line, _, token := lexer.NextToken()
+			if !strings.HasPrefix(token, ".") {
+				return exp
+			}
+			val, err := strconv.ParseInt(token[1:], 10, 64)
+			if err != nil {
+				return exp
+			}
+			exp = &TableAccessExp{line, exp, &IntegerExp{line, val}}
 		case TOKEN_SEP_LPAREN, TOKEN_STRING, TOKEN_SEP_COLON: // prefixexp args
 			exp = _finishFuncCallExp(lexer, exp)
 		default:
