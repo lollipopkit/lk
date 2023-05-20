@@ -62,18 +62,16 @@ func strMatch(ls LkState) int {
 		ls.PushNil()
 		ls.PushString(err.Error())
 	} else {
-		matchesMap := map[string]string{}
-		matches := exp.FindStringSubmatch(s)
-		for i, name := range exp.SubexpNames() {
-			if len(name) == 0 {
-				name = strconv.Itoa(i)
+		matches := map[string]string{}
+		groupNames := exp.SubexpNames()
+		for matchNum, match := range exp.FindAllStringSubmatch(s, -1) {
+			for groupIdx, group := range match {
+				name := groupNames[groupIdx]
+				if name == "" {
+					name = strconv.Itoa(matchNum)
+				}
+				matches[name] = group
 			}
-			matchesMap[name] = matches[i]
-		}
-		if len(matchesMap) == 0 {
-			ls.PushNil()
-		} else {
-			pushTable(ls, matchesMap)
 		}
 		ls.PushNil()
 	}

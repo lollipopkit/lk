@@ -26,11 +26,11 @@ var baseFuncs = map[string]GoFunction{
 	"pcall":     basePCall,
 	// "rawget":       baseRawGet,
 	// "rawset":       baseRawSet,
-	"type": baseType,
-	"str":  baseToString,
-	"num":  baseToNumber,
-	"int":  mathToInt,
-	"kv":   baseKV,
+	"type":  baseType,
+	"str":   baseToString,
+	"num":   baseToNumber,
+	"int":   mathToInt,
+	"kv":    baseKV,
 	"table": baseToTable,
 }
 
