@@ -73,14 +73,19 @@ func strMatch(ls LkState) int {
 				matches[name] = group
 			}
 		}
+		if len(matches) == 0 {
+			pushTable(ls, matches)
+		} else {
+			ls.PushNil()
+		}
 		ls.PushNil()
 	}
 	return 2
 }
 
 func strJoin(ls LkState) int {
-	list := CheckList(ls, 1)
-	sep := ls.CheckString(2)
+	sep := ls.CheckString(1)
+	list := CheckList(ls, 2)
 	l := make([]string, len(list))
 	for i := range list {
 		l[i] = list[i].(string)

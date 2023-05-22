@@ -53,7 +53,7 @@ func newState() {
 
 func Repl() {
 	fmt.Printf(
-		"REPL for lk (v%s) - enter %s for help\n",
+		"lk (v%s) - %s for help\n",
 		res.CYAN+consts.VERSION+res.NOCOLOR,
 		res.GREEN+"`help()`"+res.NOCOLOR,
 	)
