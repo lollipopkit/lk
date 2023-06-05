@@ -2,20 +2,17 @@ package stdlib
 
 import (
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strings"
 
+	"github.com/lollipopkit/gommon/util"
 	. "github.com/lollipopkit/lk/api"
-	"github.com/lollipopkit/lk/consts"
 )
 
 var (
 	client  = http.Client{}
 	httpLib = map[string]GoFunction{
 		"req":    httpReq,
-		"get":    httpGet,
-		"post":   httpPost,
 		"listen": httpListen,
 	}
 )
@@ -25,123 +22,31 @@ func OpenHttpLib(ls LkState) int {
 	return 1
 }
 
-func genHeaderMap(h *http.Header) lkMap {
-	m := lkMap{}
-	for k := range *h {
-		v := strings.Join((*h)[k], ";")
-		m[k] = v
-	}
-	return m
-}
-
-func genReturn(code int, body string, header *http.Header) lkMap {
-	return lkMap{
-		"code":    code,
-		"body":    body,
-		"headers": genHeaderMap(header),
-	}
-}
-
-func httpDo(method, url string, headers lkMap, body io.Reader) (int, string, http.Header, error) {
-	request, err := http.NewRequest(method, url, body)
-	if err != nil {
-		return 0, "", nil, err
-	}
-
-	request.Header.Set("user-agent", "lk-http/"+consts.VERSION)
-	// 仅遍历下标，性能更佳
-	for k := range headers {
-		request.Header.Set(k, headers[k].(string))
-	}
-
-	resp, err := client.Do(request)
-	if err != nil {
-		return 0, "", nil, err
-	}
-	respBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return 0, "", nil, err
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode, string(respBody), resp.Header, nil
-}
-
-func httpGet(ls LkState) int {
-	url := ls.CheckString(1)
-	headers := OptTable(ls, 2, lkMap{})
-	code, data, respHeader, err := httpDo("GET", url, headers, nil)
-	if err != nil {
-		ls.PushNil()
-		ls.PushString(err.Error())
-		return 2
-	}
-	pushTable(ls, genReturn(code, data, &respHeader))
-	ls.PushNil()
-	return 2
-}
-
-func httpPost(ls LkState) int {
-	url := ls.CheckString(1)
-	headers := OptTable(ls, 2, lkMap{})
-	bodyStr := ls.OptString(3, "")
-
-	body := func() io.Reader {
-		if bodyStr != "" {
-			return strings.NewReader(bodyStr)
-		}
-		return nil
-	}()
-
-	code, data, respHeader, err := httpDo("POST", url, headers, body)
-	if err != nil {
-		ls.PushNil()
-		ls.PushString(err.Error())
-		return 2
-	}
-	pushTable(ls, genReturn(code, data, &respHeader))
-	ls.PushNil()
-	return 2
-}
-
-// http.req (method, url [, headers, body])
-// return code, data
 func httpReq(ls LkState) int {
 	method := strings.ToUpper(ls.CheckString(1))
 	url := ls.CheckString(2)
-	headers := OptTable(ls, 3, lkMap{})
-	bodyStr := ls.OptString(4, "")
+	body := ls.ToPointer(4)
+	headers := make(map[string]string)
+	ls.PushNil()
+	for ls.Next(3) {
+		key := ls.ToString(-2)
+		val := ls.ToString(-1)
+		headers[key] = val
+		ls.Pop(1)
+	}
 
-	body := func() io.Reader {
-		if bodyStr != "" {
-			return strings.NewReader(bodyStr)
-		}
-		return nil
-	}()
-
-	code, data, respHeader, err := httpDo(method, url, headers, body)
+	data, code, err := util.HttpDo(method, url, body, headers)
 	if err != nil {
 		ls.PushNil()
+		ls.Push(code)
 		ls.PushString(err.Error())
-		return 2
+		return 3
 	}
 
-	pushTable(ls, genReturn(code, data, &respHeader))
+	ls.PushString(string(data))
+	ls.Push(code)
 	ls.PushNil()
-	return 2
-}
-
-func genReqTable(r *http.Request) (lkMap, error) {
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		return nil, err
-	}
-	headers := genHeaderMap(&r.Header)
-	return lkMap{
-		"method":  r.Method,
-		"url":     r.URL.String(),
-		"headers": headers,
-		"body":    string(body),
-	}, nil
+	return 3
 }
 
 // Lua eg:
@@ -172,4 +77,27 @@ func httpListen(ls LkState) int {
 	}
 	ls.PushNil()
 	return 1
+}
+
+func genHeaderMap(h *http.Header) lkMap {
+	m := lkMap{}
+	for k := range *h {
+		v := strings.Join((*h)[k], ";")
+		m[k] = v
+	}
+	return m
+}
+
+func genReqTable(r *http.Request) (lkMap, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+	headers := genHeaderMap(&r.Header)
+	return lkMap{
+		"method":  r.Method,
+		"url":     r.URL.String(),
+		"headers": headers,
+		"body":    string(body),
+	}, nil
 }

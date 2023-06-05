@@ -1,21 +1,10 @@
 import 'test/http_header'
 
-resp, err := http.post(
+data, code, err := http.req(
+    'post',
     'http://httpbin.org/post', 
     {'accept': 'application/json'}, 
     '{"foo": "bar"}'
 )
 
-if err == nil {
-    print(Header.fromTable(resp.headers))
-}
-
-resp, _ := http.req(
-    'delete',
-    'http://httpbin.org/delete',
-    {'accept': 'application/json'},
-    '{"foo": "bar"}'
-)
-if err == nil {
-    print(resp.code, json.get(resp.body, 'json.foo'))
-}
+print(data, code, err)

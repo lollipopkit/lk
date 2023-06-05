@@ -136,7 +136,7 @@ fn List:__index(idx) {
     rt self.items[idx]
 }
 
-shy fn iter(a, i) {
+shy fn _iter(a, i) {
     i++
     v := a[i]
     if v {
@@ -145,7 +145,7 @@ shy fn iter(a, i) {
 }
 
 fn List:__iter() {
-    rt iter, self.items, -1
+    rt _iter, self.items, -1
 }
 
 fn List:__eq(other) {

@@ -13,7 +13,7 @@ func typeOf(val any) LkType {
 		return LK_TNIL
 	case bool:
 		return LK_TBOOLEAN
-	case int64, float64:
+	case int64, float64, int, float32:
 		return LK_TNUMBER
 	case string:
 		return LK_TSTRING
@@ -44,8 +44,12 @@ func convertToFloat(val any) (float64, bool) {
 	switch x := val.(type) {
 	case int64:
 		return float64(x), true
+	case int:
+		return float64(x), true
 	case float64:
 		return x, true
+	case float32:
+		return float64(x), true
 	case string:
 		return utils.ParseFloat(x)
 	default:
@@ -58,8 +62,12 @@ func convertToInteger(val any) (int64, bool) {
 	switch x := val.(type) {
 	case int64:
 		return x, true
+	case int:
+		return int64(x), true
 	case float64:
 		return utils.FloatToInteger(x)
+	case float32:
+		return utils.FloatToInteger(float64(x))
 	case string:
 		return _stringToInteger(x)
 	default:

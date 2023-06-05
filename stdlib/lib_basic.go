@@ -17,8 +17,7 @@ var baseFuncs = map[string]GoFunction{
 	"assert":    baseAssert,
 	"error":     baseError,
 	"errorf":    baseErrorf,
-	"irange":    baseIPairs,
-	"range":     basePairs,
+	"iter":     basePairs,
 	"next":      baseNext,
 	"load":      baseLoad,
 	"load_file": baseLoadFile,
@@ -170,27 +169,6 @@ func baseErrorf(ls LkState) int {
 	fmtStr := ls.CheckString(1)
 	ls.PushString(_fmt(fmtStr, ls))
 	return ls.Error()
-}
-
-// ipairs (t)
-// http://www.lua.org/manual/5.3/manual.html#pdf-ipairs
-// lua-5.3.4/src/lbaselib.c#luaB_ipairs()
-func baseIPairs(ls LkState) int {
-	ls.CheckAny(1)
-	ls.PushGoFunction(iPairsAux) /* iteration function */
-	ls.PushValue(1)              /* state */
-	ls.PushInteger(0)            /* initial value */
-	return 3
-}
-
-func iPairsAux(ls LkState) int {
-	i := ls.CheckInteger(2) + 1
-	ls.PushInteger(i)
-	if ls.GetI(1, i) == LK_TNIL {
-		return 1
-	} else {
-		return 2
-	}
 }
 
 // pairs (t)

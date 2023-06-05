@@ -146,7 +146,7 @@ func _finishForInStat(lexer *Lexer, name0 string) *ForInStat {
 		expList[0] = &FuncCallExp{
 			Line:      lineOfDo,
 			LastLine:  lineOfDo,
-			PrefixExp: &NameExp{lineOfDo, "range"},
+			PrefixExp: &NameExp{lineOfDo, "iter"},
 			NameExp:   nil,
 			Args:      []Exp{e},
 		}

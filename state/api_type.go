@@ -1,8 +1,6 @@
 package state
 
 import (
-	"fmt"
-
 	. "github.com/lollipopkit/lk/api"
 )
 
@@ -163,10 +161,6 @@ func (self *lkState) ToStringX(idx int) (string, bool) {
 	switch x := val.(type) {
 	case string:
 		return x, true
-	case int64, float64:
-		s := fmt.Sprintf("%v", x) // todo
-		self.stack.set(idx, s)
-		return s, true
 	default:
 		return "", false
 	}
