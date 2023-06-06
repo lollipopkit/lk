@@ -44,10 +44,11 @@ func (self *lkState) ArgCheck(cond bool, arg int, extraMsg string) {
 
 // [-0, +0, v]
 // http://www.lua.org/manual/5.3/manual.html#luaL_checkany
-func (self *lkState) CheckAny(arg int) {
+func (self *lkState) CheckAny(arg int) any {
 	if self.Type(arg) == LK_TNONE {
 		self.ArgError(arg, "value expected")
 	}
+	return self.stack.get(arg)
 }
 
 // [-0, +0, v]

@@ -100,7 +100,9 @@ type BasicAPI interface {
 	IsYieldable() bool
 	GetStack() bool // debug
 
-	CatchAndPrint()
+	// isRepl: is in repl mode. 
+	// 如果处于 repl，则只输出最后的栈的情况
+	CatchAndPrint(isRepl bool)
 }
 
 type FuncReg map[string]GoFunction
@@ -113,7 +115,7 @@ type AuxLib interface {
 	/* Argument check functions */
 	CheckStack2(sz int, msg string)
 	ArgCheck(cond bool, arg int, extraMsg string)
-	CheckAny(arg int)
+	CheckAny(arg int) any
 	CheckType(arg int, t LkType)
 	CheckInteger(arg int) int64
 	CheckNumber(arg int) float64

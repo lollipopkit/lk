@@ -71,7 +71,7 @@ func runVM(path string) {
 		os.Exit(1)
 	}
 	ls := state.New()
-	defer ls.CatchAndPrint()
+	defer ls.CatchAndPrint(false)
 	ls.OpenLibs()
 	ls.Load(data, path, "bt")
 	ls.Call(0, -1)

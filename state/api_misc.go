@@ -35,7 +35,7 @@ func (self *lkState) Next(idx int) bool {
 		}
 		return false
 	}
-	panic("table expected!")
+	panic(fmt.Sprintf("table expected, got %T", val))
 }
 
 // [-1, +0, v]

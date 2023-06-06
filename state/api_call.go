@@ -37,7 +37,7 @@ func (self *lkState) Call(nArgs, nResults int) {
 			self.callGoClosure(nArgs, nResults, c)
 		}
 	} else {
-		panic(fmt.Sprintf("attempt to call on %#v", val))
+		panic(fmt.Sprintf("attempt to call on %T", val))
 	}
 }
 
@@ -106,10 +106,14 @@ func (self *lkState) runLuaClosure() {
 	}
 }
 
-func (self *lkState) CatchAndPrint() {
+func (self *lkState) CatchAndPrint(isRepl bool) {
 	if err := recover(); err != nil {
 		log.Red("%v\n", err)
 		stack := self.stack
+		if isRepl {
+			_catchEachStack(stack)
+			return
+		}
 		for stack.prev != nil {
 			_catchEachStack(stack)
 			stack = stack.prev

@@ -85,7 +85,7 @@ func Repl() {
 
 func protectedCall(ls api.LkState, cmd string) {
 	// 捕获错误
-	defer ls.CatchAndPrint()
+	defer ls.CatchAndPrint(true)
 
 	//log.Green(">>> " + cmd)
 	ls.LoadString(cmd, "stdin")

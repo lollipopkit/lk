@@ -151,17 +151,8 @@ func baseAssert(ls LkState) int {
 	}
 }
 
-// error (message [, level])
-// http://www.lua.org/manual/5.3/manual.html#pdf-error
-// lua-5.3.4/src/lbaselib.c#luaB_error()
 func baseError(ls LkState) int {
-	level := int(ls.OptInteger(2, 1))
-	ls.SetTop(1)
-	if ls.Type(1) == LK_TSTRING && level > 0 {
-		// ls.Where(level) /* add extra information */
-		// ls.PushValue(1)
-		// ls.Concat(2)
-	}
+	ls.Push(ls.CheckAny(1))
 	return ls.Error()
 }
 
