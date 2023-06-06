@@ -154,7 +154,7 @@ func (self *lkState) LoadFile(filename string) LkStatus {
 // http://www.lua.org/manual/5.3/manual.html#luaL_loadfilex
 func (self *lkState) LoadFileX(filename, mode string) LkStatus {
 	if data, err := ioutil.ReadFile(filename); err == nil {
-		return self.Load(data, "@"+filename, mode)
+		return self.Load(data, filename, mode)
 	}
 	return LK_ERRFILE
 }

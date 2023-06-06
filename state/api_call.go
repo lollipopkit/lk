@@ -2,9 +2,14 @@ package state
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/lollipopkit/gommon/log"
+	"github.com/lollipopkit/gommon/util"
 	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/consts"
+	"github.com/lollipopkit/lk/mods"
 	"github.com/lollipopkit/lk/vm"
 )
 
@@ -103,33 +108,49 @@ func (self *lkState) runLuaClosure() {
 
 func (self *lkState) CatchAndPrint() {
 	if err := recover(); err != nil {
+		log.Red("%v\n", err)
 		stack := self.stack
-		for stack != nil && stack.closure == nil {
+		for stack.prev != nil {
+			_catchEachStack(stack)
 			stack = stack.prev
 		}
-		line := func() uint32 {
-			if stack == nil || stack.closure == nil || stack.closure.proto == nil {
-				return 0
-			}
-			if stack.closure.proto.LineInfo != nil && stack.pc > 0 {
-				return stack.closure.proto.LineInfo[stack.pc-1]
-			}
-			return 0
-		}()
-		source := func() string {
-			if stack == nil || stack.closure == nil || stack.closure.proto == nil {
-				return ""
-			}
-			return stack.closure.proto.Source
-		}()
-		tip := func() string {
-			if source != "" && line != 0 {
-				return fmt.Sprintf("[%s:%d] ", source, line)
-			}
+	}
+}
+
+func _catchEachStack(stack *lkStack) {
+	if stack == nil || stack.closure == nil || stack.closure.proto == nil {
+		return
+	}
+	line := func() uint32 {
+		if stack.closure.proto.LineInfo != nil && stack.pc > 0 {
+			return stack.closure.proto.LineInfo[stack.pc-1]
+		}
+		return 0
+	}()
+	source := stack.closure.proto.Source
+	code := func() string {
+		var data []byte
+		var err error
+		if strings.HasPrefix(source, consts.BuiltinPrefix) {
+			data, err = mods.Files.ReadFile(source[consts.BuiltinPrefixLen:])
+		} else if util.Exist(source) {
+			data, err = os.ReadFile(source)
+		}
+
+		if data == nil || len(data) == 0 || err != nil {
 			return ""
-		}()
-		errStr := fmt.Sprintf("%s%v\n", tip, err)
-		log.Red(errStr)
+		}
+		splited := strings.Split(string(data), "\n")
+		if int(line) > len(splited) {
+			return fmt.Sprintf("Find code: out of range: line %d >= file len %d", line, len(splited))
+		}
+		return strings.TrimSpace(splited[line-1])
+	}()
+	if source != "" {
+		log.Yellow(">> %s:%d\n", source, line)
+		if len(code) != 0 {
+			println("  " + code)
+		}
 	}
 }
 

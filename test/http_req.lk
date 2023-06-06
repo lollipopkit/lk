@@ -7,4 +7,6 @@ data, code, err := http.req(
     '{"foo": "bar"}'
 )
 
-print(data, code, err)
+print(code, err)
+// Convert str to table
+print(table(data))

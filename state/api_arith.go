@@ -84,7 +84,7 @@ func (self *lkState) Arith(op ArithOp) {
 		self.stack.push(aa + bb)
 		return
 	}
-	
+
 	panic(fmt.Sprintf("invalid arith: %T %s %T", a, operator.symbol, b))
 }
 

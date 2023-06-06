@@ -17,7 +17,7 @@ var baseFuncs = map[string]GoFunction{
 	"assert":    baseAssert,
 	"error":     baseError,
 	"errorf":    baseErrorf,
-	"iter":     basePairs,
+	"iter":      basePairs,
 	"next":      baseNext,
 	"load":      baseLoad,
 	"load_file": baseLoadFile,
