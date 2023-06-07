@@ -106,15 +106,16 @@ if http.listen(':8080', handler) != nil {
         - [x] Support `a.0` (equals to `a[0]`) 
 - [x] CLI
     - [x] Support incoming parameters (`lk args.lk arg1` -> calling `os.args` to get args)
+    - [x] Display call stack when error
     - [x] REPL, run directly `lk` to enter
-    - [x] Support direction keys
-    - [x] Identification code block
-    - [x] Resources
-- [x] Documentation
-  - [x] `LANG.md` 
-  - [x] Test set, located in the `test` folder
-- [x] IDE
-  - [x] VSCode highlights
+        - [x] Support direction keys
+        - [x] Identification code block
+- [x] Resources
+    - [x] Documentation
+        - [x] `LANG.md` 
+        - [x] Test set, located in the `test` folder
+    - [x] IDE
+        - [x] VSCode highlights
 
 ## 🌳 Ecology
 - VSCode plugin: [highlight](https://github.com,/lollipopkit/vscode-lk-highlight)

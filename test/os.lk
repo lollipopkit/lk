@@ -1,3 +1,5 @@
+import os
+
 shy fn pri(section, ...) {
     print('###  ' + section + '  ###')
     print(...)

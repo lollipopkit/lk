@@ -1,6 +1,9 @@
 pattern := `([A-Za-z0-9]+).*(\*).*(\[\])`
 text := 'foo9 * []'
-matches := re.find(pattern, text)
+matches, err := text:match(pattern)
+if err != nil {
+    errorf('error: %s', err)
+}
 for k, v in matches {
     print(k, v)
 }

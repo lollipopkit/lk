@@ -23,14 +23,11 @@ var baseFuncs = map[string]GoFunction{
 	"load_file": baseLoadFile,
 	"do_file":   baseDoFile,
 	"pcall":     basePCall,
-	// "rawget":       baseRawGet,
-	// "rawset":       baseRawSet,
-	"type":  baseType,
-	"str":   baseToString,
-	"num":   baseToNumber,
-	"int":   mathToInt,
-	"kv":    baseKV,
-	"table": baseToTable,
+	"type":      baseType,
+	"str":       baseToString,
+	"num":       baseToNumber,
+	"int":       mathToInt,
+	"table":     baseToTable,
 }
 
 // lua-5.3.4/src/lbaselib.c#luaopen_base()
@@ -75,21 +72,6 @@ func mathToInt(ls LkState) int {
 		ls.PushNil() /* value is not convertible to integer */
 	}
 	return 1
-}
-
-func baseKV(ls LkState) int {
-	tb := getTable(ls, 1)
-	keys := make([]any, 0, len(tb))
-	for k := range tb {
-		keys = append(keys, k)
-	}
-	values := make([]any, 0, len(tb))
-	for k := range tb {
-		values = append(values, tb[k])
-	}
-	pushList(ls, keys)
-	pushList(ls, values)
-	return 2
 }
 
 // format (formatstring, ···)
@@ -262,29 +244,6 @@ func basePCall(ls LkState) int {
 	ls.PushBoolean(status == LK_OK)
 	ls.Insert(1)
 	return ls.GetTop()
-}
-
-// rawget (table, index)
-// http://www.lua.org/manual/5.3/manual.html#pdf-rawget
-// lua-5.3.4/src/lbaselib.c#luaB_rawget()
-func baseRawGet(ls LkState) int {
-	ls.CheckType(1, LK_TTABLE)
-	ls.CheckAny(2)
-	ls.SetTop(2)
-	ls.RawGet(1)
-	return 1
-}
-
-// rawset (table, index, value)
-// http://www.lua.org/manual/5.3/manual.html#pdf-rawset
-// lua-5.3.4/src/lbaselib.c#luaB_rawset()
-func baseRawSet(ls LkState) int {
-	ls.CheckType(1, LK_TTABLE)
-	ls.CheckAny(2)
-	ls.CheckAny(3)
-	ls.SetTop(3)
-	ls.RawSet(1)
-	return 1
 }
 
 // type (v)

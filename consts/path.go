@@ -7,6 +7,6 @@ var (
 )
 
 const (
-	BuiltinPrefix = "@builtin/"
+	BuiltinPrefix    = "@builtin/"
 	BuiltinPrefixLen = len(BuiltinPrefix)
 )

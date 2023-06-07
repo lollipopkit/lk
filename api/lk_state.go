@@ -100,7 +100,7 @@ type BasicAPI interface {
 	IsYieldable() bool
 	GetStack() bool // debug
 
-	// isRepl: is in repl mode. 
+	// isRepl: is in repl mode.
 	// 如果处于 repl，则只输出最后的栈的情况
 	CatchAndPrint(isRepl bool)
 }

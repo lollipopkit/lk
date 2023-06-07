@@ -194,11 +194,7 @@ func (self *lkState) ToString2(idx int) string {
 	} else {
 		switch self.Type(idx) {
 		case LK_TNUMBER:
-			if self.IsInteger(idx) {
-				self.PushString(fmt.Sprintf("%d", self.ToInteger(idx))) // todo
-			} else {
-				self.PushString(fmt.Sprintf("%g", self.ToNumber(idx))) // todo
-			}
+			self.PushFString("%v", self.ToPointer(idx))
 		case LK_TSTRING:
 			self.PushValue(idx)
 		case LK_TBOOLEAN:
@@ -292,18 +288,19 @@ func (self *lkState) OpenLibs() {
 	libs := map[string]GoFunction{
 		"_G":    stdlib.OpenBaseLib,
 		"math":  stdlib.OpenMathLib,
-		"strs":  stdlib.OpenStringLib,
+		"str":   stdlib.OpenStringLib,
 		"utf8":  stdlib.OpenUTF8Lib,
 		"os":    stdlib.OpenOSLib,
 		"pkg":   stdlib.OpenPackageLib,
 		"sync":  stdlib.OpenCoroutineLib,
 		"http":  stdlib.OpenHttpLib,
 		"table": stdlib.OpenTableLib,
-		"nums":  stdlib.OpenNumLib,
+		"num":   stdlib.OpenNumLib,
 		"term":  stdlib.OpenTermLib,
 	}
 
 	for name := range libs {
+		// Only add "_G" as global
 		self.RequireF(name, libs[name], true)
 		self.Pop(1)
 	}

@@ -21,7 +21,7 @@ func (self *lkState) TypeName(tp LkType) string {
 	case LK_TTABLE:
 		return "table"
 	case LK_TFUNCTION:
-		return "func"
+		return "fn"
 	case LK_TTHREAD:
 		return "thread"
 	default:
@@ -84,15 +84,13 @@ func (self *lkState) IsThread(idx int) bool {
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isstring
 func (self *lkState) IsString(idx int) bool {
-	t := self.Type(idx)
-	return t == LK_TSTRING || t == LK_TNUMBER
+	return self.Type(idx) == LK_TSTRING
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_isnumber
 func (self *lkState) IsNumber(idx int) bool {
-	_, ok := self.ToNumberX(idx)
-	return ok
+	return self.Type(idx) == LK_TNUMBER
 }
 
 // [-0, +0, –]
