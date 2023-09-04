@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/lollipopkit/gommon/log"
-	"github.com/lollipopkit/gommon/util"
+	"github.com/lollipopkit/gommon/sys"
 	. "github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
 	"github.com/lollipopkit/lk/mods"
@@ -111,17 +111,19 @@ func (self *lkState) CatchAndPrint(isRepl bool) {
 		log.Red("%v\n", err)
 		stack := self.stack
 		if isRepl {
-			_catchEachStack(stack)
+			_catchEachStack(stack, -1)
 			return
 		}
+		stackIdx := 0
 		for stack.prev != nil {
-			_catchEachStack(stack)
+			_catchEachStack(stack, stackIdx)
 			stack = stack.prev
+			stackIdx++
 		}
 	}
 }
 
-func _catchEachStack(stack *lkStack) {
+func _catchEachStack(stack *lkStack, idx int) {
 	if stack == nil || stack.closure == nil || stack.closure.proto == nil {
 		return
 	}
@@ -137,7 +139,7 @@ func _catchEachStack(stack *lkStack) {
 		var err error
 		if strings.HasPrefix(source, consts.BuiltinPrefix) {
 			data, err = mods.Files.ReadFile(source[consts.BuiltinPrefixLen:])
-		} else if util.Exist(source) {
+		} else if sys.Exist(source) {
 			data, err = os.ReadFile(source)
 		}
 
@@ -148,10 +150,14 @@ func _catchEachStack(stack *lkStack) {
 		if int(line) > len(splited) {
 			return fmt.Sprintf("Find code: out of range: line %d >= file len %d", line, len(splited))
 		}
-		return strings.TrimSpace(splited[line-1])
+		return strings.Trim(strings.TrimSpace(splited[line-1]), "\n")
 	}()
 	if source != "" {
-		log.Yellow(">> %s:%d\n", source, line)
+		if idx >= 0 {
+			log.Yellow("%d >> %s:%d", idx, source, line)
+		} else {
+			log.Yellow(">> %s", source)
+		}
 		if len(code) != 0 {
 			println("  " + code)
 		}
