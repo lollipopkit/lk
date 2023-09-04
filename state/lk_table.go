@@ -38,13 +38,16 @@ func (self *lkTable) String() (string, error) {
 
 func (t *lkTable) Json() any {
 	tb := t.copy()
-	for i := range tb.arr {
-		switch v := tb.arr[i].(type) {
-		case *lkClosure:
-			tb.arr[i] = v.String()
-		case *lkTable:
-			tb.arr[i] = v.Json()
+	if len(tb._map) == 0 {
+		for i := range tb.arr {
+			switch v := tb.arr[i].(type) {
+			case *lkClosure:
+				tb.arr[i] = v.String()
+			case *lkTable:
+				tb.arr[i] = v.Json()
+			}
 		}
+		return tb.arr
 	}
 	for k := range tb._map {
 		switch v := tb._map[k].(type) {
@@ -53,9 +56,6 @@ func (t *lkTable) Json() any {
 		case *lkTable:
 			tb._map[k] = v.Json()
 		}
-	}
-	if len(tb._map) == 0 {
-		return tb.arr
 	}
 	return tb._map
 }

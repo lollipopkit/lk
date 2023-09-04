@@ -77,7 +77,8 @@ if foo != nil && foo:match('[bar]{3}') {
     - [x] 改变 `metatable` 设置方式
     - [x] 支持 `a.0` (等同于 `a[0]`) 
 - [x] CLI
-  - [x] 支持传入参数 ( `lk args.lk arg1` -> `.lk`内调用`os.args` )
+  - [x] 支持传入参数 ( `lk args.lk arg1` -> `os.args` == `[lk, args.lk, arg1]` )
+  - [x] 报错时输出调用栈
   - [x] REPL，直接运行 `./lk` 即可进入
     - [x] 支持方向键
     - [x] 识别代码块

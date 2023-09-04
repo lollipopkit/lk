@@ -7,8 +7,8 @@ import (
 const LK_MINSTACK = 20
 const LK_MAXSTACK = 1000000
 const LK_REGISTRYINDEX = -LK_MAXSTACK - 1000
-const LK_RIDX_MAINTHREAD int64 = 1
-const LK_RIDX_GLOBALS int64 = 2
+const LK_RIDX_MAINTHREAD int64 = 0
+const LK_RIDX_GLOBALS int64 = 1
 const LK_MULTRET = -1
 
 const (

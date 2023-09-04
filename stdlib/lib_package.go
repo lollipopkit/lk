@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	. "github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/consts"
 	"github.com/lollipopkit/lk/mods"
 )
 
@@ -21,8 +22,6 @@ const (
 	LUA_EXEC_DIR  = "!"
 	LUA_IGMARK    = "-"
 )
-
-const builtinPrefix = "builtin/"
 
 var pkgFuncs = map[string]GoFunction{
 	"search": pkgSearchPath,
@@ -133,6 +132,7 @@ func _searchPath(name, path, sep, dirSep string) (content []byte, fname, errMsg 
 	}
 
 	for _, filename := range strings.Split(path, LUA_PATH_SEP) {
+		// 优先在磁盘内搜索
 		filename = strings.Replace(filename, LUA_PATH_MARK, name, -1)
 		if _, err := os.Stat(filename); !os.IsNotExist(err) {
 			c, err := os.ReadFile(filename)
@@ -142,9 +142,10 @@ func _searchPath(name, path, sep, dirSep string) (content []byte, fname, errMsg 
 			return c, filename, ""
 		}
 
-		// 在内置mods内搜索
+		// 如果磁盘内无 builtin 模块，再在内置 mods 内搜索
+		// 意味着可以覆盖 builtin 的实现
 		if c, err := mods.Files.ReadFile(filename); !os.IsNotExist(err) {
-			return c, builtinPrefix + filename, ""
+			return c, consts.BuiltinPrefix + filename, ""
 		}
 
 		errMsg += "\n\tno file '" + filename + "'"
