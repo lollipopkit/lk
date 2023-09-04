@@ -9,8 +9,8 @@ import (
 	"atomicgo.dev/keyboard/keys"
 	"github.com/lollipopkit/gommon/log"
 	"github.com/lollipopkit/gommon/res"
+	"github.com/lollipopkit/gommon/sys"
 	"github.com/lollipopkit/gommon/term"
-	"github.com/lollipopkit/gommon/util"
 	"github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
 	. "github.com/lollipopkit/lk/json"
@@ -180,7 +180,7 @@ func writeHistory() {
 }
 
 func loadHistory() {
-	if util.Exist(historyPath) {
+	if sys.Exist(historyPath) {
 		data, err := os.ReadFile(historyPath)
 		if err != nil {
 			log.Warn("[REPL] read history failed: %v", err)

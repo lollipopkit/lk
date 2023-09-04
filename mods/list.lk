@@ -19,32 +19,43 @@ fn List:index_of(item) {
     rt -1
 }
 
-// ...: 删除的位置
-fn List:remove_at(...) {
+// idx: 要删除的元素的索引
+fn List:remove_at(idx) {
     len := #self.items
-    idxs := new(List)
-    idxs:add(...)
-    idxs:sort()
-    for _, idx in idxs {
-        if idx >= len {
-            error(fmt("index %d >= length %d", idx, len))
-        }
-        for i = idx, len - 1 {
-            self.items[i] = self.items[i + 1]
+    if idx >= len {
+        errorf("index %d >= length %d", idx, len)
+    }
+    for i = idx, len - 1 {
+        self.items[i] = self.items[i + 1]
+    }
+}
+
+// val: 要删除的元素
+fn List:remove(val) {
+    // 倒序删除，避免删除后索引变化
+    for idx = #self.items - 1, 0, -1 {
+        if self.items[idx] == val {
+            self:remove_at(idx)
+            // 不能 break，list 不是 set，可能有相同的元素
         }
     }
 }
 
-// ...: 删除的元素
-fn List:remove(...) {
-    idxs := {}
-    for _, v in {...} {
-        for idx = #self.items - 1, 0, -1 {
-            if self.items[idx] == v {
-                self:remove_at(idx)
-                // 不能 break，list 不是 set，可能有相同的元素
-            }
+// func: func(idx, val) -> bool
+fn List:remove_where(func) {
+    if func == nil {
+        error("List:remove_where(func): func is nil")
+    }
+    idxs := new(List)
+    for idx, v in self.items {
+        if func(idx, v) {
+            idxs:add(idx)
         }
+    }
+    idxs:sort()
+    idxs:reverse()
+    for _, idx in idxs.items {
+        self:remove_at(idx)
     }
 }
 
@@ -78,22 +89,16 @@ fn List:insert(idx, item) {
     self.items[idx] = item
 }
 
-// 清空
 fn List:clear() {
     self.items = {}
 }
 
-// 反转
 fn List:reverse() {
-    maxIdx := #self.items - 1
-    if maxIdx > 0 {
-        i := 0
-        while i < maxIdx {
-            tmp = self.items[i]
-            self.items[i] = self.items[maxIdx - i]
-            self.items[maxIdx - i] = tmp
-            i++
-        }
+    len := #self.items
+    for i = 0, len / 2 - 1 {
+        tmp := self.items[i]
+        self.items[i] = self.items[len - i - 1]
+        self.items[len - i - 1] = tmp
     }
 }
 
@@ -105,8 +110,8 @@ fn List:sort(func) {
     }
     len := #self.items
     if len > 1 {
-        for i = 0, len - 1 {
-            for j = i + 1, len {
+        for i = 0, len - 2 {
+            for j = i + 1, len - 1 {
                 if func(self.items[i], self.items[j]) {
                     tmp = self.items[i]
                     self.items[i] = self.items[j]
@@ -126,6 +131,13 @@ fn List:__add(other) {
         mix:add(i)
     }
     rt mix
+}
+
+fn List:__sub(other) {
+    for _, i in other.items {
+        self:remove(i)
+    }
+    rt self
 }
 
 fn List:__str() {
@@ -158,6 +170,10 @@ fn List:__eq(other) {
         }
     }
     rt true
+}
+
+fn List:__len() {
+    rt #self.items
 }
 
 // fn List:__newindex(idx, val) {

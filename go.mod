@@ -5,7 +5,7 @@ go 1.20
 require (
 	atomicgo.dev/keyboard v0.2.9
 	github.com/json-iterator/go v1.1.12
-	github.com/lollipopkit/gommon v0.3.3
+	github.com/lollipopkit/gommon v0.4.3
 )
 
 require (

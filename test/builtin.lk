@@ -7,17 +7,44 @@ import 'list'
 a := new(List)
 a:add(1, 2, 2, 4)
 a:remove(2)
+if #a != 2 {
+    fail('#a != 2', #a)
+}
 a:remove_at(1)
-a:insert(1, '7')
-for i, v in a {
-    print(i, v)
+if #a != 1 {
+    fail('#a != 1', #a)
+}
+a:insert(1, 7)
+if a.1 != 7 {
+    fail('a.1 != 7', a.1)
 }
 a:reverse()
-if a[0] != '7' {
-    fail(a[0])
+if a[0] != 7 {
+    fail('a[0] != 7', a[0])
+}
+a:remove_where(fn (idx, val) => val == 7)
+if a.0 != 1 {
+    fail('a.0 != 1', a.0)
 }
 b := new(List)
 if a != a + b {
     fail(a, a + b)
 }
+b:add(7)
+if #(a - b) != 1 {
+    fail('#(a - b) != 1', #(a - b))
+}
+c := new(List)
+c:add(1, 2, 3)
+d := new(List)
+d:add(1, 2, 3)
+e := new(List)
+e:add(1, 2, 2)
+if c != d or d == e {
+    fail('c != d or d == e', c, d, e)
+}
+if str(c) != '[1,2,3]' {
+    fail('str(c) != "[1,2,3]"', str(c))
+}
+print('pass list')
 

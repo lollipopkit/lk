@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/lollipopkit/gommon/util"
+	http_ "github.com/lollipopkit/gommon/http"
 	. "github.com/lollipopkit/lk/api"
 )
 
@@ -35,7 +35,7 @@ func httpReq(ls LkState) int {
 		ls.Pop(1)
 	}
 
-	data, code, err := util.HttpDo(method, url, body, headers)
+	data, code, err := http_.Do(method, url, body, headers)
 	if err != nil {
 		ls.PushNil()
 		ls.Push(code)
@@ -49,7 +49,7 @@ func httpReq(ls LkState) int {
 	return 3
 }
 
-// Lua eg:
+// eg:
 // http.listen(addr, fn(req) {rt code, data})
 // return err
 func httpListen(ls LkState) int {

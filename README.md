@@ -11,14 +11,10 @@
 简体中文 | [English](README_en.md)
 </div>
 
-
-
 ## ⌨️ 体验
 #### 获取 
-- 一键安装：`go install github.com/lollipopkit/lk@latest`
+- 通过 `go` 安装：`go install github.com/lollipopkit/lk@latest`
 - [Release](https://github.com/LollipopKit/lang-lk/releases) 下载
-- 克隆后，`go build` 生成
-
 
 #### CLI
 详细说明可以运行 `lk --help` 查看
@@ -40,55 +36,25 @@ lk -a <file>
 
 #### 示例
 ```js
-// http发送请求示例
+// http 发送请求示例
 resp, err := http.post(
     'http://httpbin.org/post', // URL
     {'accept': 'application/json'}, // Headers
     '{"foo": "bar"}' // Body
 )
 if err != nil {
-    error(err) // 内置的error方法
+    errorf('http req: %s', err) // 内置的 error(f) 方法
 }
-print(resp.code, resp.body)
+printf('code: %d, body: %s', resp.code, resp.body)
 
-// json解析
-if json.get(resp.body, 'json.foo') != 'bar' {
-    error('mismatch result')
+// json 解析
+json := table(resp)
+foo := json['json']['foo']
+// 正则匹配
+if foo != nil && foo:match('[bar]{3}') {
+    printf('match: %s', foo)
 }
-
-// 以下是http监听部分
-class Header {
-    'items': {}
-}
-
-fn Header.fromTable(h) {
-    self := new(Header)
-    for k, v in h {
-        self.items[k] = v
-    }
-    rt self
-}
-
-// `print`的参数，如果非`str`类型，会调用`__str`方法
-// 这里`Header`类实现了`__str`方法
-fn Header:__str() {
-    shy s = ''
-    for k, v in self.items {
-        s = fmt('%s%s: %s\n', s, k, v)
-    }
-    rt s
-}
-
-/*
-处理监听事件
-`req`包含属性`method`, `url`, `body`, `headers`
-*/
-handler := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header.fromTable(req.headers), req.body)
-
-// 监听
-if http.listen(':8080', handler) != nil {
-    error(err)
-}
+```
 ```
 
 ## 🔖 TODO
