@@ -241,9 +241,13 @@ func parseAssignStat(lexer *Lexer, var0 Exp) Stat {
 	switch lexer.LookAhead() {
 	case TOKEN_OP_MINUS_EQ, TOKEN_OP_ADD_EQ,
 		TOKEN_OP_MUL_EQ, TOKEN_OP_DIV_EQ,
-		TOKEN_OP_MOD_EQ, TOKEN_OP_POW_EQ:
+		TOKEN_OP_MOD_EQ, TOKEN_OP_POW_EQ,
+		TOKEN_OP_NILCOALESCING_EQ:
 		line, op, _ := lexer.NextToken()
-		expList := []Exp{&BinopExp{line, SourceOp(op), varList[0], parseExp(lexer)}}
+		expList := parseExpList(lexer)
+		for i := range expList {
+			expList[i] = &BinopExp{line, SourceOp(op), varList[i], expList[i]}
+		}
 		return &AssignStat{line, varList, expList}
 	case TOKEN_OP_INC, TOKEN_OP_DEC:
 		line, op, _ := lexer.NextToken()
