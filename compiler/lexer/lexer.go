@@ -55,7 +55,7 @@ func (self *Lexer) NextIdentifier() (line int, token string) {
 func (self *Lexer) NextTokenOfKind(kind int) (line int, token string) {
 	line, _kind, token := self.NextToken()
 	if kind != _kind {
-		self.error("syntax error, expect '%s' but '%s'", tokenName(kind), tokenName(_kind))
+		self.error("syntax error, expect '%s' but '%s'", tokenName(kind), token)
 	}
 	return line, token
 }
@@ -220,7 +220,10 @@ func (self *Lexer) NextToken() (line, kind int, token string) {
 		self.next(1)
 		return self.line, TOKEN_SEP_LBRACK, "["
 	case '?':
-		if self.test("??") {
+		if self.test("??=") {
+			self.next(3)
+			return self.line, TOKEN_OP_NILCOALESCING_EQ, "??="
+		} else if self.test("??") {
 			self.next(2)
 			return self.line, TOKEN_OP_NILCOALESCING, "??"
 		} else {

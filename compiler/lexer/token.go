@@ -58,6 +58,7 @@ const (
 	TOKEN_OP_BNOT  = TOKEN_OP_WAVE
 	TOKEN_OP_BXOR  = TOKEN_OP_WAVE
 	TOKEN_KW_CLASS = iota - 4
+	// ?
 	TOKEN_OP_QUESTION
 	// ??
 	TOKEN_OP_NILCOALESCING
@@ -81,6 +82,8 @@ const (
 	TOKEN_OP_INC
 	// --
 	TOKEN_OP_DEC
+	// ??=
+	TOKEN_OP_NILCOALESCING_EQ
 )
 
 var tokenOpEq = map[int]int{
@@ -92,6 +95,7 @@ var tokenOpEq = map[int]int{
 	TOKEN_OP_MOD_EQ:   TOKEN_OP_MOD,
 	TOKEN_OP_INC:      TOKEN_OP_ADD,
 	TOKEN_OP_DEC:      TOKEN_OP_MINUS,
+	TOKEN_OP_NILCOALESCING_EQ: TOKEN_OP_NILCOALESCING,
 }
 
 func SourceOp(op int) int {
@@ -166,6 +170,7 @@ var tokenNames = map[int]string{
 	TOKEN_OP_MOD_EQ:        "%=",
 	TOKEN_OP_INC:           "++",
 	TOKEN_OP_DEC:           "--",
+	TOKEN_OP_NILCOALESCING_EQ: "??=",
 }
 
 func tokenName(token int) string {
