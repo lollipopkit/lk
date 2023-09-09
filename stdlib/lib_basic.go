@@ -27,7 +27,7 @@ var baseFuncs = map[string]GoFunction{
 	"str":       baseToString,
 	"num":       baseToNumber,
 	"int":       mathToInt,
-	"table":     baseToTable,
+	"json":     baseToJson,
 }
 
 // lua-5.3.4/src/lbaselib.c#luaopen_base()
@@ -296,10 +296,10 @@ func baseToNumber(ls LkState) int {
 }
 
 // convert (json)str to table
-func baseToTable(ls LkState) int {
+func baseToJson(ls LkState) int {
 	str := ls.CheckString(1)
 	var item any
-	if err := Json.Unmarshal([]byte(str), &item); err != nil {
+	if err := Json.UnmarshalFromString(str, &item); err != nil {
 		ls.PushNil()
 		ls.PushString(err.Error())
 		return 2

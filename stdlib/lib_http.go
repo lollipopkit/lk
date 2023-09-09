@@ -25,7 +25,6 @@ func OpenHttpLib(ls LkState) int {
 func httpReq(ls LkState) int {
 	method := strings.ToUpper(ls.CheckString(1))
 	url := ls.CheckString(2)
-	body := ls.ToPointer(4)
 	headers := make(map[string]string)
 	ls.PushNil()
 	for ls.Next(3) {
@@ -35,7 +34,8 @@ func httpReq(ls LkState) int {
 		ls.Pop(1)
 	}
 
-	data, code, err := http_.Do(method, url, body, headers)
+	// Always convert body to string
+	data, code, err := http_.Do(method, url, ls.ToString2(4), headers)
 	if err != nil {
 		ls.PushNil()
 		ls.Push(code)

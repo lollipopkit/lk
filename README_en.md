@@ -36,53 +36,26 @@ lk -a <file>
 #### Example
 ```js
 // Example of http sending request
-resp, err := http.post(
-    'http://httpbin.org/post', // URL
+resp, code, err := http.req(
+    'POST', // Method
+    'https://http.lolli.tech/post', // URL
     {'accept': 'application/json'}, // Headers
-    '{"foo": "bar"}' // Body
+    {'foo': 'bar'} // Body
 )
 if err != nil {
-    error(error) // The built-in error method
+    errorf('http req: %s', err) // Internal error(f) func
 }
-print(resp.code, resp.body)
+printf('code: %d, body: %s', code, resp)
 
-// Json parsing
-if json.get(resp.body, 'json.foo') != 'bar' {
-    error('mismatch result')
+// Json parse
+obj, err := json(resp)
+if err != nil {
+    errorf('json parse: %s', err)
 }
-
-// The following is the http listener
-class Header {
-    'items': {}
-}
-
-fn Header.fromTable(h) {
-    self := new(Header)
-    for k, v in h {
-        self.items[k] = v
-    }
-    rt self
-}
-
-// Parameter of 'print'. If it is not of type 'str', it will be called '__str' metamethod
-// Here, the 'Header' class implements the '__str' method
-fn Header:__ str() {
-    shy s = ''
-    for k, v in self.items {
-        s = fmt('%s%s: %s\n', s, k, v)
-    }
-    rt s
-}
-
-/*
-Processing listening events
-'req' contains attributes 'method', 'url', 'body', 'headers'
-*/
-handler := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header.fromTable(req.headers), req.body)
-
-// Monitoring on 8080
-if http.listen(':8080', handler) != nil {
-    error(err)
+foo := obj['json']['foo']
+// Regular matching
+if foo != nil and foo:match('[bar]{3}') {
+    printf('match: %s', foo)
 }
 ```
 ##  🔖  TODO

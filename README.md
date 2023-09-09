@@ -37,24 +37,27 @@ lk -a <file>
 #### 示例
 ```js
 // http 发送请求示例
-resp, err := http.post(
-    'http://httpbin.org/post', // URL
+resp, code, err := http.req(
+    'POST', // Method
+    'https://http.lolli.tech/post', // URL
     {'accept': 'application/json'}, // Headers
-    '{"foo": "bar"}' // Body
+    {'foo': 'bar'} // Body
 )
 if err != nil {
     errorf('http req: %s', err) // 内置的 error(f) 方法
 }
-printf('code: %d, body: %s', resp.code, resp.body)
+printf('code: %d, body: %s', code, resp)
 
 // json 解析
-json := table(resp)
-foo := json['json']['foo']
+obj, err := json(resp)
+if err != nil {
+    errorf('json parse: %s', err)
+}
+foo := obj['json']['foo']
 // 正则匹配
-if foo != nil && foo:match('[bar]{3}') {
+if foo != nil and foo:match('[bar]{3}') {
     printf('match: %s', foo)
 }
-```
 ```
 
 ## 🔖 TODO
