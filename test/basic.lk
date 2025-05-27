@@ -46,7 +46,7 @@ func('' and true and 1 ? 'support ternary exp' : 'unreachable')
 func(6 ~/ 2, 6 & 2, 6 / 2)
 func(_VERSION, math.pi)
 // 与js类似，大部分类型都可转为json str
-func(str(test2))
+func(to_str(test2))
 
 gf := new(GF)
 gf2 := new(GF)

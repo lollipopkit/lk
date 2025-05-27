@@ -9,6 +9,7 @@ var tableLib = map[string]GoFunction{
 	"keys":     tableKeys,
 	"values":   tableValues,
 	"contains": tableHave,
+	"has":      tableHave,
 }
 
 func OpenTableLib(ls LkState) int {

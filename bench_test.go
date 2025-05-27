@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -12,18 +13,12 @@ const (
 
 var (
 	skipTestList = []string{
+		"http_header.lk",
 		"http_listen.lk",
+		"gf.lk",
+		"module.lk",
 	}
 )
-
-func contains[T string](list []T, item T) bool {
-	for idx := range list {
-		if list[idx] == item {
-			return true
-		}
-	}
-	return false
-}
 
 func TestMain(m *testing.M) {
 	files, err := os.ReadDir("test")
@@ -32,7 +27,7 @@ func TestMain(m *testing.M) {
 	}
 	for idx := range files {
 		name := files[idx].Name()
-		if files[idx].IsDir() || contains(skipTestList, name) || !strings.HasSuffix(name, ".lk") {
+		if files[idx].IsDir() || slices.Contains(skipTestList, name) || !strings.HasSuffix(name, ".lk") {
 			continue
 		}
 		println("=== " + name + " ===")

@@ -108,7 +108,7 @@ func (self *lkState) runLuaClosure() {
 
 func (self *lkState) CatchAndPrint(isRepl bool) {
 	if err := recover(); err != nil {
-		term.Red("%v\n", err)
+		term.Red("%v:", err)
 		stack := self.stack
 		if isRepl {
 			_catchEachStack(stack, -1)
@@ -154,12 +154,12 @@ func _catchEachStack(stack *lkStack, idx int) {
 	}()
 	if source != "" {
 		if idx >= 0 {
-			term.Yellow("%d >> %s:%d", idx, source, line)
+			term.Yellow("\t%d >> %s:%d", idx, source, line)
 		} else {
-			term.Yellow(">> %s", source)
+			term.Yellow("\t>> %s", source)
 		}
 		if len(code) != 0 {
-			println("  " + code)
+			println("\t\t" + code)
 		}
 	}
 }

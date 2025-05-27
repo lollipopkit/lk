@@ -1,12 +1,12 @@
 import 'test/http_header'
 
 data, code, err := http.req(
-    'post',
-    'http://httpbin.org/post', 
+    'get',
+    'https://api.lpkt.cn', 
     {'accept': 'application/json'}, 
     '{"foo": "bar"}'
 )
 
 print(code, err)
 // Convert str to table
-print(table(data))
+print(to_map(data))

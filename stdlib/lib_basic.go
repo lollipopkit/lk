@@ -12,8 +12,8 @@ import (
 var baseFuncs = map[string]GoFunction{
 	"new":       baseNew,
 	"print":     basePrint,
-	"fmt":       strFormat,
 	"printf":    basePrintf,
+	"fmt":       strFormat,
 	"assert":    baseAssert,
 	"error":     baseError,
 	"errorf":    baseErrorf,
@@ -24,10 +24,10 @@ var baseFuncs = map[string]GoFunction{
 	"do_file":   baseDoFile,
 	"pcall":     basePCall,
 	"type":      baseType,
-	"str":       baseToString,
-	"num":       baseToNumber,
-	"int":       mathToInt,
-	"json":     baseToJson,
+	"to_str":       baseToString,
+	"to_num":       baseToNumber,
+	"to_int":       mathToInt,
+	"to_map":     baseToJson,
 }
 
 // lua-5.3.4/src/lbaselib.c#luaopen_base()

@@ -43,8 +43,8 @@ e:add(1, 2, 2)
 if c != d or d == e {
     fail('c != d or d == e', c, d, e)
 }
-if str(c) != '[1,2,3]' {
-    fail('str(c) != "[1,2,3]"', str(c))
+if to_str(c) != '[1,2,3]' {
+    fail('to_str(c) != "[1,2,3]"', str(c))
 }
 print('pass list')
 

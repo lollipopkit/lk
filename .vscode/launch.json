@@ -20,7 +20,7 @@
             "request": "launch",
             "mode": "debug",
             "program": ".",
-            "args": ["test/test.lk"]
+            "args": ["test/object.lk"]
         },
 
     ]

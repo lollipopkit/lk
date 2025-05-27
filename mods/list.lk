@@ -141,7 +141,7 @@ fn List:__sub(other) {
 }
 
 fn List:__str() {
-    rt str(self.items)
+    rt to_str(self.items)
 }
 
 fn List:__index(idx) {

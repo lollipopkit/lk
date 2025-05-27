@@ -107,20 +107,6 @@ func isExpression(input string) bool {
 		return false
 	}
 
-	// Check for common statement patterns that shouldn't be wrapped
-	// This is a simple heuristic and won't catch all cases
-	lowerInput := strings.TrimSpace(strings.ToLower(input))
-	statementPrefixes := []string{
-		"if ", "for ", "while ", "function ", "shy ", "class ",
-		"break", "return ", "print(", "printf(", "local ",
-	}
-
-	for _, prefix := range statementPrefixes {
-		if strings.HasPrefix(lowerInput, prefix) {
-			return false
-		}
-	}
-
 	// Check if it contains assignment
 	if strings.Contains(input, "=") ||
 		strings.Contains(input, "+=") ||
