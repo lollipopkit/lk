@@ -1,0 +1,24 @@
+shy fn foo(a) {
+    print("foo 函数输出", a)
+    rt coroutine.yield(2 * a) // 返回 2*a 的值
+}
+ 
+co := coroutine.create(fn (a , b) {
+    print("第一次协同程序执行输出", a, b) // co-body 1 10
+    shy r = foo(a + 1)
+     
+    print("第二次协同程序执行输出", r)
+    shy r, s = coroutine.yield(a + b, a - b)  // a，b的值为第一次调用协同程序时传入
+     
+    print("第三次协同程序执行输出", r, s)
+    rt b, "结束协同程序"  // b的值为第二次调用协同程序时传入
+})
+       
+print("main", coroutine.resume(co, 1, 10)) // true, 4
+print()
+print("main", coroutine.resume(co, "r")) // true 11 -9
+print()
+print("main", coroutine.resume(co, "x", "y")) // true 10 end
+print()
+print("main", coroutine.resume(co, "x", "y")) // cannot resume dead sync
+print()

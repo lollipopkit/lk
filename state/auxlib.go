@@ -292,7 +292,7 @@ func (self *lkState) OpenLibs() {
 		"utf8":  stdlib.OpenUTF8Lib,
 		"os":    stdlib.OpenOSLib,
 		"pkg":   stdlib.OpenPackageLib,
-		"sync":  stdlib.OpenCoroutineLib,
+		"coroutine":  stdlib.OpenCoroutineLib,
 		"http":  stdlib.OpenHttpLib,
 		"table": stdlib.OpenTableLib,
 		"num":   stdlib.OpenNumLib,
@@ -344,7 +344,7 @@ func (self *lkState) NewLibTable(l FuncReg) {
 func (self *lkState) SetFuncs(l FuncReg, nup int) {
 	self.CheckStack2(nup, "too many upvalues")
 	for name := range l { /* fill the table with given functions */
-		for i := 0; i < nup; i++ { /* copy upvalues to the top */
+		for range nup { /* copy upvalues to the top */
 			self.PushValue(-nup)
 		}
 		// r[-(nup+2)][name]=fun
