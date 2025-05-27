@@ -33,7 +33,7 @@ func parsePrefixExp(lexer *Lexer) Exp {
 
 func parseParensExp(lexer *Lexer) Exp {
 	lexer.NextTokenOfKind(TOKEN_SEP_LPAREN) // (
-	exp := parseExp(lexer)                  // exp
+	exp := ParseExp(lexer)                  // exp
 	lexer.NextTokenOfKind(TOKEN_SEP_RPAREN) // )
 
 	switch exp.(type) {
@@ -50,7 +50,7 @@ func _finishPrefixExp(lexer *Lexer, exp Exp) Exp {
 		switch lexer.LookAhead() {
 		case TOKEN_SEP_LBRACK: // prefixexp ‘[’ exp ‘]’
 			lexer.NextToken()                       // ‘[’
-			keyExp := parseExp(lexer)               // exp
+			keyExp := ParseExp(lexer)               // exp
 			lexer.NextTokenOfKind(TOKEN_SEP_RBRACK) // ‘]’
 			exp = &TableAccessExp{lexer.Line(), exp, keyExp}
 		case TOKEN_SEP_DOT: // prefixexp ‘.’ Name

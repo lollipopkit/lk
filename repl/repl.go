@@ -6,8 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"slices"
+
 	"atomicgo.dev/keyboard/keys"
 	"github.com/lollipopkit/lk/api"
+	"github.com/lollipopkit/lk/compiler/lexer"
+	"github.com/lollipopkit/lk/compiler/parser"
 	"github.com/lollipopkit/lk/consts"
 	. "github.com/lollipopkit/lk/json"
 	"github.com/lollipopkit/lk/state"
@@ -74,7 +78,7 @@ func Repl() {
 			continue
 		}
 
-		// 加载line，调用
+		// Call the code
 		protectedCall(ls, blockStr)
 
 		blockLines = []string{}
@@ -82,14 +86,57 @@ func Repl() {
 }
 
 func protectedCall(ls api.LkState, cmd string) {
-	// 捕获错误
+	// Catch and print any errors
 	defer ls.CatchAndPrint(true)
 
-	//log.Green(">>> " + cmd)
+	// Check if input is just an expression, and if so wrap it with printf()
+	if isExpression(cmd) {
+		cmd = "print(" + cmd + ")"
+	}
+
 	ls.LoadString(cmd, "stdin")
 
 	ls.PCall(0, api.LK_MULTRET, 1)
 	updateHistory(cmd)
+}
+
+// isExpression checks if the input is an expression (not a statement)
+func isExpression(input string) bool {
+	// Skip empty input
+	if strings.TrimSpace(input) == "" {
+		return false
+	}
+
+	// Check for common statement patterns that shouldn't be wrapped
+	// This is a simple heuristic and won't catch all cases
+	lowerInput := strings.TrimSpace(strings.ToLower(input))
+	statementPrefixes := []string{
+		"if ", "for ", "while ", "function ", "shy ", "class ",
+		"break", "return ", "print(", "printf(", "local ",
+	}
+
+	for _, prefix := range statementPrefixes {
+		if strings.HasPrefix(lowerInput, prefix) {
+			return false
+		}
+	}
+
+	// Check if it contains assignment
+	if strings.Contains(input, "=") ||
+		strings.Contains(input, "+=") ||
+		strings.Contains(input, "-=") ||
+		strings.Contains(input, "*=") ||
+		strings.Contains(input, "/=") {
+		return false
+	}
+
+	// Use the parser to try parsing as an expression
+	l := lexer.NewLexer(input, "")
+	expr := parser.ParseExp(l)
+
+	// If we can parse it as an expression and there's no more tokens,
+	// it's likely just an expression
+	return expr != nil && l.LookAhead() == lexer.TOKEN_EOF
 }
 
 func handleKeyboard(key keys.Key, rs *[]rune, rIdx *int, lIdx *int) (bool, bool, error) {
@@ -122,7 +169,7 @@ func _updateHistory(str string) {
 		}
 	}
 	if idx != -1 {
-		linesHistory = append(linesHistory[:idx], linesHistory[idx+1:]...)
+		linesHistory = slices.Delete(linesHistory, idx, idx+1)
 	}
 	linesHistory = append(linesHistory, str)
 }

@@ -9,10 +9,10 @@ import (
 // explist ::= exp {‘,’ exp}
 func parseExpList(lexer *Lexer) []Exp {
 	exps := make([]Exp, 0, 4)
-	exps = append(exps, parseExp(lexer))
+	exps = append(exps, ParseExp(lexer))
 	for lexer.LookAhead() == TOKEN_SEP_COMMA {
 		lexer.NextToken()
-		exps = append(exps, parseExp(lexer))
+		exps = append(exps, ParseExp(lexer))
 	}
 	return exps
 }
@@ -42,7 +42,7 @@ exp1  ::= exp0 {‘^’ exp2}
 exp0  ::= nil | false | true | Numeral | LiteralString
 		| ‘...’ | functiondef | prefixexp | tableconstructor
 */
-func parseExp(lexer *Lexer) Exp {
+func ParseExp(lexer *Lexer) Exp {
 	return parseExp14(lexer)
 }
 
@@ -260,7 +260,7 @@ func parseFuncDefExp(lexer *Lexer) *FuncDefExp {
 		}}
 	}
 	lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)                // {
-	block := parseBlock(lexer)                             // block
+	block := ParseBlock(lexer)                             // block
 	lastLine, _ := lexer.NextTokenOfKind(TOKEN_SEP_RCURLY) // }
 	return &FuncDefExp{line, lastLine, parList, isVararg, block}
 }
@@ -327,20 +327,20 @@ func _parseFieldList(lexer *Lexer) (ks, vs []Exp) {
 func _parseField(lexer *Lexer) (k, v Exp) {
 	if lexer.LookAhead() == TOKEN_SEP_LBRACK {
 		lexer.NextToken()                       // [
-		k = parseExp(lexer)                     // exp
+		k = ParseExp(lexer)                     // exp
 		lexer.NextTokenOfKind(TOKEN_SEP_RBRACK) // ]
 		lexer.NextTokenOfKind(TOKEN_SEP_COLON)  // :
-		v = parseExp(lexer)                     // exp
+		v = ParseExp(lexer)                     // exp
 		return
 	}
 
-	exp := parseExp(lexer)
+	exp := ParseExp(lexer)
 	if nameExp, ok := exp.(*StringExp); ok {
 		if lexer.LookAhead() == TOKEN_SEP_COLON {
 			// Name ‘:’ exp => ‘[’ LiteralString ‘]’ = exp
 			lexer.NextToken()
 			k = &StringExp{nameExp.Line, nameExp.Str}
-			v = parseExp(lexer)
+			v = ParseExp(lexer)
 			return
 		}
 	}

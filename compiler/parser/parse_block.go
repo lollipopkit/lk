@@ -6,18 +6,18 @@ import (
 )
 
 // block ::= {stat} [retstat]
-func parseBlock(lexer *Lexer) *Block {
+func ParseBlock(lexer *Lexer) *Block {
 	return &Block{
-		Stats:    parseStats(lexer),
+		Stats:    ParseStats(lexer),
 		RetExps:  parseRetExps(lexer),
 		LastLine: lexer.Line(),
 	}
 }
 
-func parseStats(lexer *Lexer) []Stat {
+func ParseStats(lexer *Lexer) []Stat {
 	stats := make([]Stat, 0, 8)
 	for !_isReturnOrBlockEnd(lexer.LookAhead()) {
-		stat := parseStat(lexer)
+		stat := ParseStat(lexer)
 		if _, ok := stat.(*EmptyStat); !ok {
 			stats = append(stats, stat)
 		}
