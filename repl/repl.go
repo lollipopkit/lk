@@ -89,12 +89,14 @@ func protectedCall(ls api.LkState, cmd string) {
 	// Catch and print any errors
 	defer ls.CatchAndPrint(true)
 
+	warpedCmd := cmd
 	// Check if input is just an expression, and if so wrap it with printf()
 	if isExpression(cmd) {
-		cmd = "print(" + cmd + ")"
+		warpedCmd = "print(" + cmd + ")"
 	}
+	// term.Info("[REPL] Running: %s", warpedCmd)
 
-	ls.LoadString(cmd, "stdin")
+	ls.LoadString(warpedCmd, "stdin")
 
 	ls.PCall(0, api.LK_MULTRET, 1)
 	updateHistory(cmd)
@@ -102,6 +104,14 @@ func protectedCall(ls api.LkState, cmd string) {
 
 // isExpression checks if the input is an expression (not a statement)
 func isExpression(input string) bool {
+	defer func() {
+		// If parser.ParseExp panics (e.g., on syntax error), recover.
+		// The function will return the zero value for bool (false) if a panic occurs
+		// before a successful return statement, effectively treating parsing errors
+		// as "not an expression".
+		recover()
+	}()
+
 	// Skip empty input
 	if strings.TrimSpace(input) == "" {
 		return false
