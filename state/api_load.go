@@ -1,26 +1,25 @@
 package state
 
 import (
-	"io/ioutil"
 	"os"
 	"strings"
 
-	"github.com/lollipopkit/gommon/log"
 	. "github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/binchunk"
 	"github.com/lollipopkit/lk/compiler"
+	"github.com/lollipopkit/lk/term"
 	"github.com/lollipopkit/lk/utils"
 )
 
 func Compile(source string) *binchunk.Prototype {
 	if !utils.Exist(source) {
-		log.Red("[compile] file not found: " + source)
+		term.Red("[compile] file not found: " + source)
 		os.Exit(2)
 	}
 
-	data, err := ioutil.ReadFile(source)
+	data, err := os.ReadFile(source)
 	if err != nil {
-		log.Red("[compile] can't read file: " + err.Error())
+		term.Red("[compile] can't read file: " + err.Error())
 		os.Exit(2)
 	}
 
@@ -28,12 +27,12 @@ func Compile(source string) *binchunk.Prototype {
 
 	compiledData, err := bin.Dump(utils.Md5(data))
 	if err != nil {
-		log.Red("[compile] dump file failed: " + err.Error())
+		term.Red("[compile] dump file failed: " + err.Error())
 		os.Exit(2)
 	}
-	err = ioutil.WriteFile(source+"c", compiledData, 0744)
+	err = os.WriteFile(source+"c", compiledData, 0744)
 	if err != nil {
-		log.Red("[compile] write file failed: " + err.Error())
+		term.Red("[compile] write file failed: " + err.Error())
 		os.Exit(2)
 	}
 	return bin
@@ -49,7 +48,7 @@ func (self *lkState) Load(chunk []byte, chunkName, mode string) LkStatus {
 		var err error
 		proto, err = binchunk.Load(chunk)
 		if err != nil {
-			log.Red("[load] load chunk failed: " + err.Error())
+			term.Red("[load] load chunk failed: " + err.Error())
 			os.Exit(2)
 		}
 	}

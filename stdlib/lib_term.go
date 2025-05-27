@@ -1,8 +1,7 @@
 package stdlib
 
 import (
-	"github.com/lollipopkit/gommon/res"
-	"github.com/lollipopkit/gommon/term"
+	"github.com/lollipopkit/lk/term"
 	. "github.com/lollipopkit/lk/api"
 )
 
@@ -12,15 +11,15 @@ var termLib = map[string]GoFunction{
 
 func OpenTermLib(ls LkState) int {
 	ls.NewLib(termLib)
-	ls.PushString(res.CYAN)
+	ls.PushString(term.CYAN)
 	ls.SetField(-2, "cyan")
-	ls.PushString(res.GREEN)
+	ls.PushString(term.GREEN)
 	ls.SetField(-2, "green")
-	ls.PushString(res.RED)
+	ls.PushString(term.RED)
 	ls.SetField(-2, "red")
-	ls.PushString(res.YELLOW)
+	ls.PushString(term.YELLOW)
 	ls.SetField(-2, "yellow")
-	ls.PushString(res.NOCOLOR)
+	ls.PushString(term.NOCOLOR)
 	ls.SetField(-2, "nocolor")
 	return 1
 }

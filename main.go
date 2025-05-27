@@ -2,13 +2,12 @@ package main
 
 import (
 	"flag"
-	"io/ioutil"
 	"os"
 	"strings"
 
-	"github.com/lollipopkit/gommon/log"
 	"github.com/lollipopkit/lk/compiler/parser"
 	. "github.com/lollipopkit/lk/json"
+	"github.com/lollipopkit/lk/term"
 	"github.com/lollipopkit/lk/repl"
 	"github.com/lollipopkit/lk/state"
 )
@@ -37,15 +36,15 @@ func main() {
 		if strings.HasSuffix(fPath, ".lk") || strings.HasSuffix(fPath, ".lkc") {
 			runVM(fPath)
 		} else {
-			log.Yellow("Can't run file without suffix '.lk(c)':\n" + fPath)
+			term.Yellow("Can't run file without suffix '.lk(c)':\n" + fPath)
 		}
 	}
 }
 
 func writeAst(path string) {
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Red(err.Error())
+		term.Red(err.Error())
 		os.Exit(1)
 	}
 
@@ -53,21 +52,21 @@ func writeAst(path string) {
 
 	j, err := Json.MarshalIndent(block, "", "  ")
 	if err != nil {
-		log.Red(err.Error())
+		term.Red(err.Error())
 		os.Exit(1)
 	}
 
-	err = ioutil.WriteFile(path+".ast.json", j, 0644)
+	err = os.WriteFile(path+".ast.json", j, 0644)
 	if err != nil {
-		log.Red(err.Error())
+		term.Red(err.Error())
 		os.Exit(1)
 	}
 }
 
 func runVM(path string) {
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Red("[run] can't read file: " + err.Error())
+		term.Red("[run] can't read file: " + err.Error())
 		os.Exit(1)
 	}
 	ls := state.New()

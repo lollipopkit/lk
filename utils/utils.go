@@ -12,5 +12,5 @@ func Md5(data []byte) string {
 
 func Exist(path string) bool {
 	_, err := os.Stat(path)
-	return !os.IsNotExist(err)
+	return err == nil || os.IsExist(err)
 }

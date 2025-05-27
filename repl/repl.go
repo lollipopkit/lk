@@ -7,14 +7,12 @@ import (
 	"strings"
 
 	"atomicgo.dev/keyboard/keys"
-	"github.com/lollipopkit/gommon/log"
-	"github.com/lollipopkit/gommon/res"
-	"github.com/lollipopkit/gommon/sys"
-	"github.com/lollipopkit/gommon/term"
 	"github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
 	. "github.com/lollipopkit/lk/json"
 	"github.com/lollipopkit/lk/state"
+	"github.com/lollipopkit/lk/term"
+	"github.com/lollipopkit/lk/utils"
 )
 
 var (
@@ -54,8 +52,8 @@ func newState() {
 func Repl() {
 	fmt.Printf(
 		"lk (v%s) - %s for help\n",
-		res.CYAN+consts.VERSION+res.NOCOLOR,
-		res.GREEN+"`help()`"+res.NOCOLOR,
+		term.CYAN+consts.VERSION+term.NOCOLOR,
+		term.GREEN+"`help()`"+term.NOCOLOR,
 	)
 
 	loadHistory()
@@ -172,22 +170,22 @@ func _blockNotEndCount(block string) int {
 func writeHistory() {
 	data, err := Json.MarshalIndent(linesHistory, "", "  ")
 	if err != nil {
-		log.Warn("[REPL] marshal history failed: %v", err)
+		term.Warn("[REPL] marshal history failed: %v", err)
 	}
 	if err := os.WriteFile(historyPath, data, 0644); err != nil {
-		log.Warn("[REPL] write history failed: %v", err)
+		term.Warn("[REPL] write history failed: %v", err)
 	}
 }
 
 func loadHistory() {
-	if sys.Exist(historyPath) {
+	if utils.Exist(historyPath) {
 		data, err := os.ReadFile(historyPath)
 		if err != nil {
-			log.Warn("[REPL] read history failed: %v", err)
+			term.Warn("[REPL] read history failed: %v", err)
 		}
 		err = Json.Unmarshal(data, &linesHistory)
 		if err != nil {
-			log.Warn("[REPL] unmarshal history failed: %v", err)
+			term.Warn("[REPL] unmarshal history failed: %v", err)
 		}
 	} else {
 		writeHistory()

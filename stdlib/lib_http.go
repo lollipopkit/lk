@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	http_ "github.com/lollipopkit/gommon/http"
 	. "github.com/lollipopkit/lk/api"
 )
 
@@ -34,17 +33,41 @@ func httpReq(ls LkState) int {
 		ls.Pop(1)
 	}
 
-	// Always convert body to string
-	data, code, err := http_.Do(method, url, ls.ToString2(4), headers)
+	bodyStr := ls.ToString2(4)
+	var body io.Reader
+	if bodyStr != "" {
+		body = strings.NewReader(bodyStr)
+	}
+
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		ls.PushNil()
-		ls.Push(code)
+		ls.Push(-1)
+		ls.PushString(err.Error())
+		return 3
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		ls.PushNil()
+		ls.Push(-1)
+		ls.PushString(err.Error())
+		return 3
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		ls.PushNil()
+		ls.Push(resp.StatusCode)
 		ls.PushString(err.Error())
 		return 3
 	}
 
 	ls.PushString(string(data))
-	ls.Push(code)
+	ls.Push(resp.StatusCode)
 	ls.PushNil()
 	return 3
 }

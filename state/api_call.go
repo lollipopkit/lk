@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lollipopkit/gommon/log"
-	"github.com/lollipopkit/gommon/sys"
 	. "github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/consts"
+	"github.com/lollipopkit/lk/term"
 	"github.com/lollipopkit/lk/mods"
+	"github.com/lollipopkit/lk/utils"
 	"github.com/lollipopkit/lk/vm"
 )
 
@@ -108,7 +108,7 @@ func (self *lkState) runLuaClosure() {
 
 func (self *lkState) CatchAndPrint(isRepl bool) {
 	if err := recover(); err != nil {
-		log.Red("%v\n", err)
+		term.Red("%v\n", err)
 		stack := self.stack
 		if isRepl {
 			_catchEachStack(stack, -1)
@@ -139,7 +139,7 @@ func _catchEachStack(stack *lkStack, idx int) {
 		var err error
 		if strings.HasPrefix(source, consts.BuiltinPrefix) {
 			data, err = mods.Files.ReadFile(source[consts.BuiltinPrefixLen:])
-		} else if sys.Exist(source) {
+		} else if utils.Exist(source) {
 			data, err = os.ReadFile(source)
 		}
 
@@ -154,9 +154,9 @@ func _catchEachStack(stack *lkStack, idx int) {
 	}()
 	if source != "" {
 		if idx >= 0 {
-			log.Yellow("%d >> %s:%d", idx, source, line)
+			term.Yellow("%d >> %s:%d", idx, source, line)
 		} else {
-			log.Yellow(">> %s", source)
+			term.Yellow(">> %s", source)
 		}
 		if len(code) != 0 {
 			println("  " + code)
