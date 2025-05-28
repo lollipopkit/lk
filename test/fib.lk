@@ -1,0 +1,8 @@
+fn fib(n) {
+    if n <= 1 {
+        rt n
+    }
+    rt fib(n-1) + fib(n-2)
+}
+
+assert(fib(20) == 6765, 'fib(20) should be 6765')

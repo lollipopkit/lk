@@ -1,5 +1,5 @@
 class speed {
-    'times': 100,
+    'times': 5,
 }
 
 fn speed:test(func) {
@@ -12,5 +12,11 @@ fn speed:test(func) {
     }
 
     t2 := os.time()
-    printf('time: %d ms', t2 - t1)
+    printf('time: %d ms', (t2 - t1) / 1000)
 }
+
+import 'test/fib'
+
+runner := new(speed)
+fib30 := fn() => fib(30)
+runner:test(fib30)
