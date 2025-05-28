@@ -49,19 +49,29 @@ func (self *lkStack) pop() any {
 	return val
 }
 
+// 批量操作优化
 func (self *lkStack) pushN(vals []any, n int) {
-	nVals := len(vals)
-	if n < 0 {
-		n = nVals
-	}
-
-	for i := 0; i < n; i++ {
-		if i < nVals {
-			self.push(vals[i])
-		} else {
-			self.push(nil)
-		}
-	}
+    nVals := len(vals)
+    if n < 0 {
+        n = nVals
+    }
+    
+    // 预分配空间
+    self.check(n)
+    
+    // 使用 copy 优化批量赋值
+    if n <= nVals {
+        copy(self.slots[self.top:], vals[:n])
+        self.top += n
+    } else {
+        copy(self.slots[self.top:], vals)
+        self.top += nVals
+        // 填充 nil
+        for i := self.top; i < self.top+(n-nVals); i++ {
+            self.slots[i] = nil
+        }
+        self.top = self.top + (n - nVals)
+    }
 }
 
 func (self *lkStack) popN(n int) []any {
