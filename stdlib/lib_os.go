@@ -166,7 +166,7 @@ func osWrite(ls LkState) int {
 // lua-5.3.4/src/loslib.c#os_time()
 func osTime(ls LkState) int {
 	if ls.IsNoneOrNil(1) { /* called without args? */
-		t := time.Now().UnixMilli() /* get current time */
+		t := time.Now().UnixMicro() /* get current time */
 		ls.PushInteger(t)
 	} else {
 		ls.CheckType(1, LK_TTABLE)
