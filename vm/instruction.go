@@ -66,11 +66,25 @@ func (self Instruction) CMode() byte {
 	return opcodes[self.Opcode()].argCMode
 }
 
+type instructionFunc func(Instruction, api.LkVM)
+
+// 预计算的跳转表
+var jumpTable [64]instructionFunc
+
+func init() {
+    // 初始化跳转表
+    for i := range opcodes {
+        if opcodes[i].action != nil {
+            jumpTable[i] = opcodes[i].action
+        }
+    }
+}
+
 func (self Instruction) Execute(vm api.LkVM) {
-	action := opcodes[self.Opcode()].action
-	if action != nil {
-		action(self, vm)
-	} else {
-		panic("No instruction: " + self.OpName())
-	}
+    op := self & 0x3F
+    if fn := jumpTable[op]; fn != nil {
+        fn(self, vm)
+    } else {
+        panic("No instruction: " + opcodes[op].name)
+    }
 }
