@@ -92,13 +92,25 @@ func (self *lkTable) len() int {
 }
 
 func (self *lkTable) get(key any) any {
-	key = _floatToInteger(key)
-	if idx, ok := key.(int64); ok {
-		if idx >= 0 && idx < int64(len(self.arr)) {
-			return self.arr[idx]
-		}
-	}
-	return self._map[key]
+    // 快速路径：整数键
+    switch k := key.(type) {
+    case int64:
+        if k >= 0 && k < int64(len(self.arr)) {
+            return self.arr[k]
+        }
+    case float64:
+        if i, ok := fastFloatToInt(k); ok && i >= 0 && i < int64(len(self.arr)) {
+            return self.arr[i]
+        }
+    }
+    
+    return self._map[key]
+}
+
+// 快速浮点数转整数
+func fastFloatToInt(f float64) (int64, bool) {
+    i := int64(f)
+    return i, f == float64(i)
 }
 
 func _floatToInteger(key any) any {
