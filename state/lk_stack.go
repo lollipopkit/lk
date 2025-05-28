@@ -31,6 +31,7 @@ func (self *lkStack) check(n int) {
 	}
 }
 
+//go:inline
 func (self *lkStack) push(val any) {
 	if self.top == len(self.slots) {
 		panic("stack overflow!")
@@ -39,6 +40,7 @@ func (self *lkStack) push(val any) {
 	self.top++
 }
 
+//go:inline
 func (self *lkStack) pop() any {
 	if self.top < 1 {
 		panic("stack underflow!")

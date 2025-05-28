@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 		if files[idx].IsDir() || slices.Contains(skipTestList, name) || !strings.HasSuffix(name, ".lk") {
 			continue
 		}
-		println("=== " + name + " ===")
+		println("\n=== " + name + " ===")
 		runVM("test/" + name)
 	}
 }

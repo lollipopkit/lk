@@ -24,10 +24,12 @@ const MAXARG_sBx = MAXARG_Bx >> 1 // 131071
 */
 type Instruction uint32
 
+//go:inline
 func (self Instruction) Opcode() int {
 	return int(self & 0x3F)
 }
 
+//go:inline
 func (self Instruction) ABC() (a, b, c int) {
 	a = int(self >> 6 & 0xFF)
 	c = int(self >> 14 & 0x1FF)
@@ -35,33 +37,40 @@ func (self Instruction) ABC() (a, b, c int) {
 	return
 }
 
+//go:inline
 func (self Instruction) ABx() (a, bx int) {
 	a = int(self >> 6 & 0xFF)
 	bx = int(self >> 14)
 	return
 }
 
+//go:inline
 func (self Instruction) AsBx() (a, sbx int) {
 	a, bx := self.ABx()
 	return a, bx - MAXARG_sBx
 }
 
+//go:inline
 func (self Instruction) Ax() int {
 	return int(self >> 6)
 }
 
+//go:inline
 func (self Instruction) OpName() string {
 	return opcodes[self.Opcode()].name
 }
 
+//go:inline
 func (self Instruction) OpMode() byte {
 	return opcodes[self.Opcode()].opMode
 }
 
+//go:inline
 func (self Instruction) BMode() byte {
 	return opcodes[self.Opcode()].argBMode
 }
 
+//go:inline
 func (self Instruction) CMode() byte {
 	return opcodes[self.Opcode()].argCMode
 }

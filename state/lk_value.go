@@ -7,6 +7,7 @@ import (
 	"github.com/lollipopkit/lk/utils"
 )
 
+//go:inline
 func typeOf(val any) LkType {
 	switch val.(type) {
 	case nil:
@@ -28,6 +29,7 @@ func typeOf(val any) LkType {
 	}
 }
 
+//go:inline
 func convertToBoolean(val any) bool {
 	switch x := val.(type) {
 	case nil:

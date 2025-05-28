@@ -4,18 +4,21 @@ import . "github.com/lollipopkit/lk/api"
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_gettop
+//go:inline
 func (self *lkState) GetTop() int {
 	return self.stack.top
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_absindex
+//go:inline
 func (self *lkState) AbsIndex(idx int) int {
 	return self.stack.absIndex(idx)
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_checkstack
+//go:inline
 func (self *lkState) CheckStack(n int) bool {
 	self.stack.check(n)
 	return true // never fails
@@ -23,14 +26,16 @@ func (self *lkState) CheckStack(n int) bool {
 
 // [-n, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_pop
+//go:inline
 func (self *lkState) Pop(n int) {
-	for i := 0; i < n; i++ {
+	for range n {
 		self.stack.pop()
 	}
 }
 
 // [-0, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_copy
+//go:inline
 func (self *lkState) Copy(fromIdx, toIdx int) {
 	val := self.stack.get(fromIdx)
 	self.stack.set(toIdx, val)
@@ -38,6 +43,7 @@ func (self *lkState) Copy(fromIdx, toIdx int) {
 
 // [-0, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_pushvalue
+//go:inline
 func (self *lkState) PushValue(idx int) {
 	val := self.stack.get(idx)
 	self.stack.push(val)
@@ -45,6 +51,7 @@ func (self *lkState) PushValue(idx int) {
 
 // [-1, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_replace
+//go:inline
 func (self *lkState) Replace(idx int) {
 	val := self.stack.pop()
 	self.stack.set(idx, val)
@@ -52,12 +59,14 @@ func (self *lkState) Replace(idx int) {
 
 // [-1, +1, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_insert
+//go:inline
 func (self *lkState) Insert(idx int) {
 	self.Rotate(idx, 1)
 }
 
 // [-1, +0, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_remove
+//go:inline
 func (self *lkState) Remove(idx int) {
 	self.Rotate(idx, -1)
 	self.Pop(1)
@@ -101,6 +110,7 @@ func (self *lkState) SetTop(idx int) {
 
 // [-?, +?, –]
 // http://www.lua.org/manual/5.3/manual.html#lua_xmove
+//go:inline
 func (self *lkState) XMove(to LkState, n int) {
 	vals := self.stack.popN(n)
 	to.(*lkState).stack.pushN(vals, n)
