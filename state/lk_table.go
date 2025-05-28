@@ -8,10 +8,6 @@ import (
 	"github.com/lollipopkit/lk/utils"
 )
 
-// var (
-// 	_closureRe = regexp.MustCompile(`"((GoFunc|LkFunc)@0x[0-9a-f]+)"`)
-// )
-
 type lkTable struct {
 	arr     []any
 	_map    map[any]any
@@ -29,35 +25,39 @@ func (self *lkTable) copy() *lkTable {
 func (self *lkTable) String() (string, error) {
 	s, err := Json.Marshal(self.Json())
 	return string(s), err
-	// if err != nil {
-	// 	return "", err
-	// }
-
-	// return _closureRe.ReplaceAllString(s, "$1"), nil
 }
 
 func (t *lkTable) Json() any {
 	tb := t.copy()
+	
+	// Process array elements
+	for i := range tb.arr {
+		tb.arr[i] = convertToJsonValue(tb.arr[i])
+	}
+	
+	// If it's an array-only table, return just the array
 	if len(tb._map) == 0 {
-		for i := range tb.arr {
-			switch v := tb.arr[i].(type) {
-			case *lkClosure:
-				tb.arr[i] = v.String()
-			case *lkTable:
-				tb.arr[i] = v.Json()
-			}
-		}
 		return tb.arr
 	}
+	
+	// Process map elements
 	for k := range tb._map {
-		switch v := tb._map[k].(type) {
-		case *lkClosure:
-			tb._map[k] = v.String()
-		case *lkTable:
-			tb._map[k] = v.Json()
-		}
+		tb._map[k] = convertToJsonValue(tb._map[k])
 	}
+	
 	return tb._map
+}
+
+// Helper function to convert lk types to JSON-compatible values
+func convertToJsonValue(value any) any {
+	switch v := value.(type) {
+	case *lkClosure:
+		return v.String()
+	case *lkTable:
+		return v.Json()
+	default:
+		return v
+	}
 }
 
 func (self *lkTable) combine(t *lkTable) {
@@ -159,7 +159,7 @@ func (self *lkTable) _shrinkArray() {
 }
 
 func (self *lkTable) _expandArray() {
-	for idx := int64(len(self.arr)) + 1; true; idx++ {
+	for idx := int64(len(self.arr)) + 1; ; idx++ {
 		if val, found := self._map[idx]; found {
 			delete(self._map, idx)
 			self.arr = append(self.arr, val)
@@ -170,22 +170,21 @@ func (self *lkTable) _expandArray() {
 }
 
 func (self *lkTable) nextKey(key any) any {
+	// Initialize keys map if needed
 	if self.keys == nil || (key == nil && self.changed) {
 		self.initKeys()
 		self.changed = false
 	}
 
 	nextKey := self.keys[key]
+	
+	// Handle possible string representation of integer keys
 	if nextKey == nil && key != nil && key != self.lastKey {
-		k, ok := key.(string)
-		if !ok {
-			return nil
+		if strKey, ok := key.(string); ok {
+			if intKey, err := strconv.ParseInt(strKey, 10, 64); err == nil {
+				nextKey = self.keys[intKey]
+			}
 		}
-		intKey, err := strconv.ParseInt(k, 10, 64)
-		if err != nil {
-			return nil
-		}
-		nextKey = self.keys[intKey]
 	}
 
 	return nextKey
@@ -194,17 +193,22 @@ func (self *lkTable) nextKey(key any) any {
 func (self *lkTable) initKeys() {
 	self.keys = make(map[any]any)
 	var key any = nil
+	
+	// Process array elements first
 	for i := range self.arr {
 		if self.arr[i] != nil {
 			self.keys[key] = int64(i)
 			key = int64(i)
 		}
 	}
+	
+	// Then process map elements
 	for k := range self._map {
 		if self._map[k] != nil {
 			self.keys[key] = k
 			key = k
 		}
 	}
+	
 	self.lastKey = key
 }

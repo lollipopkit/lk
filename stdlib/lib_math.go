@@ -2,8 +2,6 @@ package stdlib
 
 import (
 	"math"
-	"math/rand"
-	"time"
 
 	. "github.com/lollipopkit/lk/api"
 	"github.com/lollipopkit/lk/utils"
@@ -33,7 +31,6 @@ var mathLib = map[string]GoFunction{
 }
 
 func OpenMathLib(ls LkState) int {
-	rand.Seed(time.Now().UnixMilli())
 	ls.NewLib(mathLib)
 	ls.PushNumber(math.Pi)
 	ls.SetField(-2, "pi")

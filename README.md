@@ -49,7 +49,7 @@ if err != nil {
 printf('code: %d, body: %s', code, resp)
 
 // json 解析
-obj, err := json(resp)
+obj, err := to_map(resp)
 if err != nil {
     errorf('json parse: %s', err)
 }
