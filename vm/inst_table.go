@@ -6,11 +6,19 @@ import . "github.com/lollipopkit/lk/api"
 const LFIELDS_PER_FLUSH = 50
 
 // R(A) := {} (size = B,C)
-func newTable(i Instruction, vm LkVM) {
+func newMap(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 
 	vm.CreateTable(Fb2int(b), Fb2int(c))
+	vm.Replace(a)
+}
+
+func newList(i Instruction, vm LkVM) {
+	a, b, _ := i.ABC()
+	a += 1
+
+	vm.CreateTable(Fb2int(b), 0)
 	vm.Replace(a)
 }
 

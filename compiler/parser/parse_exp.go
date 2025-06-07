@@ -223,8 +223,10 @@ func parseExp0(lexer *Lexer) Exp {
 		return &StringExp{line, token}
 	case TOKEN_NUMBER: // Numeral
 		return parseNumberExp(lexer)
-	case TOKEN_SEP_LCURLY: // tableconstructor
-		return parseTableConstructorExp(lexer)
+	case TOKEN_SEP_LCURLY: // mapconstructor
+		return parseMapConstructorExp(lexer)
+	case TOKEN_SEP_LBRACK: // listconstructor
+		return parseListConstructorExp(lexer)
 	case TOKEN_KW_FUNCTION: // functiondef
 		lexer.NextToken()
 		return parseFuncDefExp(lexer)
@@ -293,13 +295,25 @@ func _parseParList(lexer *Lexer) (names []string, isVararg bool) {
 }
 
 // tableconstructor ::= ‘{’ [fieldlist] ‘}’
-func parseTableConstructorExp(lexer *Lexer) *TableConstructorExp {
+func parseMapConstructorExp(lexer *Lexer) *MapConstructorExp {
 	line := lexer.Line()
 	lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)    // {
 	keyExps, valExps := _parseFieldList(lexer) // [fieldlist]
 	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)    // }
 	lastLine := lexer.Line()
-	return &TableConstructorExp{line, lastLine, keyExps, valExps}
+	return &MapConstructorExp{line, lastLine, keyExps, valExps}
+}
+
+func parseListConstructorExp(lexer *Lexer) *ListConstructorExp {
+	line := lexer.Line()
+	lexer.NextTokenOfKind(TOKEN_SEP_LBRACK)
+	exps := []Exp{}
+	if lexer.LookAhead() != TOKEN_SEP_RBRACK {
+		exps = parseExpList(lexer)
+	}
+	lexer.NextTokenOfKind(TOKEN_SEP_RBRACK)
+	lastLine := lexer.Line()
+	return &ListConstructorExp{line, lastLine, exps}
 }
 
 // fieldlist ::= field {fieldsep field} [fieldsep]

@@ -36,8 +36,10 @@ func cgExp(fi *funcInfo, node Exp, a, n int) {
 		cgVarargExp(fi, exp, a, n)
 	case *FuncDefExp:
 		cgFuncDefExp(fi, exp, a)
-	case *TableConstructorExp:
-		cgTableConstructorExp(fi, exp, a)
+	case *MapConstructorExp:
+		cgMapConstructorExp(fi, exp, a)
+	case *ListConstructorExp:
+		cgListConstructorExp(fi, exp, a)
 	case *UnopExp:
 		cgUnopExp(fi, exp, a)
 	case *BinopExp:
@@ -77,7 +79,7 @@ func cgFuncDefExp(fi *funcInfo, node *FuncDefExp, a int) {
 	fi.emitClosure(node.LastLine, a, bx)
 }
 
-func cgTableConstructorExp(fi *funcInfo, node *TableConstructorExp, a int) {
+func cgMapConstructorExp(fi *funcInfo, node *MapConstructorExp, a int) {
 	nArr := 0
 	for i := range node.KeyExps {
 		if node.KeyExps[i] == nil {
@@ -88,7 +90,7 @@ func cgTableConstructorExp(fi *funcInfo, node *TableConstructorExp, a int) {
 	multRet := nExps > 0 &&
 		isVarargOrFuncCall(node.ValExps[nExps-1])
 
-	fi.emitNewTable(node.Line, a, nArr, nExps-nArr)
+	fi.emitNewMap(node.Line, a, nArr, nExps-nArr)
 
 	arrIdx := 0
 	for i := range node.KeyExps {
@@ -129,6 +131,39 @@ func cgTableConstructorExp(fi *funcInfo, node *TableConstructorExp, a int) {
 
 		line := lastLineOf(valExp)
 		fi.emitSetTable(line, a, b, c)
+	}
+}
+
+func cgListConstructorExp(fi *funcInfo, node *ListConstructorExp, a int) {
+	n := len(node.ValExps)
+	multRet := n > 0 && isVarargOrFuncCall(node.ValExps[n-1])
+
+	fi.emitNewList(node.Line, a, n)
+
+	arrIdx := 0
+	for i, valExp := range node.ValExps {
+		arrIdx++
+		tmp := fi.allocReg()
+		if i == n-1 && multRet {
+			cgExp(fi, valExp, tmp, -1)
+		} else {
+			cgExp(fi, valExp, tmp, 1)
+		}
+
+		if arrIdx%50 == 0 || arrIdx == n { // LFIELDS_PER_FLUSH
+			nFields := arrIdx % 50
+			if nFields == 0 {
+				nFields = 50
+			}
+			fi.freeRegs(nFields)
+			line := lastLineOf(valExp)
+			c := (arrIdx-1)/50 + 1 // todo: c > 0xFF
+			if i == n-1 && multRet {
+				fi.emitSetList(line, a, 0, c)
+			} else {
+				fi.emitSetList(line, a, nFields, c)
+			}
+		}
 	}
 }
 

@@ -324,6 +324,6 @@ func _parseFuncName(lexer *Lexer) (exp Exp, hasColon bool) {
 func parseClassDefStat(lexer *Lexer) *AssignStat {
 	lexer.NextTokenOfKind(TOKEN_KW_CLASS) // class
 	line, name := lexer.NextIdentifier()  // Name
-	tb := parseTableConstructorExp(lexer) // tableconstructor
+	tb := parseMapConstructorExp(lexer)   // mapconstructor
 	return &AssignStat{line, []Exp{&NameExp{line, name}}, []Exp{tb}}
 }
