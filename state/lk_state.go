@@ -3,7 +3,7 @@ package state
 import . "github.com/lollipopkit/lk/api"
 
 type lkState struct {
-	registry *lkTable
+	registry *tableBase
 	stack    *lkStack
 	/* coroutine */
 	coStatus LkStatus
@@ -14,9 +14,9 @@ type lkState struct {
 func New() LkState {
 	ls := &lkState{}
 
-	registry := newLkTable(8, 0)
+	registry := newLkMap(8, 0).tableBase
 	registry.put(LK_RIDX_MAINTHREAD, ls)
-	registry.put(LK_RIDX_GLOBALS, newLkTable(0, 20))
+	registry.put(LK_RIDX_GLOBALS, newLkMap(0, 20).tableBase)
 
 	ls.registry = registry
 	ls.pushLuaStack(newLuaStack(LK_MINSTACK, ls))

@@ -15,7 +15,7 @@ func (self *lkState) Len(idx int) {
 		self.stack.push(int64(len(s)))
 	} else if result, ok := callMetamethod(val, val, "__len", self); ok {
 		self.stack.push(result)
-	} else if t, ok := val.(*lkTable); ok {
+	} else if t := toTable(val); t != nil {
 		self.stack.push(int64(t.len()))
 	} else {
 		panic(fmt.Sprintf("attempt to get length of %#v (a %T value)", val, val))
@@ -26,7 +26,7 @@ func (self *lkState) Len(idx int) {
 // http://www.lua.org/manual/5.3/manual.html#lua_next
 func (self *lkState) Next(idx int) bool {
 	val := self.stack.get(idx)
-	if t, ok := val.(*lkTable); ok {
+	if t := toTable(val); t != nil {
 		key := self.stack.pop()
 		if nextKey := t.nextKey(key); nextKey != nil {
 			self.stack.push(nextKey)

@@ -8,7 +8,7 @@ import (
 	"github.com/lollipopkit/lk/utils"
 )
 
-type lkTable struct {
+type tableBase struct {
 	arr     []any
 	_map    map[any]any
 	keys    map[any]any // used by next()
@@ -16,35 +16,38 @@ type lkTable struct {
 	changed bool        // used by next()
 }
 
-func (self *lkTable) copy() *lkTable {
-	t := newLkTable(len(self.arr), len(self._map))
+type lkMap struct{ *tableBase }
+type lkList struct{ *tableBase }
+
+func (self *tableBase) copy() *tableBase {
+	t := newTableBase(len(self.arr), len(self._map))
 	t.combine(self)
 	return t
 }
 
-func (self *lkTable) String() (string, error) {
+func (self *tableBase) String() (string, error) {
 	s, err := Json.Marshal(self.Json())
 	return string(s), err
 }
 
-func (t *lkTable) Json() any {
+func (t *tableBase) Json() any {
 	tb := t.copy()
-	
+
 	// Process array elements
 	for i := range tb.arr {
 		tb.arr[i] = convertToJsonValue(tb.arr[i])
 	}
-	
+
 	// If it's an array-only table, return just the array
 	if len(tb._map) == 0 {
 		return tb.arr
 	}
-	
+
 	// Process map elements
 	for k := range tb._map {
 		tb._map[k] = convertToJsonValue(tb._map[k])
 	}
-	
+
 	return tb._map
 }
 
@@ -53,14 +56,18 @@ func convertToJsonValue(value any) any {
 	switch v := value.(type) {
 	case *lkClosure:
 		return v.String()
-	case *lkTable:
+	case *tableBase:
 		return v.Json()
+	case *lkMap:
+		return v.tableBase.Json()
+	case *lkList:
+		return v.tableBase.Json()
 	default:
 		return v
 	}
 }
 
-func (self *lkTable) combine(t *lkTable) {
+func (self *tableBase) combine(t *tableBase) {
 	if t == nil {
 		return
 	}
@@ -72,8 +79,8 @@ func (self *lkTable) combine(t *lkTable) {
 	}
 }
 
-func newLkTable(nArr, nRec int) *lkTable {
-	t := &lkTable{}
+func newTableBase(nArr, nRec int) *tableBase {
+	t := &tableBase{}
 	if nArr > 0 {
 		t.arr = make([]any, 0, nArr)
 	}
@@ -83,34 +90,55 @@ func newLkTable(nArr, nRec int) *lkTable {
 	return t
 }
 
-func (self *lkTable) hasMetafield(fieldName string) bool {
+func newLkMap(nArr, nRec int) *lkMap {
+	return &lkMap{newTableBase(nArr, nRec)}
+}
+
+func newLkList(nArr int) *lkList {
+	return &lkList{newTableBase(nArr, 0)}
+}
+
+func toTable(val any) *tableBase {
+	switch t := val.(type) {
+	case *tableBase:
+		return t
+	case *lkMap:
+		return t.tableBase
+	case *lkList:
+		return t.tableBase
+	default:
+		return nil
+	}
+}
+
+func (self *tableBase) hasMetafield(fieldName string) bool {
 	return self.get(fieldName) != nil
 }
 
-func (self *lkTable) len() int {
+func (self *tableBase) len() int {
 	return len(self.arr)
 }
 
-func (self *lkTable) get(key any) any {
-    // 快速路径：整数键
-    switch k := key.(type) {
-    case int64:
-        if k >= 0 && k < int64(len(self.arr)) {
-            return self.arr[k]
-        }
-    case float64:
-        if i, ok := fastFloatToInt(k); ok && i >= 0 && i < int64(len(self.arr)) {
-            return self.arr[i]
-        }
-    }
-    
-    return self._map[key]
+func (self *tableBase) get(key any) any {
+	// 快速路径：整数键
+	switch k := key.(type) {
+	case int64:
+		if k >= 0 && k < int64(len(self.arr)) {
+			return self.arr[k]
+		}
+	case float64:
+		if i, ok := fastFloatToInt(k); ok && i >= 0 && i < int64(len(self.arr)) {
+			return self.arr[i]
+		}
+	}
+
+	return self._map[key]
 }
 
 // 快速浮点数转整数
 func fastFloatToInt(f float64) (int64, bool) {
-    i := int64(f)
-    return i, f == float64(i)
+	i := int64(f)
+	return i, f == float64(i)
 }
 
 func _floatToInteger(key any) any {
@@ -122,7 +150,7 @@ func _floatToInteger(key any) any {
 	return key
 }
 
-func (self *lkTable) put(key, val any) {
+func (self *tableBase) put(key, val any) {
 	if key == nil {
 		panic("table index is nil!")
 	}
@@ -160,7 +188,7 @@ func (self *lkTable) put(key, val any) {
 	}
 }
 
-func (self *lkTable) _shrinkArray() {
+func (self *tableBase) _shrinkArray() {
 	for i := len(self.arr) - 1; i >= 0; i-- {
 		if self.arr[i] == nil {
 			self.arr = self.arr[0:i]
@@ -170,7 +198,7 @@ func (self *lkTable) _shrinkArray() {
 	}
 }
 
-func (self *lkTable) _expandArray() {
+func (self *tableBase) _expandArray() {
 	for idx := int64(len(self.arr)) + 1; ; idx++ {
 		if val, found := self._map[idx]; found {
 			delete(self._map, idx)
@@ -181,7 +209,7 @@ func (self *lkTable) _expandArray() {
 	}
 }
 
-func (self *lkTable) nextKey(key any) any {
+func (self *tableBase) nextKey(key any) any {
 	// Initialize keys map if needed
 	if self.keys == nil || (key == nil && self.changed) {
 		self.initKeys()
@@ -189,7 +217,7 @@ func (self *lkTable) nextKey(key any) any {
 	}
 
 	nextKey := self.keys[key]
-	
+
 	// Handle possible string representation of integer keys
 	if nextKey == nil && key != nil && key != self.lastKey {
 		if strKey, ok := key.(string); ok {
@@ -202,10 +230,10 @@ func (self *lkTable) nextKey(key any) any {
 	return nextKey
 }
 
-func (self *lkTable) initKeys() {
+func (self *tableBase) initKeys() {
 	self.keys = make(map[any]any)
 	var key any = nil
-	
+
 	// Process array elements first
 	for i := range self.arr {
 		if self.arr[i] != nil {
@@ -213,7 +241,7 @@ func (self *lkTable) initKeys() {
 			key = int64(i)
 		}
 	}
-	
+
 	// Then process map elements
 	for k := range self._map {
 		if self._map[k] != nil {
@@ -221,6 +249,6 @@ func (self *lkTable) initKeys() {
 			key = k
 		}
 	}
-	
+
 	self.lastKey = key
 }

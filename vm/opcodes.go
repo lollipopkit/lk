@@ -32,7 +32,8 @@ const (
 	OP_SETTABUP
 	OP_SETUPVAL
 	OP_SETTABLE
-	OP_NEWTABLE
+	OP_NEWMAP
+	OP_NEWLIST
 	OP_SELF
 	OP_ADD
 	OP_SUB
@@ -94,7 +95,8 @@ var opcodes = []opcode{
 	{0, 0, OpArgK, OpArgK, IABC /* */, "SETTABUP", setTabUp}, // UpValue[A][RK(B)] := RK(C)
 	{0, 0, OpArgU, OpArgN, IABC /* */, "SETUPVAL", setUpval}, // UpValue[B] := R(A)
 	{0, 0, OpArgK, OpArgK, IABC /* */, "SETTABLE", setTable}, // R(A)[RK(B)] := RK(C)
-	{0, 1, OpArgU, OpArgU, IABC /* */, "NEWTABLE", newTable}, // R(A) := {} (size = B,C)
+	{0, 1, OpArgU, OpArgU, IABC /* */, "NEWMAP ", newMap},    // R(A) := {} (size = B,C)
+	{0, 1, OpArgU, OpArgU, IABC /* */, "NEWLIST", newList},   // R(A) := [] (size = B)
 	{0, 1, OpArgR, OpArgK, IABC /* */, "SELF    ", self},     // R(A+1) := R(B); R(A) := R(B)[RK(C)]
 	{0, 1, OpArgK, OpArgK, IABC /* */, "ADD     ", add},      // R(A) := RK(B) + RK(C)
 	{0, 1, OpArgK, OpArgK, IABC /* */, "SUB     ", sub},      // R(A) := RK(B) - RK(C)

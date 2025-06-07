@@ -79,5 +79,9 @@ func (self *lkState) Push(item any) {
 }
 
 func (self *lkState) PushCopyTable(idx int) {
-	self.stack.push(self.stack.get(idx).(*lkTable).copy())
+	if t := toTable(self.stack.get(idx)); t != nil {
+		self.stack.push(t.copy())
+	} else {
+		self.PushNil()
+	}
 }

@@ -68,6 +68,8 @@ type BasicAPI interface {
 	/* get functions (Lua -> stack) */
 	NewTable()
 	CreateTable(nArr, nRec int)
+	CreateMap(nArr, nRec int)
+	CreateList(nArr int)
 	GetTable(idx int) LkType
 	GetField(idx int, k string) LkType
 	GetI(idx int, i int64) LkType
