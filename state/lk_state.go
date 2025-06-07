@@ -14,9 +14,9 @@ type lkState struct {
 func New() LkState {
 	ls := &lkState{}
 
-	registry := newLkTable(8, 0)
+	registry := newLkMap(8, 0).lkTable
 	registry.put(LK_RIDX_MAINTHREAD, ls)
-	registry.put(LK_RIDX_GLOBALS, newLkTable(0, 20))
+	registry.put(LK_RIDX_GLOBALS, newLkMap(0, 20).lkTable)
 
 	ls.registry = registry
 	ls.pushLuaStack(newLuaStack(LK_MINSTACK, ls))

@@ -13,7 +13,17 @@ func (self *lkState) NewTable() {
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_createtable
 func (self *lkState) CreateTable(nArr, nRec int) {
-	t := newLkTable(nArr, nRec)
+	t := newLkMap(nArr, nRec)
+	self.stack.push(t)
+}
+
+func (self *lkState) CreateMap(nArr, nRec int) {
+	t := newLkMap(nArr, nRec)
+	self.stack.push(t)
+}
+
+func (self *lkState) CreateList(nArr int) {
+	t := newLkList(nArr)
 	self.stack.push(t)
 }
 
@@ -81,7 +91,7 @@ func (self *lkState) GetMetatable(idx int) bool {
 // push(t[k])
 func (self *lkState) getTable(t, k any, raw bool) LkType {
 	mf := getMetafield(t, "__index", self)
-	if tbl, ok := t.(*lkTable); ok {
+	if tbl := toTable(t); tbl != nil {
 		v := tbl.get(k)
 		if raw || v != nil || !tbl.hasMetafield("__index") && mf == nil {
 			self.stack.push(v)
@@ -92,7 +102,7 @@ func (self *lkState) getTable(t, k any, raw bool) LkType {
 	if !raw {
 		if mf != nil {
 			switch x := mf.(type) {
-			case *lkTable:
+			case *lkTable, *lkMap, *lkList:
 				return self.getTable(x, k, true)
 			case *lkClosure:
 				self.stack.push(mf)

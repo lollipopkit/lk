@@ -10,7 +10,7 @@ func newMap(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()
 	a += 1
 
-	vm.CreateTable(Fb2int(b), Fb2int(c))
+	vm.CreateMap(Fb2int(b), Fb2int(c))
 	vm.Replace(a)
 }
 
@@ -18,7 +18,7 @@ func newList(i Instruction, vm LkVM) {
 	a, b, _ := i.ABC()
 	a += 1
 
-	vm.CreateTable(Fb2int(b), 0)
+	vm.CreateList(Fb2int(b))
 	vm.Replace(a)
 }
 

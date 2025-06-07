@@ -16,6 +16,9 @@ type lkTable struct {
 	changed bool        // used by next()
 }
 
+type lkMap struct{ *lkTable }
+type lkList struct{ *lkTable }
+
 func (self *lkTable) copy() *lkTable {
 	t := newLkTable(len(self.arr), len(self._map))
 	t.combine(self)
@@ -29,22 +32,22 @@ func (self *lkTable) String() (string, error) {
 
 func (t *lkTable) Json() any {
 	tb := t.copy()
-	
+
 	// Process array elements
 	for i := range tb.arr {
 		tb.arr[i] = convertToJsonValue(tb.arr[i])
 	}
-	
+
 	// If it's an array-only table, return just the array
 	if len(tb._map) == 0 {
 		return tb.arr
 	}
-	
+
 	// Process map elements
 	for k := range tb._map {
 		tb._map[k] = convertToJsonValue(tb._map[k])
 	}
-	
+
 	return tb._map
 }
 
@@ -55,6 +58,10 @@ func convertToJsonValue(value any) any {
 		return v.String()
 	case *lkTable:
 		return v.Json()
+	case *lkMap:
+		return v.lkTable.Json()
+	case *lkList:
+		return v.lkTable.Json()
 	default:
 		return v
 	}
@@ -83,6 +90,27 @@ func newLkTable(nArr, nRec int) *lkTable {
 	return t
 }
 
+func newLkMap(nArr, nRec int) *lkMap {
+	return &lkMap{newLkTable(nArr, nRec)}
+}
+
+func newLkList(nArr int) *lkList {
+	return &lkList{newLkTable(nArr, 0)}
+}
+
+func toTable(val any) *lkTable {
+	switch t := val.(type) {
+	case *lkTable:
+		return t
+	case *lkMap:
+		return t.lkTable
+	case *lkList:
+		return t.lkTable
+	default:
+		return nil
+	}
+}
+
 func (self *lkTable) hasMetafield(fieldName string) bool {
 	return self.get(fieldName) != nil
 }
@@ -92,25 +120,25 @@ func (self *lkTable) len() int {
 }
 
 func (self *lkTable) get(key any) any {
-    // 快速路径：整数键
-    switch k := key.(type) {
-    case int64:
-        if k >= 0 && k < int64(len(self.arr)) {
-            return self.arr[k]
-        }
-    case float64:
-        if i, ok := fastFloatToInt(k); ok && i >= 0 && i < int64(len(self.arr)) {
-            return self.arr[i]
-        }
-    }
-    
-    return self._map[key]
+	// 快速路径：整数键
+	switch k := key.(type) {
+	case int64:
+		if k >= 0 && k < int64(len(self.arr)) {
+			return self.arr[k]
+		}
+	case float64:
+		if i, ok := fastFloatToInt(k); ok && i >= 0 && i < int64(len(self.arr)) {
+			return self.arr[i]
+		}
+	}
+
+	return self._map[key]
 }
 
 // 快速浮点数转整数
 func fastFloatToInt(f float64) (int64, bool) {
-    i := int64(f)
-    return i, f == float64(i)
+	i := int64(f)
+	return i, f == float64(i)
 }
 
 func _floatToInteger(key any) any {
@@ -189,7 +217,7 @@ func (self *lkTable) nextKey(key any) any {
 	}
 
 	nextKey := self.keys[key]
-	
+
 	// Handle possible string representation of integer keys
 	if nextKey == nil && key != nil && key != self.lastKey {
 		if strKey, ok := key.(string); ok {
@@ -205,7 +233,7 @@ func (self *lkTable) nextKey(key any) any {
 func (self *lkTable) initKeys() {
 	self.keys = make(map[any]any)
 	var key any = nil
-	
+
 	// Process array elements first
 	for i := range self.arr {
 		if self.arr[i] != nil {
@@ -213,7 +241,7 @@ func (self *lkTable) initKeys() {
 			key = int64(i)
 		}
 	}
-	
+
 	// Then process map elements
 	for k := range self._map {
 		if self._map[k] != nil {
@@ -221,6 +249,6 @@ func (self *lkTable) initKeys() {
 			key = k
 		}
 	}
-	
+
 	self.lastKey = key
 }

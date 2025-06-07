@@ -71,7 +71,7 @@ func (self *lkState) SetMetatable(idx int) {
 
 	if mtVal == nil {
 		setMetatable(val, nil, self)
-	} else if mt, ok := mtVal.(*lkTable); ok {
+	} else if mt := toTable(mtVal); mt != nil {
 		setMetatable(val, mt, self)
 	} else {
 		panic("table expected!") // todo
@@ -80,7 +80,7 @@ func (self *lkState) SetMetatable(idx int) {
 
 // t[k]=v
 func (self *lkState) setTable(t, k, v any, raw bool) {
-	if tbl, ok := t.(*lkTable); ok {
+	if tbl := toTable(t); tbl != nil {
 		if raw || tbl.get(k) != nil || !tbl.hasMetafield("__newindex") {
 			tbl.put(k, v)
 			return
@@ -90,7 +90,7 @@ func (self *lkState) setTable(t, k, v any, raw bool) {
 	if !raw {
 		if mf := getMetafield(t, "__newindex", self); mf != nil {
 			switch x := mf.(type) {
-			case *lkTable:
+			case *lkTable, *lkMap, *lkList:
 				self.setTable(x, k, v, false)
 				return
 			case *lkClosure:
