@@ -154,8 +154,6 @@ func _searchPath(name, path, sep, dirSep string) (content []byte, fname, errMsg 
 	return nil, "", errMsg
 }
 
-// require (modname)
-// http://www.lua.org/manual/5.3/manual.html#pdf-require
 func pkgImport(ls LkState) int {
 	name := ls.CheckString(1)
 	ls.SetTop(1) /* LOADED table will be at index 2 */
@@ -183,7 +181,7 @@ func pkgImport(ls LkState) int {
 
 func _findLoader(ls LkState, name string) {
 	/* push 'package.searchers' to index 3 in the stack */
-	if ls.GetField(LkUpvalueIndex(1), "searchers") != LK_TTABLE {
+	if ls.GetField(LkUpvalueIndex(1), "searchers") != LK_TMAP {
 		ls.Error2("'package.searchers' must be a table")
 	}
 

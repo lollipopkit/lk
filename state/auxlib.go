@@ -205,19 +205,25 @@ func (self *lkState) ToString2(idx int) string {
 			}
 		case LK_TNIL:
 			self.PushString("nil")
-		case LK_TTABLE:
-			tb, ok := self.ToPointer(idx).(*lkTable)
-			if ok {
-				s, err := tb.String()
+		case LK_TLIST:
+			list, _ := self.ToPointer(idx).(*lkList)
+			if list != nil {
+				s, err := list.String()
 				if err == nil {
-					if s == "null" {
-						self.PushString("{}")
-					} else {
-						self.PushString(s)
-					}
-				} else {
-					panic(err)
+					self.PushString(s)
+					return s
 				}
+				panic(err)
+			}
+		case LK_TMAP:
+			m, _ := self.ToPointer(idx).(*lkMap)
+			if m != nil {
+				s, err := m.String()
+				if err == nil {
+					self.PushString(s)
+					return s
+				}
+				panic(err)
 			}
 		default:
 			tt := self.GetMetafield(idx, "__name") /* try name */
@@ -241,7 +247,7 @@ func (self *lkState) ToString2(idx int) string {
 // [-0, +1, e]
 // http://www.lua.org/manual/5.3/manual.html#luaL_getsubtable
 func (self *lkState) GetSubTable(idx int, fname string) bool {
-	if self.GetField(idx, fname) == LK_TTABLE {
+	if self.GetField(idx, fname) == LK_TMAP {
 		return true /* table already there */
 	}
 	self.Pop(1) /* remove previous result */
@@ -286,17 +292,17 @@ func (self *lkState) CallMeta(obj int, event string) bool {
 // http://www.lua.org/manual/5.3/manual.html#luaL_openlibs
 func (self *lkState) OpenLibs() {
 	libs := map[string]GoFunction{
-		"_G":    stdlib.OpenBaseLib,
-		"math":  stdlib.OpenMathLib,
-		"str":   stdlib.OpenStringLib,
-		"utf8":  stdlib.OpenUTF8Lib,
-		"os":    stdlib.OpenOSLib,
-		"pkg":   stdlib.OpenPackageLib,
-		"coroutine":  stdlib.OpenCoroutineLib,
-		"http":  stdlib.OpenHttpLib,
-		"table": stdlib.OpenTableLib,
-		"num":   stdlib.OpenNumLib,
-		"term":  stdlib.OpenTermLib,
+		"_G":        stdlib.OpenBaseLib,
+		"math":      stdlib.OpenMathLib,
+		"str":       stdlib.OpenStringLib,
+		"utf8":      stdlib.OpenUTF8Lib,
+		"os":        stdlib.OpenOSLib,
+		"pkg":       stdlib.OpenPackageLib,
+		"coroutine": stdlib.OpenCoroutineLib,
+		"http":      stdlib.OpenHttpLib,
+		"table":     stdlib.OpenTableLib,
+		"num":       stdlib.OpenNumLib,
+		"term":      stdlib.OpenTermLib,
 	}
 
 	for name := range libs {

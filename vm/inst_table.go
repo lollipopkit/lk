@@ -5,6 +5,37 @@ import . "github.com/lollipopkit/lk/api"
 /* number of list items to accumulate before a SETLIST instruction */
 const LFIELDS_PER_FLUSH = 50
 
+// R(A) := [] (size = B)
+func newList(i Instruction, vm LkVM) {
+    a, b, _ := i.ABC()
+    a += 1
+    vm.CreateList(b)
+    vm.Replace(a)
+}
+
+// R(A) := {} (size = B)
+func newMap(i Instruction, vm LkVM) {
+    a, b, _ := i.ABC()
+    a += 1
+    vm.CreateMap(b)
+    vm.Replace(a)
+}
+
+// R(A).append(R(B))
+func listAppend(i Instruction, vm LkVM) {
+    a, b, _ := i.ABC()
+    a += 1
+    b += 1
+    
+    // 获取列表和值
+    vm.PushValue(a)
+    vm.PushValue(b)
+	// 调用列表的append方法
+	vm.AppendToList(a, b)
+	// 将结果放回栈顶
+	vm.Replace(a)
+}
+
 // R(A) := {} (size = B,C)
 func newTable(i Instruction, vm LkVM) {
 	a, b, c := i.ABC()

@@ -18,8 +18,10 @@ func (self *lkState) TypeName(tp LkType) string {
 		return "num"
 	case LK_TSTRING:
 		return "str"
-	case LK_TTABLE:
-		return "table"
+	case LK_TMAP:
+		return "map"
+	case LK_TLIST:
+		return "list"
 	case LK_TFUNCTION:
 		return "fn"
 	case LK_TTHREAD:
@@ -63,10 +65,12 @@ func (self *lkState) IsBoolean(idx int) bool {
 	return self.Type(idx) == LK_TBOOLEAN
 }
 
-// [-0, +0, –]
-// http://www.lua.org/manual/5.3/manual.html#lua_istable
-func (self *lkState) IsTable(idx int) bool {
-	return self.Type(idx) == LK_TTABLE
+func (self *lkState) IsList(idx int) bool {
+    return self.Type(idx) == LK_TLIST
+}
+
+func (self *lkState) IsMap(idx int) bool {
+    return self.Type(idx) == LK_TMAP
 }
 
 // [-0, +0, –]

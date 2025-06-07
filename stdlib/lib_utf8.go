@@ -105,9 +105,6 @@ func utfByteOffset(ls LkState) int {
 	return 1
 }
 
-// utf8.codepoint (s [, i [, j]])
-// http://www.lua.org/manual/5.3/manual.html#pdf-utf8.codepoint
-// lua-5.3.4/src/lutf8lib.c#codepoint()
 func utfCodePoint(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
@@ -140,9 +137,6 @@ func utfCodePoint(ls LkState) int {
 	return n
 }
 
-// utf8.char (···)
-// http://www.lua.org/manual/5.3/manual.html#pdf-utf8.char
-// lua-5.3.4/src/lutf8lib.c#utfchar()
 func utfChar(ls LkState) int {
 	n := ls.GetTop() /* number of arguments */
 	codePoints := make([]rune, n)
@@ -169,8 +163,6 @@ func _encodeUtf8(codePoints []rune) string {
 	return string(str)
 }
 
-// utf8.codes (s)
-// http://www.lua.org/manual/5.3/manual.html#pdf-utf8.codes
 func utfIterCodes(ls LkState) int {
 	ls.CheckString(1)
 	ls.PushGoFunction(_iterAux)

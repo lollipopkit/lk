@@ -36,8 +36,10 @@ func cgExp(fi *funcInfo, node Exp, a, n int) {
 		cgVarargExp(fi, exp, a, n)
 	case *FuncDefExp:
 		cgFuncDefExp(fi, exp, a)
-	case *TableConstructorExp:
-		cgTableConstructorExp(fi, exp, a)
+	case *ListConstructorExp:
+        cgListConstructorExp(fi, exp, a)
+    case *MapConstructorExp:
+        cgMapConstructorExp(fi, exp, a)
 	case *UnopExp:
 		cgUnopExp(fi, exp, a)
 	case *BinopExp:
@@ -77,59 +79,32 @@ func cgFuncDefExp(fi *funcInfo, node *FuncDefExp, a int) {
 	fi.emitClosure(node.LastLine, a, bx)
 }
 
-func cgTableConstructorExp(fi *funcInfo, node *TableConstructorExp, a int) {
-	nArr := 0
-	for i := range node.KeyExps {
-		if node.KeyExps[i] == nil {
-			nArr++
-		}
-	}
-	nExps := len(node.KeyExps)
-	multRet := nExps > 0 &&
-		isVarargOrFuncCall(node.ValExps[nExps-1])
+func cgListConstructorExp(fi *funcInfo, node *ListConstructorExp, a int) {
+    nExps := len(node.Exps)
 
-	fi.emitNewTable(node.Line, a, nArr, nExps-nArr)
+    fi.emitNewList(node.Line, a, nExps)
 
-	arrIdx := 0
-	for i := range node.KeyExps {
-		valExp := node.ValExps[i]
+    for i, exp := range node.Exps {
+        tmp := fi.allocReg()
+        cgExp(fi, exp, tmp, 1)
+        fi.emitListSet(node.Line, a, i, tmp)
+        fi.freeReg()
+    }
+}
 
-		if node.KeyExps[i] == nil {
-			arrIdx++
-			tmp := fi.allocReg()
-			if i == nExps-1 && multRet {
-				cgExp(fi, valExp, tmp, -1)
-			} else {
-				cgExp(fi, valExp, tmp, 1)
-			}
+func cgMapConstructorExp(fi *funcInfo, node *MapConstructorExp, a int) {
+    nFields := len(node.KeyExps)
 
-			if arrIdx%50 == 0 || arrIdx == nArr { // LFIELDS_PER_FLUSH
-				n := arrIdx % 50
-				if n == 0 {
-					n = 50
-				}
-				fi.freeRegs(n)
-				line := lastLineOf(valExp)
-				c := (arrIdx-1)/50 + 1 // todo: c > 0xFF
-				if i == nExps-1 && multRet {
-					fi.emitSetList(line, a, 0, c)
-				} else {
-					fi.emitSetList(line, a, n, c)
-				}
-			}
+    fi.emitNewMap(node.Line, a, nFields)
 
-			continue
-		}
-
-		b := fi.allocReg()
-		cgExp(fi, node.KeyExps[i], b, 1)
-		c := fi.allocReg()
-		cgExp(fi, valExp, c, 1)
-		fi.freeRegs(2)
-
-		line := lastLineOf(valExp)
-		fi.emitSetTable(line, a, b, c)
-	}
+    for i := range node.KeyExps {
+        b := fi.allocReg()
+        cgExp(fi, node.KeyExps[i], b, 1)
+        c := fi.allocReg()
+        cgExp(fi, node.ValExps[i], c, 1)
+        fi.emitSetTable(node.Line, a, b, c)
+        fi.freeRegs(2)
+    }
 }
 
 // r[a] := op exp

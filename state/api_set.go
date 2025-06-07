@@ -71,7 +71,7 @@ func (self *lkState) SetMetatable(idx int) {
 
 	if mtVal == nil {
 		setMetatable(val, nil, self)
-	} else if mt, ok := mtVal.(*lkTable); ok {
+	} else if mt, ok := mtVal.(*lkMap); ok {
 		setMetatable(val, mt, self)
 	} else {
 		panic("table expected!") // todo
@@ -80,29 +80,20 @@ func (self *lkState) SetMetatable(idx int) {
 
 // t[k]=v
 func (self *lkState) setTable(t, k, v any, raw bool) {
-	if tbl, ok := t.(*lkTable); ok {
-		if raw || tbl.get(k) != nil || !tbl.hasMetafield("__newindex") {
-			tbl.put(k, v)
-			return
-		}
-	}
-
-	if !raw {
-		if mf := getMetafield(t, "__newindex", self); mf != nil {
-			switch x := mf.(type) {
-			case *lkTable:
-				self.setTable(x, k, v, false)
-				return
-			case *lkClosure:
-				self.stack.push(mf)
-				self.stack.push(t)
-				self.stack.push(k)
-				self.stack.push(v)
-				self.Call(3, 0)
-				return
-			}
-		}
-	}
-
-	panic("expect table, got " + fmt.Sprintf("%v", t))
+    switch x := t.(type) {
+    case *lkList:
+        if idx, ok := k.(int64); ok {
+            x.set(idx, v)
+            return
+        }
+        panic("list index must be integer")
+    case *lkMap:
+        if raw || x.get(k) != nil || !x.hasMetafield("__newindex") {
+            x.put(k, v)
+            return
+        }
+    }
+    
+    // metatable handling...
+    panic(fmt.Sprintf("attempt to index %T value", t))
 }

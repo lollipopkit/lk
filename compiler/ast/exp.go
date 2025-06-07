@@ -61,11 +61,18 @@ type TernaryExp struct {
 // fieldlist ::= field {fieldsep field} [fieldsep]
 // field ::= ‘[’ exp ‘]’ ‘=’ exp | Name ‘=’ exp | exp
 // fieldsep ::= ‘,’ | ‘;’
-type TableConstructorExp struct {
-	Line     int // line of `{` ?
-	LastLine int // line of `}`
-	KeyExps  []Exp
-	ValExps  []Exp
+
+type ListConstructorExp struct {
+    Line     int
+    LastLine int
+    Exps     []Exp
+}
+
+type MapConstructorExp struct {
+    Line     int
+    LastLine int
+    KeyExps  []Exp
+    ValExps  []Exp
 }
 
 // functiondef ::= function funcbody

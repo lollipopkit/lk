@@ -67,6 +67,10 @@ const (
 	OP_CLOSURE
 	OP_VARARG
 	OP_EXTRAARG
+
+	OP_NEWLIST
+	OP_NEWMAP
+	OP_APPEND
 )
 
 type opcode struct {
@@ -129,4 +133,7 @@ var opcodes = []opcode{
 	{0, 1, OpArgU, OpArgN, IABx /* */, "CLOSURE ", closure},  // R(A) := closure(KPROTO[Bx])
 	{0, 1, OpArgU, OpArgN, IABC /* */, "VARARG  ", vararg},   // R(A), R(A+1), ..., R(A+B-2) = vararg
 	{0, 0, OpArgU, OpArgU, IAx /*  */, "EXTRAARG", nil},      // extra (larger) argument for previous opcode
+	{0, 1, OpArgU, OpArgU, IABC, "NEWLIST ", newList},
+    {0, 1, OpArgU, OpArgU, IABC, "NEWMAP  ", newMap},
+    {0, 0, OpArgR, OpArgR, IABC, "APPEND  ", listAppend},
 }

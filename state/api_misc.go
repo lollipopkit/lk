@@ -6,36 +6,67 @@ import (
 	"github.com/lollipopkit/lk/utils"
 )
 
-// [-0, +1, e]
-// http://www.lua.org/manual/5.3/manual.html#lua_len
-func (self *lkState) Len(idx int) {
+// 更新 Next 函数以支持 list 和 map
+func (self *lkState) Next(idx int) bool {
 	val := self.stack.get(idx)
+	key := self.stack.pop()
 
-	if s, ok := val.(string); ok {
-		self.stack.push(int64(len(s)))
-	} else if result, ok := callMetamethod(val, val, "__len", self); ok {
-		self.stack.push(result)
-	} else if t, ok := val.(*lkTable); ok {
-		self.stack.push(int64(t.len()))
-	} else {
-		panic(fmt.Sprintf("attempt to get length of %#v (a %T value)", val, val))
+	switch t := val.(type) {
+	case *lkList:
+		return self.nextList(t, key)
+	case *lkMap:
+		return self.nextMap(t, key)
+	default:
+		panic(fmt.Sprintf("table expected, got %T", val))
 	}
 }
 
-// [-1, +(2|0), e]
-// http://www.lua.org/manual/5.3/manual.html#lua_next
-func (self *lkState) Next(idx int) bool {
-	val := self.stack.get(idx)
-	if t, ok := val.(*lkTable); ok {
-		key := self.stack.pop()
-		if nextKey := t.nextKey(key); nextKey != nil {
-			self.stack.push(nextKey)
-			self.stack.push(t.get(nextKey))
-			return true
+func (self *lkState) nextList(list *lkList, key any) bool {
+	var idx int64 = -1
+
+	if key != nil {
+		if i, ok := convertToInteger(key); ok {
+			idx = i
 		}
-		return false
 	}
-	panic(fmt.Sprintf("table expected, got %T", val))
+
+	idx++
+	if idx < int64(list.len()) {
+		self.stack.push(idx)
+		self.stack.push(list.get(idx))
+		return true
+	}
+
+	return false
+}
+
+func (self *lkState) nextMap(m *lkMap, key any) bool {
+	nextKey := m.nextKey(key)
+	if nextKey != nil {
+		self.stack.push(nextKey)
+		self.stack.push(m.get(nextKey))
+		return true
+	}
+	return false
+}
+
+func (self *lkState) Len(idx int) {
+    val := self.stack.get(idx)
+    
+    switch v := val.(type) {
+    case string:
+        self.stack.push(int64(len(v)))
+    case *lkList:
+        self.stack.push(int64(v.len()))
+    case *lkMap:
+        self.stack.push(int64(v.len()))
+    default:
+        if result, ok := callMetamethod(val, val, "__len", self); ok {
+            self.stack.push(result)
+        } else {
+            panic(fmt.Sprintf("attempt to get length of %T value", val))
+        }
+    }
 }
 
 // [-1, +0, v]

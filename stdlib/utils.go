@@ -70,7 +70,7 @@ func pushTable[T any](ls LkState, items map[string]T) {
 }
 
 func getTable(ls LkState, idx int) lkMap {
-	ls.CheckType(idx, LK_TTABLE)
+	ls.CheckType(idx, LK_TLIST)
 	table := make(lkMap)
 	ls.PushNil()
 	for ls.Next(idx) {
@@ -83,7 +83,7 @@ func getTable(ls LkState, idx int) lkMap {
 }
 
 func getList(ls LkState, idx int) []any {
-	ls.CheckType(idx, LK_TTABLE)
+	ls.CheckType(idx, LK_TLIST)
 	list := make([]any, 0)
 	ls.PushNil()
 	for ls.Next(idx) {
@@ -94,12 +94,12 @@ func getList(ls LkState, idx int) []any {
 }
 
 func CheckTable(ls LkState, idx int) lkMap {
-	ls.CheckType(idx, LK_TTABLE)
+	ls.CheckType(idx, LK_TMAP)
 	return getTable(ls, idx)
 }
 
 func CheckList(ls LkState, idx int) []any {
-	ls.CheckType(idx, LK_TTABLE)
+	ls.CheckType(idx, LK_TLIST)
 	return getList(ls, idx)
 }
 

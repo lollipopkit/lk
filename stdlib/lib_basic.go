@@ -30,7 +30,6 @@ var baseFuncs = map[string]GoFunction{
 	"to_map":     baseToJson,
 }
 
-// lua-5.3.4/src/lbaselib.c#luaopen_base()
 func OpenBaseLib(ls LkState) int {
 	/* open lib into global table */
 	ls.PushGlobalTable()
@@ -41,16 +40,30 @@ func OpenBaseLib(ls LkState) int {
 	/* set global _VERSION */
 	ls.PushString(consts.VERSION)
 	ls.SetField(-2, "_VERSION")
+
+	ls.NewList()
+    ls.CreateTable(0, 10)
+    ls.PushValue(-1)
+    ls.SetField(-2, "__index")
+    ls.SetRegistry("_LIST_MT")
+    ls.Pop(1)
+    
+    ls.NewMap()
+    ls.CreateTable(0, 10)
+    ls.PushValue(-1)
+    ls.SetField(-2, "__index")
+    ls.SetRegistry("_MAP_MT")
+    ls.Pop(1)
 	return 1
 }
 
 func baseNew(ls LkState) int {
-	ls.CheckType(1, LK_TTABLE)
+	ls.CheckType(1, LK_TMAP)
 	ls.CreateTable(0, 0)
 	ls.PushNil()
 	for ls.Next(1) {
 		ls.PushValue(-2)
-		if ls.IsTable(-2) {
+		if ls.IsMap(-2) {
 			ls.PushCopyTable(-2)
 		} else {
 			ls.PushValue(-2)
@@ -61,9 +74,6 @@ func baseNew(ls LkState) int {
 	return 1
 }
 
-// int (x)
-// http://www.lua.org/manual/5.3/manual.html#pdf-math.tointeger
-// lua-5.3.4/src/lmathlib.c#math_toint()
 func mathToInt(ls LkState) int {
 	if i, ok := ls.ToIntegerX(1); ok {
 		ls.PushInteger(i)
@@ -74,8 +84,6 @@ func mathToInt(ls LkState) int {
 	return 1
 }
 
-// format (formatstring, ···)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.format
 func strFormat(ls LkState) int {
 	fmtStr := ls.CheckString(1)
 	if len(fmtStr) <= 1 || strings.IndexByte(fmtStr, '%') < 0 {
@@ -87,9 +95,6 @@ func strFormat(ls LkState) int {
 	return 1
 }
 
-// print (···)
-// http://www.lua.org/manual/5.3/manual.html#pdf-print
-// lua-5.3.4/src/lbaselib.c#luaB_print()
 func basePrint(ls LkState) int {
 	n := ls.GetTop() /* number of arguments */
 	for i := 1; i <= n; i++ {
@@ -118,9 +123,6 @@ func basePrintf(ls LkState) int {
 	return 0
 }
 
-// assert (v [, message])
-// http://www.lua.org/manual/5.3/manual.html#pdf-assert
-// lua-5.3.4/src/lbaselib.c#luaB_assert()
 func baseAssert(ls LkState) int {
 	if ls.ToBoolean(1) { /* condition is true? */
 		return ls.GetTop() /* return all arguments */
@@ -144,9 +146,6 @@ func baseErrorf(ls LkState) int {
 	return ls.Error()
 }
 
-// pairs (t)
-// http://www.lua.org/manual/5.3/manual.html#pdf-pairs
-// lua-5.3.4/src/lbaselib.c#luaB_pairs()
 func basePairs(ls LkState) int {
 	ls.CheckAny(1)
 	if ls.GetMetafield(1, "__iter") == LK_TNIL { /* no metamethod? */
@@ -160,11 +159,8 @@ func basePairs(ls LkState) int {
 	return 3
 }
 
-// next (table [, index])
-// http://www.lua.org/manual/5.3/manual.html#pdf-next
-// lua-5.3.4/src/lbaselib.c#luaB_next()
 func baseNext(ls LkState) int {
-	ls.CheckType(1, LK_TTABLE)
+	ls.CheckType(1, LK_TMAP)
 	ls.SetTop(2) /* create a 2nd argument if there isn't one */
 	if ls.Next(1) {
 		return 2
@@ -174,9 +170,6 @@ func baseNext(ls LkState) int {
 	}
 }
 
-// load (chunk [, chunkname [, mode [, env]]])
-// http://www.lua.org/manual/5.3/manual.html#pdf-load
-// lua-5.3.4/src/lbaselib.c#luaB_load()
 func baseLoad(ls LkState) int {
 	var status LkStatus
 	chunk, isStr := ls.ToStringX(1)
@@ -208,9 +201,6 @@ func loadAux(ls LkState, status LkStatus, envIdx int) int {
 	}
 }
 
-// loadfile ([filename [, mode [, env]]])
-// http://www.lua.org/manual/5.3/manual.html#pdf-loadfile
-// lua-5.3.4/src/lbaselib.c#luaB_loadfile()
 func baseLoadFile(ls LkState) int {
 	fname := ls.OptString(1, "")
 	mode := ls.OptString(1, "bt")
@@ -222,9 +212,6 @@ func baseLoadFile(ls LkState) int {
 	return loadAux(ls, status, env)
 }
 
-// dofile ([filename])
-// http://www.lua.org/manual/5.3/manual.html#pdf-dofile
-// lua-5.3.4/src/lbaselib.c#luaB_dofile()
 func baseDoFile(ls LkState) int {
 	fname := ls.OptString(1, "bt")
 	ls.SetTop(1)
@@ -236,8 +223,6 @@ func baseDoFile(ls LkState) int {
 	return ls.GetTop() - 1
 }
 
-// pcall (f [, arg1, ···])
-// http://www.lua.org/manual/5.3/manual.html#pdf-pcall
 func basePCall(ls LkState) int {
 	nArgs := ls.GetTop() - 1
 	status := ls.PCall(nArgs, -1, 0)
@@ -246,9 +231,6 @@ func basePCall(ls LkState) int {
 	return ls.GetTop()
 }
 
-// type (v)
-// http://www.lua.org/manual/5.3/manual.html#pdf-type
-// lua-5.3.4/src/lbaselib.c#luaB_type()
 func baseType(ls LkState) int {
 	t := ls.Type(1)
 	ls.ArgCheck(t != LK_TNONE, 1, "value expected")
@@ -256,18 +238,12 @@ func baseType(ls LkState) int {
 	return 1
 }
 
-// str (v)
-// http://www.lua.org/manual/5.3/manual.html#pdf-tostring
-// lua-5.3.4/src/lbaselib.c#luaB_tostring()
 func baseToString(ls LkState) int {
 	ls.CheckAny(1)
 	ls.ToString2(1)
 	return 1
 }
 
-// num (e [, base])
-// http://www.lua.org/manual/5.3/manual.html#pdf-tonumber
-// lua-5.3.4/src/lbaselib.c#luaB_tonumber()
 func baseToNumber(ls LkState) int {
 	if ls.IsNoneOrNil(2) { /* standard conversion? */
 		ls.CheckAny(1)
@@ -295,7 +271,6 @@ func baseToNumber(ls LkState) int {
 	return 1
 }
 
-// convert (json)str to table
 func baseToJson(ls LkState) int {
 	str := ls.CheckString(1)
 	var item any

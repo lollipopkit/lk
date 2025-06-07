@@ -3,7 +3,6 @@ package stdlib
 import (
 	"bytes"
 	"io/fs"
-	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
@@ -39,7 +38,6 @@ var sysLib = map[string]GoFunction{
 	"sleep":     osSleep,
 	"mkdir":     osMkdir,
 	"rand":      randRandom,
-	"rand_seed": randSeed,
 }
 
 func OpenOSLib(ls LkState) int {
@@ -161,15 +159,12 @@ func osWrite(ls LkState) int {
 	return 1
 }
 
-// os.time ([table, isUTC])
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.time
-// lua-5.3.4/src/loslib.c#os_time()
 func osTime(ls LkState) int {
 	if ls.IsNoneOrNil(1) { /* called without args? */
 		t := time.Now().UnixMicro() /* get current time */
 		ls.PushInteger(t)
 	} else {
-		ls.CheckType(1, LK_TTABLE)
+		ls.CheckType(1, LK_TMAP)
 		isUTC := ls.OptBool(2, false)
 		sec := _getField(ls, "sec", 0)
 		min := _getField(ls, "min", 0)
@@ -190,9 +185,6 @@ func osTime(ls LkState) int {
 	return 1
 }
 
-// os.date ([format [, time]])
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.date
-// lua-5.3.4/src/loslib.c#os_date()
 func osDate(ls LkState) int {
 	format := ls.OptString(1, "%c")
 	var t time.Time
@@ -231,8 +223,6 @@ func _setField(ls LkState, key string, value int) {
 	ls.SetField(-2, key)
 }
 
-// os.remove (filename, [rmdir])
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.remove
 func osRemove(ls LkState) int {
 	filename := ls.CheckString(1)
 	rmdir := ls.OptBool(2, false)
@@ -253,8 +243,6 @@ SUC:
 	return 1
 }
 
-// os.rename (oldname, newname)
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.rename
 func osRename(ls LkState) int {
 	oldName := ls.CheckString(1)
 	newName := ls.CheckString(2)
@@ -266,15 +254,11 @@ func osRename(ls LkState) int {
 	return 1
 }
 
-// os.tmpname ()
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.tmpname
 func osTmpName(ls LkState) int {
 	ls.PushString(os.TempDir())
 	return 1
 }
 
-// os.getenv (varname)
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.getenv
 // lua-5.3.4/src/loslib.c#os_getenv()
 func osGetEnv(ls LkState) int {
 	key := ls.CheckString(1)
@@ -302,7 +286,7 @@ func osExecute(ls LkState) int {
 	script := ls.CheckString(1)
 	tempDir := os.TempDir()
 	path := path.Join(tempDir, "lkscript"+utils.Md5([]byte(script)))
-	err := ioutil.WriteFile(path, []byte(script), 0744)
+	err := os.WriteFile(path, []byte(script), 0744)
 	if err != nil {
 		ls.PushNil()
 		ls.PushString(err.Error())
@@ -324,18 +308,12 @@ func osExecute(ls LkState) int {
 	return 2
 }
 
-// os.exit ([code])
-// http://www.lua.org/manual/5.3/manual.html#pdf-os.exit
-// lua-5.3.4/src/loslib.c#os_exit()
 func osExit(ls LkState) int {
 	code := ls.OptInteger(1, 0)
 	os.Exit(int(code))
 	return 0
 }
 
-// rand.random ([m [, n]])
-// http://www.lua.org/manual/5.3/manual.html#pdf-math.random
-// lua-5.3.4/src/lmathlib.c#math_random()
 func randRandom(ls LkState) int {
 	var low, up int64
 	argsNum := ls.GetTop()
@@ -363,13 +341,4 @@ func randRandom(ls LkState) int {
 		ls.PushInteger(low + rand.Int63n(up-low+1))
 	}
 	return 1
-}
-
-// rand.seed (x)
-// http://www.lua.org/manual/5.3/manual.html#pdf-math.randomseed
-// lua-5.3.4/src/lmathlib.c#math_randomseed()
-func randSeed(ls LkState) int {
-	x := ls.CheckNumber(1)
-	rand.Seed(int64(x))
-	return 0
 }

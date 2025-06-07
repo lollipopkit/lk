@@ -79,5 +79,5 @@ func (self *lkState) Push(item any) {
 }
 
 func (self *lkState) PushCopyTable(idx int) {
-	self.stack.push(self.stack.get(idx).(*lkTable).copy())
+	self.stack.push(self.stack.get(idx).(*lkMap).copy())
 }

@@ -13,7 +13,7 @@ func (self *lkState) NewTable() {
 // [-0, +1, m]
 // http://www.lua.org/manual/5.3/manual.html#lua_createtable
 func (self *lkState) CreateTable(nArr, nRec int) {
-	t := newLkTable(nArr, nRec)
+	t := newLkMap(nRec)
 	self.stack.push(t)
 }
 
@@ -78,33 +78,41 @@ func (self *lkState) GetMetatable(idx int) bool {
 	}
 }
 
+
+func (self *lkState) NewList() {
+    self.CreateList(0)
+}
+
+func (self *lkState) CreateList(size int) {
+    list := newLkList(size)
+    self.stack.push(list)
+}
+
+func (self *lkState) NewMap() {
+    self.CreateMap(0)
+}
+
+func (self *lkState) CreateMap(size int) {
+    m := newLkMap(size)
+    self.stack.push(m)
+}
+
 // push(t[k])
 func (self *lkState) getTable(t, k any, raw bool) LkType {
-	mf := getMetafield(t, "__index", self)
-	if tbl, ok := t.(*lkTable); ok {
-		v := tbl.get(k)
-		if raw || v != nil || !tbl.hasMetafield("__index") && mf == nil {
-			self.stack.push(v)
-			return typeOf(v)
-		}
-	}
-
-	if !raw {
-		if mf != nil {
-			switch x := mf.(type) {
-			case *lkTable:
-				return self.getTable(x, k, true)
-			case *lkClosure:
-				self.stack.push(mf)
-				self.stack.push(t)
-				self.stack.push(k)
-				self.Call(2, 1)
-				v := self.stack.get(-1)
-				return typeOf(v)
-			}
-		}
-	}
-
-	self.PushNil()
-	return LK_TNIL
+    switch x := t.(type) {
+    case *lkList:
+        if idx, ok := k.(int64); ok {
+            self.stack.push(x.get(idx))
+            return typeOf(x.get(idx))
+        }
+    case *lkMap:
+        v := x.get(k)
+        if raw || v != nil || !x.hasMetafield("__index") {
+            self.stack.push(v)
+            return typeOf(v)
+        }
+    }
+    
+    self.PushNil()
+    return LK_TNIL
 }

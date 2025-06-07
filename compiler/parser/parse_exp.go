@@ -223,8 +223,10 @@ func parseExp0(lexer *Lexer) Exp {
 		return &StringExp{line, token}
 	case TOKEN_NUMBER: // Numeral
 		return parseNumberExp(lexer)
-	case TOKEN_SEP_LCURLY: // tableconstructor
-		return parseTableConstructorExp(lexer)
+	case TOKEN_SEP_LBRACK: // list constructor
+        return parseListConstructorExp(lexer)
+    case TOKEN_SEP_LCURLY: // map constructor
+        return parseMapConstructorExp(lexer)
 	case TOKEN_KW_FUNCTION: // functiondef
 		lexer.NextToken()
 		return parseFuncDefExp(lexer)
@@ -292,58 +294,94 @@ func _parseParList(lexer *Lexer) (names []string, isVararg bool) {
 	return
 }
 
-// tableconstructor ::= ‘{’ [fieldlist] ‘}’
-func parseTableConstructorExp(lexer *Lexer) *TableConstructorExp {
-	line := lexer.Line()
-	lexer.NextTokenOfKind(TOKEN_SEP_LCURLY)    // {
-	keyExps, valExps := _parseFieldList(lexer) // [fieldlist]
-	lexer.NextTokenOfKind(TOKEN_SEP_RCURLY)    // }
-	lastLine := lexer.Line()
-	return &TableConstructorExp{line, lastLine, keyExps, valExps}
+func parseListConstructorExp(lexer *Lexer) *ListConstructorExp {
+    line := lexer.Line()
+    
+    lexer.NextTokenOfKind(TOKEN_SEP_LBRACK) // [
+    exps := _parseListElements(lexer)
+    lexer.NextTokenOfKind(TOKEN_SEP_RBRACK) // ]
+    lastLine := lexer.Line()
+    
+    return &ListConstructorExp{line, lastLine, exps}
 }
 
-// fieldlist ::= field {fieldsep field} [fieldsep]
-func _parseFieldList(lexer *Lexer) (ks, vs []Exp) {
-	if lexer.LookAhead() != TOKEN_SEP_RCURLY {
-		k, v := _parseField(lexer)
-		ks = append(ks, k)
-		vs = append(vs, v)
-
-		for lexer.LookAhead() == TOKEN_SEP_COMMA {
-			lexer.NextToken()
-			if lexer.LookAhead() != TOKEN_SEP_RCURLY {
-				k, v := _parseField(lexer)
-				ks = append(ks, k)
-				vs = append(vs, v)
-			} else {
-				break
-			}
-		}
-	}
-	return
+func _parseListElements(lexer *Lexer) []Exp {
+    exps := make([]Exp, 0, 4)
+    
+    if lexer.LookAhead() != TOKEN_SEP_RBRACK {
+        exps = append(exps, ParseExp(lexer))
+        
+        for lexer.LookAhead() == TOKEN_SEP_COMMA {
+            lexer.NextToken() // ,
+            if lexer.LookAhead() != TOKEN_SEP_RBRACK {
+                exps = append(exps, ParseExp(lexer))
+            } else {
+                break
+            }
+        }
+    }
+    
+    return exps
 }
 
-// field ::= ‘[’ exp ‘]’ ‘:’ exp | Name ‘:’ exp | exp
-func _parseField(lexer *Lexer) (k, v Exp) {
-	if lexer.LookAhead() == TOKEN_SEP_LBRACK {
-		lexer.NextToken()                       // [
-		k = ParseExp(lexer)                     // exp
-		lexer.NextTokenOfKind(TOKEN_SEP_RBRACK) // ]
-		lexer.NextTokenOfKind(TOKEN_SEP_COLON)  // :
-		v = ParseExp(lexer)                     // exp
-		return
-	}
+func parseMapConstructorExp(lexer *Lexer) *MapConstructorExp {
+    line := lexer.Line()
+    
+    lexer.NextTokenOfKind(TOKEN_SEP_LCURLY) // {
+    keyExps, valExps := _parseMapFields(lexer)
+    lexer.NextTokenOfKind(TOKEN_SEP_RCURLY) // }
+    lastLine := lexer.Line()
+    
+    return &MapConstructorExp{line, lastLine, keyExps, valExps}
+}
 
-	exp := ParseExp(lexer)
-	if nameExp, ok := exp.(*StringExp); ok {
-		if lexer.LookAhead() == TOKEN_SEP_COLON {
-			// Name ‘:’ exp => ‘[’ LiteralString ‘]’ = exp
-			lexer.NextToken()
-			k = &StringExp{nameExp.Line, nameExp.Str}
-			v = ParseExp(lexer)
-			return
-		}
-	}
+func _parseMapFields(lexer *Lexer) (keys, vals []Exp) {
+    if lexer.LookAhead() != TOKEN_SEP_RCURLY {
+        k, v := _parseMapField(lexer)
+        keys = append(keys, k)
+        vals = append(vals, v)
+        
+        for lexer.LookAhead() == TOKEN_SEP_COMMA {
+            lexer.NextToken() // ,
+            if lexer.LookAhead() != TOKEN_SEP_RCURLY {
+                k, v := _parseMapField(lexer)
+                keys = append(keys, k)
+                vals = append(vals, v)
+            } else {
+                break
+            }
+        }
+    }
+    
+    return
+}
 
-	return nil, exp
+func _parseMapField(lexer *Lexer) (k, v Exp) {
+    // 1. [exp] : exp
+    // 2. Name : exp  
+    // 3. "string" : exp
+    
+    if lexer.LookAhead() == TOKEN_SEP_LBRACK {
+        lexer.NextToken()                       // [
+        k = ParseExp(lexer)                     // exp
+        lexer.NextTokenOfKind(TOKEN_SEP_RBRACK) // ]
+        lexer.NextTokenOfKind(TOKEN_SEP_COLON)  // :
+        v = ParseExp(lexer)                     // exp
+        return
+    }
+    
+    if lexer.LookAhead() == TOKEN_IDENTIFIER {
+        line, name := lexer.NextIdentifier()
+        k = &StringExp{line, name}
+    } else if lexer.LookAhead() == TOKEN_STRING {
+        line, _, str := lexer.NextToken()
+        k = &StringExp{line, str}
+    } else {
+        k = ParseExp(lexer)
+    }
+    
+    lexer.NextTokenOfKind(TOKEN_SEP_COLON) // :
+    v = ParseExp(lexer)
+    
+    return
 }

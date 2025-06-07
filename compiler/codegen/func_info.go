@@ -471,3 +471,18 @@ func (self *funcInfo) emitBinaryOp(line, op, a, b, c int) {
 		self.emitLoadBool(line, a, 1, 0)
 	}
 }
+
+// r[a] = []
+func (self *funcInfo) emitNewList(line, a, size int) {
+    self.emitABC(line, OP_NEWLIST, a, size, 0)
+}
+
+// r[a] = {}
+func (self *funcInfo) emitNewMap(line, a, size int) {
+    self.emitABC(line, OP_NEWMAP, a, size, 0)
+}
+
+// r[a][b] = r[c] (for list)
+func (self *funcInfo) emitListSet(line, a, b, c int) {
+    self.emitABC(line, OP_SETTABLE, a, b+0x100, c)
+}

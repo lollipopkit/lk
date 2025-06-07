@@ -101,18 +101,12 @@ func strSplit(ls LkState) int {
 	return 1
 }
 
-// string.len (s)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.len
-// lua-5.3.4/src/lstrlib.c#str_len()
 func strLen(ls LkState) int {
 	s := ls.CheckString(1)
 	ls.PushInteger(int64(len(s)))
 	return 1
 }
 
-// string.rep (s, n [, sep])
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.rep
-// lua-5.3.4/src/lstrlib.c#str_rep()
 func strRep(ls LkState) int {
 	s := ls.CheckString(1)
 	n := ls.CheckInteger(2)
@@ -133,9 +127,6 @@ func strRep(ls LkState) int {
 	return 1
 }
 
-// string.reverse (s)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.reverse
-// lua-5.3.4/src/lstrlib.c#str_reverse()
 func strReverse(ls LkState) int {
 	s := ls.CheckString(1)
 
@@ -150,27 +141,18 @@ func strReverse(ls LkState) int {
 	return 1
 }
 
-// string.lower (s)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.lower
-// lua-5.3.4/src/lstrlib.c#str_lower()
 func strLower(ls LkState) int {
 	s := ls.CheckString(1)
 	ls.PushString(strings.ToLower(s))
 	return 1
 }
 
-// string.upper (s)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.upper
-// lua-5.3.4/src/lstrlib.c#str_upper()
 func strUpper(ls LkState) int {
 	s := ls.CheckString(1)
 	ls.PushString(strings.ToUpper(s))
 	return 1
 }
 
-// string.sub (s, i [, j])
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.sub
-// lua-5.3.4/src/lstrlib.c#str_sub()
 func strSub(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
@@ -193,9 +175,6 @@ func strSub(ls LkState) int {
 	return 1
 }
 
-// string.byte (s [, i [, j]])
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.byte
-// lua-5.3.4/src/lstrlib.c#str_byte()
 func strByte(ls LkState) int {
 	s := ls.CheckString(1)
 	sLen := len(s)
@@ -208,9 +187,6 @@ func strByte(ls LkState) int {
 	return 1
 }
 
-// string.char (···)
-// http://www.lua.org/manual/5.3/manual.html#pdf-string.char
-// lua-5.3.4/src/lstrlib.c#str_char()
 func strChar(ls LkState) int {
 	nArgs := ls.GetTop()
 

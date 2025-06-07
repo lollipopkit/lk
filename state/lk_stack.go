@@ -136,7 +136,7 @@ func (self *lkStack) set(idx int, val any) {
 	}
 
 	if idx == LK_REGISTRYINDEX {
-		self.state.registry = val.(*lkTable)
+		self.state.registry = val.(*lkMap)
 		return
 	}
 

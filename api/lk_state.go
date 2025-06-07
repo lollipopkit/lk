@@ -35,7 +35,6 @@ type BasicAPI interface {
 	IsInteger(idx int) bool
 	IsNumber(idx int) bool
 	IsString(idx int) bool
-	IsTable(idx int) bool
 	IsThread(idx int) bool
 	IsFunction(idx int) bool
 	IsGoFunction(idx int) bool
