@@ -18,7 +18,7 @@ func typeOf(val any) LkType {
 		return LK_TNUMBER
 	case string:
 		return LK_TSTRING
-	case *lkTable, *lkMap, *lkList:
+	case *tableBase, *lkMap, *lkList:
 		return LK_TTABLE
 	case *lkClosure:
 		return LK_TFUNCTION
@@ -89,7 +89,7 @@ func _stringToInteger(s string) (int64, bool) {
 
 /* metatable */
 
-func getMetatable(val any, ls *lkState) (mt, global *lkTable) {
+func getMetatable(val any, ls *lkState) (mt, global *tableBase) {
 	key := fmt.Sprintf("_MT%d", typeOf(val))
 	if gmt := ls.registry.get(key); gmt != nil {
 		global = toTable(gmt)
@@ -98,7 +98,7 @@ func getMetatable(val any, ls *lkState) (mt, global *lkTable) {
 	return
 }
 
-func setMetatable(val any, mt *lkTable, ls *lkState) {
+func setMetatable(val any, mt *tableBase, ls *lkState) {
 	if t := toTable(val); t != nil {
 		t.combine(mt)
 		//return

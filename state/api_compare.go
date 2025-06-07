@@ -55,7 +55,7 @@ func _eq(a, b any, ls *lkState) bool {
 		default:
 			return false
 		}
-	case *lkTable, *lkMap, *lkList:
+	case *lkMap, *lkList:
 		if y := toTable(b); y != nil && toTable(a) != y && ls != nil {
 			if result, ok := callMetamethod(x, y, "__eq", ls); ok {
 				return convertToBoolean(result)

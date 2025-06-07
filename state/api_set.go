@@ -90,7 +90,7 @@ func (self *lkState) setTable(t, k, v any, raw bool) {
 	if !raw {
 		if mf := getMetafield(t, "__newindex", self); mf != nil {
 			switch x := mf.(type) {
-			case *lkTable, *lkMap, *lkList:
+			case *lkMap, *lkList:
 				self.setTable(x, k, v, false)
 				return
 			case *lkClosure:
