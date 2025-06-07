@@ -338,9 +338,14 @@ func (self *funcInfo) emitClosure(line, a, bx int) {
 }
 
 // r[a] = {}
-func (self *funcInfo) emitNewTable(line, a, nArr, nRec int) {
-	self.emitABC(line, OP_NEWTABLE,
+func (self *funcInfo) emitNewMap(line, a, nArr, nRec int) {
+	self.emitABC(line, OP_NEWMAP,
 		a, Int2fb(nArr), Int2fb(nRec))
+}
+
+func (self *funcInfo) emitNewList(line, a, n int) {
+	self.emitABC(line, OP_NEWLIST,
+		a, Int2fb(n), 0)
 }
 
 // r[a][(c-1)*FPF+i] := r[a+i], 1 <= i <= b

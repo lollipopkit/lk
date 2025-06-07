@@ -53,27 +53,27 @@ func (self *lkStack) pop() any {
 
 // 批量操作优化
 func (self *lkStack) pushN(vals []any, n int) {
-    nVals := len(vals)
-    if n < 0 {
-        n = nVals
-    }
-    
-    // 预分配空间
-    self.check(n)
-    
-    // 使用 copy 优化批量赋值
-    if n <= nVals {
-        copy(self.slots[self.top:], vals[:n])
-        self.top += n
-    } else {
-        copy(self.slots[self.top:], vals)
-        self.top += nVals
-        // 填充 nil
-        for i := self.top; i < self.top+(n-nVals); i++ {
-            self.slots[i] = nil
-        }
-        self.top = self.top + (n - nVals)
-    }
+	nVals := len(vals)
+	if n < 0 {
+		n = nVals
+	}
+
+	// 预分配空间
+	self.check(n)
+
+	// 使用 copy 优化批量赋值
+	if n <= nVals {
+		copy(self.slots[self.top:], vals[:n])
+		self.top += n
+	} else {
+		copy(self.slots[self.top:], vals)
+		self.top += nVals
+		// 填充 nil
+		for i := self.top; i < self.top+(n-nVals); i++ {
+			self.slots[i] = nil
+		}
+		self.top = self.top + (n - nVals)
+	}
 }
 
 func (self *lkStack) popN(n int) []any {
@@ -136,7 +136,9 @@ func (self *lkStack) set(idx int, val any) {
 	}
 
 	if idx == LK_REGISTRYINDEX {
-		self.state.registry = val.(*lkTable)
+		if t := toTable(val); t != nil {
+			self.state.registry = t
+		}
 		return
 	}
 

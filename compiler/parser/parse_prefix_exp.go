@@ -104,7 +104,9 @@ func _parseArgs(lexer *Lexer) (args []Exp) {
 		}
 		lexer.NextTokenOfKind(TOKEN_SEP_RPAREN)
 	case TOKEN_SEP_LCURLY: // ‘{’ [fieldlist] ‘}’
-		args = []Exp{parseTableConstructorExp(lexer)}
+		args = []Exp{parseMapConstructorExp(lexer)}
+	case TOKEN_SEP_LBRACK: // '[' [explist] ']'
+		args = []Exp{parseListConstructorExp(lexer)}
 	default: // LiteralString
 		line, str := lexer.NextTokenOfKind(TOKEN_STRING)
 		args = []Exp{&StringExp{line, str}}

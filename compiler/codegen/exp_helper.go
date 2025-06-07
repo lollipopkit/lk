@@ -41,7 +41,9 @@ func lineOf(exp Exp) int {
 		return x.Line
 	case *FuncCallExp:
 		return x.Line
-	case *TableConstructorExp:
+	case *MapConstructorExp:
+		return x.Line
+	case *ListConstructorExp:
 		return x.Line
 	case *UnopExp:
 		return x.Line
@@ -78,7 +80,9 @@ func lastLineOf(exp Exp) int {
 		return x.LastLine
 	case *FuncCallExp:
 		return x.LastLine
-	case *TableConstructorExp:
+	case *MapConstructorExp:
+		return x.LastLine
+	case *ListConstructorExp:
 		return x.LastLine
 	case *TableAccessExp:
 		return x.LastLine

@@ -61,10 +61,18 @@ type TernaryExp struct {
 // fieldlist ::= field {fieldsep field} [fieldsep]
 // field ::= ‘[’ exp ‘]’ ‘=’ exp | Name ‘=’ exp | exp
 // fieldsep ::= ‘,’ | ‘;’
-type TableConstructorExp struct {
+// MapConstructorExp represents `{a: b}` style map construction.
+type MapConstructorExp struct {
 	Line     int // line of `{` ?
 	LastLine int // line of `}`
 	KeyExps  []Exp
+	ValExps  []Exp
+}
+
+// ListConstructorExp represents `[a, b]` style list construction.
+type ListConstructorExp struct {
+	Line     int // line of `[` ?
+	LastLine int // line of `]`
 	ValExps  []Exp
 }
 

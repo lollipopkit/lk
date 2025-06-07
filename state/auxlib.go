@@ -206,8 +206,7 @@ func (self *lkState) ToString2(idx int) string {
 		case LK_TNIL:
 			self.PushString("nil")
 		case LK_TTABLE:
-			tb, ok := self.ToPointer(idx).(*lkTable)
-			if ok {
+			if tb := toTable(self.ToPointer(idx)); tb != nil {
 				s, err := tb.String()
 				if err == nil {
 					if s == "null" {
@@ -286,17 +285,17 @@ func (self *lkState) CallMeta(obj int, event string) bool {
 // http://www.lua.org/manual/5.3/manual.html#luaL_openlibs
 func (self *lkState) OpenLibs() {
 	libs := map[string]GoFunction{
-		"_G":    stdlib.OpenBaseLib,
-		"math":  stdlib.OpenMathLib,
-		"str":   stdlib.OpenStringLib,
-		"utf8":  stdlib.OpenUTF8Lib,
-		"os":    stdlib.OpenOSLib,
-		"pkg":   stdlib.OpenPackageLib,
-		"coroutine":  stdlib.OpenCoroutineLib,
-		"http":  stdlib.OpenHttpLib,
-		"table": stdlib.OpenTableLib,
-		"num":   stdlib.OpenNumLib,
-		"term":  stdlib.OpenTermLib,
+		"_G":        stdlib.OpenBaseLib,
+		"math":      stdlib.OpenMathLib,
+		"str":       stdlib.OpenStringLib,
+		"utf8":      stdlib.OpenUTF8Lib,
+		"os":        stdlib.OpenOSLib,
+		"pkg":       stdlib.OpenPackageLib,
+		"coroutine": stdlib.OpenCoroutineLib,
+		"http":      stdlib.OpenHttpLib,
+		"table":     stdlib.OpenTableLib,
+		"num":       stdlib.OpenNumLib,
+		"term":      stdlib.OpenTermLib,
 	}
 
 	for name := range libs {
