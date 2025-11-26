@@ -25,12 +25,6 @@ Outputs `200`. More language details: [LANG.md](LANG.md).
 - Deterministic bytecode VM with optional concurrency runtime
 - Batteries-included standard library and LSP-backed tooling
 
-### Documentation
-- Language spec: [docs/spec/functions.md](docs/spec/functions.md)
-- Runtime and bytecode: [docs/runtime.md](docs/runtime.md), [docs/bytecode.md](docs/bytecode.md)
-- LKRB packaging: [docs/lkrb.md](docs/lkrb.md)
-- CLI guide: [docs/cli.md](docs/cli.md), LSP guide: [docs/lsp.md](docs/lsp.md)
-
 ## Features
 
 ### Usage

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::env;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -149,6 +149,12 @@ struct EstimateFile {
 #[derive(Deserialize)]
 struct EstimateEntry {
     point_estimate: f64,
+}
+
+#[derive(Deserialize)]
+struct SampleFile {
+    times: Vec<f64>,
+    iters: Vec<f64>,
 }
 
 struct TimeStats {
@@ -355,25 +361,13 @@ fn run_cargo_bench(bench: &str) -> Result<()> {
 }
 
 fn load_time_stats(criterion_dir: &Path, case: &str) -> Result<TimeStats> {
-    let estimate_path = criterion_dir.join(case).join("new").join("estimates.json");
+    let case_dir = criterion_dir.join(case).join("new");
+    let estimate_path = case_dir.join("estimates.json");
     let data = fs::read_to_string(&estimate_path).with_context(|| format!("read {}", estimate_path.display()))?;
     let estimates: EstimateFile =
         serde_json::from_str(&data).with_context(|| format!("parse {}", estimate_path.display()))?;
 
-    let raw_path = criterion_dir.join(case).join("new").join("raw.csv");
-    let raw_file = File::open(&raw_path).with_context(|| format!("open {}", raw_path.display()))?;
-    let mut reader = BufReader::new(raw_file);
-    let mut line = String::new();
-    let mut samples = Vec::new();
-    while reader.read_line(&mut line)? != 0 {
-        if line.starts_with("group") {
-            line.clear();
-            continue;
-        }
-        let sample = parse_sample_value(&line)?;
-        samples.push(sample);
-        line.clear();
-    }
+    let mut samples = load_samples(&case_dir)?;
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let p50 = quantile(&samples, 0.5);
     let p95 = quantile(&samples, 0.95);
@@ -387,6 +381,67 @@ fn load_time_stats(criterion_dir: &Path, case: &str) -> Result<TimeStats> {
         p95_ns: p95,
         p99_ns: p99,
     })
+}
+
+fn load_samples(case_dir: &Path) -> Result<Vec<f64>> {
+    let raw_path = case_dir.join("raw.csv");
+    let raw_file = match File::open(&raw_path) {
+        Ok(file) => Some((raw_path, file)),
+        Err(err) if err.kind() == ErrorKind::NotFound => None,
+        Err(err) => {
+            return Err(err).with_context(|| format!("open {}", raw_path.display()));
+        }
+    };
+
+    if let Some((path, file)) = raw_file {
+        return load_samples_from_raw(file).with_context(|| format!("parse {}", path.display()));
+    }
+
+    load_samples_from_json(&case_dir.join("sample.json"))
+}
+
+fn load_samples_from_raw(raw_file: File) -> Result<Vec<f64>> {
+    let mut reader = BufReader::new(raw_file);
+    let mut line = String::new();
+    let mut samples = Vec::new();
+    while reader.read_line(&mut line)? != 0 {
+        if line.starts_with("group") {
+            line.clear();
+            continue;
+        }
+        let sample = parse_sample_value(&line)?;
+        samples.push(sample);
+        line.clear();
+    }
+    if samples.is_empty() {
+        Err(anyhow!("raw.csv did not contain any samples"))
+    } else {
+        Ok(samples)
+    }
+}
+
+fn load_samples_from_json(path: &Path) -> Result<Vec<f64>> {
+    let data = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let sample: SampleFile = serde_json::from_str(&data).with_context(|| format!("parse {}", path.display()))?;
+    if sample.times.len() != sample.iters.len() {
+        return Err(anyhow!(
+            "sample.json times ({}) and iters ({}) lengths differed",
+            sample.times.len(),
+            sample.iters.len()
+        ));
+    }
+    let mut values = Vec::with_capacity(sample.times.len());
+    for (time, iter) in sample.times.into_iter().zip(sample.iters.into_iter()) {
+        if iter <= 0.0 {
+            return Err(anyhow!("sample.json contained non-positive iteration count"));
+        }
+        values.push(time / iter);
+    }
+    if values.is_empty() {
+        Err(anyhow!("sample.json did not contain any samples"))
+    } else {
+        Ok(values)
+    }
 }
 
 fn parse_sample_value(line: &str) -> Result<f64> {
