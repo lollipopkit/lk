@@ -1,0 +1,21 @@
+fn range_sum(start, stop, { step: Int? = 1, label: String? = "sum" }) {
+    let acc = 0;
+    let i = start;
+    let step_val = step ?? 1;
+    let label_text = label ?? "sum";
+    while (i <= stop) {
+        acc += i;
+        i += step_val;
+    }
+    println("${label_text}: ${acc}");
+    return acc;
+}
+
+// positional only
+range_sum(1, 5);
+
+// override the default step, leave label as default
+range_sum(1, 10, step: 2);
+
+// supply both named parameters (order independent of positional tail)
+range_sum(0, 6, label: "evens", step: 2);

@@ -1,0 +1,14 @@
+{
+    // Enable semantic highlighting for LKR
+    "editor.semanticHighlighting.enabled": true,
+    
+    // LKR Language Server settings
+    "lkr.lsp.enabled": true,
+    "lkr.lsp.autoStart": true,
+    "lkr.lsp.semanticTokens.enabled": true,
+    "lkr.lsp.semanticTokens.throttleMs": 100,
+    
+    // Enable verbose logging for debugging (optional)
+    // "lkr.lsp.trace": "verbose",
+    // "lkr.lsp.outputChannel.enabled": true,
+}

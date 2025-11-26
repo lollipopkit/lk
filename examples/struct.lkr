@@ -1,0 +1,17 @@
+// Struct syntax demo
+
+// Define a struct (types optional; unannotated fields are treated as Any)
+struct User { id: Int, name: String?, active: Bool }
+
+// Instantiate using struct literal
+let u1 = User { id: 1, name: "Ann", active: true };
+let u2 = User { id: 2, active: false }; // name is optional
+
+println("u1.id={}, u1.name={}, u1.active={}", u1.id, u1.name, u1.active);
+println("u2.id={}, u2.name={}, u2.active={}", u2.id, u2.name, u2.active);
+
+// Constructor fallback using literal syntax
+let u3 = User { id: 3, name: "Bob", active: true };
+println("u3.id={}, u3.name={}, u3.active={}", u3.id, u3.name, u3.active);
+
+return;

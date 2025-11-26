@@ -1,101 +1,75 @@
-<h1 align="center">Lang LK</h1>
-
-<p align="center">
-    <img alt="badge-lang" src="https://badgen.net/badge/LK/0.3.0/cyan">
-    <img alt="badge-lang" src="https://badgen.net/badge/Go/1.19/purple">
-</p>
+English | [简体中文](README.zh-CN.md)
 
 <div align="center">
-💌 致谢 - <a href="https://www.lua.org">lua</a> - <a href="https://github.com/zxh0/luago-book">luago</a>
-
-简体中文 | [English](README_en.md)
+    <h2>LKR</h2>
+    <h5>a Rust-like scripting language written in Rust</h5>
 </div>
 
-## ⌨️ 体验
-#### 获取 
-- 通过 `go` 安装：`go install github.com/lollipopkit/lk@latest`
-- [Release](https://github.com/LollipopKit/lang-lk/releases) 下载
+## Intro
+
+### Example
+
+```lkr
+fn draw_rect(x: Int, y: Int, {width: Int, height: Int? = 100}) -> Int {
+    let h = height ?? 0;
+    return width * h;
+}
+
+print(draw_rect(0, 0, width: 20, height: 10));
+```
+
+Outputs `200`. More language details: [LANG.md](LANG.md).
+
+### Highlights
+- Rust-inspired syntax with first-class named parameters
+- Deterministic bytecode VM with optional concurrency runtime
+- Batteries-included standard library and LSP-backed tooling
+
+### Documentation
+- Language spec: [docs/spec/functions.md](docs/spec/functions.md)
+- Runtime and bytecode: [docs/runtime.md](docs/runtime.md), [docs/bytecode.md](docs/bytecode.md)
+- LKRB packaging: [docs/lkrb.md](docs/lkrb.md)
+- CLI guide: [docs/cli.md](docs/cli.md), LSP guide: [docs/lsp.md](docs/lsp.md)
+
+## Features
+
+### Usage
+
+#### Integration (library)
+
+```rust
+use lkr_core::{expr::Expr, vm::VmContext, val::Val};
+
+// Parse expr
+let expr_src = "data.req.user.name in 'foobar' && data.files.0.published == true";
+let expr = Expr::try_from(expr_src)?;
+
+// Provide variables in VmContext (lexical environment)
+let mut ctx = VmContext::new();
+let data_val: Val = serde_json::json!({
+    "req": { "user": { "name": "foo" } },
+    "files": [ { "name": "file1", "published": true } ]
+}).into();
+ctx.set("data", data_val);
+
+// Eval
+let result = expr.eval_with_ctx(&mut ctx)?; // Val::Bool(true)
+assert_eq!(result, Val::Bool(true));
+```
 
 #### CLI
-详细说明可以运行 `lk --help` 查看
-```bash
-# 进入REPL交互式解释器
-lk
-# 执行.lk(c)文件
-lk <file>
-# 编译.lk文件
-lk -c <file>
-# 为.lk文件，生成语法树
-lk -a <file>
-```
 
-## 📄 语法
-#### 详细
-- **Step by step** ➜ [LANG.md](LANG.md)
-- **By examples** ➜ [脚本](scripts) or [测试集](test)
+- Run REPL: `lkr`
+- Execute a file: `lkr FILE` (auto-detects `.lkr` source vs `.lkrb` bytecode)
+- Type-check without executing: `lkr check FILE` (reports compile-time diagnostics)
+- Compile to bytecode: `lkr compile FILE` → `FILE.lkrb` (see [docs/lkrb.md](docs/lkrb.md) for bundling details)
+- Compile to LLVM IR: `lkr compile llvm FILE` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
+- Compile to ELF executable: `lkr compile exe FILE` (requires LLVM tools + system linker; see [docs/llvm/backend.md](docs/llvm/backend.md))
 
-#### 示例
-```js
-// http 发送请求示例
-resp, code, err := http.req(
-    'POST', // Method
-    'https://http.lolli.tech/post', // URL
-    {'accept': 'application/json'}, // Headers
-    {'foo': 'bar'} // Body
-)
-if err != nil {
-    errorf('http req: %s', err) // 内置的 error(f) 方法
-}
-printf('code: %d, body: %s', code, resp)
+Note: command-line paths must be relative and sanitized.
 
-// json 解析
-obj, err := to_map(resp)
-if err != nil {
-    errorf('json parse: %s', err)
-}
-foo := obj['json']['foo']
-// 正则匹配
-if foo != nil and foo:match('[bar]{3}') {
-    printf('match: %s', foo)
-}
-```
+## License
 
-## 🔖 TODO
-- [x] 语法
-  - [x] 注释：`//` `/* */`
-  - [x] 去除 `repeat`, `until`, `goto`, `..` (`concat`)
-  - [x] Raw String, 使用 ``` ` ``` 包裹字符
-  - [x] 面向对象
-  - [x] 自动添加 `range` ( `paris` )
-  - [x] 语法糖
-    - [x] 三元操作符 `a ? b : c`
-    - [x] `a == nil ? b : a` -> `a ?? b`
-    - [x] `shy a = b` -> `a := b`
-    - [x] `shy a = fn(b) {rt c}` -> `shy a = fn(b) => c`
-    - [x] 支持 `a++` `a+=b` 等
-  - [x] Table
-    - [x] key为StringExp，而不是NameExp
-    - [x] 构造方式：`=` -> `:`, eg: `{a = 'a'}` -> `{a: 'a'}`
-    - [x] 索引从 `0` 开始
-    - [x] 改变 `metatable` 设置方式
-    - [x] 支持 `a.0` (等同于 `a[0]`) 
-- [x] CLI
-  - [x] 支持传入参数 ( `lk args.lk arg1` -> `os.args` == `[lk, args.lk, arg1]` )
-  - [x] 报错时输出调用栈
-  - [x] REPL，直接运行 `./lk` 即可进入
-    - [x] 支持方向键
-    - [x] 识别代码块
-- [x] 资源
-    - [x] 文档
-      - [x] `LANG.md` 
-      - [x] 测试集，位于 `test` 文件夹
-    - [x] IDE
-      - [x] VSCode高亮  
-
-## 🌳 生态
-- Vscode插件：[高亮](https://github.com,/lollipopkit/vscode-lk-highlight)
-
-## 📝 License
-```
-lollipopkit 2023 GPL v3
+```plaintext
+Apache-2.0 lollipopkit
 ```

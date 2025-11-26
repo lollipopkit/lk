@@ -1,0 +1,323 @@
+{
+  "name": "vscode-lkr-lsp",
+  "displayName": "LKR Language Server",
+  "description": "LKR Language Server (client) for editor features via LSP",
+  "version": "0.0.2",
+  "publisher": "lollipopkit",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "lollipopkit",
+    "email": "a@lpkt.cn",
+    "url": "https://github.com/lollipopkit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lollipopkit/lkr.git"
+  },
+  "engines": {
+    "vscode": "^1.103.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "extensionDependencies": [
+    "lollipopkit.vscode-lkr-highlight"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:lkr"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "lkr.startServer",
+        "title": "LKR: Start Language Server",
+        "category": "LKR"
+      },
+      {
+        "command": "lkr.restartServer",
+        "title": "LKR: Restart Language Server",
+        "category": "LKR"
+      },
+      {
+        "command": "lkr.showStatusBarMenu",
+        "title": "LKR: Show Status Bar Menu",
+        "category": "LKR"
+      },
+      {
+        "command": "lkr.analyzeCurrentFile",
+        "title": "LKR: Analyze Current File",
+        "category": "LKR"
+      }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "comment",
+        "description": "Comments",
+        "superType": "comment"
+      },
+      {
+        "id": "keyword",
+        "description": "Keywords",
+        "superType": "keyword"
+      },
+      {
+        "id": "variable",
+        "description": "Variables",
+        "superType": "variable"
+      },
+      {
+        "id": "function",
+        "description": "Functions",
+        "superType": "function"
+      },
+      {
+        "id": "string",
+        "description": "Strings",
+        "superType": "string"
+      },
+      {
+        "id": "number",
+        "description": "Numbers",
+        "superType": "number"
+      },
+      {
+        "id": "operator",
+        "description": "Operators",
+        "superType": "operator"
+      },
+      {
+        "id": "parameter",
+        "description": "Parameters",
+        "superType": "parameter"
+      },
+      {
+        "id": "property",
+        "description": "Properties",
+        "superType": "property"
+      },
+      {
+        "id": "namespace",
+        "description": "Namespaces",
+        "superType": "namespace"
+      },
+      {
+        "id": "type",
+        "description": "Types",
+        "superType": "type"
+      }
+    ],
+    "semanticTokenModifiers": [
+      {
+        "id": "declaration",
+        "description": "Declaration"
+      },
+      {
+        "id": "definition",
+        "description": "Definition"
+      },
+      {
+        "id": "readonly",
+        "description": "Readonly"
+      },
+      {
+        "id": "static",
+        "description": "Static"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "lkr",
+        "scopes": {
+          "comment": [
+            "comment",
+            "comment.line",
+            "comment.block",
+            "punctuation.definition.comment.lkr",
+            "punctuation.definition.comment.begin.lkr",
+            "punctuation.definition.comment.end.lkr"
+          ],
+          "keyword": [
+            "keyword.control.lkr",
+            "keyword.other.lkr"
+          ],
+          "variable": [
+            "variable.other.lkr"
+          ],
+          "function": [
+            "entity.name.function.lkr",
+            "support.function.lkr"
+          ],
+          "string": [
+            "string.quoted.lkr"
+          ],
+          "number": [
+            "constant.numeric.lkr"
+          ],
+          "operator": [
+            "keyword.operator.lkr"
+          ],
+          "parameter": [
+            "variable.parameter.lkr"
+          ],
+          "property": [
+            "variable.other.property.lkr",
+            "support.variable.property.lkr"
+          ],
+          "namespace": [
+            "entity.name.namespace.lkr"
+          ],
+          "type": [
+            "support.type.lkr",
+            "entity.name.type.lkr"
+          ]
+        }
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "LKR Configuration",
+      "properties": {
+        "lkr.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable LKR Language Server Protocol integration"
+        },
+        "lkr.lsp.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the LKR language server on activation"
+        },
+        "lkr.lsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to the LKR LSP server binary (leave empty to use PATH or auto-detection). Supports '~' for home directory."
+        },
+        "lkr.lsp.trace": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace communication between VSCode and the LKR language server"
+        },
+        "lkr.lsp.outputChannel.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a dedicated output channel for LKR (may affect performance)"
+        },
+        "lkr.lsp.ui.checkingDelayMs": {
+          "type": "number",
+          "default": 120,
+          "minimum": 0,
+          "description": "Delay before showing 'Checking…' in the status bar to reduce flicker (ms)."
+        },
+        "lkr.lsp.semanticTokens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic tokens; disable to rely on TextMate highlighting only"
+        },
+        "lkr.lsp.semanticTokens.mode": {
+          "type": "string",
+          "enum": ["auto", "rangeOnly", "fullOnly"],
+          "default": "auto",
+          "description": "Semantic tokens mode: auto prefers range for large files; rangeOnly disables full-document tokens; fullOnly disables range tokens."
+        },
+        "lkr.lsp.semanticTokens.autoRangeAtLines": {
+          "type": "number",
+          "default": 800,
+          "minimum": 1,
+          "description": "In auto mode, documents with at least this many lines use range tokens only."
+        },
+        "lkr.lsp.semanticTokens.throttleMs": {
+          "type": "number",
+          "default": 120,
+          "minimum": 0,
+          "description": "Throttle consecutive semantic token requests per document (ms). Set 0 to disable."
+        },
+        "lkr.lsp.inlayHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inlay hints (inline editor hints) from LKR LSP"
+        },
+        "lkr.lsp.inlayHints.throttleMs": {
+          "type": "number",
+          "default": 50,
+          "minimum": 0,
+          "description": "Throttle consecutive inlay hint requests per document (ms). Set 0 to disable."
+        },
+        "lkr.lsp.inlayHints.parameters.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show parameter name hints at call sites"
+        },
+        "lkr.lsp.inlayHints.types.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inferred type hints for declarations (let/define)"
+        },
+        "lkr.lsp.performance.maxConcurrent": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "description": "Max concurrent heavy computations on the server (semantic tokens, inlay hints). Lower to reduce CPU spikes when scrolling."
+        },
+        "lkr.lsp.performance.rangeTokenCacheLimit": {
+          "type": "number",
+          "default": 64,
+          "minimum": 1,
+          "description": "Per-document capacity for semantic tokens range cache (version+range)."
+        },
+        "lkr.lsp.performance.inlayHintCacheLimit": {
+          "type": "number",
+          "default": 64,
+          "minimum": 1,
+          "description": "Per-document capacity for inlay hints cache (version+range+settings)."
+        },
+        "lkr.lsp.performance.inlayScanMarginLines": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "description": "Additional lines to scan above/below the visible range when computing parameter inlay hints (captures multi-line calls)."
+        },
+        "lkr.lsp.performance.enableCaching": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable extension-side caching for semantic tokens (range) and inlay hints keyed by document version and range to reduce redundant requests."
+        },
+        "lkr.lsp.performance.skipStaleResults": {
+          "type": "boolean",
+          "default": true,
+          "description": "Drop results if the document version advanced while the request was in-flight to avoid applying stale tokens/hints."
+        },
+        "lkr.lsp.performance.traceSteps": {
+          "type": "boolean",
+          "default": false,
+          "description": "Print extension-side step durations to the console for performance tracing."
+        },
+        "lkr.lsp.performance.traceThresholdMs": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Only log step durations equal to or above this threshold (ms)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "package:preview": "vsce package --pre-release",
+    "publish": "vsce publish",
+    "publish:preview": "vsce publish --pre-release"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.8",
+    "@types/vscode": "^1.103.0",
+    "typescript": "^5.9.3",
+    "vsce": "^2.15.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

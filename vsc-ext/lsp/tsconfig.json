@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "module": "Node16",
+    "target": "ES2020",
+    "outDir": "out",
+    "lib": [
+      "ES2020"
+    ],
+    "sourceMap": true,
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "moduleResolution": "Node16",
+    "moduleDetection": "auto"
+  },
+  "exclude": [
+    "node_modules",
+    ".vscode-test"
+  ]
+}
+

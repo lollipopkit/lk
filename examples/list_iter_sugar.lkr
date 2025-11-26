@@ -1,0 +1,28 @@
+// Examples for list/iter interop and method sugar
+
+import iter;
+
+// Basic higher-order ops (both styles)
+let xs = [1,2,3,4,5];
+let ys = xs.map(|x| x * 2);                 // method sugar
+let zs = iter.filter(xs, |x| x % 2 == 0);   // module style
+let sum = xs.reduce(0, |acc, x| acc + x);   // method sugar
+
+println("ys={}", ys);                      // [2,4,6,8,10]
+println("zs={}", zs);                      // [2,4]
+println("sum={}", sum);                    // 15
+
+// Iterator-style helpers as list methods
+println("take={}", xs.take(3));             // [1,2,3]
+println("skip={}", xs.skip(3));             // [4,5]
+println("chain={}", xs.take(2).chain([9,9])); // [1,2,9,9]
+println("flatten={}", [[1,2],[3],4].flatten()); // [1,2,3,4]
+println("unique={}", [1,2,1,3,2].unique());     // [1,2,3]
+
+let chunks = xs.chunk(2);
+println("chunks_len={}", chunks.len());          // 3
+
+println("enumerate={}", xs.enumerate());    // [[0,1],[1,2],[2,3],[3,4],[4,5]]
+println("zip={}", [1,2].zip(["a","b","c"])); // [[1,"a"],[2,"b"]]
+
+return nil;

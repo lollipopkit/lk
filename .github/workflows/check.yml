@@ -1,0 +1,26 @@
+name: Rust Check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: ci checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain-file: rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --workspace --all-features
+      # - name: cargo fmt
+      #   run: cargo fmt --all -- --check
+      # - name: cargo clippy
+      #   run: cargo clippy --workspace --all-features -D warnings

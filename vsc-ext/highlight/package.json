@@ -1,0 +1,52 @@
+{
+  "name": "vscode-lkr-highlight",
+  "displayName": "LKR Syntax Highlighting",
+  "description": "TextMate grammar and language configuration for LKR",
+  "version": "0.0.2",
+  "publisher": "lollipopkit",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lollipopkit/lkr.git"
+  },
+  "engines": {
+    "vscode": "^1.103.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "files": [
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "language-configuration.json",
+    "syntaxes/**"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "lkr",
+        "aliases": ["LKR", "lkr"],
+        "extensions": [".lkr"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lkr",
+        "scopeName": "source.lkr",
+        "path": "./syntaxes/lkr.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "package": "vsce package",
+    "package:preview": "vsce package --pre-release",
+    "publish": "vsce publish",
+    "publish:preview": "vsce publish --pre-release"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.103.0",
+    "vsce": "^2.15.0"
+  }
+}

@@ -1,0 +1,3 @@
+fn f(x: Int, {y: Int = x + 1}) { return y; }
+println(f(11));
+return f(10);

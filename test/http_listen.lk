@@ -1,7 +1,0 @@
-import 'test/http_header'
-
-handler := fn(req) => 200, fmt('%s %s\n\n%s\n%s', req.method, req.url, Header:fromTable(req.headers), req.body)
-
-if http.listen(':8080', handler) != nil {
-    error(err)
-}

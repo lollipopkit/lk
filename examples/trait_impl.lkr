@@ -1,0 +1,50 @@
+// Trait/impl + struct 示例
+// 运行：cargo run -p lkr-cli -- examples/trait_impl.lkr
+
+const PI = 3.141592653589793;
+
+// 使用 struct 关键字定义类型
+struct Rect { w: Int, h: Int }
+struct Circle { r: Int }
+
+// 定义 Trait（参考 Rust）
+trait Area {
+    fn area(self) -> Float;
+}
+
+trait Display {
+    fn show(self) -> String;
+}
+
+// 为各类型实现 Trait
+impl Area for Rect {
+    fn area(self) -> Float { return self.w * self.h; }
+}
+
+impl Area for Circle {
+    fn area(self) -> Float { return PI * (self.r * self.r); }
+}
+
+impl Display for Rect {
+    fn show(self) -> String { return "Rect(${self.w}x${self.h})"; }
+}
+
+impl Display for Circle {
+    fn show(self) -> String { return "Circle(r=${self.r})"; }
+}
+
+// 构造并调用方法
+let r = Rect { w: 3, h: 4 };
+let c = Circle { r: 5 };
+
+println("Area(Rect)   = {}", r.area());          // 12
+println("Area(Circle) = {}", c.area());          // ~78.5398
+println("Show(Rect)   = {}", r.show());          // "Rect(3x4)"
+println("Show(Circle) = {}", c.show());          // "Circle(r=5)"
+
+// 自动 Display：print/println 与模板字符串会优先调用 Display.show/display（若存在）
+println("Auto Display(Rect)   = {}", r);        // "Rect(3x4)"
+println("Auto Display(Circle) = {}", c);        // "Circle(r=5)"
+println("Template String -> ${r}");             // "Template String -> Rect(3x4)"
+
+return nil;

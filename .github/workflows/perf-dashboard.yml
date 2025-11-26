@@ -1,0 +1,45 @@
+name: Perf Dashboard
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  perf-bench:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain-file: rust-toolchain.toml
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run scripts bench
+        run: cargo bench -p lkr-core --bench scripts_bench -- --noplot
+
+      - name: Generate dashboard snapshot
+        run: cargo run -p lkr-core --bin perf_dashboard -- --memory-iters 5 --notes "CI run ${{ github.run_id }} on ${{ github.ref }}"
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-dashboard
+          path: docs/perf/dashboard
+
+      - name: Publish perf_dashboard branch
+        if: github.event_name != 'pull_request'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: perf_dashboard
+          publish_dir: docs/perf/dashboard
+          keep_files: true

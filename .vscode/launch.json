@@ -1,27 +1,57 @@
 {
-    // 使用 IntelliSense 了解相关属性。 
-    // 悬停以查看现有属性的描述。
-    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "test",
-            "type": "go",
+            "type": "lldb",
             "request": "launch",
-            "mode": "test",
-            "program": "${workspaceFolder}",
-            "args": [
-                "-test.run",
-            ]
+            "name": "Debug unit tests in library 'lkr-core'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=lkr-core"
+                ],
+                "filter": {
+                    "name": "lkr-core",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
         },
         {
-            "name": "debug",
-            "type": "go",
+            "name": "Run VS Code Extension",
+            "type": "extensionHost",
             "request": "launch",
-            "mode": "debug",
-            "program": ".",
-            "args": ["test/object.lk"]
+            "args": [
+                "--extensionDevelopmentPath=${workspaceFolder}/vsc-ext"
+            ],
+            "outFiles": [
+                "${workspaceFolder}/vsc-ext/out/**/*.js"
+            ],
+            "preLaunchTask": "Build All"
         },
-
+        {
+            "name": "Debug LKR LSP Server",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--package=lkr-lsp"
+                ],
+                "filter": {
+                    "name": "lkr-lsp",
+                    "kind": "bin"
+                }
+            },
+            "program": "${workspaceFolder}/target/debug/lkr-lsp",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
     ]
 }

@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name to release (for example v0.1.3)'
+        required: true
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_TERM_COLOR: always
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            os: linux
+            arch: x86_64
+            archive_ext: tar.gz
+            bin_ext: ''
+          - runner: ubuntu-24.04-arm64
+            target: aarch64-unknown-linux-gnu
+            os: linux
+            arch: aarch64
+            archive_ext: tar.gz
+            bin_ext: ''
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            os: macos
+            arch: x86_64
+            archive_ext: tar.gz
+            bin_ext: ''
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            os: macos
+            arch: aarch64
+            archive_ext: tar.gz
+            bin_ext: ''
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            os: windows
+            arch: x86_64
+            archive_ext: zip
+            bin_ext: '.exe'
+          - runner: windows-latest
+            target: aarch64-pc-windows-msvc
+            os: windows
+            arch: aarch64
+            archive_ext: zip
+            bin_ext: '.exe'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain-file: rust-toolchain.toml
+          target: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}
+      - name: Build binaries
+        run: cargo build --release --target ${{ matrix.target }} -p lkr-cli -p lkr-lsp --all-features
+        shell: bash
+      - name: Package archive (unix)
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_name="lkr-${RELEASE_TAG}-${{ matrix.os }}-${{ matrix.arch }}"
+          staging="artifacts/$archive_name"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/lkr${{ matrix.bin_ext }}" "$staging/"
+          cp "target/${{ matrix.target }}/release/lkr-lsp${{ matrix.bin_ext }}" "$staging/"
+          cp LICENSE "$staging/"
+          tar -C artifacts -czf "${archive_name}.tar.gz" "$archive_name"
+          rm -rf "$staging"
+      - name: Package archive (windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archiveName = "lkr-$env:RELEASE_TAG-${{ matrix.os }}-${{ matrix.arch }}"
+          $staging = Join-Path "artifacts" $archiveName
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\lkr${{ matrix.bin_ext }}" -Destination $staging
+          Copy-Item "target\${{ matrix.target }}\release\lkr-lsp${{ matrix.bin_ext }}" -Destination $staging
+          Copy-Item "LICENSE" -Destination $staging
+          Compress-Archive -Path "$staging\*" -DestinationPath "artifacts\$archiveName.zip"
+          Remove-Item $staging -Recurse -Force
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lkr-${{ env.RELEASE_TAG }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: artifacts/lkr-${{ env.RELEASE_TAG }}-${{ matrix.os }}-${{ matrix.arch }}.${{ matrix.archive_ext }}
+
+  publish:
+    name: publish release
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+      - name: List packaged assets
+        run: ls -R release
+      - name: Publish assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          files: |
+            release/**/*
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

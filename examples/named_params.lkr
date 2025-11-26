@@ -1,0 +1,17 @@
+// Named parameter examples
+
+fn draw_rect(x: Int, y: Int, {w: Int, h: Int? = 100}) -> Int {
+    // pretend to construct a rect and return area
+    // Note: 'if' is a statement, not an expression. Use nullish coalescing here.
+    let height: Int = h ?? 0;
+    return w * height;
+}
+
+fn configure({host: String, timeout_ms: Int? = 1000}) {
+    println("Connecting to {} with timeout {}ms", host, timeout_ms);
+}
+
+let a = draw_rect(10, 20, w: 300, h: 200);
+let b = draw_rect(5, 5, h: 50, w: 60);
+
+configure(host: "example.com");

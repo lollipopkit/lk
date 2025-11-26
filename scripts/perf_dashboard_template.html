@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>LKR Performance Dashboard</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; background:#101418; color:#e5ecf4; }
+        h1 { font-size: 28px; margin-bottom: 8px; }
+        h2 { font-size: 22px; margin-top: 32px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+        th, td { border-bottom: 1px solid rgba(229,236,244,0.15); padding: 8px 12px; text-align: right; }
+        th:first-child, td:first-child { text-align: left; }
+        .variant-tag { font-size: 12px; padding: 2px 6px; border-radius: 999px; }
+        .variant-vm { background: rgba(255,255,255,0.1); color: #6fe7c8; }
+        svg { width: 100%; height: 240px; background: rgba(255,255,255,0.03); border-radius: 8px; margin-top: 12px; }
+        .chart-grid line { stroke: rgba(255,255,255,0.08); stroke-width: 1; }
+        .chart-axis text { fill: rgba(229,236,244,0.64); font-size: 12px; }
+        .chart-line.vm { stroke: #6fe7c8; fill: none; stroke-width: 2; }
+        .metadata { margin-top: 8px; font-size: 14px; color: rgba(229,236,244,0.72); }
+        a { color: #6fe7c8; }
+    </style>
+</head>
+<body>
+    <h1>LKR Performance Dashboard</h1>
+    <div class="metadata">
+        Updated at <span id="generated-at"></span>, keeping last <span id="history-limit"></span> snapshots.
+        Latest run: <span id="latest-run"></span>
+    </div>
+    <section>
+        <h2>Latest Snapshot</h2>
+        <div id="latest-table"></div>
+    </section>
+    <section>
+        <h2>Trend (P95 latency)</h2>
+        <div id="charts"></div>
+    </section>
+    <section>
+        <h2>Region Heap Trend</h2>
+        <div id="heap-charts"></div>
+    </section>
+    <script>
+        const HISTORY_DATA = __DATA_PLACEHOLDER__;
+
+        function formatNumber(value) {
+            if (value >= 1e6) {
+                return (value / 1e6).toFixed(2) + " ms";
+            } else if (value >= 1e3) {
+                return (value / 1e3).toFixed(2) + " µs";
+            }
+            return value.toFixed(2) + " ns";
+        }
+
+        function formatBytes(bytes) {
+            const units = ["B", "KB", "MB", "GB"];
+            let idx = 0;
+            let val = bytes;
+            while (val >= 1024 && idx < units.length - 1) {
+                val /= 1024;
+                idx += 1;
+            }
+            return val.toFixed(2) + " " + units[idx];
+        }
+
+        function renderLatestTable() {
+            if (!HISTORY_DATA.runs.length) return;
+            const table = document.createElement("table");
+            const thead = document.createElement("thead");
+            thead.innerHTML = `
+                <tr>
+                    <th>Scenario</th>
+                    <th>Variant</th>
+                    <th>P50</th>
+                    <th>P95</th>
+                    <th>P99</th>
+                    <th>Mean</th>
+                    <th>Std Dev</th>
+                    <th>Peak Memory</th>
+                    <th>Region Heap</th>
+                </tr>`;
+            table.appendChild(thead);
+            const tbody = document.createElement("tbody");
+            const latest = HISTORY_DATA.runs[0];
+            latest.metrics
+                .sort((a, b) => (a.scenario + a.variant).localeCompare(b.scenario + b.variant))
+                .forEach(metric => {
+                    const row = document.createElement("tr");
+                    const variantClass = "variant-vm";
+                    row.innerHTML = `
+                        <td>${metric.scenario_title}</td>
+                        <td><span class="variant-tag ${variantClass}">${metric.variant}</span></td>
+                        <td>${formatNumber(metric.p50_ns)}</td>
+                        <td>${formatNumber(metric.p95_ns)}</td>
+                        <td>${formatNumber(metric.p99_ns)}</td>
+                        <td>${formatNumber(metric.mean_ns)}</td>
+                        <td>${formatNumber(metric.std_dev_ns)}</td>
+                        <td>${formatBytes(metric.memory_peak_bytes)}</td>
+                        <td>${formatBytes(metric.region_heap_bytes)}</td>`;
+                    tbody.appendChild(row);
+                });
+            table.appendChild(tbody);
+            document.getElementById("latest-table").appendChild(table);
+            document.getElementById("latest-run").textContent = latest.generated_at + (latest.git_rev ? " · " + latest.git_rev : "");
+        }
+
+        function groupHistory() {
+            const grouped = new Map();
+            const runs = [...HISTORY_DATA.runs].reverse(); // oldest -> newest
+            runs.forEach((run, idx) => {
+                run.metrics.forEach(metric => {
+                    const scenarioKey = metric.scenario;
+                    if (!grouped.has(scenarioKey)) {
+                        grouped.set(scenarioKey, {
+                            title: metric.scenario_title,
+                            data: new Map()
+                        });
+                    }
+                    const entry = grouped.get(scenarioKey);
+                    if (!entry.data.has(metric.variant)) {
+                        entry.data.set(metric.variant, []);
+                    }
+                    entry.data.get(metric.variant).push({
+                        idx,
+                        p95: metric.p95_ns,
+                        label: run.generated_at
+                    });
+                });
+            });
+            return grouped;
+        }
+
+        function renderCharts() {
+            const container = document.getElementById("charts");
+            const grouped = groupHistory();
+            grouped.forEach(entry => {
+                const chartWrapper = document.createElement("div");
+                const heading = document.createElement("h3");
+                heading.textContent = entry.title;
+                chartWrapper.appendChild(heading);
+                const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                const width = 780;
+                const height = 220;
+                svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+                const padding = { top: 24, right: 32, bottom: 32, left: 48 };
+
+                const grid = document.createElementNS(svg.namespaceURI, "g");
+                grid.setAttribute("class", "chart-grid");
+                const seriesValues = [];
+                entry.data.forEach(points => points.forEach(p => seriesValues.push(p.p95)));
+                const maxValue = Math.max(...seriesValues, 1);
+                const yTicks = 4;
+                for (let i = 0; i <= yTicks; i++) {
+                    const y = padding.top + (height - padding.top - padding.bottom) * (i / yTicks);
+                    const line = document.createElementNS(svg.namespaceURI, "line");
+                    line.setAttribute("x1", padding.left);
+                    line.setAttribute("x2", width - padding.right);
+                    line.setAttribute("y1", y);
+                    line.setAttribute("y2", y);
+                    grid.appendChild(line);
+                    const tickLabel = document.createElementNS(svg.namespaceURI, "text");
+                    tickLabel.setAttribute("class", "chart-axis");
+                    tickLabel.setAttribute("x", 0);
+                    tickLabel.setAttribute("y", y + 4);
+                    tickLabel.textContent = formatNumber(maxValue * (1 - i / yTicks));
+                    svg.appendChild(tickLabel);
+                }
+                svg.appendChild(grid);
+
+                const runCount = HISTORY_DATA.runs.length;
+                const xScale = (idx) => {
+                    if (runCount <= 1) return padding.left;
+                    const innerWidth = width - padding.left - padding.right;
+                    return padding.left + (innerWidth * idx / (runCount - 1));
+                };
+                const yScale = (value) => {
+                    const innerHeight = height - padding.top - padding.bottom;
+                    return padding.top + innerHeight - (value / maxValue) * innerHeight;
+                };
+
+                entry.data.forEach((points, variant) => {
+                    const pathPoints = points.map(point => `${xScale(point.idx)},${yScale(point.p95)}`).join(" ");
+                    const polyline = document.createElementNS(svg.namespaceURI, "polyline");
+                    polyline.setAttribute("class", `chart-line ${variant}`);
+                    polyline.setAttribute("points", pathPoints);
+                    svg.appendChild(polyline);
+                    points.forEach(point => {
+                        const circle = document.createElementNS(svg.namespaceURI, "circle");
+                        circle.setAttribute("cx", xScale(point.idx));
+                        circle.setAttribute("cy", yScale(point.p95));
+                        circle.setAttribute("r", 3);
+                        circle.setAttribute("fill", variant === "vm" ? "#6fe7c8" : "#f2c744");
+                        circle.setAttribute("title", `${variant} @ ${formatNumber(point.p95)} (${point.label})`);
+                        svg.appendChild(circle);
+                    });
+                });
+
+                chartWrapper.appendChild(svg);
+                container.appendChild(chartWrapper);
+            });
+        }
+
+        function groupHeapHistory() {
+            const grouped = new Map();
+            const runs = [...HISTORY_DATA.runs].reverse();
+            runs.forEach((run, idx) => {
+                run.metrics.forEach(metric => {
+                    if (metric.variant !== "vm") {
+                        return;
+                    }
+                    if (!grouped.has(metric.scenario)) {
+                        grouped.set(metric.scenario, {
+                            title: metric.scenario_title,
+                            points: []
+                        });
+                    }
+                    grouped.get(metric.scenario).points.push({
+                        idx,
+                        bytes: metric.region_heap_bytes,
+                        label: run.generated_at
+                    });
+                });
+            });
+            return grouped;
+        }
+
+        function renderHeapCharts() {
+            const container = document.getElementById("heap-charts");
+            const grouped = groupHeapHistory();
+            grouped.forEach(entry => {
+                const chartWrapper = document.createElement("div");
+                const heading = document.createElement("h3");
+                heading.textContent = entry.title;
+                chartWrapper.appendChild(heading);
+                const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                const width = 780;
+                const height = 220;
+                svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+                const padding = { top: 24, right: 32, bottom: 32, left: 56 };
+
+                const grid = document.createElementNS(svg.namespaceURI, "g");
+                grid.setAttribute("class", "chart-grid");
+                const values = entry.points.map(point => point.bytes);
+                const maxValue = Math.max(...values, 0);
+                const plotMax = maxValue > 0 ? maxValue : 1;
+                const yTicks = 4;
+                for (let i = 0; i <= yTicks; i++) {
+                    const y = padding.top + (height - padding.top - padding.bottom) * (i / yTicks);
+                    const line = document.createElementNS(svg.namespaceURI, "line");
+                    line.setAttribute("x1", padding.left);
+                    line.setAttribute("x2", width - padding.right);
+                    line.setAttribute("y1", y);
+                    line.setAttribute("y2", y);
+                    grid.appendChild(line);
+                    const tickLabel = document.createElementNS(svg.namespaceURI, "text");
+                    tickLabel.setAttribute("class", "chart-axis");
+                    tickLabel.setAttribute("x", 0);
+                    tickLabel.setAttribute("y", y + 4);
+                    tickLabel.textContent = formatBytes(plotMax * (1 - i / yTicks));
+                    svg.appendChild(tickLabel);
+                }
+                svg.appendChild(grid);
+
+                const runCount = HISTORY_DATA.runs.length;
+                const xScale = (idx) => {
+                    if (runCount <= 1) return padding.left;
+                    const innerWidth = width - padding.left - padding.right;
+                    return padding.left + (innerWidth * idx / (runCount - 1));
+                };
+                const yScale = (value) => {
+                    const innerHeight = height - padding.top - padding.bottom;
+                    return padding.top + innerHeight - (value / plotMax) * innerHeight;
+                };
+
+                const pathPoints = entry.points
+                    .map(point => `${xScale(point.idx)},${yScale(point.bytes)}`)
+                    .join(" ");
+                const polyline = document.createElementNS(svg.namespaceURI, "polyline");
+                polyline.setAttribute("class", "chart-line vm");
+                polyline.setAttribute("points", pathPoints);
+                svg.appendChild(polyline);
+
+                entry.points.forEach(point => {
+                    const circle = document.createElementNS(svg.namespaceURI, "circle");
+                    circle.setAttribute("cx", xScale(point.idx));
+                    circle.setAttribute("cy", yScale(point.bytes));
+                    circle.setAttribute("r", 3);
+                    circle.setAttribute("fill", "#6fe7c8");
+                    circle.setAttribute("title", `${formatBytes(point.bytes)} · ${point.label}`);
+                    svg.appendChild(circle);
+                });
+
+                chartWrapper.appendChild(svg);
+                container.appendChild(chartWrapper);
+            });
+        }
+
+        document.getElementById("generated-at").textContent = HISTORY_DATA.generated_at;
+        document.getElementById("history-limit").textContent = HISTORY_DATA.history_limit;
+        renderLatestTable();
+        renderCharts();
+        renderHeapCharts();
+    </script>
+</body>
+</html>

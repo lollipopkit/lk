@@ -1,0 +1,43 @@
+// LKR 并发功能演示
+// 展示 spawn, chan, send, recv, select 等并发原语
+
+// 1. 基本的任务创建
+println("\n1. Basic Task Creation:");
+let simple_task = spawn(|| 42);
+println("Task created with ID: {}", simple_task);
+
+// 2. 通道操作
+println("\n2. Channel Operations:");
+let ch = chan(3);
+println("Created channel with capacity 3");
+
+send(ch, 10);
+send(ch, 20); 
+send(ch, 30);
+println("Sent values: 10, 20, 30");
+
+let msg1 = recv(ch);
+let msg2 = recv(ch);
+println("Received: {} and {}", msg1, msg2);
+
+// 3. Select语句
+println("\n3. Select Statement:");
+let ch1 = chan(1);
+let ch2 = chan(1);
+
+send(ch1, "Hello from ch1");
+
+let select_result = select {
+    case msg <= recv(ch1) => msg;
+    case _ <= send(ch2, "Hello to ch2") => "sent to ch2";
+    default => "no operation ready";
+};
+
+println("Select chose: {}", select_result);
+
+// 4. 简化的并发测试
+println("\n4. Simple Concurrency Test:");
+let simple_spawn = spawn(|| 100);
+println("Created simple task: {}", simple_spawn);
+
+println("\nDemo completed successfully!");

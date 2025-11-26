@@ -1,6 +1,8 @@
-lk
-releases
-*/*.lkc
-*.lkc
-*/*.ast.json
-test/test.lk
+target
+
+flamegraph.svg
+
+*.lkrb
+*.ll
+*.o
+*.elf

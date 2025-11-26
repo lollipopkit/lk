@@ -1,0 +1,11 @@
+import "examples/fib";
+
+const iters = 50000;
+const n = 30;
+
+let acc = 0;
+for _ in 0..iters {
+    acc = fib.iterative(n);
+}
+
+println("fib(${n}) = ${acc}, iters=${iters}");

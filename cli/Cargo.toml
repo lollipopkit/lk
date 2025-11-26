@@ -1,0 +1,37 @@
+[package]
+name = "lkr-cli"
+description = "CLI for LKR (Query Check Language)"
+version = "0.1.3"
+edition = "2024"
+authors = ["lollipopkit <a@lpkt.cn>"]
+license = "Apache-2.0"
+default-run = "lkr"
+
+[[bin]]
+name = "lkr"
+path = "src/main.rs"
+
+[package.metadata.cargo-bin]
+default-run = "lkr"
+
+[features]
+default = ["llvm"]
+llvm = ["lkr-core/llvm", "dep:llvm-tools"]
+
+[dependencies]
+lkr-core = { path = "../core", default-features = false }
+lkr-stdlib = { path = "../stdlib" }
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+rustyline = "17"
+tracing-subscriber = { workspace = true }
+llvm-tools = { workspace = true, optional = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = { workspace = true }

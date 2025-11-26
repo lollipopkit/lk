@@ -1,0 +1,7 @@
+// Demonstrates static numeric hierarchy and auto promotion.
+let answer = 40;
+let precise = answer + 2.5;
+let maybe_float = precise / 2;
+
+// Expect 21.25 after promotion.
+return maybe_float;
