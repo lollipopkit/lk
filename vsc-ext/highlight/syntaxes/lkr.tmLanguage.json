@@ -17,11 +17,27 @@
       "patterns": [
         {
           "name": "keyword.control.lkr",
-          "match": "\\b(if|else|while|let|return|fn|go|select|case|default|break|continue|import|from|as|in)\\b"
+          "match": "\\b(if|else|while|for|let|const|return|fn|match|select|case|default|break|continue|import|from|as|in)\\b"
         },
         {
-          "name": "storage.type.lkr",
+          "name": "keyword.declaration.lkr",
+          "match": "\\b(struct|type|trait|impl)\\b"
+        },
+        {
+          "name": "constant.language.lkr",
           "match": "\\b(true|false|nil)\\b"
+        },
+        {
+          "name": "keyword.other.lkr",
+          "match": "\\b(spawn|chan|send|recv)\\b"
+        },
+        {
+          "name": "support.type.primitive.lkr",
+          "match": "\\b(Int|Float|String|Bool|Nil|Any|List|Map|Task|Channel)\\b"
+        },
+        {
+          "name": "punctuation.separator.arrow.lkr",
+          "match": "->|=>"
         }
       ]
     },
@@ -41,7 +57,7 @@
         },
         {
           "name": "keyword.operator.assignment.lkr",
-          "match": "="
+          "match": "=|:=|\\+=|-\\=|\\*=|/=|%="
         },
         {
           "name": "keyword.operator.unary.lkr",
@@ -74,7 +90,21 @@
           "patterns": [
             {
               "name": "constant.character.escape.lkr",
-              "match": "\\\\."
+              "match": "\\\\.[\"]"
+            },
+            {
+              "name": "meta.interpolation.lkr",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.begin.lkr" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.end.lkr" }
+              },
+              "patterns": [
+                { "include": "$self" }
+              ]
             }
           ]
         },
@@ -85,7 +115,21 @@
           "patterns": [
             {
               "name": "constant.character.escape.lkr",
-              "match": "\\\\."
+              "match": "\\\\.[']"
+            },
+            {
+              "name": "meta.interpolation.lkr",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.begin.lkr" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.end.lkr" }
+              },
+              "patterns": [
+                { "include": "$self" }
+              ]
             }
           ]
         },
@@ -113,6 +157,17 @@
               "match": "\\\\[`\\$\\\\nrtbf]"
             }
           ]
+        },
+        {
+          "name": "string.raw.lkr",
+          "begin": "(\\|^\\"|r\"|r#\"|r##\"|r###\"|r####\"|r#####\"|r######\")",
+          "end": "\"(#*)",
+          "beginCaptures": {
+            "1": { "name": "punctuation.definition.string.begin.lkr" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.lkr" }
+          }
         }
       ]
     },

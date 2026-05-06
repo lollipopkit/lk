@@ -3,6 +3,7 @@ mod const_eval;
 mod driver;
 mod expr;
 mod free_vars;
+mod peephole;
 mod ssa;
 mod stmt;
 

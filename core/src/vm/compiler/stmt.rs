@@ -24,6 +24,69 @@ fn detect_mutating_receiver(expr: &Expr) -> Option<&str> {
 }
 
 impl FunctionBuilder {
+    fn try_emit_simple_self_assign(&mut self, name: &str, value: &Expr) -> bool {
+        let Some(dst) = self.lookup(name) else {
+            return false;
+        };
+        let Expr::Bin(left, op, right) = value else {
+            return false;
+        };
+        let Expr::Var(left_name) = left.as_ref() else {
+            return false;
+        };
+        if left_name != name {
+            return false;
+        }
+
+        match (op, right.as_ref()) {
+            (BinOp::Add, Expr::Val(Val::Int(imm))) if (-128..=127).contains(imm) => {
+                self.emit(Op::AddIntImm(dst, dst, *imm as i16));
+                true
+            }
+            (BinOp::Sub, Expr::Val(Val::Int(imm)))
+                if imm.checked_neg().is_some_and(|neg| (-128..=127).contains(&neg)) =>
+            {
+                self.emit(Op::AddIntImm(dst, dst, (-*imm) as i16));
+                true
+            }
+            (BinOp::Add, Expr::Var(rhs_name)) => {
+                if let Some(rhs) = self.lookup(rhs_name) {
+                    self.emit(Op::AddInt(dst, dst, rhs));
+                    true
+                } else {
+                    false
+                }
+            }
+            (BinOp::Sub, Expr::Var(rhs_name)) => {
+                if let Some(rhs) = self.lookup(rhs_name) {
+                    self.emit(Op::SubInt(dst, dst, rhs));
+                    true
+                } else {
+                    false
+                }
+            }
+            // Compound self-assign: x = x OP <complex_expr>
+            // Evaluate RHS into a temp, then emit in-place binary op.
+            // Only add/sub/mul have dedicated Int opcodes; div/mod fall back.
+            (BinOp::Add, _) => {
+                let rhs_reg = self.expr(right);
+                self.emit(Op::AddInt(dst, dst, rhs_reg));
+                true
+            }
+            (BinOp::Sub, _) => {
+                let rhs_reg = self.expr(right);
+                self.emit(Op::SubInt(dst, dst, rhs_reg));
+                true
+            }
+            (BinOp::Mul, _) => {
+                let rhs_reg = self.expr(right);
+                self.emit(Op::MulInt(dst, dst, rhs_reg));
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn declare_for_pattern(&mut self, pattern: &ForPattern) {
         match pattern {
             ForPattern::Variable(name) => {
@@ -450,10 +513,24 @@ impl FunctionBuilder {
                         } else {
                             self.expr(value)
                         };
-                        let idx = self.get_or_define(name);
-                        self.store_named(name, idx, rv);
-                        let kname = self.k(Val::Str(name.clone().into()));
-                        self.emit(Op::DefineGlobal(kname, idx));
+                        // For simple (non-call) expressions, map the variable directly
+                        // to the expression result register, eliminating the StoreLocal copy.
+                        // This is unsafe for function calls because the result register
+                        // may be clobbered by later call frames.
+                        if !Self::expr_contains_call(value) {
+                            self.define_var_as(name, rv);
+                            if self.loop_depth == 0 && self.var_scope_depth() == 0 {
+                                let kname = self.k(Val::Str(name.clone().into()));
+                                self.emit(Op::DefineGlobal(kname, rv));
+                            }
+                        } else {
+                            let idx = self.get_or_define(name);
+                            self.store_named(name, idx, rv);
+                            if self.loop_depth == 0 && self.var_scope_depth() == 0 {
+                                let kname = self.k(Val::Str(name.clone().into()));
+                                self.emit(Op::DefineGlobal(kname, idx));
+                            }
+                        }
                         return;
                     }
                 }
@@ -493,8 +570,10 @@ impl FunctionBuilder {
 
                 if let Pattern::Variable(name) = pattern {
                     let idx = self.get_or_define(name);
-                    let kname = self.k(Val::Str(name.clone().into()));
-                    self.emit(Op::DefineGlobal(kname, idx));
+                    if self.loop_depth == 0 && self.var_scope_depth() == 0 {
+                        let kname = self.k(Val::Str(name.clone().into()));
+                        self.emit(Op::DefineGlobal(kname, idx));
+                    }
                 }
             }
             Stmt::Assign { name, value, .. } => {
@@ -504,6 +583,22 @@ impl FunctionBuilder {
                         let _ = self.const_env.assign(name, val.clone());
                         if self.const_bindings.contains_key(name) {
                             self.const_bindings.insert(name.clone(), val);
+                        }
+                    }
+                }
+                if !is_const_target && self.try_emit_simple_self_assign(name, value) {
+                    return;
+                }
+                // Quick path: `a = b` where b is a simple local variable.
+                // Emit a single StoreLocal(a_reg, b_reg) or Move(a_reg, b_reg)
+                // instead of LoadLocal(tmp, b_reg) + StoreLocal(a_reg, tmp).
+                if !is_const_target {
+                    if let Expr::Var(src_name) = value.as_ref() {
+                        if let Some(idx) = self.lookup(name) {
+                            if let Some(src_idx) = self.lookup(src_name) {
+                                self.emit(Op::StoreLocal(idx, src_idx));
+                                return;
+                            }
                         }
                     }
                 }

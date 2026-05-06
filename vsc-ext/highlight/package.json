@@ -20,7 +20,8 @@
     "README.md",
     "LICENSE",
     "language-configuration.json",
-    "syntaxes/**"
+    "syntaxes/**",
+    "snippets/**"
   ],
   "contributes": {
     "languages": [
@@ -36,6 +37,12 @@
         "language": "lkr",
         "scopeName": "source.lkr",
         "path": "./syntaxes/lkr.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "lkr",
+        "path": "./snippets/lkr.code-snippets.json"
       }
     ]
   },

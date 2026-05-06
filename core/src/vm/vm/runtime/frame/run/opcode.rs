@@ -15,7 +15,7 @@ use crate::vm::vm::caches::{AccessIc, CallIc, ClosureFastCache, ForRangeState, G
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan, RegisterWindowRef};
 use crate::vm::vm::guards::VmCurrentGuard;
 
-use super::helpers::{assign_reg, fetch_for_range_state, frame_return_common, handle_return_common};
+use super::helpers::{assign_reg, frame_return_common, handle_return_common};
 use super::invoke::{invoke_rust_function, invoke_rust_function_named};
 use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, int_binop, int_binop_imm, rk_read};
 use super::plan::build_named_call_plan;
@@ -873,30 +873,26 @@ pub(super) fn run_opcode_code(
             }
             Op::ForRangeLoop { idx, ofs, .. } => {
                 let idx_reg = *idx as usize;
-                let state_entry = match fetch_for_range_state(for_range_ic, pc) {
-                    Ok(state) => state,
-                    Err(err) => {
-                        return frame_return_common(frame_raw, pc, Err(err)).map(Some);
+                // Safety: for_range_ic is pre-sized to f.code.len() in the prologue.
+                let slot = unsafe { for_range_ic.get_unchecked_mut(pc) };
+                if let Some(state) = slot {
+                    if state.should_continue() {
+                        assign_reg(frame_raw, regs, idx_reg, Val::Int(state.current));
+                        state.current += state.step; // pre-increment for next iteration
+                        pc += 1;
+                    } else {
+                        *slot = None;
+                        pc = ((pc as isize) + (*ofs as isize)) as usize;
                     }
-                };
-
-                if state_entry.should_continue() {
-                    assign_reg(frame_raw, regs, idx_reg, Val::Int(state_entry.current));
-                    pc += 1;
                 } else {
-                    for_range_ic[pc] = None;
-                    pc = ((pc as isize) + (*ofs as isize)) as usize;
+                    return frame_return_common(frame_raw, pc,
+                        Err(anyhow!("For-range state missing at pc {}", pc))).map(Some);
                 }
             }
             Op::ForRangeStep { back_ofs, .. } => {
                 let guard_pc = ((pc as isize) + (*back_ofs as isize)) as usize;
-                let state_entry = match fetch_for_range_state(for_range_ic, guard_pc) {
-                    Ok(state) => state,
-                    Err(err) => {
-                        return frame_return_common(frame_raw, pc, Err(err)).map(Some);
-                    }
-                };
-                state_entry.current += state_entry.step;
+                // Safety: for_range_ic is pre-sized, guard_pc is a valid code position.
+                // ForRangeLoop already pre-increments state.current, so ForRangeStep only jumps.
                 pc = guard_pc;
             }
             Op::MakeClosure { dst, proto } => {
@@ -985,6 +981,48 @@ pub(super) fn run_opcode_code(
             Op::JmpFalse(r, ofs) => {
                 let cond_falsey = matches!(regs[*r as usize], Val::Nil | Val::Bool(false));
                 if cond_falsey {
+                    pc = ((pc as isize) + (*ofs as isize)) as usize;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::CmpLtImmJmp { r, imm, ofs } => {
+                // Fused CmpLtImm + JmpFalse: if r < imm, fall through; else jump.
+                let skip = match &regs[*r as usize] {
+                    Val::Int(x) => !(*x < (*imm as i64)),
+                    _ => true, // non-integers always skip the loop
+                };
+                if skip {
+                    pc = ((pc as isize) + (*ofs as isize)) as usize;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::JmpNilOrFalseJmp { r, ofs } => {
+                // Fused: if r is nil or false, jump by ofs, else fall through.
+                let is_falsey = matches!(regs[*r as usize], Val::Nil | Val::Bool(false));
+                if is_falsey {
+                    pc = ((pc as isize) + (*ofs as isize)) as usize;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::AddIntImmJmp { r, imm, ofs } => {
+                // Fused: r += imm, then jump by ofs. Common loop tail.
+                if let Val::Int(x) = regs[*r as usize] {
+                    // Check for overflow and wrap to avoid panics
+                    let result = x.wrapping_add(*imm as i64);
+                    regs[*r as usize] = Val::Int(result);
+                }
+                pc = ((pc as isize) + (*ofs as isize)) as usize;
+            }
+            Op::CmpLeImmJmp { r, imm, ofs } => {
+                // Fused CmpLeImm + JmpFalse: if r <= imm, fall through; else jump.
+                let skip = match &regs[*r as usize] {
+                    Val::Int(x) => !(*x <= (*imm as i64)),
+                    _ => true,
+                };
+                if skip {
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
                 } else {
                     pc += 1;

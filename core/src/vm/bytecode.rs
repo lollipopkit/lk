@@ -238,6 +238,29 @@ pub enum Op {
     },
     Jmp(i16 /*ofs*/),
     JmpFalse(u16 /*r*/, i16 /*ofs*/),
+    // Fused: compare r < imm, if false jump by ofs. Saves one dispatch for while loops.
+    CmpLtImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
+    },
+    // Fused: if r is nil or false, jump by ofs. Saves ToBool + JmpFalse.
+    JmpNilOrFalseJmp {
+        r: u16,
+        ofs: i16,
+    },
+    // Fused: r += imm, then jump by ofs. Common loop tail pattern.
+    AddIntImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
+    },
+    // Fused: compare src <= imm, if false jump by ofs. Like CmpLtImmJmp but for <=.
+    CmpLeImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
+    },
     Call {
         f: u16,
         base: u16,
@@ -363,6 +386,10 @@ impl fmt::Debug for Op {
             Op::MakeClosure { dst, proto } => write!(f, "MakeClosure r{}, p{}", dst, proto),
             Op::Jmp(ofs) => write!(f, "Jmp {}", ofs),
             Op::JmpFalse(r, ofs) => write!(f, "JmpFalse r{}, {}", r, ofs),
+            Op::CmpLtImmJmp { r, imm, ofs } => write!(f, "CmpLtImmJmp r{}, {}, {}", r, imm, ofs),
+            Op::JmpNilOrFalseJmp { r, ofs } => write!(f, "JmpNilOrFalseJmp r{}, {}", r, ofs),
+            Op::AddIntImmJmp { r, imm, ofs } => write!(f, "AddIntImmJmp r{}, {}, {}", r, imm, ofs),
+            Op::CmpLeImmJmp { r, imm, ofs } => write!(f, "CmpLeImmJmp r{}, {}, {}", r, imm, ofs),
             Op::Call {
                 f: rf,
                 base,

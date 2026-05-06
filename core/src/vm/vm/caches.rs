@@ -229,6 +229,13 @@ pub(super) enum PackedHotKind {
         name_k: u16,
         src: u16,
     },
+    ForRangePrep {
+        idx: u16,
+        limit: u16,
+        step: u16,
+        inclusive: bool,
+        explicit: bool,
+    },
     ForRangeLoop {
         idx: u16,
         ofs: i16,
@@ -239,6 +246,10 @@ pub(super) enum PackedHotKind {
     ToStr {
         dst: u16,
         src: u16,
+    },
+    MakeClosure {
+        dst: u16,
+        proto: u16,
     },
     Arith {
         op: PackedArithOp,
@@ -262,6 +273,17 @@ pub(super) enum PackedHotKind {
         dst: u16,
         a: u16,
         b: u16,
+    },
+    Jmp {
+        ofs: i16,
+    },
+    JmpFalse {
+        r: u16,
+        ofs: i16,
+    },
+    Ret {
+        base: u16,
+        retc: u8,
     },
 }
 

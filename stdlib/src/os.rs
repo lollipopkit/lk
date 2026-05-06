@@ -169,6 +169,9 @@ impl OsModule {
         functions.insert("os".to_string(), Val::RustFunction(Self::os));
         functions.insert("exit".to_string(), Val::RustFunction(Self::exit));
         functions.insert("exec".to_string(), Val::RustFunction(Self::exec));
+        functions.insert("clock".to_string(), Val::RustFunction(Self::clock));
+        functions.insert("time".to_string(), Val::RustFunction(Self::time));
+        functions.insert("epoch".to_string(), Val::RustFunction(Self::epoch));
 
         // Add env object
         functions.insert("env".to_string(), EnvObject::create());
@@ -177,6 +180,46 @@ impl OsModule {
         functions.insert("dir".to_string(), DirObject::create());
 
         Self { functions }
+    }
+
+    /// Get CPU time in seconds (like Lua's os.clock())
+    fn clock(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        // Use a simple timing mechanism. For benchmark purposes,
+        // we return wall-clock elapsed since first call.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::atomic::AtomicBool;
+        static START: AtomicU64 = AtomicU64::new(0);
+        static INIT: AtomicBool = AtomicBool::new(false);
+        if !INIT.swap(true, Ordering::SeqCst) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            START.store(now, Ordering::SeqCst);
+        }
+        let start = START.load(Ordering::SeqCst);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let elapsed_secs = (now.wrapping_sub(start) as f64) / 1_000_000_000.0;
+        Ok(Val::Float(elapsed_secs))
+    }
+
+    /// Get current time in seconds since epoch
+    fn time(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        Ok(Val::Int(elapsed.as_secs() as i64))
+    }
+
+    /// Get current time in milliseconds since epoch
+    fn epoch(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        Ok(Val::Int(elapsed.as_millis() as i64))
     }
 
     /// Get system hostname

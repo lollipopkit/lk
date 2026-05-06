@@ -474,6 +474,12 @@ pub struct StreamValue {
 }
 
 #[derive(Debug, Clone)]
+pub struct StreamCursorValue {
+    pub id: u64,
+    pub stream_id: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct ObjectValue {
     pub type_name: Arc<str>,
     pub fields: Arc<HashMap<String, Val>>,
@@ -508,11 +514,7 @@ pub enum Val {
     /// Mutation guard - encapsulates in-place collection mutation
     MutationGuard(Arc<MutationGuardValue>),
     /// Stream cursor - a subscribed iterator with independent progress
-    StreamCursor {
-        id: u64,
-        /// Associated stream id for diagnostics (not strictly required for equality)
-        stream_id: u64,
-    },
+    StreamCursor(Arc<StreamCursorValue>),
     /// Runtime object with named type and fields
     Object(Arc<ObjectValue>),
     #[default]
@@ -668,7 +670,7 @@ impl Val {
             Val::Stream(_) => "Stream",
             Val::Iterator(_) => "Iterator",
             Val::MutationGuard(guard) => guard.guard_type(),
-            Val::StreamCursor { .. } => "StreamCursor",
+            Val::StreamCursor(_) => "StreamCursor",
             Val::Object(_) => "Object",
             Val::Nil => "Nil",
         }
@@ -1148,15 +1150,9 @@ impl PartialEq for Val {
             (Val::Iterator(a), Val::Iterator(b)) => Arc::ptr_eq(a, b),
             (Val::MutationGuard(a), Val::MutationGuard(b)) => Arc::ptr_eq(a, b),
             (
-                Val::StreamCursor {
-                    id: a_id,
-                    stream_id: a_sid,
-                },
-                Val::StreamCursor {
-                    id: b_id,
-                    stream_id: b_sid,
-                },
-            ) => a_id == b_id && a_sid == b_sid,
+                Val::StreamCursor(a),
+                Val::StreamCursor(b),
+            ) => a.id == b.id && a.stream_id == b.stream_id,
             (Val::Object(a), Val::Object(b)) => a.type_name == b.type_name && a.fields == b.fields,
             (Val::Nil, Val::Nil) => true,
             _ => false,
@@ -1214,10 +1210,10 @@ impl Serialize for Val {
                 map.serialize_entry("inner_type", &format!("{:?}", stream.inner_type))?;
                 map.end()
             }
-            Val::StreamCursor { stream_id, .. } => {
+            Val::StreamCursor(cur) => {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("type", "stream_cursor")?;
-                map.serialize_entry("stream_id", stream_id)?;
+                map.serialize_entry("stream_id", &cur.stream_id)?;
                 map.end()
             }
             Val::Object(object) => {
@@ -1281,8 +1277,8 @@ impl core::fmt::Display for Val {
                 }
             }
             Val::MutationGuard(guard) => write!(f, "<{}>", guard.guard_type()),
-            Val::StreamCursor { id, stream_id } => {
-                write!(f, "StreamCursor(id={}, stream={})", id, stream_id)
+            Val::StreamCursor(cur) => {
+                write!(f, "StreamCursor(id={}, stream={})", cur.id, cur.stream_id)
             }
             Val::Object(object) => {
                 write!(f, "Object(type={}, fields={:?})", object.type_name, object.fields)
@@ -1312,7 +1308,7 @@ impl Val {
             },
             Val::Iterator(_) => Type::Named("Iterator".to_string()),
             Val::MutationGuard(guard) => Type::Named(guard.guard_type().to_string()),
-            Val::StreamCursor { .. } => Type::Named("StreamCursor".to_string()),
+            Val::StreamCursor(_) => Type::Named("StreamCursor".to_string()),
             Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => Type::Function {
                 params: vec![],
                 named_params: Vec::new(),

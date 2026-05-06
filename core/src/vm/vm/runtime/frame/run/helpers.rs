@@ -50,27 +50,17 @@ pub(super) fn handle_return_common(
 }
 
 #[inline(always)]
-pub(super) fn assign_reg(frame_raw: *mut FrameState<'_>, regs: &mut Vec<Val>, idx: usize, value: Val) {
-    unsafe {
-        (*frame_raw).record_reg_write(idx);
-    }
+pub(super) fn assign_reg(_frame_raw: *mut FrameState<'_>, regs: &mut Vec<Val>, idx: usize, value: Val) {
     regs[idx] = value;
 }
 
 #[inline(always)]
-pub(super) fn assign_reg_slice(frame_raw: *mut FrameState<'_>, regs: &mut [Val], idx: usize, value: Val) {
-    unsafe {
-        (*frame_raw).record_reg_write(idx);
-    }
+pub(super) fn assign_reg_slice(_frame_raw: *mut FrameState<'_>, regs: &mut [Val], idx: usize, value: Val) {
     regs[idx] = value;
 }
 
 #[inline(always)]
-pub(super) fn mark_reg_written(frame_raw: *mut FrameState<'_>, idx: usize) {
-    unsafe {
-        (*frame_raw).record_reg_write(idx);
-    }
-}
+pub(super) fn mark_reg_written(_frame_raw: *mut FrameState<'_>, _idx: usize) {}
 
 #[inline]
 pub(super) fn fetch_for_range_state<'a>(

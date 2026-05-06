@@ -842,7 +842,7 @@ impl Expr {
                                     Val::Object(_) => format!("{:?}", val),
                                     Val::Task(_) => format!("{:?}", val),
                                     Val::Channel(_) => format!("{:?}", val),
-                                    Val::Stream(_) | Val::StreamCursor { .. } => format!("{:?}", val),
+                                    Val::Stream(_) | Val::StreamCursor(_) => format!("{:?}", val),
                                     Val::Iterator(_) => "[Iterator]".to_string(),
                                     Val::MutationGuard(_) => "[MutationGuard]".to_string(),
                                     Val::Closure(_) => "[Closure]".to_string(),

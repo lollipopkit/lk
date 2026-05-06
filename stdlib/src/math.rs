@@ -40,8 +40,19 @@ impl MathModule {
         functions.insert("min".to_string(), Val::RustFunction(Self::min));
         functions.insert("max".to_string(), Val::RustFunction(Self::max));
         functions.insert("clamp".to_string(), Val::RustFunctionNamed(Self::clamp));
+
+        // Random number generation
+        functions.insert("random".to_string(), Val::RustFunction(Self::random));
+
+        // Constants
         functions.insert("pi".to_string(), Val::Float(std::f64::consts::PI));
         functions.insert("e".to_string(), Val::Float(std::f64::consts::E));
+        functions.insert("inf".to_string(), Val::Float(f64::INFINITY));
+        functions.insert("nan".to_string(), Val::Float(f64::NAN));
+        functions.insert("max_int".to_string(), Val::Int(i64::MAX));
+        functions.insert("min_int".to_string(), Val::Int(i64::MIN));
+        functions.insert("max_float".to_string(), Val::Float(f64::MAX));
+        functions.insert("epsilon".to_string(), Val::Float(f64::EPSILON));
 
         Self { functions }
     }
@@ -109,6 +120,36 @@ impl MathModule {
 
         let clamped = value.clamp(min, max);
         Ok(Val::Int(clamped))
+    }
+
+    /// Random number generation (0.0 to 1.0)
+    fn random(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        if !args.is_empty() {
+            return Err(anyhow::anyhow!("random() takes 0 arguments; call with no args for [0,1), 1 arg for [0,n), 2 args for [a,b)"));
+        }
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::atomic::AtomicU32;
+        // Simple xorshift64 PRNG seeded from a global counter + thread id
+        static SEED: AtomicU64 = AtomicU64::new(0x12345678_9ABCDEF0);
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let mut seed = SEED.load(Ordering::Relaxed);
+        if seed == 0 {
+            seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            if seed == 0 { seed = 1; }
+        }
+        // xorshift64
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        SEED.store(seed, Ordering::Relaxed);
+        // Mix in a counter for extra entropy
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        seed = seed.wrapping_add(counter as u64);
+        let result = (seed >> 11) as f64 / (1u64 << 53) as f64; // [0, 1)
+        Ok(Val::Float(result))
     }
 
     /// Absolute value

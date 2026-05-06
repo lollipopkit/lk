@@ -85,6 +85,11 @@ impl Vm {
                 } else {
                     regs.resize(needed, Val::Nil);
                 }
+                let mut i = 0;
+                while i < needed {
+                    regs[i] = Val::Nil;
+                    i += 1;
+                }
             }
 
             let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
@@ -125,7 +130,6 @@ impl Vm {
                 },
                 self_ptr,
             );
-            let _ = frame.clear_written_regs();
             let exec_result = exec_raw;
             if pushed_frame {
                 match exec_result {
@@ -230,6 +234,11 @@ impl Vm {
         } else {
             regs.resize(reg_count, Val::Nil);
         }
+        let mut i = 0;
+        while i < reg_count {
+            regs[i] = Val::Nil;
+            i += 1;
+        }
 
         self.regs = regs;
 
@@ -285,8 +294,6 @@ impl Vm {
             },
             self_ptr,
         );
-
-        let _ = callee_state.clear_written_regs();
 
         let exec_result = match exec_raw {
             Ok(val) => Ok(val),
@@ -399,6 +406,11 @@ impl Vm {
         } else {
             vm.regs.resize(reg_count, Val::Nil);
         }
+        let mut i = 0;
+        while i < reg_count {
+            vm.regs[i] = Val::Nil;
+            i += 1;
+        }
         let region_plan = fun.analysis.as_ref().map(|analysis| analysis.region_plan.clone());
         let mut call_frame = CallFrame::new(fun, reg_base, reg_count, captures, capture_specs, region_plan);
         let region_alloc_ptr: *const RegionAllocator = &vm.region_alloc;
@@ -438,7 +450,6 @@ impl Vm {
             },
             self_ptr,
         );
-        let _ = callee_state.clear_written_regs();
         let exec_result = exec_raw;
         drop(callee_state);
         if pushed_frame {

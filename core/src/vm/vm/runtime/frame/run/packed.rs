@@ -171,6 +171,24 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
                 let (name_k, src, _) = decode_abc(word, reg_ext);
                 PackedHotKind::DefineGlobal { name_k, src }
             }
+            Tag::ForRangePrep => {
+                let (idx, limit, step) = decode_abc(word, reg_ext);
+                let ext_word = *code32.get(next_pc)?;
+                if bc32::tag_of(ext_word) != bc32::TAG_EXT {
+                    return None;
+                }
+                let flags = ((ext_word >> 16) & 0xFF) as u8;
+                let inclusive = (flags & 1) != 0;
+                let explicit = (flags & 2) != 0;
+                next_pc += 1;
+                PackedHotKind::ForRangePrep {
+                    idx,
+                    limit,
+                    step,
+                    inclusive,
+                    explicit,
+                }
+            }
             Tag::ForRangeLoop => {
                 let (idx, _, _) = decode_abc(word, reg_ext);
                 let ext_word = *code32.get(next_pc)?;
@@ -193,6 +211,10 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
             Tag::ToStr => {
                 let (dst, src, _) = decode_abc(word, reg_ext);
                 PackedHotKind::ToStr { dst, src }
+            }
+            Tag::MakeClosure => {
+                let (dst, proto, _) = decode_abc(word, reg_ext);
+                PackedHotKind::MakeClosure { dst, proto }
             }
             Tag::Add => {
                 let (dst, a, b) = decode_rk_pair(word, reg_ext, flags);
@@ -297,6 +319,22 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
                     imm,
                 }
             }
+            Tag::Jmp => {
+                let ofs = (((word & 0x00FF_FFFF) as i32) << 8 >> 8) as i16;
+                PackedHotKind::Jmp { ofs }
+            }
+            Tag::JmpFalse => {
+                let (r, hi, lo) = decode_abc(word, reg_ext);
+                let ofs = ((hi << 8) | lo) as i16;
+                PackedHotKind::JmpFalse { r, ofs }
+            }
+            Tag::Ret => {
+                let (base, retc, _) = decode_abc(word, reg_ext);
+                PackedHotKind::Ret {
+                    base,
+                    retc: retc as u8,
+                }
+            }
             Tag::Eq => {
                 let (dst, a, b) = decode_rk_pair(word, reg_ext, flags);
                 PackedHotKind::Cmp {
@@ -359,6 +397,75 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
     }
 }
 
+fn make_closure_value(
+    f: &Function,
+    proto: u16,
+    ctx: &mut VmContext,
+    regs: &[Val],
+    frame_base: usize,
+) -> Result<Val> {
+    let p = f
+        .protos
+        .get(proto as usize)
+        .ok_or_else(|| anyhow!("closure proto out of range"))?;
+    let captured_env = Arc::new(ctx.snapshot());
+    let captures = if p.captures.is_empty() {
+        ClosureCapture::empty()
+    } else {
+        let mut names: Vec<String> = Vec::with_capacity(p.captures.len());
+        let mut values: Vec<Val> = Vec::with_capacity(p.captures.len());
+        for spec in &p.captures {
+            match spec {
+                CaptureSpec::Register { name, src } => {
+                    let idx = frame_base + (*src as usize);
+                    let val = regs.get(idx).cloned().unwrap_or(Val::Nil);
+                    names.push(name.clone());
+                    values.push(val);
+                }
+                CaptureSpec::Const { name, kidx } => {
+                    let val = f.consts.get(*kidx as usize).cloned().unwrap_or(Val::Nil);
+                    names.push(name.clone());
+                    values.push(val);
+                }
+                CaptureSpec::Global { name } => {
+                    let val = ctx.get(name.as_str()).cloned().unwrap_or(Val::Nil);
+                    names.push(name.clone());
+                    values.push(val);
+                }
+            }
+        }
+        ClosureCapture::from_pairs(names, values)
+    };
+    let mut clo = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
+        params: Arc::new(p.params.clone()),
+        named_params: Arc::new(p.named_params.clone()),
+        body: Arc::new(p.body.clone()),
+        env: captured_env,
+        upvalues: Arc::new(Vec::new()),
+        captures,
+        capture_specs: Arc::new(p.captures.clone()),
+        default_funcs: Arc::new(p.default_funcs.clone()),
+        debug_name: p.self_name.clone(),
+        debug_location: None,
+    })));
+    if let (Some(name), Val::Closure(closure_arc)) = (&p.self_name, &mut clo)
+        && let Some(closure) = Arc::get_mut(closure_arc)
+        && let Some(env_mut) = Arc::get_mut(&mut closure.env)
+    {
+        let env_ptr: *mut VmContext = env_mut;
+        let clone_for_env = clo.clone();
+        unsafe {
+            (*env_ptr).define(name.clone(), clone_for_env);
+        }
+    }
+    if let Val::Closure(closure_arc) = &clo
+        && let Some(inner) = &p.func
+    {
+        let _ = closure_arc.code.set((**inner).clone());
+    }
+    Ok(clo)
+}
+
 #[inline(always)]
 fn exec_hot_slot(
     entry: &PackedHotSlot,
@@ -369,6 +476,7 @@ fn exec_hot_slot(
     global_ic: &mut Vec<Option<GlobalEntry>>,
     for_range_ic: &mut Vec<Option<ForRangeState>>,
     pc: usize,
+    frame_base: usize,
 ) -> Result<Option<usize>> {
     let result = match &entry.kind {
         PackedHotKind::Move { dst, src } => {
@@ -437,10 +545,53 @@ fn exec_hot_slot(
             }
             None
         }
+        PackedHotKind::ForRangePrep {
+            idx,
+            limit,
+            step,
+            inclusive,
+            explicit,
+        } => {
+            let idx_reg = *idx as usize;
+            let limit_reg = *limit as usize;
+            let step_reg = *step as usize;
+            let (i0, ilim) = match (&regs[idx_reg], &regs[limit_reg]) {
+                (Val::Int(a0), Val::Int(b0)) => (*a0, *b0),
+                _ => {
+                    return Err(anyhow!(
+                        "For-range requires integer bounds, got idx={:?}, limit={:?}",
+                        regs[idx_reg],
+                        regs[limit_reg]
+                    ));
+                }
+            };
+            let step_val = if !*explicit {
+                let step_val = if i0 <= ilim { 1 } else { -1 };
+                assign_reg(frame_raw, regs, step_reg, Val::Int(step_val));
+                step_val
+            } else {
+                match &regs[step_reg] {
+                    Val::Int(0) => return Err(anyhow!("For-range step cannot be zero")),
+                    Val::Int(v) => *v,
+                    other => return Err(anyhow!("For-range step must be Int when explicit, got {:?}", other)),
+                }
+            };
+            if step_val == 0 {
+                return Err(anyhow!("For-range step cannot be zero"));
+            }
+            if let Some(slot) = for_range_ic.get_mut(entry.next_pc) {
+                *slot = Some(ForRangeState::new(i0, ilim, step_val, *inclusive));
+            }
+            None
+        }
         PackedHotKind::ForRangeLoop { idx, ofs } => {
-            let state_entry = fetch_for_range_state(for_range_ic, pc)?;
+            let state_entry = match for_range_ic.get_mut(pc).and_then(Option::as_mut) {
+                Some(state) => state,
+                None => return Err(anyhow!("For-range state missing at pc {}", pc)),
+            };
             if state_entry.should_continue() {
                 assign_reg(frame_raw, regs, *idx as usize, Val::Int(state_entry.current));
+                state_entry.current += state_entry.step; // pre-increment
                 None
             } else {
                 for_range_ic[pc] = None;
@@ -449,8 +600,7 @@ fn exec_hot_slot(
         }
         PackedHotKind::ForRangeStep { back_ofs } => {
             let guard_pc = ((pc as isize) + (*back_ofs as isize)) as usize;
-            let state_entry = fetch_for_range_state(for_range_ic, guard_pc)?;
-            state_entry.current += state_entry.step;
+            // ForRangeLoop already pre-increments state.current, so just jump.
             Some(guard_pc)
         }
         PackedHotKind::ToStr { dst, src } => {
@@ -458,84 +608,97 @@ fn exec_hot_slot(
             assign_reg(frame_raw, regs, *dst as usize, Val::Str(s.into()));
             None
         }
+        PackedHotKind::MakeClosure { dst, proto } => {
+            let clo = make_closure_value(func, *proto, ctx, regs, frame_base)?;
+            assign_reg(frame_raw, regs, *dst as usize, clo);
+            None
+        }
         PackedHotKind::Arith { op, dst, a, b } => {
-            match op {
-                PackedArithOp::Add => {
-                    if !Vm::arith2_try_numeric(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *a,
-                        *b,
-                        "add",
-                        |x, y| x + y,
-                        |x, y| x + y,
-                    ) {
-                        let out =
-                            BinOp::Add.eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
+            if let (Val::Int(x), Val::Int(y)) = (rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b)) {
+                let out = match op {
+                    PackedArithOp::Add => *x + *y,
+                    PackedArithOp::Sub => *x - *y,
+                    PackedArithOp::Mul => *x * *y,
+                    PackedArithOp::Div => *x / *y,
+                    PackedArithOp::Mod => *x % *y,
+                };
+                assign_reg(frame_raw, regs, *dst as usize, Val::Int(out));
+            } else {
+                match op {
+                    PackedArithOp::Add => {
+                        if !Vm::arith2_try_numeric(
+                            frame_raw,
+                            regs,
+                            &func.consts,
+                            *dst,
+                            *a,
+                            *b,
+                            "add",
+                            |x, y| x + y,
+                            |x, y| x + y,
+                        ) {
+                            let out = BinOp::Add
+                                .eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
+                            assign_reg(frame_raw, regs, *dst as usize, out);
+                        }
+                    }
+                    PackedArithOp::Sub => {
+                        if !Vm::arith2_try_numeric(
+                            frame_raw,
+                            regs,
+                            &func.consts,
+                            *dst,
+                            *a,
+                            *b,
+                            "sub",
+                            |x, y| x - y,
+                            |x, y| x - y,
+                        ) {
+                            let out = BinOp::Sub
+                                .eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
+                            assign_reg(frame_raw, regs, *dst as usize, out);
+                        }
+                    }
+                    PackedArithOp::Mul => {
+                        if !Vm::arith2_try_numeric(
+                            frame_raw,
+                            regs,
+                            &func.consts,
+                            *dst,
+                            *a,
+                            *b,
+                            "mul",
+                            |x, y| x * y,
+                            |x, y| x * y,
+                        ) {
+                            let out = BinOp::Mul
+                                .eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
+                            assign_reg(frame_raw, regs, *dst as usize, out);
+                        }
+                    }
+                    PackedArithOp::Div => {
+                        if !Vm::arith2_try_numeric(
+                            frame_raw,
+                            regs,
+                            &func.consts,
+                            *dst,
+                            *a,
+                            *b,
+                            "div",
+                            |x, y| x / y,
+                            |x, y| x / y,
+                        ) {
+                            let out = BinOp::Div
+                                .eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
+                            assign_reg(frame_raw, regs, *dst as usize, out);
+                        }
+                    }
+                    PackedArithOp::Mod => {
+                        let out = BinOp::Mod
+                            .eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
                         assign_reg(frame_raw, regs, *dst as usize, out);
                     }
                 }
-                PackedArithOp::Sub => {
-                    if !Vm::arith2_try_numeric(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *a,
-                        *b,
-                        "sub",
-                        |x, y| x - y,
-                        |x, y| x - y,
-                    ) {
-                        let out =
-                            BinOp::Sub.eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
-                        assign_reg(frame_raw, regs, *dst as usize, out);
-                    }
-                }
-                PackedArithOp::Mul => {
-                    if !Vm::arith2_try_numeric(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *a,
-                        *b,
-                        "mul",
-                        |x, y| x * y,
-                        |x, y| x * y,
-                    ) {
-                        let out =
-                            BinOp::Mul.eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
-                        assign_reg(frame_raw, regs, *dst as usize, out);
-                    }
-                }
-                PackedArithOp::Div => {
-                    if !Vm::arith2_try_numeric(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *a,
-                        *b,
-                        "div",
-                        |x, y| x / y,
-                        |x, y| x / y,
-                    ) {
-                        let out =
-                            BinOp::Div.eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
-                        assign_reg(frame_raw, regs, *dst as usize, out);
-                    }
-                }
-                PackedArithOp::Mod => match (rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b)) {
-                    (Val::Int(x), Val::Int(y)) => assign_reg(frame_raw, regs, *dst as usize, Val::Int(x % y)),
-                    _ => {
-                        let out =
-                            BinOp::Mod.eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
-                        assign_reg(frame_raw, regs, *dst as usize, out);
-                    }
-                },
             }
             None
         }
@@ -598,67 +761,93 @@ fn exec_hot_slot(
             }
             None
         }
+        PackedHotKind::Jmp { ofs } => Some(((pc as isize) + (*ofs as isize)) as usize),
+        PackedHotKind::JmpFalse { r, ofs } => {
+            if matches!(regs[*r as usize], Val::Nil | Val::Bool(false)) {
+                Some(((pc as isize) + (*ofs as isize)) as usize)
+            } else {
+                None
+            }
+        }
+        PackedHotKind::Ret { .. } => unreachable!("Ret is handled directly by run_packed_code"),
         PackedHotKind::AddIntImm { dst, src, imm } => {
-            int_binop_imm(
-                frame_raw,
-                regs,
-                &func.consts,
-                *dst,
-                *src,
-                *imm,
-                |x, y| x + y,
-                BinOp::Add,
-            )?;
+            let dst_idx = *dst as usize;
+            let src_idx = *src as usize;
+            if let Val::Int(x) = regs[src_idx] {
+                assign_reg(frame_raw, regs, dst_idx, Val::Int(x + *imm as i64));
+            } else {
+                int_binop_imm(
+                    frame_raw,
+                    regs,
+                    &func.consts,
+                    *dst,
+                    *src,
+                    *imm,
+                    |x, y| x + y,
+                    BinOp::Add,
+                )?;
+            }
             None
         }
         PackedHotKind::CmpImm { op, dst, src, imm } => {
-            match op {
-                PackedCmpImmOp::Eq => cmp_eq_imm(frame_raw, regs, &func.consts, *dst, *src, *imm, BinOp::Eq)?,
-                PackedCmpImmOp::Ne => cmp_ne_imm(frame_raw, regs, &func.consts, *dst, *src, *imm, BinOp::Ne)?,
-                PackedCmpImmOp::Lt => cmp_ord_imm(
-                    frame_raw,
-                    regs,
-                    &func.consts,
-                    *dst,
-                    *src,
-                    *imm,
-                    |x, y| x < y,
-                    |x, y| x < y,
-                    BinOp::Lt,
-                )?,
-                PackedCmpImmOp::Le => cmp_ord_imm(
-                    frame_raw,
-                    regs,
-                    &func.consts,
-                    *dst,
-                    *src,
-                    *imm,
-                    |x, y| x <= y,
-                    |x, y| x <= y,
-                    BinOp::Le,
-                )?,
-                PackedCmpImmOp::Gt => cmp_ord_imm(
-                    frame_raw,
-                    regs,
-                    &func.consts,
-                    *dst,
-                    *src,
-                    *imm,
-                    |x, y| x > y,
-                    |x, y| x > y,
-                    BinOp::Gt,
-                )?,
-                PackedCmpImmOp::Ge => cmp_ord_imm(
-                    frame_raw,
-                    regs,
-                    &func.consts,
-                    *dst,
-                    *src,
-                    *imm,
-                    |x, y| x >= y,
-                    |x, y| x >= y,
-                    BinOp::Ge,
-                )?,
+            let dst_idx = *dst as usize;
+            let src_idx = *src as usize;
+            let imm_i64 = *imm as i64;
+            match (&regs[src_idx], op) {
+                (Val::Int(x), PackedCmpImmOp::Eq) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x == imm_i64)),
+                (Val::Int(x), PackedCmpImmOp::Ne) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x != imm_i64)),
+                (Val::Int(x), PackedCmpImmOp::Lt) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x < imm_i64)),
+                (Val::Int(x), PackedCmpImmOp::Le) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x <= imm_i64)),
+                (Val::Int(x), PackedCmpImmOp::Gt) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x > imm_i64)),
+                (Val::Int(x), PackedCmpImmOp::Ge) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x >= imm_i64)),
+                _ => match op {
+                    PackedCmpImmOp::Eq => cmp_eq_imm(frame_raw, regs, &func.consts, *dst, *src, *imm, BinOp::Eq)?,
+                    PackedCmpImmOp::Ne => cmp_ne_imm(frame_raw, regs, &func.consts, *dst, *src, *imm, BinOp::Ne)?,
+                    PackedCmpImmOp::Lt => cmp_ord_imm(
+                        frame_raw,
+                        regs,
+                        &func.consts,
+                        *dst,
+                        *src,
+                        *imm,
+                        |x, y| x < y,
+                        |x, y| x < y,
+                        BinOp::Lt,
+                    )?,
+                    PackedCmpImmOp::Le => cmp_ord_imm(
+                        frame_raw,
+                        regs,
+                        &func.consts,
+                        *dst,
+                        *src,
+                        *imm,
+                        |x, y| x <= y,
+                        |x, y| x <= y,
+                        BinOp::Le,
+                    )?,
+                    PackedCmpImmOp::Gt => cmp_ord_imm(
+                        frame_raw,
+                        regs,
+                        &func.consts,
+                        *dst,
+                        *src,
+                        *imm,
+                        |x, y| x > y,
+                        |x, y| x > y,
+                        BinOp::Gt,
+                    )?,
+                    PackedCmpImmOp::Ge => cmp_ord_imm(
+                        frame_raw,
+                        regs,
+                        &func.consts,
+                        *dst,
+                        *src,
+                        *imm,
+                        |x, y| x >= y,
+                        |x, y| x >= y,
+                        BinOp::Ge,
+                    )?,
+                },
             }
             None
         }
@@ -899,7 +1088,13 @@ pub(super) fn run_packed_code(
                     if slot.word == word {
                         #[cfg(debug_assertions)]
                         PACKED_HOT_HITS.fetch_add(1, Ordering::Relaxed);
-                        let override_pc = exec_hot_slot(slot, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc)?;
+                        if let PackedHotKind::Ret { base, retc } = &slot.kind {
+                            let retc = *retc as usize;
+                            let base_idx = *base as usize;
+                            let ret_val = if retc > 0 { regs[base_idx].clone() } else { Val::Nil };
+                            return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
+                        }
+                        let override_pc = exec_hot_slot(slot, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc, frame_base)?;
                         pc = override_pc.unwrap_or(slot.next_pc);
                         continue;
                     }
@@ -935,7 +1130,17 @@ pub(super) fn run_packed_code(
                 #[cfg(debug_assertions)]
                 PACKED_HOT_BUILD_SUCCESSES.fetch_add(1, Ordering::Relaxed);
                 let next_pc = entry.next_pc;
-                let override_pc = exec_hot_slot(&entry, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc)?;
+                if let PackedHotKind::Ret { base, retc } = &entry.kind {
+                    let retc = *retc as usize;
+                    let base_idx = *base as usize;
+                    let ret_val = if retc > 0 { regs[base_idx].clone() } else { Val::Nil };
+                    if packed_hot.len() <= pc {
+                        packed_hot.resize(pc + 1, None);
+                    }
+                    packed_hot[pc] = Some(PackedHotEntry::Slot(entry));
+                    return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
+                }
+                let override_pc = exec_hot_slot(&entry, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc, frame_base)?;
                 if packed_hot.len() <= pc {
                     packed_hot.resize(pc + 1, None);
                 }
@@ -1545,15 +1750,9 @@ pub(super) fn run_packed_code(
                     pc = ((pc as isize) + (ofs as isize)) as usize;
                 }
             }
+            // ForRangeLoop already pre-increments; ForRangeStep only jumps back.
             Op::ForRangeStep { back_ofs, .. } => {
                 let guard_pc = ((pc as isize) + (back_ofs as isize)) as usize;
-                let state_entry = match fetch_for_range_state(for_range_ic, guard_pc) {
-                    Ok(state) => state,
-                    Err(err) => {
-                        return frame_return_common(frame_raw, pc, Err(err)).map(Some);
-                    }
-                };
-                state_entry.current += state_entry.step;
                 pc = guard_pc;
             }
             Op::PatternMatch { dst, src, plan } => {
@@ -1720,67 +1919,7 @@ pub(super) fn run_packed_code(
                 pc = next_pc_default;
             }
             Op::MakeClosure { dst, proto } => {
-                let p = f
-                    .protos
-                    .get(proto as usize)
-                    .ok_or_else(|| anyhow!("closure proto out of range"))?;
-                // Use snapshot of ctx as captured environment
-                let captured_env = Arc::new(ctx.snapshot());
-                let captures = if p.captures.is_empty() {
-                    ClosureCapture::empty()
-                } else {
-                    let mut names: Vec<String> = Vec::with_capacity(p.captures.len());
-                    let mut values: Vec<Val> = Vec::with_capacity(p.captures.len());
-                    for spec in &p.captures {
-                        match spec {
-                            CaptureSpec::Register { name, src } => {
-                                let idx = frame_base + (*src as usize);
-                                let val = regs.get(idx).cloned().unwrap_or(Val::Nil);
-                                names.push(name.clone());
-                                values.push(val);
-                            }
-                            CaptureSpec::Const { name, kidx } => {
-                                let val = f.consts.get(*kidx as usize).cloned().unwrap_or(Val::Nil);
-                                names.push(name.clone());
-                                values.push(val);
-                            }
-                            CaptureSpec::Global { name } => {
-                                let val = ctx.get(name.as_str()).cloned().unwrap_or(Val::Nil);
-                                names.push(name.clone());
-                                values.push(val);
-                            }
-                        }
-                    }
-                    ClosureCapture::from_pairs(names, values)
-                };
-                let mut clo = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
-                    params: Arc::new(p.params.clone()),
-                    named_params: Arc::new(p.named_params.clone()),
-                    body: Arc::new(p.body.clone()),
-                    env: captured_env,
-                    upvalues: Arc::new(Vec::new()),
-                    captures,
-                    capture_specs: Arc::new(p.captures.clone()),
-                    default_funcs: Arc::new(p.default_funcs.clone()),
-                    debug_name: p.self_name.clone(),
-                    debug_location: None,
-                })));
-                if let (Some(name), Val::Closure(closure_arc)) = (&p.self_name, &mut clo)
-                    && let Some(closure) = Arc::get_mut(closure_arc)
-                    && let Some(env_mut) = Arc::get_mut(&mut closure.env)
-                {
-                    let env_ptr: *mut VmContext = env_mut;
-                    let clone_for_env = clo.clone();
-                    unsafe {
-                        (*env_ptr).define(name.clone(), clone_for_env);
-                    }
-                }
-                // Seed precompiled code when available for fast-path execution
-                if let Val::Closure(closure_arc) = &clo
-                    && let Some(inner) = &p.func
-                {
-                    let _ = closure_arc.code.set((**inner).clone());
-                }
+                let clo = make_closure_value(f, proto, ctx, regs, frame_base)?;
                 assign_reg(frame_raw, regs, dst as usize, clo);
                 pc = next_pc_default;
             }

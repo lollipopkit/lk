@@ -33,7 +33,7 @@ pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction>
         Val::Stream(_) => "Stream",
         Val::Iterator(_) => "Iterator",
         Val::MutationGuard(guard) => guard.guard_type(),
-        Val::StreamCursor { .. } => "StreamCursor",
+        Val::StreamCursor(_) => "StreamCursor",
         Val::Object(object) => object.type_name.as_ref(),
         Val::Nil => "Nil",
     };

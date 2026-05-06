@@ -20,7 +20,7 @@ use crate::{
     typ::TypeChecker,
     util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_map_with_capacity},
     val::Val,
-    vm::{BytecodeModule, VmContext, decode_module},
+    vm::{BytecodeModule, Vm, VmContext, decode_module},
 };
 
 #[cfg(not(test))]
@@ -488,6 +488,48 @@ pub extern "C" fn lkr_rt_build_map(ptr: *const i64, len: i64) -> i64 {
         }
         state.encode_value(Val::Map(Arc::new(map)))
     })
+}
+
+#[cold]
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub extern "C" fn lkr_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32 {
+    if data_ptr.is_null() || data_len <= 0 {
+        eprintln!("lkr_rt_run_bytecode: empty bytecode payload");
+        return 1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) };
+    let result: Result<Val> = (|| {
+        let module = decode_module(bytes)?;
+        let imports = module
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.tags.get("imports"))
+            .map(|raw| deserialize_imports(raw))
+            .transpose()?;
+        let bundled: Vec<DecodedBundledModule> = module
+            .bundled_modules
+            .iter()
+            .map(|child| DecodedBundledModule {
+                path: child.path.clone(),
+                module: child.module.clone(),
+            })
+            .collect();
+        let (mut ctx, resolver) = RuntimeState::build_context(&[], &bundled)?;
+        if let Some(imports) = imports.as_ref() {
+            execute_imports(imports, resolver.as_ref(), &mut ctx)?;
+        }
+        let mut vm = Vm::new();
+        vm.exec(&module.entry, &mut ctx)
+    })();
+
+    match result {
+        Ok(_) => 0,
+        Err(err) => {
+            eprintln!("lkr_rt_run_bytecode error: {err}");
+            1
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

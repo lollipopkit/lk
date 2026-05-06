@@ -35,6 +35,14 @@ impl StringModule {
         functions.insert("substring".to_string(), Val::RustFunction(Self::substring));
         functions.insert("split".to_string(), Val::RustFunction(Self::split));
         functions.insert("join".to_string(), Val::RustFunction(Self::join));
+        functions.insert("reverse".to_string(), Val::RustFunction(Self::reverse));
+        functions.insert("repeat".to_string(), Val::RustFunction(Self::repeat));
+        functions.insert("char".to_string(), Val::RustFunction(Self::char_at));
+        functions.insert("byte".to_string(), Val::RustFunction(Self::byte_at));
+        functions.insert("chars".to_string(), Val::RustFunction(Self::chars));
+        functions.insert("find".to_string(), Val::RustFunction(Self::find));
+        functions.insert("is_empty".to_string(), Val::RustFunction(Self::is_empty));
+        functions.insert("format".to_string(), Val::RustFunction(Self::format));
 
         // Also register as meta-methods for String type
         register_method("String", "len", Self::len);
@@ -48,6 +56,14 @@ impl StringModule {
         register_method("String", "substring", Self::substring);
         register_method("String", "split", Self::split);
         register_method("String", "join", Self::join);
+
+        register_method("String", "reverse", Self::reverse);
+        register_method("String", "repeat", Self::repeat);
+        register_method("String", "char", Self::char_at);
+        register_method("String", "byte", Self::byte_at);
+        register_method("String", "chars", Self::chars);
+        register_method("String", "find", Self::find);
+        register_method("String", "is_empty", Self::is_empty);
 
         Self { functions }
     }
@@ -325,6 +341,172 @@ impl StringModule {
         };
 
         Ok(Val::List(Arc::from(parts)))
+    }
+
+    /// Reverse a string
+    fn reverse(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 1 {
+            return Err(anyhow!("reverse() takes exactly 1 argument"));
+        }
+        match &args[0] {
+            Val::Str(s) => Ok(Val::Str(s.chars().rev().collect::<String>().into())),
+            _ => Err(anyhow!("reverse() argument must be a string")),
+        }
+    }
+
+    /// Repeat a string n times
+    fn repeat(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 2 {
+            return Err(anyhow!("repeat() takes exactly 2 arguments: string, count"));
+        }
+        let s = match &args[0] {
+            Val::Str(s) => &**s,
+            _ => return Err(anyhow!("repeat() first argument must be a string")),
+        };
+        let n = match &args[1] {
+            Val::Int(i) => *i,
+            _ => return Err(anyhow!("repeat() second argument must be an integer")),
+        };
+        if n < 0 {
+            return Err(anyhow!("repeat() count must be non-negative"));
+        }
+        Ok(Val::Str(s.repeat(n as usize).into()))
+    }
+
+    /// Get character at index (returns single-char string)
+    fn char_at(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 2 {
+            return Err(anyhow!("char() takes exactly 2 arguments: string, index"));
+        }
+        let s = match &args[0] {
+            Val::Str(s) => &**s,
+            _ => return Err(anyhow!("char() first argument must be a string")),
+        };
+        let idx = match &args[1] {
+            Val::Int(i) => *i as usize,
+            _ => return Err(anyhow!("char() second argument must be an integer")),
+        };
+        match s.chars().nth(idx) {
+            Some(c) => Ok(Val::Str(c.to_string().into())),
+            None => Ok(Val::Nil),
+        }
+    }
+
+    /// Get byte value of character at index
+    fn byte_at(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 2 {
+            return Err(anyhow!("byte() takes exactly 2 arguments: string, index"));
+        }
+        let s = match &args[0] {
+            Val::Str(s) => &**s,
+            _ => return Err(anyhow!("byte() first argument must be a string")),
+        };
+        let idx = match &args[1] {
+            Val::Int(i) => *i as usize,
+            _ => return Err(anyhow!("byte() second argument must be an integer")),
+        };
+        match s.as_bytes().get(idx) {
+            Some(b) => Ok(Val::Int(*b as i64)),
+            None => Ok(Val::Nil),
+        }
+    }
+
+    /// Convert string to list of characters
+    fn chars(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 1 {
+            return Err(anyhow!("chars() takes exactly 1 argument"));
+        }
+        match &args[0] {
+            Val::Str(s) => {
+                let list: Vec<Val> = s.chars().map(|c| Val::Str(c.to_string().into())).collect();
+                Ok(Val::List(Arc::from(list)))
+            }
+            _ => Err(anyhow!("chars() argument must be a string")),
+        }
+    }
+
+    /// Find substring position (returns index or nil)
+    fn find(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 2 && args.len() != 3 {
+            return Err(anyhow!("find() takes 2 or 3 arguments: string, pattern[, start]"));
+        }
+        let s = match &args[0] {
+            Val::Str(s) => &**s,
+            _ => return Err(anyhow!("find() first argument must be a string")),
+        };
+        let pattern = match &args[1] {
+            Val::Str(p) => &**p,
+            _ => return Err(anyhow!("find() second argument must be a string")),
+        };
+        let start = if args.len() >= 3 {
+            match &args[2] {
+                Val::Int(i) => *i as usize,
+                _ => return Err(anyhow!("find() third argument must be an integer")),
+            }
+        } else {
+            0
+        };
+        if start > s.len() {
+            return Ok(Val::Nil);
+        }
+        match s[start..].find(pattern) {
+            Some(idx) => Ok(Val::Int((start + idx) as i64)),
+            None => Ok(Val::Nil),
+        }
+    }
+
+    /// Check if string is empty
+    fn is_empty(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 1 {
+            return Err(anyhow!("is_empty() takes exactly 1 argument"));
+        }
+        match &args[0] {
+            Val::Str(s) => Ok(Val::Bool(s.is_empty())),
+            _ => Err(anyhow!("is_empty() argument must be a string")),
+        }
+    }
+
+    /// Format string (simple positional formatting)
+    fn format(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
+        if args.is_empty() {
+            return Err(anyhow!("format() requires at least 1 argument (format string)"));
+        }
+        let fmt = match &args[0] {
+            Val::Str(s) => s.clone(),
+            _ => return Err(anyhow!("format() first argument must be a string")),
+        };
+        let rest = &args[1..];
+        let mut out = String::with_capacity(fmt.len());
+        let chars: Vec<char> = fmt.chars().collect();
+        let mut i = 0usize;
+        let mut arg_idx = 0usize;
+        while i < chars.len() {
+            if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '}' {
+                if arg_idx < rest.len() {
+                    out.push_str(&rest[arg_idx].display_string(Some(ctx)));
+                    arg_idx += 1;
+                } else {
+                    out.push_str("{}");
+                }
+                i += 2;
+            } else {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+        // Append any remaining args
+        if arg_idx < rest.len() {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            for (j, v) in rest[arg_idx..].iter().enumerate() {
+                if j > 0 {
+                    out.push(' ');
+                }
+                out.push_str(&v.display_string(Some(ctx)));
+            }
+        }
+        Ok(Val::Str(out.into()))
     }
 
     /// Join list of strings with delimiter

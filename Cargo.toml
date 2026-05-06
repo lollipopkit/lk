@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "cli", "stdlib", "lsp"]
+members = ["core", "cli", "stdlib", "lsp", "tree-sitter-lkr"]
 resolver = "2"
 
 [workspace.package]

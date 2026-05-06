@@ -250,6 +250,17 @@ impl FunctionBuilder {
     fn expr_operand(&mut self, expr: &Expr) -> u16 {
         if let Some(kidx) = self.try_const_operand(expr) {
             rk_make_const(kidx)
+        } else if let Expr::Var(name) = expr {
+            // For simple local variable lookups, return the register directly
+            // without allocating a new register and emitting LoadLocal.
+            // This is safe because rk operands are read-only in binary ops.
+            if let Some(idx) = self.lookup(name) {
+                idx // return variable register directly, no LoadLocal
+            } else if self.capture_indices.contains_key(name) {
+                self.expr(expr)
+            } else {
+                self.expr(expr) // global lookup needs LoadGlobal
+            }
         } else {
             self.expr(expr)
         }

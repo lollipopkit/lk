@@ -1,0 +1,36 @@
+{
+  "grammars": [
+    {
+      "name": "lkr",
+      "camelcase": "Lkr",
+      "scope": "source.lkr",
+      "path": ".",
+      "file-types": [
+        "lkr"
+      ],
+      "injection-regex": "^lkr$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "Apache-2.0",
+    "description": "LKR grammar for tree-sitter",
+    "authors": [
+      {
+        "name": "lollipopkit",
+        "email": "a@lpkt.cn"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/lollipopkit/lkr/tree-sitter-lkr"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": true,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": true
+  }
+}

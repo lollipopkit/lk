@@ -960,6 +960,29 @@ fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u8(out, 46);
             write_i16(out, ofs);
         }
+        Op::CmpLtImmJmp { r, imm, ofs } => {
+            write_u8(out, 57);
+            write_u16(out, r);
+            write_i16(out, imm);
+            write_i16(out, ofs);
+        }
+        Op::JmpNilOrFalseJmp { r, ofs } => {
+            write_u8(out, 58);
+            write_u16(out, r);
+            write_i16(out, ofs);
+        }
+        Op::AddIntImmJmp { r, imm, ofs } => {
+            write_u8(out, 59);
+            write_u16(out, r);
+            write_i16(out, imm);
+            write_i16(out, ofs);
+        }
+        Op::CmpLeImmJmp { r, imm, ofs } => {
+            write_u8(out, 60);
+            write_u16(out, r);
+            write_i16(out, imm);
+            write_i16(out, ofs);
+        }
         Op::PatternMatch { dst, src, plan } => {
             write_u8(out, 47);
             write_u16(out, dst);
@@ -1108,6 +1131,25 @@ fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             read_u16(bytes, cursor)?,
             read_i16(bytes, cursor)?,
         ),
+        57 => Op::CmpLtImmJmp {
+            r: read_u16(bytes, cursor)?,
+            imm: read_i16(bytes, cursor)?,
+            ofs: read_i16(bytes, cursor)?,
+        },
+        58 => Op::JmpNilOrFalseJmp {
+            r: read_u16(bytes, cursor)?,
+            ofs: read_i16(bytes, cursor)?,
+        },
+        59 => Op::AddIntImmJmp {
+            r: read_u16(bytes, cursor)?,
+            imm: read_i16(bytes, cursor)?,
+            ofs: read_i16(bytes, cursor)?,
+        },
+        60 => Op::CmpLeImmJmp {
+            r: read_u16(bytes, cursor)?,
+            imm: read_i16(bytes, cursor)?,
+            ofs: read_i16(bytes, cursor)?,
+        },
         36 => Op::Jmp(read_i16(bytes, cursor)?),
         37 => Op::JmpFalse(read_u16(bytes, cursor)?, read_i16(bytes, cursor)?),
         38 => Op::Call {

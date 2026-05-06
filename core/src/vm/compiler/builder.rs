@@ -207,6 +207,9 @@ impl FunctionBuilder {
             analysis: self.analysis,
         };
 
+        // Peephole: fuse CmpLtImm + JmpFalse into CmpLtImmJmp
+        super::peephole::peephole_fuse_cmp_jmp(&mut f.code);
+
         if let Some(packed) = Bc32Function::try_from_function(&f) {
             let decoded = packed.decoded;
             f.code32 = Some(packed.code32);
@@ -298,6 +301,20 @@ impl FunctionBuilder {
             scope.push((name.to_string(), prev));
         }
         reg
+    }
+
+    /// Define a variable that already has a register assigned (e.g., from expr result).
+    /// Records the scope stack entry so the variable is properly unwound.
+    pub fn define_var_as(&mut self, name: &str, reg: u16) {
+        let prev = self.vars.insert(name.to_string(), reg);
+        if let Some(scope) = self.var_scope_stack.last_mut() {
+            scope.push((name.to_string(), prev));
+        }
+    }
+
+    #[inline]
+    pub fn var_scope_depth(&self) -> usize {
+        self.var_scope_stack.len()
     }
 
     pub fn emit_function_closure(
@@ -428,5 +445,32 @@ impl FunctionBuilder {
             }
         }
         self.const_env.set(name.to_string(), func_val);
+    }
+
+    /// Check if an expression contains a function call or other effects that make
+    /// it unsafe to keep the result in the expression's own register.
+    pub(crate) fn expr_contains_call(e: &Expr) -> bool {
+        match e {
+            Expr::Call(_, _) => true,
+            Expr::CallNamed(_, _, _) => true,
+            Expr::CallExpr(_, _) => true,
+            Expr::Bin(l, _, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
+            Expr::Unary(_, inner) => Self::expr_contains_call(inner),
+            Expr::Paren(inner) => Self::expr_contains_call(inner),
+            Expr::Access(obj, field) => Self::expr_contains_call(obj) || Self::expr_contains_call(field),
+            Expr::OptionalAccess(obj, field) => Self::expr_contains_call(obj) || Self::expr_contains_call(field),
+            Expr::List(elems) => elems.iter().any(|e| Self::expr_contains_call(e)),
+            Expr::Map(pairs) => pairs.iter().any(|(k, v)| Self::expr_contains_call(k) || Self::expr_contains_call(v)),
+            Expr::Conditional(c, t, e) => Self::expr_contains_call(c) || Self::expr_contains_call(t) || Self::expr_contains_call(e),
+            Expr::And(l, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
+            Expr::Or(l, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
+            Expr::NullishCoalescing(l, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
+            Expr::Select { .. } => true,
+            Expr::Closure { .. } => true,
+            Expr::StructLiteral { .. } => true,
+            Expr::Match { .. } => true,
+            Expr::TemplateString(_) => true,
+            _ => false,
+        }
     }
 }

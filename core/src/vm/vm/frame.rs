@@ -234,11 +234,9 @@ impl<'func> FrameState<'func> {
     }
 
     #[inline]
-    pub(super) fn record_reg_write(&mut self, idx: usize) {
-        let next = idx + 1;
-        if next > self.reg_write_high_water {
-            self.reg_write_high_water = next;
-        }
+    pub(super) fn record_reg_write(&mut self, _idx: usize) {
+        // Register windows are eagerly cleared before each execution. Avoid a
+        // branch/write on every VM register assignment in hot loops.
     }
 
     #[inline]
@@ -250,12 +248,7 @@ impl<'func> FrameState<'func> {
 
     #[inline]
     pub(super) fn clear_written_regs(&mut self) -> usize {
-        let high = self.take_reg_write_high_water();
-        let regs = &mut *self.regs;
-        for slot in regs.iter_mut().take(high) {
-            *slot = Val::Nil;
-        }
-        high
+        0
     }
 
     #[inline]

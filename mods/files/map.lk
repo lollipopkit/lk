@@ -1,0 +1,35 @@
+class Map {
+    'items': {}
+}
+
+fn Map:__index(key) {
+    if type(key) != 'str' {
+        error('Map keys must be str.')
+    }
+    rt self.items[key]
+}
+
+fn Map:__str() {
+    rt str(self.items)
+}
+
+fn Map:__len() {
+    rt len(self.items)
+}
+
+// fn Map:combine(other) {
+//     if type(other) != Map {
+//         error('Can only combine with other maps.')
+//     }
+//     for key, value in other.items {
+//         self.items[key] = value
+//     }
+// }
+
+// 得放在最后，否则使用此 ___newindex 方法新增索引
+// 或者在此方法内判断 key 是否以 __ 开头
+fn Map:__newindex(key, value) {
+    self.items[key] = value
+}
+
+rt Map

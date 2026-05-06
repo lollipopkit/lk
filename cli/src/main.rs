@@ -295,10 +295,55 @@ fn resolve_llvm_tool(tool: &str, env_var: &str) -> Option<PathBuf> {
     {
         return Some(path);
     }
-    Some(PathBuf::from(tool))
+    let fallback = PathBuf::from(tool);
+    if Command::new(&fallback)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+    {
+        Some(fallback)
+    } else {
+        None
+    }
 }
 
 #[cfg(feature = "llvm")]
+fn bytecode_trampoline_c(bytecode: &[u8]) -> String {
+    let mut out = String::new();
+    out.push_str("#include <stddef.h>\nextern int lkr_rt_run_bytecode(const unsigned char*, long long);\n");
+    out.push_str("static const unsigned char LKR_ENTRY_BYTECODE[] = {\n");
+    for chunk in bytecode.chunks(16) {
+        out.push_str("  ");
+        for byte in chunk {
+            let _ = write!(out, "0x{byte:02x}, ");
+        }
+        out.push('\n');
+    }
+    out.push_str("};\nint main(void) { return lkr_rt_run_bytecode(LKR_ENTRY_BYTECODE, (long long)sizeof(LKR_ENTRY_BYTECODE)); }\n");
+    out
+}
+
+fn bytecode_trampoline_ir(module_name: &str, bytecode: &[u8]) -> String {
+    let len = bytecode.len();
+    let literal = llvm_bytes_literal(bytecode);
+    let mut out = String::new();
+    out.push_str(&format!("; ModuleID = '{}_bytecode_trampoline'\n", module_name));
+    out.push_str(&format!("source_filename = \"{}_bytecode_trampoline\"\n\n", module_name));
+    out.push_str("declare i32 @lkr_rt_run_bytecode(i8*, i64)\n\n");
+    out.push_str(&format!(
+        "@.lkr_entry_bytecode = private unnamed_addr constant [{len} x i8] {literal}, align 1\n\n"
+    ));
+    out.push_str("define i32 @main() {\n");
+    out.push_str(&format!(
+        "  %status = call i32 @lkr_rt_run_bytecode(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* @.lkr_entry_bytecode, i64 0, i64 0), i64 {len})\n"
+    ));
+    out.push_str("  ret i32 %status\n");
+    out.push_str("}\n");
+    out
+}
+
 fn append_main_stub(ir: &str, entry: &str, init: &RuntimeInitPlan) -> String {
     let mut out = String::with_capacity(ir.len() + 256 + init.globals.iter().map(String::len).sum::<usize>());
     out.push_str(ir);
@@ -619,12 +664,13 @@ fn main() -> anyhow::Result<()> {
 
                         let mut bundler = ModuleBundler::new(parent_dir_owned.as_deref());
                         bundler.bundle_program(&program)?;
+                        let bundled_modules = bundler.into_bundled();
                         let mut encoded_modules = Vec::new();
-                        for bundled in bundler.into_bundled() {
+                        for bundled in &bundled_modules {
                             let bytes = vm::encode_module(&bundled.module)
                                 .with_context(|| format!("encode bundled module {}", bundled.path))?;
                             encoded_modules.push(EncodedBundledModule {
-                                path: bundled.path,
+                                path: bundled.path.clone(),
                                 bytes,
                             });
                         }
@@ -635,27 +681,52 @@ fn main() -> anyhow::Result<()> {
                             .filter(|s| !s.is_empty())
                             .unwrap_or_else(|| "lkr_module".to_string());
                         let options = LlvmBackendOptions {
-                            module_name,
+                            module_name: module_name.clone(),
                             target_triple: target_triple.clone(),
                             run_optimizations: !skip_opt,
                             opt_level: opt_level_cli.into(),
                         };
-                        let artifact = compile_function_to_llvm(&func, "lkr_entry", options).context("LLVM backend")?;
-                        let final_ir = artifact.optimised_ir.as_deref().unwrap_or(&artifact.module.ir);
-                        let runtime_plan = build_runtime_init_plan(
-                            final_ir,
-                            &search_paths,
-                            imports_serialized.as_deref(),
-                            &encoded_modules,
-                        );
-                        let ll_with_main = append_main_stub(final_ir, "lkr_entry", &runtime_plan);
-                        let unopt_plan = build_runtime_init_plan(
-                            &artifact.module.ir,
-                            &search_paths,
-                            imports_serialized.as_deref(),
-                            &encoded_modules,
-                        );
-                        let unopt_with_main = append_main_stub(&artifact.module.ir, "lkr_entry", &unopt_plan);
+                        let llvm_artifact = compile_function_to_llvm(&func, "lkr_entry", options);
+                        let (ll_with_main, unopt_with_main, bytecode_trampoline_c_src) = match llvm_artifact {
+                            Ok(artifact) => {
+                                let final_ir = artifact.optimised_ir.as_deref().unwrap_or(&artifact.module.ir);
+                                let runtime_plan = build_runtime_init_plan(
+                                    final_ir,
+                                    &search_paths,
+                                    imports_serialized.as_deref(),
+                                    &encoded_modules,
+                                );
+                                let ll_with_main = append_main_stub(final_ir, "lkr_entry", &runtime_plan);
+                                let unopt_plan = build_runtime_init_plan(
+                                    &artifact.module.ir,
+                                    &search_paths,
+                                    imports_serialized.as_deref(),
+                                    &encoded_modules,
+                                );
+                                let unopt_with_main = append_main_stub(&artifact.module.ir, "lkr_entry", &unopt_plan);
+                                (ll_with_main, Some(unopt_with_main), None)
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                    "LLVM backend could not lower this program ({err}); emitting VM bytecode trampoline executable"
+                                );
+                                let mut module = BytecodeModule::new(func.clone());
+                                module.flags.insert(ModuleFlags::CONST_FOLDED);
+                                let mut meta = ModuleMeta {
+                                    source: Some(src_path_str.clone()),
+                                    ..Default::default()
+                                };
+                                meta.tags.insert("entry_kind".to_string(), "stmt".to_string());
+                                if let Some(imports) = imports_serialized.as_ref() {
+                                    meta.tags.insert("imports".to_string(), imports.clone());
+                                }
+                                module.meta = Some(meta);
+                                module.bundled_modules = bundled_modules;
+                                let bytes = vm::encode_module(&module).context("encode bytecode trampoline payload")?;
+                                let c_src = bytecode_trampoline_c(&bytes);
+                                (bytecode_trampoline_ir(&module_name, &bytes), None, Some(c_src))
+                            }
+                        };
 
                         let ll_path = safe.with_extension("ll");
                         if let Some(parent) = ll_path.parent()
@@ -668,27 +739,12 @@ fn main() -> anyhow::Result<()> {
                         std::fs::write(&ll_path, &ll_with_main)
                             .with_context(|| format!("Failed to write LLVM IR to {}", ll_path.display()))?;
 
-                        if artifact.optimised_ir.is_some() {
+                        if let Some(unopt_with_main) = &unopt_with_main {
                             let mut unopt_path = ll_path.clone();
                             unopt_path.set_extension("unopt.ll");
-                            std::fs::write(&unopt_path, &unopt_with_main).with_context(|| {
+                            std::fs::write(&unopt_path, unopt_with_main).with_context(|| {
                                 format!("Failed to write unoptimised LLVM IR to {}", ll_path.display())
                             })?;
-                        }
-
-                        let llc_path = resolve_llvm_tool("llc", "LKR_LLVM_LLC")
-                            .ok_or_else(|| anyhow::anyhow!("llc tool not found"))?;
-                        let obj_path = safe.with_extension("o");
-                        let mut llc_cmd = Command::new(&llc_path);
-                        llc_cmd.arg("-filetype=obj").arg(&ll_path).arg("-o").arg(&obj_path);
-                        if let Some(triple) = &target_triple {
-                            llc_cmd.arg("-mtriple").arg(triple);
-                        }
-                        let llc_status = llc_cmd
-                            .status()
-                            .with_context(|| format!("failed to spawn llc at {}", llc_path.display()))?;
-                        if !llc_status.success() {
-                            anyhow::bail!("llc failed with status {}", llc_status);
                         }
 
                         let runtime_staticlibs = ensure_runtime_staticlib(
@@ -701,14 +757,41 @@ fn main() -> anyhow::Result<()> {
                         let cc = std::env::var("LKR_CC")
                             .or_else(|_| std::env::var("CC"))
                             .unwrap_or_else(|_| "cc".to_string());
+
+                        let obj_path = safe.with_extension("o");
+                        let mut cc_input = obj_path.clone();
+                        if let Some(llc_path) = resolve_llvm_tool("llc", "LKR_LLVM_LLC") {
+                            let mut llc_cmd = Command::new(&llc_path);
+                            llc_cmd.arg("-filetype=obj").arg(&ll_path).arg("-o").arg(&obj_path);
+                            if let Some(triple) = &target_triple {
+                                llc_cmd.arg("-mtriple").arg(triple);
+                            }
+                            let llc_status = llc_cmd
+                                .status()
+                                .with_context(|| format!("failed to spawn llc at {}", llc_path.display()))?;
+                            if !llc_status.success() {
+                                anyhow::bail!("llc failed with status {}", llc_status);
+                            }
+                        } else if let Some(c_src) = &bytecode_trampoline_c_src {
+                            let c_path = safe.with_extension("trampoline.c");
+                            std::fs::write(&c_path, c_src)
+                                .with_context(|| format!("Failed to write C trampoline to {}", c_path.display()))?;
+                            cc_input = c_path;
+                        } else {
+                            anyhow::bail!("llc tool not found");
+                        }
+
                         let mut cc_cmd = Command::new(&cc);
-                        cc_cmd.arg(&obj_path);
+                        cc_cmd.arg(&cc_input);
                         for lib in &runtime_staticlibs {
                             cc_cmd.arg(lib);
                         }
                         cc_cmd.arg("-o").arg(&exe_path);
                         if let Some(triple) = &target_triple {
                             cc_cmd.arg(format!("--target={}", triple));
+                        }
+                        if !cfg!(target_os = "macos") && !cfg!(target_os = "windows") {
+                            cc_cmd.arg("-lm");
                         }
                         let target_is_apple = target_triple
                             .as_deref()
@@ -725,10 +808,15 @@ fn main() -> anyhow::Result<()> {
                             anyhow::bail!("linker {} failed with status {}", cc, cc_status);
                         }
 
+                        let backend_label = if bytecode_trampoline_c_src.is_some() {
+                            "VM bytecode trampoline"
+                        } else {
+                            opt_level_cli.label()
+                        };
                         eprintln!(
-                            "Emitted ELF executable to {} (opt-level {}, LLVM IR at {})",
+                            "Emitted ELF executable to {} (backend {}, LLVM IR at {})",
                             exe_path.display(),
-                            opt_level_cli.label(),
+                            backend_label,
                             ll_path.display()
                         );
                         return Ok(());

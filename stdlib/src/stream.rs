@@ -4,7 +4,7 @@ use lkr_core::{
     module,
     module::Module,
     rt,
-    val::{StreamValue, Type, Val, methods::register_method},
+    val::{StreamCursorValue, StreamValue, Type, Val, methods::register_method},
     vm::VmContext,
 };
 use once_cell::sync::Lazy;
@@ -398,7 +398,7 @@ impl StreamModule {
             ci.channel_id = Some(*channel_id);
         }
         CURSOR_INFO.insert(id, ci);
-        Ok(Val::StreamCursor { id, stream_id })
+        Ok(Val::StreamCursor(Arc::new(StreamCursorValue { id, stream_id })))
     }
 
     // Module API implementations
@@ -517,7 +517,7 @@ impl StreamModule {
 
     fn next(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         let cid = match args {
-            [Val::StreamCursor { id, .. }] => *id,
+            [Val::StreamCursor(c)] => c.id,
             _ => return Err(anyhow!("next expects (cursor)")),
         };
         let cursor_arc = CURSORS
@@ -534,7 +534,7 @@ impl StreamModule {
     fn collect(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         match args {
             // collect(cursor[, n])
-            [Val::StreamCursor { .. }, ..] => Self::collect_cursor(args, ctx),
+            [Val::StreamCursor(_), ..] => Self::collect_cursor(args, ctx),
             // collect(stream[, n])
             [Val::Stream(_), ..] => Self::collect_stream(args, ctx),
             _ => Err(anyhow!("collect expects (stream|cursor[, n])")),
@@ -557,8 +557,8 @@ impl StreamModule {
 
     fn collect_cursor(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         let (cid, limit) = match args {
-            [Val::StreamCursor { id, .. }] => (*id, None),
-            [Val::StreamCursor { id, .. }, n] => (*id, Some(extract_int(n)?)),
+            [Val::StreamCursor(c)] => (c.id, None),
+            [Val::StreamCursor(c), n] => (c.id, Some(extract_int(n)?)),
             _ => return Err(anyhow!("collect(cursor[, n]) expects cursor as first argument")),
         };
         let cursor_arc = CURSORS
@@ -591,8 +591,8 @@ impl StreamModule {
     fn next_block(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         use std::time::Duration;
         let (cid, timeout_ms) = match args {
-            [Val::StreamCursor { id, .. }] => (*id, None),
-            [Val::StreamCursor { id, .. }, Val::Int(ms)] => (*id, Some(*ms)),
+            [Val::StreamCursor(c)] => (c.id, None),
+            [Val::StreamCursor(c), Val::Int(ms)] => (c.id, Some(*ms)),
             _ => {
                 return Err(anyhow!(
                     "next_block(cursor[, timeout_ms]) expects cursor as first argument"
@@ -638,28 +638,22 @@ impl StreamModule {
         let (cursor_id, need_drop_cursor, limit, timeout_ms) = match args {
             [Val::Stream(stream)] => {
                 let c = Self::create_cursor(stream.id)?;
-                let Val::StreamCursor { id: cid, .. } = c else {
-                    unreachable!()
-                };
+                let cid = match &c { Val::StreamCursor(cur) => cur.id, _ => unreachable!() };
                 (cid, Some(c), None, None)
             }
             [Val::Stream(stream), n] => {
                 let c = Self::create_cursor(stream.id)?;
-                let Val::StreamCursor { id: cid, .. } = c else {
-                    unreachable!()
-                };
+                let cid = match &c { Val::StreamCursor(cur) => cur.id, _ => unreachable!() };
                 (cid, Some(c), Some(extract_int(n)?), None)
             }
             [Val::Stream(stream), n, Val::Int(ms)] => {
                 let c = Self::create_cursor(stream.id)?;
-                let Val::StreamCursor { id: cid, .. } = c else {
-                    unreachable!()
-                };
+                let cid = match &c { Val::StreamCursor(cur) => cur.id, _ => unreachable!() };
                 (cid, Some(c), Some(extract_int(n)?), Some(*ms))
             }
-            [Val::StreamCursor { id: cid, .. }] => (*cid, None, None, None),
-            [Val::StreamCursor { id: cid, .. }, n] => (*cid, None, Some(extract_int(n)?), None),
-            [Val::StreamCursor { id: cid, .. }, n, Val::Int(ms)] => (*cid, None, Some(extract_int(n)?), Some(*ms)),
+            [Val::StreamCursor(cur)] => (cur.id, None, None, None),
+            [Val::StreamCursor(cur), n] => (cur.id, None, Some(extract_int(n)?), None),
+            [Val::StreamCursor(cur), n, Val::Int(ms)] => (cur.id, None, Some(extract_int(n)?), Some(*ms)),
             _ => return Err(anyhow!("collect_block expects (stream|cursor[, n][, timeout_ms])")),
         };
 
