@@ -17,12 +17,12 @@ use lkr_core::vm::VmContext;
 const LIST_MUT_TYPE: &str = "ListMut";
 
 struct ListIteratorState {
-    data: Arc<[Val]>,
+    data: Arc<Vec<Val>>,
     index: usize,
 }
 
 impl ListIteratorState {
-    fn new(data: Arc<[Val]>) -> Self {
+    fn new(data: Arc<Vec<Val>>) -> Self {
         Self { data, index: 0 }
     }
 
@@ -111,7 +111,7 @@ impl MutationGuardState for ListMutationGuardState {
     }
 
     fn commit(&mut self) -> Result<Val> {
-        let scratch: Arc<[Val]> = Arc::from(Vec::<Val>::new());
+        let scratch: Arc<Vec<Val>> = Arc::from(Vec::<Val>::new());
         let current = mem::replace(&mut self.inner, ListMutation::new(scratch));
         let updated = current.finish();
         self.inner = ListMutation::from_val(&updated)?;
@@ -364,12 +364,7 @@ impl ListModule {
             return Err(anyhow!("push() takes exactly 2 arguments: list, value"));
         }
         match &args[0] {
-            Val::List(_) => {
-                let mut list = ListMutation::from_val(&args[0])?;
-                list.reserve(1);
-                list.push(args[1].clone());
-                Ok(list.finish())
-            }
+            Val::List(list) => Ok(Val::List(Val::append_to_list(list.as_ref(), &args[1]))),
             _ => Err(anyhow!("push() first argument must be a list")),
         }
     }

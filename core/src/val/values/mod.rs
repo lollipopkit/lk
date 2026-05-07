@@ -82,21 +82,21 @@ pub struct VmCallEnv {
 #[derive(Debug, Clone)]
 pub struct ClosureCapture {
     names: Arc<[String]>,
-    values: Arc<[Val]>,
+    values: Arc<Vec<Val>>,
 }
 
 impl ClosureCapture {
     pub fn empty() -> Arc<Self> {
         Arc::new(Self {
             names: Arc::<[String]>::from(Vec::new()),
-            values: Arc::<[Val]>::from(Vec::new()),
+            values: Arc::new(Vec::new()),
         })
     }
 
     pub fn from_pairs(names: Vec<String>, values: Vec<Val>) -> Arc<Self> {
         Arc::new(Self {
             names: Arc::<[String]>::from(names),
-            values: Arc::<[Val]>::from(values),
+            values: Arc::new(values),
         })
     }
 
@@ -495,8 +495,8 @@ pub enum Val {
     /// Map type, wrapped in Arc<FastHashMap> to avoid deep cloning
     /// Keys use Arc<str> to reduce key-string cloning and allocations
     Map(Arc<FastHashMap<Arc<str>, Val>>),
-    /// List type, stored as Arc<[Val]> for compact, immutable sharing
-    List(Arc<[Val]>),
+    /// List type, stored as Arc<Vec<Val>> for compact, immutable sharing
+    List(Arc<Vec<Val>>),
     /// Closure - contains parameters and body with captured environment
     Closure(Arc<ClosureValue>),
     /// Rust function - contains a function pointer that can be called
@@ -677,7 +677,7 @@ impl Val {
     }
 
     #[inline]
-    pub(crate) fn list_contains(list: &Arc<[Val]>, needle: &Val) -> bool {
+    pub(crate) fn list_contains(list: &Arc<Vec<Val>>, needle: &Val) -> bool {
         if let Some(result) = cached_list_contains(list, needle) {
             result
         } else {
@@ -686,7 +686,7 @@ impl Val {
     }
 
     #[inline]
-    pub(crate) fn list_contains_all(list: &Arc<[Val]>, subset: &Arc<[Val]>) -> bool {
+    pub(crate) fn list_contains_all(list: &Arc<Vec<Val>>, subset: &Arc<Vec<Val>>) -> bool {
         subset.iter().all(|item| Val::list_contains(list, item))
     }
 
@@ -1014,7 +1014,7 @@ impl Val {
 
     /// Efficient string concatenation without redundant copying.
     #[inline]
-    fn concat_strings(a: &str, b: &str) -> Val {
+    pub(crate) fn concat_strings(a: &str, b: &str) -> Val {
         if a.is_empty() {
             return Val::Str(Arc::from(b));
         }
@@ -1042,79 +1042,33 @@ impl Val {
     }
 
     #[inline]
-    pub(crate) fn clone_list_slice(slice: &[Val]) -> Arc<[Val]> {
+    pub(crate) fn clone_list_slice(slice: &[Val]) -> Arc<Vec<Val>> {
         if slice.is_empty() {
-            return Arc::<[Val]>::from(Vec::new());
+            return Arc::new(Vec::new());
         }
-
-        let mut buffer = Arc::<[MaybeUninit<Val>]>::new_uninit_slice(slice.len());
-        {
-            let slots = Arc::get_mut(&mut buffer).expect("new_uninit_slice returns unique arc");
-            unsafe {
-                let mut ptr = slots.as_mut_ptr();
-                for item in slice {
-                    let val_ptr = ptr.cast::<Val>();
-                    ptr::write(val_ptr, item.clone());
-                    ptr = ptr.add(1);
-                }
-            }
-        }
-
-        let raw = Arc::into_raw(buffer) as *const [MaybeUninit<Val>];
-        unsafe { Arc::from_raw(raw as *const [Val]) }
+        Arc::new(slice.to_vec())
     }
 
     #[inline]
-    pub(crate) fn concat_lists(left: &[Val], right: &[Val]) -> Arc<[Val]> {
+    pub(crate) fn concat_lists(left: &[Val], right: &[Val]) -> Arc<Vec<Val>> {
         if left.is_empty() {
             return Self::clone_list_slice(right);
         }
         if right.is_empty() {
             return Self::clone_list_slice(left);
         }
-
-        let total_len = left.len() + right.len();
-        let mut buffer = Arc::<[MaybeUninit<Val>]>::new_uninit_slice(total_len);
-        {
-            let slots = Arc::get_mut(&mut buffer).expect("new_uninit_slice returns unique arc");
-            unsafe {
-                let mut ptr = slots.as_mut_ptr();
-                for item in left {
-                    let val_ptr = ptr.cast::<Val>();
-                    ptr::write(val_ptr, item.clone());
-                    ptr = ptr.add(1);
-                }
-                for item in right {
-                    let val_ptr = ptr.cast::<Val>();
-                    ptr::write(val_ptr, item.clone());
-                    ptr = ptr.add(1);
-                }
-            }
-        }
-
-        let raw = Arc::into_raw(buffer) as *const [MaybeUninit<Val>];
-        unsafe { Arc::from_raw(raw as *const [Val]) }
+        let mut vec = Vec::with_capacity(left.len() + right.len());
+        vec.extend_from_slice(left);
+        vec.extend_from_slice(right);
+        Arc::new(vec)
     }
 
-    #[inline]
-    pub(crate) fn append_to_list(list: &[Val], value: &Val) -> Arc<[Val]> {
-        let mut buffer = Arc::<[MaybeUninit<Val>]>::new_uninit_slice(list.len() + 1);
-        {
-            let slots = Arc::get_mut(&mut buffer).expect("new_uninit_slice returns unique arc");
-            unsafe {
-                let mut ptr = slots.as_mut_ptr();
-                for item in list {
-                    let val_ptr = ptr.cast::<Val>();
-                    ptr::write(val_ptr, item.clone());
-                    ptr = ptr.add(1);
-                }
-                let val_ptr = ptr.cast::<Val>();
-                ptr::write(val_ptr, value.clone());
-            }
-        }
-
-        let raw = Arc::into_raw(buffer) as *const [MaybeUninit<Val>];
-        unsafe { Arc::from_raw(raw as *const [Val]) }
+    #[inline(always)]
+    pub fn append_to_list(list: &[Val], value: &Val) -> Arc<Vec<Val>> {
+        let mut vec = Vec::with_capacity(list.len() + 1);
+        vec.extend_from_slice(list);
+        vec.push(value.clone());
+        Arc::new(vec)
     }
 }
 

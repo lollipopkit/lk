@@ -54,6 +54,19 @@ impl FunctionBuilder {
     }
 
     fn compile_method_call(&mut self, obj_expr: &Expr, field_expr: &Expr, args: &[Box<Expr>]) -> u16 {
+        // Fast path: t.push(val) — emit ListPush opcode
+        if args.len() == 1
+            && let Expr::Var(var_name) = obj_expr
+            && let Expr::Val(Val::Str(method)) = field_expr
+            && method.as_ref() == "push"
+        {
+            if let Some(list_reg) = self.lookup(var_name) {
+                let val_reg = self.expr(&args[0]);
+                self.emit(Op::ListPush { list: list_reg, val: val_reg });
+                return list_reg;
+            }
+        }
+
         let obj_reg = self.expr(obj_expr);
         let pos_list = self.emit_list_from_exprs(args);
         let method_reg = self.expr(field_expr);
@@ -312,11 +325,26 @@ impl FunctionBuilder {
                 return true;
             }
             BinOp::Lt => {
-                self.emit(Op::CmpLtImm(dst, left_reg, imm));
+                if (-128..=127).contains(&imm) {
+                    self.emit(Op::CmpLtImm(dst, left_reg, imm));
+                } else {
+                    // Large immediate: emit LoadK+CmpLt (both bc32-packable)
+                    let k = self.k(Val::Int(imm as i64));
+                    let tmp = self.alloc();
+                    self.emit(Op::LoadK(tmp, k));
+                    self.emit(Op::CmpLt(dst, left_reg, tmp));
+                }
                 return true;
             }
             BinOp::Le => {
-                self.emit(Op::CmpLeImm(dst, left_reg, imm));
+                if (-128..=127).contains(&imm) {
+                    self.emit(Op::CmpLeImm(dst, left_reg, imm));
+                } else {
+                    let k = self.k(Val::Int(imm as i64));
+                    let tmp = self.alloc();
+                    self.emit(Op::LoadK(tmp, k));
+                    self.emit(Op::CmpLe(dst, left_reg, tmp));
+                }
                 return true;
             }
             BinOp::Gt => {

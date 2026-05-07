@@ -28,3 +28,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 llvm-tools = "0.1"
+
+[profile.release]
+panic = "abort"

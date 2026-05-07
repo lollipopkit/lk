@@ -364,16 +364,16 @@ fn map_to_iterable(map: &FastHashMap<Arc<str>, Val>) -> Val {
             pairs.push(pair);
         }
     }
-    Val::List(pairs.into())
+    Val::List(Arc::new(pairs))
 }
 
-fn list_slice(list: &Arc<[Val]>, start: i64) -> Val {
+fn list_slice(list: &Arc<Vec<Val>>, start: i64) -> Val {
     if start <= 0 {
         return Val::List(list.clone());
     }
     let idx = start as usize;
     if idx >= list.len() {
-        Val::List(Vec::<Val>::new().into())
+        Val::List(Arc::new(Vec::new()))
     } else {
         Val::List(list[idx..].to_vec().into())
     }
@@ -456,7 +456,7 @@ pub extern "C" fn lkr_rt_build_list(ptr: *const i64, len: i64) -> i64 {
     let len_usize = len.max(0) as usize;
     with_state(|state| {
         let elements = state.decode_values(ptr, len_usize);
-        let list = Val::List(elements.into());
+        let list = Val::List(Arc::new(elements));
         state.encode_value(list)
     })
 }
@@ -640,11 +640,11 @@ pub extern "C" fn lkr_rt_to_iter(value: i64) -> i64 {
             Val::List(_) | Val::Str(_) => val,
             Val::Map(ref map) => map_to_iterable(map),
             other => match other {
-                Val::Nil => Val::List(Vec::<Val>::new().into()),
+                Val::Nil => Val::List(Arc::new(Vec::new())),
                 Val::Bool(_) | Val::Int(_) | Val::Float(_) | Val::Object(_) | Val::Task(_) | Val::Channel(_) => {
-                    Val::List(Vec::<Val>::new().into())
+                    Val::List(Arc::new(Vec::new()))
                 }
-                _ => Val::List(Vec::<Val>::new().into()),
+                _ => Val::List(Arc::new(Vec::new())),
             },
         };
         state.encode_value(iter)

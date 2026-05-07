@@ -62,7 +62,7 @@ where
 {
     fn from(v: Vec<T>) -> Self {
         let v: Vec<Val> = v.into_iter().map(Into::into).collect();
-        Val::List(Arc::<[Val]>::from(v))
+        Val::List(Arc::new(v))
     }
 }
 

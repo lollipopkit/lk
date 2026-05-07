@@ -147,7 +147,7 @@ pub(super) struct ForRangeState {
 }
 
 impl ForRangeState {
-    #[inline]
+    #[inline(always)]
     pub(super) fn new(current: i64, limit: i64, step: i64, inclusive: bool) -> Self {
         Self {
             current,
@@ -158,7 +158,7 @@ impl ForRangeState {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub(super) fn should_continue(&self) -> bool {
         if self.positive {
             if self.inclusive {
@@ -284,6 +284,10 @@ pub(super) enum PackedHotKind {
     Ret {
         base: u16,
         retc: u8,
+    },
+    ListPush {
+        list: u16,
+        val: u16,
     },
 }
 

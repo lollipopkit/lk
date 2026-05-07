@@ -232,6 +232,11 @@ pub enum Op {
         src: u16,   // source list register
         start: u16, // start index (inclusive) in register (must be Int)
     },
+    // Append value to list in-place (Arc::make_mut when possible)
+    ListPush {
+        list: u16, // list register (must be List type) — mutated in-place if refcount==1
+        val: u16,  // value register to append
+    },
     MakeClosure {
         dst: u16,
         proto: u16,
@@ -383,6 +388,7 @@ impl fmt::Debug for Op {
             Op::ListSlice { dst, src, start } => {
                 write!(f, "ListSlice r{}, r{}, r{}", dst, src, start)
             }
+            Op::ListPush { list, val } => write!(f, "ListPush r{}, r{}", list, val),
             Op::MakeClosure { dst, proto } => write!(f, "MakeClosure r{}, p{}", dst, proto),
             Op::Jmp(ofs) => write!(f, "Jmp {}", ofs),
             Op::JmpFalse(r, ofs) => write!(f, "JmpFalse r{}, {}", r, ofs),

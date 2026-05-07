@@ -72,7 +72,11 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::Add(dst, a, b) => {
-                if !Vm::arith2_try_numeric(
+                let a_val = rk_read(regs, &f.consts, *a);
+                let b_val = rk_read(regs, &f.consts, *b);
+                if let (Val::Str(a_str), Val::Str(b_str)) = (&a_val, &b_val) {
+                    assign_reg(frame_raw, regs, *dst as usize, Val::concat_strings(a_str, b_str));
+                } else if !Vm::arith2_try_numeric(
                     frame_raw,
                     regs,
                     &f.consts,
@@ -160,7 +164,13 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::AddInt(dst, a, b) => {
-                int_binop(frame_raw, regs, &f.consts, *dst, *a, *b, |x, y| x + y, BinOp::Add)?;
+                let a_val = &regs[*a as usize];
+                let b_val = &regs[*b as usize];
+                if let (Val::Str(a_str), Val::Str(b_str)) = (a_val, b_val) {
+                    assign_reg(frame_raw, regs, *dst as usize, Val::concat_strings(a_str, b_str));
+                } else {
+                    int_binop(frame_raw, regs, &f.consts, *dst, *a, *b, |x, y| x + y, BinOp::Add)?;
+                }
                 pc += 1;
             }
             Op::AddFloat(dst, a, b) => {
@@ -168,7 +178,13 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::AddIntImm(dst, a, imm) => {
-                int_binop_imm(frame_raw, regs, &f.consts, *dst, *a, *imm, |x, y| x + y, BinOp::Add)?;
+                let src_idx = *a as usize;
+                let dst_idx = *dst as usize;
+                if let Val::Int(x) = regs[src_idx] {
+                    assign_reg(frame_raw, regs, dst_idx, Val::Int(x + *imm as i64));
+                } else {
+                    int_binop_imm(frame_raw, regs, &f.consts, *dst, *a, *imm, |x, y| x + y, BinOp::Add)?;
+                }
                 pc += 1;
             }
             Op::SubInt(dst, a, b) => {
@@ -813,6 +829,24 @@ pub(super) fn run_opcode_code(
                         } else {
                             assign_reg(frame_raw, regs, *dst as usize, Val::List((list[s..]).to_vec().into()));
                         }
+                    }
+                }
+                pc += 1;
+            }
+            Op::ListPush { list, val } => {
+                let pushed_val = regs[*val as usize].clone();
+                match &mut regs[*list as usize] {
+                    Val::List(arc) => {
+                        let list_vec = Arc::make_mut(arc);
+                        list_vec.push(pushed_val);
+                    }
+                    _ => {
+                        return frame_return_common(
+                            frame_raw,
+                            pc,
+                            Err(anyhow!("ListPush target is not a List")),
+                        )
+                        .map(Some);
                     }
                 }
                 pc += 1;

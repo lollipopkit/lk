@@ -1,4 +1,6 @@
 // List operations benchmark
+import os;
+
 let start = os.clock();
 let t = [];
 let i = 0;

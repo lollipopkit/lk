@@ -73,7 +73,7 @@ pub trait MutableMap {
 
 /// Copy-on-write mutation guard for list values.
 pub struct ListMutation {
-    original: Arc<[Val]>,
+    original: Arc<Vec<Val>>,
     scratch: Option<Vec<Val>>,
 }
 
@@ -87,7 +87,7 @@ impl ListMutation {
     }
 
     /// Wraps the provided list arc.
-    pub fn new(list: Arc<[Val]>) -> Self {
+    pub fn new(list: Arc<Vec<Val>>) -> Self {
         Self {
             original: list,
             scratch: None,
@@ -167,7 +167,7 @@ impl MutableSequence for ListMutation {
             Val::List(self.original)
         } else {
             let vec = self.scratch.expect("scratch must exist when mutated");
-            Val::List(Arc::<[Val]>::from(vec))
+            Val::List(Arc::new(vec))
         }
     }
 }
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn list_mutation_reuses_original_when_pristine() {
-        let original: Arc<[Val]> = vec![Val::Int(1), Val::Int(2)].into();
+        let original: Arc<Vec<Val>> = vec![Val::Int(1), Val::Int(2)].into();
         let guard = ListMutation::new(original.clone());
         let result = guard.finish();
         let Val::List(list_arc) = result else {
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn list_mutation_clones_on_write() {
-        let original: Arc<[Val]> = vec![Val::Int(1), Val::Int(2)].into();
+        let original: Arc<Vec<Val>> = vec![Val::Int(1), Val::Int(2)].into();
         let mut guard = ListMutation::new(original.clone());
         guard.push(Val::Int(3));
         let result = guard.finish();

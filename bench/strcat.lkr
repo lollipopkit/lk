@@ -1,4 +1,5 @@
 // String concatenation benchmark
+import os;
 import string;
 let start = os.clock();
 let s = "";

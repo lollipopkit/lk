@@ -44,7 +44,7 @@ static CURSOR_INFO: Lazy<DashMap<u64, CursorInfo>> = Lazy::new(DashMap::new);
 // Stream specification: cold (multi-consumer) description that can open independent cursors
 #[derive(Debug, Clone)]
 enum StreamSpec {
-    FromList(Arc<[Val]>),
+    FromList(Arc<Vec<Val>>),
     Range {
         start: i64,
         end: Option<i64>,
@@ -141,7 +141,7 @@ impl StreamSpec {
 // Concrete cursors
 #[derive(Debug)]
 struct FromListCursor {
-    data: Arc<[Val]>,
+    data: Arc<Vec<Val>>,
     idx: usize,
 }
 impl StreamCursor for FromListCursor {
@@ -585,7 +585,7 @@ impl StreamModule {
                 None => break,
             }
         }
-        Ok(Val::List(out.into()))
+        Ok(Val::List(Arc::new(out)))
     }
 
     fn next_block(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
@@ -727,7 +727,7 @@ impl StreamModule {
 
         // need_drop_cursor is not used beyond lifetime tracking; cursor will drop at end of scope
         let _ = need_drop_cursor;
-        Ok(Val::List(out.into()))
+        Ok(Val::List(Arc::new(out)))
     }
 
     fn to_stream(args: &[Val], ctx: &mut VmContext) -> Result<Val> {

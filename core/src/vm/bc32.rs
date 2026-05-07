@@ -645,6 +645,7 @@ pub(crate) enum Tag {
     BuildMap,
     MakeClosure,
     CallNamedX,
+    ListPush,
 }
 
 impl Tag {
@@ -709,6 +710,7 @@ impl Tag {
             56 => Tag::BuildMap,
             57 => Tag::MakeClosure,
             58 => Tag::CallNamedX,
+            59 => Tag::ListPush,
             _ => return None,
         })
     }
@@ -875,6 +877,7 @@ fn opcode_name(op: &Op) -> &'static str {
         Op::BuildList { .. } => "BuildList",
         Op::BuildMap { .. } => "BuildMap",
         Op::ListSlice { .. } => "ListSlice",
+        Op::ListPush { .. } => "ListPush",
         Op::MakeClosure { .. } => "MakeClosure",
         Op::Jmp(..) => "Jmp",
         Op::JmpFalse(..) => "JmpFalse",
@@ -1175,6 +1178,11 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let word = pack(Tag::ListSlice, 0, dst as u8, src as u8, start as u8);
             Ok(EncodedOp::new(word, None))
         }
+        Op::ListPush { list, val } => {
+            ensure_regs_u8("ListPush", list, val, 0)?;
+            let word = pack(Tag::ListPush, 0, list as u8, val as u8, 0);
+            Ok(EncodedOp::new(word, None))
+        }
         Op::BuildList { dst, base, len } => {
             ensure_regs_u8("BuildList", dst, base, len)?;
             let word = pack(Tag::BuildList, 0, dst as u8, base as u8, len as u8);
@@ -1311,6 +1319,10 @@ pub(crate) fn decode_word_with_hi(tag: Tag, flags: u8, w: u32, hi: (u16, u16, u1
             dst: a,
             src: b_reg,
             start: c_reg,
+        },
+        Tag::ListPush => Op::ListPush {
+            list: a,
+            val: b_reg,
         },
         Tag::BuildList => Op::BuildList {
             dst: a,

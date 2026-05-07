@@ -10,7 +10,7 @@ use super::Val;
 const LIST_CACHE_MIN_LEN: usize = 64;
 
 struct HomogeneousListCache<T> {
-    list: Weak<[Val]>,
+    list: Weak<Vec<Val>>,
     set: FastHashSet<T>,
 }
 
@@ -22,11 +22,11 @@ fn cleanup_cache<T>(map: &DashMap<usize, HomogeneousListCache<T>>) {
     map.retain(|_, entry| entry.list.upgrade().is_some());
 }
 
-fn list_cache_key(list: &Arc<[Val]>) -> usize {
+fn list_cache_key(list: &Arc<Vec<Val>>) -> usize {
     Arc::as_ptr(list) as *const () as usize
 }
 
-fn cached_list_contains_int(list: &Arc<[Val]>, needle: i64) -> Option<bool> {
+fn cached_list_contains_int(list: &Arc<Vec<Val>>, needle: i64) -> Option<bool> {
     if list.len() < LIST_CACHE_MIN_LEN {
         return None;
     }
@@ -75,7 +75,7 @@ fn cached_list_contains_int(list: &Arc<[Val]>, needle: i64) -> Option<bool> {
     })
 }
 
-fn cached_list_contains_str(list: &Arc<[Val]>, needle: &Arc<str>) -> Option<bool> {
+fn cached_list_contains_str(list: &Arc<Vec<Val>>, needle: &Arc<str>) -> Option<bool> {
     if list.len() < LIST_CACHE_MIN_LEN {
         return None;
     }
@@ -124,7 +124,7 @@ fn cached_list_contains_str(list: &Arc<[Val]>, needle: &Arc<str>) -> Option<bool
     })
 }
 
-fn cached_list_contains_bool(list: &Arc<[Val]>, needle: bool) -> Option<bool> {
+fn cached_list_contains_bool(list: &Arc<Vec<Val>>, needle: bool) -> Option<bool> {
     if list.len() < LIST_CACHE_MIN_LEN {
         return None;
     }
@@ -173,7 +173,7 @@ fn cached_list_contains_bool(list: &Arc<[Val]>, needle: bool) -> Option<bool> {
     })
 }
 
-pub(super) fn cached_list_contains(list: &Arc<[Val]>, needle: &Val) -> Option<bool> {
+pub(super) fn cached_list_contains(list: &Arc<Vec<Val>>, needle: &Val) -> Option<bool> {
     match needle {
         Val::Int(i) => cached_list_contains_int(list, *i),
         Val::Str(s) => cached_list_contains_str(list, s),
@@ -191,7 +191,7 @@ mod cache_tests {
     #[test]
     fn reuses_cached_int_membership() {
         LIST_INT_CACHE.clear();
-        let list: Arc<[Val]> = (0..128).map(Val::Int).collect::<Vec<_>>().into();
+        let list: Arc<Vec<Val>> = (0..128).map(Val::Int).collect::<Vec<_>>().into();
         let needle = Val::Int(64);
 
         assert!(Val::list_contains(&list, &needle));
@@ -205,7 +205,7 @@ mod cache_tests {
         use std::time::{Duration, Instant};
 
         LIST_INT_CACHE.clear();
-        let list: Arc<[Val]> = (0..100_000).map(Val::Int).collect::<Vec<_>>().into();
+        let list: Arc<Vec<Val>> = (0..100_000).map(Val::Int).collect::<Vec<_>>().into();
         let needle = Val::Int(99_999);
 
         assert!(Val::list_contains(&list, &needle));
