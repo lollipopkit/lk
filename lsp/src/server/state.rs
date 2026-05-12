@@ -32,6 +32,7 @@ pub(crate) struct LkrLanguageServer {
     pub(crate) documents: Arc<DashMap<Url, Document>>,
     pub(crate) analyzer: Mutex<LkrAnalyzer>,
     pub(crate) config: Mutex<super::config::ServerConfig>,
+    // Shared limiter for all heavy analysis work (diagnostics, hover-derived lookups, etc.).
     pub(crate) compute_limiter: Mutex<Arc<Semaphore>>,
     pub(crate) workspace_root: Mutex<Option<PathBuf>>,
 }

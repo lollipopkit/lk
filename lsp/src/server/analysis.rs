@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use ropey::Rope;
 use tokio::task;
@@ -13,6 +14,17 @@ use lkr_core::{resolve, stmt, token};
 
 use super::state::LkrLanguageServer;
 use super::text::{describe_token_hover, find_token_at_offset, position_to_char_idx};
+use tracing::debug;
+
+fn log_timing(stage: &str, uri: &Url, duration_ms: u128, details: &str) {
+    debug!(
+        operation = %stage,
+        uri = %uri,
+        duration_ms = duration_ms,
+        details = %details,
+        "LSP timing"
+    );
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SymbolContext {
@@ -87,6 +99,11 @@ impl LkrLanguageServer {
             .to_file_path()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+        let sem = self.compute_limiter.lock().unwrap().clone();
+        let _permit = sem.acquire().await.ok()?;
+
+        let start = Instant::now();
         let computed_result = task::spawn_blocking(move || {
             let mut analyzer = LkrAnalyzer::new();
             if let Some(b) = base_dir {
@@ -96,7 +113,17 @@ impl LkrLanguageServer {
         })
         .await
         .ok()?;
+
         let computed = Arc::new(computed_result);
+
+        if let Some(elapsed) = Instant::now().checked_duration_since(start).map(|d| d.as_millis()) {
+            log_timing(
+                "get_or_compute_analysis",
+                uri,
+                elapsed,
+                "full analysis for demand request",
+            );
+        }
 
         if let Some(mut doc) = self.documents.get_mut(uri) {
             if doc.version == version_snapshot && doc.debounce_seq == seq_snapshot {
@@ -125,6 +152,7 @@ impl LkrLanguageServer {
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
         let sem = self.compute_limiter.lock().unwrap().clone();
         let _permit = sem.acquire().await.ok();
+        let start = Instant::now();
         let generated_result = task::spawn_blocking(move || {
             let mut analyzer = LkrAnalyzer::new_light();
             if let Some(b) = base_dir {
@@ -135,6 +163,15 @@ impl LkrLanguageServer {
         .await
         .ok()?;
         let generated = Arc::new(generated_result);
+
+        if let Some(elapsed) = Instant::now().checked_duration_since(start).map(|d| d.as_millis()) {
+            log_timing(
+                "generate_semantic_tokens",
+                uri,
+                elapsed,
+                "full semantic token generation",
+            );
+        }
 
         if let Some(mut doc) = self.documents.get_mut(uri) {
             if doc.version == version_snapshot && doc.debounce_seq == seq_snapshot {
@@ -147,6 +184,7 @@ impl LkrLanguageServer {
     pub(crate) async fn schedule_diagnostics_and_warmup(&self, uri: Url, scheduled_version: i32, delay_ms: u64) {
         let documents = self.documents.clone();
         let client = self.client.clone();
+        let sem = self.compute_limiter.lock().unwrap().clone();
         tokio::spawn(async move {
             sleep(Duration::from_millis(delay_ms)).await;
 
@@ -156,17 +194,54 @@ impl LkrLanguageServer {
                 return;
             };
 
-            if version_snapshot != scheduled_version {
+            if version_snapshot != scheduled_version
+                || documents.get(&uri).map_or(true, |doc| doc.debounce_seq != seq_snapshot)
+            {
+                return;
+            }
+
+            let Some(_permit) = sem.acquire().await.ok() else {
+                return;
+            };
+
+            if let Some(doc) = documents.get(&uri) {
+                if doc.version != scheduled_version || doc.debounce_seq != seq_snapshot {
+                    return;
+                }
+            } else {
                 return;
             }
 
             let content_for_compute = content_snapshot.clone();
+            let base_dir = uri
+                .to_file_path()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+            let start = Instant::now();
             let computed_result = task::spawn_blocking(move || {
                 let mut analyzer = LkrAnalyzer::new();
+                if let Some(b) = base_dir {
+                    analyzer.set_base_dir(b);
+                }
                 analyzer.analyze(&content_for_compute)
             })
             .await
             .ok();
+
+            if let Some(diagnostics_len) = computed_result.as_ref().map(|c| c.diagnostics.len()) {
+                if let Some(elapsed) = Instant::now().checked_duration_since(start).map(|d| d.as_millis()) {
+                    log_timing(
+                        "schedule_diagnostics_and_warmup",
+                        &uri,
+                        elapsed,
+                        &format!(
+                            "diag_count={diagnostics_len}, content_len={}",
+                            content_for_compute.len()
+                        ),
+                    );
+                }
+            }
 
             let mut diagnostics_to_publish: Option<Vec<Diagnostic>> = None;
             if let Some(computed) = computed_result {

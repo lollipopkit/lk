@@ -3,6 +3,7 @@ use lkr_core::{
     ast::Parser as ExprParser,
     expr::Expr,
     module::ModuleRegistry,
+    package::PackageGraph,
     resolve,
     resolve::slots::{FunctionLayout, SlotResolver},
     stmt,
@@ -104,4 +105,7 @@ pub struct LkrAnalyzer {
     registry: ModuleRegistry,
     // Base directory for resolving relative file imports
     base_dir: Option<PathBuf>,
+    // Package modules available from Lkr.toml workspace/dependencies
+    package_modules: HashMap<String, PathBuf>,
+    missing_packages: HashSet<String>,
 }

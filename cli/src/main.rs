@@ -857,7 +857,11 @@ fn main() -> anyhow::Result<()> {
         let mut registry = ModuleRegistry::new();
         lkr_stdlib::register_stdlib_globals(&mut registry);
         lkr_stdlib::register_stdlib_modules(&mut registry)?;
-        let resolver = Arc::new(ModuleResolver::with_registry(registry));
+        let mut resolver = ModuleResolver::with_registry(registry);
+        if let Some(parent) = safe.parent().filter(|p| !p.as_os_str().is_empty()) {
+            resolver.set_base_dir(parent.to_path_buf());
+        }
+        let resolver = Arc::new(resolver);
         register_embedded_modules(&resolver, &module.bundled_modules);
         let mut base_env = VmContext::new()
             .with_resolver(Arc::clone(&resolver))
@@ -920,7 +924,11 @@ fn main() -> anyhow::Result<()> {
     let mut registry = ModuleRegistry::new();
     lkr_stdlib::register_stdlib_globals(&mut registry);
     lkr_stdlib::register_stdlib_modules(&mut registry)?;
-    let resolver = Arc::new(ModuleResolver::with_registry(registry));
+    let mut resolver = ModuleResolver::with_registry(registry);
+    if let Some(parent) = safe.parent().filter(|p| !p.as_os_str().is_empty()) {
+        resolver.set_base_dir(parent.to_path_buf());
+    }
+    let resolver = Arc::new(resolver);
     let mut base_env = VmContext::new()
         .with_resolver(Arc::clone(&resolver))
         .with_type_checker(Some(TypeChecker::new_strict()));

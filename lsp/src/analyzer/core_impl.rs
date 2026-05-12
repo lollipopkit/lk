@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Instant;
 
 impl LkrAnalyzer {
     /// Collect user-defined function named-parameter declarations from the current document.
@@ -172,6 +173,8 @@ impl LkrAnalyzer {
             // Empty registry; populated only in `new()` when needed for stdlib-aware features
             registry: ModuleRegistry::new(),
             base_dir: None,
+            package_modules: HashMap::new(),
+            missing_packages: HashSet::new(),
         }
     }
     /// Create a new LKR analyzer
@@ -189,6 +192,8 @@ impl LkrAnalyzer {
             completion_cache: None,
             registry,
             base_dir: None,
+            package_modules: HashMap::new(),
+            missing_packages: HashSet::new(),
         }
     }
 
@@ -573,13 +578,23 @@ impl LkrAnalyzer {
 
     /// Set the base directory used for resolving file imports
     pub fn set_base_dir(&mut self, base: PathBuf) {
+        if let Ok(Some(graph)) = PackageGraph::discover(&base) {
+            self.package_modules = graph
+                .modules
+                .into_iter()
+                .map(|module| (module.name, module.root))
+                .collect();
+            self.missing_packages = graph.missing.into_iter().collect();
+        }
         self.base_dir = Some(base);
     }
 
     /// Scan tokens to add diagnostics for unknown stdlib modules and unknown exports with precise spans
     fn add_import_diagnostics(&self, tokens: &[token::Token], spans: &[Span], result: &mut AnalysisResult) {
+        use std::collections::HashMap;
         use token::Token as T;
 
+        let mut file_exists_cache: HashMap<String, bool> = HashMap::new();
         let mut i = 0usize;
         while i < tokens.len() {
             match &tokens[i] {
@@ -588,8 +603,10 @@ impl LkrAnalyzer {
                     match tokens.get(j) {
                         Some(T::Str(path)) => {
                             // import "file"; -> check existence
-                            let exists = self.file_exists(path);
-                            if !exists {
+                            let exists = file_exists_cache
+                                .entry(path.clone())
+                                .or_insert_with(|| self.file_exists(path));
+                            if !*exists {
                                 // Diagnostic on the string span (includes quotes)
                                 if j < spans.len() {
                                     let sp = &spans[j];
@@ -685,7 +702,7 @@ impl LkrAnalyzer {
                                                 }
                                             }
                                         }
-                                    } else if j < spans.len() {
+                                    } else if !self.package_modules.contains_key(mod_name) && j < spans.len() {
                                         let sp = &spans[j];
                                         let range = Range::new(
                                             Position::new(sp.start.line - 1, sp.start.column.saturating_sub(1)),
@@ -696,7 +713,7 @@ impl LkrAnalyzer {
                                             Some(DiagnosticSeverity::ERROR),
                                             None,
                                             Some("lkr".to_string()),
-                                            format!("Unknown module: {}", mod_name),
+                                            self.module_diagnostic_message(mod_name),
                                             None,
                                             None,
                                         ));
@@ -719,7 +736,10 @@ impl LkrAnalyzer {
                             if j + 1 < tokens.len() {
                                 j += 1;
                                 if let T::Id(mod_name) = &tokens[j] {
-                                    if self.registry.get_module(mod_name).is_err() && j < spans.len() {
+                                    if self.registry.get_module(mod_name).is_err()
+                                        && !self.package_modules.contains_key(mod_name)
+                                        && j < spans.len()
+                                    {
                                         let sp = &spans[j];
                                         let range = Range::new(
                                             Position::new(sp.start.line - 1, sp.start.column.saturating_sub(1)),
@@ -730,7 +750,7 @@ impl LkrAnalyzer {
                                             Some(DiagnosticSeverity::ERROR),
                                             None,
                                             Some("lkr".to_string()),
-                                            format!("Unknown module: {}", mod_name),
+                                            self.module_diagnostic_message(mod_name),
                                             None,
                                             None,
                                         ));
@@ -747,7 +767,10 @@ impl LkrAnalyzer {
                         Some(T::Id(mod_name)) => {
                             // import module [as alias]?;
                             let mod_idx = j;
-                            if self.registry.get_module(mod_name).is_err() && mod_idx < spans.len() {
+                            if self.registry.get_module(mod_name).is_err()
+                                && !self.package_modules.contains_key(mod_name)
+                                && mod_idx < spans.len()
+                            {
                                 let sp = &spans[mod_idx];
                                 let range = Range::new(
                                     Position::new(sp.start.line - 1, sp.start.column.saturating_sub(1)),
@@ -758,7 +781,7 @@ impl LkrAnalyzer {
                                     Some(DiagnosticSeverity::ERROR),
                                     None,
                                     Some("lkr".to_string()),
-                                    format!("Unknown module: {}", mod_name),
+                                    self.module_diagnostic_message(mod_name),
                                     None,
                                     None,
                                 ));
@@ -783,27 +806,50 @@ impl LkrAnalyzer {
     }
 
     fn file_exists(&self, rel: &str) -> bool {
+        let start = Instant::now();
         // Absolute path: use as-is
         let path = Path::new(rel);
-        if path.is_absolute() {
-            return path.exists();
-        }
-        let base = self.base_dir.as_ref().cloned().unwrap_or_else(|| PathBuf::from("."));
-        let candidates = [base.clone(), base.join("lib"), base.join("modules")];
-        for dir in candidates.iter() {
-            let p = dir.join(rel);
-            if p.exists() {
-                return true;
-            }
-            // Try with .lkr appended if missing extension
-            if p.extension().is_none() {
-                let with_ext = p.with_extension("lkr");
-                if with_ext.exists() {
+        let exists = if path.is_absolute() {
+            path.exists()
+        } else {
+            let base = self.base_dir.as_ref().cloned().unwrap_or_else(|| PathBuf::from("."));
+            let candidates = [base.clone(), base.join("lib"), base.join("modules")];
+            candidates.iter().any(|dir| {
+                let p = dir.join(rel);
+                if p.exists() {
                     return true;
                 }
-            }
+                // Try with .lkr appended if missing extension
+                if p.extension().is_none() {
+                    let with_ext = p.with_extension("lkr");
+                    if with_ext.exists() {
+                        return true;
+                    }
+                }
+                false
+            })
+        };
+
+        let elapsed = start.elapsed().as_millis();
+        if elapsed > 2 {
+            tracing::debug!(
+                operation = "analyzer.file_exists",
+                path = %rel,
+                exists = exists,
+                duration_ms = elapsed,
+                "LSP analyzer file existence check",
+            );
         }
-        false
+
+        exists
+    }
+
+    fn module_diagnostic_message(&self, name: &str) -> String {
+        if self.missing_packages.contains(name) {
+            format!("Package not fetched: {} (run `lkr pkg fetch`)", name)
+        } else {
+            format!("Unknown module: {}", name)
+        }
     }
 
     /// Tokenize with spans, using an internal cache keyed by full content string.

@@ -33,7 +33,7 @@ impl ModuleBundler {
         if let Some(dir) = base_dir
             && !dir.as_os_str().is_empty()
         {
-            resolver.add_search_path(dir.to_path_buf());
+            resolver.set_base_dir(dir.to_path_buf());
         }
         Self {
             resolver,

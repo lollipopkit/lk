@@ -110,6 +110,12 @@ impl ModuleResolver {
         self.search_paths.push(path.into());
     }
 
+    /// Set the default base directory for relative file imports.
+    pub fn set_base_dir(&mut self, path: impl Into<PathBuf>) {
+        let base = path.into();
+        self.search_paths = vec![base.clone(), base.join("lib"), base.join("modules")];
+    }
+
     /// Register a precompiled module that should be resolved from memory instead of disk.
     pub fn register_embedded_module(&self, path: impl Into<PathBuf>, module: BytecodeModule) {
         let normalized = Self::normalize_path(path.into());
@@ -562,6 +568,26 @@ mod tests {
         // (error message still OK but not due to security check)
         let rel = PathBuf::from("does_not_exist.lkr");
         assert!(resolver.resolve_file_path(&rel.to_string_lossy()).is_err());
+    }
+
+    #[test]
+    fn test_resolve_file_path_uses_base_dir() -> Result<()> {
+        let mut base = std::env::temp_dir();
+        base.push(format!("lkr-import-base-test-{}", std::process::id()));
+        let current_file_dir = base.join("examples");
+        let nested_import_dir = current_file_dir.join("examples");
+        std::fs::create_dir_all(&nested_import_dir)?;
+
+        let expected = nested_import_dir.join("fib.lkr");
+        std::fs::write(&expected, "fn iterative(n) { return n; }\n")?;
+
+        let mut resolver = ModuleResolver::new();
+        resolver.set_base_dir(&current_file_dir);
+
+        assert_eq!(resolver.resolve_file_path("examples/fib")?, expected);
+
+        let _ = std::fs::remove_dir_all(base);
+        Ok(())
     }
 
     #[test]
