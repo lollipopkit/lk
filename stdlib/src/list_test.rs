@@ -83,9 +83,7 @@ mod tests {
     #[test]
     fn test_list_push_method_sugar_preserves_original() -> Result<()> {
         // push() is now mutating (in-place); result is the same list
-        let result = run(
-            "import list; let xs = [1, 2]; let ys = xs.push(3); return [xs.len(), ys.len(), ys.get(2)];",
-        )?;
+        let result = run("import list; let xs = [1, 2]; let ys = xs.push(3); return [xs.len(), ys.len(), ys.get(2)];")?;
         let Val::List(values) = result else {
             panic!("expected list result");
         };

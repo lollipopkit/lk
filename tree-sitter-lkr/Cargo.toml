@@ -14,6 +14,9 @@ links = "tree_sitter_lkr"
 [dependencies]
 tree-sitter = "~0.24"
 
+[features]
+link = []
+
 [build-dependencies]
 cc = "1"
 

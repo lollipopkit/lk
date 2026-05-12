@@ -6,6 +6,7 @@
 use std::sync::OnceLock;
 
 #[cfg(not(feature = "link"))]
+#[allow(dead_code)]
 mod scanner {
     pub extern "C" fn tree_sitter_lkr_external_scanner_create() -> *mut std::ffi::c_void {
         std::ptr::null_mut()

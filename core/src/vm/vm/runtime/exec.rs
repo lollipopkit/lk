@@ -209,22 +209,6 @@ impl Vm {
         // This avoids the overhead of enter_nested_call() which does redundant pool push/pop.
         let pooled_regs = std::mem::take(&mut self.regs);
         let mut regs = std::mem::take(&mut cache.regs);
-        #[cfg(debug_assertions)]
-        if regs.is_empty() {
-            eprintln!(
-                "exec_function_positional_fast: function regs={}, code_len={}",
-                reg_count,
-                fun.code.len()
-            );
-        }
-        if regs.is_empty() {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[debug] exec positional fast: regs={} code_len={}",
-                reg_count,
-                fun.code.len()
-            );
-        }
         if regs.len() >= reg_count {
             regs.truncate(reg_count);
         } else {

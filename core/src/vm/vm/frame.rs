@@ -154,7 +154,6 @@ pub(super) struct FrameState<'func> {
     pub(super) region_plan: Option<Arc<RegionPlan>>,
     region_allocator: *const RegionAllocator,
     inline_return_meta: Option<CallFrameMeta>,
-    reg_write_high_water: usize,
 }
 
 impl<'func> FrameState<'func> {
@@ -175,7 +174,6 @@ impl<'func> FrameState<'func> {
             region_plan: frame.region_plan.take(),
             region_allocator,
             inline_return_meta: None,
-            reg_write_high_water: 0,
         }
     }
 
@@ -237,18 +235,6 @@ impl<'func> FrameState<'func> {
     pub(super) fn record_reg_write(&mut self, _idx: usize) {
         // Register windows are eagerly cleared before each execution. Avoid a
         // branch/write on every VM register assignment in hot loops.
-    }
-
-    #[inline]
-    pub(super) fn take_reg_write_high_water(&mut self) -> usize {
-        let high = self.reg_write_high_water.min(self.regs.len());
-        self.reg_write_high_water = 0;
-        high
-    }
-
-    #[inline]
-    pub(super) fn clear_written_regs(&mut self) -> usize {
-        0
     }
 
     #[inline]

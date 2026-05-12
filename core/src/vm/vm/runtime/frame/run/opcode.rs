@@ -852,12 +852,8 @@ pub(super) fn run_opcode_code(
                         Arc::make_mut(arc).push(pushed_val);
                     }
                     _ => {
-                        return frame_return_common(
-                            frame_raw,
-                            pc,
-                            Err(anyhow!("ListPush target is not a List")),
-                        )
-                        .map(Some);
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("ListPush target is not a List")))
+                            .map(Some);
                     }
                 }
                 pc += 1;
@@ -866,24 +862,18 @@ pub(super) fn run_opcode_code(
                 let key_arc = match &regs[*key as usize] {
                     Val::Str(s) => s.clone(),
                     _ => {
-                        return frame_return_common(
-                            frame_raw,
-                            pc,
-                            Err(anyhow!("MapSet key must be a String")),
-                        )
-                        .map(Some);
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet key must be a String")))
+                            .map(Some);
                     }
                 };
                 let pushed_val = regs[*val as usize].clone();
                 match &mut regs[*map as usize] {
-                    Val::Map(arc) => { Arc::make_mut(arc).insert(key_arc, pushed_val); }
+                    Val::Map(arc) => {
+                        Arc::make_mut(arc).insert(key_arc, pushed_val);
+                    }
                     _ => {
-                        return frame_return_common(
-                            frame_raw,
-                            pc,
-                            Err(anyhow!("MapSet target is not a Map")),
-                        )
-                        .map(Some);
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map")))
+                            .map(Some);
                     }
                 }
                 pc += 1;
@@ -948,10 +938,16 @@ pub(super) fn run_opcode_code(
                 if let Some(state) = slot {
                     // Inline should_continue — eliminates fn call on hot loop guard
                     let keep_going = if state.positive {
-                        if state.inclusive { state.current <= state.limit }
-                        else { state.current < state.limit }
-                    } else if state.inclusive { state.current >= state.limit }
-                    else { state.current > state.limit };
+                        if state.inclusive {
+                            state.current <= state.limit
+                        } else {
+                            state.current < state.limit
+                        }
+                    } else if state.inclusive {
+                        state.current >= state.limit
+                    } else {
+                        state.current > state.limit
+                    };
                     if keep_going {
                         assign_reg(frame_raw, regs, idx_reg, Val::Int(state.current));
                         state.current += state.step;
@@ -961,8 +957,8 @@ pub(super) fn run_opcode_code(
                         pc = ((pc as isize) + (*ofs as isize)) as usize;
                     }
                 } else {
-                    return frame_return_common(frame_raw, pc,
-                        Err(anyhow!("For-range state missing at pc {}", pc))).map(Some);
+                    return frame_return_common(frame_raw, pc, Err(anyhow!("For-range state missing at pc {}", pc)))
+                        .map(Some);
                 }
             }
             Op::ForRangeStep { back_ofs, .. } => {
@@ -1382,7 +1378,8 @@ pub(super) fn run_opcode_code(
                                             let default_frame = closure
                                                 .default_frame_info(idx)
                                                 .expect("default frame info should exist");
-                                            let default_val =
+                                            let hidden_frame = unsafe { &mut *self_ptr }.frames.pop();
+                                            let default_result =
                                                 allocator.with_reg_val_pairs(resolved_seed.len(), |seed_regs| {
                                                     Vm::map_named_seed(
                                                         default_fun,
@@ -1399,7 +1396,12 @@ pub(super) fn run_opcode_code(
                                                         self_ptr,
                                                         Some(default_frame.clone()),
                                                     )
-                                                })?;
+                                                });
+                                            if let Some(meta) = hidden_frame {
+                                                unsafe { &mut *self_ptr }.frames.push(meta);
+                                            }
+                                            let default_val = default_result?;
+                                            unsafe { &mut *self_ptr }.pending_resume_pc.take();
                                             resolved_seed.push((idx, default_val));
                                         } else if matches!(decl.type_annotation, Some(Type::Optional(_))) {
                                             resolved_seed.push((idx, Val::Nil));
@@ -1594,7 +1596,8 @@ pub(super) fn run_opcode_code(
                                     let default_layout = closure
                                         .default_seed_regs(default_idx)
                                         .expect("default seed layout should exist for default thunk");
-                                    let default_val = allocator.with_reg_val_pairs(seed_pairs.len(), |seed_regs| {
+                                    let hidden_frame = unsafe { &mut *self_ptr }.frames.pop();
+                                    let default_result = allocator.with_reg_val_pairs(seed_pairs.len(), |seed_regs| {
                                         for (seed_idx, seed_val) in seed_pairs.iter() {
                                             let reg = default_layout
                                                 .get(*seed_idx)
@@ -1612,7 +1615,12 @@ pub(super) fn run_opcode_code(
                                             self_ptr,
                                             Some(default_frame.clone()),
                                         )
-                                    })?;
+                                    });
+                                    if let Some(meta) = hidden_frame {
+                                        unsafe { &mut *self_ptr }.frames.push(meta);
+                                    }
+                                    let default_val = default_result?;
+                                    unsafe { &mut *self_ptr }.pending_resume_pc.take();
                                     seed_pairs.push((default_idx, default_val));
                                 }
                                 for &optional_idx in plan.optional_nil.iter() {

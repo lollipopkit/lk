@@ -82,7 +82,10 @@ impl FunctionBuilder {
         {
             if let Some(list_reg) = self.lookup(var_name) {
                 let val_reg = self.expr(&args[0]);
-                self.emit(Op::ListPush { list: list_reg, val: val_reg });
+                self.emit(Op::ListPush {
+                    list: list_reg,
+                    val: val_reg,
+                });
                 return list_reg;
             }
         }
@@ -108,7 +111,11 @@ impl FunctionBuilder {
                 if self.map_locals.contains(&map_reg) {
                     let key_reg = self.expr(&args[0]);
                     let val_reg = self.expr(&args[1]);
-                    self.emit(Op::MapSet { map: map_reg, key: key_reg, val: val_reg });
+                    self.emit(Op::MapSet {
+                        map: map_reg,
+                        key: key_reg,
+                        val: val_reg,
+                    });
                     return map_reg;
                 }
             }
@@ -959,8 +966,7 @@ impl FunctionBuilder {
             Expr::Call(name, args) => {
                 // If the callee is a locally-defined function registered in const_env,
                 // load it from the constant pool instead of via LoadGlobal (avoids hashtable lookup).
-                let use_direct_call = self.const_env.get(name).is_some()
-                    && self.call_safe_to_fold(name);
+                let use_direct_call = self.const_env.get(name).is_some() && self.call_safe_to_fold(name);
                 let f = self.alloc();
                 if use_direct_call {
                     let func_val = self.const_env.get(name).unwrap().clone();

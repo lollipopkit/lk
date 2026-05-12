@@ -1,6 +1,6 @@
-use lkr_core::vm::Compiler;
 use lkr_core::stmt::{Stmt, StmtParser};
 use lkr_core::token::Tokenizer;
+use lkr_core::vm::Compiler;
 
 fn main() {
     let script = r#"
@@ -19,9 +19,11 @@ fn iterative(n) {
     let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(script).unwrap();
     let mut parser = StmtParser::new_with_spans(&tokens, &spans);
     let parsed = parser.parse_program_with_enhanced_errors(script).unwrap();
-    let block = Stmt::Block { statements: parsed.statements };
+    let block = Stmt::Block {
+        statements: parsed.statements,
+    };
     let fun = Compiler::new().compile_stmt(&block);
-    
+
     println!("n_regs: {}", fun.n_regs);
     println!("code len: {}", fun.code.len());
     if let Some(code32) = &fun.code32 {

@@ -1012,14 +1012,14 @@ impl Val {
         }
     }
 
-/// Fast string concatenation — hot path for `s = s + "x"` loops.
-/// Optimized to avoid redundant allocations:
-///  1. Returns empty-string operand directly (no allocation)
-///  2. Uses `MaybeUninit` buffer to avoid zero-initialization
-///  3. `ptr::copy_nonoverlapping` (memcpy-equivalent) for byte copying
-///  4. Raw pointer casting `Arc<[u8]>` → `Arc<str>` (valid UTF-8 preserved)
-#[inline]
-pub(crate) fn concat_strings(a: &str, b: &str) -> Val {
+    /// Fast string concatenation — hot path for `s = s + "x"` loops.
+    /// Optimized to avoid redundant allocations:
+    ///  1. Returns empty-string operand directly (no allocation)
+    ///  2. Uses `MaybeUninit` buffer to avoid zero-initialization
+    ///  3. `ptr::copy_nonoverlapping` (memcpy-equivalent) for byte copying
+    ///  4. Raw pointer casting `Arc<[u8]>` → `Arc<str>` (valid UTF-8 preserved)
+    #[inline]
+    pub(crate) fn concat_strings(a: &str, b: &str) -> Val {
         if a.is_empty() {
             return Val::Str(Arc::from(b));
         }
@@ -1108,10 +1108,7 @@ impl PartialEq for Val {
             }
             (Val::Iterator(a), Val::Iterator(b)) => Arc::ptr_eq(a, b),
             (Val::MutationGuard(a), Val::MutationGuard(b)) => Arc::ptr_eq(a, b),
-            (
-                Val::StreamCursor(a),
-                Val::StreamCursor(b),
-            ) => a.id == b.id && a.stream_id == b.stream_id,
+            (Val::StreamCursor(a), Val::StreamCursor(b)) => a.id == b.id && a.stream_id == b.stream_id,
             (Val::Object(a), Val::Object(b)) => a.type_name == b.type_name && a.fields == b.fields,
             (Val::Nil, Val::Nil) => true,
             _ => false,

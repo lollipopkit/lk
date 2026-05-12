@@ -10,7 +10,7 @@ use lkr_core::vm::VmContext;
 
 use crate::collections::{MapMutation, MutableMap};
 
-use lkr_core::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
+use lkr_core::util::fast_map::FastHashMap;
 use lkr_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue};
 
 const MAP_MUT_TYPE: &str = "MapMut";

@@ -464,8 +464,12 @@ impl FunctionBuilder {
             Expr::Access(obj, field) => Self::expr_contains_call(obj) || Self::expr_contains_call(field),
             Expr::OptionalAccess(obj, field) => Self::expr_contains_call(obj) || Self::expr_contains_call(field),
             Expr::List(elems) => elems.iter().any(|e| Self::expr_contains_call(e)),
-            Expr::Map(pairs) => pairs.iter().any(|(k, v)| Self::expr_contains_call(k) || Self::expr_contains_call(v)),
-            Expr::Conditional(c, t, e) => Self::expr_contains_call(c) || Self::expr_contains_call(t) || Self::expr_contains_call(e),
+            Expr::Map(pairs) => pairs
+                .iter()
+                .any(|(k, v)| Self::expr_contains_call(k) || Self::expr_contains_call(v)),
+            Expr::Conditional(c, t, e) => {
+                Self::expr_contains_call(c) || Self::expr_contains_call(t) || Self::expr_contains_call(e)
+            }
             Expr::And(l, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
             Expr::Or(l, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),
             Expr::NullishCoalescing(l, r) => Self::expr_contains_call(l) || Self::expr_contains_call(r),

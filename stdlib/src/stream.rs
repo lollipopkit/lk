@@ -638,17 +638,26 @@ impl StreamModule {
         let (cursor_id, need_drop_cursor, limit, timeout_ms) = match args {
             [Val::Stream(stream)] => {
                 let c = Self::create_cursor(stream.id)?;
-                let cid = match &c { Val::StreamCursor(cur) => cur.id, _ => unreachable!() };
+                let cid = match &c {
+                    Val::StreamCursor(cur) => cur.id,
+                    _ => unreachable!(),
+                };
                 (cid, Some(c), None, None)
             }
             [Val::Stream(stream), n] => {
                 let c = Self::create_cursor(stream.id)?;
-                let cid = match &c { Val::StreamCursor(cur) => cur.id, _ => unreachable!() };
+                let cid = match &c {
+                    Val::StreamCursor(cur) => cur.id,
+                    _ => unreachable!(),
+                };
                 (cid, Some(c), Some(extract_int(n)?), None)
             }
             [Val::Stream(stream), n, Val::Int(ms)] => {
                 let c = Self::create_cursor(stream.id)?;
-                let cid = match &c { Val::StreamCursor(cur) => cur.id, _ => unreachable!() };
+                let cid = match &c {
+                    Val::StreamCursor(cur) => cur.id,
+                    _ => unreachable!(),
+                };
                 (cid, Some(c), Some(extract_int(n)?), Some(*ms))
             }
             [Val::StreamCursor(cur)] => (cur.id, None, None, None),

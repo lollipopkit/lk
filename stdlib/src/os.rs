@@ -186,8 +186,8 @@ impl OsModule {
     fn clock(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         // Use a simple timing mechanism. For benchmark purposes,
         // we return wall-clock elapsed since first call.
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::{AtomicU64, Ordering};
         static START: AtomicU64 = AtomicU64::new(0);
         static INIT: AtomicBool = AtomicBool::new(false);
         if !INIT.swap(true, Ordering::SeqCst) {

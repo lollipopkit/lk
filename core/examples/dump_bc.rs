@@ -1,7 +1,6 @@
-use lkr_core::perf::scenarios::prepare_script_scenarios;
-use lkr_core::vm::Compiler;
-use lkr_core::stmt::{StmtParser, Stmt};
+use lkr_core::stmt::{Stmt, StmtParser};
 use lkr_core::token::Tokenizer;
+use lkr_core::vm::Compiler;
 
 const FIB_SCRIPT: &str = include_str!("../../examples/fib.lkr");
 
@@ -30,7 +29,9 @@ fn compile_script(source: &str) -> lkr_core::vm::Function {
     let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(source).unwrap();
     let mut parser = StmtParser::new_with_spans(&tokens, &spans);
     let program = parser.parse_program_with_enhanced_errors(source).unwrap();
-    let block = Stmt::Block { statements: program.statements };
+    let block = Stmt::Block {
+        statements: program.statements,
+    };
     Compiler::new().compile_stmt(&block)
 }
 

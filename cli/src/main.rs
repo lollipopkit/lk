@@ -330,7 +330,10 @@ fn bytecode_trampoline_ir(module_name: &str, bytecode: &[u8]) -> String {
     let literal = llvm_bytes_literal(bytecode);
     let mut out = String::new();
     out.push_str(&format!("; ModuleID = '{}_bytecode_trampoline'\n", module_name));
-    out.push_str(&format!("source_filename = \"{}_bytecode_trampoline\"\n\n", module_name));
+    out.push_str(&format!(
+        "source_filename = \"{}_bytecode_trampoline\"\n\n",
+        module_name
+    ));
     out.push_str("declare i32 @lkr_rt_run_bytecode(i8*, i64)\n\n");
     out.push_str(&format!(
         "@.lkr_entry_bytecode = private unnamed_addr constant [{len} x i8] {literal}, align 1\n\n"

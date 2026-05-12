@@ -354,10 +354,7 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
             }
             Tag::Ret => {
                 let (base, retc, _) = decode_abc(word, reg_ext);
-                PackedHotKind::Ret {
-                    base,
-                    retc: retc as u8,
-                }
+                PackedHotKind::Ret { base, retc: retc as u8 }
             }
             Tag::ListPush => {
                 let (list, val, _) = decode_abc(word, reg_ext);
@@ -421,6 +418,39 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
                     b,
                 }
             }
+            Tag::CmpLtImmJmp => {
+                let r = ((word >> 16) & 0xFF) as u16;
+                let imm = (((word >> 8) & 0xFF) as i8) as i16;
+                let ext_word = *code32.get(next_pc)?;
+                if bc32::tag_of(ext_word) != bc32::TAG_EXT {
+                    return None;
+                }
+                let ofs = (((((ext_word >> 8) & 0xFF) as u16) << 8) | ((ext_word & 0xFF) as u16)) as i16;
+                next_pc += 1;
+                PackedHotKind::CmpLtImmJmp { r, imm, ofs }
+            }
+            Tag::CmpLeImmJmp => {
+                let r = ((word >> 16) & 0xFF) as u16;
+                let imm = (((word >> 8) & 0xFF) as i8) as i16;
+                let ext_word = *code32.get(next_pc)?;
+                if bc32::tag_of(ext_word) != bc32::TAG_EXT {
+                    return None;
+                }
+                let ofs = (((((ext_word >> 8) & 0xFF) as u16) << 8) | ((ext_word & 0xFF) as u16)) as i16;
+                next_pc += 1;
+                PackedHotKind::CmpLeImmJmp { r, imm, ofs }
+            }
+            Tag::AddIntImmJmp => {
+                let r = ((word >> 16) & 0xFF) as u16;
+                let imm = (((word >> 8) & 0xFF) as i8) as i16;
+                let ext_word = *code32.get(next_pc)?;
+                if bc32::tag_of(ext_word) != bc32::TAG_EXT {
+                    return None;
+                }
+                let ofs = (((((ext_word >> 8) & 0xFF) as u16) << 8) | ((ext_word & 0xFF) as u16)) as i16;
+                next_pc += 1;
+                PackedHotKind::AddIntImmJmp { r, imm, ofs }
+            }
             _ => return None,
         };
         Some(PackedHotSlot { word, next_pc, kind })
@@ -429,13 +459,7 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
     }
 }
 
-fn make_closure_value(
-    f: &Function,
-    proto: u16,
-    ctx: &mut VmContext,
-    regs: &[Val],
-    frame_base: usize,
-) -> Result<Val> {
+fn make_closure_value(f: &Function, proto: u16, ctx: &mut VmContext, regs: &[Val], frame_base: usize) -> Result<Val> {
     let p = f
         .protos
         .get(proto as usize)
@@ -632,10 +656,16 @@ fn exec_hot_slot(
                 None => return Err(anyhow!("For-range state missing at pc {}", pc)),
             };
             let keep_going = if state_entry.positive {
-                if state_entry.inclusive { state_entry.current <= state_entry.limit }
-                else { state_entry.current < state_entry.limit }
-            } else if state_entry.inclusive { state_entry.current >= state_entry.limit }
-            else { state_entry.current > state_entry.limit };
+                if state_entry.inclusive {
+                    state_entry.current <= state_entry.limit
+                } else {
+                    state_entry.current < state_entry.limit
+                }
+            } else if state_entry.inclusive {
+                state_entry.current >= state_entry.limit
+            } else {
+                state_entry.current > state_entry.limit
+            };
             if keep_going {
                 assign_reg(frame_raw, regs, *idx as usize, Val::Int(state_entry.current));
                 state_entry.current += state_entry.step;
@@ -648,9 +678,7 @@ fn exec_hot_slot(
                         if bc32::tag_of(step_w) == bc32::TAG_FOR_RANGE_STEP {
                             let ext_idx = step_pc + 1;
                             let mut ext = code32.get(ext_idx).copied();
-                            if ext.is_some()
-                                && bc32::tag_of(ext.unwrap()) == bc32::TAG_REG_EXT
-                            {
+                            if ext.is_some() && bc32::tag_of(ext.unwrap()) == bc32::TAG_REG_EXT {
                                 ext = code32.get(ext_idx + 1).copied();
                             }
                             if let Some(e) = ext {
@@ -765,8 +793,8 @@ fn exec_hot_slot(
                         }
                     }
                     PackedArithOp::Mod => {
-                        let out = BinOp::Mod
-                            .eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
+                        let out =
+                            BinOp::Mod.eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
                         assign_reg(frame_raw, regs, *dst as usize, out);
                     }
                 }
@@ -844,7 +872,9 @@ fn exec_hot_slot(
         PackedHotKind::ListPush { list, val } => {
             let pushed_val = regs[*val as usize].clone();
             match &mut regs[*list as usize] {
-                Val::List(arc) => { Arc::make_mut(arc).push(pushed_val); }
+                Val::List(arc) => {
+                    Arc::make_mut(arc).push(pushed_val);
+                }
                 _ => return Err(anyhow!("ListPush target is not a List")),
             }
             None
@@ -856,7 +886,9 @@ fn exec_hot_slot(
             };
             let pushed_val = regs[*val as usize].clone();
             match &mut regs[*map as usize] {
-                Val::Map(arc) => { Arc::make_mut(arc).insert(key_arc, pushed_val); }
+                Val::Map(arc) => {
+                    Arc::make_mut(arc).insert(key_arc, pushed_val);
+                }
                 _ => return Err(anyhow!("MapSet target is not a Map")),
             }
             None
@@ -941,6 +973,38 @@ fn exec_hot_slot(
                 },
             }
             None
+        }
+        PackedHotKind::CmpLtImmJmp { r, imm, ofs } => {
+            // Fused: if r < imm, fall through; else jump.
+            let skip = match &regs[*r as usize] {
+                Val::Int(x) => !(*x < (*imm as i64)),
+                _ => true,
+            };
+            if skip {
+                Some(((pc as isize) + (*ofs as isize)) as usize)
+            } else {
+                None
+            }
+        }
+        PackedHotKind::CmpLeImmJmp { r, imm, ofs } => {
+            // Fused: if r <= imm, fall through; else jump.
+            let skip = match &regs[*r as usize] {
+                Val::Int(x) => !(*x <= (*imm as i64)),
+                _ => true,
+            };
+            if skip {
+                Some(((pc as isize) + (*ofs as isize)) as usize)
+            } else {
+                None
+            }
+        }
+        PackedHotKind::AddIntImmJmp { r, imm, ofs } => {
+            // Fused: r += imm, then jump by ofs.
+            if let Val::Int(x) = regs[*r as usize] {
+                let result = x.wrapping_add(*imm as i64);
+                assign_reg(frame_raw, regs, *r as usize, Val::Int(result));
+            }
+            Some(((pc as isize) + (*ofs as isize)) as usize)
         }
     };
     Ok(result)
@@ -1071,6 +1135,36 @@ fn decode_packed_op(code32: &[u32], pc: usize, w: u32, tag: u8) -> anyhow::Resul
                     retc,
                 }
             }
+            Tag::CmpLtImmJmp => {
+                let r = ((w >> 16) & 0xFF) as u16;
+                let imm = (((w >> 8) & 0xFF) as i8) as i16;
+                let w2 = *code32
+                    .get(next)
+                    .ok_or_else(|| anyhow!("bc32: missing Ext for CmpLtImmJmp"))?;
+                next += 1;
+                let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
+                Op::CmpLtImmJmp { r, imm, ofs }
+            }
+            Tag::CmpLeImmJmp => {
+                let r = ((w >> 16) & 0xFF) as u16;
+                let imm = (((w >> 8) & 0xFF) as i8) as i16;
+                let w2 = *code32
+                    .get(next)
+                    .ok_or_else(|| anyhow!("bc32: missing Ext for CmpLeImmJmp"))?;
+                next += 1;
+                let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
+                Op::CmpLeImmJmp { r, imm, ofs }
+            }
+            Tag::AddIntImmJmp => {
+                let r = ((w >> 16) & 0xFF) as u16;
+                let imm = (((w >> 8) & 0xFF) as i8) as i16;
+                let w2 = *code32
+                    .get(next)
+                    .ok_or_else(|| anyhow!("bc32: missing Ext for AddIntImmJmp"))?;
+                next += 1;
+                let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
+                Op::AddIntImmJmp { r, imm, ofs }
+            }
             _ => bc32::decode_word_with_hi(tag, flags, w, (hi_a, hi_b, hi_c)),
         },
     };
@@ -1187,9 +1281,11 @@ pub(super) fn run_packed_code(
                             } else {
                                 Val::Nil
                             };
-                            return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
+                            return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr)
+                                .map(Some);
                         }
-                        let override_pc = exec_hot_slot(slot, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc, frame_base)?;
+                        let override_pc =
+                            exec_hot_slot(slot, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc, frame_base)?;
                         pc = override_pc.unwrap_or(slot.next_pc);
                         continue;
                     }
@@ -1235,7 +1331,8 @@ pub(super) fn run_packed_code(
                     packed_hot[pc] = Some(PackedHotEntry::Slot(entry));
                     return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
                 }
-                let override_pc = exec_hot_slot(&entry, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc, frame_base)?;
+                let override_pc =
+                    exec_hot_slot(&entry, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc, frame_base)?;
                 if packed_hot.len() <= pc {
                     packed_hot.resize(pc + 1, None);
                 }
@@ -1567,6 +1664,38 @@ pub(super) fn run_packed_code(
                 } else {
                     pc = next_pc_default;
                 }
+            }
+            Op::CmpLtImmJmp { r, imm, ofs } => {
+                // Fused CmpLtImm + JmpFalse: if r < imm, fall through; else jump.
+                let skip = match &regs[r as usize] {
+                    Val::Int(x) => !(*x < (imm as i64)),
+                    _ => true,
+                };
+                if skip {
+                    pc = ((pc as isize) + (ofs as isize)) as usize;
+                } else {
+                    pc = next_pc_default;
+                }
+            }
+            Op::CmpLeImmJmp { r, imm, ofs } => {
+                // Fused CmpLeImm + JmpFalse: if r <= imm, fall through; else jump.
+                let skip = match &regs[r as usize] {
+                    Val::Int(x) => !(*x <= (imm as i64)),
+                    _ => true,
+                };
+                if skip {
+                    pc = ((pc as isize) + (ofs as isize)) as usize;
+                } else {
+                    pc = next_pc_default;
+                }
+            }
+            Op::AddIntImmJmp { r, imm, ofs } => {
+                // Fused: r += imm, then jump by ofs.
+                if let Val::Int(x) = regs[r as usize] {
+                    let result = x.wrapping_add(imm as i64);
+                    assign_reg(frame_raw, regs, r as usize, Val::Int(result));
+                }
+                pc = ((pc as isize) + (ofs as isize)) as usize;
             }
             Op::ToBool(dst, src) => {
                 let truthy = !matches!(regs[src as usize], Val::Nil | Val::Bool(false));
@@ -2265,7 +2394,8 @@ pub(super) fn run_packed_code(
                                             let default_frame = closure
                                                 .default_frame_info(idx)
                                                 .expect("default frame info should exist");
-                                            let default_val =
+                                            let hidden_frame = unsafe { &mut *self_ptr }.frames.pop();
+                                            let default_result =
                                                 allocator.with_reg_val_pairs(resolved_seed.len(), |seed_regs| {
                                                     Vm::map_named_seed(
                                                         default_fun,
@@ -2282,7 +2412,12 @@ pub(super) fn run_packed_code(
                                                         self_ptr,
                                                         Some(default_frame.clone()),
                                                     )
-                                                })?;
+                                                });
+                                            if let Some(meta) = hidden_frame {
+                                                unsafe { &mut *self_ptr }.frames.push(meta);
+                                            }
+                                            let default_val = default_result?;
+                                            unsafe { &mut *self_ptr }.pending_resume_pc.take();
                                             resolved_seed.push((idx, default_val));
                                         } else if matches!(decl.type_annotation, Some(Type::Optional(_))) {
                                             resolved_seed.push((idx, Val::Nil));
@@ -2474,7 +2609,8 @@ pub(super) fn run_packed_code(
                                     let default_layout = closure
                                         .default_seed_regs(default_idx)
                                         .expect("default seed layout should exist for default thunk");
-                                    let default_val = allocator.with_reg_val_pairs(seed_pairs.len(), |seed_regs| {
+                                    let hidden_frame = unsafe { &mut *self_ptr }.frames.pop();
+                                    let default_result = allocator.with_reg_val_pairs(seed_pairs.len(), |seed_regs| {
                                         for (seed_idx, seed_val) in seed_pairs.iter() {
                                             let reg = default_layout
                                                 .get(*seed_idx)
@@ -2492,7 +2628,12 @@ pub(super) fn run_packed_code(
                                             self_ptr,
                                             Some(default_frame.clone()),
                                         )
-                                    })?;
+                                    });
+                                    if let Some(meta) = hidden_frame {
+                                        unsafe { &mut *self_ptr }.frames.push(meta);
+                                    }
+                                    let default_val = default_result?;
+                                    unsafe { &mut *self_ptr }.pending_resume_pc.take();
                                     seed_pairs.push((default_idx, default_val));
                                 }
                                 for &optional_idx in plan.optional_nil.iter() {
@@ -2667,12 +2808,8 @@ pub(super) fn run_packed_code(
                         Arc::make_mut(arc).push(pushed_val);
                     }
                     _ => {
-                        return frame_return_common(
-                            frame_raw,
-                            pc,
-                            Err(anyhow!("ListPush target is not a List")),
-                        )
-                        .map(Some);
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("ListPush target is not a List")))
+                            .map(Some);
                     }
                 }
                 pc = next_pc_default;

@@ -125,10 +125,12 @@ impl MathModule {
     /// Random number generation (0.0 to 1.0)
     fn random(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         if !args.is_empty() {
-            return Err(anyhow::anyhow!("random() takes 0 arguments; call with no args for [0,1), 1 arg for [0,n), 2 args for [a,b)"));
+            return Err(anyhow::anyhow!(
+                "random() takes 0 arguments; call with no args for [0,1), 1 arg for [0,n), 2 args for [a,b)"
+            ));
         }
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::atomic::AtomicU32;
+        use std::sync::atomic::{AtomicU64, Ordering};
         // Simple xorshift64 PRNG seeded from a global counter + thread id
         static SEED: AtomicU64 = AtomicU64::new(0x12345678_9ABCDEF0);
         static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -138,7 +140,9 @@ impl MathModule {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos() as u64;
-            if seed == 0 { seed = 1; }
+            if seed == 0 {
+                seed = 1;
+            }
         }
         // xorshift64
         seed ^= seed << 13;

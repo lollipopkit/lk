@@ -4,9 +4,7 @@
 //! simple encoder/decoder. It is intended as a building block for future i-cache
 //! density work, not as a full replacement yet.
 
-use super::bytecode::{
-    ClosureProto, Function, NamedParamLayoutEntry, Op, PatternPlan, rk_is_const, rk_make_const,
-};
+use super::bytecode::{ClosureProto, Function, NamedParamLayoutEntry, Op, PatternPlan, rk_is_const, rk_make_const};
 use crate::val::Val;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -187,6 +185,39 @@ impl Bc32Decoded {
                         namedc,
                         retc,
                     }
+                }
+                x if x == encode_tag_raw(Tag::CmpLtImmJmp) => {
+                    let r = ((word >> 16) & 0xFF) as u16;
+                    let imm = (((word >> 8) & 0xFF) as i8) as i16;
+                    let w2 = match code32.get(next) {
+                        Some(val) => *val,
+                        None => return None,
+                    };
+                    next += 1;
+                    let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
+                    Op::CmpLtImmJmp { r, imm, ofs }
+                }
+                x if x == encode_tag_raw(Tag::CmpLeImmJmp) => {
+                    let r = ((word >> 16) & 0xFF) as u16;
+                    let imm = (((word >> 8) & 0xFF) as i8) as i16;
+                    let w2 = match code32.get(next) {
+                        Some(val) => *val,
+                        None => return None,
+                    };
+                    next += 1;
+                    let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
+                    Op::CmpLeImmJmp { r, imm, ofs }
+                }
+                x if x == encode_tag_raw(Tag::AddIntImmJmp) => {
+                    let r = ((word >> 16) & 0xFF) as u16;
+                    let imm = (((word >> 8) & 0xFF) as i8) as i16;
+                    let w2 = match code32.get(next) {
+                        Some(val) => *val,
+                        None => return None,
+                    };
+                    next += 1;
+                    let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
+                    Op::AddIntImmJmp { r, imm, ofs }
                 }
                 _ => match decode_tag_byte(tag) {
                     DecodedTag::Regular { tag: base, flags } => {
@@ -553,7 +584,9 @@ impl Bc32Function {
                             pc = next;
                         }
                         Tag::CmpLtImmJmp => {
-                            if next >= self.code32.len() { break; }
+                            if next >= self.code32.len() {
+                                break;
+                            }
                             let r = ((w >> 16) & 0xFF) as u16;
                             let imm = (((w >> 8) & 0xFF) as i8) as i16;
                             let w2 = self.code32[next];
@@ -563,7 +596,9 @@ impl Bc32Function {
                             pc = next;
                         }
                         Tag::CmpLeImmJmp => {
-                            if next >= self.code32.len() { break; }
+                            if next >= self.code32.len() {
+                                break;
+                            }
                             let r = ((w >> 16) & 0xFF) as u16;
                             let imm = (((w >> 8) & 0xFF) as i8) as i16;
                             let w2 = self.code32[next];
@@ -573,7 +608,9 @@ impl Bc32Function {
                             pc = next;
                         }
                         Tag::AddIntImmJmp => {
-                            if next >= self.code32.len() { break; }
+                            if next >= self.code32.len() {
+                                break;
+                            }
                             let r = ((w >> 16) & 0xFF) as u16;
                             let imm = (((w >> 8) & 0xFF) as i8) as i16;
                             let w2 = self.code32[next];
@@ -747,9 +784,10 @@ impl Tag {
             57 => Tag::MakeClosure,
             58 => Tag::CallNamedX,
             59 => Tag::ListPush,
-            60 => Tag::CmpLtImmJmp,
-            61 => Tag::CmpLeImmJmp,
-            62 => Tag::AddIntImmJmp,
+            60 => Tag::MapSet,
+            61 => Tag::CmpLtImmJmp,
+            62 => Tag::CmpLeImmJmp,
+            63 => Tag::AddIntImmJmp,
             _ => return None,
         })
     }
@@ -917,6 +955,7 @@ fn opcode_name(op: &Op) -> &'static str {
         Op::BuildMap { .. } => "BuildMap",
         Op::ListSlice { .. } => "ListSlice",
         Op::ListPush { .. } => "ListPush",
+        Op::MapSet { .. } => "MapSet",
         Op::MakeClosure { .. } => "MakeClosure",
         Op::Jmp(..) => "Jmp",
         Op::JmpFalse(..) => "JmpFalse",
@@ -1225,6 +1264,11 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let word = pack(Tag::ListPush, 0, list as u8, val as u8, 0);
             Ok(EncodedOp::new(word, None))
         }
+        Op::MapSet { map, key, val } => {
+            ensure_regs_u8("MapSet", map, key, val)?;
+            let word = pack(Tag::MapSet, 0, map as u8, key as u8, val as u8);
+            Ok(EncodedOp::new(word, None))
+        }
         Op::BuildList { dst, base, len } => {
             ensure_regs_u8("BuildList", dst, base, len)?;
             let word = pack(Tag::BuildList, 0, dst as u8, base as u8, len as u8);
@@ -1362,10 +1406,7 @@ pub(crate) fn decode_word_with_hi(tag: Tag, flags: u8, w: u32, hi: (u16, u16, u1
             src: b_reg,
             start: c_reg,
         },
-        Tag::ListPush => Op::ListPush {
-            list: a,
-            val: b_reg,
-        },
+        Tag::ListPush => Op::ListPush { list: a, val: b_reg },
         Tag::MapSet => Op::MapSet {
             map: a,
             key: b_reg,
@@ -1548,7 +1589,7 @@ impl Bc32Function {
                         }
                     }
                     Op::CmpLtImmJmp { ofs, .. } => {
-                        let j = (i as isize) + *ofs as isize;
+                        let j = (i as isize) + ofs as isize;
                         if j < 0 || j as usize >= n {
                             return Err(PackIssue::new(
                                 Bc32Reject::BranchTargetOutOfBounds {
@@ -1559,7 +1600,7 @@ impl Bc32Function {
                         }
                     }
                     Op::CmpLeImmJmp { ofs, .. } => {
-                        let j = (i as isize) + *ofs as isize;
+                        let j = (i as isize) + ofs as isize;
                         if j < 0 || j as usize >= n {
                             return Err(PackIssue::new(
                                 Bc32Reject::BranchTargetOutOfBounds {
@@ -1570,7 +1611,7 @@ impl Bc32Function {
                         }
                     }
                     Op::AddIntImmJmp { ofs, .. } => {
-                        let j = (i as isize) + *ofs as isize;
+                        let j = (i as isize) + ofs as isize;
                         if j < 0 || j as usize >= n {
                             return Err(PackIssue::new(
                                 Bc32Reject::BranchTargetOutOfBounds {

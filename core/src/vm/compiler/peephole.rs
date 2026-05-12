@@ -32,24 +32,36 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
     let mut i = 0;
     while i + 1 < code.len() {
         match (&code[i], &code[i + 1]) {
-            (Op::CmpLtImm(dst, src, imm), Op::JmpFalse(r, ofs)) if *dst == *r
-                && (-128..=127).contains(imm) && (-128..=127).contains(ofs) =>
+            (Op::CmpLtImm(dst, src, imm), Op::JmpFalse(r, ofs))
+                if *dst == *r && (-128..=127).contains(imm) && (-128..=127).contains(ofs) =>
             {
-                code[i] = Op::CmpLtImmJmp { r: *src, imm: *imm, ofs: *ofs + 1 };
+                code[i] = Op::CmpLtImmJmp {
+                    r: *src,
+                    imm: *imm,
+                    ofs: *ofs + 1,
+                };
                 removals.push(i + 1);
                 i += 2;
             }
-            (Op::CmpLeImm(dst, src, imm), Op::JmpFalse(r, ofs)) if *dst == *r
-                && (-128..=127).contains(imm) && (-128..=127).contains(ofs) =>
+            (Op::CmpLeImm(dst, src, imm), Op::JmpFalse(r, ofs))
+                if *dst == *r && (-128..=127).contains(imm) && (-128..=127).contains(ofs) =>
             {
-                code[i] = Op::CmpLeImmJmp { r: *src, imm: *imm, ofs: *ofs + 1 };
+                code[i] = Op::CmpLeImmJmp {
+                    r: *src,
+                    imm: *imm,
+                    ofs: *ofs + 1,
+                };
                 removals.push(i + 1);
                 i += 2;
             }
-            (Op::AddIntImm(dst, src, imm), Op::Jmp(ofs)) if dst == src
-                && (-128..=127).contains(imm) && (-128..=127).contains(ofs) =>
+            (Op::AddIntImm(dst, src, imm), Op::Jmp(ofs))
+                if dst == src && (-128..=127).contains(imm) && (-128..=127).contains(ofs) =>
             {
-                code[i] = Op::AddIntImmJmp { r: *dst, imm: *imm, ofs: *ofs + 1 };
+                code[i] = Op::AddIntImmJmp {
+                    r: *dst,
+                    imm: *imm,
+                    ofs: *ofs + 1,
+                };
                 removals.push(i + 1);
                 i += 2;
             }
@@ -117,7 +129,9 @@ fn count_removed_before(new_pos: usize, removals: &[usize]) -> usize {
     let mut shift = 0;
     loop {
         let n = removals.iter().take_while(|&&r| r <= new_pos + shift).count();
-        if n == shift { break; }
+        if n == shift {
+            break;
+        }
         shift = n;
     }
     shift

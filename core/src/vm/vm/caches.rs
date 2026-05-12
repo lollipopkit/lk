@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::val::{RustFunction, RustFunctionNamed, Val};
+use crate::vm::RegionPlan;
 use crate::vm::bytecode::Function;
 use crate::vm::vm::frame::FrameInfo;
-use crate::vm::RegionPlan;
 
 // ────────────── Inline Cache Architecture ──────────────
 //

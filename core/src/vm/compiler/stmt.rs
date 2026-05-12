@@ -62,12 +62,8 @@ fn strip_trailing_increment(stmt: &Stmt, counter_name: &str) -> Stmt {
                 Stmt::Block { statements: trimmed }
             }
         }
-        Stmt::Assign { name, value, .. } if name == counter_name => {
-            Stmt::Block { statements: vec![] }
-        }
-        Stmt::CompoundAssign { name, .. } if name == counter_name => {
-            Stmt::Block { statements: vec![] }
-        }
+        Stmt::Assign { name, value, .. } if name == counter_name => Stmt::Block { statements: vec![] },
+        Stmt::CompoundAssign { name, .. } if name == counter_name => Stmt::Block { statements: vec![] },
         other => other.clone(),
     }
 }
@@ -189,7 +185,7 @@ impl FunctionBuilder {
         }
     }
 
-/// Try to lower a simple `while (i < N) { body; i = i + 1; }` loop into a for-range loop.
+    /// Try to lower a simple `while (i < N) { body; i = i + 1; }` loop into a for-range loop.
     /// This enables BC32 packing and uses the efficient ForRangeState instead of Val-based
     /// comparison/increment for each iteration. Only applied when the body is simple enough
     /// that for-range overhead (3 words/tags per iteration) beats peephole-fused while (1 dispatch).
@@ -197,8 +193,12 @@ impl FunctionBuilder {
         // Match: condition is `counter < limit` where counter is a local var.
         let (counter_name, limit_val) = match condition {
             Expr::Bin(left, BinOp::Lt, right) => {
-                let Expr::Var(name) = left.as_ref() else { return false; };
-                let Expr::Val(Val::Int(n)) = right.as_ref() else { return false; };
+                let Expr::Var(name) = left.as_ref() else {
+                    return false;
+                };
+                let Expr::Val(Val::Int(n)) = right.as_ref() else {
+                    return false;
+                };
                 (name.as_str(), *n)
             }
             _ => return false,
@@ -224,9 +224,7 @@ impl FunctionBuilder {
                         )
                 }
                 Stmt::CompoundAssign { name, op, value, .. } => {
-                    name == counter_name
-                        && matches!(op, BinOp::Add)
-                        && matches!(value.as_ref(), Expr::Val(Val::Int(1)))
+                    name == counter_name && matches!(op, BinOp::Add) && matches!(value.as_ref(), Expr::Val(Val::Int(1)))
                 }
                 _ => false,
             }
@@ -686,7 +684,9 @@ impl FunctionBuilder {
                         }
                         let rv = if let Some(v) = const_value.clone() {
                             let dst = self.alloc();
-                            if matches!(v, Val::Map(_)) { self.map_locals.insert(dst); }
+                            if matches!(v, Val::Map(_)) {
+                                self.map_locals.insert(dst);
+                            }
                             let k = self.k(v);
                             self.emit(Op::LoadK(dst, k));
                             dst
