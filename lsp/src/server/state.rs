@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
@@ -32,6 +33,7 @@ pub(crate) struct LkrLanguageServer {
     pub(crate) analyzer: Mutex<LkrAnalyzer>,
     pub(crate) config: Mutex<super::config::ServerConfig>,
     pub(crate) compute_limiter: Mutex<Arc<Semaphore>>,
+    pub(crate) workspace_root: Mutex<Option<PathBuf>>,
 }
 
 impl LkrLanguageServer {
@@ -42,6 +44,7 @@ impl LkrLanguageServer {
             analyzer: Mutex::new(LkrAnalyzer::new()),
             config: Mutex::new(super::config::ServerConfig::default()),
             compute_limiter: Mutex::new(Arc::new(Semaphore::new(2))),
+            workspace_root: Mutex::new(None),
         }
     }
 

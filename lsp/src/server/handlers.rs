@@ -29,6 +29,20 @@ use super::{
 impl LanguageServer for LkrLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         info!("LKR Language Server initializing with params: {:?}", params.root_uri);
+        let workspace_root = params
+            .root_uri
+            .as_ref()
+            .and_then(|uri| uri.to_file_path().ok())
+            .or_else(|| {
+                params
+                    .workspace_folders
+                    .as_ref()
+                    .and_then(|folders| folders.first())
+                    .and_then(|folder| folder.uri.to_file_path().ok())
+            });
+        if let Ok(mut root) = self.workspace_root.lock() {
+            *root = workspace_root;
+        }
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -1037,17 +1051,28 @@ impl LanguageServer for LkrLanguageServer {
             doc.content.to_string()
         };
 
+        if let Some(import_location) = self.find_file_import_at_position(&content, position, uri).await {
+            return Ok(Some(GotoDefinitionResponse::Scalar(import_location)));
+        }
+
         // Find the symbol at the cursor position
-        if let Some(symbol_name) = self.find_symbol_at_position(&content, position).await {
+        if let Some(symbol) = self.find_symbol_context_at_position(&content, position).await {
+            if let Some(definition_location) = self.find_imported_member_definition(&content, &symbol, uri).await {
+                return Ok(Some(GotoDefinitionResponse::Scalar(definition_location)));
+            }
+            if let Some(definition_location) = self.find_imported_module_location(&content, &symbol.name, uri).await {
+                return Ok(Some(GotoDefinitionResponse::Scalar(definition_location)));
+            }
+
             // Prefer precise resolver-based decl spans
             if let Some(definition_location) = self
-                .find_definition_precise(&content, &symbol_name, position, uri)
+                .find_definition_precise(&content, &symbol.name, position, uri)
                 .await
             {
                 return Ok(Some(GotoDefinitionResponse::Scalar(definition_location)));
             }
             // Fallback: heuristic text scan
-            if let Some(definition_location) = self.find_definition(&content, &symbol_name, uri).await {
+            if let Some(definition_location) = self.find_definition(&content, &symbol.name, uri).await {
                 return Ok(Some(GotoDefinitionResponse::Scalar(definition_location)));
             }
         }
