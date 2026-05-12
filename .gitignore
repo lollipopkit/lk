@@ -6,3 +6,6 @@ flamegraph.svg
 *.ll
 *.o
 *.elf
+
+vsc-ext/*/node_modules/
+vsc-ext/*/*.vsix

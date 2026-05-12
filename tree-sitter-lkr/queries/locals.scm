@@ -22,9 +22,8 @@
 
 ; Closures
 (closure
-  (_parameter_list
-    (parameter
-      name: (identifier) @local.definition)))
+  (parameter
+    name: (identifier) @local.definition))
 
 ; For loop patterns create bindings
 (for_statement

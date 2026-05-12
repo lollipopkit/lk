@@ -8,7 +8,6 @@
   "for"
   "in"
   "let"
-  "const"
   "return"
   "break"
   "continue"
@@ -18,9 +17,6 @@
   "from"
   "as"
   "struct"
-  "type"
-  "trait"
-  "impl"
   "select"
   "case"
   "default"
@@ -81,7 +77,6 @@
   "%="
   "=>"
   "->"
-  "<-"
 ] @operator
 
 ; Punctuation

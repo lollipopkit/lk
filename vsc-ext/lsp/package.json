@@ -15,7 +15,7 @@
     "url": "https://github.com/lollipopkit/lkr.git"
   },
   "engines": {
-    "vscode": "^1.103.0"
+    "vscode": "^1.118.0"
   },
   "categories": [
     "Programming Languages"
@@ -195,7 +195,11 @@
         },
         "lkr.lsp.trace": {
           "type": "string",
-          "enum": ["off", "messages", "verbose"],
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
           "default": "off",
           "description": "Trace communication between VSCode and the LKR language server"
         },
@@ -217,7 +221,11 @@
         },
         "lkr.lsp.semanticTokens.mode": {
           "type": "string",
-          "enum": ["auto", "rangeOnly", "fullOnly"],
+          "enum": [
+            "auto",
+            "rangeOnly",
+            "fullOnly"
+          ],
           "default": "auto",
           "description": "Semantic tokens mode: auto prefers range for large files; rangeOnly disables full-document tokens; fullOnly disables range tokens."
         },
@@ -312,10 +320,10 @@
     "publish:preview": "vsce publish --pre-release"
   },
   "devDependencies": {
-    "@types/node": "^22.18.8",
-    "@types/vscode": "^1.103.0",
-    "typescript": "^5.9.3",
-    "vsce": "^2.15.0"
+    "@types/node": "^25.7.0",
+    "@types/vscode": "^1.118.0",
+    "@vscode/vsce": "^3.9.1",
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"

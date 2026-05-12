@@ -10,7 +10,7 @@
     "url": "https://github.com/lollipopkit/lkr.git"
   },
   "engines": {
-    "vscode": "^1.103.0"
+    "vscode": "^1.118.0"
   },
   "categories": [
     "Programming Languages"
@@ -27,8 +27,13 @@
     "languages": [
       {
         "id": "lkr",
-        "aliases": ["LKR", "lkr"],
-        "extensions": [".lkr"],
+        "aliases": [
+          "LKR",
+          "lkr"
+        ],
+        "extensions": [
+          ".lkr"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -53,7 +58,7 @@
     "publish:preview": "vsce publish --pre-release"
   },
   "devDependencies": {
-    "@types/vscode": "^1.103.0",
-    "vsce": "^2.15.0"
+    "@types/vscode": "^1.118.0",
+    "@vscode/vsce": "^3.9.1"
   }
 }

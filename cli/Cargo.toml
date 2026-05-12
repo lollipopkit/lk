@@ -27,7 +27,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 toml = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-rustyline = "17"
+rustyline = "18"
 tracing-subscriber = { workspace = true }
 llvm-tools = { workspace = true, optional = true }
 
