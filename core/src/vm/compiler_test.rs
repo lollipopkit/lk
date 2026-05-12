@@ -52,7 +52,7 @@ mod tests {
     }
 
     fn compile_and_run(stmts: Vec<Stmt>) -> (Function, VmContext, anyhow::Result<Val>) {
-        let program = Program::new(stmts.into_iter().map(|stmt| Box::new(stmt)).collect()).expect("program");
+        let program = Program::new(stmts.into_iter().map(Box::new).collect()).expect("program");
         let function = compile_program(&program);
         let mut ctx = VmContext::new();
         let mut vm = Vm::new();

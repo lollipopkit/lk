@@ -70,18 +70,16 @@ impl FunctionBuilder {
     }
 
     pub(super) fn call_safe_to_fold(&self, func_name: &str) -> bool {
-        if let Some(value) = self.const_env.get(func_name) {
-            if let Val::Closure(closure_arc) = value {
-                let closure = closure_arc.as_ref();
-                if !closure
-                    .capture_specs
-                    .iter()
-                    .all(|spec| matches!(spec, CaptureSpec::Const { .. }))
-                {
-                    return false;
-                }
-                return !self.closure_has_free_vars(closure);
+        if let Some(Val::Closure(closure_arc)) = self.const_env.get(func_name) {
+            let closure = closure_arc.as_ref();
+            if !closure
+                .capture_specs
+                .iter()
+                .all(|spec| matches!(spec, CaptureSpec::Const { .. }))
+            {
+                return false;
             }
+            return !self.closure_has_free_vars(closure);
         }
         false
     }

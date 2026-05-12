@@ -6,7 +6,7 @@ use crate::val::{ClosureValue, Type, Val};
 use crate::vm::vm::caches::NamedCallPlan;
 
 pub(super) fn build_named_call_plan(closure: &ClosureValue, named_slice: &[Val]) -> Result<Arc<NamedCallPlan>> {
-    if named_slice.len() % 2 != 0 {
+    if !named_slice.len().is_multiple_of(2) {
         return Err(anyhow!(
             "Named argument slice has unexpected odd length: {}",
             named_slice.len()

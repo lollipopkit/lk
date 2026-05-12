@@ -36,12 +36,12 @@ impl RegionPlan {
 
 thread_local! {
     static TLS_ARENA: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(32 * 1024));
-    static TLS_VAL_BUF: RefCell<Vec<Val>> = RefCell::new(Vec::new());
-    static TLS_BOOL_FLAGS: RefCell<Vec<bool>> = RefCell::new(Vec::new());
-    static TLS_MAP_ENTRIES: RefCell<Vec<(Arc<str>, Val)>> = RefCell::new(Vec::new());
-    static TLS_INDEXED_VALS: RefCell<Vec<(usize, Val)>> = RefCell::new(Vec::new());
-    static TLS_REG_VALS: RefCell<Vec<(u16, Val)>> = RefCell::new(Vec::new());
-    static TLS_NAMED_PAIRS: RefCell<Vec<(String, Val)>> = RefCell::new(Vec::new());
+    static TLS_VAL_BUF: RefCell<Vec<Val>> = const { RefCell::new(Vec::new()) };
+    static TLS_BOOL_FLAGS: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+    static TLS_MAP_ENTRIES: RefCell<Vec<(Arc<str>, Val)>> = const { RefCell::new(Vec::new()) };
+    static TLS_INDEXED_VALS: RefCell<Vec<(usize, Val)>> = const { RefCell::new(Vec::new()) };
+    static TLS_REG_VALS: RefCell<Vec<(u16, Val)>> = const { RefCell::new(Vec::new()) };
+    static TLS_NAMED_PAIRS: RefCell<Vec<(String, Val)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Thread-safe allocator that prefers thread-local arenas and falls back to heap.

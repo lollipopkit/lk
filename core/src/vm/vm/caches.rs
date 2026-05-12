@@ -67,6 +67,7 @@ pub(super) struct GlobalEntry(
     pub(super) u64, /*generation*/
 );
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum CallIc {
     Rust(RustFunction, u8 /*argc*/),
     RustNamed(RustFunctionNamed, u8 /*argc*/),

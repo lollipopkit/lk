@@ -84,10 +84,10 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
     fixup_offsets(code, &removals);
 }
 
-fn fixup_offsets(code: &mut Vec<Op>, removals: &[usize]) {
-    for p in 0..code.len() {
+fn fixup_offsets(code: &mut [Op], removals: &[usize]) {
+    for (p, op) in code.iter_mut().enumerate() {
         let old_src = p + count_removed_before(p, removals);
-        let new_ofs = match &code[p] {
+        let new_ofs = match &*op {
             Op::Jmp(ofs)
             | Op::JmpFalse(_, ofs)
             | Op::JmpFalseSet { ofs, .. }
@@ -115,7 +115,7 @@ fn fixup_offsets(code: &mut Vec<Op>, removals: &[usize]) {
             }
             _ => continue,
         };
-        set_offset(&mut code[p], new_ofs);
+        set_offset(op, new_ofs);
     }
 }
 

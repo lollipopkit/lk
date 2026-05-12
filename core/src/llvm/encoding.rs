@@ -37,7 +37,7 @@ pub const fn bool_literal(value: bool) -> &'static str {
 /// Returns `true` when the encoded value lies inside the reserved sentinel range.
 #[inline]
 pub const fn is_reserved_sentinel(value: i64) -> bool {
-    value >= NIL_VALUE && value <= BOOL_TRUE_VALUE
+    value <= BOOL_TRUE_VALUE
 }
 
 /// Convert a high-level `Val` into its raw encoded form. Currently supports

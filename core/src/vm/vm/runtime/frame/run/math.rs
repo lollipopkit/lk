@@ -33,6 +33,7 @@ pub(super) fn read_float_pair(regs: &[Val], consts: &[Val], a: u16, b: u16) -> O
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn int_binop<F>(
     frame_raw: *mut super::FrameState<'_>,
     regs: &mut [Val],
@@ -67,6 +68,7 @@ where
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn float_binop<F>(
     frame_raw: *mut super::FrameState<'_>,
     regs: &mut [Val],
@@ -101,6 +103,7 @@ where
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn int_binop_imm<F>(
     frame_raw: *mut super::FrameState<'_>,
     regs: &mut [Val],
@@ -136,6 +139,7 @@ where
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn cmp_ord_imm(
     frame_raw: *mut super::FrameState<'_>,
     regs: &mut [Val],

@@ -20,7 +20,7 @@ pub(super) fn frame_return_common(frame_raw: *mut FrameState<'_>, pc: usize, val
 
 pub(super) fn handle_return_common(
     frame_raw: *mut FrameState<'_>,
-    regs: &mut Vec<Val>,
+    regs: &mut [Val],
     pc: usize,
     base_idx: usize,
     retc: usize,
@@ -53,6 +53,7 @@ pub(super) fn handle_return_common(
 }
 
 #[inline(always)]
+#[allow(clippy::ptr_arg)]
 pub(super) fn assign_reg(_frame_raw: *mut FrameState<'_>, regs: &mut Vec<Val>, idx: usize, value: Val) {
     regs[idx] = value;
 }
@@ -66,10 +67,7 @@ pub(super) fn assign_reg_slice(_frame_raw: *mut FrameState<'_>, regs: &mut [Val]
 pub(super) fn mark_reg_written(_frame_raw: *mut FrameState<'_>, _idx: usize) {}
 
 #[inline]
-pub(super) fn fetch_for_range_state<'a>(
-    slots: &'a mut Vec<Option<ForRangeState>>,
-    pc: usize,
-) -> Result<&'a mut ForRangeState> {
+pub(super) fn fetch_for_range_state(slots: &mut [Option<ForRangeState>], pc: usize) -> Result<&mut ForRangeState> {
     slots
         .get_mut(pc)
         .and_then(|slot| slot.as_mut())
@@ -79,7 +77,7 @@ pub(super) fn fetch_for_range_state<'a>(
 fn move_return_values(
     frame_raw: *mut FrameState<'_>,
     vm: &mut Vm,
-    callee_regs: &mut Vec<Val>,
+    callee_regs: &mut [Val],
     base_idx: usize,
     retc: usize,
     expected: usize,

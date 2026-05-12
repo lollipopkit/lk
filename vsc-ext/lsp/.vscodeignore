@@ -8,9 +8,7 @@ vsc-extension-quickstart.md
 **/.eslintrc.json
 **/*.map
 **/*.ts
-node_modules/**
 bun.lock
 bun.lockb
 vscode-lkr-*.vsix
 **/tsconfig.*
-

@@ -33,6 +33,8 @@ use cache::cached_list_contains;
 
 pub use types::{FunctionNamedParamType, Type};
 
+type DefaultSeedRegLayout = Vec<Option<Arc<[u16]>>>;
+
 pub use iter::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue};
 
 /// New VM-optimized function type that directly uses VmContext
@@ -140,7 +142,7 @@ pub struct ClosureValue {
     default_frame_infos: Arc<OnceCell<Vec<Option<FrameInfo>>>>,
     named_param_index: Arc<OnceCell<FastHashMap<Arc<str>, usize>>>,
     named_param_kinds: Arc<OnceCell<Vec<NamedParamKind>>>,
-    default_seed_reg_layout: Arc<OnceCell<Vec<Option<Arc<[u16]>>>>>,
+    default_seed_reg_layout: Arc<OnceCell<DefaultSeedRegLayout>>,
 }
 
 pub struct ClosureInit {

@@ -79,61 +79,55 @@ impl FunctionBuilder {
             && let Expr::Var(var_name) = obj_expr
             && let Expr::Val(Val::Str(method)) = field_expr
             && method.as_ref() == "push"
+            && let Some(list_reg) = self.lookup(var_name)
         {
-            if let Some(list_reg) = self.lookup(var_name) {
-                let val_reg = self.expr(&args[0]);
-                self.emit(Op::ListPush {
-                    list: list_reg,
-                    val: val_reg,
-                });
-                return list_reg;
-            }
+            let val_reg = self.expr(&args[0]);
+            self.emit(Op::ListPush {
+                list: list_reg,
+                val: val_reg,
+            });
+            return list_reg;
         }
         // Fast path: t.len() — emit Len opcode directly (avoids method dispatch)
         if args.is_empty()
             && let Expr::Var(var_name) = obj_expr
             && let Expr::Val(Val::Str(method)) = field_expr
             && method.as_ref() == "len"
+            && let Some(obj_reg) = self.lookup(var_name)
         {
-            if let Some(obj_reg) = self.lookup(var_name) {
-                let dst = self.alloc();
-                self.emit(Op::Len { dst, src: obj_reg });
-                return dst;
-            }
+            let dst = self.alloc();
+            self.emit(Op::Len { dst, src: obj_reg });
+            return dst;
         }
         // Fast path: m.set(k, v) — emit MapSet for locals tracked as Maps
         if args.len() == 2
             && let Expr::Var(var_name) = obj_expr
             && let Expr::Val(Val::Str(method)) = field_expr
             && method.as_ref() == "set"
+            && let Some(map_reg) = self.lookup(var_name)
+            && self.map_locals.contains(&map_reg)
         {
-            if let Some(map_reg) = self.lookup(var_name) {
-                if self.map_locals.contains(&map_reg) {
-                    let key_reg = self.expr(&args[0]);
-                    let val_reg = self.expr(&args[1]);
-                    self.emit(Op::MapSet {
-                        map: map_reg,
-                        key: key_reg,
-                        val: val_reg,
-                    });
-                    return map_reg;
-                }
-            }
+            let key_reg = self.expr(&args[0]);
+            let val_reg = self.expr(&args[1]);
+            self.emit(Op::MapSet {
+                map: map_reg,
+                key: key_reg,
+                val: val_reg,
+            });
+            return map_reg;
         }
         // Fast path: m.get(k) — emit Access for map locals to avoid method dispatch
         if args.len() == 1
             && let Expr::Var(var_name) = obj_expr
             && let Expr::Val(Val::Str(method)) = field_expr
             && method.as_ref() == "get"
+            && let Some(map_reg) = self.lookup(var_name)
+            && self.map_locals.contains(&map_reg)
         {
-            if let Some(map_reg) = self.lookup(var_name) {
-                if self.map_locals.contains(&map_reg) {
-                    let key_reg = self.expr(&args[0]);
-                    let dst = self.alloc();
-                    self.emit(Op::Access(dst, map_reg, key_reg));
-                    return dst;
-                }
-            }
+            let key_reg = self.expr(&args[0]);
+            let dst = self.alloc();
+            self.emit(Op::Access(dst, map_reg, key_reg));
+            return dst;
         }
 
         let obj_reg = self.expr(obj_expr);
@@ -299,7 +293,8 @@ impl FunctionBuilder {
             Expr::Val(v) => Some(self.k(v.clone())),
             Expr::Var(name) => {
                 if let Some(val) = self.lookup_const(name) {
-                    Some(self.k(val.clone()))
+                    let val = val.clone();
+                    Some(self.k(val))
                 } else {
                     None
                 }
@@ -338,8 +333,6 @@ impl FunctionBuilder {
             // This is safe because rk operands are read-only in binary ops.
             if let Some(idx) = self.lookup(name) {
                 idx // return variable register directly, no LoadLocal
-            } else if self.capture_indices.contains_key(name) {
-                self.expr(expr)
             } else {
                 self.expr(expr) // global lookup needs LoadGlobal
             }
@@ -377,12 +370,11 @@ impl FunctionBuilder {
                 }
             }
             BinOp::Sub => {
-                if flavor != ArithFlavor::Float {
-                    if let Some(neg) = imm.checked_neg() {
-                        if (-128..=127).contains(&neg) {
-                            return emit_add_int_imm(neg);
-                        }
-                    }
+                if flavor != ArithFlavor::Float
+                    && let Some(neg) = imm.checked_neg()
+                    && (-128..=127).contains(&neg)
+                {
+                    return emit_add_int_imm(neg);
                 }
             }
             BinOp::Eq => {
@@ -445,13 +437,12 @@ impl FunctionBuilder {
             let flavor = self.select_arith_flavor(op, left_expr, right_expr, node_expr);
             let dst = self.alloc();
 
-            if use_rk {
-                if let Some(imm) = self.try_small_int_const(right_expr) {
-                    if self.try_emit_binop_imm(dst, left_operand, imm, op, flavor) {
-                        acc = dst;
-                        continue;
-                    }
-                }
+            if use_rk
+                && let Some(imm) = self.try_small_int_const(right_expr)
+                && self.try_emit_binop_imm(dst, left_operand, imm, op, flavor)
+            {
+                acc = dst;
+                continue;
             }
 
             let right_operand = if use_rk {
@@ -892,7 +883,7 @@ impl FunctionBuilder {
                     self.emit(Op::LoadK(dst, k));
                     return dst;
                 }
-                return self.compile_bin_expr(e);
+                self.compile_bin_expr(e)
             }
             Expr::List(items) => {
                 let dst = self.alloc();

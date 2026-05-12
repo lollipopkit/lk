@@ -655,14 +655,14 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
         }
     };
     let method_key = Val::Str(method_arc.clone());
-    if matches!(&args[2], Val::Nil) || matches!(&args[2], Val::List(list) if list.is_empty()) {
-        if let Some(prop_val) = receiver.access(&method_key) {
-            match prop_val {
-                Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
-                    return prop_val.call(&[], ctx);
-                }
-                other => return Ok(other),
+    if (matches!(&args[2], Val::Nil) || matches!(&args[2], Val::List(list) if list.is_empty()))
+        && let Some(prop_val) = receiver.access(&method_key)
+    {
+        match prop_val {
+            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
+                return prop_val.call(&[], ctx);
             }
+            other => return Ok(other),
         }
     }
 

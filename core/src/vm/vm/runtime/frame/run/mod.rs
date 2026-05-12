@@ -39,8 +39,7 @@ pub(crate) fn run_frame(
 
     if let Some(code32) = f.code32.as_ref()
         && supports_bc32_fast_path(f)
-    {
-        if let Some(value) = run_packed_code(
+        && let Some(value) = run_packed_code(
             frame_raw,
             regs,
             ctx,
@@ -55,9 +54,9 @@ pub(crate) fn run_frame(
             region_plan.as_deref(),
             region_allocator_ptr,
             self_ptr,
-        )? {
-            return Ok(value);
-        }
+        )?
+    {
+        return Ok(value);
     }
 
     if let Some(value) = run_opcode_code(

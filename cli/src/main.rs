@@ -978,9 +978,10 @@ fn ensure_runtime_staticlib(target_triple: Option<&str>, use_release: bool) -> a
     if let Some(packaged) = find_packaged_staticlibs(target_triple, use_release) {
         return Ok(packaged);
     }
-    let mut libs = Vec::new();
-    libs.push(build_staticlib(RUNTIME_CRATE_NAME, target_triple, use_release)?);
-    libs.push(build_staticlib(RUNTIME_STDLIB_CRATE, target_triple, use_release)?);
+    let libs = vec![
+        build_staticlib(RUNTIME_CRATE_NAME, target_triple, use_release)?,
+        build_staticlib(RUNTIME_STDLIB_CRATE, target_triple, use_release)?,
+    ];
     Ok(libs)
 }
 
@@ -1046,14 +1047,14 @@ fn find_packaged_staticlibs(target_triple: Option<&str>, use_release: bool) -> O
         }
     }
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(bin_dir) = exe_path.parent() {
-            roots.push(bin_dir.to_path_buf());
-            roots.push(bin_dir.join("lib"));
-            if let Some(parent) = bin_dir.parent() {
-                roots.push(parent.to_path_buf());
-                roots.push(parent.join("lib"));
-            }
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(bin_dir) = exe_path.parent()
+    {
+        roots.push(bin_dir.to_path_buf());
+        roots.push(bin_dir.join("lib"));
+        if let Some(parent) = bin_dir.parent() {
+            roots.push(parent.to_path_buf());
+            roots.push(parent.join("lib"));
         }
     }
 

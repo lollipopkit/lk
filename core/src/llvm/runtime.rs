@@ -735,7 +735,7 @@ mod tests {
     }
 
     fn add_one(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let value = args.get(0).cloned().unwrap_or(Val::Int(0));
+        let value = args.first().cloned().unwrap_or(Val::Int(0));
         match value {
             Val::Int(i) => Ok(Val::Int(i + 1)),
             _ => Ok(Val::Nil),

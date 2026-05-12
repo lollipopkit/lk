@@ -521,26 +521,22 @@ fn make_closure_value(f: &Function, proto: u16, ctx: &mut VmContext, regs: &[Val
     } else if let Val::Closure(closure_arc) = &clo {
         // Eagerly pre-compile closures to eliminate OnceCell overhead from hot calls
         let c = Compiler::new();
-        let compiled = c.compile_function_with_captures(
-            &p.params,
-            &p.named_params.iter().map(|d| d.clone()).collect::<Vec<_>>(),
-            &p.body,
-            &p.captures,
-        );
+        let compiled = c.compile_function_with_captures(&p.params, &p.named_params.to_vec(), &p.body, &p.captures);
         let _ = closure_arc.code.set(compiled);
     }
     Ok(clo)
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn exec_hot_slot(
     entry: &PackedHotSlot,
     frame_raw: *mut FrameState<'_>,
     regs: &mut Vec<Val>,
     func: &Function,
     ctx: &mut VmContext,
-    global_ic: &mut Vec<Option<GlobalEntry>>,
-    for_range_ic: &mut Vec<Option<ForRangeState>>,
+    global_ic: &mut [Option<GlobalEntry>],
+    for_range_ic: &mut [Option<ForRangeState>],
     pc: usize,
     frame_base: usize,
 ) -> Result<Option<usize>> {
@@ -580,20 +576,20 @@ fn exec_hot_slot(
                         global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
                     }
                 }
-                if matches!(out, Val::Nil) {
-                    if let Some(v) = ctx.get_value(s.as_ref()) {
-                        out = v;
-                        if !local_shadowed {
-                            global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
-                        }
+                if matches!(out, Val::Nil)
+                    && let Some(v) = ctx.get_value(s.as_ref())
+                {
+                    out = v;
+                    if !local_shadowed {
+                        global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
                     }
                 }
-                if matches!(out, Val::Nil) {
-                    if let Some(builtin) = ctx.resolver().get_builtin(s.as_ref()) {
-                        out = builtin.clone();
-                        if !local_shadowed {
-                            global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
-                        }
+                if matches!(out, Val::Nil)
+                    && let Some(builtin) = ctx.resolver().get_builtin(s.as_ref())
+                {
+                    out = builtin.clone();
+                    if !local_shadowed {
+                        global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
                     }
                 }
             } else {
@@ -674,17 +670,17 @@ fn exec_hot_slot(
                 // dispatch per for-range iteration.
                 if let Some(code32) = func.code32.as_ref() {
                     let step_pc = entry.next_pc;
-                    if let Some(&step_w) = code32.get(step_pc) {
-                        if bc32::tag_of(step_w) == bc32::TAG_FOR_RANGE_STEP {
-                            let ext_idx = step_pc + 1;
-                            let mut ext = code32.get(ext_idx).copied();
-                            if ext.is_some() && bc32::tag_of(ext.unwrap()) == bc32::TAG_REG_EXT {
-                                ext = code32.get(ext_idx + 1).copied();
-                            }
-                            if let Some(e) = ext {
-                                let back = (((((e >> 8) & 0xFF) as u16) << 8) | ((e & 0xFF) as u16)) as i16;
-                                return Ok(Some(((step_pc as isize) + (back as isize)) as usize));
-                            }
+                    if let Some(&step_w) = code32.get(step_pc)
+                        && bc32::tag_of(step_w) == bc32::TAG_FOR_RANGE_STEP
+                    {
+                        let ext_idx = step_pc + 1;
+                        let mut ext = code32.get(ext_idx).copied();
+                        if ext.is_some() && bc32::tag_of(ext.unwrap()) == bc32::TAG_REG_EXT {
+                            ext = code32.get(ext_idx + 1).copied();
+                        }
+                        if let Some(e) = ext {
+                            let back = (((((e >> 8) & 0xFF) as u16) << 8) | ((e & 0xFF) as u16)) as i16;
+                            return Ok(Some(((step_pc as isize) + (back as isize)) as usize));
                         }
                     }
                 }
@@ -977,7 +973,7 @@ fn exec_hot_slot(
         PackedHotKind::CmpLtImmJmp { r, imm, ofs } => {
             // Fused: if r < imm, fall through; else jump.
             let skip = match &regs[*r as usize] {
-                Val::Int(x) => !(*x < (*imm as i64)),
+                Val::Int(x) => *x >= (*imm as i64),
                 _ => true,
             };
             if skip {
@@ -989,7 +985,7 @@ fn exec_hot_slot(
         PackedHotKind::CmpLeImmJmp { r, imm, ofs } => {
             // Fused: if r <= imm, fall through; else jump.
             let skip = match &regs[*r as usize] {
-                Val::Int(x) => !(*x <= (*imm as i64)),
+                Val::Int(x) => *x > (*imm as i64),
                 _ => true,
             };
             if skip {
@@ -1195,6 +1191,7 @@ fn fetch_packed_op(decoded: Option<&Bc32Decoded>, code32: &[u32], pc: usize) -> 
     decode_packed_op(code32, pc, w, tag)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_packed_code(
     frame_raw: *mut FrameState<'_>,
     regs: &mut Vec<Val>,
@@ -1302,17 +1299,17 @@ pub(super) fn run_packed_code(
             }
         }
         if !skip_build {
-            if let Some(entry) = packed_hot.get_mut(pc) {
-                if let Some(existing) = entry {
-                    match existing {
-                        PackedHotEntry::Slot(slot) if slot.word != word => {
-                            *entry = None;
-                        }
-                        PackedHotEntry::Miss(last_word) if *last_word != word => {
-                            *entry = None;
-                        }
-                        _ => {}
+            if let Some(entry) = packed_hot.get_mut(pc)
+                && let Some(existing) = entry
+            {
+                match existing {
+                    PackedHotEntry::Slot(slot) if slot.word != word => {
+                        *entry = None;
                     }
+                    PackedHotEntry::Miss(last_word) if *last_word != word => {
+                        *entry = None;
+                    }
+                    _ => {}
                 }
             }
             #[cfg(debug_assertions)]
@@ -1668,7 +1665,7 @@ pub(super) fn run_packed_code(
             Op::CmpLtImmJmp { r, imm, ofs } => {
                 // Fused CmpLtImm + JmpFalse: if r < imm, fall through; else jump.
                 let skip = match &regs[r as usize] {
-                    Val::Int(x) => !(*x < (imm as i64)),
+                    Val::Int(x) => *x >= (imm as i64),
                     _ => true,
                 };
                 if skip {
@@ -1680,7 +1677,7 @@ pub(super) fn run_packed_code(
             Op::CmpLeImmJmp { r, imm, ofs } => {
                 // Fused CmpLeImm + JmpFalse: if r <= imm, fall through; else jump.
                 let skip = match &regs[r as usize] {
-                    Val::Int(x) => !(*x <= (imm as i64)),
+                    Val::Int(x) => *x > (imm as i64),
                     _ => true,
                 };
                 if skip {
@@ -2236,7 +2233,7 @@ pub(super) fn run_packed_code(
                 match &func {
                     Val::Closure(closure_arc) => {
                         let closure_ptr = Arc::as_ptr(closure_arc) as usize;
-                        let cached_fast = matches!(call_ic[pc as usize].as_ref(), Some(CallIc::ClosurePositional { closure_ptr: cached_ptr, argc: cached_argc, .. }) if *cached_ptr == closure_ptr && *cached_argc == argc);
+                        let cached_fast = matches!(call_ic[pc].as_ref(), Some(CallIc::ClosurePositional { closure_ptr: cached_ptr, argc: cached_argc, .. }) if *cached_ptr == closure_ptr && *cached_argc == argc);
                         let supports_fast = cached_fast || closure_arc.supports_vm_positional_fast_path();
                         if supports_fast && closure_arc.named_params.is_empty() {
                             if !cached_fast && args_slice.len() != closure_arc.params.len() {
@@ -2264,7 +2261,7 @@ pub(super) fn run_packed_code(
                                 fun_ptr,
                                 argc: cached_argc,
                                 ..
-                            }) = call_ic[pc as usize].as_ref()
+                            }) = call_ic[pc].as_ref()
                                 && *cached_ptr == closure_ptr
                                 && *cached_argc == argc
                             {
@@ -2290,7 +2287,7 @@ pub(super) fn run_packed_code(
                                 argc: _,
                                 cache,
                                 frame_info,
-                            }) = call_ic[pc as usize].as_mut()
+                            }) = call_ic[pc].as_mut()
                                 && cached_fast
                             {
                                 match vm_mut.exec_function_positional_fast(
@@ -2325,7 +2322,7 @@ pub(super) fn run_packed_code(
                                         if retc > 0 {
                                             assign_reg(frame_raw, regs, base as usize, val);
                                         }
-                                        call_ic[pc as usize] = Some(CallIc::ClosurePositional {
+                                        call_ic[pc] = Some(CallIc::ClosurePositional {
                                             closure_ptr,
                                             fun_ptr: fun as *const Function,
                                             argc,

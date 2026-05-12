@@ -22,6 +22,9 @@ pub use stmt_impl::*;
 pub use stmt_parser::*;
 
 #[cfg(test)]
+pub use test_support::*;
+
+#[cfg(test)]
 pub mod test_support {
     use super::*;
     use crate::{
@@ -41,6 +44,3 @@ pub mod test_support {
         run_program(program, &mut ctx)
     }
 }
-
-#[cfg(test)]
-pub use test_support::*;

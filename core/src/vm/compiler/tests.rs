@@ -70,7 +70,7 @@ fn compile_and_run_with_ctx(
     stmts: Vec<Stmt>,
     setup: impl FnOnce(&mut VmContext),
 ) -> (Function, VmContext, anyhow::Result<Val>) {
-    let program = Program::new(stmts.into_iter().map(|stmt| Box::new(stmt)).collect()).expect("program");
+    let program = Program::new(stmts.into_iter().map(Box::new).collect()).expect("program");
     let function = compile_program(&program);
     let mut ctx = VmContext::new();
     setup(&mut ctx);

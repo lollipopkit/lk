@@ -32,6 +32,7 @@ use super::invoke::{invoke_rust_function, invoke_rust_function_named};
 use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, int_binop, int_binop_imm, rk_read};
 use super::plan::build_named_call_plan;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_opcode_code(
     frame_raw: *mut FrameState<'_>,
     regs: &mut Vec<Val>,
@@ -392,13 +393,12 @@ pub(super) fn run_opcode_code(
                     .ok_or_else(|| anyhow!("Capture index {} out of bounds", capture_idx))?;
                 if let Some(specs) = frame_capture_specs
                     && let Some(spec) = specs.get(capture_idx)
+                    && let CaptureSpec::Global { name } = spec
                 {
-                    if let CaptureSpec::Global { name } = spec {
-                        if let Some(val) = ctx.get(name.as_str()).cloned() {
-                            captured = val;
-                        } else {
-                            captured = ctx.get_value(name.as_str()).unwrap_or(Val::Nil);
-                        }
+                    if let Some(val) = ctx.get(name.as_str()).cloned() {
+                        captured = val;
+                    } else {
+                        captured = ctx.get_value(name.as_str()).unwrap_or(Val::Nil);
                     }
                 }
                 assign_reg(frame_raw, regs, *dst as usize, captured);
@@ -1031,12 +1031,8 @@ pub(super) fn run_opcode_code(
                 } else if let Val::Closure(closure_arc) = &clo {
                     // Eagerly pre-compile closures to eliminate OnceCell overhead from hot calls
                     let c = Compiler::new();
-                    let compiled = c.compile_function_with_captures(
-                        &p.params,
-                        &p.named_params.iter().map(|d| d.clone()).collect::<Vec<_>>(),
-                        &p.body,
-                        &p.captures,
-                    );
+                    let compiled =
+                        c.compile_function_with_captures(&p.params, &p.named_params.to_vec(), &p.body, &p.captures);
                     let _ = closure_arc.code.set(compiled);
                 }
                 assign_reg(frame_raw, regs, *dst as usize, clo);
@@ -1071,7 +1067,7 @@ pub(super) fn run_opcode_code(
             Op::CmpLtImmJmp { r, imm, ofs } => {
                 // Fused CmpLtImm + JmpFalse: if r < imm, fall through; else jump.
                 let skip = match &regs[*r as usize] {
-                    Val::Int(x) => !(*x < (*imm as i64)),
+                    Val::Int(x) => *x >= (*imm as i64),
                     _ => true, // non-integers always skip the loop
                 };
                 if skip {
@@ -1101,7 +1097,7 @@ pub(super) fn run_opcode_code(
             Op::CmpLeImmJmp { r, imm, ofs } => {
                 // Fused CmpLeImm + JmpFalse: if r <= imm, fall through; else jump.
                 let skip = match &regs[*r as usize] {
-                    Val::Int(x) => !(*x <= (*imm as i64)),
+                    Val::Int(x) => *x > (*imm as i64),
                     _ => true,
                 };
                 if skip {

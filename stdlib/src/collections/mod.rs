@@ -261,9 +261,7 @@ impl MutableMap for MapMutation {
     }
 
     fn finish(self) -> Val {
-        if self.mutated_in_place {
-            Val::Map(self.source)
-        } else if self.pristine() {
+        if self.mutated_in_place || self.pristine() {
             Val::Map(self.source)
         } else {
             let map = self.owned.expect("scratch must exist when mutated");

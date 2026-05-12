@@ -284,8 +284,10 @@ mod tests {
 
     #[test]
     fn frame_state_propagates_region_plan_and_allocator() {
-        let mut plan = RegionPlan::default();
-        plan.values = vec![AllocationRegion::Heap, AllocationRegion::ThreadLocal];
+        let plan = RegionPlan {
+            values: vec![AllocationRegion::Heap, AllocationRegion::ThreadLocal],
+            ..Default::default()
+        };
         let analysis = FunctionAnalysis {
             ssa: None,
             escape: EscapeSummary {

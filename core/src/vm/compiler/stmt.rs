@@ -32,15 +32,13 @@ use super::FunctionBuilder;
 use std::collections::HashSet;
 
 fn detect_mutating_receiver(expr: &Expr) -> Option<&str> {
-    if let Expr::CallExpr(callee, _args) = expr {
-        if let Expr::Access(obj, field) = callee.as_ref() {
-            if let Expr::Var(var_name) = obj.as_ref()
-                && let Expr::Val(Val::Str(method)) = field.as_ref()
-                && method.as_ref() == "push"
-            {
-                return Some(var_name);
-            }
-        }
+    if let Expr::CallExpr(callee, _args) = expr
+        && let Expr::Access(obj, field) = callee.as_ref()
+        && let Expr::Var(var_name) = obj.as_ref()
+        && let Expr::Val(Val::Str(method)) = field.as_ref()
+        && method.as_ref() == "push"
+    {
+        return Some(var_name);
     }
     None
 }
@@ -213,7 +211,7 @@ impl FunctionBuilder {
         // Check body ends with increment.
         fn body_ends_with_inc(s: &Stmt, counter_name: &str) -> bool {
             match s {
-                Stmt::Block { statements } => statements.last().map_or(false, |s| body_ends_with_inc(s, counter_name)),
+                Stmt::Block { statements } => statements.last().is_some_and(|s| body_ends_with_inc(s, counter_name)),
                 Stmt::Assign { name, value, .. } => {
                     name == counter_name
                         && matches!(
@@ -534,10 +532,10 @@ impl FunctionBuilder {
                         if let Op::Jmp(ref mut ofs) = self.code[skip_pos] {
                             *ofs = (after_fail as isize - skip_pos as isize) as i16;
                         }
-                    } else if let ForPattern::Variable(name) = pattern {
-                        if let Some(idx) = self.lookup(name) {
-                            self.emit(Op::StoreLocal(idx, r_idx));
-                        }
+                    } else if let ForPattern::Variable(name) = pattern
+                        && let Some(idx) = self.lookup(name)
+                    {
+                        self.emit(Op::StoreLocal(idx, r_idx));
                     }
 
                     self.with_const_scope(|builder| builder.stmt(body));
@@ -624,10 +622,10 @@ impl FunctionBuilder {
                         if let Op::Jmp(ref mut ofs) = self.code[skip_pos] {
                             *ofs = (after_fail as isize - skip_pos as isize) as i16;
                         }
-                    } else if let ForPattern::Variable(name) = pattern {
-                        if let Some(idx) = self.lookup(name) {
-                            self.emit(Op::StoreLocal(idx, r_item));
-                        }
+                    } else if let ForPattern::Variable(name) = pattern
+                        && let Some(idx) = self.lookup(name)
+                    {
+                        self.emit(Op::StoreLocal(idx, r_item));
                     }
 
                     self.with_const_scope(|builder| builder.stmt(body));
@@ -678,10 +676,10 @@ impl FunctionBuilder {
             } => {
                 let const_value = self.try_eval_const_expr(value);
                 if let Pattern::Variable(name) = pattern {
+                    if let (false, Some(v)) = (*is_const, const_value.as_ref()) {
+                        self.const_env.define(name.clone(), v.clone());
+                    }
                     if !*is_const {
-                        if let Some(v) = const_value.as_ref() {
-                            self.const_env.define(name.clone(), v.clone());
-                        }
                         let rv = if let Some(v) = const_value.clone() {
                             let dst = self.alloc();
                             if matches!(v, Val::Map(_)) {
@@ -758,12 +756,10 @@ impl FunctionBuilder {
             }
             Stmt::Assign { name, value, .. } => {
                 let is_const_target = self.const_names.contains(name);
-                if !is_const_target {
-                    if let Some(val) = self.try_eval_const_expr(value) {
-                        let _ = self.const_env.assign(name, val.clone());
-                        if self.const_bindings.contains_key(name) {
-                            self.const_bindings.insert(name.clone(), val);
-                        }
+                if !is_const_target && let Some(val) = self.try_eval_const_expr(value) {
+                    let _ = self.const_env.assign(name, val.clone());
+                    if self.const_bindings.contains_key(name) {
+                        self.const_bindings.insert(name.clone(), val);
                     }
                 }
                 if !is_const_target && self.try_emit_simple_self_assign(name, value) {
@@ -772,15 +768,13 @@ impl FunctionBuilder {
                 // Quick path: `a = b` where b is a simple local variable.
                 // Emit a single StoreLocal(a_reg, b_reg) or Move(a_reg, b_reg)
                 // instead of LoadLocal(tmp, b_reg) + StoreLocal(a_reg, tmp).
-                if !is_const_target {
-                    if let Expr::Var(src_name) = value.as_ref() {
-                        if let Some(idx) = self.lookup(name) {
-                            if let Some(src_idx) = self.lookup(src_name) {
-                                self.emit(Op::StoreLocal(idx, src_idx));
-                                return;
-                            }
-                        }
-                    }
+                if !is_const_target
+                    && let Expr::Var(src_name) = value.as_ref()
+                    && let Some(idx) = self.lookup(name)
+                    && let Some(src_idx) = self.lookup(src_name)
+                {
+                    self.emit(Op::StoreLocal(idx, src_idx));
+                    return;
                 }
                 let rv = self.expr(value);
                 if let Some(idx) = self.lookup(name) {
@@ -797,10 +791,10 @@ impl FunctionBuilder {
             }
             Stmt::Expr(e) => {
                 let reg = self.expr(e);
-                if let Some(var_name) = detect_mutating_receiver(e) {
-                    if let Some(idx) = self.lookup(var_name) {
-                        self.emit(Op::StoreLocal(idx, reg));
-                    }
+                if let Some(var_name) = detect_mutating_receiver(e)
+                    && let Some(idx) = self.lookup(var_name)
+                {
+                    self.emit(Op::StoreLocal(idx, reg));
                 }
             }
             Stmt::If {
@@ -1085,10 +1079,10 @@ impl FunctionBuilder {
                 }
 
                 let end = self.code.len();
-                if let Some(pos) = break_jump {
-                    if let Op::Jmp(ref mut ofs) = self.code[pos] {
-                        *ofs = (end as isize - pos as isize) as i16;
-                    }
+                if let Some(pos) = break_jump
+                    && let Op::Jmp(ref mut ofs) = self.code[pos]
+                {
+                    *ofs = (end as isize - pos as isize) as i16;
                 }
 
                 let current_breaks = std::mem::take(&mut self.break_locations);
@@ -1105,10 +1099,10 @@ impl FunctionBuilder {
                 if let Op::JmpFalse(_, ref mut ofs) = self.code[jf] {
                     *ofs = (fail_block_pos as isize - jf as isize) as i16;
                 }
-                if let Some(pos) = nil_break {
-                    if let Op::JmpIfNil(_, ref mut ofs) = self.code[pos] {
-                        *ofs = (end as isize - pos as isize) as i16;
-                    }
+                if let Some(pos) = nil_break
+                    && let Op::JmpIfNil(_, ref mut ofs) = self.code[pos]
+                {
+                    *ofs = (end as isize - pos as isize) as i16;
                 }
             }
             Stmt::CompoundAssign { name, op, value, .. } => {
