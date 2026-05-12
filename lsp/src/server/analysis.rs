@@ -6,7 +6,7 @@ use std::sync::Arc;
 use ropey::Rope;
 use tokio::task;
 use tokio::time::{sleep, Duration};
-use tower_lsp::lsp_types::{request::WorkDoneProgressCreate, *};
+use tower_lsp::lsp_types::*;
 
 use crate::analyzer::{AnalysisResult, LkrAnalyzer};
 use lkr_core::{resolve, stmt, token};
@@ -160,22 +160,6 @@ impl LkrLanguageServer {
                 return;
             }
 
-            let token = NumberOrString::String(format!("lkr:diag:{}", uri));
-            let _ = client
-                .send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams { token: token.clone() })
-                .await;
-            let _ = client
-                .send_notification::<notification::Progress>(ProgressParams {
-                    token: token.clone(),
-                    value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
-                        title: "LKR: Checking".to_string(),
-                        cancellable: Some(false),
-                        message: Some(uri.to_string()),
-                        percentage: None,
-                    })),
-                })
-                .await;
-
             let content_for_compute = content_snapshot.clone();
             let computed_result = task::spawn_blocking(move || {
                 let mut analyzer = LkrAnalyzer::new();
@@ -203,15 +187,6 @@ impl LkrLanguageServer {
                     })
                     .await;
             }
-
-            let _ = client
-                .send_notification::<notification::Progress>(ProgressParams {
-                    token,
-                    value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(WorkDoneProgressEnd {
-                        message: Some("Checking complete".to_string()),
-                    })),
-                })
-                .await;
         });
     }
 

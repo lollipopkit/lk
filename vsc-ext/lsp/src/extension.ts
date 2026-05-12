@@ -14,10 +14,12 @@ import { execFile } from 'child_process';
 
 let client: LanguageClient;
 let statusBarItem: vscode.StatusBarItem;
+let outputChannel: vscode.OutputChannel;
 let isManuallyDisabled = false;
 let checkInFlight = 0;
 let checkIdleTimer: NodeJS.Timeout | undefined;
 let checkStartTimer: NodeJS.Timeout | undefined;
+let nudgeTimer: NodeJS.Timeout | undefined;
 
 // Lightweight performance tracing (extension-side)
 let perfTraceSteps = false;
@@ -27,10 +29,25 @@ function perfLog(label: string, ms: number) {
   if (!perfTraceSteps) return;
   if (ms < perfThresholdMs) return;
   try {
-    console.log(`[LKR Perf] ${label} took ${ms.toFixed(1)} ms`);
+    log(`[LKR Perf] ${label} took ${ms.toFixed(1)} ms`);
   } catch {
     // ignore logging failures
   }
+}
+
+function log(message: string) {
+  const line = `${new Date().toISOString()} ${message}`;
+  try {
+    console.log(line);
+    outputChannel?.appendLine(line);
+  } catch {
+    // ignore logging failures
+  }
+}
+
+function logError(message: string, error?: unknown) {
+  const details = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error ?? '');
+  log(details ? `${message}: ${details}` : message);
 }
 
 function withTiming<T>(label: string, fn: () => T): T {
@@ -97,7 +114,9 @@ const runtime = {
 };
 
 export function activate(context: vscode.ExtensionContext) {
-  console.log('LKR extension is now active');
+  outputChannel = vscode.window.createOutputChannel('LKR Language Server');
+  context.subscriptions.push(outputChannel);
+  log('LKR extension is now active');
 
   // Create status bar item
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -115,19 +134,23 @@ export function activate(context: vscode.ExtensionContext) {
     }
     try {
       updateStatusBar('starting');
+      log('Starting LKR Language Server from command');
       await withTiming('command.startServer', () => client.start());
+      log('LKR Language Server started from command');
       vscode.window.showInformationMessage('LKR Language Server started');
     } catch (e: any) {
+      logError('Failed to start LKR Language Server from command', e);
       vscode.window.showErrorMessage('Failed to start LKR Language Server: ' + (e?.message || e));
     }
   });
 
   const restartCommand = vscode.commands.registerCommand('lkr.restartServer', async () => {
     if (client) {
-      console.log('Restarting LKR Language Server...');
+      log('Restarting LKR Language Server');
       updateStatusBar('starting');
       await client.stop();
       await withTiming('command.restartServer.start', () => client.start());
+      log('LKR Language Server restarted');
       vscode.window.showInformationMessage('LKR Language Server restarted');
     }
   });
@@ -293,7 +316,7 @@ export function activate(context: vscode.ExtensionContext) {
   runtime.checkingDelayMs = Math.max(0, Number(config.get<number>('ui.checkingDelayMs', 120)) || 120);
   
   if (!lspEnabled || isManuallyDisabled) {
-    console.log('LKR LSP is disabled in configuration or manually disabled');
+    log('LKR LSP is disabled in configuration or manually disabled');
     updateStatusBar('disabled');
     return;
   }
@@ -302,8 +325,8 @@ export function activate(context: vscode.ExtensionContext) {
   const customServerPath = config.get<string>('serverPath', '');
   const serverPath = withTiming('resolveServerPath', () => (customServerPath ? expandHome(customServerPath) : getServerPath()));
 
-  console.log('Looking for LKR LSP server...');
-  console.log('Server path resolved to:', serverPath ?? 'PATH: lkr-lsp');
+  log('Looking for LKR LSP server');
+  log(`Server path resolved to: ${serverPath ?? 'PATH: lkr-lsp'}`);
 
   // If the server path is not found, show an error and return
   if (!serverPath) {
@@ -321,7 +344,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   const traceLevel = config.get<string>('trace', 'off');
   const isVerbose = traceLevel === 'verbose';
-  const outputChannelEnabled = config.get<boolean>('outputChannel.enabled', false);
   const semanticTokensEnabled = runtime.semanticTokensEnabled;
   const throttleMs = runtime.semanticTokensThrottleMs;
 
@@ -355,13 +377,13 @@ export function activate(context: vscode.ExtensionContext) {
     },
     provideDocumentSemanticTokens(document, token, next) {
       if (!settings.semanticTokensEnabled) {
-        if (isVerbose) console.log('Semantic tokens disabled (full)');
+        if (isVerbose) log('Semantic tokens disabled (full)');
         return null;
       }
       // semantic tokens mode logic
       const mode = runtime.semanticTokensMode;
       if (mode === 'rangeOnly' || (mode === 'auto' && document.lineCount >= runtime.autoRangeAtLines)) {
-        if (isVerbose) console.log('Skip full tokens due to mode');
+        if (isVerbose) log('Skip full tokens due to mode');
         return null;
       }
       if (token?.isCancellationRequested) return null;
@@ -376,7 +398,7 @@ export function activate(context: vscode.ExtensionContext) {
         const now = Date.now();
         const last = lastTokenReqAt.get(key) || 0;
         if (now - last < settings.throttleMs) {
-          if (isVerbose) console.log('Semantic tokens full throttled');
+          if (isVerbose) log('Semantic tokens full throttled');
           endChecking();
           return null;
         }
@@ -414,13 +436,13 @@ export function activate(context: vscode.ExtensionContext) {
     },
     provideDocumentRangeSemanticTokens(document, range, token, next) {
       if (!settings.semanticTokensEnabled) {
-        if (isVerbose) console.log('Semantic tokens disabled (range)');
+        if (isVerbose) log('Semantic tokens disabled (range)');
         return null;
       }
       // semantic tokens mode logic
       const mode = runtime.semanticTokensMode;
       if (mode === 'fullOnly' || (mode === 'auto' && document.lineCount < runtime.autoRangeAtLines)) {
-        if (isVerbose) console.log('Skip range tokens due to mode');
+        if (isVerbose) log('Skip range tokens due to mode');
         return null;
       }
       if (token?.isCancellationRequested) return null;
@@ -435,7 +457,7 @@ export function activate(context: vscode.ExtensionContext) {
         const now = Date.now();
         const last = lastTokenReqAt.get(key) || 0;
         if (now - last < settings.throttleMs) {
-          if (isVerbose) console.log('Semantic tokens range throttled');
+          if (isVerbose) log('Semantic tokens range throttled');
           endChecking();
           return null;
         }
@@ -598,15 +620,10 @@ export function activate(context: vscode.ExtensionContext) {
     },
     // Never auto-reveal the output unless user explicitly opens it
     revealOutputChannelOn: RevealOutputChannelOn.Never,
-    traceOutputChannel: traceLevel !== 'off' ? vscode.window.createOutputChannel('LKR Language Server Trace') : undefined,
+    outputChannel,
+    traceOutputChannel: traceLevel !== 'off' ? outputChannel : undefined,
     middleware
   };
-
-  // Create and attach an output channel only when enabled/verbose
-  if (outputChannelEnabled || isVerbose) {
-    const outputChannel = vscode.window.createOutputChannel('LKR Language Server');
-    clientOptions.outputChannel = outputChannel;
-  }
 
   client = withTiming('createLanguageClient', () => new LanguageClient(
     'lkr',
@@ -616,13 +633,13 @@ export function activate(context: vscode.ExtensionContext) {
   ));
 
   if (isVerbose) {
-    console.log('Starting LKR Language Server...', serverPath);
+    log(`Starting LKR Language Server: ${serverPath}`);
   }
   
   // Add error handling for the client itself
   client.onDidChangeState((event) => {
     if (isVerbose) {
-      console.log(`LSP client state change: ${event.oldState} -> ${event.newState}`);
+      log(`LSP client state change: ${event.oldState} -> ${event.newState}`);
     }
     
     // Update status bar based on state
@@ -645,31 +662,39 @@ export function activate(context: vscode.ExtensionContext) {
   const startPromise = autoStart ? withTiming('lsp.start', () => client.start()) : Promise.resolve();
   
   // Add a timeout to detect hanging
+  let startTimeout: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => reject(new Error('LSP server start timeout after 10 seconds')), 10000);
+    startTimeout = setTimeout(() => reject(new Error('LSP server start timeout after 10 seconds')), 10000);
   });
   
   Promise.race([startPromise, timeoutPromise])
     .then(() => {
+      if (startTimeout) {
+        clearTimeout(startTimeout);
+        startTimeout = undefined;
+      }
       if (isVerbose && autoStart) {
-        console.log('LKR Language Server started successfully');
+        log('LKR Language Server started successfully');
         // Check if semantic highlighting is enabled
         const editorConfig = vscode.workspace.getConfiguration('editor');
         const semanticHighlighting = editorConfig.get('semanticHighlighting.enabled');
-        console.log('Semantic highlighting enabled:', semanticHighlighting);
+        log(`Semantic highlighting enabled: ${semanticHighlighting}`);
       }
       updateStatusBar('running');
     })
     .catch((error) => {
-      console.error('Failed to start LKR Language Server:', error);
-      console.error('Error details:', JSON.stringify(error, null, 2));
+      if (startTimeout) {
+        clearTimeout(startTimeout);
+        startTimeout = undefined;
+      }
+      logError('Failed to start LKR Language Server', error);
       vscode.window.showErrorMessage('Failed to start LKR Language Server: ' + error.message);
       updateStatusBar('error', 'Start failed');
       
       // Try to stop the client if it's in a bad state
       if (client) {
         client.stop().catch(stopError => {
-          console.error('Error stopping client after failure:', stopError);
+          logError('Error stopping client after failure', stopError);
         });
       }
     });
@@ -691,7 +716,7 @@ export function activate(context: vscode.ExtensionContext) {
       const cfg = vscode.workspace.getConfiguration('lkr.lsp');
       settings.semanticTokensEnabled = cfg.get<boolean>('semanticTokens.enabled', true);
       settings.throttleMs = Math.max(0, Number(cfg.get<number>('semanticTokens.throttleMs', 40)) || 0);
-      if (isVerbose) console.log('Updated semantic tokens settings', settings);
+      if (isVerbose) log(`Updated semantic tokens settings ${JSON.stringify(settings)}`);
     }
   }));
 }
@@ -789,6 +814,10 @@ function beginChecking(_reason?: string) {
   const wasIdle = checkInFlight === 0;
   checkInFlight++;
   if (wasIdle) {
+    if (nudgeTimer) {
+      clearTimeout(nudgeTimer);
+      nudgeTimer = undefined;
+    }
     if (checkIdleTimer) {
       clearTimeout(checkIdleTimer);
       checkIdleTimer = undefined;
@@ -803,6 +832,10 @@ function beginChecking(_reason?: string) {
 
 function endChecking() {
   if (!statusBarItem) return;
+  if (nudgeTimer) {
+    clearTimeout(nudgeTimer);
+    nudgeTimer = undefined;
+  }
   if (checkInFlight > 0) checkInFlight--;
   if (checkInFlight === 0) {
     if (checkStartTimer) { clearTimeout(checkStartTimer); checkStartTimer = undefined; }
@@ -815,16 +848,26 @@ function endChecking() {
 // UI-only nudge to show 'Checking…' without affecting the in-flight counter.
 function nudgeChecking() {
   if (!statusBarItem || isManuallyDisabled) return;
-  if (checkInFlight === 0) {
-    if (checkIdleTimer) {
-      clearTimeout(checkIdleTimer);
-      checkIdleTimer = undefined;
-    }
-    updateStatusBar('checking');
+  if (checkInFlight !== 0) return;
+  if (checkIdleTimer) {
+    clearTimeout(checkIdleTimer);
+    checkIdleTimer = undefined;
   }
+  if (nudgeTimer) clearTimeout(nudgeTimer);
+  const delay = Math.max(0, runtime.checkingDelayMs || 0);
+  nudgeTimer = setTimeout(() => {
+    nudgeTimer = undefined;
+    if (checkInFlight === 0 && !isManuallyDisabled) {
+      updateStatusBar('checking');
+    }
+  }, delay);
 }
 
 export function deactivate(): Thenable<void> | undefined {
+  if (nudgeTimer) {
+    clearTimeout(nudgeTimer);
+    nudgeTimer = undefined;
+  }
   if (!client) {
     return undefined;
   }
