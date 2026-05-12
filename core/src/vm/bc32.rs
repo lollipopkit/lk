@@ -5,13 +5,15 @@
 //! density work, not as a full replacement yet.
 
 use super::bytecode::{
-    ClosureProto, Function, NamedParamLayoutEntry, Op, PatternPlan, rk_index, rk_is_const, rk_make_const,
+    ClosureProto, Function, NamedParamLayoutEntry, Op, PatternPlan, rk_is_const, rk_make_const,
 };
 use crate::val::Val;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing::info;
+
+use super::bytecode::rk_index;
 
 /// Packed function using 32-bit instructions for a subset of ops.
 #[derive(Debug, Clone)]
@@ -550,6 +552,36 @@ impl Bc32Function {
                             });
                             pc = next;
                         }
+                        Tag::CmpLtImmJmp => {
+                            if next >= self.code32.len() { break; }
+                            let r = ((w >> 16) & 0xFF) as u16;
+                            let imm = (((w >> 8) & 0xFF) as i8) as i16;
+                            let w2 = self.code32[next];
+                            next += 1;
+                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
+                            code.push(Op::CmpLtImmJmp { r, imm, ofs });
+                            pc = next;
+                        }
+                        Tag::CmpLeImmJmp => {
+                            if next >= self.code32.len() { break; }
+                            let r = ((w >> 16) & 0xFF) as u16;
+                            let imm = (((w >> 8) & 0xFF) as i8) as i16;
+                            let w2 = self.code32[next];
+                            next += 1;
+                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
+                            code.push(Op::CmpLeImmJmp { r, imm, ofs });
+                            pc = next;
+                        }
+                        Tag::AddIntImmJmp => {
+                            if next >= self.code32.len() { break; }
+                            let r = ((w >> 16) & 0xFF) as u16;
+                            let imm = (((w >> 8) & 0xFF) as i8) as i16;
+                            let w2 = self.code32[next];
+                            next += 1;
+                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
+                            code.push(Op::AddIntImmJmp { r, imm, ofs });
+                            pc = next;
+                        }
                         _ => {
                             let op = decode_word_with_hi(tag, flags, w, (hi_a, hi_b, hi_c));
                             code.push(op);
@@ -646,6 +678,10 @@ pub(crate) enum Tag {
     MakeClosure,
     CallNamedX,
     ListPush,
+    MapSet,
+    CmpLtImmJmp,
+    CmpLeImmJmp,
+    AddIntImmJmp,
 }
 
 impl Tag {
@@ -711,6 +747,9 @@ impl Tag {
             57 => Tag::MakeClosure,
             58 => Tag::CallNamedX,
             59 => Tag::ListPush,
+            60 => Tag::CmpLtImmJmp,
+            61 => Tag::CmpLeImmJmp,
+            62 => Tag::AddIntImmJmp,
             _ => return None,
         })
     }
@@ -889,6 +928,9 @@ fn opcode_name(op: &Op) -> &'static str {
         Op::ForRangeStep { .. } => "ForRangeStep",
         Op::Break(..) => "Break",
         Op::Continue(..) => "Continue",
+        Op::CmpLtImmJmp { .. } => "CmpLtImmJmp",
+        Op::CmpLeImmJmp { .. } => "CmpLeImmJmp",
+        Op::AddIntImmJmp { .. } => "AddIntImmJmp",
         _ => "Unknown",
     }
 }
@@ -1324,6 +1366,11 @@ pub(crate) fn decode_word_with_hi(tag: Tag, flags: u8, w: u32, hi: (u16, u16, u1
             list: a,
             val: b_reg,
         },
+        Tag::MapSet => Op::MapSet {
+            map: a,
+            key: b_reg,
+            val: c_reg,
+        },
         Tag::BuildList => Op::BuildList {
             dst: a,
             base: b_reg,
@@ -1398,6 +1445,21 @@ impl Bc32Function {
                 Op::ForRangeStep { idx, step, .. } => {
                     let extra = pack_reg_ext_bits(*idx, *step, 0).is_some() as usize;
                     2 + extra
+                }
+                Op::CmpLtImmJmp { r, imm, .. } => {
+                    ensure_regs_u8("CmpLtImmJmp", *r, 0, 0).map_err(|err| PackIssue::new(err, i))?;
+                    ensure_i8_range("CmpLtImmJmp", "imm", *imm as i32).map_err(|err| PackIssue::new(err, i))?;
+                    2
+                }
+                Op::CmpLeImmJmp { r, imm, .. } => {
+                    ensure_regs_u8("CmpLeImmJmp", *r, 0, 0).map_err(|err| PackIssue::new(err, i))?;
+                    ensure_i8_range("CmpLeImmJmp", "imm", *imm as i32).map_err(|err| PackIssue::new(err, i))?;
+                    2
+                }
+                Op::AddIntImmJmp { r, imm, .. } => {
+                    ensure_regs_u8("AddIntImmJmp", *r, 0, 0).map_err(|err| PackIssue::new(err, i))?;
+                    ensure_i8_range("AddIntImmJmp", "imm", *imm as i32).map_err(|err| PackIssue::new(err, i))?;
+                    2
                 }
                 // Optimistically 1 for Jmp*Set/NullishPick; we refine offset below. Include reg-ext if needed.
                 Op::JmpFalseSet { .. } => 1,
@@ -1483,6 +1545,39 @@ impl Bc32Function {
                         if new != old {
                             words_per_op[i] = new;
                             changed = true;
+                        }
+                    }
+                    Op::CmpLtImmJmp { ofs, .. } => {
+                        let j = (i as isize) + *ofs as isize;
+                        if j < 0 || j as usize >= n {
+                            return Err(PackIssue::new(
+                                Bc32Reject::BranchTargetOutOfBounds {
+                                    opcode: opcode_name(op),
+                                },
+                                i,
+                            ));
+                        }
+                    }
+                    Op::CmpLeImmJmp { ofs, .. } => {
+                        let j = (i as isize) + *ofs as isize;
+                        if j < 0 || j as usize >= n {
+                            return Err(PackIssue::new(
+                                Bc32Reject::BranchTargetOutOfBounds {
+                                    opcode: opcode_name(op),
+                                },
+                                i,
+                            ));
+                        }
+                    }
+                    Op::AddIntImmJmp { ofs, .. } => {
+                        let j = (i as isize) + *ofs as isize;
+                        if j < 0 || j as usize >= n {
+                            return Err(PackIssue::new(
+                                Bc32Reject::BranchTargetOutOfBounds {
+                                    opcode: opcode_name(op),
+                                },
+                                i,
+                            ));
                         }
                     }
                     _ => {}
@@ -1615,6 +1710,24 @@ impl Bc32Function {
                     if let Some(ext) = pack_reg_ext_bits(*idx, *step, 0) {
                         out.push(ext);
                     }
+                    out.push(pack_ext_word(0, (wofs >> 8) as u8, (wofs & 0xFF) as u8));
+                }
+                Op::CmpLtImmJmp { r, imm, ofs } => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
+                    out.push(pack(Tag::CmpLtImmJmp, 0, *r as u8, (*imm as i8) as u8, 0));
+                    out.push(pack_ext_word(0, (wofs >> 8) as u8, (wofs & 0xFF) as u8));
+                }
+                Op::CmpLeImmJmp { r, imm, ofs } => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
+                    out.push(pack(Tag::CmpLeImmJmp, 0, *r as u8, (*imm as i8) as u8, 0));
+                    out.push(pack_ext_word(0, (wofs >> 8) as u8, (wofs & 0xFF) as u8));
+                }
+                Op::AddIntImmJmp { r, imm, ofs } => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
+                    out.push(pack(Tag::AddIntImmJmp, 0, *r as u8, (*imm as i8) as u8, 0));
                     out.push(pack_ext_word(0, (wofs >> 8) as u8, (wofs & 0xFF) as u8));
                 }
                 Op::Call { f, base, argc, retc } => {

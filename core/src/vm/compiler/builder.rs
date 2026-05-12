@@ -40,6 +40,9 @@ pub(crate) struct FunctionBuilder {
     pub analysis: Option<FunctionAnalysis>,
     pub const_names: HashSet<String>,
     expr_type_hints: Option<HashMap<usize, Type>>,
+    /// Registers known to hold Map values (set when initialized from {} or map exprs).
+    /// Used to safely emit MapSet opcode in compile_method_call.
+    pub(crate) map_locals: HashSet<u16>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +112,7 @@ impl FunctionBuilder {
             analysis: None,
             const_names: HashSet::new(),
             expr_type_hints: None,
+            map_locals: HashSet::new(),
         };
         for (idx, cap) in captures.iter().enumerate() {
             let name = match cap {

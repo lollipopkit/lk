@@ -1012,9 +1012,14 @@ impl Val {
         }
     }
 
-    /// Efficient string concatenation without redundant copying.
-    #[inline]
-    pub(crate) fn concat_strings(a: &str, b: &str) -> Val {
+/// Fast string concatenation — hot path for `s = s + "x"` loops.
+/// Optimized to avoid redundant allocations:
+///  1. Returns empty-string operand directly (no allocation)
+///  2. Uses `MaybeUninit` buffer to avoid zero-initialization
+///  3. `ptr::copy_nonoverlapping` (memcpy-equivalent) for byte copying
+///  4. Raw pointer casting `Arc<[u8]>` → `Arc<str>` (valid UTF-8 preserved)
+#[inline]
+pub(crate) fn concat_strings(a: &str, b: &str) -> Val {
         if a.is_empty() {
             return Val::Str(Arc::from(b));
         }

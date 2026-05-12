@@ -580,7 +580,10 @@ export function activate(context: vscode.ExtensionContext) {
   }));
 
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'lkr' }],
+    documentSelector: [
+      { scheme: 'file', language: 'lkr' },
+      { scheme: 'untitled', language: 'lkr' },
+    ],
     synchronize: {
       configurationSection: 'lkr'
     },
@@ -704,14 +707,13 @@ function getServerPath(): string | undefined {
     // Fallbacks that may exist depending on packaging layout
     path.join(__dirname, '..', '..', 'target', 'debug', `lkr-lsp${exe}`),
     path.join(__dirname, '..', '..', 'target', 'release', `lkr-lsp${exe}`),
-    // Common user install
+    // Common user install locations
     expandHome(`~/.cargo/bin/lkr-lsp${exe}`),
+    // Homebrew on macOS
+    '/opt/homebrew/bin/lkr-lsp',
+    '/usr/local/bin/lkr-lsp',
   ];
 
-  // Reduce noisy logs unless verbose
-  // console.log('Extension __dirname:', __dirname);
-  // console.log('Searching for lkr-lsp binary in paths:');
-  
   for (const possiblePath of possiblePaths) {
     if (!possiblePath) continue;
     try {
@@ -728,7 +730,10 @@ function getServerPath(): string | undefined {
     }
   }
 
-  // Fall back to PATH resolution by returning command name
+  // Fall back to PATH resolution by returning command name.
+  // This allows the system to find lkr-lsp if it's on the PATH.
+  // The vscode-languageclient will use child_process.spawn which
+  // resolves from PATH automatically.
   return process.platform === 'win32' ? 'lkr-lsp.exe' : 'lkr-lsp';
 }
 

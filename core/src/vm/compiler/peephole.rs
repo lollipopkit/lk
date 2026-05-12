@@ -1,7 +1,21 @@
 //! Peephole optimization passes for LKR bytecode.
 //!
-//! These passes run after compilation to fuse common instruction patterns
-//! into single instructions, reducing dispatch overhead in hot loops.
+//! These post-compilation passes scan for instruction patterns that can be
+//! fused into single, more efficient opcodes. Each pass performs pattern
+//! matching, replaces matched pairs with fused instructions, and adjusts
+//! all relative jump offsets to maintain correctness.
+//!
+//! ## Current Fusions
+//!
+//! | Pattern | Fused Result | Benefit |
+//! |---------|-------------|---------|
+//! | `CmpLtImm + JmpFalse` | `CmpLtImmJmp` | 1 dispatch/iteration savings in while loops |
+//! | `CmpLeImm + JmpFalse` | `CmpLeImmJmp` | Same for <= based loops |
+//! | `AddIntImm + Jmp` | `AddIntImmJmp` | Loop increment tail fusion |
+//!
+//! These fused ops are handled natively in `opcode.rs`. BC32 packing sees
+//! them as unsupported opcodes and gracefully skips those functions, which
+//! then run on the optimized opcode.rs path.
 
 use crate::vm::bytecode::Op;
 

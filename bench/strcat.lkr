@@ -9,4 +9,4 @@ while (i < 100000) {
     i = i + 1;
 }
 let elapsed = os.clock() - start;
-println("lkr strcat 100k: len={}, time={:.4}s", string.len(s), elapsed);
+println("lkr strcat 100k: len={}, time={}s", string.len(s), elapsed);

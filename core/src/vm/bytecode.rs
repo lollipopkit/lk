@@ -8,7 +8,27 @@ use crate::vm::analysis::FunctionAnalysis;
 use crate::vm::bc32::Bc32Decoded;
 
 /// Compact bytecode representation and constant pool.
-/// This is a minimal scaffold to unblock incremental VM work.
+///
+/// This module defines the core data structures for the LKR VM's bytecode
+/// compiler and interpreter:
+///
+/// - **`Function`**: A compiled function with constant pool, instruction list,
+///   register count, closures, and patterns. Can optionally carry a 32-bit
+///   packed encoding (`code32`) for BC32 fast-path execution.
+///
+/// - **`Op`**: The instruction set (~70 variants). Many ops use RK
+///   (register/constant) addressing: bit 15 set → constant pool index.
+///
+/// - **`ClosureProto`**: Captured closure metadata including parameter
+///   lists, default value thunks, and compile-on-demand bytecode.
+///
+/// ## RK Encoding
+/// The 16-bit operand space is split:
+/// - Bit 15 = `RK_CONST_BIT`: 1 → constant pool, 0 → register
+/// - Bits 0-14 = index (register number or constant pool index)
+///
+/// Fused opcodes (`CmpLtImmJmp`, `AddIntImmJmp`, etc.) combine two
+/// instructions into one to reduce dispatch overhead in hot loops.
 #[derive(Debug, Clone)]
 pub struct Function {
     pub consts: Vec<Val>,
@@ -234,8 +254,14 @@ pub enum Op {
     },
     // Append value to list in-place (Arc::make_mut when possible)
     ListPush {
-        list: u16, // list register (must be List type) — mutated in-place if refcount==1
+        list: u16, // list register (must be List type) — mutated in-place via Arc::make_mut
         val: u16,  // value register to append
+    },
+    // Set a key-value pair in a map register in-place via Arc::make_mut
+    MapSet {
+        map: u16,
+        key: u16,
+        val: u16,
     },
     MakeClosure {
         dst: u16,
@@ -389,6 +415,7 @@ impl fmt::Debug for Op {
                 write!(f, "ListSlice r{}, r{}, r{}", dst, src, start)
             }
             Op::ListPush { list, val } => write!(f, "ListPush r{}, r{}", list, val),
+            Op::MapSet { map, key, val } => write!(f, "MapSet r{}, r{}, r{}", map, key, val),
             Op::MakeClosure { dst, proto } => write!(f, "MakeClosure r{}, p{}", dst, proto),
             Op::Jmp(ofs) => write!(f, "Jmp {}", ofs),
             Op::JmpFalse(r, ofs) => write!(f, "JmpFalse r{}, {}", r, ofs),

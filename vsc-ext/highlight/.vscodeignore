@@ -1,9 +1,0 @@
-.vscode/**
-.vscode-test/**
-node_modules/**
-**/*.map
-**/*.ts
-bun.lock
-bun.lockb
-vscode-lkr-*.vsix
-

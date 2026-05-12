@@ -173,9 +173,16 @@ impl MutableSequence for ListMutation {
 }
 
 /// Copy-on-write mutation guard for map values.
+///
+/// Uses Arc::make_mut for fast path when the map has a single reference.
 pub struct MapMutation {
-    original: Arc<FastHashMap<Arc<str>, Val>>,
-    scratch: Option<FastHashMap<Arc<str>, Val>>,
+    source: Arc<FastHashMap<Arc<str>, Val>>,
+    /// When source is uniquely owned, we use Arc::make_mut eagerly.
+    /// When source is shared, we fall back to a scratch copy.
+    owned: Option<FastHashMap<Arc<str>, Val>>,
+    /// True when we've already called Arc::make_mut and mutated the original
+    /// arc in-place. In this case `owned` is None and `source` has the changes.
+    mutated_in_place: bool,
 }
 
 impl MapMutation {
@@ -188,39 +195,52 @@ impl MapMutation {
 
     pub fn new(map: Arc<FastHashMap<Arc<str>, Val>>) -> Self {
         Self {
-            original: map,
-            scratch: None,
+            source: map,
+            owned: None,
+            mutated_in_place: false,
         }
     }
 
+    /// Try to get mutable access via Arc::make_mut (fast path for unique refs).
+    /// Falls back to cloning into `owned` when the arc is shared.
     fn ensure_owned(&mut self) -> &mut FastHashMap<Arc<str>, Val> {
-        if self.scratch.is_none() {
-            let mut owned = fast_hash_map_with_capacity(self.original.len());
-            for (k, v) in self.original.iter() {
+        if self.mutated_in_place {
+            // Already using Arc::make_mut, just return a fresh mutable ref
+            return Arc::make_mut(&mut self.source);
+        }
+        if Arc::strong_count(&self.source) == 1 && Arc::weak_count(&self.source) == 0 {
+            // Unique reference — mutate in place via Arc::make_mut
+            self.mutated_in_place = true;
+            return Arc::make_mut(&mut self.source);
+        }
+        // Shared reference — must copy
+        if self.owned.is_none() {
+            let mut owned = fast_hash_map_with_capacity(self.source.len());
+            for (k, v) in self.source.iter() {
                 owned.insert(k.clone(), v.clone());
             }
-            self.scratch = Some(owned);
+            self.owned = Some(owned);
         }
-        self.scratch.as_mut().expect("scratch initialised above")
+        self.owned.as_mut().expect("scratch initialised above")
     }
 
     fn pristine(&self) -> bool {
-        self.scratch.is_none()
+        self.owned.is_none() && !self.mutated_in_place
     }
 }
 
 impl MutableMap for MapMutation {
     fn len(&self) -> usize {
-        self.scratch
+        self.owned
             .as_ref()
             .map(|m| m.len())
-            .unwrap_or_else(|| self.original.len())
+            .unwrap_or_else(|| self.source.len())
     }
 
     fn contains_key(&self, key: &str) -> bool {
-        match &self.scratch {
+        match &self.owned {
             Some(map) => map.contains_key(key),
-            None => self.original.contains_key(key),
+            None => self.source.contains_key(key),
         }
     }
 
@@ -241,10 +261,12 @@ impl MutableMap for MapMutation {
     }
 
     fn finish(self) -> Val {
-        if self.pristine() {
-            Val::Map(self.original)
+        if self.mutated_in_place {
+            Val::Map(self.source)
+        } else if self.pristine() {
+            Val::Map(self.source)
         } else {
-            let map = self.scratch.expect("scratch must exist when mutated");
+            let map = self.owned.expect("scratch must exist when mutated");
             Val::Map(Arc::new(map))
         }
     }
@@ -292,17 +314,35 @@ mod tests {
     }
 
     #[test]
-    fn map_mutation_clone_on_write() {
+    fn map_mutation_make_mut_on_unique_ref() {
         let mut map = fast_hash_map_with_capacity(1);
         map.insert(Arc::<str>::from("k"), Val::Int(1));
         let original = Arc::new(map);
-        let mut guard = MapMutation::new(original.clone());
+        // Only one reference — should use Arc::make_mut path
+        let mut guard = MapMutation::new(original);
         guard.insert(Arc::<str>::from("k2"), Val::Int(2));
         let result = guard.finish();
         let Val::Map(map_arc) = result else {
             panic!("expected map");
         };
         assert_eq!(map_arc.len(), 2);
-        assert!(!Arc::ptr_eq(&map_arc, &original));
+    }
+
+    #[test]
+    fn map_mutation_clone_on_write() {
+        let mut map = fast_hash_map_with_capacity(1);
+        map.insert(Arc::<str>::from("k"), Val::Int(1));
+        let original = Arc::new(map);
+        // clone to create a second reference — should force copy path
+        let shared = original.clone();
+        let mut guard = MapMutation::new(shared);
+        guard.insert(Arc::<str>::from("k2"), Val::Int(2));
+        let result = guard.finish();
+        let Val::Map(map_arc) = result else {
+            panic!("expected map");
+        };
+        assert_eq!(map_arc.len(), 2);
+        // original should still be unchanged at len 1
+        assert_eq!(original.len(), 1);
     }
 }

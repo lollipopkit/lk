@@ -13,8 +13,32 @@ pub(crate) use guards::with_current_vm;
 #[cfg(test)]
 pub(crate) use guards::with_current_vm_ctx;
 
-/// Minimal VM loop that can execute the placeholder Function produced by the stub compiler.
-/// Reuses an internal register vector across executions to reduce allocations.
+/// LKR's register-based bytecode virtual machine.
+///
+/// ## Architecture
+///
+/// The VM executes compiled bytecode using a register-based model:
+/// - `regs`: Main register file (`Vec<Val>`). All operations read/write registers.
+/// - `reg_pool` / `reg_stack`: Multi-frame register windows for nested function calls.
+/// - Inline caches per instruction site:
+///   - `access_ic`: `.field` / `[key]` on Maps and Objects (4-entry LRU)
+///   - `index_ic`: `list[idx]` / `str[idx]` (4-entry LRU)
+///   - `global_ic`: Global variable lookup with generation tracking
+///   - `call_ic`: Function call fast-path (closure_ptr + argc match)
+///   - `for_range_ic`: Numeric for-range state (bare i64, no Val boxing)
+///   - `packed_hot_ic`: BC32 hot instruction cache (switch-free dispatch)
+/// - `frames`: Call frame metadata stack for return addresses and register windows.
+/// - `region_alloc`: Thread-local scratch buffer for temporary allocations.
+///
+/// ## Execution Paths
+///
+/// 1. **BC32 Packed Fast Path** (preferred): When a `Function` has `code32`,
+///    `run_packed_code` executes it with a switch-free loop using the
+///    packed hot cache and sentinel-based skip for cold sites.
+///
+/// 2. **Standard Match Dispatch**: `run_opcode_code` uses a `match` on the
+///    `Op` enum and supports all opcodes including peephole-fused forms.
+///    Functions without BC32 encoding always use this path.
 pub struct Vm {
     regs: Vec<Val>,
     reg_pool: Vec<Vec<Val>>,

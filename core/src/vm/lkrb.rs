@@ -988,6 +988,12 @@ fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u16(out, list);
             write_u16(out, val);
         }
+        Op::MapSet { map, key, val } => {
+            write_u8(out, 62);
+            write_u16(out, map);
+            write_u16(out, key);
+            write_u16(out, val);
+        }
         Op::PatternMatch { dst, src, plan } => {
             write_u8(out, 47);
             write_u16(out, dst);
@@ -1157,6 +1163,11 @@ fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
         },
         61 => Op::ListPush {
             list: read_u16(bytes, cursor)?,
+            val: read_u16(bytes, cursor)?,
+        },
+        62 => Op::MapSet {
+            map: read_u16(bytes, cursor)?,
+            key: read_u16(bytes, cursor)?,
             val: read_u16(bytes, cursor)?,
         },
         36 => Op::Jmp(read_i16(bytes, cursor)?),

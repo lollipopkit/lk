@@ -54,7 +54,3 @@ harness = false
 [[bin]]
 name = "perf_dashboard"
 path = "../scripts/perf_dashboard.rs"
-
-[[bin]]
-name = "autoresearch_bench"
-path = "../scripts/autoresearch_bench.rs"

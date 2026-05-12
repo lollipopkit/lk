@@ -5,6 +5,9 @@ use crate::vm::vm::Vm;
 use crate::vm::vm::caches::ForRangeState;
 use crate::vm::vm::frame::{CallFrameMeta, FrameState, RegisterWindowRef};
 
+/// Mark the end of the current frame and return to caller.
+/// Records the PC position and updates the frame pointer.
+#[inline]
 pub(super) fn frame_return_common(frame_raw: *mut FrameState<'_>, pc: usize, value: Result<Val>) -> Result<Val> {
     unsafe {
         (*frame_raw).pc = pc;

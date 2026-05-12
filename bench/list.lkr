@@ -10,9 +10,10 @@ while (i < 100000) {
 }
 let sum = 0;
 let j = 0;
-while (j < t.len()) {
+let len = t.len();
+while (j < len) {
     sum = sum + t[j];
     j = j + 1;
 }
 let elapsed = os.clock() - start;
-println("lkr list 100k: sum={}, time={:.4}s", sum, elapsed);
+println("lkr list 100k: sum={}, time={}s", sum, elapsed);

@@ -85,11 +85,6 @@ impl Vm {
                 } else {
                     regs.resize(needed, Val::Nil);
                 }
-                let mut i = 0;
-                while i < needed {
-                    regs[i] = Val::Nil;
-                    i += 1;
-                }
             }
 
             let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
@@ -207,10 +202,11 @@ impl Vm {
         cache: &mut ClosureFastCache,
         return_meta: Option<CallFrameMeta>,
     ) -> Result<Val> {
-        let nested_guard = self.enter_nested_call();
         let reg_count = fun.n_regs as usize;
         let self_ptr: *mut Vm = self;
 
+        // Swap caller's registers into pooled_regs and callee's cache.regs into self.regs.
+        // This avoids the overhead of enter_nested_call() which does redundant pool push/pop.
         let pooled_regs = std::mem::take(&mut self.regs);
         let mut regs = std::mem::take(&mut cache.regs);
         #[cfg(debug_assertions)]
@@ -234,15 +230,18 @@ impl Vm {
         } else {
             regs.resize(reg_count, Val::Nil);
         }
-        let mut i = 0;
-        while i < reg_count {
-            regs[i] = Val::Nil;
-            i += 1;
-        }
+        // No need for separate Nil loop — resize already filled with Nil
 
         self.regs = regs;
 
-        let region_plan = fun.analysis.as_ref().map(|analysis| analysis.region_plan.clone());
+        // Use cached region_plan if available (avoids Arc clone per call), otherwise compute and cache.
+        let region_plan = if let Some(ref rp) = cache.region_plan {
+            Some(Arc::clone(rp))
+        } else {
+            let rp = fun.analysis.as_ref().map(|analysis| analysis.region_plan.clone());
+            cache.region_plan = rp.clone();
+            rp
+        };
         let mut call_frame = CallFrame::new(fun, 0, reg_count, None, None, region_plan);
         let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
         let mut callee_state = FrameState::new(&mut call_frame, &mut self.regs, region_alloc_ptr);
@@ -318,7 +317,6 @@ impl Vm {
         let regs_back = std::mem::take(&mut self.regs);
         cache.regs = regs_back;
         self.regs = pooled_regs;
-        drop(nested_guard);
 
         exec_result
     }

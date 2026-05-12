@@ -1,3 +1,27 @@
+//! Packed 32-bit bytecode fast-path interpreter.
+//!
+//! This module provides a switch-free dispatch loop for BC32-encoded functions.
+//! It uses a two-tier caching strategy:
+//!
+//! 1. **Packed Hot Cache** (`PackedHotEntry`): Per-instruction-site cache that
+//!    stores pre-decoded hot slots. Each slot maps a raw 32-bit word to a
+//!    `PackedHotKind` (Arith, Cmp, ForRange, etc.) and can execute the
+//!    instruction without a full `match` dispatch.
+//!
+//! 2. **Sentinel-based skip**: For cold instruction sites, a `Miss` entry
+//!    records the last word seen. If the same word appears again (monomorphic
+//!    site), the interpreter skips the hot-slot build attempt and directly
+//!    decodes the instruction via `fetch_packed_op`.
+//!
+//! ## ForRange Fusion
+//!
+//! For-range loops execute as:
+//!   ForRangePrep → ForRangeLoop → body → ForRangeStep → (back to Loop)
+//!
+//! The `ForRangeLoop` hot slot peeks at the next word: if it's `ForRangeStep`,
+//! it jumps directly back to the loop guard, saving one hot-slot dispatch per
+//! iteration. This is the equivalent of peephole fusion for the packed path.
+
 use std::sync::Arc;
 #[cfg(debug_assertions)]
 use std::{
@@ -339,6 +363,10 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
                 let (list, val, _) = decode_abc(word, reg_ext);
                 PackedHotKind::ListPush { list, val }
             }
+            Tag::MapSet => {
+                let (map, key, val) = decode_abc(word, reg_ext);
+                PackedHotKind::MapSet { map, key, val }
+            }
             Tag::Eq => {
                 let (dst, a, b) = decode_rk_pair(word, reg_ext, flags);
                 PackedHotKind::Cmp {
@@ -466,6 +494,16 @@ fn make_closure_value(
         && let Some(inner) = &p.func
     {
         let _ = closure_arc.code.set((**inner).clone());
+    } else if let Val::Closure(closure_arc) = &clo {
+        // Eagerly pre-compile closures to eliminate OnceCell overhead from hot calls
+        let c = Compiler::new();
+        let compiled = c.compile_function_with_captures(
+            &p.params,
+            &p.named_params.iter().map(|d| d.clone()).collect::<Vec<_>>(),
+            &p.body,
+            &p.captures,
+        );
+        let _ = closure_arc.code.set(compiled);
     }
     Ok(clo)
 }
@@ -593,9 +631,35 @@ fn exec_hot_slot(
                 Some(state) => state,
                 None => return Err(anyhow!("For-range state missing at pc {}", pc)),
             };
-            if state_entry.should_continue() {
+            let keep_going = if state_entry.positive {
+                if state_entry.inclusive { state_entry.current <= state_entry.limit }
+                else { state_entry.current < state_entry.limit }
+            } else if state_entry.inclusive { state_entry.current >= state_entry.limit }
+            else { state_entry.current > state_entry.limit };
+            if keep_going {
                 assign_reg(frame_raw, regs, *idx as usize, Val::Int(state_entry.current));
-                state_entry.current += state_entry.step; // pre-increment
+                state_entry.current += state_entry.step;
+                // ForRange fusion: peek at next BC32 word. If it's ForRangeStep,
+                // jump directly back to the loop guard — saves one PackedHotSlot
+                // dispatch per for-range iteration.
+                if let Some(code32) = func.code32.as_ref() {
+                    let step_pc = entry.next_pc;
+                    if let Some(&step_w) = code32.get(step_pc) {
+                        if bc32::tag_of(step_w) == bc32::TAG_FOR_RANGE_STEP {
+                            let ext_idx = step_pc + 1;
+                            let mut ext = code32.get(ext_idx).copied();
+                            if ext.is_some()
+                                && bc32::tag_of(ext.unwrap()) == bc32::TAG_REG_EXT
+                            {
+                                ext = code32.get(ext_idx + 1).copied();
+                            }
+                            if let Some(e) = ext {
+                                let back = (((((e >> 8) & 0xFF) as u16) << 8) | ((e & 0xFF) as u16)) as i16;
+                                return Ok(Some(((step_pc as isize) + (back as isize)) as usize));
+                            }
+                        }
+                    }
+                }
                 None
             } else {
                 for_range_ic[pc] = None;
@@ -604,7 +668,6 @@ fn exec_hot_slot(
         }
         PackedHotKind::ForRangeStep { back_ofs } => {
             let guard_pc = ((pc as isize) + (*back_ofs as isize)) as usize;
-            // ForRangeLoop already pre-increments state.current, so just jump.
             Some(guard_pc)
         }
         PackedHotKind::ToStr { dst, src } => {
@@ -781,11 +844,20 @@ fn exec_hot_slot(
         PackedHotKind::ListPush { list, val } => {
             let pushed_val = regs[*val as usize].clone();
             match &mut regs[*list as usize] {
-                Val::List(arc) => {
-                    let list_vec = Arc::make_mut(arc);
-                    list_vec.push(pushed_val);
-                }
+                Val::List(arc) => { Arc::make_mut(arc).push(pushed_val); }
                 _ => return Err(anyhow!("ListPush target is not a List")),
+            }
+            None
+        }
+        PackedHotKind::MapSet { map, key, val } => {
+            let key_arc = match &regs[*key as usize] {
+                Val::Str(s) => s.clone(),
+                _ => return Err(anyhow!("MapSet key must be a String")),
+            };
+            let pushed_val = regs[*val as usize].clone();
+            match &mut regs[*map as usize] {
+                Val::Map(arc) => { Arc::make_mut(arc).insert(key_arc, pushed_val); }
+                _ => return Err(anyhow!("MapSet target is not a Map")),
             }
             None
         }
@@ -1110,7 +1182,11 @@ pub(super) fn run_packed_code(
                         if let PackedHotKind::Ret { base, retc } = &slot.kind {
                             let retc = *retc as usize;
                             let base_idx = *base as usize;
-                            let ret_val = if retc > 0 { regs[base_idx].clone() } else { Val::Nil };
+                            let ret_val = if retc > 0 {
+                                std::mem::replace(&mut regs[base_idx], Val::Nil)
+                            } else {
+                                Val::Nil
+                            };
                             return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
                         }
                         let override_pc = exec_hot_slot(slot, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc, frame_base)?;
@@ -1970,14 +2046,64 @@ pub(super) fn run_packed_code(
                 retc,
             } => {
                 let resume_pc = next_pc_default;
-                let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
-                let func = regs[rf as usize].clone();
                 let start = base as usize;
                 let n = argc as usize;
-                let args_slice = &regs[start..start + n];
-                let call_args = CallArgs::registers(RegisterSpan::current(start, n));
                 let allocator = unsafe { &*region_allocator_ptr };
                 let mut next_pc = resume_pc;
+                // Fast path: check IC first to avoid cloning the closure Arc.
+                // DISABLED: causes For-range state errors on second call.
+                /*
+                let mut ic_fast_path_taken = false;
+                if let Some(CallIc::ClosurePositional { closure_ptr, fun_ptr, argc: ic_argc, .. }) = call_ic[pc as usize].as_ref()
+                    && *ic_argc == argc
+                {
+                    let reg_val = &regs[rf as usize];
+                    if let Val::Closure(arc) = reg_val {
+                        if Arc::as_ptr(arc) as usize == *closure_ptr {
+                            let fun_ptr_val = *fun_ptr;
+                            let fun = unsafe { &*fun_ptr_val };
+                            let args_slice_fast = &regs[start..start + n];
+                            let return_meta = CallFrameMeta {
+                                resume_pc,
+                                ret_base: base,
+                                retc,
+                                caller_window: RegisterWindowRef::Current,
+                            };
+                            let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
+                            if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) = call_ic[pc as usize].as_mut() {
+                                let val = unsafe { &mut *self_ptr }.exec_function_positional_fast(
+                                    fun,
+                                    args_slice_fast,
+                                    ctx,
+                                    Some(frame_info),
+                                    Some(cache),
+                                    Some(return_meta),
+                                );
+                                match val {
+                                    Ok(val) => {
+                                        if retc > 0 {
+                                            assign_reg(frame_raw, regs, base as usize, val);
+                                        }
+                                    }
+                                    Err(err) => {
+                                        return frame_return_common(frame_raw, pc, Err(err)).map(Some);
+                                    }
+                                }
+                                ic_fast_path_taken = true;
+                            }
+                        }
+                    }
+                }
+                if ic_fast_path_taken {
+                    pc = next_pc;
+                    continue;
+                }
+                */
+                // Slow path.
+                let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
+                let args_slice = &regs[start..start + n];
+                let func = regs[rf as usize].clone();
+                let call_args = CallArgs::registers(RegisterSpan::current(start, n));
                 match &func {
                     Val::Closure(closure_arc) => {
                         let closure_ptr = Arc::as_ptr(closure_arc) as usize;
@@ -2538,8 +2664,7 @@ pub(super) fn run_packed_code(
                 let pushed_val = regs[val as usize].clone();
                 match &mut regs[list as usize] {
                     Val::List(arc) => {
-                        let list_vec = Arc::make_mut(arc);
-                        list_vec.push(pushed_val);
+                        Arc::make_mut(arc).push(pushed_val);
                     }
                     _ => {
                         return frame_return_common(

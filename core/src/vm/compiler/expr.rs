@@ -1,3 +1,23 @@
+//! Expression compilation — translates AST expressions to bytecode.
+//!
+//! Handles all expression forms: literals, variables, binary/unary ops,
+//! function calls, method calls, list/map literals, closures, and control
+//! flow expressions (if-else, match).
+//!
+//! ## Type-Specialized Code Generation
+//!
+//! The compiler emits type-specialized opcodes when it can statically
+//! determine operand types:
+//! - `ArithFlavor::Int` → `AddInt`, `SubInt`, `MulInt` (no float coercion)
+//! - `ArithFlavor::Float` → `AddFloat`, `SubFloat`, `DivFloat`
+//! - `ArithFlavor::Any` → generic `Add`, `Sub`, `Mul` (runtime dispatch)
+//!
+//! ## Constant Folding
+//!
+//! `try_fold_bin` and `try_fold_unary` perform compile-time evaluation of
+//! constant expressions, emitting `LoadK` for pre-computed results instead
+//! of runtime operations.
+
 use super::builder::ArithFlavor;
 use crate::{
     expr::{Expr, SelectPattern, TemplateStringPart},
@@ -64,6 +84,48 @@ impl FunctionBuilder {
                 let val_reg = self.expr(&args[0]);
                 self.emit(Op::ListPush { list: list_reg, val: val_reg });
                 return list_reg;
+            }
+        }
+        // Fast path: t.len() — emit Len opcode directly (avoids method dispatch)
+        if args.is_empty()
+            && let Expr::Var(var_name) = obj_expr
+            && let Expr::Val(Val::Str(method)) = field_expr
+            && method.as_ref() == "len"
+        {
+            if let Some(obj_reg) = self.lookup(var_name) {
+                let dst = self.alloc();
+                self.emit(Op::Len { dst, src: obj_reg });
+                return dst;
+            }
+        }
+        // Fast path: m.set(k, v) — emit MapSet for locals tracked as Maps
+        if args.len() == 2
+            && let Expr::Var(var_name) = obj_expr
+            && let Expr::Val(Val::Str(method)) = field_expr
+            && method.as_ref() == "set"
+        {
+            if let Some(map_reg) = self.lookup(var_name) {
+                if self.map_locals.contains(&map_reg) {
+                    let key_reg = self.expr(&args[0]);
+                    let val_reg = self.expr(&args[1]);
+                    self.emit(Op::MapSet { map: map_reg, key: key_reg, val: val_reg });
+                    return map_reg;
+                }
+            }
+        }
+        // Fast path: m.get(k) — emit Access for map locals to avoid method dispatch
+        if args.len() == 1
+            && let Expr::Var(var_name) = obj_expr
+            && let Expr::Val(Val::Str(method)) = field_expr
+            && method.as_ref() == "get"
+        {
+            if let Some(map_reg) = self.lookup(var_name) {
+                if self.map_locals.contains(&map_reg) {
+                    let key_reg = self.expr(&args[0]);
+                    let dst = self.alloc();
+                    self.emit(Op::Access(dst, map_reg, key_reg));
+                    return dst;
+                }
             }
         }
 
@@ -844,6 +906,7 @@ impl FunctionBuilder {
             }
             Expr::Map(pairs) => {
                 let dst = self.alloc();
+                self.map_locals.insert(dst);
                 let n = pairs.len() as u16;
                 let base = self.n_regs;
                 for _ in 0..(pairs.len() * 2) {
@@ -894,9 +957,19 @@ impl FunctionBuilder {
                 base
             }
             Expr::Call(name, args) => {
+                // If the callee is a locally-defined function registered in const_env,
+                // load it from the constant pool instead of via LoadGlobal (avoids hashtable lookup).
+                let use_direct_call = self.const_env.get(name).is_some()
+                    && self.call_safe_to_fold(name);
                 let f = self.alloc();
-                let kname = self.k(Val::Str(name.clone().into()));
-                self.emit(Op::LoadGlobal(f, kname));
+                if use_direct_call {
+                    let func_val = self.const_env.get(name).unwrap().clone();
+                    let kidx = self.k(func_val);
+                    self.emit(Op::LoadK(f, kidx));
+                } else {
+                    let kname = self.k(Val::Str(name.clone().into()));
+                    self.emit(Op::LoadGlobal(f, kname));
+                }
                 let argc = args.len() as u8;
                 let base = self.n_regs;
                 for _ in 0..args.len() {

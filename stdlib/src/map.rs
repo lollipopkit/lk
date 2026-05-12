@@ -10,7 +10,7 @@ use lkr_core::vm::VmContext;
 
 use crate::collections::{MapMutation, MutableMap};
 
-use lkr_core::util::fast_map::FastHashMap;
+use lkr_core::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
 use lkr_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue};
 
 const MAP_MUT_TYPE: &str = "MapMut";
@@ -360,15 +360,14 @@ impl MapModule {
             Val::Str(s) => s.clone(),
             _ => return Err(anyhow!("set() key must be a string")),
         };
-        match &args[0] {
-            Val::Map(_) => {
-                let mut map = MapMutation::from_val(&args[0])?;
-                let previous = map.insert(key_arc, args[2].clone()).unwrap_or(Val::Nil);
-                let updated = map.finish();
-                Ok(Val::List(vec![updated, previous].into()))
-            }
-            _ => Err(anyhow!("set() first argument must be a map")),
-        }
+        let mut map_arc = match &args[0] {
+            Val::Map(m) => m.clone(),
+            other => return Err(anyhow!("set() first argument must be a map, got {}", other.type_name())),
+        };
+        // Arc::make_mut: if refcount is 1, reuses allocation in-place.
+        // If refcount > 1 (shared), clones the data. This is the stdlib CoW.
+        Arc::make_mut(&mut map_arc).insert(key_arc, args[2].clone());
+        Ok(Val::Map(map_arc))
     }
 
     fn delete(args: &[Val], _: &mut VmContext) -> Result<Val> {
@@ -515,21 +514,18 @@ mod tests {
     fn test_map_set_and_delete() -> Result<()> {
         let result = run(r#"
             import map;
-            let pair = map.set({"a": 1}, "a", 7);
-            let updated = pair.get(0);
-            let prev = pair.get(1);
+            let updated = map.set({"a": 1}, "a", 7);
             let removed_pair = map.delete(updated, "a");
             let without = removed_pair.get(0);
             let removed = removed_pair.get(1);
-            return [prev, removed, without.has("a")];
+            return [removed, without.has("a")];
         "#)?;
         let Val::List(values) = result else {
             panic!("expected list");
         };
-        assert_eq!(values.len(), 3);
-        assert_eq!(values[0], Val::Int(1));
-        assert_eq!(values[1], Val::Int(7));
-        assert_eq!(values[2], Val::Bool(false));
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], Val::Int(7)); // removed: 7
+        assert_eq!(values[1], Val::Bool(false));
         Ok(())
     }
 }

@@ -1,3 +1,15 @@
+//! Standard bytecode interpreter — match-dispatch on Op enum.
+//!
+//! This module implements the primary execution loop for LKR bytecode.
+//! Each iteration does a `match &f.code[pc]` on the Op enum (70+ variants)
+//! and executes the instruction. Inline caches (Access, Index, Global, Call,
+//! ForRange) are per-instruction-site to accelerate polymorphic operations.
+//!
+//! When a Function has a `code32` packed encoding, the BC32 fast path in
+//! `packed.rs` is preferred. This interpreter handles all remaining cases
+//! including peephole-fused ops (CmpLtImmJmp, AddIntImmJmp, etc.) that
+//! combine multiple operations into a single dispatch.
+
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -837,14 +849,39 @@ pub(super) fn run_opcode_code(
                 let pushed_val = regs[*val as usize].clone();
                 match &mut regs[*list as usize] {
                     Val::List(arc) => {
-                        let list_vec = Arc::make_mut(arc);
-                        list_vec.push(pushed_val);
+                        Arc::make_mut(arc).push(pushed_val);
                     }
                     _ => {
                         return frame_return_common(
                             frame_raw,
                             pc,
                             Err(anyhow!("ListPush target is not a List")),
+                        )
+                        .map(Some);
+                    }
+                }
+                pc += 1;
+            }
+            Op::MapSet { map, key, val } => {
+                let key_arc = match &regs[*key as usize] {
+                    Val::Str(s) => s.clone(),
+                    _ => {
+                        return frame_return_common(
+                            frame_raw,
+                            pc,
+                            Err(anyhow!("MapSet key must be a String")),
+                        )
+                        .map(Some);
+                    }
+                };
+                let pushed_val = regs[*val as usize].clone();
+                match &mut regs[*map as usize] {
+                    Val::Map(arc) => { Arc::make_mut(arc).insert(key_arc, pushed_val); }
+                    _ => {
+                        return frame_return_common(
+                            frame_raw,
+                            pc,
+                            Err(anyhow!("MapSet target is not a Map")),
                         )
                         .map(Some);
                     }
@@ -907,12 +944,17 @@ pub(super) fn run_opcode_code(
             }
             Op::ForRangeLoop { idx, ofs, .. } => {
                 let idx_reg = *idx as usize;
-                // Safety: for_range_ic is pre-sized to f.code.len() in the prologue.
                 let slot = unsafe { for_range_ic.get_unchecked_mut(pc) };
                 if let Some(state) = slot {
-                    if state.should_continue() {
+                    // Inline should_continue — eliminates fn call on hot loop guard
+                    let keep_going = if state.positive {
+                        if state.inclusive { state.current <= state.limit }
+                        else { state.current < state.limit }
+                    } else if state.inclusive { state.current >= state.limit }
+                    else { state.current > state.limit };
+                    if keep_going {
                         assign_reg(frame_raw, regs, idx_reg, Val::Int(state.current));
-                        state.current += state.step; // pre-increment for next iteration
+                        state.current += state.step;
                         pc += 1;
                     } else {
                         *slot = None;
@@ -990,6 +1032,16 @@ pub(super) fn run_opcode_code(
                     && let Some(inner) = &p.func
                 {
                     let _ = closure_arc.code.set((**inner).clone());
+                } else if let Val::Closure(closure_arc) = &clo {
+                    // Eagerly pre-compile closures to eliminate OnceCell overhead from hot calls
+                    let c = Compiler::new();
+                    let compiled = c.compile_function_with_captures(
+                        &p.params,
+                        &p.named_params.iter().map(|d| d.clone()).collect::<Vec<_>>(),
+                        &p.body,
+                        &p.captures,
+                    );
+                    let _ = closure_arc.code.set(compiled);
                 }
                 assign_reg(frame_raw, regs, *dst as usize, clo);
                 pc += 1;
@@ -1109,14 +1161,65 @@ pub(super) fn run_opcode_code(
                 retc,
             } => {
                 let resume_pc = pc + 1;
-                let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
-                let func = regs[*rf as usize].clone();
                 let start = *base as usize;
                 let n = *argc as usize;
-                let args_slice = &regs[start..start + n];
-                let call_args = CallArgs::registers(RegisterSpan::current(start, n));
                 let allocator = unsafe { &*region_allocator_ptr };
                 let mut next_pc = resume_pc;
+                // Fast path: check IC first to avoid cloning the closure Arc.
+                // DISABLED: causes For-range state errors on second call.
+                /*
+                let mut ic_fast_path_taken = false;
+                if let Some(CallIc::ClosurePositional { closure_ptr, fun_ptr, argc: ic_argc, .. }) = call_ic[pc].as_ref()
+                    && *ic_argc == *argc
+                {
+                    let reg_val = &regs[*rf as usize];
+                    if let Val::Closure(arc) = reg_val {
+                        if Arc::as_ptr(arc) as usize == *closure_ptr {
+                            // IC hit — skip Arc clone and go straight to fast path.
+                            let fun_ptr_val = *fun_ptr;
+                            let fun = unsafe { &*fun_ptr_val };
+                            let args_slice_fast = &regs[*base as usize..*base as usize + *argc as usize];
+                            let return_meta = CallFrameMeta {
+                                resume_pc,
+                                ret_base: *base,
+                                retc: *retc,
+                                caller_window: RegisterWindowRef::Current,
+                            };
+                            let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
+                            // Now get mutable access to the IC cache.
+                            if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) = call_ic[pc].as_mut() {
+                                let val = unsafe { &mut *self_ptr }.exec_function_positional_fast(
+                                    fun,
+                                    args_slice_fast,
+                                    ctx,
+                                    Some(frame_info),
+                                    Some(cache),
+                                    Some(return_meta),
+                                );
+                                match val {
+                                    Ok(val) => {
+                                        if *retc > 0 {
+                                            assign_reg(frame_raw, regs, *base as usize, val);
+                                        }
+                                    }
+                                    Err(err) => {
+                                        return frame_return_common(frame_raw, pc, Err(err)).map(Some);
+                                    }
+                                }
+                                ic_fast_path_taken = true;
+                            }
+                        }
+                    }
+                }
+                if ic_fast_path_taken {
+                    pc = next_pc;
+                    continue;
+                }
+                */
+                // Slow path: clone and dispatch as before.
+                let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
+                let func = regs[*rf as usize].clone();
+                let args_slice = &regs[*base as usize..*base as usize + *argc as usize];
                 match &func {
                     Val::Closure(closure_arc) => {
                         let closure_ptr = Arc::as_ptr(closure_arc) as usize;
@@ -1223,6 +1326,7 @@ pub(super) fn run_opcode_code(
                                 }
                             }
                         } else {
+                            let call_args = CallArgs::registers(RegisterSpan::current(start, n));
                             let _frame_guard = CallFrameStackGuard::push(
                                 self_ptr,
                                 CallFrameMeta {
@@ -1622,7 +1726,11 @@ pub(super) fn run_opcode_code(
             Op::Ret { base, retc } => {
                 let retc = *retc as usize;
                 let base_idx = *base as usize;
-                let ret_val = if retc > 0 { regs[base_idx].clone() } else { Val::Nil };
+                let ret_val = if retc > 0 {
+                    std::mem::replace(&mut regs[base_idx], Val::Nil)
+                } else {
+                    Val::Nil
+                };
                 return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
             }
             Op::Break(ofs) => {

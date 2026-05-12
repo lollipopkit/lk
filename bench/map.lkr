@@ -1,0 +1,23 @@
+// Map operations benchmark — m.set(k,v) method syntax with MapSet opcode fast path
+import os;
+
+let start = os.clock();
+let m = {};
+let i = 0;
+while (i < 10000) {
+    let key = "k${i}";
+    m.set(key, i * 2);
+    i = i + 1;
+}
+let sum = 0;
+let j = 0;
+while (j < 10000) {
+    let key = "k${j}";
+    let v = m.get(key);
+    if v != nil {
+        sum = sum + v;
+    }
+    j = j + 1;
+}
+let elapsed = os.clock() - start;
+println("lkr map 10k: sum={}, time={}s", sum, elapsed);

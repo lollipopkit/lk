@@ -1,3 +1,25 @@
+//! Statement compilation — translates AST statements to bytecode.
+//!
+//! Handles all statement forms: variable bindings (let/const), assignments,
+//! loops (while, for, for-in), conditionals (if, if-let), returns, and
+//! compound assignments. Also orchestrates trait/impl registration.
+//!
+//! ## Loop Lowering
+//!
+//! Simple `while (i < N) { ...; i = i + 1 }` loops are detected and lowered
+//! to for-range via `try_lower_while_to_for_range`. This enables:
+//!  1. BC32 packing (ForRange ops are BC32-encodable)
+//!  2. Using `ForRangeState` (bare i64) instead of `Val::Int` comparison/increment
+//!
+//! For-range loops with constant bounds may be fully unrolled at compile time
+//! via `try_precompute_range_loop`.
+//!
+//! ## Self-Assign Optimization
+//!
+//! `try_emit_simple_self_assign` detects `x = x + 1` / `x = x * y` and emits
+//! in-place opcodes (`AddIntImm`, `AddInt`, `SubInt`, `MulInt`) that avoid
+//! temporary register allocation and extra load/store cycles.
+
 use crate::{
     expr::{Expr, Pattern},
     op::BinOp,
@@ -21,6 +43,33 @@ fn detect_mutating_receiver(expr: &Expr) -> Option<&str> {
         }
     }
     None
+}
+
+/// Strip the trailing increment statement from a while-loop body.
+/// Used by the while→for-range lowering pass.
+fn strip_trailing_increment(stmt: &Stmt, counter_name: &str) -> Stmt {
+    match stmt {
+        Stmt::Block { statements } => {
+            if statements.len() <= 1 {
+                Stmt::Block { statements: vec![] }
+            } else {
+                let mut trimmed = statements.clone();
+                trimmed.pop();
+                // Also strip trailing increment from the new last statement if it's a block
+                if let Some(last) = trimmed.pop() {
+                    trimmed.push(Box::new(strip_trailing_increment(&last, counter_name)));
+                }
+                Stmt::Block { statements: trimmed }
+            }
+        }
+        Stmt::Assign { name, value, .. } if name == counter_name => {
+            Stmt::Block { statements: vec![] }
+        }
+        Stmt::CompoundAssign { name, .. } if name == counter_name => {
+            Stmt::Block { statements: vec![] }
+        }
+        other => other.clone(),
+    }
 }
 
 impl FunctionBuilder {
@@ -138,6 +187,136 @@ impl FunctionBuilder {
                 rest: None,
             },
         }
+    }
+
+/// Try to lower a simple `while (i < N) { body; i = i + 1; }` loop into a for-range loop.
+    /// This enables BC32 packing and uses the efficient ForRangeState instead of Val-based
+    /// comparison/increment for each iteration. Only applied when the body is simple enough
+    /// that for-range overhead (3 words/tags per iteration) beats peephole-fused while (1 dispatch).
+    fn try_lower_while_to_for_range(&mut self, condition: &Expr, body: &Stmt) -> bool {
+        // Match: condition is `counter < limit` where counter is a local var.
+        let (counter_name, limit_val) = match condition {
+            Expr::Bin(left, BinOp::Lt, right) => {
+                let Expr::Var(name) = left.as_ref() else { return false; };
+                let Expr::Val(Val::Int(n)) = right.as_ref() else { return false; };
+                (name.as_str(), *n)
+            }
+            _ => return false,
+        };
+
+        // The counter must be a known local variable.
+        let counter_reg = match self.lookup(counter_name) {
+            Some(r) => r,
+            None => return false,
+        };
+
+        // Check body ends with increment.
+        fn body_ends_with_inc(s: &Stmt, counter_name: &str) -> bool {
+            match s {
+                Stmt::Block { statements } => statements.last().map_or(false, |s| body_ends_with_inc(s, counter_name)),
+                Stmt::Assign { name, value, .. } => {
+                    name == counter_name
+                        && matches!(
+                            value.as_ref(),
+                            Expr::Bin(left, BinOp::Add, right)
+                                if matches!(left.as_ref(), Expr::Var(n) if n == counter_name)
+                                    && matches!(right.as_ref(), Expr::Val(Val::Int(1)))
+                        )
+                }
+                Stmt::CompoundAssign { name, op, value, .. } => {
+                    name == counter_name
+                        && matches!(op, BinOp::Add)
+                        && matches!(value.as_ref(), Expr::Val(Val::Int(1)))
+                }
+                _ => false,
+            }
+        }
+
+        if !body_ends_with_inc(body, counter_name) {
+            return false;
+        }
+
+        // Only apply for very simple bodies — for-range has 2-word BC32 encoding
+        // overhead per iteration vs peephole-fused while's 1 dispatch.
+        fn ops_in_body(s: &Stmt, counter_name: &str) -> usize {
+            match s {
+                Stmt::Block { statements } => statements.iter().map(|s| ops_in_body(s, counter_name)).sum(),
+                Stmt::Assign { name, .. } | Stmt::CompoundAssign { name, .. } if name == counter_name => 0,
+                Stmt::Expr(_) => 1,
+                Stmt::Assign { .. } | Stmt::Let { .. } | Stmt::CompoundAssign { .. } => 1,
+                _ => 8,
+            }
+        }
+        if ops_in_body(body, counter_name) > 6 {
+            return false;
+        }
+
+        // ── Lower to for-range ──
+        let limit_reg = self.alloc();
+        let limit_k = self.k(Val::Int(limit_val));
+        self.emit(Op::LoadK(limit_reg, limit_k));
+
+        let step_reg = self.alloc();
+
+        self.emit(Op::ForRangePrep {
+            idx: counter_reg,
+            limit: limit_reg,
+            step: step_reg,
+            inclusive: false,
+            explicit: false,
+        });
+
+        let guard_pos = self.code.len();
+        self.emit(Op::ForRangeLoop {
+            idx: counter_reg,
+            limit: limit_reg,
+            step: step_reg,
+            inclusive: false,
+            ofs: 0,
+        });
+
+        // Emit body WITHOUT the trailing increment.
+        let saved_breaks = std::mem::take(&mut self.break_locations);
+        let saved_conts = std::mem::take(&mut self.continue_locations);
+        self.loop_depth = self.loop_depth.saturating_add(1);
+
+        let body_without_inc = strip_trailing_increment(body, counter_name);
+        self.with_const_scope(|builder| builder.stmt(&body_without_inc));
+
+        let pending_continues = std::mem::take(&mut self.continue_locations);
+        let step_pos = self.code.len();
+        self.emit(Op::ForRangeStep {
+            idx: counter_reg,
+            step: step_reg,
+            back_ofs: 0,
+        });
+
+        let back = (guard_pos as isize - step_pos as isize) as i16;
+        if let Op::ForRangeStep { back_ofs, .. } = &mut self.code[step_pos] {
+            *back_ofs = back;
+        }
+        for loc in pending_continues {
+            if let Some(Op::Continue(ofs)) = self.code.get_mut(loc) {
+                *ofs = (step_pos as isize - loc as isize) as i16;
+            }
+        }
+
+        let end_pos = self.code.len();
+        if let Op::ForRangeLoop { ofs, .. } = &mut self.code[guard_pos] {
+            *ofs = (end_pos as isize - guard_pos as isize) as i16;
+        }
+        let pending_breaks = std::mem::take(&mut self.break_locations);
+        for loc in pending_breaks {
+            if let Some(Op::Break(ofs)) = self.code.get_mut(loc) {
+                *ofs = (end_pos as isize - loc as isize) as i16;
+            }
+        }
+
+        self.loop_depth = self.loop_depth.saturating_sub(1);
+        self.break_locations = saved_breaks;
+        self.continue_locations = saved_conts;
+
+        true
     }
 
     fn try_precompute_range_loop(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> bool {
@@ -507,6 +686,7 @@ impl FunctionBuilder {
                         }
                         let rv = if let Some(v) = const_value.clone() {
                             let dst = self.alloc();
+                            if matches!(v, Val::Map(_)) { self.map_locals.insert(dst); }
                             let k = self.k(v);
                             self.emit(Op::LoadK(dst, k));
                             dst
@@ -652,6 +832,13 @@ impl FunctionBuilder {
                 }
             }
             Stmt::While { condition, body } => {
+                // Try to lower simple `while (i < N) { ...; i = i + 1 }` to for-range.
+                // ForRange uses ForRangeState (bare integers, no Val boxing) instead of
+                // Val-based comparison + increment per iteration, AND is BC32-encodable.
+                if self.try_lower_while_to_for_range(condition, body.as_ref()) {
+                    return;
+                }
+
                 let start = self.code.len();
                 let rc = self.expr(condition);
                 let jf = self.code.len();

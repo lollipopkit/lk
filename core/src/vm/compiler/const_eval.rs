@@ -69,7 +69,7 @@ impl FunctionBuilder {
         None
     }
 
-    fn call_safe_to_fold(&self, func_name: &str) -> bool {
+    pub(super) fn call_safe_to_fold(&self, func_name: &str) -> bool {
         if let Some(value) = self.const_env.get(func_name) {
             if let Val::Closure(closure_arc) = value {
                 let closure = closure_arc.as_ref();

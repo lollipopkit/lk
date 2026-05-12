@@ -3,6 +3,19 @@ use std::sync::Arc;
 use crate::val::{RustFunction, RustFunctionNamed, Val};
 use crate::vm::bytecode::Function;
 use crate::vm::vm::frame::FrameInfo;
+use crate::vm::RegionPlan;
+
+// ────────────── Inline Cache Architecture ──────────────
+//
+// LKR uses polymorphic inline caches (ICs) at each instruction site to
+// accelerate property access, indexing, global lookups, and function calls.
+//
+//  AccessIc (MapStr/ObjectStr): 4-entry LRU cache keyed by (base_ptr, key_ptr).
+//  IndexIc (List/Str): 4-entry LRU cache keyed by (base_ptr, index).
+//  GlobalEntry: Single-entry per site, with generation tracking for invalidation.
+//  CallIc: ClosurePositional (closure_ptr+argc), Rust, RustNamed.
+//  ForRangeState: Holds (current, limit, step, inclusive) — bare i64s.
+//  PackedHotEntry: Caches decoded packed instruction for hot BC32 paths.
 
 // Small polymorphic inline caches (4-way) for property/index access per instruction site.
 // This reduces churn at megamorphic sites while staying allocation-free.
@@ -26,7 +39,7 @@ pub(super) enum AccessIc {
     ObjectStr([Option<ObjectStrEntry>; 4]),
 }
 
-// Per-op inline cache entries reused across VM executions (to avoid reallocation).
+/// Per-op inline cache entries reused across VM executions (to avoid reallocation).
 #[derive(Clone)]
 pub(super) struct ListEntry {
     pub(super) base_ptr: usize,
@@ -112,6 +125,8 @@ pub(super) struct ClosureFastCache {
     pub(super) for_range: Vec<Option<ForRangeState>>,
     pub(super) packed_hot: Vec<Option<PackedHotEntry>>,
     pub(super) packed_hot_key: usize,
+    /// Cached region plan — avoids Arc clone per call for closure calls.
+    pub(super) region_plan: Option<Arc<RegionPlan>>,
 }
 
 impl ClosureFastCache {
@@ -126,6 +141,7 @@ impl ClosureFastCache {
             for_range: Vec::new(),
             packed_hot: Vec::new(),
             packed_hot_key: 0,
+            region_plan: None,
         }
     }
 }
@@ -288,6 +304,26 @@ pub(super) enum PackedHotKind {
     ListPush {
         list: u16,
         val: u16,
+    },
+    MapSet {
+        map: u16,
+        key: u16,
+        val: u16,
+    },
+    CmpLtImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
+    },
+    CmpLeImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
+    },
+    AddIntImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
     },
 }
 

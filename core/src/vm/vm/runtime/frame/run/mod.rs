@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::val::Val;
+use crate::vm::RegionPlan;
 use crate::vm::alloc::RegionAllocator;
 use crate::vm::bc32;
 use crate::vm::bytecode::Function;
