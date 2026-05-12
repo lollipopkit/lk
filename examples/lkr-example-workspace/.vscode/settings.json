@@ -5,9 +5,8 @@
     // LKR Language Server settings
     "lkr.lsp.enabled": true,
     "lkr.lsp.autoStart": true,
-    "lkr.lsp.serverPath": "~/.cargo/bin/lkr-lsp",
+    "lkr.lsp.serverPath": "~/proj/lk/target/debug/lkr-lsp",
     "lkr.lsp.semanticTokens.enabled": true,
-    "lkr.lsp.semanticTokens.experimentalProvider": true,
     "lkr.lsp.semanticTokens.throttleMs": 100,
     "lkr.lsp.inlayHints.enabled": false,
     

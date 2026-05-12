@@ -29,48 +29,6 @@ use super::{
     MAX_SEMANTIC_TOKENS,
 };
 
-struct LspRequestLog {
-    method: &'static str,
-    uri: Option<String>,
-    start: Instant,
-}
-
-impl LspRequestLog {
-    fn new(method: &'static str, uri: Option<&Url>) -> Self {
-        let uri = uri.map(ToString::to_string);
-        match uri.as_deref() {
-            Some(uri) => debug!(operation = "lsp.recv", method = method, uri = uri, "LSP recv"),
-            None => debug!(operation = "lsp.recv", method = method, "LSP recv"),
-        }
-        Self {
-            method,
-            uri,
-            start: Instant::now(),
-        }
-    }
-}
-
-impl Drop for LspRequestLog {
-    fn drop(&mut self) {
-        let duration_ms = self.start.elapsed().as_millis();
-        match self.uri.as_deref() {
-            Some(uri) => debug!(
-                operation = "lsp.done",
-                method = self.method,
-                uri = uri,
-                duration_ms = duration_ms,
-                "LSP done"
-            ),
-            None => debug!(
-                operation = "lsp.done",
-                method = self.method,
-                duration_ms = duration_ms,
-                "LSP done"
-            ),
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct ServerInitializationOptions {
@@ -86,13 +44,14 @@ struct LkrInitializationOptions {
 }
 
 fn semantic_tokens_provider_from(params: &InitializeParams) -> Option<SemanticTokensServerCapabilities> {
-    let enable_semantic_tokens = params
+    let options = params
         .initialization_options
         .as_ref()
         .and_then(|value| serde_json::from_value::<ServerInitializationOptions>(value.clone()).ok())
-        .is_some_and(|options| options.lkr.enable_semantic_tokens);
+        .unwrap_or_default()
+        .lkr;
 
-    if !enable_semantic_tokens {
+    if !options.enable_semantic_tokens {
         return None;
     }
 
@@ -120,11 +79,8 @@ fn semantic_tokens_provider_from(params: &InitializeParams) -> Option<SemanticTo
                     SemanticTokenModifier::STATIC,
                 ],
             },
-            // Recovery starts with range-only tokens. Full-document and delta
-            // tokens should be reintroduced only after renderer stability is
-            // verified with VS Code logs.
             range: Some(true),
-            full: None,
+            full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
         },
     ))
 }
@@ -132,7 +88,6 @@ fn semantic_tokens_provider_from(params: &InitializeParams) -> Option<SemanticTo
 #[tower_lsp::async_trait]
 impl LanguageServer for LkrLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        let _request_log = LspRequestLog::new("initialize", params.root_uri.as_ref());
         info!("LKR Language Server initializing with params: {:?}", params.root_uri);
         let workspace_root = params
             .root_uri
@@ -206,7 +161,6 @@ impl LanguageServer for LkrLanguageServer {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        let _request_log = LspRequestLog::new("initialized", None);
         info!("LKR Language Server initialized");
         let _ = self
             .client
@@ -218,19 +172,16 @@ impl LanguageServer for LkrLanguageServer {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        let _request_log = LspRequestLog::new("shutdown", None);
         info!("LKR Language Server shutting down");
         Ok(())
     }
 
     async fn did_change_configuration(&self, _params: DidChangeConfigurationParams) {
-        let _request_log = LspRequestLog::new("workspace/didChangeConfiguration", None);
         // Reload configuration when the client notifies of changes
         self.load_config().await;
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let _request_log = LspRequestLog::new("textDocument/didOpen", Some(&params.text_document.uri));
         let start = Instant::now();
         let uri = params.text_document.uri;
         let version = params.text_document.version;
@@ -265,7 +216,6 @@ impl LanguageServer for LkrLanguageServer {
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let _request_log = LspRequestLog::new("textDocument/didChange", Some(&params.text_document.uri));
         let uri = params.text_document.uri;
         let version = params.text_document.version;
 
@@ -307,7 +257,6 @@ impl LanguageServer for LkrLanguageServer {
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        let _request_log = LspRequestLog::new("textDocument/didSave", Some(&params.text_document.uri));
         let uri = params.text_document.uri;
         let Some((content, base_dir)) = self.documents.get(&uri).and_then(|doc| {
             let base_dir = uri
@@ -340,7 +289,6 @@ impl LanguageServer for LkrLanguageServer {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let _request_log = LspRequestLog::new("textDocument/didClose", Some(&params.text_document.uri));
         let uri = params.text_document.uri;
         self.documents.remove(&uri);
         let _ = self
@@ -355,17 +303,12 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/hover", Some(uri));
         let position = params.text_document_position_params.position;
 
         Ok(self.get_hover_info(uri, position).await)
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let _request_log = LspRequestLog::new(
-            "textDocument/completion",
-            Some(&params.text_document_position.text_document.uri),
-        );
         let mut items = self.get_completions();
 
         // Add identifier-aware and stdlib-aware completions based on current line
@@ -670,7 +613,6 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/codeAction", Some(uri));
         let mut actions: Vec<CodeActionOrCommand> = Vec::new();
 
         // Snapshot document content for textual replacements
@@ -746,7 +688,6 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn diagnostic(&self, params: DocumentDiagnosticParams) -> Result<DocumentDiagnosticReportResult> {
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/diagnostic", Some(uri));
         let diagnostics = self.validate_document(uri).await;
 
         Ok(DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
@@ -762,7 +703,6 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn document_symbol(&self, params: DocumentSymbolParams) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/documentSymbol", Some(uri));
         if let Some(analysis) = self.get_or_compute_analysis(uri).await {
             if !analysis.symbols.is_empty() {
                 return Ok(Some(DocumentSymbolResponse::Nested(analysis.symbols.clone())));
@@ -773,7 +713,6 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/references", Some(uri));
         let position = params.text_document_position.position;
 
         // Get document content to find symbol at position
@@ -786,7 +725,7 @@ impl LanguageServer for LkrLanguageServer {
         };
 
         // Find the symbol at the cursor position
-        if let Some(symbol_name) = self.find_symbol_at_position(&content, position).await {
+        if let Some(symbol_name) = self.find_plain_symbol_at_position(&content, position).await {
             // Find all references to this symbol in the document
             let locations = self.find_all_references(&content, &symbol_name, uri).await;
 
@@ -800,14 +739,13 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn document_highlight(&self, params: DocumentHighlightParams) -> Result<Option<Vec<DocumentHighlight>>> {
         let uri = &params.text_document_position_params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/documentHighlight", Some(uri));
         let position = params.text_document_position_params.position;
         let content = if let Some(doc) = self.documents.get(uri) {
             doc.content.to_string()
         } else {
             String::new()
         };
-        if let Some(symbol) = self.find_symbol_at_position(&content, position).await {
+        if let Some(symbol) = self.find_plain_symbol_at_position(&content, position).await {
             let locs = self.find_all_references(&content, &symbol, uri).await;
             if !locs.is_empty() {
                 let highlights = locs
@@ -825,7 +763,6 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/rename", Some(uri));
         let position = params.text_document_position.position;
         let new_name = params.new_name.clone();
 
@@ -919,7 +856,6 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn prepare_rename(&self, params: TextDocumentPositionParams) -> Result<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/prepareRename", Some(uri));
         let position = params.position;
         // Snapshot content
         let (content, line_text) = if let Some(doc) = self.documents.get(uri) {
@@ -964,7 +900,6 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = &params.text_document_position_params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/signatureHelp", Some(uri));
         let position = params.text_document_position_params.position;
 
         // Snapshot content
@@ -1200,7 +1135,6 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/definition", Some(uri));
         let position = params.text_document_position_params.position;
 
         // Get document content to find symbol at position
@@ -1213,6 +1147,9 @@ impl LanguageServer for LkrLanguageServer {
         };
 
         if let Some(import_location) = self.find_file_import_at_position(&content, position, uri).await {
+            return Ok(Some(GotoDefinitionResponse::Scalar(import_location)));
+        }
+        if let Some(import_location) = self.find_package_import_at_position(&content, position, uri).await {
             return Ok(Some(GotoDefinitionResponse::Scalar(import_location)));
         }
 
@@ -1243,18 +1180,7 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/codeLens", Some(uri));
         let mut lenses: Vec<CodeLens> = Vec::new();
-        // Lens: Analyze file
-        lenses.push(CodeLens {
-            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-            command: Some(Command {
-                title: "Analyze file".to_string(),
-                command: "lkr.analyzeCurrentFile".to_string(),
-                arguments: None,
-            }),
-            data: None,
-        });
 
         // Lens: Identifier roots used (if any)
         if let Some(analysis) = self.get_or_compute_analysis(uri).await {
@@ -1283,7 +1209,6 @@ impl LanguageServer for LkrLanguageServer {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/formatting", Some(uri));
         let options = params.options;
         let content = if let Some(doc) = self.documents.get(uri) {
             doc.content.to_string()
@@ -1310,7 +1235,6 @@ impl LanguageServer for LkrLanguageServer {
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let start = Instant::now();
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/inlayHint", Some(uri));
         let (content, version, content_hash, cached_opt) = if let Some(doc) = self.documents.get(uri) {
             let cfg = self.config.lock().unwrap().clone();
             let key = format!(
@@ -1419,7 +1343,6 @@ impl LanguageServer for LkrLanguageServer {
     async fn semantic_tokens_full(&self, params: SemanticTokensParams) -> Result<Option<SemanticTokensResult>> {
         let start = Instant::now();
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/semanticTokens/full", Some(uri));
         // Compute or fetch tokens for current doc state
         let tokens_arc = match self.get_or_generate_semantic_tokens(uri).await {
             Some(t) => t,
@@ -1462,7 +1385,6 @@ impl LanguageServer for LkrLanguageServer {
     ) -> Result<Option<SemanticTokensRangeResult>> {
         let start = Instant::now();
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/semanticTokens/range", Some(uri));
         // Snapshot and versioned range cache lookup
         let (slice_string, range, version) = if let Some(doc) = self.documents.get(uri) {
             let key = format!(
@@ -1546,7 +1468,6 @@ impl LanguageServer for LkrLanguageServer {
         params: SemanticTokensDeltaParams,
     ) -> Result<Option<SemanticTokensFullDeltaResult>> {
         let uri = &params.text_document.uri;
-        let _request_log = LspRequestLog::new("textDocument/semanticTokens/full/delta", Some(uri));
 
         // Compute fresh tokens for current doc state
         let new_tokens_full = match self.get_or_generate_semantic_tokens(uri).await {

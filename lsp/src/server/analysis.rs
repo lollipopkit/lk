@@ -10,7 +10,7 @@ use tokio::time::{sleep, Duration};
 use tower_lsp::lsp_types::*;
 
 use crate::analyzer::{AnalysisResult, LkrAnalyzer};
-use lkr_core::{resolve, stmt, token};
+use lkr_core::{package::PackageGraph, resolve, stmt, token};
 
 use super::state::LkrLanguageServer;
 use super::text::{describe_token_hover, find_token_at_offset, position_to_char_idx};
@@ -25,6 +25,43 @@ fn log_timing(stage: &str, uri: &Url, duration_ms: u128, details: &str) {
         details = %details,
         "LSP timing"
     );
+}
+
+fn import_module_name_at_position(content: &str, position: Position) -> Option<String> {
+    let (tokens, spans) = token::Tokenizer::tokenize_enhanced_with_spans(content).ok()?;
+    let offset = position_to_char_idx(&Rope::from_str(content), position);
+    for (idx, span) in spans.iter().enumerate() {
+        if offset < span.start.offset || offset > span.end.offset {
+            continue;
+        }
+        let token::Token::Id(module_name) = tokens.get(idx)? else {
+            continue;
+        };
+        if is_import_module_token(&tokens, idx) {
+            return Some(module_name.clone());
+        }
+    }
+    None
+}
+
+fn plain_symbol_name_at_position(content: &str, position: Position) -> Option<String> {
+    let (tokens, spans) = token::Tokenizer::tokenize_enhanced_with_spans(content).ok()?;
+    let offset = position_to_char_idx(&Rope::from_str(content), position);
+    for (idx, span) in spans.iter().enumerate() {
+        if offset >= span.start.offset && offset < span.end.offset {
+            if let Some(token::Token::Id(name)) = tokens.get(idx) {
+                return Some(name.clone());
+            }
+        }
+    }
+    None
+}
+
+fn is_import_module_token(tokens: &[token::Token], idx: usize) -> bool {
+    matches!(
+        idx.checked_sub(1).and_then(|prev| tokens.get(prev)),
+        Some(token::Token::Import | token::Token::From)
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +360,10 @@ impl LkrLanguageServer {
             .map(|ctx| ctx.name)
     }
 
+    pub(crate) async fn find_plain_symbol_at_position(&self, content: &str, position: Position) -> Option<String> {
+        plain_symbol_name_at_position(content, position)
+    }
+
     pub(crate) async fn find_symbol_context_at_position(
         &self,
         content: &str,
@@ -333,6 +374,9 @@ impl LkrLanguageServer {
             Err(_) => return None,
         };
         let offset = position_to_char_idx(&Rope::from_str(content), position);
+        if let Some(context) = qualified_symbol_context_at_offset(&tokens, &spans, offset) {
+            return Some(context);
+        }
         for (i, span) in spans.iter().enumerate() {
             if offset >= span.start.offset && offset <= span.end.offset {
                 if let token::Token::Id(name) = &tokens[i] {
@@ -384,6 +428,18 @@ impl LkrLanguageServer {
         None
     }
 
+    pub(crate) async fn find_package_import_at_position(
+        &self,
+        content: &str,
+        position: Position,
+        current_uri: &Url,
+    ) -> Option<Location> {
+        let module_name = import_module_name_at_position(content, position)?;
+        let path = self.resolve_package_module_path(&module_name, current_uri)?;
+        let uri = Url::from_file_path(path).ok()?;
+        Some(Location::new(uri, Range::new(Position::new(0, 0), Position::new(0, 0))))
+    }
+
     pub(crate) async fn find_imported_member_definition(
         &self,
         content: &str,
@@ -399,12 +455,33 @@ impl LkrLanguageServer {
         }
 
         let imports = self.collect_file_import_aliases(content, current_uri).await;
-        let import_path = imports.get(qualifier)?;
-        let imported_uri = Url::from_file_path(import_path).ok()?;
+        if let Some(import_path) = imports.get(qualifier) {
+            let imported_uri = Url::from_file_path(import_path).ok()?;
+            let imported_content = fs::read_to_string(import_path).ok()?;
+            if let Some(location) = self
+                .find_definition_precise(&imported_content, &symbol.name, Position::new(0, 0), &imported_uri)
+                .await
+                .or_else(|| find_definition_in_content(&imported_content, &symbol.name, &imported_uri))
+            {
+                return Some(location);
+            }
+        }
+
+        self.find_imported_package_member_definition(content, symbol, current_uri)
+    }
+
+    fn find_imported_package_member_definition(
+        &self,
+        content: &str,
+        symbol: &SymbolContext,
+        current_uri: &Url,
+    ) -> Option<Location> {
+        let qualifier = symbol.qualifier.as_ref()?;
+        let module_name = self.imported_module_for_alias(content, qualifier)?;
+        let import_path = self.resolve_package_module_path(&module_name, current_uri)?;
+        let imported_uri = Url::from_file_path(&import_path).ok()?;
         let imported_content = fs::read_to_string(import_path).ok()?;
-        self.find_definition_precise(&imported_content, &symbol.name, Position::new(0, 0), &imported_uri)
-            .await
-            .or_else(|| find_definition_in_content(&imported_content, &symbol.name, &imported_uri))
+        find_definition_in_content(&imported_content, &symbol.name, &imported_uri)
     }
 
     pub(crate) async fn find_imported_module_location(
@@ -463,6 +540,12 @@ impl LkrLanguageServer {
         aliases.get(alias).cloned()
     }
 
+    fn imported_module_for_alias(&self, content: &str, alias: &str) -> Option<String> {
+        let mut analyzer = LkrAnalyzer::new_light();
+        let aliases = analyzer.collect_import_aliases(content);
+        aliases.get(alias).cloned()
+    }
+
     fn resolve_lkr_import_path(&self, import_path: &str, current_uri: &Url) -> Option<PathBuf> {
         if import_path.is_empty() || import_path.contains("..") || Path::new(import_path).is_absolute() {
             return None;
@@ -492,6 +575,26 @@ impl LkrLanguageServer {
         }
 
         None
+    }
+
+    fn resolve_package_module_path(&self, module_name: &str, current_uri: &Url) -> Option<PathBuf> {
+        let current_dir = current_uri
+            .to_file_path()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))?;
+
+        let (_, cached_modules, _) = self.workspace_cache.package_context_for(current_dir.clone());
+        if let Some(path) = cached_modules.get(module_name) {
+            return path.canonicalize().ok().or_else(|| Some(path.clone()));
+        }
+
+        let graph = PackageGraph::discover(&current_dir).ok().flatten()?;
+        graph
+            .modules
+            .into_iter()
+            .find(|module| module.name == module_name)
+            .map(|module| module.root)
+            .and_then(|path| path.canonicalize().ok().or(Some(path)))
     }
 
     pub(crate) async fn find_all_references(&self, content: &str, symbol_name: &str, uri: &Url) -> Vec<Location> {
@@ -593,6 +696,41 @@ impl LkrLanguageServer {
         }
         None
     }
+}
+
+fn qualified_symbol_context_at_offset(
+    tokens: &[token::Token],
+    spans: &[token::Span],
+    offset: usize,
+) -> Option<SymbolContext> {
+    for (dot_idx, dot_span) in spans.iter().enumerate() {
+        if !matches!(tokens.get(dot_idx), Some(token::Token::Dot | token::Token::OptionalDot)) {
+            continue;
+        }
+        let qualifier_idx = dot_idx.checked_sub(1)?;
+        let member_idx = dot_idx + 1;
+        let (Some(token::Token::Id(qualifier)), Some(token::Token::Id(member))) =
+            (tokens.get(qualifier_idx), tokens.get(member_idx))
+        else {
+            continue;
+        };
+        let qualifier_span = spans.get(qualifier_idx)?;
+        let member_span = spans.get(member_idx)?;
+
+        // VS Code can send definition positions on the dot or token boundary for
+        // qualified names. Treat the dot/member side as a member lookup, while a
+        // clear click inside the qualifier still resolves the module itself.
+        if offset >= qualifier_span.start.offset && offset.saturating_add(1) < qualifier_span.end.offset {
+            continue;
+        }
+        if offset.saturating_add(1) >= dot_span.start.offset && offset <= member_span.end.offset {
+            return Some(SymbolContext {
+                name: member.clone(),
+                qualifier: Some(qualifier.clone()),
+            });
+        }
+    }
+    None
 }
 
 fn import_path_candidates(base: &Path) -> Vec<PathBuf> {
@@ -722,5 +860,83 @@ mod tests {
         let location = find_stdlib_export_location("math", "sqrt").expect("math.sqrt location");
         assert!(location.uri.as_str().ends_with("/stdlib/src/math.rs"));
         assert!(location.range.start.line > 0);
+    }
+
+    #[test]
+    fn import_module_name_at_position_detects_module_import_target() {
+        let content = "import mathlib;\nimport mathlib as ml;\nimport { add } from mathlib;\n";
+
+        assert_eq!(
+            import_module_name_at_position(content, Position::new(0, 8)).as_deref(),
+            Some("mathlib")
+        );
+        assert_eq!(
+            import_module_name_at_position(content, Position::new(1, 8)).as_deref(),
+            Some("mathlib")
+        );
+        assert_eq!(
+            import_module_name_at_position(content, Position::new(2, 22)).as_deref(),
+            Some("mathlib")
+        );
+    }
+
+    #[test]
+    fn import_module_name_at_position_ignores_alias_and_imported_items() {
+        let content = "import mathlib as ml;\nimport { add } from mathlib;\n";
+
+        assert_eq!(import_module_name_at_position(content, Position::new(0, 18)), None);
+        assert_eq!(import_module_name_at_position(content, Position::new(1, 9)), None);
+    }
+
+    #[test]
+    fn qualified_symbol_context_prefers_member_on_dot_and_member_side() {
+        let content = "let doubled = mathlib.double(n);\n";
+        let (tokens, spans) = token::Tokenizer::tokenize_enhanced_with_spans(content).expect("tokens");
+
+        let on_dot = qualified_symbol_context_at_offset(&tokens, &spans, content.find('.').expect("dot"));
+        assert_eq!(
+            on_dot,
+            Some(SymbolContext {
+                name: "double".to_string(),
+                qualifier: Some("mathlib".to_string()),
+            })
+        );
+
+        let on_member =
+            qualified_symbol_context_at_offset(&tokens, &spans, content.rfind("double").expect("member") + 2);
+        assert_eq!(
+            on_member,
+            Some(SymbolContext {
+                name: "double".to_string(),
+                qualifier: Some("mathlib".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn qualified_symbol_context_keeps_clear_qualifier_click_as_module() {
+        let content = "println(greetings.message(\"workspace\"));\n";
+        let (tokens, spans) = token::Tokenizer::tokenize_enhanced_with_spans(content).expect("tokens");
+
+        let on_qualifier =
+            qualified_symbol_context_at_offset(&tokens, &spans, content.find("greetings").expect("qualifier") + 2);
+
+        assert_eq!(on_qualifier, None);
+    }
+
+    #[test]
+    fn plain_symbol_at_position_uses_only_the_current_token() {
+        let content = "let doubled = mathlib.double(n);\n";
+        let mathlib_pos = Position::new(0, content.find("mathlib").expect("mathlib") as u32 + 2);
+        let double_pos = Position::new(0, content.rfind("double").expect("double") as u32 + 2);
+
+        assert_eq!(
+            plain_symbol_name_at_position(content, mathlib_pos).as_deref(),
+            Some("mathlib")
+        );
+        assert_eq!(
+            plain_symbol_name_at_position(content, double_pos).as_deref(),
+            Some("double")
+        );
     }
 }

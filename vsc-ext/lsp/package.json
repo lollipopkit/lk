@@ -50,81 +50,6 @@
         "category": "LKR"
       }
     ],
-    "semanticTokenTypes": [
-      {
-        "id": "comment",
-        "description": "Comments",
-        "superType": "comment"
-      },
-      {
-        "id": "keyword",
-        "description": "Keywords",
-        "superType": "keyword"
-      },
-      {
-        "id": "variable",
-        "description": "Variables",
-        "superType": "variable"
-      },
-      {
-        "id": "function",
-        "description": "Functions",
-        "superType": "function"
-      },
-      {
-        "id": "string",
-        "description": "Strings",
-        "superType": "string"
-      },
-      {
-        "id": "number",
-        "description": "Numbers",
-        "superType": "number"
-      },
-      {
-        "id": "operator",
-        "description": "Operators",
-        "superType": "operator"
-      },
-      {
-        "id": "parameter",
-        "description": "Parameters",
-        "superType": "parameter"
-      },
-      {
-        "id": "property",
-        "description": "Properties",
-        "superType": "property"
-      },
-      {
-        "id": "namespace",
-        "description": "Namespaces",
-        "superType": "namespace"
-      },
-      {
-        "id": "type",
-        "description": "Types",
-        "superType": "type"
-      }
-    ],
-    "semanticTokenModifiers": [
-      {
-        "id": "declaration",
-        "description": "Declaration"
-      },
-      {
-        "id": "definition",
-        "description": "Definition"
-      },
-      {
-        "id": "readonly",
-        "description": "Readonly"
-      },
-      {
-        "id": "static",
-        "description": "Static"
-      }
-    ],
     "semanticTokenScopes": [
       {
         "language": "lkr",
@@ -216,13 +141,8 @@
         },
         "lkr.lsp.semanticTokens.enabled": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Enable semantic tokens; disable to rely on TextMate highlighting only"
-        },
-        "lkr.lsp.semanticTokens.experimentalProvider": {
-          "type": "boolean",
-          "default": false,
-          "description": "Advertise the experimental semantic tokens LSP provider on server startup. Requires semanticTokens.enabled and a window reload."
         },
         "lkr.lsp.semanticTokens.mode": {
           "type": "string",

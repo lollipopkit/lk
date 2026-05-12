@@ -1,6 +1,6 @@
 [package]
 name = "lkr-core"
-description = "Core library for LKR (Query Check Language)"
+description = "Core library for LKR"
 version = "0.2.0"
 edition = "2024"
 authors = ["lollipopkit <a@lpkt.cn>"]
