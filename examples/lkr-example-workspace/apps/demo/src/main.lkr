@@ -1,0 +1,8 @@
+import mathlib;
+import greetings;
+
+let n = 7;
+let doubled = mathlib.double(n);
+println(greetings.message("workspace"));
+println("double(${n}) = ${doubled}");
+return doubled;

@@ -20,6 +20,7 @@ let checkInFlight = 0;
 let checkIdleTimer: NodeJS.Timeout | undefined;
 let checkStartTimer: NodeJS.Timeout | undefined;
 let nudgeTimer: NodeJS.Timeout | undefined;
+let nudgeClearTimer: NodeJS.Timeout | undefined;
 
 // Lightweight performance tracing (extension-side)
 let perfTraceSteps = false;
@@ -101,7 +102,8 @@ class LRU<K, V> {
 
 // Runtime settings snapshot (kept in sync with workspace configuration)
 const runtime = {
-  semanticTokensEnabled: true,
+  semanticTokensEnabled: false,
+  semanticTokensExperimentalProvider: false,
   semanticTokensThrottleMs: 120,
   // auto | rangeOnly | fullOnly
   semanticTokensMode: 'auto' as 'auto' | 'rangeOnly' | 'fullOnly',
@@ -305,7 +307,8 @@ export function activate(context: vscode.ExtensionContext) {
   const lspEnabled = config.get<boolean>('enabled', true);
   const autoStart = config.get<boolean>('autoStart', true);
   // Load runtime settings from configuration
-  runtime.semanticTokensEnabled = config.get<boolean>('semanticTokens.enabled', true);
+  runtime.semanticTokensEnabled = config.get<boolean>('semanticTokens.enabled', false);
+  runtime.semanticTokensExperimentalProvider = config.get<boolean>('semanticTokens.experimentalProvider', false);
   runtime.semanticTokensThrottleMs = Math.max(0, Number(config.get<number>('semanticTokens.throttleMs', 120)) || 0);
   runtime.semanticTokensMode = (config.get<string>('semanticTokens.mode', 'auto') as any) || 'auto';
   runtime.autoRangeAtLines = Math.max(1, Number(config.get<number>('semanticTokens.autoRangeAtLines', 800)) || 800);
@@ -345,6 +348,7 @@ export function activate(context: vscode.ExtensionContext) {
   const traceLevel = config.get<string>('trace', 'off');
   const isVerbose = traceLevel === 'verbose';
   const semanticTokensEnabled = runtime.semanticTokensEnabled;
+  const semanticTokensProviderEnabled = runtime.semanticTokensEnabled && runtime.semanticTokensExperimentalProvider;
   const throttleMs = runtime.semanticTokensThrottleMs;
 
   // Lightweight, per-document throttle map (separate for tokens and hints)
@@ -578,7 +582,8 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
     if (!e.affectsConfiguration('lkr.lsp')) return;
     const cfg = vscode.workspace.getConfiguration('lkr.lsp');
-    runtime.semanticTokensEnabled = cfg.get<boolean>('semanticTokens.enabled', true);
+    runtime.semanticTokensEnabled = cfg.get<boolean>('semanticTokens.enabled', false);
+    runtime.semanticTokensExperimentalProvider = cfg.get<boolean>('semanticTokens.experimentalProvider', false);
     runtime.semanticTokensThrottleMs = Math.max(0, Number(cfg.get<number>('semanticTokens.throttleMs', 120)) || 0);
     runtime.semanticTokensMode = (cfg.get<string>('semanticTokens.mode', 'auto') as any) || 'auto';
     runtime.autoRangeAtLines = Math.max(1, Number(cfg.get<number>('semanticTokens.autoRangeAtLines', 800)) || 800);
@@ -612,10 +617,10 @@ export function activate(context: vscode.ExtensionContext) {
     // Initialize options for semantic highlighting
     initializationOptions: {
       // Enable semantic highlighting
-      semanticHighlighting: true,
+      semanticHighlighting: semanticTokensProviderEnabled,
       // Custom configuration for LKR
       lkr: {
-        enableSemanticTokens: true
+        enableSemanticTokens: semanticTokensProviderEnabled
       }
     },
     // Never auto-reveal the output unless user explicitly opens it
@@ -699,22 +704,23 @@ export function activate(context: vscode.ExtensionContext) {
       }
     });
   
-  // Mark as checking when LKR documents change or save; diagnostics will clear it
+  // Mark as checking when LKR documents change; diagnostics will clear it.
+  // Save alone does not necessarily produce a server request, so it must not
+  // create a long-lived checking state.
   context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => {
     if (e.document.languageId === 'lkr') {
       nudgeChecking();
     }
   }));
-  context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => {
-    if (doc.languageId === 'lkr') {
-      nudgeChecking();
-    }
-  }));
   // React to configuration changes at runtime
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-    if (e.affectsConfiguration('lkr.lsp.semanticTokens.enabled') || e.affectsConfiguration('lkr.lsp.semanticTokens.throttleMs')) {
+    if (
+      e.affectsConfiguration('lkr.lsp.semanticTokens.enabled') ||
+      e.affectsConfiguration('lkr.lsp.semanticTokens.experimentalProvider') ||
+      e.affectsConfiguration('lkr.lsp.semanticTokens.throttleMs')
+    ) {
       const cfg = vscode.workspace.getConfiguration('lkr.lsp');
-      settings.semanticTokensEnabled = cfg.get<boolean>('semanticTokens.enabled', true);
+      settings.semanticTokensEnabled = cfg.get<boolean>('semanticTokens.enabled', false);
       settings.throttleMs = Math.max(0, Number(cfg.get<number>('semanticTokens.throttleMs', 40)) || 0);
       if (isVerbose) log(`Updated semantic tokens settings ${JSON.stringify(settings)}`);
     }
@@ -818,6 +824,10 @@ function beginChecking(_reason?: string) {
       clearTimeout(nudgeTimer);
       nudgeTimer = undefined;
     }
+    if (nudgeClearTimer) {
+      clearTimeout(nudgeClearTimer);
+      nudgeClearTimer = undefined;
+    }
     if (checkIdleTimer) {
       clearTimeout(checkIdleTimer);
       checkIdleTimer = undefined;
@@ -835,6 +845,10 @@ function endChecking() {
   if (nudgeTimer) {
     clearTimeout(nudgeTimer);
     nudgeTimer = undefined;
+  }
+  if (nudgeClearTimer) {
+    clearTimeout(nudgeClearTimer);
+    nudgeClearTimer = undefined;
   }
   if (checkInFlight > 0) checkInFlight--;
   if (checkInFlight === 0) {
@@ -854,11 +868,21 @@ function nudgeChecking() {
     checkIdleTimer = undefined;
   }
   if (nudgeTimer) clearTimeout(nudgeTimer);
+  if (nudgeClearTimer) {
+    clearTimeout(nudgeClearTimer);
+    nudgeClearTimer = undefined;
+  }
   const delay = Math.max(0, runtime.checkingDelayMs || 0);
   nudgeTimer = setTimeout(() => {
     nudgeTimer = undefined;
     if (checkInFlight === 0 && !isManuallyDisabled) {
       updateStatusBar('checking');
+      nudgeClearTimer = setTimeout(() => {
+        nudgeClearTimer = undefined;
+        if (checkInFlight === 0 && !isManuallyDisabled) {
+          updateStatusBar('running');
+        }
+      }, 1500);
     }
   }, delay);
 }
@@ -867,6 +891,10 @@ export function deactivate(): Thenable<void> | undefined {
   if (nudgeTimer) {
     clearTimeout(nudgeTimer);
     nudgeTimer = undefined;
+  }
+  if (nudgeClearTimer) {
+    clearTimeout(nudgeClearTimer);
+    nudgeClearTimer = undefined;
   }
   if (!client) {
     return undefined;

@@ -59,6 +59,7 @@ assert_eq!(result, Val::Bool(true));
 - Compile to bytecode: `lkr compile FILE` → `FILE.lkrb` (see [docs/lkrb.md](docs/lkrb.md) for bundling details)
 - Compile to LLVM IR: `lkr compile llvm FILE` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
 - Compile to ELF executable: `lkr compile exe FILE` (requires LLVM tools + system linker; see [docs/llvm/backend.md](docs/llvm/backend.md))
+- Create packages and manage dependencies: `lkr init`, `lkr pkg add`, `lkr pkg fetch`, `lkr pkg tree` (see [docs/packages.md](docs/packages.md))
 
 Note: command-line paths must be relative and sanitized.
 

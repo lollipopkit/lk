@@ -1,7 +1,9 @@
 use super::*;
 use lkr_core::expr;
 use std::collections::HashMap;
-use tower_lsp::lsp_types::{DiagnosticSeverity, InlayHintKind, NumberOrString, Position, Range, SymbolKind};
+use tower_lsp::lsp_types::{
+    DiagnosticSeverity, InlayHintKind, NumberOrString, Position, Range, SemanticToken, SymbolKind,
+};
 use val::Val;
 
 fn create_analyzer() -> LkrAnalyzer {
@@ -282,6 +284,38 @@ fn test_generate_semantic_tokens_function_identifier() {
     const FUNCTION_IDX: u32 = 3;
 
     assert!(tokens.iter().any(|t| t.token_type == FUNCTION_IDX));
+}
+
+#[test]
+fn test_validate_semantic_tokens_accepts_generated_tokens() {
+    let analyzer = create_analyzer();
+    let content = "let y = foo(1)\nreturn y\n";
+    let tokens = analyzer.generate_semantic_tokens(content);
+
+    let summary = analyzer.validate_semantic_tokens(content, &tokens);
+
+    assert!(summary.valid, "unexpected semantic token errors: {:?}", summary.errors);
+    assert_eq!(summary.token_count, tokens.len());
+}
+
+#[test]
+fn test_validate_semantic_tokens_rejects_bad_ranges_and_legend_indexes() {
+    let analyzer = create_analyzer();
+    let content = "let x = 1";
+    let tokens = vec![SemanticToken {
+        delta_line: 0,
+        delta_start: 20,
+        length: 1,
+        token_type: 99,
+        token_modifiers_bitset: 1 << 8,
+    }];
+
+    let summary = analyzer.validate_semantic_tokens(content, &tokens);
+
+    assert!(!summary.valid);
+    assert!(summary.errors.iter().any(|err| err.contains("token_type")));
+    assert!(summary.errors.iter().any(|err| err.contains("modifier bitset")));
+    assert!(summary.errors.iter().any(|err| err.contains("exceeds line")));
 }
 
 #[test]

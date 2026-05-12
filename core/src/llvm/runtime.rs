@@ -6,6 +6,7 @@
 //! can reuse existing semantics while sharing a common value encoding.
 
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
@@ -124,6 +125,31 @@ pub extern "C" fn lkr_rt_register_imports(ptr: *const i8, len: i64) -> i32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn lkr_rt_register_package_modules(ptr: *const i8, len: i64) -> i32 {
+    let json = read_string(ptr, len);
+    if json.trim().is_empty() {
+        with_state(|state| {
+            state.pending_package_modules.clear();
+            state.imports_applied = false;
+        });
+        return 0;
+    }
+    match serde_json::from_str::<BTreeMap<String, String>>(&json) {
+        Ok(modules) => {
+            with_state(move |state| {
+                state.pending_package_modules = modules.into_iter().collect();
+                state.imports_applied = false;
+            });
+            0
+        }
+        Err(err) => {
+            eprintln!("lkr_rt_register_package_modules: failed to parse modules: {err}");
+            -1
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn lkr_rt_apply_imports() -> i32 {
     let result: Result<()> = with_state(|state| state.apply_pending());
     match result {
@@ -148,12 +174,13 @@ struct RuntimeState {
     pending_search_paths: Vec<String>,
     pending_imports: Vec<ImportStmt>,
     pending_bundled: Vec<DecodedBundledModule>,
+    pending_package_modules: Vec<(String, String)>,
     imports_applied: bool,
 }
 
 impl RuntimeState {
     fn new() -> Self {
-        let (ctx, resolver) = match Self::build_context(&[], &[]) {
+        let (ctx, resolver) = match Self::build_context(&[], &[], &[]) {
             Ok(pair) => pair,
             Err(err) => {
                 eprintln!("lkr_rt: failed to initialise stdlib context: {err}");
@@ -170,6 +197,7 @@ impl RuntimeState {
             pending_search_paths: Vec::new(),
             pending_imports: Vec::new(),
             pending_bundled: Vec::new(),
+            pending_package_modules: Vec::new(),
             imports_applied: false,
         }
     }
@@ -178,10 +206,11 @@ impl RuntimeState {
         self.pending_search_paths.clear();
         self.pending_imports.clear();
         self.pending_bundled.clear();
+        self.pending_package_modules.clear();
         self.imports_applied = false;
         self.handles = HandleTable::default();
         self.interned_strings.clear();
-        match Self::build_context(&[], &[]) {
+        match Self::build_context(&[], &[], &[]) {
             Ok((ctx, resolver)) => {
                 self.ctx = ctx;
                 self.resolver = resolver;
@@ -196,7 +225,11 @@ impl RuntimeState {
     }
 
     fn apply_pending(&mut self) -> Result<()> {
-        let (mut ctx, resolver) = Self::build_context(&self.pending_search_paths, &self.pending_bundled)?;
+        let (mut ctx, resolver) = Self::build_context(
+            &self.pending_search_paths,
+            &self.pending_bundled,
+            &self.pending_package_modules,
+        )?;
         if !self.pending_imports.is_empty() {
             execute_imports(&self.pending_imports, resolver.as_ref(), &mut ctx)?;
         }
@@ -211,6 +244,7 @@ impl RuntimeState {
     fn build_context(
         search_paths: &[String],
         bundled: &[DecodedBundledModule],
+        package_modules: &[(String, String)],
     ) -> Result<(VmContext, Arc<ModuleResolver>)> {
         let mut registry = ModuleRegistry::new();
         #[cfg_attr(test, allow(unused_unsafe))]
@@ -225,6 +259,9 @@ impl RuntimeState {
         }
         for module in bundled {
             Self::register_embedded_recursive(&resolver, &module.path, &module.module);
+        }
+        for (name, path) in package_modules {
+            resolver.register_package_module(name.clone(), PathBuf::from(path));
         }
 
         let resolver_arc = Arc::new(resolver);
@@ -515,7 +552,7 @@ pub extern "C" fn lkr_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32
                 module: child.module.clone(),
             })
             .collect();
-        let (mut ctx, resolver) = RuntimeState::build_context(&[], &bundled)?;
+        let (mut ctx, resolver) = RuntimeState::build_context(&[], &bundled, &[])?;
         if let Some(imports) = imports.as_ref() {
             execute_imports(imports, resolver.as_ref(), &mut ctx)?;
         }

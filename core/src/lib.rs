@@ -2,6 +2,7 @@ pub mod ast;
 pub mod expr;
 pub mod module;
 mod op;
+pub mod package;
 pub mod rt;
 pub mod stmt;
 pub mod token;

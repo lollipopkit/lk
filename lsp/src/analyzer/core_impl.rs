@@ -589,6 +589,18 @@ impl LkrAnalyzer {
         self.base_dir = Some(base);
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn set_package_context(
+        &mut self,
+        base: PathBuf,
+        package_modules: HashMap<String, PathBuf>,
+        missing_packages: HashSet<String>,
+    ) {
+        self.base_dir = Some(base);
+        self.package_modules = package_modules;
+        self.missing_packages = missing_packages;
+    }
+
     /// Scan tokens to add diagnostics for unknown stdlib modules and unknown exports with precise spans
     fn add_import_diagnostics(&self, tokens: &[token::Token], spans: &[Span], result: &mut AnalysisResult) {
         use std::collections::HashMap;

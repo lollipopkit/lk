@@ -9,6 +9,23 @@ pub(crate) fn try_cli_analyze() -> anyhow::Result<Option<String>> {
         return Ok(None);
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--semantic-tokens-check") {
+        let path = args.get(i + 1).cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Usage: lkr-lsp --semantic-tokens-check <relative-file-path>\n  --semantic-tokens-check <file> : Validate semantic tokens and print JSON summary"
+            )
+        })?;
+        let content = read_file_content(&path)?;
+        let analyzer = LkrAnalyzer::new();
+        let tokens = analyzer.generate_semantic_tokens(&content);
+        let summary = analyzer.validate_semantic_tokens(&content, &tokens);
+        let output = serde_json::json!({
+            "file": path,
+            "summary": summary,
+        });
+        return Ok(Some(serde_json::to_string_pretty(&output)?));
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--analyze") {
         let mut path_index = i + 1;
         while path_index < args.len() && args[path_index].starts_with("--") {

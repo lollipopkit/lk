@@ -8,6 +8,7 @@ use tokio::sync::Semaphore;
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, InlayHint, SemanticToken, Url};
 use tower_lsp::Client;
 
+use super::workspace_cache::WorkspaceCache;
 use crate::analyzer::{AnalysisResult, LkrAnalyzer};
 
 /// In-memory representation of an open LKR document and its cached LSP artifacts.
@@ -35,6 +36,7 @@ pub(crate) struct LkrLanguageServer {
     // Shared limiter for all heavy analysis work (diagnostics, hover-derived lookups, etc.).
     pub(crate) compute_limiter: Mutex<Arc<Semaphore>>,
     pub(crate) workspace_root: Mutex<Option<PathBuf>>,
+    pub(crate) workspace_cache: Arc<WorkspaceCache>,
 }
 
 impl LkrLanguageServer {
@@ -46,6 +48,7 @@ impl LkrLanguageServer {
             config: Mutex::new(super::config::ServerConfig::default()),
             compute_limiter: Mutex::new(Arc::new(Semaphore::new(2))),
             workspace_root: Mutex::new(None),
+            workspace_cache: Arc::new(WorkspaceCache::default()),
         }
     }
 

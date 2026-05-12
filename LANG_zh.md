@@ -138,8 +138,15 @@ for 循环模式
 
 - 文件导入解析与安全：
   - 仅允许相对且净化后的路径：拒绝绝对路径与任何包含 `..` 的路径。
-  - 解析顺序：优先尝试 `${MOD_NAME}.lkr`，若不存在再尝试 `${MOD_NAME}/mod.lkr`（相对于当前工作目录）。
+  - 解析顺序：优先尝试 `${MOD_NAME}.lkr`，若不存在再尝试 `${MOD_NAME}/mod.lkr`（相对于当前文件目录）。
   - 若传入已带 `.lkr` 的相对路径（如 `"lib/foo.lkr"`），在存在时将被直接使用。
+  - 在包内，裸模块导入先查标准库，再查 `Lkr.toml` 中的 workspace/dependency package。package 导入解析到 `src/mod.lkr` 或 `src/<package-name>.lkr`。
+
+包
+- `Lkr.toml` 定义 `[package]`、`[dependencies]`、`[workspace]` 与 `[workspace.dependencies]`。
+- 字符串依赖默认是 GitHub，例如 `util = "owner/repo"`。
+- `Lkr.lock` 保存已获取 git 源的具体 revision。
+- 包管理器命令和 manifest 示例见 `docs/packages.md`。
 
 内建与标准库
 - 内建全局：`print(fmt, ...args)`、`println(fmt, ...args)`、`panic([msg])`。

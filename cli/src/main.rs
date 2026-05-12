@@ -1,9 +1,9 @@
 #[cfg(feature = "llvm")]
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
-#[cfg(feature = "llvm")]
 use std::process::Command;
 use std::sync::{Arc, Once};
+use std::{collections::BTreeMap, fs};
 
 static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str =
@@ -14,6 +14,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lkr_core::llvm::{LlvmBackendOptions, OptLevel, compile_function_to_llvm};
 use lkr_core::{
     module::ModuleRegistry,
+    package::{
+        DependencySpec, DetailedDependency, LOCK_FILE, LockFile, LockedPackage, MANIFEST_FILE, Manifest, PackageGraph,
+        PackageModule, PackageSection, cache_dir_for_source, find_manifest,
+    },
     rt,
     stmt::{ModuleResolver, Program, deserialize_imports, execute_imports, serialize_imports, stmt_parser::StmtParser},
     token::Tokenizer,
@@ -171,6 +175,37 @@ enum Commands {
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
     },
+    /// Create and manage LKR packages.
+    Init {
+        /// Package name. Defaults to the current directory name.
+        name: Option<String>,
+    },
+    /// Package manager commands.
+    Pkg {
+        #[command(subcommand)]
+        command: PkgCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PkgCommand {
+    /// Add a GitHub dependency to Lkr.toml.
+    Add {
+        name: String,
+        source: String,
+        #[arg(long)]
+        branch: Option<String>,
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        rev: Option<String>,
+    },
+    /// Fetch dependencies and update Lkr.lock.
+    Fetch,
+    /// Update one dependency or all dependencies.
+    Update { name: Option<String> },
+    /// Print the resolved dependency tree.
+    Tree,
 }
 
 fn read_file_content(path: &str) -> anyhow::Result<String> {
@@ -415,6 +450,7 @@ fn build_runtime_init_plan(
     module_ir: &str,
     search_paths: &[String],
     imports_json: Option<&str>,
+    package_modules_json: Option<&str>,
     modules: &[EncodedBundledModule],
 ) -> RuntimeInitPlan {
     let mut plan = RuntimeInitPlan::default();
@@ -424,6 +460,7 @@ fn build_runtime_init_plan(
         "declare void @lkr_rt_register_search_path(i8*, i64)",
         "declare i32 @lkr_rt_register_bundled_module(i8*, i64, i8*, i64)",
         "declare i32 @lkr_rt_register_imports(i8*, i64)",
+        "declare i32 @lkr_rt_register_package_modules(i8*, i64)",
         "declare i32 @lkr_rt_apply_imports()",
     ];
     for decl in decls {
@@ -489,6 +526,21 @@ fn build_runtime_init_plan(
         }
     }
 
+    if let Some(package_modules) = package_modules_json {
+        let bytes = package_modules.as_bytes();
+        if !bytes.is_empty() {
+            let len = bytes.len();
+            let global_name = "@.lkr_package_modules";
+            let literal = llvm_bytes_literal(bytes);
+            plan.globals.push(format!(
+                "{global_name} = private unnamed_addr constant [{len} x i8] {literal}, align 1"
+            ));
+            plan.body_lines.push(format!(
+                "call i32 @lkr_rt_register_package_modules(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* {global_name}, i64 0, i64 0), i64 {len})"
+            ));
+        }
+    }
+
     plan.body_lines.push("call i32 @lkr_rt_apply_imports()".to_string());
 
     plan
@@ -545,6 +597,7 @@ fn main() -> anyhow::Result<()> {
 
                 let src_path_str = safe.to_string_lossy().to_string();
                 let program = parse_program_file(&safe)?;
+                let package_graph = PackageGraph::discover(&safe)?;
                 let func = compile_program(&program);
                 if std::env::var_os("LKR_DEBUG_BYTECODE").is_some() {
                     eprintln!("-- bytecode for {} --", src_path_str);
@@ -578,8 +631,19 @@ fn main() -> anyhow::Result<()> {
 
                         let parent_dir = safe.parent().filter(|p| !p.as_os_str().is_empty());
                         let mut bundler = ModuleBundler::new(parent_dir);
+                        if let Some(graph) = package_graph.as_ref() {
+                            bundler.register_package_modules(&graph.modules);
+                        }
                         bundler.bundle_program(&program)?;
+                        let package_modules_json = bundler.package_modules_json()?;
                         let bundled_modules = bundler.into_bundled();
+                        if let Some(json) = package_modules_json {
+                            module
+                                .meta
+                                .get_or_insert_with(Default::default)
+                                .tags
+                                .insert("package_modules".to_string(), json);
+                        }
                         if !bundled_modules.is_empty() {
                             module.bundled_modules = bundled_modules;
                         }
@@ -666,7 +730,11 @@ fn main() -> anyhow::Result<()> {
                         }
 
                         let mut bundler = ModuleBundler::new(parent_dir_owned.as_deref());
+                        if let Some(graph) = package_graph.as_ref() {
+                            bundler.register_package_modules(&graph.modules);
+                        }
                         bundler.bundle_program(&program)?;
+                        let package_modules_json = bundler.package_modules_json()?;
                         let bundled_modules = bundler.into_bundled();
                         let mut encoded_modules = Vec::new();
                         for bundled in &bundled_modules {
@@ -697,6 +765,7 @@ fn main() -> anyhow::Result<()> {
                                     final_ir,
                                     &search_paths,
                                     imports_serialized.as_deref(),
+                                    package_modules_json.as_deref(),
                                     &encoded_modules,
                                 );
                                 let ll_with_main = append_main_stub(final_ir, "lkr_entry", &runtime_plan);
@@ -704,6 +773,7 @@ fn main() -> anyhow::Result<()> {
                                     &artifact.module.ir,
                                     &search_paths,
                                     imports_serialized.as_deref(),
+                                    package_modules_json.as_deref(),
                                     &encoded_modules,
                                 );
                                 let unopt_with_main = append_main_stub(&artifact.module.ir, "lkr_entry", &unopt_plan);
@@ -722,6 +792,9 @@ fn main() -> anyhow::Result<()> {
                                 meta.tags.insert("entry_kind".to_string(), "stmt".to_string());
                                 if let Some(imports) = imports_serialized.as_ref() {
                                     meta.tags.insert("imports".to_string(), imports.clone());
+                                }
+                                if let Some(package_modules) = package_modules_json.as_ref() {
+                                    meta.tags.insert("package_modules".to_string(), package_modules.clone());
                                 }
                                 module.meta = Some(meta);
                                 module.bundled_modules = bundled_modules;
@@ -830,6 +903,14 @@ fn main() -> anyhow::Result<()> {
                 run_type_check(&file)?;
                 return Ok(());
             }
+            Commands::Init { name } => {
+                init_package(name)?;
+                return Ok(());
+            }
+            Commands::Pkg { command } => {
+                run_pkg_command(command)?;
+                return Ok(());
+            }
         }
     }
     // No separate subcommand to run bytecode; handled below by auto-detecting LKRB magic
@@ -863,6 +944,7 @@ fn main() -> anyhow::Result<()> {
         }
         let resolver = Arc::new(resolver);
         register_embedded_modules(&resolver, &module.bundled_modules);
+        register_package_modules_from_meta(&resolver, module.meta.as_ref())?;
         let mut base_env = VmContext::new()
             .with_resolver(Arc::clone(&resolver))
             .with_type_checker(Some(TypeChecker::new_strict()));
@@ -928,6 +1010,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(parent) = safe.parent().filter(|p| !p.as_os_str().is_empty()) {
         resolver.set_base_dir(parent.to_path_buf());
     }
+    configure_package_resolver(&mut resolver, &safe)?;
     let resolver = Arc::new(resolver);
     let mut base_env = VmContext::new()
         .with_resolver(Arc::clone(&resolver))
@@ -967,6 +1050,231 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
     if let Err(err) = program.type_check(&mut checker) {
         eprintln!("Error: {}", err);
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn configure_package_resolver(resolver: &mut ModuleResolver, path: &Path) -> anyhow::Result<Option<PackageGraph>> {
+    let Some(graph) = PackageGraph::discover(path)? else {
+        return Ok(None);
+    };
+    register_package_modules(resolver, &graph.modules)?;
+    Ok(Some(graph))
+}
+
+fn register_package_modules(resolver: &ModuleResolver, modules: &[PackageModule]) -> anyhow::Result<()> {
+    for module in modules {
+        if resolver.resolve_module(&module.name).is_ok() {
+            anyhow::bail!("Package module '{}' conflicts with a stdlib module", module.name);
+        }
+        resolver.register_package_module(module.name.clone(), module.root.clone());
+    }
+    Ok(())
+}
+
+fn register_package_modules_from_meta(resolver: &Arc<ModuleResolver>, meta: Option<&ModuleMeta>) -> anyhow::Result<()> {
+    let Some(raw) = meta.and_then(|meta| meta.tags.get("package_modules")) else {
+        return Ok(());
+    };
+    let modules: BTreeMap<String, String> = serde_json::from_str(raw).context("parse package module metadata")?;
+    for (name, path) in modules {
+        resolver.register_package_module(name, PathBuf::from(path));
+    }
+    Ok(())
+}
+
+fn init_package(name: Option<String>) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir().context("read current directory")?;
+    let package_name = name
+        .or_else(|| cwd.file_name().map(|name| name.to_string_lossy().to_string()))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "lkr-package".to_string());
+    let manifest_path = cwd.join(MANIFEST_FILE);
+    if manifest_path.exists() {
+        anyhow::bail!("{} already exists", manifest_path.display());
+    }
+    let manifest = Manifest {
+        package: Some(PackageSection {
+            name: package_name.clone(),
+            version: Some("0.1.0".to_string()),
+            edition: Some("2026".to_string()),
+            license: None,
+            authors: Vec::new(),
+            description: None,
+        }),
+        workspace: None,
+        dependencies: BTreeMap::new(),
+    };
+    manifest.write(&manifest_path)?;
+    let src_dir = cwd.join("src");
+    fs::create_dir_all(&src_dir).with_context(|| format!("create {}", src_dir.display()))?;
+    let main_path = src_dir.join("main.lkr");
+    if !main_path.exists() {
+        fs::write(
+            &main_path,
+            "println(\"hello from ${pkg}\");\n".replace("${pkg}", &package_name),
+        )
+        .with_context(|| format!("write {}", main_path.display()))?;
+    }
+    eprintln!("Created {}", manifest_path.display());
+    Ok(())
+}
+
+fn run_pkg_command(command: PkgCommand) -> anyhow::Result<()> {
+    match command {
+        PkgCommand::Add {
+            name,
+            source,
+            branch,
+            tag,
+            rev,
+        } => add_dependency(name, source, branch, tag, rev),
+        PkgCommand::Fetch => fetch_dependencies(None),
+        PkgCommand::Update { name } => fetch_dependencies(name),
+        PkgCommand::Tree => print_package_tree(),
+    }
+}
+
+fn load_project_manifest() -> anyhow::Result<(PathBuf, Manifest)> {
+    let cwd = std::env::current_dir().context("read current directory")?;
+    let manifest_path = find_manifest(&cwd).ok_or_else(|| anyhow::anyhow!("No {MANIFEST_FILE} found"))?;
+    let manifest = Manifest::read(&manifest_path)?;
+    Ok((manifest_path, manifest))
+}
+
+fn add_dependency(
+    name: String,
+    source: String,
+    branch: Option<String>,
+    tag: Option<String>,
+    rev: Option<String>,
+) -> anyhow::Result<()> {
+    let (manifest_path, mut manifest) = load_project_manifest()?;
+    let spec = if branch.is_none() && tag.is_none() && rev.is_none() {
+        DependencySpec::GitHub(source)
+    } else {
+        DependencySpec::Detailed(DetailedDependency {
+            github: Some(source),
+            branch,
+            tag,
+            rev,
+            ..Default::default()
+        })
+    };
+    manifest.dependencies.insert(name, spec);
+    manifest.write(&manifest_path)?;
+    eprintln!("Updated {}", manifest_path.display());
+    Ok(())
+}
+
+fn fetch_dependencies(only: Option<String>) -> anyhow::Result<()> {
+    let (manifest_path, manifest) = load_project_manifest()?;
+    let root = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("manifest has no parent"))?;
+    let mut lock = LockFile::read(&root.join(LOCK_FILE))?;
+    let mut locked = BTreeMap::new();
+    for pkg in lock.package {
+        locked.insert(pkg.name.clone(), pkg);
+    }
+
+    let dependencies = manifest.dependencies;
+    for (name, spec) in dependencies {
+        if only.as_ref().is_some_and(|only| only != &name) {
+            continue;
+        }
+        if spec.is_workspace() || spec.path().is_some() {
+            continue;
+        }
+        let source = spec
+            .git_url()
+            .ok_or_else(|| anyhow::anyhow!("dependency '{name}' has no git source"))?;
+        let dir = cache_dir_for_source(&source);
+        fetch_git_dependency(&source, &dir, &spec)?;
+        let rev = git_output(&dir, ["rev-parse", "HEAD"])?;
+        locked.insert(name.clone(), LockedPackage { name, source, rev });
+    }
+
+    lock = LockFile {
+        package: locked.into_values().collect(),
+    };
+    lock.write(&root.join(LOCK_FILE))?;
+    eprintln!("Updated {}", root.join(LOCK_FILE).display());
+    Ok(())
+}
+
+fn fetch_git_dependency(source: &str, dir: &Path, spec: &DependencySpec) -> anyhow::Result<()> {
+    if dir.exists() {
+        git_status(
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .arg("fetch")
+                .arg("--tags")
+                .arg("--prune"),
+        )?;
+    } else {
+        if let Some(parent) = dir.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+        }
+        git_status(Command::new("git").arg("clone").arg(source).arg(dir))?;
+    }
+
+    if let DependencySpec::Detailed(dep) = spec {
+        if let Some(rev) = dep.rev.as_ref() {
+            git_status(Command::new("git").arg("-C").arg(dir).arg("checkout").arg(rev))?;
+        } else if let Some(tag) = dep.tag.as_ref() {
+            git_status(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .arg("checkout")
+                    .arg(format!("tags/{tag}")),
+            )?;
+        } else if let Some(branch) = dep.branch.as_ref() {
+            git_status(Command::new("git").arg("-C").arg(dir).arg("checkout").arg(branch))?;
+            git_status(Command::new("git").arg("-C").arg(dir).arg("pull").arg("--ff-only"))?;
+        }
+    }
+    Ok(())
+}
+
+fn git_status(cmd: &mut Command) -> anyhow::Result<()> {
+    let status = cmd.status().context("run git")?;
+    if !status.success() {
+        anyhow::bail!("git failed with status {status}");
+    }
+    Ok(())
+}
+
+fn git_output<const N: usize>(dir: &Path, args: [&str; N]) -> anyhow::Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .context("run git")?;
+    if !output.status.success() {
+        anyhow::bail!("git failed with status {}", output.status);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn print_package_tree() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir().context("read current directory")?;
+    let graph = PackageGraph::discover(&cwd)?.ok_or_else(|| anyhow::anyhow!("No {MANIFEST_FILE} found"))?;
+    let root_name = graph
+        .manifest
+        .package
+        .as_ref()
+        .map(|package| package.name.as_str())
+        .unwrap_or("<workspace>");
+    println!("{root_name} ({})", graph.manifest_dir().display());
+    for module in &graph.modules {
+        println!("  {} -> {}", module.name, module.root.display());
+    }
+    for missing in &graph.missing {
+        println!("  {} -> <missing; run lkr pkg fetch>", missing);
     }
     Ok(())
 }

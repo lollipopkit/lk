@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXT="$ROOT/vsc-ext/lsp"
 HIGHLIGHT_EXT="$ROOT/vsc-ext/highlight"
-EXAMPLES="$ROOT/examples"
+EXAMPLES="$ROOT/examples/lkr-example-workspace"
 SERVER="$ROOT/target/debug/lkr-lsp"
 USER_DATA_DIR="${LKR_VSCODE_USER_DATA_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/lkr-vscode-lsp.XXXXXX")}"
 

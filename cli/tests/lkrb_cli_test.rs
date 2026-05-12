@@ -129,6 +129,65 @@ fn test_lkrb_compile_with_import_bundled() {
 }
 
 #[test]
+fn test_package_path_dependency_runs_and_bundles() {
+    let dir = unique_tmp_dir("pkg_path_dep");
+    ensure_clean_dir(&dir);
+    create_dir_all(dir.join("src")).expect("create app src");
+    create_dir_all(dir.join("deps/util/src")).expect("create dep src");
+    write_file(
+        &dir,
+        "Lkr.toml",
+        r#"
+[package]
+name = "app"
+
+[dependencies]
+util = { path = "deps/util" }
+"#,
+    );
+    write_file(
+        &dir.join("deps/util"),
+        "Lkr.toml",
+        r#"
+[package]
+name = "util"
+"#,
+    );
+    write_file(&dir.join("deps/util"), "src/mod.lkr", "fn answer() { return 42; }\n");
+    write_file(&dir, "src/main.lkr", "import util;\nreturn util.answer();\n");
+
+    let run_out = run_cli(&dir, ["src/main.lkr"]).output().expect("spawn run");
+    assert!(
+        run_out.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&run_out.stderr)
+    );
+    assert_eq!(String::from_utf8(run_out.stdout).expect("utf8 stdout").trim(), "42");
+
+    let compile = run_cli(&dir, ["compile", "src/main.lkr"])
+        .output()
+        .expect("spawn compile");
+    assert!(
+        compile.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let decoded =
+        vm::decode_module(&fs::read(dir.join("src/main.lkrb")).expect("read bytecode")).expect("decode module");
+    assert_eq!(decoded.bundled_modules.len(), 1);
+    assert!(
+        decoded
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.tags.get("package_modules"))
+            .is_some(),
+        "expected package module metadata"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn test_compile_rejects_unsupported_constructs_for_vm() {
     let dir = unique_tmp_dir("compile_vm_guard");
     ensure_clean_dir(&dir);

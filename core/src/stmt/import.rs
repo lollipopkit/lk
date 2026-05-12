@@ -70,6 +70,8 @@ pub struct ModuleResolver {
     embedded_modules: Arc<DashMap<String, Arc<BytecodeModule>>>,
     /// Search paths for module resolution
     search_paths: Vec<PathBuf>,
+    /// Package modules resolved from Lkr.toml dependencies/workspace members
+    package_modules: Arc<DashMap<String, PathBuf>>,
 }
 
 impl PartialEq for ModuleResolver {
@@ -93,6 +95,7 @@ impl ModuleResolver {
             embedded_modules: Arc::new(DashMap::new()),
             // Prefer current directory; also allow `core/` for workspace runs.
             search_paths: vec![PathBuf::from("."), PathBuf::from("core")],
+            package_modules: Arc::new(DashMap::new()),
         }
     }
 
@@ -114,6 +117,16 @@ impl ModuleResolver {
     pub fn set_base_dir(&mut self, path: impl Into<PathBuf>) {
         let base = path.into();
         self.search_paths = vec![base.clone(), base.join("lib"), base.join("modules")];
+    }
+
+    /// Register a package root module. `import name;` resolves to this file when
+    /// no stdlib module with the same name exists.
+    pub fn register_package_module(&self, name: impl Into<String>, root: impl Into<PathBuf>) {
+        self.package_modules.insert(name.into(), root.into());
+    }
+
+    pub fn package_module_path(&self, name: &str) -> Option<PathBuf> {
+        self.package_modules.get(name).map(|root| root.value().clone())
     }
 
     /// Register a precompiled module that should be resolved from memory instead of disk.
@@ -172,13 +185,21 @@ impl ModuleResolver {
             return Ok(module_val);
         }
 
+        if let Some(root) = self.package_modules.get(name) {
+            return self.resolve_resolved_file(root.value());
+        }
+
         Err(anyhow!("Module '{}' not found", name))
     }
 
     /// Resolve a file module - loads if not already cached
     pub fn resolve_file(&self, path: &str) -> Result<Val> {
         let resolved_path = self.resolve_file_path(path)?;
+        self.resolve_resolved_file(&resolved_path)
+    }
 
+    fn resolve_resolved_file(&self, resolved_path: &Path) -> Result<Val> {
+        let resolved_path = Self::normalize_path(resolved_path.to_path_buf());
         // Check cache first
         if let Some(module) = self.file_modules.get(&resolved_path) {
             return Ok(module.value().clone());
@@ -298,9 +319,12 @@ impl ModuleResolver {
 
     /// Load and parse a file module into a namespace map
     fn load_file_module(&self, path: &Path) -> Result<Val> {
-        // Read source then delegate to resolve_source
         let src = std::fs::read_to_string(path)?;
-        self.resolve_source(&src)
+        let mut resolver = self.clone();
+        if let Some(parent) = path.parent() {
+            resolver.set_base_dir(parent.to_path_buf());
+        }
+        resolver.resolve_source(&src)
     }
 
     fn execute_embedded_module(&self, path: &Path, module: Arc<BytecodeModule>) -> Result<Val> {

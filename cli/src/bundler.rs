@@ -1,11 +1,12 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, anyhow};
 use lkr_core::{
+    package::PackageModule,
     stmt::stmt_parser::StmtParser,
     stmt::{ImportSource, ImportStmt, ModuleResolver, Program, Stmt, serialize_imports},
     token::Tokenizer,
@@ -15,6 +16,7 @@ use lkr_core::{
 /// Collects file-based imports and compiles them into bundled LKRB modules.
 pub struct ModuleBundler {
     resolver: ModuleResolver,
+    package_modules: BTreeMap<String, PathBuf>,
     visited: HashSet<PathBuf>,
     modules: Vec<(PathBuf, BytecodeModule)>,
 }
@@ -37,9 +39,32 @@ impl ModuleBundler {
         }
         Self {
             resolver,
+            package_modules: BTreeMap::new(),
             visited: HashSet::new(),
             modules: Vec::new(),
         }
+    }
+
+    pub fn register_package_modules(&mut self, modules: &[PackageModule]) {
+        for module in modules {
+            self.resolver
+                .register_package_module(module.name.clone(), module.root.clone());
+            self.package_modules.insert(module.name.clone(), module.root.clone());
+        }
+    }
+
+    pub fn package_modules_json(&self) -> Result<Option<String>> {
+        if self.package_modules.is_empty() {
+            return Ok(None);
+        }
+        let map: BTreeMap<String, String> = self
+            .package_modules
+            .iter()
+            .map(|(name, path)| (name.clone(), path.to_string_lossy().into_owned()))
+            .collect();
+        serde_json::to_string(&map)
+            .map(Some)
+            .context("serialize package modules")
     }
 
     /// Traverse the program and enqueue any file imports for bundling.
@@ -47,6 +72,10 @@ impl ModuleBundler {
         let imports = collect_file_imports(program);
         for spec in imports {
             self.bundle_import(&spec)?;
+        }
+        let package_imports = self.collect_package_imports(program);
+        for path in package_imports {
+            self.bundle_path(path)?;
         }
         Ok(())
     }
@@ -68,7 +97,10 @@ impl ModuleBundler {
             .resolver
             .resolve_file_path(spec)
             .with_context(|| format!("Failed to resolve import '{}'", spec))?;
+        self.bundle_path(resolved)
+    }
 
+    fn bundle_path(&mut self, resolved: PathBuf) -> Result<()> {
         if !self.visited.insert(resolved.clone()) {
             return Ok(());
         }
@@ -111,6 +143,14 @@ impl ModuleBundler {
         self.modules.push((resolved, module));
         Ok(())
     }
+
+    fn collect_package_imports(&self, program: &Program) -> BTreeSet<PathBuf> {
+        let mut imports = BTreeSet::new();
+        for stmt in &program.statements {
+            collect_package_imports_from_stmt(stmt, &self.resolver, &mut imports);
+        }
+        imports
+    }
 }
 
 fn collect_file_imports(program: &Program) -> BTreeSet<String> {
@@ -119,6 +159,52 @@ fn collect_file_imports(program: &Program) -> BTreeSet<String> {
         collect_imports_from_stmt(stmt, &mut imports);
     }
     imports
+}
+
+fn collect_package_imports_from_stmt(stmt: &Stmt, resolver: &ModuleResolver, imports: &mut BTreeSet<PathBuf>) {
+    match stmt {
+        Stmt::Import(import_stmt) => match import_stmt {
+            ImportStmt::Module { module } | ImportStmt::ModuleAlias { module, .. } => {
+                if let Some(path) = resolver.package_module_path(module) {
+                    imports.insert(path);
+                }
+            }
+            ImportStmt::Items { source, .. } | ImportStmt::Namespace { source, .. } => {
+                if let ImportSource::Module(module) = source
+                    && let Some(path) = resolver.package_module_path(module)
+                {
+                    imports.insert(path);
+                }
+            }
+            ImportStmt::File { .. } => {}
+        },
+        Stmt::Block { statements } => {
+            for stmt in statements {
+                collect_package_imports_from_stmt(stmt, resolver, imports);
+            }
+        }
+        Stmt::If {
+            then_stmt, else_stmt, ..
+        }
+        | Stmt::IfLet {
+            then_stmt, else_stmt, ..
+        } => {
+            collect_package_imports_from_stmt(then_stmt, resolver, imports);
+            if let Some(else_stmt) = else_stmt {
+                collect_package_imports_from_stmt(else_stmt, resolver, imports);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::WhileLet { body, .. } | Stmt::For { body, .. } => {
+            collect_package_imports_from_stmt(body, resolver, imports)
+        }
+        Stmt::Function { body, .. } => collect_package_imports_from_stmt(body, resolver, imports),
+        Stmt::Impl { methods, .. } => {
+            for method in methods {
+                collect_package_imports_from_stmt(method, resolver, imports);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_imports_from_stmt(stmt: &Stmt, imports: &mut BTreeSet<String>) {

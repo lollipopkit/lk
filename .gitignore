@@ -9,3 +9,5 @@ flamegraph.svg
 
 vsc-ext/*/node_modules/
 vsc-ext/*/*.vsix
+
+lkr-lsp-debug.log

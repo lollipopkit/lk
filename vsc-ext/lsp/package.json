@@ -216,8 +216,13 @@
         },
         "lkr.lsp.semanticTokens.enabled": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Enable semantic tokens; disable to rely on TextMate highlighting only"
+        },
+        "lkr.lsp.semanticTokens.experimentalProvider": {
+          "type": "boolean",
+          "default": false,
+          "description": "Advertise the experimental semantic tokens LSP provider on server startup. Requires semanticTokens.enabled and a window reload."
         },
         "lkr.lsp.semanticTokens.mode": {
           "type": "string",

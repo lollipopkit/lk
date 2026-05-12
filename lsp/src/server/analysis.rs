@@ -14,6 +14,7 @@ use lkr_core::{resolve, stmt, token};
 
 use super::state::LkrLanguageServer;
 use super::text::{describe_token_hover, find_token_at_offset, position_to_char_idx};
+use super::utils::compute_content_hash;
 use tracing::debug;
 
 fn log_timing(stage: &str, uri: &Url, duration_ms: u128, details: &str) {
@@ -33,6 +34,13 @@ pub(crate) struct SymbolContext {
 }
 
 impl LkrLanguageServer {
+    pub(crate) fn schedule_workspace_cache_preload(&self) {
+        let cache = self.workspace_cache.clone();
+        tokio::spawn(async move {
+            let _ = task::spawn_blocking(move || cache.preload()).await;
+        });
+    }
+
     pub(crate) async fn validate_document(&self, uri: &Url) -> Vec<Diagnostic> {
         match self.get_or_compute_analysis(uri).await {
             Some(analysis) => analysis.diagnostics.clone(),
@@ -94,11 +102,22 @@ impl LkrLanguageServer {
             (doc.content.to_string(), doc.version, doc.debounce_seq)
         };
 
+        if let Some(cached) = self.workspace_cache.get(uri, compute_content_hash(&content_snapshot)) {
+            if let Some(mut doc) = self.documents.get_mut(uri) {
+                if doc.version == version_snapshot && doc.debounce_seq == seq_snapshot {
+                    doc.cached_analysis = Some(cached.analysis.clone());
+                    doc.cached_semantic_tokens = Some(cached.semantic_tokens.clone());
+                }
+            }
+            return Some(cached.analysis);
+        }
+
         let content_for_compute = content_snapshot.clone();
         let base_dir = uri
             .to_file_path()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+        let workspace_cache = self.workspace_cache.clone();
 
         let sem = self.compute_limiter.lock().unwrap().clone();
         let _permit = sem.acquire().await.ok()?;
@@ -107,7 +126,12 @@ impl LkrLanguageServer {
         let computed_result = task::spawn_blocking(move || {
             let mut analyzer = LkrAnalyzer::new();
             if let Some(b) = base_dir {
-                analyzer.set_base_dir(b);
+                let (base, modules, missing) = workspace_cache.package_context_for(b);
+                if modules.is_empty() && missing.is_empty() {
+                    analyzer.set_base_dir(base);
+                } else {
+                    analyzer.set_package_context(base, modules, missing);
+                }
             }
             analyzer.analyze(&content_for_compute)
         })
@@ -146,17 +170,33 @@ impl LkrLanguageServer {
         };
 
         let content_for_tokens = content_snapshot.clone();
+        if let Some(cached) = self.workspace_cache.get(uri, compute_content_hash(&content_snapshot)) {
+            if let Some(mut doc) = self.documents.get_mut(uri) {
+                if doc.version == version_snapshot && doc.debounce_seq == seq_snapshot {
+                    doc.cached_analysis = Some(cached.analysis.clone());
+                    doc.cached_semantic_tokens = Some(cached.semantic_tokens.clone());
+                }
+            }
+            return Some(cached.semantic_tokens);
+        }
+
         let base_dir = uri
             .to_file_path()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
         let sem = self.compute_limiter.lock().unwrap().clone();
         let _permit = sem.acquire().await.ok();
+        let workspace_cache = self.workspace_cache.clone();
         let start = Instant::now();
         let generated_result = task::spawn_blocking(move || {
             let mut analyzer = LkrAnalyzer::new_light();
             if let Some(b) = base_dir {
-                analyzer.set_base_dir(b);
+                let (base, modules, missing) = workspace_cache.package_context_for(b);
+                if modules.is_empty() && missing.is_empty() {
+                    analyzer.set_base_dir(base);
+                } else {
+                    analyzer.set_package_context(base, modules, missing);
+                }
             }
             analyzer.generate_semantic_tokens(&content_for_tokens)
         })
@@ -185,6 +225,7 @@ impl LkrLanguageServer {
         let documents = self.documents.clone();
         let client = self.client.clone();
         let sem = self.compute_limiter.lock().unwrap().clone();
+        let workspace_cache = self.workspace_cache.clone();
         tokio::spawn(async move {
             sleep(Duration::from_millis(delay_ms)).await;
 
@@ -195,7 +236,7 @@ impl LkrLanguageServer {
             };
 
             if version_snapshot != scheduled_version
-                || documents.get(&uri).map_or(true, |doc| doc.debounce_seq != seq_snapshot)
+                || documents.get(&uri).is_none_or(|doc| doc.debounce_seq != seq_snapshot)
             {
                 return;
             }
@@ -219,15 +260,26 @@ impl LkrLanguageServer {
                 .and_then(|p| p.parent().map(|p| p.to_path_buf()));
 
             let start = Instant::now();
-            let computed_result = task::spawn_blocking(move || {
-                let mut analyzer = LkrAnalyzer::new();
-                if let Some(b) = base_dir {
-                    analyzer.set_base_dir(b);
-                }
-                analyzer.analyze(&content_for_compute)
-            })
-            .await
-            .ok();
+            let content_len = content_for_compute.len();
+            let computed_result =
+                if let Some(cached) = workspace_cache.get(&uri, compute_content_hash(&content_for_compute)) {
+                    Some((*cached.analysis).clone())
+                } else {
+                    task::spawn_blocking(move || {
+                        let mut analyzer = LkrAnalyzer::new();
+                        if let Some(b) = base_dir {
+                            let (base, modules, missing) = workspace_cache.package_context_for(b);
+                            if modules.is_empty() && missing.is_empty() {
+                                analyzer.set_base_dir(base);
+                            } else {
+                                analyzer.set_package_context(base, modules, missing);
+                            }
+                        }
+                        analyzer.analyze(&content_for_compute)
+                    })
+                    .await
+                    .ok()
+                };
 
             if let Some(diagnostics_len) = computed_result.as_ref().map(|c| c.diagnostics.len()) {
                 if let Some(elapsed) = Instant::now().checked_duration_since(start).map(|d| d.as_millis()) {
@@ -235,10 +287,7 @@ impl LkrLanguageServer {
                         "schedule_diagnostics_and_warmup",
                         &uri,
                         elapsed,
-                        &format!(
-                            "diag_count={diagnostics_len}, content_len={}",
-                            content_for_compute.len()
-                        ),
+                        &format!("diag_count={diagnostics_len}, content_len={}", content_len),
                     );
                 }
             }
@@ -254,6 +303,9 @@ impl LkrLanguageServer {
             }
 
             if let Some(diags) = diagnostics_to_publish {
+                if !documents.contains_key(&uri) {
+                    return;
+                }
                 let _ = client
                     .send_notification::<notification::PublishDiagnostics>(PublishDiagnosticsParams {
                         uri: uri.clone(),

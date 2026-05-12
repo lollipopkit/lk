@@ -1,9 +1,32 @@
 use lkr_lsp::LkrAnalyzer;
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("lsp crate has workspace parent")
+        .to_path_buf()
+}
 
 fn assert_under(label: &str, dur: Duration, max: Duration) {
     eprintln!("{} took: {:?} (limit: {:?})", label, dur, max);
     assert!(dur <= max, "{} exceeded budget: {:?} > {:?}", label, dur, max);
+}
+
+fn collect_lkr_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read directory") {
+        let entry = entry.expect("read directory entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_lkr_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "lkr") {
+            out.push(path);
+        }
+    }
 }
 
 #[test]
@@ -80,4 +103,76 @@ fn test_semantic_tokens_large_document_latency() {
     // Ensure we produced some tokens and kept time under a relaxed budget
     assert!(!tokens.is_empty(), "semantic tokens should not be empty");
     assert_under("semantic_tokens(large doc)", elapsed, Duration::from_millis(1500));
+}
+
+#[test]
+fn test_analyze_example_workspace_main_latency() {
+    let root = repo_root().join("examples/lkr-example-workspace");
+    let app_src = root.join("apps/demo/src");
+    let main_path = app_src.join("main.lkr");
+    let src = fs::read_to_string(&main_path).expect("read example workspace main.lkr");
+
+    let mut analyzer = LkrAnalyzer::new();
+    analyzer.set_base_dir(app_src);
+    let start = Instant::now();
+    let res = analyzer.analyze(&src);
+    let elapsed = start.elapsed();
+
+    let messages: Vec<&str> = res.diagnostics.iter().map(|diag| diag.message.as_str()).collect();
+    assert!(
+        !messages.iter().any(|msg| msg.contains("Unknown module")),
+        "example workspace imports should resolve; diagnostics: {messages:?}"
+    );
+    assert_under("analyze(example workspace main)", elapsed, Duration::from_millis(100));
+}
+
+#[test]
+fn test_semantic_tokens_example_workspace_latency() {
+    let main_path = repo_root().join("examples/lkr-example-workspace/apps/demo/src/main.lkr");
+    let src = fs::read_to_string(&main_path).expect("read example workspace main.lkr");
+    let analyzer = LkrAnalyzer::new();
+
+    let start = Instant::now();
+    let tokens = analyzer.generate_semantic_tokens(&src);
+    let elapsed = start.elapsed();
+
+    assert!(
+        !tokens.is_empty(),
+        "example workspace semantic tokens should not be empty"
+    );
+    assert_under(
+        "semantic_tokens(example workspace main)",
+        elapsed,
+        Duration::from_millis(50),
+    );
+}
+
+#[test]
+fn test_semantic_tokens_example_workspace_all_files_are_valid_and_fast() {
+    let root = repo_root().join("examples/lkr-example-workspace");
+    let mut files = Vec::new();
+    collect_lkr_files(&root, &mut files);
+    files.sort();
+    assert!(!files.is_empty(), "example workspace should contain .lkr files");
+
+    let analyzer = LkrAnalyzer::new();
+    let start = Instant::now();
+    for file in &files {
+        let src = fs::read_to_string(file).expect("read example workspace lkr file");
+        let tokens = analyzer.generate_semantic_tokens(&src);
+        let summary = analyzer.validate_semantic_tokens(&src, &tokens);
+        assert!(
+            summary.valid,
+            "invalid semantic tokens for {}: {:?}",
+            file.display(),
+            summary.errors
+        );
+    }
+    let elapsed = start.elapsed();
+
+    assert_under(
+        "semantic_tokens(example workspace all files)",
+        elapsed,
+        Duration::from_millis(100),
+    );
 }

@@ -1,5 +1,22 @@
 use super::{LkrAnalyzer, MAX_TOKENS_PER_DOC, MAX_TOKENS_PER_RANGE};
+use serde::Serialize;
+use std::collections::BTreeMap;
 use tower_lsp::lsp_types::{Range, SemanticToken};
+
+const SEMANTIC_TOKEN_TYPE_COUNT: u32 = 11;
+const SEMANTIC_TOKEN_MODIFIER_COUNT: u32 = 4;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SemanticTokenValidationSummary {
+    pub valid: bool,
+    pub token_count: usize,
+    pub errors: Vec<String>,
+    pub token_type_counts: BTreeMap<u32, usize>,
+    pub modifier_bitset_counts: BTreeMap<u32, usize>,
+    pub max_line: u32,
+    pub max_start: u32,
+    pub max_length: u32,
+}
 
 impl LkrAnalyzer {
     /// Generate semantic tokens for LKR code (optimized version)
@@ -544,6 +561,90 @@ impl LkrAnalyzer {
             first = false;
         }
         result
+    }
+
+    pub fn validate_semantic_tokens(&self, content: &str, tokens: &[SemanticToken]) -> SemanticTokenValidationSummary {
+        let line_lengths: Vec<u32> = content
+            .lines()
+            .map(|line| line.chars().map(|ch| ch.len_utf16() as u32).sum())
+            .collect();
+        let allowed_modifier_bits = if SEMANTIC_TOKEN_MODIFIER_COUNT == 32 {
+            u32::MAX
+        } else {
+            (1u32 << SEMANTIC_TOKEN_MODIFIER_COUNT) - 1
+        };
+
+        let mut errors = Vec::new();
+        let mut token_type_counts = BTreeMap::new();
+        let mut modifier_bitset_counts = BTreeMap::new();
+        let mut line = 0u32;
+        let mut start = 0u32;
+        let mut max_line = 0u32;
+        let mut max_start = 0u32;
+        let mut max_length = 0u32;
+
+        for (idx, token) in tokens.iter().enumerate() {
+            if idx == 0 {
+                line = token.delta_line;
+                start = token.delta_start;
+            } else if token.delta_line == 0 {
+                start = start.saturating_add(token.delta_start);
+            } else {
+                line = line.saturating_add(token.delta_line);
+                start = token.delta_start;
+            }
+
+            *token_type_counts.entry(token.token_type).or_insert(0) += 1;
+            *modifier_bitset_counts.entry(token.token_modifiers_bitset).or_insert(0) += 1;
+            max_line = max_line.max(line);
+            max_start = max_start.max(start);
+            max_length = max_length.max(token.length);
+
+            if token.length == 0 {
+                errors.push(format!("token {idx}: length must be greater than 0"));
+            }
+            if token.token_type >= SEMANTIC_TOKEN_TYPE_COUNT {
+                errors.push(format!(
+                    "token {idx}: token_type {} exceeds legend size {}",
+                    token.token_type, SEMANTIC_TOKEN_TYPE_COUNT
+                ));
+            }
+            if token.token_modifiers_bitset & !allowed_modifier_bits != 0 {
+                errors.push(format!(
+                    "token {idx}: modifier bitset {} contains undeclared modifiers",
+                    token.token_modifiers_bitset
+                ));
+            }
+
+            let Some(line_len) = line_lengths.get(line as usize).copied() else {
+                errors.push(format!("token {idx}: line {line} is outside document"));
+                continue;
+            };
+            if start > line_len {
+                errors.push(format!(
+                    "token {idx}: start {start} exceeds line {line} length {line_len}"
+                ));
+                continue;
+            }
+            if start.saturating_add(token.length) > line_len {
+                errors.push(format!(
+                    "token {idx}: range {}..{} exceeds line {line} length {line_len}",
+                    start,
+                    start.saturating_add(token.length)
+                ));
+            }
+        }
+
+        SemanticTokenValidationSummary {
+            valid: errors.is_empty(),
+            token_count: tokens.len(),
+            errors,
+            token_type_counts,
+            modifier_bitset_counts,
+            max_line,
+            max_start,
+            max_length,
+        }
     }
 
     fn create_token(

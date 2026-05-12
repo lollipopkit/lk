@@ -82,7 +82,7 @@ mod tests {
             bytes: b"LKRB".to_vec(),
         }];
 
-        let plan = build_runtime_init_plan(module_ir, &search_paths, imports_json.as_deref(), &modules);
+        let plan = build_runtime_init_plan(module_ir, &search_paths, imports_json.as_deref(), None, &modules);
 
         assert!(
             plan.declarations

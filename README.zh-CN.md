@@ -45,6 +45,7 @@ assert_eq!(result, Val::Bool(true));
 - 编译为字节码：`lkr compile FILE` → `FILE.lkrb`
 - 编译为 LLVM IR：`lkr compile llvm FILE`（详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
 - 编译为 ELF 可执行文件：`lkr compile exe FILE`（需安装 LLVM 工具链与系统链接器，详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
+- 创建包并管理依赖：`lkr init`、`lkr pkg add`、`lkr pkg fetch`、`lkr pkg tree`（详见 [docs/packages.md](docs/packages.md)）
 
 注意：命令行参数路径必须为经净化的相对路径。
 

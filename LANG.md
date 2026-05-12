@@ -138,8 +138,15 @@ Imports
 
 - File import resolution and safety:
   - Paths are relative-only and sanitized: absolute paths and any `..` components are rejected.
-  - Resolution attempts, in order: `${MOD_NAME}.lkr`, then `${MOD_NAME}/mod.lkr` (relative to the current directory).
+  - Resolution attempts, in order: `${MOD_NAME}.lkr`, then `${MOD_NAME}/mod.lkr` (relative to the current file directory).
   - If you pass a quoted path with `.lkr` already (e.g., `"lib/foo.lkr"`), it must be relative and will be used directly if it exists.
+  - In a package, bare module imports first check stdlib modules, then `Lkr.toml` workspace/dependency packages. Package imports resolve to `src/mod.lkr` or `src/<package-name>.lkr`.
+
+Packages
+- `Lkr.toml` defines `[package]`, `[dependencies]`, `[workspace]`, and `[workspace.dependencies]`.
+- String dependencies default to GitHub, e.g. `util = "owner/repo"`.
+- `Lkr.lock` stores fetched git sources at concrete revisions.
+- See `docs/packages.md` for package manager commands and manifest examples.
 
 Builtins and Stdlib
 - Builtin globals: `print(fmt, ...args)`, `println(fmt, ...args)`, `panic([msg])`.
