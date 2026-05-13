@@ -118,6 +118,25 @@ impl OptLevelCli {
     }
 }
 
+#[cfg(feature = "llvm")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeProfile {
+    Release,
+}
+
+#[cfg(feature = "llvm")]
+impl RuntimeProfile {
+    fn use_release(self) -> bool {
+        matches!(self, RuntimeProfile::Release)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            RuntimeProfile::Release => "release",
+        }
+    }
+}
+
 impl From<EmitKind> for CompileMode {
     fn from(value: EmitKind) -> Self {
         match value {
@@ -460,6 +479,70 @@ fn resolve_llvm_tool(tool: &str, env_var: &str) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+#[cfg(feature = "llvm")]
+fn default_runtime_profile_for_exe() -> RuntimeProfile {
+    RuntimeProfile::Release
+}
+
+#[cfg(feature = "llvm")]
+fn default_executable_path(source: &Path, target_triple: Option<&str>) -> PathBuf {
+    match default_executable_extension(target_triple) {
+        Some(ext) => source.with_extension(ext),
+        None => source.with_extension(""),
+    }
+}
+
+#[cfg(feature = "llvm")]
+fn default_executable_extension(target_triple: Option<&str>) -> Option<&'static str> {
+    if let Some(triple) = target_triple {
+        if triple.contains("windows") {
+            return Some("exe");
+        }
+        if triple.contains("apple") {
+            return None;
+        }
+        if triple.contains("linux") || triple.contains("elf") {
+            return Some("elf");
+        }
+        return Some("out");
+    }
+
+    if cfg!(windows) {
+        Some("exe")
+    } else if cfg!(target_os = "macos") {
+        None
+    } else if cfg!(unix) {
+        Some("elf")
+    } else {
+        Some("out")
+    }
+}
+
+#[cfg(feature = "llvm")]
+fn should_strip_executable(target_triple: Option<&str>) -> bool {
+    target_triple.is_none()
+}
+
+#[cfg(feature = "llvm")]
+fn strip_executable_if_needed(exe_path: &Path, target_triple: Option<&str>) -> anyhow::Result<bool> {
+    if !should_strip_executable(target_triple) {
+        return Ok(false);
+    }
+
+    let strip = std::env::var("LK_STRIP").unwrap_or_else(|_| "strip".to_string());
+    let status = Command::new(&strip)
+        .arg(exe_path)
+        .status()
+        .with_context(|| format!("failed to spawn strip tool `{strip}` for {}", exe_path.display()))?;
+    if !status.success() {
+        anyhow::bail!(
+            "strip tool `{strip}` failed with status {status} for {}",
+            exe_path.display()
+        );
+    }
+    Ok(true)
 }
 
 #[cfg(feature = "llvm")]
@@ -943,13 +1026,14 @@ fn main() -> anyhow::Result<()> {
                             })?;
                         }
 
-                        let runtime_staticlibs = ensure_runtime_staticlib(
-                            target_triple.as_deref(),
-                            matches!(opt_level_cli, OptLevelCli::O3) && !skip_opt,
-                        )
-                        .with_context(|| "failed to produce LLVM runtime static library")?;
+                        let runtime_profile = default_runtime_profile_for_exe();
+                        let runtime_staticlibs =
+                            ensure_runtime_staticlib(target_triple.as_deref(), runtime_profile.use_release())
+                                .with_context(|| "failed to produce LLVM runtime static library")?;
 
-                        let exe_path = output.clone().unwrap_or_else(|| safe.with_extension("elf"));
+                        let exe_path = output
+                            .clone()
+                            .unwrap_or_else(|| default_executable_path(&safe, target_triple.as_deref()));
                         let cc = std::env::var("LK_CC")
                             .or_else(|_| std::env::var("CC"))
                             .unwrap_or_else(|_| "cc".to_string());
@@ -1003,6 +1087,7 @@ fn main() -> anyhow::Result<()> {
                         if !cc_status.success() {
                             anyhow::bail!("linker {} failed with status {}", cc, cc_status);
                         }
+                        let stripped = strip_executable_if_needed(&exe_path, target_triple.as_deref())?;
 
                         let backend_label = if bytecode_trampoline_c_src.is_some() {
                             "VM bytecode trampoline"
@@ -1010,9 +1095,11 @@ fn main() -> anyhow::Result<()> {
                             opt_level_cli.label()
                         };
                         eprintln!(
-                            "Emitted ELF executable to {} (backend {}, LLVM IR at {})",
+                            "Emitted native executable to {} (backend {}, runtime {}, {}, LLVM IR at {})",
                             exe_path.display(),
                             backend_label,
+                            runtime_profile.label(),
+                            if stripped { "stripped" } else { "not stripped" },
                             ll_path.display()
                         );
                         return Ok(());

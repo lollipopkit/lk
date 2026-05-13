@@ -2,7 +2,7 @@
 
 ## 背景
 
-LLVM 后端已经能够将大部分 VM 字节码指令翻译成 LLVM IR，并在 IR 中调用一组 `lk_rt_*` 的 runtime helper（例如 `lk_rt_intern_string`、`lk_rt_build_list`、`lk_rt_call` 等）。当我们使用 `llc` + `clang` 将生成的 `.ll` 链接成可执行文件时，这些符号缺失导致链接失败。
+LLVM 后端已经能够将大部分 VM 字节码指令翻译成 LLVM IR，并在 IR 中调用一组 `lk_rt_*` 的 runtime helper（例如 `lk_rt_intern_string`、`lk_rt_build_list`、`lk_rt_call` 等）。当我们使用 `llc` + `clang` 将生成的 `.ll` 链接成原生可执行文件时，这些符号需要由 runtime staticlib 提供。
 
 要实现端到端的 AOT 流程，需要为这些 helper 提供可链接的实现，并定义清晰的运行时数据约定，以便与现有的 `VmContext` 与 `Val` 类型互通。
 
@@ -13,7 +13,7 @@ LLVM 后端已经能够将大部分 VM 字节码指令翻译成 LLVM IR，并在
 3. **实现 helper**：以 `#[no_mangle] extern "C"` 暴露的函数为入口，内部桥接到现有解释器实现：
    - 字符串常量、全局读写、集合构造（list/map）、`Len`/`Index`、`Call` 等操作。
    - 函数调用 helper 需要能够调用闭包、Rust 原生函数等。
-4. **集成构建**：调整 `Cargo.toml` 导出 `cdylib` 或 `staticlib`，让 CLI 在 `compile exe` 时自动链接该库。
+4. **集成构建**：调整 `Cargo.toml` 导出 `staticlib`，让 CLI 在 `compile exe` 时自动链接 release runtime 库。
 5. **提供最小 `main` stub**：在链接路径中包含一个 `main`，负责初始化 runtime（例如构建 `VmContext`、安装 stdlib），然后调用 `lk_entry`。
 6. **验证**：
    - 添加新的集成测试，生成 `.ll`、`llc` 为 `.o`、`clang` 链接，与 runtime 库静态链接后运行产物。
@@ -47,7 +47,7 @@ LLVM 后端已经能够将大部分 VM 字节码指令翻译成 LLVM IR，并在
 2. `core/src/llvm/runtime.rs`：实现 helper，定义 value encoding。
 3. `core/src/lib.rs`：导出 runtime 模块。
 4. `Cargo.toml`：添加 `crate-type = ["rlib", "staticlib"]`；CLI 构建时链接。
-5. CLI：在 `compile exe` 时追加 runtime staticlib。
+5. CLI：在 `compile exe` 时追加 release runtime staticlib，并对本机目标链接产物执行 `strip`。
 6. 添加 `tests/llvm_link.rs` 集成测试，执行 end-to-end 构建。
 
 ## 未决问题
@@ -61,4 +61,3 @@ LLVM 后端已经能够将大部分 VM 字节码指令翻译成 LLVM IR，并在
 - 评估现有 `Val` 的 64-bit 编码需求；确定 int/bool/nil/pointer 区分方式。
 - 搭建最小 runtime shell，先实现 `intern_string` / `define_global` / `load_global`，验证链接错误消失。
 - 逐步补齐其他 helper，直到示例 `import.lk` 可直接运行。
-

@@ -11,3 +11,4 @@ vsc-ext/*/node_modules/
 vsc-ext/*/*.vsix
 
 lk-lsp-debug.log
+main
