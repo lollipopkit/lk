@@ -1,18 +1,18 @@
 [package]
-name = "lkr-lsp"
+name = "lk-lsp"
 version = "0.2.0"
 edition = "2021"
-description = "Language Server Protocol implementation for LKR"
+description = "Language Server Protocol implementation for LK"
 authors = ["lollipopkit <a@lpkt.cn>"]
 license = "Apache-2.0"
 
 [[bin]]
-name = "lkr-lsp"
+name = "lk-lsp"
 path = "src/main.rs"
 
 [dependencies]
-lkr-core = { path = "../core" }
-lkr-stdlib = { path = "../stdlib" }
+lk-core = { path = "../core" }
+lk-stdlib = { path = "../stdlib" }
 tower-lsp = "0.20"
 tokio = { version = "1.52", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }

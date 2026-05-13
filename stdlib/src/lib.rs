@@ -34,7 +34,7 @@ mod string_test;
 mod tcp_test;
 
 use anyhow::{Result, anyhow};
-use lkr_core::{
+use lk_core::{
     module::ModuleRegistry,
     rt, val,
     val::{ChannelValue, TaskValue, Val},
@@ -163,7 +163,7 @@ pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
     // - spawn(closure) -> Task
     // - chan(capacity[, type_str]) -> Channel
 
-    use val::Type as LkrType;
+    use val::Type as LkType;
 
     fn spawn_fn(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
@@ -216,8 +216,8 @@ pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
         };
         let inner_type = if args.len() >= 2 {
             match &args[1] {
-                Val::Str(s) => LkrType::parse(s.as_ref()).unwrap_or(LkrType::Nil),
-                Val::Nil => LkrType::Nil,
+                Val::Str(s) => LkType::parse(s.as_ref()).unwrap_or(LkType::Nil),
+                Val::Nil => LkType::Nil,
                 other => {
                     return Err(anyhow!(
                         "chan() type must be a string when provided, got {}",
@@ -226,7 +226,7 @@ pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
                 }
             }
         } else {
-            LkrType::Nil
+            LkType::Nil
         };
 
         let cap_opt = if capacity <= 0 { None } else { Some(capacity as usize) };
@@ -401,11 +401,11 @@ pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "Rust" fn lkr_stdlib_register_globals(registry: &mut ModuleRegistry) {
+pub extern "Rust" fn lk_stdlib_register_globals(registry: &mut ModuleRegistry) {
     register_stdlib_globals(registry);
 }
 
 #[unsafe(no_mangle)]
-pub extern "Rust" fn lkr_stdlib_register_modules(registry: &mut ModuleRegistry) -> Result<()> {
+pub extern "Rust" fn lk_stdlib_register_modules(registry: &mut ModuleRegistry) -> Result<()> {
     register_stdlib_modules(registry)
 }

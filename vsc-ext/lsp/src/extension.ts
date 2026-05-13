@@ -30,7 +30,7 @@ function perfLog(label: string, ms: number) {
   if (!perfTraceSteps) return;
   if (ms < perfThresholdMs) return;
   try {
-    log(`[LKR Perf] ${label} took ${ms.toFixed(1)} ms`);
+    log(`[LK Perf] ${label} took ${ms.toFixed(1)} ms`);
   } catch {
     // ignore logging failures
   }
@@ -115,67 +115,67 @@ const runtime = {
 };
 
 export function activate(context: vscode.ExtensionContext) {
-  outputChannel = vscode.window.createOutputChannel('LKR Language Server');
+  outputChannel = vscode.window.createOutputChannel('LK Language Server');
   context.subscriptions.push(outputChannel);
-  log('LKR extension is now active');
+  log('LK extension is now active');
 
   // Create status bar item
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.text = '$(sync~spin) LKR LSP: Starting...';
-  statusBarItem.tooltip = 'LKR Language Server is starting';
-  statusBarItem.command = 'lkr.showStatusBarMenu';
+  statusBarItem.text = '$(sync~spin) LK LSP: Starting...';
+  statusBarItem.tooltip = 'LK Language Server is starting';
+  statusBarItem.command = 'lk.showStatusBarMenu';
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
   // Register commands
-  const startCommand = vscode.commands.registerCommand('lkr.startServer', async () => {
+  const startCommand = vscode.commands.registerCommand('lk.startServer', async () => {
     if (!client) {
-      vscode.window.showErrorMessage('LKR Language Server client not initialized');
+      vscode.window.showErrorMessage('LK Language Server client not initialized');
       return;
     }
     try {
       updateStatusBar('starting');
-      log('Starting LKR Language Server from command');
+      log('Starting LK Language Server from command');
       await withTiming('command.startServer', () => client.start());
-      log('LKR Language Server started from command');
-      vscode.window.showInformationMessage('LKR Language Server started');
+      log('LK Language Server started from command');
+      vscode.window.showInformationMessage('LK Language Server started');
     } catch (e: any) {
-      logError('Failed to start LKR Language Server from command', e);
-      vscode.window.showErrorMessage('Failed to start LKR Language Server: ' + (e?.message || e));
+      logError('Failed to start LK Language Server from command', e);
+      vscode.window.showErrorMessage('Failed to start LK Language Server: ' + (e?.message || e));
     }
   });
 
-  const restartCommand = vscode.commands.registerCommand('lkr.restartServer', async () => {
+  const restartCommand = vscode.commands.registerCommand('lk.restartServer', async () => {
     if (client) {
-      log('Restarting LKR Language Server');
+      log('Restarting LK Language Server');
       updateStatusBar('starting');
       await client.stop();
       await withTiming('command.restartServer.start', () => client.start());
-      log('LKR Language Server restarted');
-      vscode.window.showInformationMessage('LKR Language Server restarted');
+      log('LK Language Server restarted');
+      vscode.window.showInformationMessage('LK Language Server restarted');
     }
   });
 
-  const statusBarMenuCommand = vscode.commands.registerCommand('lkr.showStatusBarMenu', async () => {
+  const statusBarMenuCommand = vscode.commands.registerCommand('lk.showStatusBarMenu', async () => {
     const items: vscode.QuickPickItem[] = [];
     
     if (isManuallyDisabled) {
       items.push({
-        label: '$(play) Enable LKR LSP',
+        label: '$(play) Enable LK LSP',
         description: 'Start the language server',
-        detail: 'Enable LKR Language Server'
+        detail: 'Enable LK Language Server'
       });
     } else {
       items.push({
-        label: '$(sync) Restart LKR LSP',
+        label: '$(sync) Restart LK LSP',
         description: 'Restart the language server',
-        detail: 'Restart LKR Language Server'
+        detail: 'Restart LK Language Server'
       });
       
       items.push({
-        label: '$(circle-slash) Disable LKR LSP',
+        label: '$(circle-slash) Disable LK LSP',
         description: 'Temporarily disable (memory state)',
-        detail: 'Disable LKR Language Server temporarily'
+        detail: 'Disable LK Language Server temporarily'
       });
 
       // Inline menu toggles for inlay hints
@@ -197,50 +197,50 @@ export function activate(context: vscode.ExtensionContext) {
     }
     
     const selected = await vscode.window.showQuickPick(items, {
-      placeHolder: 'LKR Language Server Actions',
-      title: 'LKR Language Server'
+      placeHolder: 'LK Language Server Actions',
+      title: 'LK Language Server'
     });
     
     if (!selected) return;
     
     if (selected.label.includes('Enable')) {
       isManuallyDisabled = false;
-      await vscode.commands.executeCommand('lkr.startServer');
+      await vscode.commands.executeCommand('lk.startServer');
     } else if (selected.label.includes('Restart')) {
-      await vscode.commands.executeCommand('lkr.restartServer');
+      await vscode.commands.executeCommand('lk.restartServer');
     } else if (selected.label.includes('Disable')) {
       isManuallyDisabled = true;
       if (client) {
         await client.stop();
       }
       updateStatusBar('disabled');
-      vscode.window.showInformationMessage('LKR Language Server disabled temporarily');
+      vscode.window.showInformationMessage('LK Language Server disabled temporarily');
     } else if (selected.label.includes('Toggle Inlay Hints')) {
       runtime.inlayHintsEnabled = !runtime.inlayHintsEnabled;
-      await vscode.workspace.getConfiguration('lkr.lsp').update('inlayHints.enabled', runtime.inlayHintsEnabled, vscode.ConfigurationTarget.Workspace);
-      vscode.window.showInformationMessage(`LKR Inlay Hints ${runtime.inlayHintsEnabled ? 'enabled' : 'disabled'}`);
+      await vscode.workspace.getConfiguration('lk.lsp').update('inlayHints.enabled', runtime.inlayHintsEnabled, vscode.ConfigurationTarget.Workspace);
+      vscode.window.showInformationMessage(`LK Inlay Hints ${runtime.inlayHintsEnabled ? 'enabled' : 'disabled'}`);
       // Trigger refresh
       await vscode.commands.executeCommand('editor.action.inlineHints.refresh');
     } else if (selected.label.includes('Parameter Hints')) {
       runtime.inlayHintsShowParameters = !runtime.inlayHintsShowParameters;
-      await vscode.workspace.getConfiguration('lkr.lsp').update('inlayHints.parameters.enabled', runtime.inlayHintsShowParameters, vscode.ConfigurationTarget.Workspace);
-      vscode.window.showInformationMessage(`LKR Parameter Hints ${runtime.inlayHintsShowParameters ? 'enabled' : 'disabled'}`);
+      await vscode.workspace.getConfiguration('lk.lsp').update('inlayHints.parameters.enabled', runtime.inlayHintsShowParameters, vscode.ConfigurationTarget.Workspace);
+      vscode.window.showInformationMessage(`LK Parameter Hints ${runtime.inlayHintsShowParameters ? 'enabled' : 'disabled'}`);
       await vscode.commands.executeCommand('editor.action.inlineHints.refresh');
     } else if (selected.label.includes('Type Hints')) {
       runtime.inlayHintsShowTypes = !runtime.inlayHintsShowTypes;
-      await vscode.workspace.getConfiguration('lkr.lsp').update('inlayHints.types.enabled', runtime.inlayHintsShowTypes, vscode.ConfigurationTarget.Workspace);
-      vscode.window.showInformationMessage(`LKR Type Hints ${runtime.inlayHintsShowTypes ? 'enabled' : 'disabled'}`);
+      await vscode.workspace.getConfiguration('lk.lsp').update('inlayHints.types.enabled', runtime.inlayHintsShowTypes, vscode.ConfigurationTarget.Workspace);
+      vscode.window.showInformationMessage(`LK Type Hints ${runtime.inlayHintsShowTypes ? 'enabled' : 'disabled'}`);
       await vscode.commands.executeCommand('editor.action.inlineHints.refresh');
     }
   });
 
   context.subscriptions.push(startCommand, restartCommand, statusBarMenuCommand);
 
-  // Analyze current file via lkr-lsp --analyze (uses relative, sanitized path)
-  const analyzeCommand = vscode.commands.registerCommand('lkr.analyzeCurrentFile', async () => {
+  // Analyze current file via lk-lsp --analyze (uses relative, sanitized path)
+  const analyzeCommand = vscode.commands.registerCommand('lk.analyzeCurrentFile', async () => {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'lkr') {
-      vscode.window.showWarningMessage('Open a LKR file to analyze.');
+    if (!editor || editor.document.languageId !== 'lk') {
+      vscode.window.showWarningMessage('Open a LK file to analyze.');
       return;
     }
     const ws = vscode.workspace.workspaceFolders?.[0];
@@ -262,12 +262,12 @@ export function activate(context: vscode.ExtensionContext) {
     const pick = await vscode.window.showQuickPick([
       { label: 'Full JSON', description: 'Show full analysis output' },
       { label: 'Errors Only', description: 'List only errors' }
-    ], { title: 'LKR Analyze Current File' });
+    ], { title: 'LK Analyze Current File' });
     if (!pick) return;
 
     const serverPath = getServerPath();
     if (!serverPath) {
-      vscode.window.showErrorMessage('LKR LSP server binary not found. Build the project or configure lkr.lsp.serverPath.');
+      vscode.window.showErrorMessage('LK LSP server binary not found. Build the project or configure lk.lsp.serverPath.');
       return;
     }
 
@@ -275,7 +275,7 @@ export function activate(context: vscode.ExtensionContext) {
     if (pick.label.startsWith('Errors')) args.push('--errors-only');
     args.push(rel);
 
-    const out = vscode.window.createOutputChannel('LKR Analysis');
+    const out = vscode.window.createOutputChannel('LK Analysis');
     out.clear();
     out.show(true);
     out.appendLine(`Running: ${serverPath} ${args.join(' ')}`);
@@ -299,7 +299,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(analyzeCommand);
 
   // Check if LSP is enabled
-  const config = vscode.workspace.getConfiguration('lkr.lsp');
+  const config = vscode.workspace.getConfiguration('lk.lsp');
   // Initialize perf tracing settings early
   perfTraceSteps = config.get<boolean>('performance.traceSteps', false);
   perfThresholdMs = Math.max(0, Number(config.get<number>('performance.traceThresholdMs', 0)) || 0);
@@ -317,23 +317,23 @@ export function activate(context: vscode.ExtensionContext) {
   runtime.checkingDelayMs = Math.max(0, Number(config.get<number>('ui.checkingDelayMs', 120)) || 120);
   
   if (!lspEnabled || isManuallyDisabled) {
-    log('LKR LSP is disabled in configuration or manually disabled');
+    log('LK LSP is disabled in configuration or manually disabled');
     updateStatusBar('disabled');
     return;
   }
 
-  // Get the path to the LKR LSP server
+  // Get the path to the LK LSP server
   const customServerPath = config.get<string>('serverPath', '');
   const serverPath = withTiming('resolveServerPath', () => (customServerPath ? expandHome(customServerPath) : getServerPath()));
 
-  log('Looking for LKR LSP server');
-  log(`Server path resolved to: ${serverPath ?? 'PATH: lkr-lsp'}`);
+  log('Looking for LK LSP server');
+  log(`Server path resolved to: ${serverPath ?? 'PATH: lk-lsp'}`);
 
   // If the server path is not found, show an error and return
   if (!serverPath) {
     updateStatusBar('error', 'Server not found');
     vscode.window.showErrorMessage(
-      'LKR LSP server not found. Please build the LKR project first or configure a custom server path.'
+      'LK LSP server not found. Please build the LK project first or configure a custom server path.'
     );
     return;
   }
@@ -577,8 +577,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // React to configuration changes
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-    if (!e.affectsConfiguration('lkr.lsp')) return;
-    const cfg = vscode.workspace.getConfiguration('lkr.lsp');
+    if (!e.affectsConfiguration('lk.lsp')) return;
+    const cfg = vscode.workspace.getConfiguration('lk.lsp');
     runtime.semanticTokensEnabled = cfg.get<boolean>('semanticTokens.enabled', true);
     runtime.semanticTokensThrottleMs = Math.max(0, Number(cfg.get<number>('semanticTokens.throttleMs', 120)) || 0);
     runtime.semanticTokensMode = (cfg.get<string>('semanticTokens.mode', 'auto') as any) || 'auto';
@@ -604,18 +604,18 @@ export function activate(context: vscode.ExtensionContext) {
 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
-      { scheme: 'file', language: 'lkr' },
-      { scheme: 'untitled', language: 'lkr' },
+      { scheme: 'file', language: 'lk' },
+      { scheme: 'untitled', language: 'lk' },
     ],
     synchronize: {
-      configurationSection: 'lkr'
+      configurationSection: 'lk'
     },
     // Initialize options for semantic highlighting
     initializationOptions: {
       // Enable semantic highlighting
       semanticHighlighting: runtime.semanticTokensEnabled,
-      // Custom configuration for LKR
-      lkr: {
+      // Custom configuration for LK
+      lk: {
         enableSemanticTokens: runtime.semanticTokensEnabled
       }
     },
@@ -627,14 +627,14 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   client = withTiming('createLanguageClient', () => new LanguageClient(
-    'lkr',
-    'LKR Language Server',
+    'lk',
+    'LK Language Server',
     serverOptions,
     clientOptions
   ));
 
   if (isVerbose) {
-    log(`Starting LKR Language Server: ${serverPath}`);
+    log(`Starting LK Language Server: ${serverPath}`);
   }
   
   // Add error handling for the client itself
@@ -675,7 +675,7 @@ export function activate(context: vscode.ExtensionContext) {
         startTimeout = undefined;
       }
       if (isVerbose && autoStart) {
-        log('LKR Language Server started successfully');
+        log('LK Language Server started successfully');
         // Check if semantic highlighting is enabled
         const editorConfig = vscode.workspace.getConfiguration('editor');
         const semanticHighlighting = editorConfig.get('semanticHighlighting.enabled');
@@ -688,8 +688,8 @@ export function activate(context: vscode.ExtensionContext) {
         clearTimeout(startTimeout);
         startTimeout = undefined;
       }
-      logError('Failed to start LKR Language Server', error);
-      vscode.window.showErrorMessage('Failed to start LKR Language Server: ' + error.message);
+      logError('Failed to start LK Language Server', error);
+      vscode.window.showErrorMessage('Failed to start LK Language Server: ' + error.message);
       updateStatusBar('error', 'Start failed');
       
       // Try to stop the client if it's in a bad state
@@ -700,21 +700,21 @@ export function activate(context: vscode.ExtensionContext) {
       }
     });
   
-  // Mark as checking when LKR documents change; diagnostics will clear it.
+  // Mark as checking when LK documents change; diagnostics will clear it.
   // Save alone does not necessarily produce a server request, so it must not
   // create a long-lived checking state.
   context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => {
-    if (e.document.languageId === 'lkr') {
+    if (e.document.languageId === 'lk') {
       nudgeChecking();
     }
   }));
   // React to configuration changes at runtime
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
     if (
-      e.affectsConfiguration('lkr.lsp.semanticTokens.enabled') ||
-      e.affectsConfiguration('lkr.lsp.semanticTokens.throttleMs')
+      e.affectsConfiguration('lk.lsp.semanticTokens.enabled') ||
+      e.affectsConfiguration('lk.lsp.semanticTokens.throttleMs')
     ) {
-      const cfg = vscode.workspace.getConfiguration('lkr.lsp');
+      const cfg = vscode.workspace.getConfiguration('lk.lsp');
       settings.semanticTokensEnabled = cfg.get<boolean>('semanticTokens.enabled', true);
       settings.throttleMs = Math.max(0, Number(cfg.get<number>('semanticTokens.throttleMs', 40)) || 0);
       if (isVerbose) log(`Updated semantic tokens settings ${JSON.stringify(settings)}`);
@@ -723,21 +723,21 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 function getServerPath(): string | undefined {
-  // Try to find the lkr-lsp executable in different locations
+  // Try to find the lk-lsp executable in different locations
   const exe = process.platform === 'win32' ? '.exe' : '';
   const possiblePaths = [
     // When developing inside repo: extension is at vsc-ext/lsp/out
     // Look for cargo build outputs at repo root target/{debug,release}
-    path.join(__dirname, '..', '..', '..', 'target', 'debug', `lkr-lsp${exe}`),
-    path.join(__dirname, '..', '..', '..', 'target', 'release', `lkr-lsp${exe}`),
+    path.join(__dirname, '..', '..', '..', 'target', 'debug', `lk-lsp${exe}`),
+    path.join(__dirname, '..', '..', '..', 'target', 'release', `lk-lsp${exe}`),
     // Fallbacks that may exist depending on packaging layout
-    path.join(__dirname, '..', '..', 'target', 'debug', `lkr-lsp${exe}`),
-    path.join(__dirname, '..', '..', 'target', 'release', `lkr-lsp${exe}`),
+    path.join(__dirname, '..', '..', 'target', 'debug', `lk-lsp${exe}`),
+    path.join(__dirname, '..', '..', 'target', 'release', `lk-lsp${exe}`),
     // Common user install locations
-    expandHome(`~/.cargo/bin/lkr-lsp${exe}`),
+    expandHome(`~/.cargo/bin/lk-lsp${exe}`),
     // Homebrew on macOS
-    '/opt/homebrew/bin/lkr-lsp',
-    '/usr/local/bin/lkr-lsp',
+    '/opt/homebrew/bin/lk-lsp',
+    '/usr/local/bin/lk-lsp',
   ];
 
   for (const possiblePath of possiblePaths) {
@@ -757,10 +757,10 @@ function getServerPath(): string | undefined {
   }
 
   // Fall back to PATH resolution by returning command name.
-  // This allows the system to find lkr-lsp if it's on the PATH.
+  // This allows the system to find lk-lsp if it's on the PATH.
   // The vscode-languageclient will use child_process.spawn which
   // resolves from PATH automatically.
-  return process.platform === 'win32' ? 'lkr-lsp.exe' : 'lkr-lsp';
+  return process.platform === 'win32' ? 'lk-lsp.exe' : 'lk-lsp';
 }
 
 function expandHome(p: string): string {
@@ -779,32 +779,32 @@ function updateStatusBar(state: string, customMessage?: string) {
   
   switch (state) {
     case 'starting':
-      statusBarItem.text = '$(sync~spin) LKR LSP: Starting...';
-      statusBarItem.tooltip = 'LKR Language Server is starting';
+      statusBarItem.text = '$(sync~spin) LK LSP: Starting...';
+      statusBarItem.tooltip = 'LK Language Server is starting';
       break;
     case 'checking':
-      statusBarItem.text = '$(sync~spin) LKR LSP: Checking...';
-      statusBarItem.tooltip = 'LKR Language Server is analyzing/validating';
+      statusBarItem.text = '$(sync~spin) LK LSP: Checking...';
+      statusBarItem.tooltip = 'LK Language Server is analyzing/validating';
       break;
     case 'running':
-      statusBarItem.text = '$(check) LKR LSP: Running';
-      statusBarItem.tooltip = 'LKR Language Server is running';
+      statusBarItem.text = '$(check) LK LSP: Running';
+      statusBarItem.tooltip = 'LK Language Server is running';
       break;
     case 'stopped':
-      statusBarItem.text = '$(circle-slash) LKR LSP: Stopped';
-      statusBarItem.tooltip = 'LKR Language Server is stopped';
+      statusBarItem.text = '$(circle-slash) LK LSP: Stopped';
+      statusBarItem.tooltip = 'LK Language Server is stopped';
       break;
     case 'error':
-      statusBarItem.text = '$(error) LKR LSP: Error';
-      statusBarItem.tooltip = customMessage ? `LKR Language Server error: ${customMessage}` : 'LKR Language Server error';
+      statusBarItem.text = '$(error) LK LSP: Error';
+      statusBarItem.tooltip = customMessage ? `LK Language Server error: ${customMessage}` : 'LK Language Server error';
       break;
     case 'disabled':
-      statusBarItem.text = '$(circle-slash) LKR LSP: Disabled';
-      statusBarItem.tooltip = isManuallyDisabled ? 'LKR Language Server is temporarily disabled (click to enable)' : 'LKR Language Server is disabled in settings';
+      statusBarItem.text = '$(circle-slash) LK LSP: Disabled';
+      statusBarItem.tooltip = isManuallyDisabled ? 'LK Language Server is temporarily disabled (click to enable)' : 'LK Language Server is disabled in settings';
       break;
     default:
-      statusBarItem.text = '$(question) LKR LSP: Unknown';
-      statusBarItem.tooltip = 'LKR Language Server status unknown';
+      statusBarItem.text = '$(question) LK LSP: Unknown';
+      statusBarItem.tooltip = 'LK Language Server status unknown';
   }
 }
 

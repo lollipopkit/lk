@@ -48,7 +48,7 @@ pub struct LlvmBackendOptions {
 impl Default for LlvmBackendOptions {
     fn default() -> Self {
         Self {
-            module_name: "lkr_module".to_string(),
+            module_name: "lk_module".to_string(),
             target_triple: None,
             run_optimizations: true,
             opt_level: OptLevel::default(),

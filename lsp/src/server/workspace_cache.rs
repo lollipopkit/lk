@@ -13,8 +13,8 @@ use dashmap::DashMap;
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, Position, Range, SemanticToken, Url};
 use tracing::{debug, warn};
 
-use crate::analyzer::{AnalysisResult, LkrAnalyzer};
-use lkr_core::{package::PackageGraph, token::Tokenizer};
+use crate::analyzer::{AnalysisResult, LkAnalyzer};
+use lk_core::{package::PackageGraph, token::Tokenizer};
 
 use super::{inlay_hints::compute_inlay_hints_with_margin, utils::compute_content_hash};
 
@@ -91,10 +91,10 @@ impl WorkspaceCache {
 
         self.refresh_package_context(&root);
 
-        let files = collect_lkr_files(&root, MAX_WORKSPACE_FILES);
+        let files = collect_lk_files(&root, MAX_WORKSPACE_FILES);
         let file_count = files.len();
         let mut indexed = 0usize;
-        let mut analyzer = LkrAnalyzer::new();
+        let mut analyzer = LkAnalyzer::new();
         let (modules, missing) = self
             .package_context
             .lock()
@@ -159,14 +159,14 @@ impl WorkspaceCache {
                     operation = "workspace_cache.package_graph",
                     root = %root.display(),
                     error = %err,
-                    "failed to cache LKR package graph"
+                    "failed to cache LK package graph"
                 );
             }
         }
     }
 }
 
-pub(crate) fn build_file_cache(analyzer: &mut LkrAnalyzer, content: &str) -> WorkspaceFileCache {
+pub(crate) fn build_file_cache(analyzer: &mut LkAnalyzer, content: &str) -> WorkspaceFileCache {
     let analysis = Arc::new(analyzer.analyze(content));
     let semantic_tokens = Arc::new(analyzer.generate_semantic_tokens(content));
     let inlay_hints = Arc::new(compute_full_inlay_hints(content));
@@ -203,7 +203,7 @@ fn compute_full_inlay_hints(content: &str) -> Vec<InlayHint> {
     let range = full_range(content);
     let mut hints = compute_inlay_hints_with_margin(content, range, 0);
     if let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(content) {
-        let analyzer = LkrAnalyzer::new_light();
+        let analyzer = LkAnalyzer::new_light();
         hints.extend(analyzer.compute_type_inlay_hints_from_tokens(&tokens, &spans, range));
         hints.extend(analyzer.compute_define_type_hints_from_tokens(&tokens, &spans, range));
         hints.extend(analyzer.compute_function_return_type_hints_from_tokens(&tokens, &spans, range));
@@ -234,13 +234,13 @@ fn position_in_range(position: Position, range: Range) -> bool {
     true
 }
 
-fn collect_lkr_files(root: &Path, limit: usize) -> Vec<PathBuf> {
+fn collect_lk_files(root: &Path, limit: usize) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    collect_lkr_files_inner(root, limit, &mut out);
+    collect_lk_files_inner(root, limit, &mut out);
     out
 }
 
-fn collect_lkr_files_inner(dir: &Path, limit: usize, out: &mut Vec<PathBuf>) {
+fn collect_lk_files_inner(dir: &Path, limit: usize, out: &mut Vec<PathBuf>) {
     if out.len() >= limit || should_skip_dir(dir) {
         return;
     }
@@ -253,8 +253,8 @@ fn collect_lkr_files_inner(dir: &Path, limit: usize, out: &mut Vec<PathBuf>) {
         }
         let path = entry.path();
         if path.is_dir() {
-            collect_lkr_files_inner(&path, limit, out);
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("lkr") {
+            collect_lk_files_inner(&path, limit, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("lk") {
             out.push(path);
         }
     }
@@ -313,9 +313,9 @@ mod tests {
 
     #[test]
     fn preloads_example_workspace_cache_quickly() {
-        let root = repo_root().join("examples/lkr-example-workspace");
-        let main_path = root.join("apps/demo/src/main.lkr");
-        let content = fs::read_to_string(&main_path).expect("read example workspace main.lkr");
+        let root = repo_root().join("examples/lk-example-workspace");
+        let main_path = root.join("apps/demo/src/main.lk");
+        let content = fs::read_to_string(&main_path).expect("read example workspace main.lk");
         let uri = Url::from_file_path(&main_path).expect("example main uri");
         let cache = WorkspaceCache::default();
         cache.set_root(Some(root));

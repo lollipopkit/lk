@@ -54,7 +54,7 @@ impl LlvmBackend {
 
     pub fn compile_program(&self, program: &Program) -> Result<LlvmModuleArtifact> {
         let lowered = compile_program(program);
-        self.compile_function_with_name(&lowered, "lkr_entry")
+        self.compile_function_with_name(&lowered, "lk_entry")
     }
 
     pub fn compile_function_with_name(&self, function: &Function, name: &str) -> Result<LlvmModuleArtifact> {
@@ -1343,39 +1343,39 @@ enum RuntimeHelper {
 impl RuntimeHelper {
     fn symbol(self) -> &'static str {
         match self {
-            RuntimeHelper::InternString => "lkr_rt_intern_string",
-            RuntimeHelper::ToString => "lkr_rt_to_string",
-            RuntimeHelper::LoadGlobal => "lkr_rt_load_global",
-            RuntimeHelper::DefineGlobal => "lkr_rt_define_global",
-            RuntimeHelper::BuildList => "lkr_rt_build_list",
-            RuntimeHelper::BuildMap => "lkr_rt_build_map",
-            RuntimeHelper::Call => "lkr_rt_call",
-            RuntimeHelper::Access => "lkr_rt_access",
-            RuntimeHelper::Index => "lkr_rt_index",
-            RuntimeHelper::In => "lkr_rt_in",
-            RuntimeHelper::Len => "lkr_rt_len",
-            RuntimeHelper::ListSlice => "lkr_rt_list_slice",
-            RuntimeHelper::ToIter => "lkr_rt_to_iter",
-            RuntimeHelper::AddValue => "lkr_rt_add",
+            RuntimeHelper::InternString => "lk_rt_intern_string",
+            RuntimeHelper::ToString => "lk_rt_to_string",
+            RuntimeHelper::LoadGlobal => "lk_rt_load_global",
+            RuntimeHelper::DefineGlobal => "lk_rt_define_global",
+            RuntimeHelper::BuildList => "lk_rt_build_list",
+            RuntimeHelper::BuildMap => "lk_rt_build_map",
+            RuntimeHelper::Call => "lk_rt_call",
+            RuntimeHelper::Access => "lk_rt_access",
+            RuntimeHelper::Index => "lk_rt_index",
+            RuntimeHelper::In => "lk_rt_in",
+            RuntimeHelper::Len => "lk_rt_len",
+            RuntimeHelper::ListSlice => "lk_rt_list_slice",
+            RuntimeHelper::ToIter => "lk_rt_to_iter",
+            RuntimeHelper::AddValue => "lk_rt_add",
         }
     }
 
     fn declaration(self) -> &'static str {
         match self {
-            RuntimeHelper::InternString => "declare i64 @lkr_rt_intern_string(i8*, i64)",
-            RuntimeHelper::ToString => "declare i64 @lkr_rt_to_string(i64)",
-            RuntimeHelper::LoadGlobal => "declare i64 @lkr_rt_load_global(i64)",
-            RuntimeHelper::DefineGlobal => "declare void @lkr_rt_define_global(i64, i64)",
-            RuntimeHelper::BuildList => "declare i64 @lkr_rt_build_list(i64*, i64)",
-            RuntimeHelper::Call => "declare i64 @lkr_rt_call(i64, i64*, i64, i64)",
-            RuntimeHelper::BuildMap => "declare i64 @lkr_rt_build_map(i64*, i64)",
-            RuntimeHelper::Access => "declare i64 @lkr_rt_access(i64, i64)",
-            RuntimeHelper::Index => "declare i64 @lkr_rt_index(i64, i64)",
-            RuntimeHelper::In => "declare i64 @lkr_rt_in(i64, i64)",
-            RuntimeHelper::Len => "declare i64 @lkr_rt_len(i64)",
-            RuntimeHelper::ListSlice => "declare i64 @lkr_rt_list_slice(i64, i64)",
-            RuntimeHelper::ToIter => "declare i64 @lkr_rt_to_iter(i64)",
-            RuntimeHelper::AddValue => "declare i64 @lkr_rt_add(i64, i64)",
+            RuntimeHelper::InternString => "declare i64 @lk_rt_intern_string(i8*, i64)",
+            RuntimeHelper::ToString => "declare i64 @lk_rt_to_string(i64)",
+            RuntimeHelper::LoadGlobal => "declare i64 @lk_rt_load_global(i64)",
+            RuntimeHelper::DefineGlobal => "declare void @lk_rt_define_global(i64, i64)",
+            RuntimeHelper::BuildList => "declare i64 @lk_rt_build_list(i64*, i64)",
+            RuntimeHelper::Call => "declare i64 @lk_rt_call(i64, i64*, i64, i64)",
+            RuntimeHelper::BuildMap => "declare i64 @lk_rt_build_map(i64*, i64)",
+            RuntimeHelper::Access => "declare i64 @lk_rt_access(i64, i64)",
+            RuntimeHelper::Index => "declare i64 @lk_rt_index(i64, i64)",
+            RuntimeHelper::In => "declare i64 @lk_rt_in(i64, i64)",
+            RuntimeHelper::Len => "declare i64 @lk_rt_len(i64)",
+            RuntimeHelper::ListSlice => "declare i64 @lk_rt_list_slice(i64, i64)",
+            RuntimeHelper::ToIter => "declare i64 @lk_rt_to_iter(i64)",
+            RuntimeHelper::AddValue => "declare i64 @lk_rt_add(i64, i64)",
         }
     }
 }

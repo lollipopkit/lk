@@ -189,7 +189,7 @@ impl RegionAllocator {
         let prev = self.heap_fallback_bytes.fetch_add(len as u64, Ordering::Relaxed);
         let total = prev + len as u64;
         trace!(
-            target: "lkr::vm::alloc",
+            target: "lk::vm::alloc",
             bytes = len,
             total_bytes = total,
             "region_allocator.heap_alloc"

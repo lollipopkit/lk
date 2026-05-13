@@ -13,7 +13,7 @@ pub(crate) use guards::with_current_vm;
 #[cfg(test)]
 pub(crate) use guards::with_current_vm_ctx;
 
-/// LKR's register-based bytecode virtual machine.
+/// LK's register-based bytecode virtual machine.
 ///
 /// ## Architecture
 ///

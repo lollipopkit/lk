@@ -1,6 +1,6 @@
 ## Language Overview
 
-This document describes the LKR language as implemented in this repository (parser, evaluator, statements, types, and standard library wiring).
+This document describes the LK language as implemented in this repository (parser, evaluator, statements, types, and standard library wiring).
 
 Comments
 - Line comments: `// ...`
@@ -130,22 +130,22 @@ Functions
 Imports
 - Forms:
   - `import math;` — stdlib module as a namespace
-  - `import "path/to/file.lkr";` — file module as a namespace (name is the file stem)
+  - `import "path/to/file.lk";` — file module as a namespace (name is the file stem)
   - `import { abs, sqrt } from math;` — selected items
-  - `import { f as g } from "m.lkr";` — with alias
+  - `import { f as g } from "m.lk";` — with alias
   - `import * as m from math;` — namespace alias
   - `import math as m;` — module alias
 
 - File import resolution and safety:
   - Paths are relative-only and sanitized: absolute paths and any `..` components are rejected.
-  - Resolution attempts, in order: `${MOD_NAME}.lkr`, then `${MOD_NAME}/mod.lkr` (relative to the current file directory).
-  - If you pass a quoted path with `.lkr` already (e.g., `"lib/foo.lkr"`), it must be relative and will be used directly if it exists.
-  - In a package, bare module imports first check stdlib modules, then `Lkr.toml` workspace/dependency packages. Package imports resolve to `src/mod.lkr` or `src/<package-name>.lkr`.
+  - Resolution attempts, in order: `${MOD_NAME}.lk`, then `${MOD_NAME}/mod.lk` (relative to the current file directory).
+  - If you pass a quoted path with `.lk` already (e.g., `"lib/foo.lk"`), it must be relative and will be used directly if it exists.
+  - In a package, bare module imports first check stdlib modules, then `Lk.toml` workspace/dependency packages. Package imports resolve to `src/mod.lk` or `src/<package-name>.lk`.
 
 Packages
-- `Lkr.toml` defines `[package]`, `[dependencies]`, `[workspace]`, and `[workspace.dependencies]`.
+- `Lk.toml` defines `[package]`, `[dependencies]`, `[workspace]`, and `[workspace.dependencies]`.
 - String dependencies default to GitHub, e.g. `util = "owner/repo"`.
-- `Lkr.lock` stores fetched git sources at concrete revisions.
+- `Lk.lock` stores fetched git sources at concrete revisions.
 - See `docs/packages.md` for package manager commands and manifest examples.
 
 Builtins and Stdlib
@@ -258,9 +258,9 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ```
 
 ## Notes for CLI usage
-- Run REPL: `lkr`
-- Execute a file (statements): `lkr FILE`
-- Compile to bytecode: `lkr compile FILE` → `FILE.lkrb`
+- Run REPL: `lk`
+- Execute a file (statements): `lk FILE`
+- Compile to bytecode: `lk compile FILE` → `FILE.lkb`
 - Only relative, sanitized paths are allowed
 - CLI prints a result only when it is not `nil`
 

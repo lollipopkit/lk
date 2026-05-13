@@ -1,7 +1,7 @@
 English | [简体中文](README.zh-CN.md)
 
 <div align="center">
-    <h2>LKR</h2>
+    <h2>LK</h2>
     <h5>a Rust-like scripting language written in Rust</h5>
 </div>
 
@@ -9,7 +9,7 @@ English | [简体中文](README.zh-CN.md)
 
 ### Example
 
-```lkr
+```lk
 fn draw_rect(x: Int, y: Int, {width: Int, height: Int? = 100}) -> Int {
     let h = height ?? 0;
     return width * h;
@@ -32,7 +32,7 @@ Outputs `200`. More language details: [LANG.md](LANG.md).
 #### Integration (library)
 
 ```rust
-use lkr_core::{expr::Expr, vm::VmContext, val::Val};
+use lk_core::{expr::Expr, vm::VmContext, val::Val};
 
 // Parse expr
 let expr_src = "data.req.user.name in 'foobar' && data.files.0.published == true";
@@ -53,13 +53,13 @@ assert_eq!(result, Val::Bool(true));
 
 #### CLI
 
-- Run REPL: `lkr`
-- Execute a file: `lkr FILE` (auto-detects `.lkr` source vs `.lkrb` bytecode)
-- Type-check without executing: `lkr check FILE` (reports compile-time diagnostics)
-- Compile to bytecode: `lkr compile FILE` → `FILE.lkrb` (see [docs/lkrb.md](docs/lkrb.md) for bundling details)
-- Compile to LLVM IR: `lkr compile llvm FILE` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
-- Compile to ELF executable: `lkr compile exe FILE` (requires LLVM tools + system linker; see [docs/llvm/backend.md](docs/llvm/backend.md))
-- Create packages and manage dependencies: `lkr init`, `lkr pkg add`, `lkr pkg fetch`, `lkr pkg tree` (see [docs/packages.md](docs/packages.md))
+- Run REPL: `lk`
+- Execute a file: `lk FILE` (auto-detects `.lk` source vs `.lkb` bytecode)
+- Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
+- Compile to bytecode: `lk compile FILE` → `FILE.lkb` (see [docs/lkb.md](docs/lkb.md) for bundling details)
+- Compile to LLVM IR: `lk compile llvm FILE` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
+- Compile to ELF executable: `lk compile exe FILE` (requires LLVM tools + system linker; see [docs/llvm/backend.md](docs/llvm/backend.md))
+- Create packages and manage dependencies: `lk init`, `lk pkg add`, `lk pkg fetch`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
 
 Note: command-line paths must be relative and sanitized.
 

@@ -1135,7 +1135,7 @@ impl FunctionBuilder {
             }
             Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {}
             Stmt::Trait { name, methods } => {
-                let builtin_idx = self.k(Val::Str("__lkr_register_trait".into()));
+                let builtin_idx = self.k(Val::Str("__lk_register_trait".into()));
                 let reg_fn = self.alloc();
                 self.emit(Op::LoadGlobal(reg_fn, builtin_idx));
 
@@ -1167,7 +1167,7 @@ impl FunctionBuilder {
                 target_type,
                 methods,
             } => {
-                let builtin_idx = self.k(Val::Str("__lkr_register_trait_impl".into()));
+                let builtin_idx = self.k(Val::Str("__lk_register_trait_impl".into()));
                 let reg_fn = self.alloc();
                 self.emit(Op::LoadGlobal(reg_fn, builtin_idx));
 

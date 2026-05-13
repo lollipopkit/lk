@@ -4,10 +4,10 @@ This directory houses the checkpoint for **M1 – 原型验证**. Run the helper
 refresh the register-based VM baseline numbers:
 
 ```bash
-cargo run -p lkr-core --bin m1_bench_report
+cargo run -p lk-core --bin m1_bench_report
 ```
 
-The command will invoke `cargo bench -p lkr-core --bench scripts_bench` and emit an
+The command will invoke `cargo bench -p lk-core --bench scripts_bench` and emit an
 aggregated CSV at `docs/perf/m1/latest.csv`. Use `--skip-run` if you only want to
 re-summarise existing Criterion outputs.
 

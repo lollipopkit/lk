@@ -426,33 +426,33 @@ impl VmContext {
     }
 
     fn install_core_vm_builtins(&mut self) {
-        if !self.globals.contains_key("__lkr_register_trait") {
+        if !self.globals.contains_key("__lk_register_trait") {
             self.globals.insert(
-                "__lkr_register_trait".to_string(),
+                "__lk_register_trait".to_string(),
                 Val::RustFunction(core_register_trait_builtin),
             );
         }
-        if !self.globals.contains_key("__lkr_register_trait_impl") {
+        if !self.globals.contains_key("__lk_register_trait_impl") {
             self.globals.insert(
-                "__lkr_register_trait_impl".to_string(),
+                "__lk_register_trait_impl".to_string(),
                 Val::RustFunction(core_register_trait_impl_builtin),
             );
         }
-        if !self.globals.contains_key("__lkr_call_method") {
+        if !self.globals.contains_key("__lk_call_method") {
             self.globals.insert(
-                "__lkr_call_method".to_string(),
+                "__lk_call_method".to_string(),
                 Val::RustFunction(core_call_method_builtin),
             );
         }
-        if !self.globals.contains_key("__lkr_call_method_named") {
+        if !self.globals.contains_key("__lk_call_method_named") {
             self.globals.insert(
-                "__lkr_call_method_named".to_string(),
+                "__lk_call_method_named".to_string(),
                 Val::RustFunction(core_call_method_named_builtin),
             );
         }
-        if !self.globals.contains_key("__lkr_make_struct") {
+        if !self.globals.contains_key("__lk_make_struct") {
             self.globals.insert(
-                "__lkr_make_struct".to_string(),
+                "__lk_make_struct".to_string(),
                 Val::RustFunction(core_make_struct_builtin),
             );
         }
@@ -476,7 +476,7 @@ impl VmContext {
 fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!(
-            "__lkr_register_trait expects 2 arguments: name and methods list"
+            "__lk_register_trait expects 2 arguments: name and methods list"
         ));
     }
 
@@ -484,7 +484,7 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
         Val::Str(s) => s.as_ref().to_string(),
         other => {
             return Err(anyhow!(
-                "__lkr_register_trait expects trait name as string, got {}",
+                "__lk_register_trait expects trait name as string, got {}",
                 other.type_name()
             ));
         }
@@ -494,7 +494,7 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
         Val::List(list) => list.as_ref(),
         other => {
             return Err(anyhow!(
-                "__lkr_register_trait expects methods as list, got {}",
+                "__lk_register_trait expects methods as list, got {}",
                 other.type_name()
             ));
         }
@@ -544,7 +544,7 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
 fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 3 {
         return Err(anyhow!(
-            "__lkr_register_trait_impl expects 3 arguments: trait_name, target_type, methods"
+            "__lk_register_trait_impl expects 3 arguments: trait_name, target_type, methods"
         ));
     }
 
@@ -552,7 +552,7 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
         Val::Str(s) => s.as_ref().to_string(),
         other => {
             return Err(anyhow!(
-                "__lkr_register_trait_impl expects trait name string, got {}",
+                "__lk_register_trait_impl expects trait name string, got {}",
                 other.type_name()
             ));
         }
@@ -562,7 +562,7 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
         Val::Str(s) => s.as_ref(),
         other => {
             return Err(anyhow!(
-                "__lkr_register_trait_impl expects target type string, got {}",
+                "__lk_register_trait_impl expects target type string, got {}",
                 other.type_name()
             ));
         }
@@ -574,7 +574,7 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
         Val::List(list) => list.as_ref(),
         other => {
             return Err(anyhow!(
-                "__lkr_register_trait_impl expects methods list, got {}",
+                "__lk_register_trait_impl expects methods list, got {}",
                 other.type_name()
             ));
         }
@@ -640,7 +640,7 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
 fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 3 {
         return Err(anyhow!(
-            "__lkr_call_method expects 3 arguments: receiver, method name, positional args list"
+            "__lk_call_method expects 3 arguments: receiver, method name, positional args list"
         ));
     }
 
@@ -649,7 +649,7 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
         Val::Str(s) => s.clone(),
         other => {
             return Err(anyhow!(
-                "__lkr_call_method expects method name as string, got {}",
+                "__lk_call_method expects method name as string, got {}",
                 other.type_name()
             ));
         }
@@ -671,7 +671,7 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
         Val::Nil => Vec::new(),
         other => {
             return Err(anyhow!(
-                "__lkr_call_method expects positional arguments as list, got {}",
+                "__lk_call_method expects positional arguments as list, got {}",
                 other.type_name()
             ));
         }
@@ -712,7 +712,7 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
 fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 4 {
         return Err(anyhow!(
-            "__lkr_call_method_named expects 4 arguments: receiver, method name, positional args list, named args map"
+            "__lk_call_method_named expects 4 arguments: receiver, method name, positional args list, named args map"
         ));
     }
 
@@ -721,7 +721,7 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
         Val::Str(s) => s.clone(),
         other => {
             return Err(anyhow!(
-                "__lkr_call_method_named expects method name as string, got {}",
+                "__lk_call_method_named expects method name as string, got {}",
                 other.type_name()
             ));
         }
@@ -731,7 +731,7 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
         Val::Nil => Vec::new(),
         other => {
             return Err(anyhow!(
-                "__lkr_call_method_named expects positional arguments as list, got {}",
+                "__lk_call_method_named expects positional arguments as list, got {}",
                 other.type_name()
             ));
         }
@@ -741,7 +741,7 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
         Val::Nil => Vec::new(),
         other => {
             return Err(anyhow!(
-                "__lkr_call_method_named expects named arguments as map, got {}",
+                "__lk_call_method_named expects named arguments as map, got {}",
                 other.type_name()
             ));
         }
@@ -803,7 +803,7 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
 fn core_make_struct_builtin(args: &[Val], _ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!(
-            "__lkr_make_struct expects 2 arguments: struct name and fields map"
+            "__lk_make_struct expects 2 arguments: struct name and fields map"
         ));
     }
 
@@ -811,7 +811,7 @@ fn core_make_struct_builtin(args: &[Val], _ctx: &mut VmContext) -> anyhow::Resul
         Val::Str(s) => s.clone(),
         other => {
             return Err(anyhow!(
-                "__lkr_make_struct expects struct name as string, got {}",
+                "__lk_make_struct expects struct name as string, got {}",
                 other.type_name()
             ));
         }
@@ -827,7 +827,7 @@ fn core_make_struct_builtin(args: &[Val], _ctx: &mut VmContext) -> anyhow::Resul
         }
         other => {
             return Err(anyhow!(
-                "__lkr_make_struct expects fields as map, got {}",
+                "__lk_make_struct expects fields as map, got {}",
                 other.type_name()
             ));
         }

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use lkr_core::{module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val::Val, vm};
+    use lk_core::{module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val::Val, vm};
 
     fn run(source: &str) -> Result<Val> {
         let tokens = Tokenizer::tokenize(source)?;
@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn test_os_env_get_default_set_unset() -> Result<()> {
         // Use a very unlikely var name
-        let var = "LKR_TEST_ENV_SHOULD_NOT_EXIST_42";
+        let var = "LK_TEST_ENV_SHOULD_NOT_EXIST_42";
         // Get default when unset
         let src_default = format!("import os; let e = os.env; return e.get(\"{}\", \"dflt\");", var);
         let out = run(&src_default)?;
@@ -77,7 +77,7 @@ mod tests {
 
         // Create a temporary directory with a couple of files
         let mut td = std::env::temp_dir();
-        td.push("lkr_os_test");
+        td.push("lk_os_test");
         td.push(format!("case_{}", std::process::id()));
         create_dir_all(&td)?;
 

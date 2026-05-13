@@ -4,7 +4,7 @@ mod tests {
 
     use crate::{register_stdlib_modules, string::StringModule};
     use anyhow::Result;
-    use lkr_core::{
+    use lk_core::{
         module::{Module, ModuleRegistry},
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,

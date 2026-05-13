@@ -7,8 +7,8 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-pub const MANIFEST_FILE: &str = "Lkr.toml";
-pub const LOCK_FILE: &str = "Lkr.lock";
+pub const MANIFEST_FILE: &str = "Lk.toml";
+pub const LOCK_FILE: &str = "Lk.lock";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Manifest {
@@ -91,7 +91,7 @@ impl Manifest {
     }
 
     pub fn write(&self, path: &Path) -> Result<()> {
-        let raw = toml::to_string_pretty(self).context("serialize Lkr.toml")?;
+        let raw = toml::to_string_pretty(self).context("serialize Lk.toml")?;
         fs::write(path, raw).with_context(|| format!("write manifest {}", path.display()))
     }
 }
@@ -106,7 +106,7 @@ impl LockFile {
     }
 
     pub fn write(&self, path: &Path) -> Result<()> {
-        let raw = toml::to_string_pretty(self).context("serialize Lkr.lock")?;
+        let raw = toml::to_string_pretty(self).context("serialize Lk.lock")?;
         fs::write(path, raw).with_context(|| format!("write lockfile {}", path.display()))
     }
 }
@@ -290,11 +290,11 @@ fn find_manifests(start: &Path) -> Vec<PathBuf> {
 
 pub fn package_entry(root: &Path, name: &str) -> Option<PathBuf> {
     let src = root.join("src");
-    let mod_file = src.join("mod.lkr");
+    let mod_file = src.join("mod.lk");
     if mod_file.exists() {
         return Some(mod_file);
     }
-    let named = src.join(format!("{name}.lkr"));
+    let named = src.join(format!("{name}.lk"));
     if named.exists() {
         return Some(named);
     }
@@ -310,7 +310,7 @@ pub fn github_url(repo: &str) -> String {
 }
 
 pub fn cache_dir_for_source(source: &str) -> PathBuf {
-    let mut root = lkr_home().join("git");
+    let mut root = lk_home().join("git");
     let normalized = source
         .trim_end_matches(".git")
         .trim_start_matches("https://")
@@ -323,15 +323,15 @@ pub fn cache_dir_for_source(source: &str) -> PathBuf {
     root
 }
 
-pub fn lkr_home() -> PathBuf {
-    if let Ok(home) = env::var("LKR_HOME")
+pub fn lk_home() -> PathBuf {
+    if let Ok(home) = env::var("LK_HOME")
         && !home.is_empty()
     {
         return PathBuf::from(home);
     }
     env::var("HOME")
-        .map(|home| PathBuf::from(home).join(".lkr"))
-        .unwrap_or_else(|_| PathBuf::from(".lkr"))
+        .map(|home| PathBuf::from(home).join(".lk"))
+        .unwrap_or_else(|_| PathBuf::from(".lk"))
 }
 
 fn expand_members(root: &Path, members: &[String]) -> Result<Vec<PathBuf>> {
@@ -418,7 +418,7 @@ mod tests {
                 name = "util"
             "#,
         )?;
-        fs::write(root.join("crates/util/src/mod.lkr"), "fn value() { return 1; }\n")?;
+        fs::write(root.join("crates/util/src/mod.lk"), "fn value() { return 1; }\n")?;
         fs::write(
             root.join("deps/helper").join(MANIFEST_FILE),
             r#"
@@ -426,7 +426,7 @@ mod tests {
                 name = "helper"
             "#,
         )?;
-        fs::write(root.join("deps/helper/src/mod.lkr"), "fn value() { return 2; }\n")?;
+        fs::write(root.join("deps/helper/src/mod.lk"), "fn value() { return 2; }\n")?;
 
         let graph = PackageGraph::discover(root)?.unwrap();
         let modules: BTreeMap<_, _> = graph

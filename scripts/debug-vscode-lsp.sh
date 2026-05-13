@@ -4,9 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXT="$ROOT/vsc-ext/lsp"
 HIGHLIGHT_EXT="$ROOT/vsc-ext/highlight"
-EXAMPLES="$ROOT/examples/lkr-example-workspace"
-SERVER="$ROOT/target/debug/lkr-lsp"
-USER_DATA_DIR="${LKR_VSCODE_USER_DATA_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/lkr-vscode-lsp.XXXXXX")}"
+EXAMPLES="$ROOT/examples/lk-example-workspace"
+SERVER="$ROOT/target/debug/lk-lsp"
+USER_DATA_DIR="${LK_VSCODE_USER_DATA_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/lk-vscode-lsp.XXXXXX")}"
 
 find_code_bin() {
   if [[ -n "${CODE_BIN:-}" ]]; then
@@ -42,8 +42,8 @@ find_code_bin() {
 
 CODE_CLI="$(find_code_bin)"
 
-echo "Building lkr-lsp..."
-cargo build -p lkr-lsp
+echo "Building lk-lsp..."
+cargo build -p lk-lsp
 
 if [[ ! -d "$EXT/node_modules" ]]; then
   echo "Installing VS Code extension dependencies..."
@@ -56,11 +56,11 @@ npm --prefix "$EXT" run compile
 mkdir -p "$USER_DATA_DIR/User"
 cat >"$USER_DATA_DIR/User/settings.json" <<EOF
 {
-  "lkr.lsp.serverPath": "$SERVER",
-  "lkr.lsp.trace": "verbose",
-  "lkr.lsp.outputChannel.enabled": true,
+  "lk.lsp.serverPath": "$SERVER",
+  "lk.lsp.trace": "verbose",
+  "lk.lsp.outputChannel.enabled": true,
   "files.associations": {
-    "*.lkr": "lkr"
+    "*.lk": "lk"
   }
 }
 EOF

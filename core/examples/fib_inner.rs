@@ -1,6 +1,6 @@
-use lkr_core::stmt::{Stmt, StmtParser};
-use lkr_core::token::Tokenizer;
-use lkr_core::vm::Compiler;
+use lk_core::stmt::{Stmt, StmtParser};
+use lk_core::token::Tokenizer;
+use lk_core::vm::Compiler;
 
 fn main() {
     let script = r#"

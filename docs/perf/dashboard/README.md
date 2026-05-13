@@ -10,8 +10,8 @@ dashboard.
 The `.github/workflows/perf-dashboard.yml` workflow runs on `main`, scheduled
 windows, or manual dispatch. It performs the following steps:
 
-1. Executes `cargo bench -p lkr-core --bench scripts_bench -- --noplot`.
-2. Runs `cargo run -p lkr-core --bin perf_dashboard -- --memory-iters 5` to
+1. Executes `cargo bench -p lk-core --bench scripts_bench -- --noplot`.
+2. Runs `cargo run -p lk-core --bin perf_dashboard -- --memory-iters 5` to
    aggregate P50/P95/P99 latency and peak memory per scenario.
 3. Uploads `docs/perf/dashboard` as an Actions artifact for the run.
 4. Commits the same directory contents to the `perf_dashboard` branch using
@@ -26,8 +26,8 @@ instead of expecting files in `main`.
 If you need to reproduce the dashboard locally:
 
 ```bash
-cargo bench -p lkr-core --bench scripts_bench -- --noplot
-cargo run -p lkr-core --bin perf_dashboard -- --memory-iters 5
+cargo bench -p lk-core --bench scripts_bench -- --noplot
+cargo run -p lk-core --bin perf_dashboard -- --memory-iters 5
 ```
 
 Remember to discard the generated `docs/perf/dashboard` directory afterward or
@@ -42,6 +42,6 @@ The workflow pushes the dashboard to the `perf_dashboard` branch. To serve it:
 2. Choose *Deploy from a branch* as the source.
 3. Select the `perf_dashboard` branch and the `/` (root) folder, then save.
 
-GitHub will publish the static site at `https://lollipopkit.github.io/lkr/`
+GitHub will publish the static site at `https://lollipopkit.github.io/lk/`
 (replace with your fork’s owner/repo as needed) and automatically refresh it
 whenever the workflow updates the branch.

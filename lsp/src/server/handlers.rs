@@ -11,15 +11,15 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::LanguageServer;
 use tracing::{debug, info};
 
-use crate::analyzer::LkrAnalyzer;
-use lkr_core::{token::Tokenizer, val};
+use crate::analyzer::LkAnalyzer;
+use lk_core::{token::Tokenizer, val};
 
 use super::{
-    formatting::format_lkr,
+    formatting::format_lk,
     inlay_hints::compute_inlay_hints_with_margin,
     semantic::semantic_tokens_delta_edit,
     signature::{sig, sig_owned},
-    state::{Document, LkrLanguageServer},
+    state::{Document, LkLanguageServer},
     text::{
         apply_incremental_change_rope, collect_named_keys_in_args, find_call_before_cursor, infer_call_at_position,
         position_to_char_idx,
@@ -33,12 +33,12 @@ use super::{
 #[serde(rename_all = "camelCase")]
 struct ServerInitializationOptions {
     #[serde(default)]
-    lkr: LkrInitializationOptions,
+    lk: LkInitializationOptions,
 }
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct LkrInitializationOptions {
+struct LkInitializationOptions {
     #[serde(default)]
     enable_semantic_tokens: bool,
 }
@@ -49,7 +49,7 @@ fn semantic_tokens_provider_from(params: &InitializeParams) -> Option<SemanticTo
         .as_ref()
         .and_then(|value| serde_json::from_value::<ServerInitializationOptions>(value.clone()).ok())
         .unwrap_or_default()
-        .lkr;
+        .lk;
 
     if !options.enable_semantic_tokens {
         return None;
@@ -86,9 +86,9 @@ fn semantic_tokens_provider_from(params: &InitializeParams) -> Option<SemanticTo
 }
 
 #[tower_lsp::async_trait]
-impl LanguageServer for LkrLanguageServer {
+impl LanguageServer for LkLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        info!("LKR Language Server initializing with params: {:?}", params.root_uri);
+        info!("LK Language Server initializing with params: {:?}", params.root_uri);
         let workspace_root = params
             .root_uri
             .as_ref()
@@ -135,7 +135,7 @@ impl LanguageServer for LkrLanguageServer {
                 document_highlight_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
                 diagnostic_provider: Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
-                    identifier: Some("lkr".to_string()),
+                    identifier: Some("lk".to_string()),
                     inter_file_dependencies: false,
                     workspace_diagnostics: false,
                     work_done_progress_options: Default::default(),
@@ -154,17 +154,17 @@ impl LanguageServer for LkrLanguageServer {
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
-                name: "LKR Language Server".to_string(),
+                name: "LK Language Server".to_string(),
                 version: Some("0.1.0".to_string()),
             }),
         })
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        info!("LKR Language Server initialized");
+        info!("LK Language Server initialized");
         let _ = self
             .client
-            .log_message(MessageType::INFO, "LKR Language Server started")
+            .log_message(MessageType::INFO, "LK Language Server started")
             .await;
         // Load initial configuration from client
         self.load_config().await;
@@ -172,7 +172,7 @@ impl LanguageServer for LkrLanguageServer {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        info!("LKR Language Server shutting down");
+        info!("LK Language Server shutting down");
         Ok(())
     }
 
@@ -272,7 +272,7 @@ impl LanguageServer for LkrLanguageServer {
         tokio::spawn(async move {
             let cache_for_build = cache.clone();
             let entry = task::spawn_blocking(move || {
-                let mut analyzer = LkrAnalyzer::new();
+                let mut analyzer = LkAnalyzer::new();
                 let (base, modules, missing) = cache_for_build.package_context_for(base_dir);
                 if modules.is_empty() && missing.is_empty() {
                     analyzer.set_base_dir(base);
@@ -349,7 +349,7 @@ impl LanguageServer for LkrLanguageServer {
                                 items.push(CompletionItem {
                                     label: m,
                                     kind: Some(CompletionItemKind::MODULE),
-                                    detail: Some("LKR stdlib module".to_string()),
+                                    detail: Some("LK stdlib module".to_string()),
                                     ..Default::default()
                                 });
                             }
@@ -363,7 +363,7 @@ impl LanguageServer for LkrLanguageServer {
                                 items.push(CompletionItem {
                                     label: m,
                                     kind: Some(CompletionItemKind::MODULE),
-                                    detail: Some("LKR stdlib module".to_string()),
+                                    detail: Some("LK stdlib module".to_string()),
                                     ..Default::default()
                                 });
                             }
@@ -628,7 +628,7 @@ impl LanguageServer for LkrLanguageServer {
                 NumberOrString::String(s) => Some(s.as_str()),
                 _ => None,
             });
-            if code == Some("lkr_file_not_found") || diag.message.starts_with("File not found:") {
+            if code == Some("lk_file_not_found") || diag.message.starts_with("File not found:") {
                 // Extract quoted string at diagnostic range
                 let start = position_to_char_idx(&rope, diag.range.start);
                 let end = position_to_char_idx(&rope, diag.range.end);
@@ -640,8 +640,8 @@ impl LanguageServer for LkrLanguageServer {
                 let current = slice.trim_matches('"');
 
                 let mut candidates: Vec<String> = Vec::new();
-                if !current.ends_with(".lkr") {
-                    candidates.push(format!("{}.lkr", current));
+                if !current.ends_with(".lk") {
+                    candidates.push(format!("{}.lk", current));
                 }
                 if !current.starts_with("./") && !current.starts_with('/') {
                     candidates.push(format!("./{}", current));
@@ -649,8 +649,8 @@ impl LanguageServer for LkrLanguageServer {
                 for prefix in ["lib/", "modules/"] {
                     if !current.starts_with(prefix) {
                         candidates.push(format!("{}{}", prefix, current));
-                        if !current.ends_with(".lkr") {
-                            candidates.push(format!("{}{}.lkr", prefix, current));
+                        if !current.ends_with(".lk") {
+                            candidates.push(format!("{}{}.lk", prefix, current));
                         }
                     }
                 }
@@ -797,13 +797,13 @@ impl LanguageServer for LkrLanguageServer {
         let locations = {
             // Tokenize to compute function body line ranges
             if let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(&content) {
-                let _analyzer = LkrAnalyzer::default();
+                let _analyzer = LkAnalyzer::default();
                 // Try to find definition precisely to determine scope
                 if let Some(def_loc) = self
                     .find_definition_precise(&content, &symbol_name, position, uri)
                     .await
                 {
-                    let fbodies = LkrAnalyzer::scan_function_blocks(&tokens, &spans);
+                    let fbodies = LkAnalyzer::scan_function_blocks(&tokens, &spans);
                     // Identify if this def is inside a function body by comparing lines (0-based)
                     let def_line0 = def_loc.range.start.line;
                     // Build line ranges for each function body
@@ -1196,7 +1196,7 @@ impl LanguageServer for LkrLanguageServer {
                     range: Range::new(Position::new(0, 0), Position::new(0, 0)),
                     command: Some(Command {
                         title: format!("Identifier roots: {}", preview),
-                        command: "lkr.showStatusBarMenu".to_string(),
+                        command: "lk.showStatusBarMenu".to_string(),
                         arguments: None,
                     }),
                     data: None,
@@ -1215,7 +1215,7 @@ impl LanguageServer for LkrLanguageServer {
         } else {
             String::new()
         };
-        let formatted = format_lkr(&content, &options);
+        let formatted = format_lk(&content, &options);
         if formatted == content {
             return Ok(Some(vec![]));
         }
@@ -1296,7 +1296,7 @@ impl LanguageServer for LkrLanguageServer {
             if want_types {
                 // Tokenize once and reuse across individual computations
                 if let Ok((tokens, spans)) = Tokenizer::tokenize_enhanced_with_spans(&content) {
-                    let analyzer = LkrAnalyzer::new_light();
+                    let analyzer = LkAnalyzer::new_light();
                     let mut h1 = analyzer.compute_type_inlay_hints_from_tokens(&tokens, &spans, range);
                     let mut h2 = analyzer.compute_define_type_hints_from_tokens(&tokens, &spans, range);
                     let mut h3 = analyzer.compute_function_return_type_hints_from_tokens(&tokens, &spans, range);
@@ -1427,7 +1427,7 @@ impl LanguageServer for LkrLanguageServer {
 
         // Generate range tokens off the async runtime
         let generated = tokio::task::spawn_blocking(move || {
-            let analyzer = LkrAnalyzer::new_light();
+            let analyzer = LkAnalyzer::new_light();
             analyzer.generate_semantic_tokens_in_range(&slice_string, range)
         })
         .await

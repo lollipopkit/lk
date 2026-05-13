@@ -1,13 +1,13 @@
 {
-  "name": "vscode-lkr-highlight",
-  "displayName": "LKR Syntax Highlighting",
-  "description": "TextMate grammar and language configuration for LKR",
+  "name": "lk-highlight",
+  "displayName": "LK Syntax Highlighting",
+  "description": "TextMate grammar and language configuration for LK",
   "version": "0.0.2",
   "publisher": "lollipopkit",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lollipopkit/lkr.git"
+    "url": "https://github.com/lollipopkit/lk.git"
   },
   "engines": {
     "vscode": "^1.118.0"
@@ -26,28 +26,28 @@
   "contributes": {
     "languages": [
       {
-        "id": "lkr",
+        "id": "lk",
         "aliases": [
-          "LKR",
-          "lkr"
+          "LK",
+          "lk"
         ],
         "extensions": [
-          ".lkr"
+          ".lk"
         ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "lkr",
-        "scopeName": "source.lkr",
-        "path": "./syntaxes/lkr.tmLanguage.json"
+        "language": "lk",
+        "scopeName": "source.lk",
+        "path": "./syntaxes/lk.tmLanguage.json"
       }
     ],
     "snippets": [
       {
-        "language": "lkr",
-        "path": "./snippets/lkr.code-snippets.json"
+        "language": "lk",
+        "path": "./snippets/lk.code-snippets.json"
       }
     ]
   },

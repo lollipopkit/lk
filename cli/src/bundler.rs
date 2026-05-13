@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use lkr_core::{
+use lk_core::{
     package::PackageModule,
     stmt::stmt_parser::StmtParser,
     stmt::{ImportSource, ImportStmt, ModuleResolver, Program, Stmt, serialize_imports},
@@ -13,7 +13,7 @@ use lkr_core::{
     vm::{BundledModule, BytecodeModule, ModuleFlags, ModuleMeta, compile_program},
 };
 
-/// Collects file-based imports and compiles them into bundled LKRB modules.
+/// Collects file-based imports and compiles them into bundled LKB modules.
 pub struct ModuleBundler {
     resolver: ModuleResolver,
     package_modules: BTreeMap<String, PathBuf>,

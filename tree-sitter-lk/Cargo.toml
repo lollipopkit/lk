@@ -1,0 +1,27 @@
+[package]
+name = "tree-sitter-lk"
+description = "LK grammar for tree-sitter"
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["lollipopkit <a@lpkt.cn>"]
+keywords = ["incremental", "parsing", "lk"]
+categories = ["parsing", "text-editors"]
+repository = "https://github.com/lollipopkit/lk/tree-sitter-lk"
+edition = "2021"
+build = "bindings/rust/build.rs"
+links = "tree_sitter_lk"
+
+[dependencies]
+tree-sitter = "~0.26"
+
+[features]
+link = []
+
+[build-dependencies]
+cc = "1"
+
+[lib]
+path = "bindings/rust/lib.rs"
+
+[dev-dependencies]
+tree-sitter = { version = "~0.26" }

@@ -7,7 +7,7 @@ use crate::vm::vm::frame::FrameInfo;
 
 // ────────────── Inline Cache Architecture ──────────────
 //
-// LKR uses polymorphic inline caches (ICs) at each instruction site to
+// LK uses polymorphic inline caches (ICs) at each instruction site to
 // accelerate property access, indexing, global lookups, and function calls.
 //
 //  AccessIc (MapStr/ObjectStr): 4-entry LRU cache keyed by (base_ptr, key_ptr).

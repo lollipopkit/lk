@@ -2,7 +2,7 @@ use regex::Regex;
 use ropey::Rope;
 use tower_lsp::lsp_types::{Position, TextDocumentContentChangeEvent};
 
-use lkr_core::token::{Span as CoreSpan, Token as CoreToken};
+use lk_core::token::{Span as CoreSpan, Token as CoreToken};
 
 // Convert LSP UTF-16 position to Rope char index (scalar values), clamped to the end of the line.
 pub(crate) fn position_to_char_idx(text: &Rope, pos: Position) -> usize {

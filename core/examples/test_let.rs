@@ -1,7 +1,7 @@
 // Quick test to check let binding behavior
-use lkr_core::stmt::{Stmt, StmtParser};
-use lkr_core::token::Tokenizer;
-use lkr_core::vm::{Compiler, Vm, VmContext};
+use lk_core::stmt::{Stmt, StmtParser};
+use lk_core::token::Tokenizer;
+use lk_core::vm::{Compiler, Vm, VmContext};
 
 fn main() {
     // Test: let variable with function call

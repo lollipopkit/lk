@@ -1,7 +1,7 @@
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::sync::Arc;
 
-use lkr_core::{
+use lk_core::{
     module::ModuleRegistry,
     rt,
     stmt::{ModuleResolver, StmtParser},
@@ -114,8 +114,8 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
 
     // Prepare stdlib and environment (persist across statements)
     let mut registry = ModuleRegistry::new();
-    lkr_stdlib::register_stdlib_globals(&mut registry);
-    lkr_stdlib::register_stdlib_modules(&mut registry)?;
+    lk_stdlib::register_stdlib_globals(&mut registry);
+    lk_stdlib::register_stdlib_modules(&mut registry)?;
     let resolver = Arc::new(ModuleResolver::with_registry(registry));
     let mut env = VmContext::new()
         .with_resolver(resolver)

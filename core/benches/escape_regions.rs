@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use lkr_core::{
+use lk_core::{
     stmt::{Stmt, StmtParser},
     token::Tokenizer,
     vm::{AllocationRegion, Compiler, Function, Op, RegionAllocator, Vm, VmContext},

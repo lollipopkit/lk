@@ -1,9 +1,9 @@
-//! Concurrency module for LKR
+//! Concurrency module for LK
 //!
 //! Provides Go-style concurrency primitives including tasks, channels, and synchronization.
 
 use anyhow::{Result, anyhow};
-use lkr_core::{
+use lk_core::{
     module::{self, Module},
     rt,
     val::{TaskValue, Val},

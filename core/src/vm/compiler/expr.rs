@@ -135,7 +135,7 @@ impl FunctionBuilder {
         let method_reg = self.expr(field_expr);
 
         let builtin_reg = self.alloc();
-        let builtin_idx = self.k(Val::Str("__lkr_call_method".into()));
+        let builtin_idx = self.k(Val::Str("__lk_call_method".into()));
         self.emit(Op::LoadGlobal(builtin_reg, builtin_idx));
 
         let base = self.alloc();
@@ -175,7 +175,7 @@ impl FunctionBuilder {
         let method_reg = self.expr(field_expr);
 
         let builtin_reg = self.alloc();
-        let builtin_idx = self.k(Val::Str("__lkr_call_method_named".into()));
+        let builtin_idx = self.k(Val::Str("__lk_call_method_named".into()));
         self.emit(Op::LoadGlobal(builtin_reg, builtin_idx));
 
         let base = self.alloc();
@@ -932,7 +932,7 @@ impl FunctionBuilder {
                 self.emit(Op::LoadK(type_reg, type_idx));
 
                 let builtin_reg = self.alloc();
-                let builtin_idx = self.k(Val::Str("__lkr_make_struct".into()));
+                let builtin_idx = self.k(Val::Str("__lk_make_struct".into()));
                 self.emit(Op::LoadGlobal(builtin_reg, builtin_idx));
 
                 let base = self.alloc();

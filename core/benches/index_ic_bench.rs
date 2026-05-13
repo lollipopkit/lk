@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use lkr_core::{expr::Expr, stmt::Stmt, val::Val, vm};
+use lk_core::{expr::Expr, stmt::Stmt, val::Val, vm};
 use std::hint::black_box;
 
 fn make_hits_function() -> vm::Function {

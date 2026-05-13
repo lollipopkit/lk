@@ -1,7 +1,7 @@
 中文 | [English](README.md)
 
 <div align="center">
-    <h2>LKR</h2>
+    <h2>LK</h2>
     <h5>使用 Rust 编写的，类似 Rust 的脚本语言</h5>
 </div>
 
@@ -18,7 +18,7 @@
 #### 集成（库）
 
 ```rust
-use lkr_core::{expr::Expr, vm::VmContext, val::Val};
+use lk_core::{expr::Expr, vm::VmContext, val::Val};
 
 // 解析表达式
 let expr_src = "data.req.user.name in 'foobar' && data.files.0.published == true";
@@ -39,13 +39,13 @@ assert_eq!(result, Val::Bool(true));
 
 #### CLI
 
-- 进入 REPL：`lkr`
-- 执行脚本/字节码：`lkr FILE`（自动检测 `.lkr` 源码或 `.lkrb` 字节码）
-- 仅做静态类型检查：`lkr check FILE`（输出编译期诊断信息）
-- 编译为字节码：`lkr compile FILE` → `FILE.lkrb`
-- 编译为 LLVM IR：`lkr compile llvm FILE`（详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
-- 编译为 ELF 可执行文件：`lkr compile exe FILE`（需安装 LLVM 工具链与系统链接器，详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
-- 创建包并管理依赖：`lkr init`、`lkr pkg add`、`lkr pkg fetch`、`lkr pkg tree`（详见 [docs/packages.md](docs/packages.md)）
+- 进入 REPL：`lk`
+- 执行脚本/字节码：`lk FILE`（自动检测 `.lk` 源码或 `.lkb` 字节码）
+- 仅做静态类型检查：`lk check FILE`（输出编译期诊断信息）
+- 编译为字节码：`lk compile FILE` → `FILE.lkb`
+- 编译为 LLVM IR：`lk compile llvm FILE`（详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
+- 编译为 ELF 可执行文件：`lk compile exe FILE`（需安装 LLVM 工具链与系统链接器，详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
+- 创建包并管理依赖：`lk init`、`lk pkg add`、`lk pkg fetch`、`lk pkg tree`（详见 [docs/packages.md](docs/packages.md)）
 
 注意：命令行参数路径必须为经净化的相对路径。
 

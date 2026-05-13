@@ -75,7 +75,7 @@ struct PackedHotStatsGuard {
 #[cfg(debug_assertions)]
 impl PackedHotStatsGuard {
     fn new() -> Self {
-        let dump = std::env::var("LKR_DUMP_PACKED_STATS")
+        let dump = std::env::var("LK_DUMP_PACKED_STATS")
             .ok()
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
             .unwrap_or(false);

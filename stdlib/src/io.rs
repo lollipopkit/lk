@@ -1,7 +1,7 @@
 use anyhow::Result;
-use lkr_core::module::Module;
-use lkr_core::val::Val;
-use lkr_core::vm::VmContext;
+use lk_core::module::Module;
+use lk_core::val::Val;
+use lk_core::vm::VmContext;
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
@@ -202,7 +202,7 @@ impl Module for IoModule {
         "io"
     }
 
-    fn register(&self, _registry: &mut lkr_core::module::ModuleRegistry) -> Result<()> {
+    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
         // Don't register functions globally - they should be accessed via module.function()
         Ok(())
     }

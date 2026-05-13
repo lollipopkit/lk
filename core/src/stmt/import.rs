@@ -12,13 +12,13 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-/// Import system for LKR - supports various import syntaxes and plugin-style module resolution
+/// Import system for LK - supports various import syntaxes and plugin-style module resolution
 ///
 /// Supported import syntaxes:
 /// 1. `import math;` - imports stdlib module 'math' with all exports
-/// 2. `import "path/to/file.lkr";` - imports file with all exports  
+/// 2. `import "path/to/file.lk";` - imports file with all exports  
 /// 3. `import { abs, sqrt } from math;` - imports specific items from stdlib module
-/// 4. `import { func as alias } from "file.lkr";` - imports with alias
+/// 4. `import { func as alias } from "file.lk";` - imports with alias
 /// 5. `import * as math from math;` - imports all as namespace
 /// 6. `import math as m;` - imports entire module with alias
 ///
@@ -70,7 +70,7 @@ pub struct ModuleResolver {
     embedded_modules: Arc<DashMap<String, Arc<BytecodeModule>>>,
     /// Search paths for module resolution
     search_paths: Vec<PathBuf>,
-    /// Package modules resolved from Lkr.toml dependencies/workspace members
+    /// Package modules resolved from Lk.toml dependencies/workspace members
     package_modules: Arc<DashMap<String, PathBuf>>,
 }
 
@@ -273,14 +273,14 @@ impl ModuleResolver {
         }
 
         // Candidate patterns (searched under each `search_paths` root):
-        // 1) ${MOD_NAME}.lkr
-        // 2) ${MOD_NAME}/mod.lkr
+        // 1) ${MOD_NAME}.lk
+        // 2) ${MOD_NAME}/mod.lk
         // If the input already contains an extension, also allow it directly.
         let base = PathBuf::from(path);
 
         for root in &self.search_paths {
-            // If the input already includes .lkr and exists under this root, accept it
-            if base.extension().and_then(|s| s.to_str()) == Some("lkr") {
+            // If the input already includes .lk and exists under this root, accept it
+            if base.extension().and_then(|s| s.to_str()) == Some("lk") {
                 let p = root.join(&base);
                 if self.has_embedded_module(&p) {
                     return Ok(Self::normalize_path(p));
@@ -290,8 +290,8 @@ impl ModuleResolver {
                 }
             }
 
-            // Try ${MOD_NAME}.lkr
-            let candidate1 = root.join(base.with_extension("lkr"));
+            // Try ${MOD_NAME}.lk
+            let candidate1 = root.join(base.with_extension("lk"));
             if self.has_embedded_module(&candidate1) {
                 return Ok(Self::normalize_path(candidate1));
             }
@@ -299,8 +299,8 @@ impl ModuleResolver {
                 return Ok(Self::normalize_path(candidate1));
             }
 
-            // Try ${MOD_NAME}/mod.lkr
-            let candidate2 = root.join(base.join("mod.lkr"));
+            // Try ${MOD_NAME}/mod.lk
+            let candidate2 = root.join(base.join("mod.lk"));
             if self.has_embedded_module(&candidate2) {
                 return Ok(Self::normalize_path(candidate2));
             }
@@ -310,7 +310,7 @@ impl ModuleResolver {
         }
 
         Err(anyhow!(
-            "File not found for module '{}': expected '{}.lkr' or '{}/mod.lkr'",
+            "File not found for module '{}': expected '{}.lk' or '{}/mod.lk'",
             path.display(),
             path.display(),
             path.display()
@@ -586,23 +586,23 @@ mod tests {
         assert!(resolver.resolve_file_path(&abs_str).is_err());
 
         // Parent directory components are rejected
-        assert!(resolver.resolve_file_path("../foo.lkr").is_err());
+        assert!(resolver.resolve_file_path("../foo.lk").is_err());
 
         // Relative simple path that likely does not exist should return not found
         // (error message still OK but not due to security check)
-        let rel = PathBuf::from("does_not_exist.lkr");
+        let rel = PathBuf::from("does_not_exist.lk");
         assert!(resolver.resolve_file_path(&rel.to_string_lossy()).is_err());
     }
 
     #[test]
     fn test_resolve_file_path_uses_base_dir() -> Result<()> {
         let mut base = std::env::temp_dir();
-        base.push(format!("lkr-import-base-test-{}", std::process::id()));
+        base.push(format!("lk-import-base-test-{}", std::process::id()));
         let current_file_dir = base.join("examples");
         let nested_import_dir = current_file_dir.join("examples");
         std::fs::create_dir_all(&nested_import_dir)?;
 
-        let expected = nested_import_dir.join("fib.lkr");
+        let expected = nested_import_dir.join("fib.lk");
         std::fs::write(&expected, "fn iterative(n) { return n; }\n")?;
 
         let mut resolver = ModuleResolver::new();

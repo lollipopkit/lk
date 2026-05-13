@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
-use lkr_core::module::Module;
-use lkr_core::val::methods::register_method;
-use lkr_core::val::{IteratorState, IteratorValue, Val};
-use lkr_core::vm::VmContext;
+use lk_core::module::Module;
+use lk_core::val::methods::register_method;
+use lk_core::val::{IteratorState, IteratorValue, Val};
+use lk_core::vm::VmContext;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -15,7 +15,7 @@ fn warn_legacy(api: &'static str, message: &'static str) {
         guard.insert(api)
     };
     if inserted {
-        tracing::warn!(target: "lkr::iter", "{}: {}", api, message);
+        tracing::warn!(target: "lk::iter", "{}: {}", api, message);
     }
 }
 
@@ -170,7 +170,7 @@ impl Module for IterModule {
         "Iterator utilities and functions for working with collections"
     }
 
-    fn register(&self, _registry: &mut lkr_core::module::ModuleRegistry) -> Result<()> {
+    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
         // Don't register functions globally - they should be accessed via module.function()
         Ok(())
     }
@@ -600,7 +600,7 @@ mod tests {
 
     use crate::register_stdlib_modules;
     use anyhow::Result;
-    use lkr_core::{
+    use lk_core::{
         stmt::stmt_parser::StmtParser,
         token::Tokenizer,
         val::Val,
@@ -613,9 +613,9 @@ mod tests {
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
 
-        let mut registry = lkr_core::module::ModuleRegistry::new();
+        let mut registry = lk_core::module::ModuleRegistry::new();
         register_stdlib_modules(&mut registry)?;
-        let resolver = Arc::new(lkr_core::stmt::ModuleResolver::with_registry(registry));
+        let resolver = Arc::new(lk_core::stmt::ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
         let mut vm = Vm::new();
         program.execute_with_vm(&mut vm, &mut env)

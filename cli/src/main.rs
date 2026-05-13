@@ -7,12 +7,12 @@ use std::{collections::BTreeMap, fs};
 
 static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str =
-    "lkr::vm::alloc=trace,lkr::vm::bc32=info,lkr::vm::slowpath=debug,lkr_core=info,lkr_cli=info";
+    "lk::vm::alloc=trace,lk::vm::bc32=info,lk::vm::slowpath=debug,lk_core=info,lk_cli=info";
 
 use clap::{Parser, Subcommand, ValueEnum};
 #[cfg(feature = "llvm")]
-use lkr_core::llvm::{LlvmBackendOptions, OptLevel, compile_function_to_llvm};
-use lkr_core::{
+use lk_core::llvm::{LlvmBackendOptions, OptLevel, compile_function_to_llvm};
+use lk_core::{
     module::ModuleRegistry,
     package::{
         DependencySpec, DetailedDependency, LOCK_FILE, LockFile, LockedPackage, MANIFEST_FILE, Manifest, PackageGraph,
@@ -38,9 +38,9 @@ mod repl;
 use bundler::ModuleBundler;
 
 #[cfg(feature = "llvm")]
-const RUNTIME_CRATE_NAME: &str = "lkr-core";
+const RUNTIME_CRATE_NAME: &str = "lk-core";
 #[cfg(feature = "llvm")]
-const RUNTIME_STDLIB_CRATE: &str = "lkr-stdlib";
+const RUNTIME_STDLIB_CRATE: &str = "lk-stdlib";
 
 #[cfg(feature = "llvm")]
 struct EncodedBundledModule {
@@ -61,10 +61,10 @@ impl RuntimeInitPlan {}
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "lkr",
+    name = "lk",
     author,
     version,
-    about = "CLI for LKR",
+    about = "CLI for LK",
     long_about = None,
     after_help = "BC32 compression guide: docs/bc32.md"
 )]
@@ -121,7 +121,7 @@ impl OptLevelCli {
 impl From<EmitKind> for CompileMode {
     fn from(value: EmitKind) -> Self {
         match value {
-            EmitKind::Bytecode => CompileMode::Lkrb,
+            EmitKind::Bytecode => CompileMode::Lkb,
             #[cfg(feature = "llvm")]
             EmitKind::Llvm => CompileMode::Llvm,
         }
@@ -130,8 +130,8 @@ impl From<EmitKind> for CompileMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum CompileMode {
-    #[value(name = "lkrb", alias = "bytecode")]
-    Lkrb,
+    #[value(name = "lkb", alias = "bytecode")]
+    Lkb,
     #[cfg(feature = "llvm")]
     Llvm,
     #[cfg(feature = "llvm")]
@@ -142,7 +142,7 @@ enum CompileMode {
 enum Commands {
     /// Compile sources into bytecode / (optional) LLVM IR or native executables.
     Compile {
-        /// 支持 `lkr compile [TARGET] FILE`（默认为 `lkrb`）
+        /// 支持 `lk compile [TARGET] FILE`（默认为 `lkb`）
         #[arg(value_name = "ARGS", num_args = 1..=2)]
         positional: Vec<String>,
         /// Emit format when未指定 `exe`（向后兼容，推荐使用位置参数）
@@ -175,7 +175,7 @@ enum Commands {
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
     },
-    /// Create and manage LKR packages.
+    /// Create and manage LK packages.
     Init {
         /// Package name. Defaults to the current directory name.
         name: Option<String>,
@@ -189,7 +189,7 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum PkgCommand {
-    /// Add a GitHub dependency to Lkr.toml.
+    /// Add a GitHub dependency to Lk.toml.
     Add {
         name: String,
         source: String,
@@ -200,7 +200,7 @@ enum PkgCommand {
         #[arg(long)]
         rev: Option<String>,
     },
-    /// Fetch dependencies and update Lkr.lock.
+    /// Fetch dependencies and update Lk.lock.
     Fetch,
     /// Update one dependency or all dependencies.
     Update { name: Option<String> },
@@ -252,7 +252,7 @@ fn filter_expr_from(raw: &str) -> Option<String> {
 }
 
 fn maybe_init_perf_tracing() {
-    let raw = match std::env::var("LKR_TRACE") {
+    let raw = match std::env::var("LK_TRACE") {
         Ok(value) => value,
         Err(_) => return,
     };
@@ -347,8 +347,8 @@ fn resolve_llvm_tool(tool: &str, env_var: &str) -> Option<PathBuf> {
 #[cfg(feature = "llvm")]
 fn bytecode_trampoline_c(bytecode: &[u8]) -> String {
     let mut out = String::new();
-    out.push_str("#include <stddef.h>\nextern int lkr_rt_run_bytecode(const unsigned char*, long long);\n");
-    out.push_str("static const unsigned char LKR_ENTRY_BYTECODE[] = {\n");
+    out.push_str("#include <stddef.h>\nextern int lk_rt_run_bytecode(const unsigned char*, long long);\n");
+    out.push_str("static const unsigned char LK_ENTRY_BYTECODE[] = {\n");
     for chunk in bytecode.chunks(16) {
         out.push_str("  ");
         for byte in chunk {
@@ -356,7 +356,9 @@ fn bytecode_trampoline_c(bytecode: &[u8]) -> String {
         }
         out.push('\n');
     }
-    out.push_str("};\nint main(void) { return lkr_rt_run_bytecode(LKR_ENTRY_BYTECODE, (long long)sizeof(LKR_ENTRY_BYTECODE)); }\n");
+    out.push_str(
+        "};\nint main(void) { return lk_rt_run_bytecode(LK_ENTRY_BYTECODE, (long long)sizeof(LK_ENTRY_BYTECODE)); }\n",
+    );
     out
 }
 
@@ -369,13 +371,13 @@ fn bytecode_trampoline_ir(module_name: &str, bytecode: &[u8]) -> String {
         "source_filename = \"{}_bytecode_trampoline\"\n\n",
         module_name
     ));
-    out.push_str("declare i32 @lkr_rt_run_bytecode(i8*, i64)\n\n");
+    out.push_str("declare i32 @lk_rt_run_bytecode(i8*, i64)\n\n");
     out.push_str(&format!(
-        "@.lkr_entry_bytecode = private unnamed_addr constant [{len} x i8] {literal}, align 1\n\n"
+        "@.lk_entry_bytecode = private unnamed_addr constant [{len} x i8] {literal}, align 1\n\n"
     ));
     out.push_str("define i32 @main() {\n");
     out.push_str(&format!(
-        "  %status = call i32 @lkr_rt_run_bytecode(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* @.lkr_entry_bytecode, i64 0, i64 0), i64 {len})\n"
+        "  %status = call i32 @lk_rt_run_bytecode(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* @.lk_entry_bytecode, i64 0, i64 0), i64 {len})\n"
     ));
     out.push_str("  ret i32 %status\n");
     out.push_str("}\n");
@@ -456,12 +458,12 @@ fn build_runtime_init_plan(
     let mut plan = RuntimeInitPlan::default();
 
     let decls = [
-        "declare void @lkr_rt_begin_session()",
-        "declare void @lkr_rt_register_search_path(i8*, i64)",
-        "declare i32 @lkr_rt_register_bundled_module(i8*, i64, i8*, i64)",
-        "declare i32 @lkr_rt_register_imports(i8*, i64)",
-        "declare i32 @lkr_rt_register_package_modules(i8*, i64)",
-        "declare i32 @lkr_rt_apply_imports()",
+        "declare void @lk_rt_begin_session()",
+        "declare void @lk_rt_register_search_path(i8*, i64)",
+        "declare i32 @lk_rt_register_bundled_module(i8*, i64, i8*, i64)",
+        "declare i32 @lk_rt_register_imports(i8*, i64)",
+        "declare i32 @lk_rt_register_package_modules(i8*, i64)",
+        "declare i32 @lk_rt_apply_imports()",
     ];
     for decl in decls {
         if !module_ir.contains(decl) {
@@ -469,7 +471,7 @@ fn build_runtime_init_plan(
         }
     }
 
-    plan.body_lines.push("call void @lkr_rt_begin_session()".to_string());
+    plan.body_lines.push("call void @lk_rt_begin_session()".to_string());
 
     for (idx, path) in search_paths.iter().enumerate() {
         let bytes = path.as_bytes();
@@ -477,13 +479,13 @@ fn build_runtime_init_plan(
             continue;
         }
         let len = bytes.len();
-        let global_name = format!("@.lkr_path.{}", idx);
+        let global_name = format!("@.lk_path.{}", idx);
         let literal = llvm_bytes_literal(bytes);
         plan.globals.push(format!(
             "{global_name} = private unnamed_addr constant [{len} x i8] {literal}, align 1"
         ));
         plan.body_lines.push(format!(
-            "call void @lkr_rt_register_search_path(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* {global_name}, i64 0, i64 0), i64 {len})"
+            "call void @lk_rt_register_search_path(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* {global_name}, i64 0, i64 0), i64 {len})"
         ));
     }
 
@@ -493,21 +495,21 @@ fn build_runtime_init_plan(
             continue;
         }
         let path_len = path_bytes.len();
-        let path_name = format!("@.lkr_mod_path.{}", idx);
+        let path_name = format!("@.lk_mod_path.{}", idx);
         let path_literal = llvm_bytes_literal(path_bytes);
         plan.globals.push(format!(
             "{path_name} = private unnamed_addr constant [{path_len} x i8] {path_literal}, align 1"
         ));
 
         let blob_len = module.bytes.len();
-        let blob_name = format!("@.lkr_mod_blob.{}", idx);
+        let blob_name = format!("@.lk_mod_blob.{}", idx);
         let blob_literal = llvm_bytes_literal(&module.bytes);
         plan.globals.push(format!(
             "{blob_name} = private unnamed_addr constant [{blob_len} x i8] {blob_literal}, align 1"
         ));
 
         plan.body_lines.push(format!(
-            "call i32 @lkr_rt_register_bundled_module(i8* getelementptr inbounds ([{path_len} x i8], [{path_len} x i8]* {path_name}, i64 0, i64 0), i64 {path_len}, i8* getelementptr inbounds ([{blob_len} x i8], [{blob_len} x i8]* {blob_name}, i64 0, i64 0), i64 {blob_len})"
+            "call i32 @lk_rt_register_bundled_module(i8* getelementptr inbounds ([{path_len} x i8], [{path_len} x i8]* {path_name}, i64 0, i64 0), i64 {path_len}, i8* getelementptr inbounds ([{blob_len} x i8], [{blob_len} x i8]* {blob_name}, i64 0, i64 0), i64 {blob_len})"
         ));
     }
 
@@ -515,13 +517,13 @@ fn build_runtime_init_plan(
         let bytes = imports.as_bytes();
         if !bytes.is_empty() {
             let len = bytes.len();
-            let global_name = "@.lkr_imports";
+            let global_name = "@.lk_imports";
             let literal = llvm_bytes_literal(bytes);
             plan.globals.push(format!(
                 "{global_name} = private unnamed_addr constant [{len} x i8] {literal}, align 1"
             ));
             plan.body_lines.push(format!(
-                "call i32 @lkr_rt_register_imports(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* {global_name}, i64 0, i64 0), i64 {len})"
+                "call i32 @lk_rt_register_imports(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* {global_name}, i64 0, i64 0), i64 {len})"
             ));
         }
     }
@@ -530,18 +532,18 @@ fn build_runtime_init_plan(
         let bytes = package_modules.as_bytes();
         if !bytes.is_empty() {
             let len = bytes.len();
-            let global_name = "@.lkr_package_modules";
+            let global_name = "@.lk_package_modules";
             let literal = llvm_bytes_literal(bytes);
             plan.globals.push(format!(
                 "{global_name} = private unnamed_addr constant [{len} x i8] {literal}, align 1"
             ));
             plan.body_lines.push(format!(
-                "call i32 @lkr_rt_register_package_modules(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* {global_name}, i64 0, i64 0), i64 {len})"
+                "call i32 @lk_rt_register_package_modules(i8* getelementptr inbounds ([{len} x i8], [{len} x i8]* {global_name}, i64 0, i64 0), i64 {len})"
             ));
         }
     }
 
-    plan.body_lines.push("call i32 @lkr_rt_apply_imports()".to_string());
+    plan.body_lines.push("call i32 @lk_rt_apply_imports()".to_string());
 
     plan
 }
@@ -588,18 +590,18 @@ fn main() -> anyhow::Result<()> {
 
                 let compile_mode = pos_target
                     .or_else(|| emit.map(CompileMode::from))
-                    .unwrap_or(CompileMode::Lkrb);
+                    .unwrap_or(CompileMode::Lkb);
 
                 #[cfg(feature = "llvm")]
                 if compile_mode != CompileMode::Exe && output.is_some() {
-                    anyhow::bail!("--output is only supported for `lkr compile exe <FILE>`");
+                    anyhow::bail!("--output is only supported for `lk compile exe <FILE>`");
                 }
 
                 let src_path_str = safe.to_string_lossy().to_string();
                 let program = parse_program_file(&safe)?;
                 let package_graph = PackageGraph::discover(&safe)?;
                 let func = compile_program(&program);
-                if std::env::var_os("LKR_DEBUG_BYTECODE").is_some() {
+                if std::env::var_os("LK_DEBUG_BYTECODE").is_some() {
                     eprintln!("-- bytecode for {} --", src_path_str);
                     for (idx, op) in func.code.iter().enumerate() {
                         eprintln!("op[{idx}]: {op:?}");
@@ -607,7 +609,7 @@ fn main() -> anyhow::Result<()> {
                 }
 
                 match compile_mode {
-                    CompileMode::Lkrb => {
+                    CompileMode::Lkb => {
                         let mut module = BytecodeModule::new(func.clone());
                         module.flags.insert(ModuleFlags::CONST_FOLDED);
                         let mut meta = ModuleMeta {
@@ -648,7 +650,7 @@ fn main() -> anyhow::Result<()> {
                             module.bundled_modules = bundled_modules;
                         }
 
-                        let out_path = safe.with_extension("lkrb");
+                        let out_path = safe.with_extension("lkb");
 
                         let bytes = vm::encode_module(&module)?;
                         if let Some(parent) = out_path.parent()
@@ -669,14 +671,14 @@ fn main() -> anyhow::Result<()> {
                             .file_stem()
                             .map(|s| s.to_string_lossy().to_string())
                             .filter(|s| !s.is_empty())
-                            .unwrap_or_else(|| "lkr_module".to_string());
+                            .unwrap_or_else(|| "lk_module".to_string());
                         let options = LlvmBackendOptions {
                             module_name,
                             target_triple: target_triple.clone(),
                             run_optimizations: !skip_opt,
                             opt_level: opt_level_cli.into(),
                         };
-                        let artifact = compile_function_to_llvm(&func, "lkr_entry", options).context("LLVM backend")?;
+                        let artifact = compile_function_to_llvm(&func, "lk_entry", options).context("LLVM backend")?;
 
                         let out_path = safe.with_extension("ll");
                         if let Some(parent) = out_path.parent()
@@ -750,14 +752,14 @@ fn main() -> anyhow::Result<()> {
                             .file_stem()
                             .map(|s| s.to_string_lossy().to_string())
                             .filter(|s| !s.is_empty())
-                            .unwrap_or_else(|| "lkr_module".to_string());
+                            .unwrap_or_else(|| "lk_module".to_string());
                         let options = LlvmBackendOptions {
                             module_name: module_name.clone(),
                             target_triple: target_triple.clone(),
                             run_optimizations: !skip_opt,
                             opt_level: opt_level_cli.into(),
                         };
-                        let llvm_artifact = compile_function_to_llvm(&func, "lkr_entry", options);
+                        let llvm_artifact = compile_function_to_llvm(&func, "lk_entry", options);
                         let (ll_with_main, unopt_with_main, bytecode_trampoline_c_src) = match llvm_artifact {
                             Ok(artifact) => {
                                 let final_ir = artifact.optimised_ir.as_deref().unwrap_or(&artifact.module.ir);
@@ -768,7 +770,7 @@ fn main() -> anyhow::Result<()> {
                                     package_modules_json.as_deref(),
                                     &encoded_modules,
                                 );
-                                let ll_with_main = append_main_stub(final_ir, "lkr_entry", &runtime_plan);
+                                let ll_with_main = append_main_stub(final_ir, "lk_entry", &runtime_plan);
                                 let unopt_plan = build_runtime_init_plan(
                                     &artifact.module.ir,
                                     &search_paths,
@@ -776,7 +778,7 @@ fn main() -> anyhow::Result<()> {
                                     package_modules_json.as_deref(),
                                     &encoded_modules,
                                 );
-                                let unopt_with_main = append_main_stub(&artifact.module.ir, "lkr_entry", &unopt_plan);
+                                let unopt_with_main = append_main_stub(&artifact.module.ir, "lk_entry", &unopt_plan);
                                 (ll_with_main, Some(unopt_with_main), None)
                             }
                             Err(err) => {
@@ -830,13 +832,13 @@ fn main() -> anyhow::Result<()> {
                         .with_context(|| "failed to produce LLVM runtime static library")?;
 
                         let exe_path = output.clone().unwrap_or_else(|| safe.with_extension("elf"));
-                        let cc = std::env::var("LKR_CC")
+                        let cc = std::env::var("LK_CC")
                             .or_else(|_| std::env::var("CC"))
                             .unwrap_or_else(|_| "cc".to_string());
 
                         let obj_path = safe.with_extension("o");
                         let mut cc_input = obj_path.clone();
-                        if let Some(llc_path) = resolve_llvm_tool("llc", "LKR_LLVM_LLC") {
+                        if let Some(llc_path) = resolve_llvm_tool("llc", "LK_LLVM_LLC") {
                             let mut llc_cmd = Command::new(&llc_path);
                             llc_cmd.arg("-filetype=obj").arg(&ll_path).arg("-o").arg(&obj_path);
                             if let Some(triple) = &target_triple {
@@ -913,7 +915,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
-    // No separate subcommand to run bytecode; handled below by auto-detecting LKRB magic
+    // No separate subcommand to run bytecode; handled below by auto-detecting LKB magic
 
     // Otherwise: execute FILE as statements
     let file = file.expect("internal: file should be present when no subcommand");
@@ -922,12 +924,12 @@ fn main() -> anyhow::Result<()> {
         e
     })?;
     let src_path_str = safe.to_string_lossy().to_string();
-    // Read raw bytes first to auto-detect LKRB magic
+    // Read raw bytes first to auto-detect LKB magic
     let raw = std::fs::read(&safe).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", src_path_str, e))?;
 
-    // If LKRB magic present, decode and execute via VM
-    if raw.len() >= 4 && &raw[..4] == b"LKRB" {
-        let module = vm::decode_module(&raw).with_context(|| format!("Failed to decode LKRB from {}", src_path_str))?;
+    // If LKB magic present, decode and execute via VM
+    if raw.starts_with(b"LKB") {
+        let module = vm::decode_module(&raw).with_context(|| format!("Failed to decode LKB from {}", src_path_str))?;
 
         // Initialize runtime for concurrency if enabled
         if let Err(e) = rt::init_runtime() {
@@ -936,8 +938,8 @@ fn main() -> anyhow::Result<()> {
 
         // Prepare environment with stdlib
         let mut registry = ModuleRegistry::new();
-        lkr_stdlib::register_stdlib_globals(&mut registry);
-        lkr_stdlib::register_stdlib_modules(&mut registry)?;
+        lk_stdlib::register_stdlib_globals(&mut registry);
+        lk_stdlib::register_stdlib_modules(&mut registry)?;
         let mut resolver = ModuleResolver::with_registry(registry);
         if let Some(parent) = safe.parent().filter(|p| !p.as_os_str().is_empty()) {
             resolver.set_base_dir(parent.to_path_buf());
@@ -977,9 +979,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Otherwise: treat as UTF-8 LKR source and execute statements
+    // Otherwise: treat as UTF-8 LK source and execute statements
     let input = String::from_utf8(raw)
-        .map_err(|e| anyhow::anyhow!("Input file is neither LKRB bytecode nor valid UTF-8 source: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Input file is neither LKB bytecode nor valid UTF-8 source: {}", e))?;
 
     // Initialize runtime for concurrency if enabled
     if let Err(e) = rt::init_runtime() {
@@ -1004,8 +1006,8 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut registry = ModuleRegistry::new();
-    lkr_stdlib::register_stdlib_globals(&mut registry);
-    lkr_stdlib::register_stdlib_modules(&mut registry)?;
+    lk_stdlib::register_stdlib_globals(&mut registry);
+    lk_stdlib::register_stdlib_modules(&mut registry)?;
     let mut resolver = ModuleResolver::with_registry(registry);
     if let Some(parent) = safe.parent().filter(|p| !p.as_os_str().is_empty()) {
         resolver.set_base_dir(parent.to_path_buf());
@@ -1088,7 +1090,7 @@ fn init_package(name: Option<String>) -> anyhow::Result<()> {
     let package_name = name
         .or_else(|| cwd.file_name().map(|name| name.to_string_lossy().to_string()))
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "lkr-package".to_string());
+        .unwrap_or_else(|| "lk-package".to_string());
     let manifest_path = cwd.join(MANIFEST_FILE);
     if manifest_path.exists() {
         anyhow::bail!("{} already exists", manifest_path.display());
@@ -1108,7 +1110,7 @@ fn init_package(name: Option<String>) -> anyhow::Result<()> {
     manifest.write(&manifest_path)?;
     let src_dir = cwd.join("src");
     fs::create_dir_all(&src_dir).with_context(|| format!("create {}", src_dir.display()))?;
-    let main_path = src_dir.join("main.lkr");
+    let main_path = src_dir.join("main.lk");
     if !main_path.exists() {
         fs::write(
             &main_path,
@@ -1274,7 +1276,7 @@ fn print_package_tree() -> anyhow::Result<()> {
         println!("  {} -> {}", module.name, module.root.display());
     }
     for missing in &graph.missing {
-        println!("  {} -> <missing; run lkr pkg fetch>", missing);
+        println!("  {} -> <missing; run lk pkg fetch>", missing);
     }
     Ok(())
 }
@@ -1308,7 +1310,7 @@ fn build_staticlib(crate_name: &str, target_triple: Option<&str>, use_release: b
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let runtime_target_root = std::env::var("LKR_RUNTIME_TARGET_DIR")
+    let runtime_target_root = std::env::var("LK_RUNTIME_TARGET_DIR")
         .map(PathBuf::from)
         .map(|path| {
             if path.is_absolute() {
@@ -1317,7 +1319,7 @@ fn build_staticlib(crate_name: &str, target_triple: Option<&str>, use_release: b
                 workspace_root.join(path)
             }
         })
-        .unwrap_or_else(|_| workspace_root.join("target").join("lkr-native"));
+        .unwrap_or_else(|_| workspace_root.join("target").join("lk-native"));
 
     let mut cmd = Command::new(&cargo);
     cmd.arg("build").arg("-p").arg(crate_name).arg("--lib");
@@ -1356,7 +1358,7 @@ fn build_staticlib(crate_name: &str, target_triple: Option<&str>, use_release: b
 #[cfg(feature = "llvm")]
 fn find_packaged_staticlibs(target_triple: Option<&str>, use_release: bool) -> Option<Vec<PathBuf>> {
     let mut roots = Vec::new();
-    if let Ok(env_dir) = std::env::var("LKR_RUNTIME_LIB_DIR") {
+    if let Ok(env_dir) = std::env::var("LK_RUNTIME_LIB_DIR") {
         let candidate = PathBuf::from(env_dir);
         if candidate.exists() {
             roots.push(candidate);
@@ -1432,7 +1434,7 @@ mod packaged_staticlib_tests {
     #[test]
     fn uses_env_dir_when_all_libs_present() {
         let temp = tempfile::tempdir().expect("tempdir");
-        for name in ["liblkr_core.a", "liblkr_stdlib.a"] {
+        for name in ["liblk_core.a", "liblk_stdlib.a"] {
             let path = temp.path().join(name);
             fs::write(&path, []).expect("write stub lib");
         }

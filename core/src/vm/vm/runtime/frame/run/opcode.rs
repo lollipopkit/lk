@@ -1,6 +1,6 @@
 //! Standard bytecode interpreter — match-dispatch on Op enum.
 //!
-//! This module implements the primary execution loop for LKR bytecode.
+//! This module implements the primary execution loop for LK bytecode.
 //! Each iteration does a `match &f.code[pc]` on the Op enum (70+ variants)
 //! and executes the instruction. Inline caches (Access, Index, Global, Call,
 //! ForRange) are per-instruction-site to accelerate polymorphic operations.
@@ -164,7 +164,7 @@ pub(super) fn run_opcode_code(
                         let lhs = rk_read(regs, &f.consts, *a);
                         let rhs = rk_read(regs, &f.consts, *b);
                         tracing::debug!(
-                            target: "lkr::vm::slowpath",
+                            target: "lk::vm::slowpath",
                             op = "mod",
                             lhs = lhs.type_name(),
                             rhs = rhs.type_name(),

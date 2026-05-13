@@ -230,7 +230,7 @@ impl Vm {
             }
             _ => {
                 tracing::debug!(
-                    target: "lkr::vm::slowpath",
+                    target: "lk::vm::slowpath",
                     op = op_label,
                     lhs = ar.type_name(),
                     rhs = br.type_name(),

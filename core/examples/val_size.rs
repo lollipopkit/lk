@@ -1,4 +1,4 @@
-use lkr_core::val::Val;
+use lk_core::val::Val;
 
 fn main() {
     println!("size_of Val: {}", std::mem::size_of::<Val>());

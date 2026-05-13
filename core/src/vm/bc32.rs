@@ -239,7 +239,7 @@ impl Bc32Decoded {
     }
 }
 
-const TRACE_TARGET: &str = "lkr::vm::bc32";
+const TRACE_TARGET: &str = "lk::vm::bc32";
 
 #[derive(Default)]
 struct Bc32Metrics {

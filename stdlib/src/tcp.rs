@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use lkr_core::{module::Module, val::Val, vm::VmContext};
+use lk_core::{module::Module, val::Val, vm::VmContext};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener as StdTcpListener, TcpStream};
@@ -244,7 +244,7 @@ impl Module for TcpModule {
         "tcp"
     }
 
-    fn register(&self, _registry: &mut lkr_core::module::ModuleRegistry) -> Result<()> {
+    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
         // Don't register functions globally - they should be accessed via module.function()
         Ok(())
     }

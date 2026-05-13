@@ -1,8 +1,8 @@
-use lkr_core::stmt::{Stmt, StmtParser};
-use lkr_core::token::Tokenizer;
-use lkr_core::vm::Compiler;
+use lk_core::stmt::{Stmt, StmtParser};
+use lk_core::token::Tokenizer;
+use lk_core::vm::Compiler;
 
-const FIB_SCRIPT: &str = include_str!("../../examples/fib.lkr");
+const FIB_SCRIPT: &str = include_str!("../../examples/fib.lk");
 
 const REPL_SEQUENCE_SCRIPT: &str = r#"
 let total = 0;
@@ -25,7 +25,7 @@ while (i < 200) {
 return total;
 "#;
 
-fn compile_script(source: &str) -> lkr_core::vm::Function {
+fn compile_script(source: &str) -> lk_core::vm::Function {
     let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(source).unwrap();
     let mut parser = StmtParser::new_with_spans(&tokens, &spans);
     let program = parser.parse_program_with_enhanced_errors(source).unwrap();

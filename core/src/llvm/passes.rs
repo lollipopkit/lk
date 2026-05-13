@@ -10,7 +10,7 @@ use tempfile::NamedTempFile;
 use super::options::OptLevel;
 
 fn resolve_opt_path() -> Option<PathBuf> {
-    if let Ok(explicit) = std::env::var("LKR_LLVM_OPT") {
+    if let Ok(explicit) = std::env::var("LK_LLVM_OPT") {
         let path = PathBuf::from(explicit);
         if path.exists() {
             return Some(path);

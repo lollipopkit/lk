@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
-use lkr_core::{
+use lk_core::{
     module,
     module::Module,
     rt,

@@ -1,4 +1,4 @@
-use lkr_lsp::analyzer::LkrAnalyzer;
+use lk_lsp::analyzer::LkAnalyzer;
 use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind};
 
 fn get_symbol<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
@@ -22,7 +22,7 @@ fn list_child_names(parent: &DocumentSymbol) -> Vec<String> {
 
 #[test]
 fn test_function_symbol_hierarchy_with_groups_and_labels() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let code = r#"
         import math;
 
@@ -84,7 +84,7 @@ fn test_function_symbol_hierarchy_with_groups_and_labels() {
 
 #[test]
 fn test_nested_function_appears_under_parent() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let code = r#"
         fn outer(a: Int) -> Int {
             let x: Int = 1;
@@ -141,7 +141,7 @@ fn test_nested_function_appears_under_parent() {
 
 #[test]
 fn test_toplevel_grouped_containers() {
-    let mut analyzer = LkrAnalyzer::new();
+    let mut analyzer = LkAnalyzer::new();
     let code = r#"
         import math;
         import { sqrt, sin } from math;

@@ -2,7 +2,7 @@
 mod tests {
     use crate::{list::ListModule, register_stdlib_modules};
     use anyhow::Result;
-    use lkr_core::{
+    use lk_core::{
         module::{self, Module},
         stmt::{self, stmt_parser::StmtParser},
         token::Tokenizer,

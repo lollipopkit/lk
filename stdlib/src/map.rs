@@ -3,15 +3,15 @@ use std::mem;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use lkr_core::module::{Module, ModuleRegistry};
-use lkr_core::val::Val;
-use lkr_core::val::methods::register_method;
-use lkr_core::vm::VmContext;
+use lk_core::module::{Module, ModuleRegistry};
+use lk_core::val::Val;
+use lk_core::val::methods::register_method;
+use lk_core::vm::VmContext;
 
 use crate::collections::{MapMutation, MutableMap};
 
-use lkr_core::util::fast_map::FastHashMap;
-use lkr_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue};
+use lk_core::util::fast_map::FastHashMap;
+use lk_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue};
 
 const MAP_MUT_TYPE: &str = "MapMut";
 
@@ -472,10 +472,10 @@ mod tests {
     use super::*;
     use crate::register_stdlib_modules;
     use anyhow::Result;
-    use lkr_core::module::ModuleRegistry;
-    use lkr_core::stmt::{ModuleResolver, stmt_parser::StmtParser};
-    use lkr_core::token::Tokenizer;
-    use lkr_core::vm::Vm;
+    use lk_core::module::ModuleRegistry;
+    use lk_core::stmt::{ModuleResolver, stmt_parser::StmtParser};
+    use lk_core::token::Tokenizer;
+    use lk_core::vm::Vm;
     use std::sync::Arc;
 
     fn run(source: &str) -> Result<Val> {

@@ -1,13 +1,13 @@
 [package]
-name = "lkr-core"
-description = "Core library for LKR"
+name = "lk-core"
+description = "Core library for LK"
 version = "0.2.0"
 edition = "2024"
 authors = ["lollipopkit <a@lpkt.cn>"]
 license = "Apache-2.0"
 
 [lib]
-name = "lkr_core"
+name = "lk_core"
 crate-type = ["rlib", "staticlib"]
 
 [features]

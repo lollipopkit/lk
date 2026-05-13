@@ -368,7 +368,7 @@ fn drop_runtime_arc(runtime: Arc<Runtime>) {
 }
 
 fn create_runtime() -> Result<Runtime> {
-    if std::env::var("LKR_SINGLE_THREAD").is_ok() {
+    if std::env::var("LK_SINGLE_THREAD").is_ok() {
         return Runtime::new_current_thread();
     }
 

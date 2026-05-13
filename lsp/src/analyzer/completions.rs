@@ -1,8 +1,8 @@
-use super::LkrAnalyzer;
-use lkr_core::{expr::Expr, val::Val};
+use super::LkAnalyzer;
+use lk_core::{expr::Expr, val::Val};
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, Position, Range};
 
-impl LkrAnalyzer {
+impl LkAnalyzer {
     /// Get common variable completions for the given prefix
     pub fn get_var_completions(&mut self, prefix: &str) -> Vec<CompletionItem> {
         // Use cached completion items if available
@@ -103,7 +103,7 @@ impl LkrAnalyzer {
                         Range::new(Position::new(0, 0), Position::new(0, 100)),
                         Some(DiagnosticSeverity::WARNING),
                         None,
-                        Some("lkr".to_string()),
+                        Some("lk".to_string()),
                         format!("Identifier root '{}' not found in provided variables", ctx_key),
                         None,
                         None,
@@ -115,7 +115,7 @@ impl LkrAnalyzer {
                 Range::new(Position::new(0, 0), Position::new(0, 100)),
                 Some(DiagnosticSeverity::INFORMATION),
                 None,
-                Some("lkr".to_string()),
+                Some("lk".to_string()),
                 format!("Expression references identifier roots: {:?}", required_ctx),
                 None,
                 None,

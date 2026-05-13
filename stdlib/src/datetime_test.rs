@@ -5,7 +5,7 @@ mod tests {
     use crate::{datetime::DateTimeModule, register_stdlib_modules};
     use anyhow::Result;
     use chrono::{TimeZone, Utc};
-    use lkr_core::{
+    use lk_core::{
         module, module::Module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val, val::Val, vm, vm::VmContext,
     };
 

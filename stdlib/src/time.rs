@@ -1,9 +1,9 @@
-//! Time module for LKR concurrency
+//! Time module for LK concurrency
 //!
 //! Provides timing and scheduling functions for concurrent operations.
 
 use anyhow::{Result, anyhow};
-use lkr_core::{
+use lk_core::{
     module,
     module::Module,
     rt::with_runtime,

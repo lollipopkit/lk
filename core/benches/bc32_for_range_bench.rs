@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use lkr_core::{
+use lk_core::{
     expr::Expr,
     stmt::{self, Stmt},
     val::Val,

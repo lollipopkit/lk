@@ -8,7 +8,7 @@ use tempfile::tempdir;
 #[test]
 fn reports_numeric_operand_error() -> Result<(), Box<dyn Error>> {
     let dir = tempdir()?;
-    let script_path = dir.path().join("bad_numeric.lkr");
+    let script_path = dir.path().join("bad_numeric.lk");
     fs::write(
         &script_path,
         r#"
@@ -18,7 +18,7 @@ fn reports_numeric_operand_error() -> Result<(), Box<dyn Error>> {
         "#,
     )?;
 
-    let mut cmd = Command::cargo_bin("lkr")?;
+    let mut cmd = Command::cargo_bin("lk")?;
     cmd.args(["check", script_path.to_str().unwrap()]);
     cmd.assert()
         .failure()

@@ -1,13 +1,13 @@
-# LKR Language Server
+# LK Language Server
 
-A Language Server Protocol (LSP) implementation for the LKR (Query Check Language) domain-specific language.
+A Language Server Protocol (LSP) implementation for the LK (Query Check Language) domain-specific language.
 
 ## Features
 
-- **Syntax Diagnostics**: Real-time error detection for LKR expressions and statement programs
+- **Syntax Diagnostics**: Real-time error detection for LK expressions and statement programs
 - **Hover Information**: Shows type information, identifier roots, and symbol counts
-- **Code Completion**: Auto-complete for LKR keywords, operators, common variables, and standard library functions
-- **Document Symbols**: Navigate through variables, functions, and imports in LKR programs
+- **Code Completion**: Auto-complete for LK keywords, operators, common variables, and standard library functions
+- **Document Symbols**: Navigate through variables, functions, and imports in LK programs
 - **Identifier Analysis**: Detects and analyzes top-level identifier roots used (req, record, etc.)
 
 ## Architecture
@@ -15,7 +15,7 @@ A Language Server Protocol (LSP) implementation for the LKR (Query Check Languag
 The LSP server consists of:
 
 - `main.rs`: Core LSP server implementation using tower-lsp
-- `analyzer.rs`: LKR language analysis engine that provides:
+- `analyzer.rs`: LK language analysis engine that provides:
   - Expression and statement parsing
   - Symbol extraction (variables, functions, imports)
   - Identifier root collection
@@ -23,13 +23,13 @@ The LSP server consists of:
 
 ## Supported Language Features
 
-### LKR Expressions
+### LK Expressions
 - Identifier/property access (`req.user.role`)
 - Arithmetic operations (`+`, `-`, `*`, `/`, `%`)
 - Logical operations (`&&`, `||`, `!`)
 - Comparison operations (`==`, `!=`, `<`, `>`, `<=`, `>=`, `in`)
 
-### LKR Statements
+### LK Statements
 - Variable declarations (`let x = value;`)
 - Function definitions (`fn name(params) { body }`)
 - Import statements (`import math;`, `import { abs } from math;`)
@@ -64,12 +64,12 @@ The LSP server consists of:
 
 ### Building
 ```bash
-cargo build -p lkr-lsp
+cargo build -p lk-lsp
 ```
 
 ### Running
 ```bash
-cargo run -p lkr-lsp
+cargo run -p lk-lsp
 ```
 
 The server communicates via stdin/stdout using the LSP JSON-RPC protocol.
@@ -79,7 +79,7 @@ The server communicates via stdin/stdout using the LSP JSON-RPC protocol.
 Analyze a single file from the command line and print JSON containing diagnostics, symbols, identifier roots, and semantic tokens:
 
 ```bash
-cargo run -p lkr-lsp -- --analyze path/to/file.lkr
+cargo run -p lk-lsp -- --analyze path/to/file.lk
 ```
 
 Notes:
@@ -92,25 +92,25 @@ Notes:
 Create a VS Code extension that launches the LSP server:
 ```json
 {
-  "name": "lkr",
+  "name": "lk",
   "engines": { "vscode": "^1.50.0" },
   "contributes": {
     "languages": [{
-      "id": "lkr",
-      "extensions": [".lkr"]
+      "id": "lk",
+      "extensions": [".lk"]
     }]
   },
-  "activationEvents": ["onLanguage:lkr"]
+  "activationEvents": ["onLanguage:lk"]
 }
 ```
 
 #### Neovim
 Use nvim-lspconfig:
 ```lua
-require'lspconfig'.configs.lkr = {
+require'lspconfig'.configs.lk = {
   default_config = {
-    cmd = {'lkr-lsp'},
-    filetypes = {'lkr'},
+    cmd = {'lk-lsp'},
+    filetypes = {'lk'},
     root_dir = require('lspconfig.util').root_pattern('.git'),
   }
 }
@@ -118,14 +118,14 @@ require'lspconfig'.configs.lkr = {
 
 ## Development
 
-The LSP server leverages the LKR core library for parsing and analysis:
-- Expression parsing via `lkr_core::expr::Expr`
-- Statement parsing via `lkr_core::stmt_parser::StmtParser`
-- Tokenization via `lkr_core::token::Tokenizer`
+The LSP server leverages the LK core library for parsing and analysis:
+- Expression parsing via `lk_core::expr::Expr`
+- Statement parsing via `lk_core::stmt_parser::StmtParser`
+- Tokenization via `lk_core::token::Tokenizer`
 
 ### Testing
-Test the LSP server with a LKR file containing:
-```lkr
+Test the LSP server with a LK file containing:
+```lk
 // Expression example
 req.user.role == 'admin' && req.user.level >= 5
 

@@ -1,8 +1,8 @@
 use anyhow::Result;
-use lkr_core::module::Module;
-use lkr_core::val::Val;
-use lkr_core::val::de;
-use lkr_core::vm::VmContext;
+use lk_core::module::Module;
+use lk_core::val::Val;
+use lk_core::val::de;
+use lk_core::vm::VmContext;
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -29,7 +29,7 @@ impl Module for JsonModule {
         "json"
     }
 
-    fn register(&self, _registry: &mut lkr_core::module::ModuleRegistry) -> Result<()> {
+    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
         Ok(())
     }
 

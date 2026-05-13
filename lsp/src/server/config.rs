@@ -4,7 +4,7 @@ use serde::Deserialize;
 use tokio::sync::Semaphore;
 use tower_lsp::lsp_types::ConfigurationItem;
 
-use super::state::LkrLanguageServer;
+use super::state::LkLanguageServer;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ServerConfig {
@@ -33,7 +33,7 @@ impl Default for ServerConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct LkrLspConfigSection {
+struct LkLspConfigSection {
     #[serde(default)]
     inlay_hints: InlayHintsConfig,
     #[serde(default)]
@@ -70,16 +70,16 @@ struct PerformanceConfig {
     inlay_scan_margin_lines: Option<usize>,
 }
 
-impl LkrLanguageServer {
+impl LkLanguageServer {
     pub(crate) async fn load_config(&self) {
         let items = vec![ConfigurationItem {
             scope_uri: None,
-            section: Some("lkr.lsp".to_string()),
+            section: Some("lk.lsp".to_string()),
         }];
 
         if let Ok(values) = self.client.configuration(items).await {
             if let Some(val) = values.into_iter().next() {
-                if let Ok(cfg) = serde_json::from_value::<LkrLspConfigSection>(val) {
+                if let Ok(cfg) = serde_json::from_value::<LkLspConfigSection>(val) {
                     let mut guard = self.config.lock().unwrap();
                     guard.inlay_hints_enabled = cfg.inlay_hints.enabled.unwrap_or(true);
                     guard.inlay_hints_parameters = cfg.inlay_hints.parameters.enabled.unwrap_or(true);

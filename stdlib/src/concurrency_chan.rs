@@ -1,9 +1,9 @@
-//! Channel module for LKR
+//! Channel module for LK
 //!
 //! Provides channel operations for inter-task communication.
 
 use anyhow::{Result, anyhow};
-use lkr_core::{module, module::Module, rt, val::Val, vm::VmContext};
+use lk_core::{module, module::Module, rt, val::Val, vm::VmContext};
 use std::collections::HashMap;
 
 /// Channel module - provides channel operations

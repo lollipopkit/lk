@@ -3,7 +3,7 @@ NPM ?= npm
 VSC_EXT_DIR := vsc-ext
 VSC_EXTENSIONS := highlight lsp
 
-.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext install-lkr
+.PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext install-lk
 
 vsix: $(VSC_EXTENSIONS:%=vsix-%)
 
@@ -17,6 +17,6 @@ clean-vsix:
 debug-lsp-ext:
 	./scripts/debug-vscode-lsp.sh
 
-install-lkr:
+install-lk:
 	cargo install --path cli
 	cargo install --path lsp

@@ -1,6 +1,6 @@
 ## 语言概览
 
-本文档描述了本仓库所实现的 LKR 语言（解析器、求值器、语句、类型以及标准库的对接）。
+本文档描述了本仓库所实现的 LK 语言（解析器、求值器、语句、类型以及标准库的对接）。
 
 注释
 - 行注释：`// ...`
@@ -130,22 +130,22 @@ for 循环模式
 导入
 - 形式：
   - `import math;` —— 将标准库模块作为命名空间导入
-  - `import "path/to/file.lkr";` —— 将文件模块作为命名空间导入（命名为文件名的主干）
+  - `import "path/to/file.lk";` —— 将文件模块作为命名空间导入（命名为文件名的主干）
   - `import { abs, sqrt } from math;` —— 挑选条目导入
-  - `import { f as g } from "m.lkr";` —— 带别名
+  - `import { f as g } from "m.lk";` —— 带别名
   - `import * as m from math;` —— 命名空间别名
   - `import math as m;` —— 模块别名
 
 - 文件导入解析与安全：
   - 仅允许相对且净化后的路径：拒绝绝对路径与任何包含 `..` 的路径。
-  - 解析顺序：优先尝试 `${MOD_NAME}.lkr`，若不存在再尝试 `${MOD_NAME}/mod.lkr`（相对于当前文件目录）。
-  - 若传入已带 `.lkr` 的相对路径（如 `"lib/foo.lkr"`），在存在时将被直接使用。
-  - 在包内，裸模块导入先查标准库，再查 `Lkr.toml` 中的 workspace/dependency package。package 导入解析到 `src/mod.lkr` 或 `src/<package-name>.lkr`。
+  - 解析顺序：优先尝试 `${MOD_NAME}.lk`，若不存在再尝试 `${MOD_NAME}/mod.lk`（相对于当前文件目录）。
+  - 若传入已带 `.lk` 的相对路径（如 `"lib/foo.lk"`），在存在时将被直接使用。
+  - 在包内，裸模块导入先查标准库，再查 `Lk.toml` 中的 workspace/dependency package。package 导入解析到 `src/mod.lk` 或 `src/<package-name>.lk`。
 
 包
-- `Lkr.toml` 定义 `[package]`、`[dependencies]`、`[workspace]` 与 `[workspace.dependencies]`。
+- `Lk.toml` 定义 `[package]`、`[dependencies]`、`[workspace]` 与 `[workspace.dependencies]`。
 - 字符串依赖默认是 GitHub，例如 `util = "owner/repo"`。
-- `Lkr.lock` 保存已获取 git 源的具体 revision。
+- `Lk.lock` 保存已获取 git 源的具体 revision。
 - 包管理器命令和 manifest 示例见 `docs/packages.md`。
 
 内建与标准库
@@ -258,9 +258,9 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ```
 
 ## CLI 使用说明
-- 进入 REPL：`lkr`
-- 执行脚本（语句）：`lkr FILE`
-- 编译为字节码：`lkr compile FILE` → `FILE.lkrb`
+- 进入 REPL：`lk`
+- 执行脚本（语句）：`lk FILE`
+- 编译为字节码：`lk compile FILE` → `FILE.lkb`
 - 仅允许相对且净化后的命令行路径
 - CLI 仅在结果值非 `nil` 时打印输出
 

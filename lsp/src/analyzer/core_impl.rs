@@ -1,7 +1,7 @@
 use super::*;
 use std::time::Instant;
 
-impl LkrAnalyzer {
+impl LkAnalyzer {
     /// Collect user-defined function named-parameter declarations from the current document.
     /// Returns a map: function name -> list of NamedParamDecl (from core AST).
     pub fn collect_fn_named_param_decls(&mut self, content: &str) -> Arc<HashMap<String, Vec<NamedParamDecl>>> {
@@ -108,7 +108,7 @@ impl LkrAnalyzer {
                             range,
                             Some(DiagnosticSeverity::ERROR),
                             None,
-                            Some("lkr".to_string()),
+                            Some("lk".to_string()),
                             format!("Duplicate named argument: {}", name),
                             None,
                             None,
@@ -128,7 +128,7 @@ impl LkrAnalyzer {
                             range,
                             Some(DiagnosticSeverity::ERROR),
                             None,
-                            Some("lkr".to_string()),
+                            Some("lk".to_string()),
                             format!("Unknown named argument: {}", name),
                             None,
                             None,
@@ -150,7 +150,7 @@ impl LkrAnalyzer {
                         range,
                         Some(DiagnosticSeverity::ERROR),
                         None,
-                        Some("lkr".to_string()),
+                        Some("lk".to_string()),
                         format!("Missing required named argument: {}", decl.name),
                         None,
                         None,
@@ -177,13 +177,13 @@ impl LkrAnalyzer {
             missing_packages: HashSet::new(),
         }
     }
-    /// Create a new LKR analyzer
+    /// Create a new LK analyzer
     pub fn new() -> Self {
         // Initialize a registry preloaded with stdlib modules and globals
         let mut registry = ModuleRegistry::new();
         // Register stdlib globals and modules so LSP can recognize them
-        lkr_stdlib::register_stdlib_globals(&mut registry);
-        if let Err(err) = lkr_stdlib::register_stdlib_modules(&mut registry) {
+        lk_stdlib::register_stdlib_globals(&mut registry);
+        if let Err(err) = lk_stdlib::register_stdlib_modules(&mut registry) {
             tracing::error!("failed to register stdlib modules: {:#}", err);
         }
 
@@ -630,12 +630,12 @@ impl LkrAnalyzer {
                                         range,
                                         Some(DiagnosticSeverity::ERROR),
                                         None,
-                                        Some("lkr".to_string()),
+                                        Some("lk".to_string()),
                                         format!("File not found: {}", path),
                                         None,
                                         None,
                                     );
-                                    d.code = Some(NumberOrString::String("lkr_file_not_found".to_string()));
+                                    d.code = Some(NumberOrString::String("lk_file_not_found".to_string()));
                                     result.diagnostics.push(d);
                                 }
                             }
@@ -702,7 +702,7 @@ impl LkrAnalyzer {
                                                             range,
                                                             Some(DiagnosticSeverity::ERROR),
                                                             None,
-                                                            Some("lkr".to_string()),
+                                                            Some("lk".to_string()),
                                                             format!(
                                                                 "Unknown export '{}' from module '{}'",
                                                                 item_name, mod_name
@@ -724,7 +724,7 @@ impl LkrAnalyzer {
                                             range,
                                             Some(DiagnosticSeverity::ERROR),
                                             None,
-                                            Some("lkr".to_string()),
+                                            Some("lk".to_string()),
                                             self.module_diagnostic_message(mod_name),
                                             None,
                                             None,
@@ -761,7 +761,7 @@ impl LkrAnalyzer {
                                             range,
                                             Some(DiagnosticSeverity::ERROR),
                                             None,
-                                            Some("lkr".to_string()),
+                                            Some("lk".to_string()),
                                             self.module_diagnostic_message(mod_name),
                                             None,
                                             None,
@@ -792,7 +792,7 @@ impl LkrAnalyzer {
                                     range,
                                     Some(DiagnosticSeverity::ERROR),
                                     None,
-                                    Some("lkr".to_string()),
+                                    Some("lk".to_string()),
                                     self.module_diagnostic_message(mod_name),
                                     None,
                                     None,
@@ -831,9 +831,9 @@ impl LkrAnalyzer {
                 if p.exists() {
                     return true;
                 }
-                // Try with .lkr appended if missing extension
+                // Try with .lk appended if missing extension
                 if p.extension().is_none() {
-                    let with_ext = p.with_extension("lkr");
+                    let with_ext = p.with_extension("lk");
                     if with_ext.exists() {
                         return true;
                     }
@@ -858,7 +858,7 @@ impl LkrAnalyzer {
 
     fn module_diagnostic_message(&self, name: &str) -> String {
         if self.missing_packages.contains(name) {
-            format!("Package not fetched: {} (run `lkr pkg fetch`)", name)
+            format!("Package not fetched: {} (run `lk pkg fetch`)", name)
         } else {
             format!("Unknown module: {}", name)
         }
@@ -883,7 +883,7 @@ impl LkrAnalyzer {
         Ok(entry)
     }
 
-    /// Analyze LKR code and return diagnostics, symbols, and identifier roots
+    /// Analyze LK code and return diagnostics, symbols, and identifier roots
     pub fn analyze(&mut self, content: &str) -> AnalysisResult {
         let mut result = AnalysisResult {
             diagnostics: Vec::new(),
@@ -915,7 +915,7 @@ impl LkrAnalyzer {
                     range,
                     Some(DiagnosticSeverity::ERROR),
                     None,
-                    Some("lkr".to_string()),
+                    Some("lk".to_string()),
                     format!("Tokenization error: {}", parse_err.message),
                     None,
                     None,
@@ -935,7 +935,7 @@ impl LkrAnalyzer {
                 // Add expression symbol
                 let symbol = DocumentSymbol {
                     name: "expression".to_string(),
-                    detail: Some("LKR Expression".to_string()),
+                    detail: Some("LK Expression".to_string()),
                     kind: SymbolKind::CONSTANT,
                     tags: None,
                     #[allow(deprecated)]
@@ -1074,7 +1074,7 @@ impl LkrAnalyzer {
                                     range,
                                     Some(DiagnosticSeverity::ERROR),
                                     None,
-                                    Some("lkr".to_string()),
+                                    Some("lk".to_string()),
                                     e.message,
                                     None,
                                     None,
@@ -1098,7 +1098,7 @@ impl LkrAnalyzer {
                                     range,
                                     Some(DiagnosticSeverity::ERROR),
                                     None,
-                                    Some("lkr".to_string()),
+                                    Some("lk".to_string()),
                                     e.message,
                                     None,
                                     None,
@@ -1147,7 +1147,7 @@ impl LkrAnalyzer {
                                 range,
                                 Some(DiagnosticSeverity::ERROR),
                                 None,
-                                Some("lkr".to_string()),
+                                Some("lk".to_string()),
                                 parse_err.message.clone(),
                                 None,
                                 None,
@@ -1183,7 +1183,7 @@ impl LkrAnalyzer {
                             Range::new(Position::new(0, 0), Position::new(0, 0)),
                             Some(DiagnosticSeverity::ERROR),
                             None,
-                            Some("lkr".to_string()),
+                            Some("lk".to_string()),
                             err.to_string(),
                             None,
                             None,
@@ -1267,7 +1267,7 @@ impl LkrAnalyzer {
             for (pname, pspan) in fb.param_spans.iter() {
                 pool.entry(pname.clone()).or_default().push(pspan.clone());
             }
-            let locals = LkrAnalyzer::scan_decl_spans_in_range(tokens, spans, fb.body_start_idx, fb.body_end_idx);
+            let locals = LkAnalyzer::scan_decl_spans_in_range(tokens, spans, fb.body_start_idx, fb.body_end_idx);
             for (n, sp) in locals {
                 pool.entry(n).or_default().push(sp);
             }

@@ -9,10 +9,10 @@ use tokio::task;
 use tokio::time::{sleep, Duration};
 use tower_lsp::lsp_types::*;
 
-use crate::analyzer::{AnalysisResult, LkrAnalyzer};
-use lkr_core::{package::PackageGraph, resolve, stmt, token};
+use crate::analyzer::{AnalysisResult, LkAnalyzer};
+use lk_core::{package::PackageGraph, resolve, stmt, token};
 
-use super::state::LkrLanguageServer;
+use super::state::LkLanguageServer;
 use super::text::{describe_token_hover, find_token_at_offset, position_to_char_idx};
 use super::utils::compute_content_hash;
 use tracing::debug;
@@ -70,7 +70,7 @@ pub(crate) struct SymbolContext {
     pub(crate) qualifier: Option<String>,
 }
 
-impl LkrLanguageServer {
+impl LkLanguageServer {
     pub(crate) fn schedule_workspace_cache_preload(&self) {
         let cache = self.workspace_cache.clone();
         tokio::spawn(async move {
@@ -161,7 +161,7 @@ impl LkrLanguageServer {
 
         let start = Instant::now();
         let computed_result = task::spawn_blocking(move || {
-            let mut analyzer = LkrAnalyzer::new();
+            let mut analyzer = LkAnalyzer::new();
             if let Some(b) = base_dir {
                 let (base, modules, missing) = workspace_cache.package_context_for(b);
                 if modules.is_empty() && missing.is_empty() {
@@ -226,7 +226,7 @@ impl LkrLanguageServer {
         let workspace_cache = self.workspace_cache.clone();
         let start = Instant::now();
         let generated_result = task::spawn_blocking(move || {
-            let mut analyzer = LkrAnalyzer::new_light();
+            let mut analyzer = LkAnalyzer::new_light();
             if let Some(b) = base_dir {
                 let (base, modules, missing) = workspace_cache.package_context_for(b);
                 if modules.is_empty() && missing.is_empty() {
@@ -303,7 +303,7 @@ impl LkrLanguageServer {
                     Some((*cached.analysis).clone())
                 } else {
                     task::spawn_blocking(move || {
-                        let mut analyzer = LkrAnalyzer::new();
+                        let mut analyzer = LkAnalyzer::new();
                         if let Some(b) = base_dir {
                             let (base, modules, missing) = workspace_cache.package_context_for(b);
                             if modules.is_empty() && missing.is_empty() {
@@ -421,7 +421,7 @@ impl LkrLanguageServer {
             if !matches!(tokens.get(i.checked_sub(1)?), Some(token::Token::Import)) {
                 continue;
             }
-            let path = self.resolve_lkr_import_path(import_path, current_uri)?;
+            let path = self.resolve_lk_import_path(import_path, current_uri)?;
             let uri = Url::from_file_path(path).ok()?;
             return Some(Location::new(uri, Range::new(Position::new(0, 0), Position::new(0, 0))));
         }
@@ -522,7 +522,7 @@ impl LkrLanguageServer {
             ) {
                 continue;
             }
-            let Some(path) = self.resolve_lkr_import_path(import_path, current_uri) else {
+            let Some(path) = self.resolve_lk_import_path(import_path, current_uri) else {
                 continue;
             };
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -541,12 +541,12 @@ impl LkrLanguageServer {
     }
 
     fn imported_module_for_alias(&self, content: &str, alias: &str) -> Option<String> {
-        let mut analyzer = LkrAnalyzer::new_light();
+        let mut analyzer = LkAnalyzer::new_light();
         let aliases = analyzer.collect_import_aliases(content);
         aliases.get(alias).cloned()
     }
 
-    fn resolve_lkr_import_path(&self, import_path: &str, current_uri: &Url) -> Option<PathBuf> {
+    fn resolve_lk_import_path(&self, import_path: &str, current_uri: &Url) -> Option<PathBuf> {
         if import_path.is_empty() || import_path.contains("..") || Path::new(import_path).is_absolute() {
             return None;
         }
@@ -637,9 +637,9 @@ impl LkrLanguageServer {
         let program = parser.parse_program_with_enhanced_errors(content).ok()?;
         let mut resolver = resolve::slots::SlotResolver::new();
         let resolution = resolver.resolve_program_slots(&program);
-        let analyzer = LkrAnalyzer::default();
+        let analyzer = LkAnalyzer::default();
         let enriched = analyzer.enrich_layout_spans(&resolution.root, &tokens, &spans);
-        let fblocks = LkrAnalyzer::scan_function_blocks(&tokens, &spans);
+        let fblocks = LkAnalyzer::scan_function_blocks(&tokens, &spans);
         let cursor_line = pos.line + 1;
         let cursor_col = pos.character + 1;
         let mut cursor_offset = 0usize;
@@ -737,7 +737,7 @@ fn import_path_candidates(base: &Path) -> Vec<PathBuf> {
     if base.extension().is_some() {
         vec![base.to_path_buf()]
     } else {
-        vec![base.with_extension("lkr"), base.join("mod.lkr")]
+        vec![base.with_extension("lk"), base.join("mod.lk")]
     }
 }
 
@@ -847,11 +847,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn import_path_candidates_adds_lkr_and_mod_file() {
+    fn import_path_candidates_adds_lk_and_mod_file() {
         let candidates = import_path_candidates(Path::new("examples/fib"));
         assert_eq!(
             candidates,
-            vec![PathBuf::from("examples/fib.lkr"), PathBuf::from("examples/fib/mod.lkr")]
+            vec![PathBuf::from("examples/fib.lk"), PathBuf::from("examples/fib/mod.lk")]
         );
     }
 

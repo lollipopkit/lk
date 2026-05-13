@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use lkr_core::{ast, expr::Expr, token, val::Val, vm::VmContext};
+use lk_core::{ast, expr::Expr, token, val::Val, vm::VmContext};
 use std::collections::HashMap;
 use std::hint::black_box;
 use std::sync::Arc;

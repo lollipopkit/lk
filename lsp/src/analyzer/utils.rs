@@ -1,4 +1,4 @@
-use lkr_core::expr;
+use lk_core::expr;
 
 /// Helper function to extract variable names from a pattern for LSP analysis
 pub fn extract_variables_from_pattern(pattern: &expr::Pattern) -> Option<Vec<String>> {

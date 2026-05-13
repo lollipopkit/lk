@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use lkr_core::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
-use lkr_core::val::Val;
+use lk_core::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
+use lk_core::val::Val;
 
 /// Trait describing a sequence container that supports mutation with
 /// copy-on-write semantics.

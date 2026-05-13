@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::FormattingOptions;
 
-pub(crate) fn format_lkr(input: &str, options: &FormattingOptions) -> String {
+pub(crate) fn format_lk(input: &str, options: &FormattingOptions) -> String {
     let mut out = String::with_capacity(input.len() + 16);
     let use_spaces = options.insert_spaces;
     let tab_size = options.tab_size.clamp(1, 8) as usize;

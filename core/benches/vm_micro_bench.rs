@@ -1,10 +1,10 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use lkr_core::val::Val;
+use lk_core::val::Val;
 use std::hint::black_box;
 
 mod vm_benches {
     use super::*;
-    use lkr_core::vm::{Function, Op, Vm, VmContext};
+    use lk_core::vm::{Function, Op, Vm, VmContext};
     use std::sync::Arc;
 
     fn make_index_fn() -> Function {

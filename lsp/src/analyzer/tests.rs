@@ -1,13 +1,13 @@
 use super::*;
-use lkr_core::expr;
+use lk_core::expr;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::{
     DiagnosticSeverity, InlayHintKind, NumberOrString, Position, Range, SemanticToken, SymbolKind,
 };
 use val::Val;
 
-fn create_analyzer() -> LkrAnalyzer {
-    LkrAnalyzer::new()
+fn create_analyzer() -> LkAnalyzer {
+    LkAnalyzer::new()
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn test_analyze_statement_program() {
     let diag = &result.diagnostics[0];
     assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
     assert!(diag.message.contains("Function 'calculate_score' infers implicit Any"));
-    assert_eq!(diag.code, Some(NumberOrString::String("lkr_type_error".to_string())));
+    assert_eq!(diag.code, Some(NumberOrString::String("lk_type_error".to_string())));
 
     // Should have symbols for import, variable, and function
     assert!(result.symbols.len() >= 3);
@@ -320,7 +320,7 @@ fn test_validate_semantic_tokens_rejects_bad_ranges_and_legend_indexes() {
 
 #[test]
 fn test_type_inlay_hints_let_and_define() {
-    let analyzer = LkrAnalyzer::new();
+    let analyzer = LkAnalyzer::new();
     let src = r#"
         let x = 1;
         y := 1.0;

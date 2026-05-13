@@ -8,11 +8,11 @@ use crate::iter::{
     unique as iter_unique, zip as iter_zip,
 };
 use anyhow::{Result, anyhow};
-use lkr_core::module::{Module, ModuleRegistry};
-use lkr_core::val::Val;
-use lkr_core::val::methods::register_method;
-use lkr_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue};
-use lkr_core::vm::VmContext;
+use lk_core::module::{Module, ModuleRegistry};
+use lk_core::val::Val;
+use lk_core::val::methods::register_method;
+use lk_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue};
+use lk_core::vm::VmContext;
 
 const LIST_MUT_TYPE: &str = "ListMut";
 

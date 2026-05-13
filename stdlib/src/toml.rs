@@ -1,5 +1,5 @@
 use anyhow::Result;
-use lkr_core::{
+use lk_core::{
     module::{self, Module},
     val::{Val, de},
     vm::VmContext,

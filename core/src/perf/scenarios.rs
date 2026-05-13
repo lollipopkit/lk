@@ -95,7 +95,7 @@ impl std::fmt::Debug for ExpectedValue {
     }
 }
 
-const FIB_SCRIPT: &str = concat!(include_str!("../../../examples/fib.lkr"), "\nreturn iterative(30);\n");
+const FIB_SCRIPT: &str = concat!(include_str!("../../../examples/fib.lk"), "\nreturn iterative(30);\n");
 
 const REPL_SEQUENCE_SCRIPT: &str = r#"
 let total = 0;

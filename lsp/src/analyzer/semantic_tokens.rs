@@ -1,4 +1,4 @@
-use super::{LkrAnalyzer, MAX_TOKENS_PER_DOC, MAX_TOKENS_PER_RANGE};
+use super::{LkAnalyzer, MAX_TOKENS_PER_DOC, MAX_TOKENS_PER_RANGE};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use tower_lsp::lsp_types::{Range, SemanticToken};
@@ -18,8 +18,8 @@ pub struct SemanticTokenValidationSummary {
     pub max_length: u32,
 }
 
-impl LkrAnalyzer {
-    /// Generate semantic tokens for LKR code (optimized version)
+impl LkAnalyzer {
+    /// Generate semantic tokens for LK code (optimized version)
     pub fn generate_semantic_tokens(&self, content: &str) -> Vec<SemanticToken> {
         // Early return for empty content
         if content.trim().is_empty() {

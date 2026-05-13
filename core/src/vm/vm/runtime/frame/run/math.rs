@@ -55,7 +55,7 @@ where
         let lhs = rk_read(regs, consts, a);
         let rhs = rk_read(regs, consts, b);
         tracing::debug!(
-            target: "lkr::vm::slowpath",
+            target: "lk::vm::slowpath",
             op = ?fallback,
             lhs = lhs.type_name(),
             rhs = rhs.type_name(),
@@ -90,7 +90,7 @@ where
         let lhs = rk_read(regs, consts, a);
         let rhs = rk_read(regs, consts, b);
         tracing::debug!(
-            target: "lkr::vm::slowpath",
+            target: "lk::vm::slowpath",
             op = ?fallback,
             lhs = lhs.type_name(),
             rhs = rhs.type_name(),
@@ -126,7 +126,7 @@ where
 
     let imm_val = Val::Int(imm as i64);
     tracing::debug!(
-        target: "lkr::vm::slowpath",
+        target: "lk::vm::slowpath",
         op = ?fallback,
         lhs = aval.type_name(),
         rhs = "ImmediateInt",
@@ -166,7 +166,7 @@ pub(super) fn cmp_ord_imm(
         _ => {
             let imm_val = Val::Int(imm_i64);
             tracing::debug!(
-                target: "lkr::vm::slowpath",
+                target: "lk::vm::slowpath",
                 op = ?fallback,
                 lhs = aval.type_name(),
                 rhs = "ImmediateInt",
@@ -205,7 +205,7 @@ pub(super) fn cmp_eq_imm(
         _ => {
             let imm_val = Val::Int(imm_i64);
             tracing::debug!(
-                target: "lkr::vm::slowpath",
+                target: "lk::vm::slowpath",
                 op = ?fallback,
                 lhs = aval.type_name(),
                 rhs = "ImmediateInt",
@@ -244,7 +244,7 @@ pub(super) fn cmp_ne_imm(
         _ => {
             let imm_val = Val::Int(imm_i64);
             tracing::debug!(
-                target: "lkr::vm::slowpath",
+                target: "lk::vm::slowpath",
                 op = ?fallback,
                 lhs = aval.type_name(),
                 rhs = "ImmediateInt",

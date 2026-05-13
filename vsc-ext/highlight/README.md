@@ -1,6 +1,6 @@
-# LKR Syntax Highlighting for VS Code
+# LK Syntax Highlighting for VS Code
 
-This extension provides TextMate grammar and language configuration for the LKR language (`.lkr`).
+This extension provides TextMate grammar and language configuration for the LK language (`.lk`).
 
-Install together with `LKR Language Server` (client) for full editor features.
+Install together with `LK Language Server` (client) for full editor features.
 

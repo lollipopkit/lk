@@ -9,7 +9,7 @@ use crate::vm::bc32::Bc32Decoded;
 
 /// Compact bytecode representation and constant pool.
 ///
-/// This module defines the core data structures for the LKR VM's bytecode
+/// This module defines the core data structures for the LK VM's bytecode
 /// compiler and interpreter:
 ///
 /// - **`Function`**: A compiled function with constant pool, instruction list,
@@ -106,7 +106,7 @@ pub struct ClosureProto {
     pub named_params: Vec<crate::stmt::NamedParamDecl>,
     // Optional default value thunks for each named parameter (aligned with `named_params`)
     pub default_funcs: Vec<Option<Function>>,
-    // Optional precompiled nested function (used by VM/LKRB). When None, the
+    // Optional precompiled nested function (used by VM/LKB). When None, the
     // bytecode compiler will materialize it from `body` on demand.
     pub func: Option<Box<Function>>,
     // AST body retained for tooling (formatters, doc generators) now that the

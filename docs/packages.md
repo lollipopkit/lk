@@ -1,6 +1,6 @@
-# LKR Packages and Workspaces
+# LK Packages and Workspaces
 
-LKR packages use `Lkr.toml` and `Lkr.lock`, modelled after Cargo manifests.
+LK packages use `Lk.toml` and `Lk.lock`, modelled after Cargo manifests.
 
 ## Package Manifest
 
@@ -29,19 +29,19 @@ members = ["crates/*"]
 util = { path = "crates/util" }
 ```
 
-Workspace members are packages with their own `Lkr.toml`. A member package is
+Workspace members are packages with their own `Lk.toml`. A member package is
 imported by its package name.
 
 ## Module Roots
 
 Package imports resolve to:
 
-1. `src/mod.lkr`
-2. `src/<package-name>.lkr`
+1. `src/mod.lk`
+2. `src/<package-name>.lk`
 
 Example:
 
-```lkr
+```lk
 import util;
 return util.answer();
 ```
@@ -50,8 +50,8 @@ File imports such as `import "foo";` remain relative to the current file.
 
 ## CLI
 
-- `lkr init [name]` creates a package.
-- `lkr pkg add <name> <owner/repo> [--tag v1] [--branch main] [--rev SHA]` adds a dependency.
-- `lkr pkg fetch` downloads dependencies into `$LKR_HOME/git` or `~/.lkr/git` and writes `Lkr.lock`.
-- `lkr pkg update [name]` refreshes dependencies.
-- `lkr pkg tree` prints resolved package modules.
+- `lk init [name]` creates a package.
+- `lk pkg add <name> <owner/repo> [--tag v1] [--branch main] [--rev SHA]` adds a dependency.
+- `lk pkg fetch` downloads dependencies into `$LK_HOME/git` or `~/.lk/git` and writes `Lk.lock`.
+- `lk pkg update [name]` refreshes dependencies.
+- `lk pkg tree` prints resolved package modules.

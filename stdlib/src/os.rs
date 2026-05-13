@@ -1,5 +1,5 @@
 use anyhow::Result;
-use lkr_core::{module::Module, val::Val, vm::VmContext};
+use lk_core::{module::Module, val::Val, vm::VmContext};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -346,7 +346,7 @@ impl OsModule {
                 items.push(Val::Str(line.into()));
             }
             let list_val = Val::List(items.into());
-            if let Some(to_stream) = lkr_core::val::methods::find_method_for_val(&list_val, "to_stream") {
+            if let Some(to_stream) = lk_core::val::methods::find_method_for_val(&list_val, "to_stream") {
                 let res = to_stream(&[list_val], ctx)?;
                 return Ok(res);
             }
@@ -374,7 +374,7 @@ impl Module for OsModule {
         "Operating system interface"
     }
 
-    fn register(&self, _registry: &mut lkr_core::module::ModuleRegistry) -> Result<()> {
+    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
         Ok(())
     }
 

@@ -1,4 +1,4 @@
-//! Peephole optimization passes for LKR bytecode.
+//! Peephole optimization passes for LK bytecode.
 //!
 //! These post-compilation passes scan for instruction patterns that can be
 //! fused into single, more efficient opcodes. Each pass performs pattern

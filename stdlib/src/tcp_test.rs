@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::tcp::TcpModule;
-    use lkr_core::{module::Module, stmt::ModuleResolver, val::Val, vm::VmContext};
+    use lk_core::{module::Module, stmt::ModuleResolver, val::Val, vm::VmContext};
     use std::sync::Arc;
 
     fn create_test_env() -> VmContext {

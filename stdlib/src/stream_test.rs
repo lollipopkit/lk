@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use lkr_core::{
+    use lk_core::{
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
         val::Val,
@@ -14,7 +14,7 @@ mod tests {
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
 
-        let mut registry = lkr_core::module::ModuleRegistry::new();
+        let mut registry = lk_core::module::ModuleRegistry::new();
         crate::register_stdlib_modules(&mut registry)?;
         crate::register_stdlib_globals(&mut registry);
         let resolver = Arc::new(ModuleResolver::with_registry(registry));

@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use lkr_core::perf::scenarios::prepare_script_scenarios;
-use lkr_core::vm::Vm;
+use lk_core::perf::scenarios::prepare_script_scenarios;
+use lk_core::vm::Vm;
 use std::hint::black_box;
 
 fn bench_script_scenarios(c: &mut Criterion) {

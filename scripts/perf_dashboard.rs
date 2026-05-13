@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
-use lkr_core::{
+use lk_core::{
     perf::scenarios::{PreparedScriptScenario, prepare_script_scenarios},
     vm::Vm,
 };
@@ -351,7 +351,7 @@ fn print_help() {
 
 fn run_cargo_bench(bench: &str) -> Result<()> {
     let status = Command::new("cargo")
-        .args(["bench", "-p", "lkr-core", "--bench", bench, "--", "--noplot"])
+        .args(["bench", "-p", "lk-core", "--bench", bench, "--", "--noplot"])
         .status()
         .context("failed to spawn cargo bench")?;
     if !status.success() {

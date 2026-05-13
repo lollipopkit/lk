@@ -3,7 +3,7 @@ mod tests {
     use std::sync::Arc;
 
     use anyhow::Result;
-    use lkr_core::{module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val::Val, vm};
+    use lk_core::{module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val::Val, vm};
 
     #[test]
     fn test_global_printf_and_panic_available() -> Result<()> {

@@ -1,6 +1,6 @@
 use super::*;
 
-impl LkrAnalyzer {
+impl LkAnalyzer {
     /// Scan function blocks in source order: name, name span, body token range, and param spans.
     pub(crate) fn scan_function_blocks(tokens: &[token::Token], spans: &[Span]) -> Vec<FnBlockInfo> {
         use token::Token as T;
@@ -864,7 +864,7 @@ impl LkrAnalyzer {
                         range,
                         Some(DiagnosticSeverity::ERROR),
                         None,
-                        Some("lkr".to_string()),
+                        Some("lk".to_string()),
                         format!("Tokenization error: {}", parse_err.message),
                         None,
                         None,
@@ -908,7 +908,7 @@ impl LkrAnalyzer {
                                         range,
                                         Some(DiagnosticSeverity::ERROR),
                                         None,
-                                        Some("lkr".to_string()),
+                                        Some("lk".to_string()),
                                         ee.message.clone(),
                                         None,
                                         None,
@@ -938,7 +938,7 @@ impl LkrAnalyzer {
                                         range,
                                         Some(DiagnosticSeverity::ERROR),
                                         None,
-                                        Some("lkr".to_string()),
+                                        Some("lk".to_string()),
                                         stmt_err.message.clone(),
                                         None,
                                         None,
@@ -991,7 +991,7 @@ impl LkrAnalyzer {
                         range,
                         Some(DiagnosticSeverity::ERROR),
                         None,
-                        Some("lkr".to_string()),
+                        Some("lk".to_string()),
                         format!("Tokenization error: {}", parse_err.message),
                         None,
                         None,
@@ -1030,7 +1030,7 @@ impl LkrAnalyzer {
                                         range,
                                         Some(DiagnosticSeverity::ERROR),
                                         None,
-                                        Some("lkr".to_string()),
+                                        Some("lk".to_string()),
                                         ee.message.clone(),
                                         None,
                                         None,
@@ -1054,7 +1054,7 @@ impl LkrAnalyzer {
                                     range,
                                     Some(DiagnosticSeverity::ERROR),
                                     None,
-                                    Some("lkr".to_string()),
+                                    Some("lk".to_string()),
                                     parse_err.message.clone(),
                                     None,
                                     None,
@@ -1087,12 +1087,12 @@ impl LkrAnalyzer {
                     range,
                     Some(DiagnosticSeverity::ERROR),
                     None,
-                    Some("lkr".to_string()),
+                    Some("lk".to_string()),
                     err.to_string(),
                     None,
                     None,
                 );
-                diagnostic.code = Some(NumberOrString::String("lkr_type_error".to_string()));
+                diagnostic.code = Some(NumberOrString::String("lk_type_error".to_string()));
                 vec![diagnostic]
             }
         }

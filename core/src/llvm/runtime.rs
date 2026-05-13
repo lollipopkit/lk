@@ -1,7 +1,7 @@
 //! Runtime helpers exposed to LLVM-generated code.
 //!
 //! The LLVM backend lowers high-level operations (string interning, list/map
-//! construction, global access, etc.) into calls to `lkr_rt_*` functions. This
+//! construction, global access, etc.) into calls to `lk_rt_*` functions. This
 //! module provides those helpers and bridges them back to the VM runtime so we
 //! can reuse existing semantics while sharing a common value encoding.
 
@@ -26,15 +26,15 @@ use crate::{
 
 #[cfg(not(test))]
 unsafe extern "Rust" {
-    fn lkr_stdlib_register_globals(registry: &mut ModuleRegistry);
-    fn lkr_stdlib_register_modules(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_globals(registry: &mut ModuleRegistry);
+    fn lk_stdlib_register_modules(registry: &mut ModuleRegistry) -> Result<()>;
 }
 
 #[cfg(test)]
-fn lkr_stdlib_register_globals(_registry: &mut ModuleRegistry) {}
+fn lk_stdlib_register_globals(_registry: &mut ModuleRegistry) {}
 
 #[cfg(test)]
-fn lkr_stdlib_register_modules(_registry: &mut ModuleRegistry) -> Result<()> {
+fn lk_stdlib_register_modules(_registry: &mut ModuleRegistry) -> Result<()> {
     Ok(())
 }
 
@@ -47,12 +47,12 @@ fn with_state<R>(f: impl FnOnce(&mut RuntimeState) -> R) -> R {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_begin_session() {
+pub extern "C" fn lk_rt_begin_session() {
     with_state(|state| state.reset_session());
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_register_search_path(ptr: *const i8, len: i64) {
+pub extern "C" fn lk_rt_register_search_path(ptr: *const i8, len: i64) {
     let path = read_string(ptr, len);
     if path.is_empty() {
         return;
@@ -66,7 +66,7 @@ pub extern "C" fn lkr_rt_register_search_path(ptr: *const i8, len: i64) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_register_bundled_module(
+pub extern "C" fn lk_rt_register_bundled_module(
     path_ptr: *const i8,
     path_len: i64,
     data_ptr: *const u8,
@@ -83,7 +83,7 @@ pub extern "C" fn lkr_rt_register_bundled_module(
     let module = match decode_module(&bytes) {
         Ok(module) => module,
         Err(err) => {
-            eprintln!("lkr_rt_register_bundled_module: failed to decode module: {err}");
+            eprintln!("lk_rt_register_bundled_module: failed to decode module: {err}");
             return -1;
         }
     };
@@ -100,7 +100,7 @@ pub extern "C" fn lkr_rt_register_bundled_module(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_register_imports(ptr: *const i8, len: i64) -> i32 {
+pub extern "C" fn lk_rt_register_imports(ptr: *const i8, len: i64) -> i32 {
     let json = read_string(ptr, len);
     if json.trim().is_empty() {
         with_state(|state| {
@@ -118,14 +118,14 @@ pub extern "C" fn lkr_rt_register_imports(ptr: *const i8, len: i64) -> i32 {
             0
         }
         Err(err) => {
-            eprintln!("lkr_rt_register_imports: failed to parse imports: {err}");
+            eprintln!("lk_rt_register_imports: failed to parse imports: {err}");
             -1
         }
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_register_package_modules(ptr: *const i8, len: i64) -> i32 {
+pub extern "C" fn lk_rt_register_package_modules(ptr: *const i8, len: i64) -> i32 {
     let json = read_string(ptr, len);
     if json.trim().is_empty() {
         with_state(|state| {
@@ -143,19 +143,19 @@ pub extern "C" fn lkr_rt_register_package_modules(ptr: *const i8, len: i64) -> i
             0
         }
         Err(err) => {
-            eprintln!("lkr_rt_register_package_modules: failed to parse modules: {err}");
+            eprintln!("lk_rt_register_package_modules: failed to parse modules: {err}");
             -1
         }
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_apply_imports() -> i32 {
+pub extern "C" fn lk_rt_apply_imports() -> i32 {
     let result: Result<()> = with_state(|state| state.apply_pending());
     match result {
         Ok(()) => 0,
         Err(err) => {
-            eprintln!("lkr_rt_apply_imports error: {err}");
+            eprintln!("lk_rt_apply_imports error: {err}");
             -1
         }
     }
@@ -183,7 +183,7 @@ impl RuntimeState {
         let (ctx, resolver) = match Self::build_context(&[], &[], &[]) {
             Ok(pair) => pair,
             Err(err) => {
-                eprintln!("lkr_rt: failed to initialise stdlib context: {err}");
+                eprintln!("lk_rt: failed to initialise stdlib context: {err}");
                 let resolver = Arc::new(ModuleResolver::new());
                 let ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
                 (ctx, resolver)
@@ -216,7 +216,7 @@ impl RuntimeState {
                 self.resolver = resolver;
             }
             Err(err) => {
-                eprintln!("lkr_rt: failed to reset stdlib context: {err}");
+                eprintln!("lk_rt: failed to reset stdlib context: {err}");
                 let resolver = Arc::new(ModuleResolver::new());
                 self.ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
                 self.resolver = resolver;
@@ -249,8 +249,8 @@ impl RuntimeState {
         let mut registry = ModuleRegistry::new();
         #[cfg_attr(test, allow(unused_unsafe))]
         unsafe {
-            lkr_stdlib_register_globals(&mut registry);
-            lkr_stdlib_register_modules(&mut registry)?;
+            lk_stdlib_register_globals(&mut registry);
+            lk_stdlib_register_modules(&mut registry)?;
         }
 
         let mut resolver = ModuleResolver::with_registry(registry);
@@ -449,13 +449,13 @@ fn index_value(base: &Val, idx: &Val) -> Val {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_intern_string(ptr: *const i8, len: i64) -> i64 {
+pub extern "C" fn lk_rt_intern_string(ptr: *const i8, len: i64) -> i64 {
     let text = read_string(ptr, len);
     with_state(|state| state.intern_string(text.as_str()))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_to_string(value: i64) -> i64 {
+pub extern "C" fn lk_rt_to_string(value: i64) -> i64 {
     with_state(|state| {
         let rendered = state.decode_value(value).to_string();
         state.intern_string(rendered.as_str())
@@ -463,7 +463,7 @@ pub extern "C" fn lkr_rt_to_string(value: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_load_global(name: i64) -> i64 {
+pub extern "C" fn lk_rt_load_global(name: i64) -> i64 {
     with_state(|state| {
         let key_val = state.decode_value(name);
         let name_str = key_val
@@ -476,7 +476,7 @@ pub extern "C" fn lkr_rt_load_global(name: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_define_global(name: i64, value: i64) {
+pub extern "C" fn lk_rt_define_global(name: i64, value: i64) {
     with_state(|state| {
         let key_val = state.decode_value(name);
         let name_str = key_val
@@ -489,7 +489,7 @@ pub extern "C" fn lkr_rt_define_global(name: i64, value: i64) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_build_list(ptr: *const i64, len: i64) -> i64 {
+pub extern "C" fn lk_rt_build_list(ptr: *const i64, len: i64) -> i64 {
     let len_usize = len.max(0) as usize;
     with_state(|state| {
         let elements = state.decode_values(ptr, len_usize);
@@ -499,7 +499,7 @@ pub extern "C" fn lkr_rt_build_list(ptr: *const i64, len: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_build_map(ptr: *const i64, len: i64) -> i64 {
+pub extern "C" fn lk_rt_build_map(ptr: *const i64, len: i64) -> i64 {
     let len_usize = len.max(0) as usize;
     with_state(|state| {
         if len_usize == 0 {
@@ -518,7 +518,7 @@ pub extern "C" fn lkr_rt_build_map(ptr: *const i64, len: i64) -> i64 {
                     map.insert(k, val);
                 }
                 Err(err) => {
-                    eprintln!("lkr_rt_build_map: {err}");
+                    eprintln!("lk_rt_build_map: {err}");
                     return encoding::NIL_VALUE;
                 }
             }
@@ -530,9 +530,9 @@ pub extern "C" fn lkr_rt_build_map(ptr: *const i64, len: i64) -> i64 {
 #[cold]
 #[inline(never)]
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32 {
+pub extern "C" fn lk_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32 {
     if data_ptr.is_null() || data_len <= 0 {
-        eprintln!("lkr_rt_run_bytecode: empty bytecode payload");
+        eprintln!("lk_rt_run_bytecode: empty bytecode payload");
         return 1;
     }
     let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) };
@@ -563,14 +563,14 @@ pub extern "C" fn lkr_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32
     match result {
         Ok(_) => 0,
         Err(err) => {
-            eprintln!("lkr_rt_run_bytecode error: {err}");
+            eprintln!("lk_rt_run_bytecode error: {err}");
             1
         }
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_call(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
+pub extern "C" fn lk_rt_call(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
     with_state(|state| {
         let callee = state.decode_value(func);
         let argc_usize = argc.max(0) as usize;
@@ -585,7 +585,7 @@ pub extern "C" fn lkr_rt_call(func: i64, args_ptr: *const i64, argc: i64, retc: 
                 }
             }
             Err(err) => {
-                eprintln!("lkr_rt_call error: {err}");
+                eprintln!("lk_rt_call error: {err}");
                 encoding::NIL_VALUE
             }
         }
@@ -593,14 +593,14 @@ pub extern "C" fn lkr_rt_call(func: i64, args_ptr: *const i64, argc: i64, retc: 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_add(lhs: i64, rhs: i64) -> i64 {
+pub extern "C" fn lk_rt_add(lhs: i64, rhs: i64) -> i64 {
     with_state(|state| {
         let left = state.decode_value(lhs);
         let right = state.decode_value(rhs);
         match BinOp::Add.eval_vals(&left, &right) {
             Ok(value) => state.encode_value(value),
             Err(err) => {
-                eprintln!("lkr_rt_add error: {err}");
+                eprintln!("lk_rt_add error: {err}");
                 encoding::NIL_VALUE
             }
         }
@@ -608,7 +608,7 @@ pub extern "C" fn lkr_rt_add(lhs: i64, rhs: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_access(base: i64, key: i64) -> i64 {
+pub extern "C" fn lk_rt_access(base: i64, key: i64) -> i64 {
     with_state(|state| {
         let base_val = state.decode_value(base);
         let key_val = state.decode_value(key);
@@ -618,7 +618,7 @@ pub extern "C" fn lkr_rt_access(base: i64, key: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_index(base: i64, idx: i64) -> i64 {
+pub extern "C" fn lk_rt_index(base: i64, idx: i64) -> i64 {
     with_state(|state| {
         let base_val = state.decode_value(base);
         let idx_val = state.decode_value(idx);
@@ -628,14 +628,14 @@ pub extern "C" fn lkr_rt_index(base: i64, idx: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_in(needle: i64, haystack: i64) -> i64 {
+pub extern "C" fn lk_rt_in(needle: i64, haystack: i64) -> i64 {
     with_state(|state| {
         let l = state.decode_value(needle);
         let r = state.decode_value(haystack);
         match BinOp::In.cmp(&l, &r) {
             Ok(result) => state.encode_value(Val::Bool(result)),
             Err(err) => {
-                eprintln!("lkr_rt_in error: {err}");
+                eprintln!("lk_rt_in error: {err}");
                 encoding::NIL_VALUE
             }
         }
@@ -643,7 +643,7 @@ pub extern "C" fn lkr_rt_in(needle: i64, haystack: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_len(value: i64) -> i64 {
+pub extern "C" fn lk_rt_len(value: i64) -> i64 {
     with_state(|state| {
         let val = state.decode_value(value);
         let len = match val {
@@ -657,7 +657,7 @@ pub extern "C" fn lkr_rt_len(value: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_list_slice(list: i64, start: i64) -> i64 {
+pub extern "C" fn lk_rt_list_slice(list: i64, start: i64) -> i64 {
     with_state(|state| {
         let list_val = state.decode_value(list);
         let start_val = state.decode_value(start);
@@ -670,7 +670,7 @@ pub extern "C" fn lkr_rt_list_slice(list: i64, start: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lkr_rt_to_iter(value: i64) -> i64 {
+pub extern "C" fn lk_rt_to_iter(value: i64) -> i64 {
     with_state(|state| {
         let val = state.decode_value(value);
         let iter = match val {
@@ -735,8 +735,8 @@ mod tests {
         let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
         reset_runtime_state();
         let text = b"hello";
-        let handle = lkr_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
-        let handle_again = lkr_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
+        let handle = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
+        let handle_again = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
         assert_eq!(handle, handle_again);
         assert!(matches!(decode_for_tests(handle), Val::Str(s) if s.as_ref() == "hello"));
     }
@@ -746,8 +746,8 @@ mod tests {
         let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
         reset_runtime_state();
         let values = [encoding::BOOL_TRUE_VALUE, 42, encoding::NIL_VALUE];
-        let list_handle = lkr_rt_build_list(values.as_ptr(), values.len() as i64);
-        let len = lkr_rt_len(list_handle);
+        let list_handle = lk_rt_build_list(values.as_ptr(), values.len() as i64);
+        let len = lk_rt_len(list_handle);
         assert_eq!(len, 3);
         match decode_for_tests(list_handle) {
             Val::List(list) => {
@@ -765,9 +765,9 @@ mod tests {
         let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
         reset_runtime_state();
         let name_bytes = b"g";
-        let name_handle = lkr_rt_intern_string(name_bytes.as_ptr().cast(), 1);
-        lkr_rt_define_global(name_handle, encoding::BOOL_TRUE_VALUE);
-        let loaded = lkr_rt_load_global(name_handle);
+        let name_handle = lk_rt_intern_string(name_bytes.as_ptr().cast(), 1);
+        lk_rt_define_global(name_handle, encoding::BOOL_TRUE_VALUE);
+        let loaded = lk_rt_load_global(name_handle);
         assert_eq!(loaded, encoding::BOOL_TRUE_VALUE);
     }
 
@@ -785,7 +785,7 @@ mod tests {
         reset_runtime_state();
         let func_handle = with_state(|state| state.encode_value(Val::RustFunction(add_one)));
         let arg = 41i64;
-        let result = lkr_rt_call(func_handle, &arg, 1, 1);
+        let result = lk_rt_call(func_handle, &arg, 1, 1);
         assert_eq!(result, 42);
     }
 
@@ -804,7 +804,7 @@ mod tests {
     fn apply_imports_registers_bundled_module() {
         let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
         reset_runtime_state();
-        lkr_rt_begin_session();
+        lk_rt_begin_session();
 
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -812,13 +812,13 @@ mod tests {
             .to_path_buf();
         let examples_dir = workspace.join("examples");
         let search_path = CString::new("examples").unwrap();
-        lkr_rt_register_search_path(search_path.as_ptr(), search_path.as_bytes().len() as i64);
+        lk_rt_register_search_path(search_path.as_ptr(), search_path.as_bytes().len() as i64);
 
-        let fib_path = examples_dir.join("fib.lkr");
+        let fib_path = examples_dir.join("fib.lk");
         let fib_module = compile_module_from_path(&fib_path);
         let fib_bytes = encode_module(&fib_module).expect("encode module");
-        let fib_path_rel = CString::new("examples/fib.lkr").unwrap();
-        let _ = lkr_rt_register_bundled_module(
+        let fib_path_rel = CString::new("examples/fib.lk").unwrap();
+        let _ = lk_rt_register_bundled_module(
             fib_path_rel.as_ptr(),
             fib_path_rel.as_bytes().len() as i64,
             fib_bytes.as_ptr(),
@@ -826,13 +826,13 @@ mod tests {
         );
 
         let imports_json = CString::new("[{\"File\":{\"path\":\"examples/fib\"}}]").unwrap();
-        let _ = lkr_rt_register_imports(imports_json.as_ptr(), imports_json.as_bytes().len() as i64);
-        let apply = lkr_rt_apply_imports();
+        let _ = lk_rt_register_imports(imports_json.as_ptr(), imports_json.as_bytes().len() as i64);
+        let apply = lk_rt_apply_imports();
         assert_eq!(apply, 0, "apply imports succeeds");
 
         let fib_name = CString::new("fib").unwrap();
-        let fib_handle = lkr_rt_intern_string(fib_name.as_ptr(), fib_name.as_bytes().len() as i64);
-        let fib_value = lkr_rt_load_global(fib_handle);
+        let fib_handle = lk_rt_intern_string(fib_name.as_ptr(), fib_name.as_bytes().len() as i64);
+        let fib_value = lk_rt_load_global(fib_handle);
         assert_ne!(fib_value, encoding::NIL_VALUE, "fib module is loaded");
     }
 }

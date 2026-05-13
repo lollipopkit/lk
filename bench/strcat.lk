@@ -1,0 +1,12 @@
+// String concatenation benchmark
+import os;
+import string;
+let start = os.clock();
+let s = "";
+let i = 0;
+while (i < 100000) {
+    s = s + "x";
+    i = i + 1;
+}
+let elapsed = os.clock() - start;
+println("lk strcat 100k: len={}, time={}s", string.len(s), elapsed);

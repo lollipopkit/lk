@@ -33,7 +33,7 @@ fn emits_addition_ir() {
     let artifact = compile_function_to_llvm(&func, "add", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lkr_rt_add"),
+        ir.contains("call i64 @lk_rt_add"),
         "expected runtime add helper in IR:\n{}",
         ir
     );
@@ -361,7 +361,7 @@ fn lowers_string_constants() {
     let ir = artifact.module.ir;
     assert!(ir.contains("@.str"), "expected string global definition in IR:\n{}", ir);
     assert!(
-        ir.contains("call i64 @lkr_rt_intern_string"),
+        ir.contains("call i64 @lk_rt_intern_string"),
         "expected string interning helper call in IR:\n{}",
         ir
     );
@@ -395,7 +395,7 @@ fn lowers_to_string_helper() {
     let artifact = compile_function_to_llvm(&func, "tostr", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lkr_rt_to_string"),
+        ir.contains("call i64 @lk_rt_to_string"),
         "expected call into runtime to_string helper in IR:\n{}",
         ir
     );
@@ -424,12 +424,12 @@ fn lowers_load_global() {
     let artifact = compile_function_to_llvm(&func, "load_global", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lkr_rt_intern_string"),
+        ir.contains("call i64 @lk_rt_intern_string"),
         "expected string interning before global load in IR:\n{}",
         ir
     );
     assert!(
-        ir.contains("call i64 @lkr_rt_load_global"),
+        ir.contains("call i64 @lk_rt_load_global"),
         "expected runtime load_global helper call in IR:\n{}",
         ir
     );
@@ -458,12 +458,12 @@ fn lowers_define_global() {
     let artifact = compile_function_to_llvm(&func, "define_global", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lkr_rt_intern_string"),
+        ir.contains("call i64 @lk_rt_intern_string"),
         "expected string interning before defining global in IR:\n{}",
         ir
     );
     assert!(
-        ir.contains("call void @lkr_rt_define_global"),
+        ir.contains("call void @lk_rt_define_global"),
         "expected runtime define_global helper call in IR:\n{}",
         ir
     );
@@ -504,7 +504,7 @@ fn lowers_build_list() {
         ir
     );
     assert!(
-        ir.contains("call i64 @lkr_rt_build_list"),
+        ir.contains("call i64 @lk_rt_build_list"),
         "expected runtime build_list helper call in IR:\n{}",
         ir
     );
@@ -546,7 +546,7 @@ fn lowers_call_instruction() {
         ir
     );
     assert!(
-        ir.contains("call i64 @lkr_rt_call"),
+        ir.contains("call i64 @lk_rt_call"),
         "expected runtime call helper invocation in IR:\n{}",
         ir
     );
@@ -584,12 +584,12 @@ fn lowers_build_map_and_access() {
     let artifact = compile_function_to_llvm(&func, "map_access", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lkr_rt_build_map"),
+        ir.contains("call i64 @lk_rt_build_map"),
         "expected runtime build_map helper call in IR:\n{}",
         ir
     );
     assert!(
-        ir.contains("call i64 @lkr_rt_access"),
+        ir.contains("call i64 @lk_rt_access"),
         "expected runtime access helper call in IR:\n{}",
         ir
     );
@@ -622,12 +622,12 @@ fn lowers_index_and_len() {
     let artifact = compile_function_to_llvm(&func, "index_len", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lkr_rt_len"),
+        ir.contains("call i64 @lk_rt_len"),
         "expected runtime len helper call in IR:\n{}",
         ir
     );
     assert!(
-        ir.contains("call i64 @lkr_rt_index"),
+        ir.contains("call i64 @lk_rt_index"),
         "expected runtime index helper call in IR:\n{}",
         ir
     );
@@ -656,7 +656,7 @@ fn lowers_in_membership() {
     let artifact = compile_function_to_llvm(&func, "contains", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lkr_rt_in"),
+        ir.contains("call i64 @lk_rt_in"),
         "expected runtime membership helper call in IR:\n{}",
         ir
     );
@@ -692,7 +692,7 @@ fn lowers_list_slice() {
     let artifact = compile_function_to_llvm(&func, "list_slice", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lkr_rt_list_slice"),
+        ir.contains("call i64 @lk_rt_list_slice"),
         "expected runtime list_slice helper call in IR:\n{}",
         ir
     );
@@ -721,7 +721,7 @@ fn lowers_to_iter() {
     let artifact = compile_function_to_llvm(&func, "to_iter", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lkr_rt_to_iter"),
+        ir.contains("call i64 @lk_rt_to_iter"),
         "expected runtime to_iter helper call in IR:\n{}",
         ir
     );

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use lkr_core::{
+use lk_core::{
     module::{Module, ModuleRegistry},
     val::{Val, methods::register_method},
     vm::VmContext,
