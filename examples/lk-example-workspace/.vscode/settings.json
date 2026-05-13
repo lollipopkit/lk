@@ -1,11 +1,11 @@
 {
-    // Enable semantic highlighting for LKR
+    // Enable semantic highlighting for LK
     "editor.semanticHighlighting.enabled": true,
     
-    // LKR Language Server settings
+    // LK Language Server settings
     "lk.lsp.enabled": true,
     "lk.lsp.autoStart": true,
-    "lk.lsp.serverPath": "~/proj/lk/target/debug/lkr-lsp",
+    "lk.lsp.serverPath": "~/proj/lk/target/debug/lk-lsp",
     "lk.lsp.semanticTokens.enabled": true,
     "lk.lsp.semanticTokens.throttleMs": 100,
     "lk.lsp.inlayHints.enabled": false,

@@ -114,3 +114,20 @@ fn test_example_workspace_imports_are_resolved() {
         "expected greetings workspace import to resolve; diagnostics: {msgs:?}"
     );
 }
+
+#[test]
+fn test_example_workspace_vscode_settings_use_current_lsp_binary() {
+    let settings_path = repo_root().join("examples/lk-example-workspace/.vscode/settings.json");
+    let settings = fs::read_to_string(&settings_path).expect("read example workspace VS Code settings");
+
+    assert!(
+        settings.contains("target/debug/lk-lsp"),
+        "example workspace should launch the current lk-lsp binary: {}",
+        settings_path.display()
+    );
+    assert!(
+        !settings.contains("target/debug/lkr-lsp"),
+        "example workspace must not launch the old lkr-lsp binary: {}",
+        settings_path.display()
+    );
+}

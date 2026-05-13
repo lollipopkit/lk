@@ -57,6 +57,86 @@ fn plain_symbol_name_at_position(content: &str, position: Position) -> Option<St
     None
 }
 
+fn interpolation_symbol_context_at_offset(content: &str, offset: usize) -> Option<SymbolContext> {
+    let chars: Vec<char> = content.chars().collect();
+    let token_offset = if chars.get(offset).is_some_and(|ch| is_ident_continue(*ch)) {
+        offset
+    } else if offset > 0 && chars.get(offset - 1).is_some_and(|ch| is_ident_continue(*ch)) {
+        offset - 1
+    } else {
+        return None;
+    };
+
+    let mut start = token_offset;
+    while start > 0 && is_ident_continue(chars[start - 1]) {
+        start -= 1;
+    }
+    if !chars.get(start).is_some_and(|ch| is_ident_start(*ch)) {
+        return None;
+    }
+
+    let mut end = token_offset + 1;
+    while chars.get(end).is_some_and(|ch| is_ident_continue(*ch)) {
+        end += 1;
+    }
+
+    let mut interpolation_open = None;
+    let mut i = start;
+    while i > 0 {
+        if chars[i - 1] == '$' && chars[i] == '{' {
+            interpolation_open = Some(i + 1);
+            break;
+        }
+        if chars[i] == '}' || chars[i] == '\n' {
+            return None;
+        }
+        i -= 1;
+    }
+    let interpolation_open = interpolation_open?;
+    if start < interpolation_open {
+        return None;
+    }
+
+    let mut interpolation_closed = false;
+    for ch in chars.iter().skip(end) {
+        if *ch == '}' {
+            interpolation_closed = true;
+            break;
+        }
+        if *ch == '\n' {
+            return None;
+        }
+    }
+    if !interpolation_closed {
+        return None;
+    }
+
+    let name: String = chars[start..end].iter().collect();
+    let qualifier = if start >= 2 && chars[start - 1] == '.' {
+        let mut qualifier_start = start - 2;
+        while qualifier_start > interpolation_open && is_ident_continue(chars[qualifier_start - 1]) {
+            qualifier_start -= 1;
+        }
+        if chars.get(qualifier_start).is_some_and(|ch| is_ident_start(*ch)) {
+            Some(chars[qualifier_start..start - 1].iter().collect())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Some(SymbolContext { name, qualifier })
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    is_ident_start(ch) || ch.is_ascii_digit()
+}
+
 fn is_import_module_token(tokens: &[token::Token], idx: usize) -> bool {
     matches!(
         idx.checked_sub(1).and_then(|prev| tokens.get(prev)),
@@ -374,6 +454,9 @@ impl LkLanguageServer {
             Err(_) => return None,
         };
         let offset = position_to_char_idx(&Rope::from_str(content), position);
+        if let Some(context) = interpolation_symbol_context_at_offset(content, offset) {
+            return Some(context);
+        }
         if let Some(context) = qualified_symbol_context_at_offset(&tokens, &spans, offset) {
             return Some(context);
         }
@@ -937,6 +1020,28 @@ mod tests {
         assert_eq!(
             plain_symbol_name_at_position(content, double_pos).as_deref(),
             Some("double")
+        );
+    }
+
+    #[test]
+    fn interpolation_symbol_context_extracts_identifiers_inside_strings() {
+        let content = "println(\"double(${n}) = ${doubled}\");\n";
+        let n_offset = content.find("${n}").expect("n interpolation") + 2;
+        let doubled_offset = content.find("${doubled}").expect("doubled interpolation") + 4;
+
+        assert_eq!(
+            interpolation_symbol_context_at_offset(content, n_offset),
+            Some(SymbolContext {
+                name: "n".to_string(),
+                qualifier: None,
+            })
+        );
+        assert_eq!(
+            interpolation_symbol_context_at_offset(content, doubled_offset),
+            Some(SymbolContext {
+                name: "doubled".to_string(),
+                qualifier: None,
+            })
         );
     }
 }
