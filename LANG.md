@@ -287,7 +287,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ## Notes for CLI usage
 - Run REPL: `lk`
 - Execute a file (statements): `lk FILE`
-- Compile to bytecode: `lk compile FILE` → `FILE.lkb`
+- Compile to bytecode: `lk compile [FILE]` → `FILE.lkb`; when `FILE` is omitted, the CLI uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry.
 - Only relative, sanitized paths are allowed
 - CLI prints a result only when it is not `nil`
 

@@ -56,9 +56,9 @@ assert_eq!(result, Val::Bool(true));
 - Run REPL: `lk`
 - Execute a file: `lk FILE` (auto-detects `.lk` source vs `.lkb` bytecode)
 - Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
-- Compile to bytecode: `lk compile FILE` → `FILE.lkb` (see [docs/lkb.md](docs/lkb.md) for bundling details)
-- Compile to LLVM IR: `lk compile llvm FILE` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
-- Compile to ELF executable: `lk compile exe FILE` (requires LLVM tools + system linker; see [docs/llvm/backend.md](docs/llvm/backend.md))
+- Compile to bytecode: `lk compile [FILE]` → `FILE.lkb` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry; see [docs/lkb.md](docs/lkb.md) for bundling details)
+- Compile to LLVM IR: `lk compile llvm [FILE]` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
+- Compile to ELF executable: `lk compile exe [FILE]` (requires LLVM tools + system linker; see [docs/llvm/backend.md](docs/llvm/backend.md))
 - Create packages and manage dependencies: `lk init`, `lk pkg add`, `lk pkg fetch`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
 
 Note: command-line paths must be relative and sanitized.

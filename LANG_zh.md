@@ -287,7 +287,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ## CLI 使用说明
 - 进入 REPL：`lk`
 - 执行脚本（语句）：`lk FILE`
-- 编译为字节码：`lk compile FILE` → `FILE.lkb`
+- 编译为字节码：`lk compile [FILE]` → `FILE.lkb`；省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口。
 - 仅允许相对且净化后的命令行路径
 - CLI 仅在结果值非 `nil` 时打印输出
 

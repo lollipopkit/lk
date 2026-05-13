@@ -71,6 +71,110 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_cli_args_compile_allows_omitted_file() {
+        let args = CliArgs::try_parse_from(["lk", "compile"]).expect("should parse compile without file");
+        if let Some(Commands::Compile { positional, .. }) = args.command {
+            assert!(positional.is_empty());
+        } else {
+            panic!("expected compile command");
+        }
+    }
+
+    #[test]
+    fn test_split_compile_args_defaults_to_cwd_main() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let main = temp.path().join("main.lk");
+        std::fs::write(&main, "return 1;\n").expect("write main.lk");
+
+        let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find main.lk");
+
+        assert_eq!(target, None);
+        assert_eq!(file, main.canonicalize().expect("canonical main"));
+    }
+
+    #[test]
+    fn test_split_compile_args_defaults_to_package_src_main() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(
+            temp.path().join("Lk.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write manifest");
+        let src = temp.path().join("src");
+        std::fs::create_dir_all(&src).expect("create src");
+        let main = src.join("main.lk");
+        std::fs::write(&main, "return 1;\n").expect("write src/main.lk");
+
+        let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find src/main.lk");
+
+        assert_eq!(target, None);
+        assert_eq!(file, main.canonicalize().expect("canonical main"));
+    }
+
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn test_split_compile_args_accepts_target_with_omitted_file() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let main = temp.path().join("main.lk");
+        std::fs::write(&main, "return 1;\n").expect("write main.lk");
+
+        let args = vec!["exe".to_string()];
+        let (target, file) = split_compile_args_with_cwd(&args, temp.path()).expect("should find main.lk");
+
+        assert_eq!(target, Some(CompileMode::Exe));
+        assert_eq!(file, main.canonicalize().expect("canonical main"));
+    }
+
+    #[test]
+    fn test_split_compile_args_defaults_to_single_workspace_app() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("Lk.toml"), "[workspace]\nmembers = [\"apps/*\"]\n").expect("write manifest");
+        let app = temp.path().join("apps").join("demo");
+        let src = app.join("src");
+        std::fs::create_dir_all(&src).expect("create app src");
+        std::fs::write(app.join("Lk.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+            .expect("write app manifest");
+        let main = src.join("main.lk");
+        std::fs::write(&main, "return 1;\n").expect("write app main");
+
+        let (target, file) = split_compile_args_with_cwd(&[], temp.path()).expect("should find single workspace app");
+
+        assert_eq!(target, None);
+        assert_eq!(file, main.canonicalize().expect("canonical main"));
+    }
+
+    #[test]
+    fn test_split_compile_args_rejects_workspace_manifest_without_entry() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("Lk.toml"), "[workspace]\nmembers = []\n").expect("write manifest");
+
+        let err = split_compile_args_with_cwd(&[], temp.path()).expect_err("workspace root has no single entry");
+
+        assert!(err.to_string().contains("no member src/main.lk was found"));
+    }
+
+    #[test]
+    fn test_split_compile_args_rejects_multiple_workspace_apps() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(temp.path().join("Lk.toml"), "[workspace]\nmembers = [\"apps/*\"]\n").expect("write manifest");
+        for name in ["a", "b"] {
+            let app = temp.path().join("apps").join(name);
+            let src = app.join("src");
+            std::fs::create_dir_all(&src).expect("create app src");
+            std::fs::write(
+                app.join("Lk.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+            )
+            .expect("write app manifest");
+            std::fs::write(src.join("main.lk"), "return 1;\n").expect("write app main");
+        }
+
+        let err = split_compile_args_with_cwd(&[], temp.path()).expect_err("workspace root has multiple entries");
+
+        assert!(err.to_string().contains("multiple workspace app entries"));
+    }
+
     #[cfg(feature = "llvm")]
     #[test]
     fn runtime_init_plan_embeds_assets() {
