@@ -32,6 +32,9 @@ util = { path = "crates/util" }
 Workspace members are packages with their own `Lk.toml`. A member package is
 imported by its package name.
 
+See `examples/lk-example-workspace` for a runnable workspace with one app and
+two member packages (`mathlib` and `greetings`).
+
 ## Module Roots
 
 Package imports resolve to:
@@ -47,6 +50,19 @@ return util.answer();
 ```
 
 File imports such as `import "foo";` remain relative to the current file.
+They do not require `Lk.toml`; use them for files under the importing file's
+directory. File imports are still explicit: files are not automatically visible
+to each other.
+
+Parent-directory imports are intentionally rejected. For example, from
+`src/nested/test.lk`, `import "../root";` is invalid. If nested code needs to
+depend on code outside its subtree, make that code a package/workspace member and
+use a bare package import instead:
+
+```lk
+import util;
+return util.answer();
+```
 
 ## CLI
 

@@ -5,7 +5,7 @@ This example shows a Cargo-style LK workspace with one app and two member packag
 Run it from the repository root:
 
 ```sh
-cargo run -p lk-cli -- examples/workspace/apps/demo/src/main.lk
+cargo run -p lk-cli -- examples/lk-example-workspace/apps/demo/src/main.lk
 ```
 
 Expected output:

@@ -1,15 +1,15 @@
-## Language Overview
+# Language Overview
 
 This document describes the LK language as implemented in this repository (parser, evaluator, statements, types, and standard library wiring).
 
-Comments
+### Comments
 - Line comments: `// ...`
 - Block comments: `/* ... */`
 
-Identifiers
+### Identifiers
 - Consist of letters, digits, `_`, and `-`. Keywords are reserved. (Be mindful that `-` within identifiers is allowed by the lexer.)
 
-Literals
+### Literals
 - String: `"..."` or `'...'` UTF‑8 strings. Supports escapes `\n \r \t \\ \" \' \$ \0`.
 - Raw string (Rust‑style, no escapes/interpolation): `r"..."`, `r#"..."#`, `r##"..."##` (multi‑line allowed).
 - Int: 64‑bit signed, supports leading sign and scientific notation for floats.
@@ -17,34 +17,34 @@ Literals
 - Bool: `true`, `false`
 - Nil: `nil`
 
-Collections
+### Collections
 - List: `[a, b, c]` (heterogeneous allowed). Indexing: `list[0]`. Safe access helpers via stdlib/meta‑methods.
 - Map: `{ key: value, ... }`. Keys are evaluated expressions and coerced to strings at runtime (string/int/float/bool); access with `map.key` or `map["key"]`.
 
-Template Strings
+### Template Strings
 - Interpolation only with `${expr}` inside normal quotes (both `"..."` and `'...'`).
 - Raw strings do not support interpolation.
 - Examples: `"Hello, ${user.name}!"`, `"Sum: ${1 + 2}"`.
 
-Input and Variables
+### Input and Variables
 - There is no implicit runtime context. Identifiers must be defined in the lexical environment (e.g., via `let` in statements, function params, or imports).
 - Read external input explicitly with stdlib: `io.read()` (string). Parse manually: `json.parse(...)`, `yaml.parse(...)`, `toml.parse(...)`.
 - Example: `import io; import json; let data = json.parse(io.read()); return data.req.user.id == 1;`
 
-Function Calls and Methods
+### Function Calls and Methods
 - Call any expression: `f(x, y)`, `(g)(z)`.
 - Property access: `expr.field` or `expr[expr]`. Optional chaining: `expr?.field` and `expr?[index]`.
 - Method sugar: `value.method(args...)` dispatches as:
   1) If `value.method` yields a callable (closure/native), call it.
   2) Else dispatch a registered meta‑method for the value’s runtime type, passing the receiver as the first argument (e.g., `"abc".len()`; see stdlib).
 
-Closures
+### Closures
 - Expression form only: `|a, b| a + b`.
 
-Ranges
+### Ranges
 - `a..b` and `a..=b` produce integer lists when evaluated (inclusive/exclusive end). Used in patterns as well.
 
-Nullish Coalescing and Ternary
+### Nullish Coalescing and Ternary
 - `lhs ?? rhs` yields `lhs` unless it is `nil`, then `rhs`.
 - `cond ? then : else` (right‑associative). In expressions, `cond` must be Bool. In `if`/`while`, truthiness is used (see below).
 
@@ -59,7 +59,7 @@ Nullish Coalescing and Ternary
 - Nullish coalescing: `??`
 - Ternary: `? :` (lowest among expression operators)
 
-Notes
+### Notes
 - `+` supports String + String concatenation. Other string/number mixes are feature‑gated and not enabled by default.
 - `in` supports: substring `str in str`, element membership in lists, and key existence in maps. For `list in list`, it checks all elements of the left are contained in the right.
 
@@ -72,7 +72,7 @@ Notes
   - `recv(channel)` → `[ok, value]`
   - `select { case recv(c) => expr; case send(c, v) => expr; default => expr }`
 
-Match Expression
+### Match Expression
 - `match value { pattern => expr, ... }` (`,` or `;` separators allowed). Returns the chosen arm’s value. Patterns below.
 
 ## Patterns
@@ -86,7 +86,7 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 - Guarded pattern: `pat if expr`
 - Range pattern: `1..10`, `0..=n`
 
-For‑loop Patterns
+### For‑loop Patterns
 - Support an extended pattern set:
   - Variable: `x`
   - Ignore: `_`
@@ -97,7 +97,7 @@ For‑loop Patterns
 ## Statements
 - Program is a sequence of statements. Semicolons `;` terminate simple statements and expression statements.
 
-Control Flow
+### Control Flow
 - `if (cond) stmt` or `if cond stmt` (parentheses optional). Truthiness: `false` and `nil` are false; everything else is true.
 - `if let pattern = expr stmt [else stmt]`
 - `while (cond) stmt` or `while cond stmt`
@@ -106,20 +106,20 @@ Control Flow
 - `break;`, `continue;`
 - `return;` or `return expr;`
 
-Variables
+### Variables
 - Declaration/destructuring: `let pattern [: Type] = expr;`
 - Assignment: `name = expr;`
 - Compound assignment: `name += expr;`, `-=`, `*=`, `/=`, `%=`
 - Short definition: `name := expr;` (define and initialize)
 - Lexical scoping: blocks `{ ... }` introduce a new scope.
 
-Structs
+### Structs
 - Define: `struct User { id: Int, name: String? }`
 - Instantiate (literal): `User { id: 1, name: "Ann" }`
 - Instantiate (sugar): `User(id: 1, name: "Ann")`
 - Access: `user.name`
 
-Functions
+### Functions
 - Definition: `fn name(param1[: Type], param2[: Type]) [-> Type] { statements }`
 - Parameters and return type are optional; functions return `nil` by default unless `return` is used.
 - First‑class: closures and function values can be passed, returned, and called.
@@ -127,7 +127,7 @@ Functions
 - Defaults are lazily evaluated inside the callee when the argument is omitted; expressions can reference other parameters.
 - Call sites supply named arguments with `name: expr` after the positional tail: `f(1, 2, label: "demo", flag: false)`. Named arguments may appear in any order but must follow all positional ones.
 
-Imports
+### Imports
 - Forms:
   - `import math;` — stdlib module as a namespace
   - `import "path/to/file.lk";` — file module as a namespace (name is the file stem)
@@ -137,18 +137,45 @@ Imports
   - `import math as m;` — module alias
 
 - File import resolution and safety:
+  - Files are not automatically visible to each other. Import every cross-file dependency explicitly.
+  - Quoted file imports do not require `Lk.toml`; they are resolved from the importing file's directory.
   - Paths are relative-only and sanitized: absolute paths and any `..` components are rejected.
   - Resolution attempts, in order: `${MOD_NAME}.lk`, then `${MOD_NAME}/mod.lk` (relative to the current file directory).
   - If you pass a quoted path with `.lk` already (e.g., `"lib/foo.lk"`), it must be relative and will be used directly if it exists.
   - In a package, bare module imports first check stdlib modules, then `Lk.toml` workspace/dependency packages. Package imports resolve to `src/mod.lk` or `src/<package-name>.lk`.
+  - Because `..` is rejected, code in a nested directory cannot import a parent-directory file with `../...`; use a package/workspace module when nested code must depend on code outside its subtree.
 
-Packages
+#### File Import Example
+
+```text
+a.lk
+b.lk
+c/c1.lk
+c/d/d1.lk
+```
+
+From `a.lk`:
+
+```lk
+import "b";       // b.lk, available as b
+import "c/c1";    // c/c1.lk, available as c1
+import "c/d/d1";  // c/d/d1.lk, available as d1
+```
+
+From `c/c1.lk`:
+
+```lk
+import "d/d1";    // c/d/d1.lk, available as d1
+// import "../a"; // rejected: parent-directory imports are not allowed
+```
+
+## Packages
 - `Lk.toml` defines `[package]`, `[dependencies]`, `[workspace]`, and `[workspace.dependencies]`.
 - String dependencies default to GitHub, e.g. `util = "owner/repo"`.
 - `Lk.lock` stores fetched git sources at concrete revisions.
-- See `docs/packages.md` for package manager commands and manifest examples.
+- See `docs/packages.md` for package manager commands and manifest examples. The runnable workspace example lives in `examples/lk-example-workspace`.
 
-Builtins and Stdlib
+## Builtins and Stdlib
 - Builtin globals: `print(fmt, ...args)`, `println(fmt, ...args)`, `panic([msg])`.
 - Stdlib modules (import as needed): `math`, `string`, `list`, `map`, `iter`, `datetime`, `os`, `tcp`. With `concurrency` feature: `task`, `chan`, `time`.
 - `iter` module highlights: `enumerate(list)`, `range([start,] end [, step])`, `zip(list1, list2)`,
@@ -163,7 +190,7 @@ Builtins and Stdlib
 - REPL and CLI print evaluation results only when the value is not `nil`. This avoids extra lines after statements that return `nil` by default (e.g., `let`, `fn` definitions, `println(...)`). If you need to display `nil`, print it explicitly via `println(nil)` or include it in formatted output.
 
 ## Types and Annotations
-Primitive and composite types
+### Primitive and Composite Types
 - `Int`, `Float`, `String`, `Bool`, `Nil`, `Any`
 - `List<T>`, `Map<K, V>`
 - `Task<T>`, `Channel<T>` (concurrency)
@@ -171,14 +198,14 @@ Primitive and composite types
 - Union: `A | B | Nil`; Optional: `T?` (sugar for `T | Nil`; prefix form `?T` is accepted for compatibility)
 - Named and generic types are parsed (e.g., `List<Int>`, `Map<String, Int>`)
 
-Annotations
+### Annotations
 - `let x: Int = 1;`
 - `fn f(a: Int, b: String) -> Bool { ... }`
 - Type checking/inference is best‑effort and conservative; runtime remains dynamic.
 
 ## Grammar (EBNF‑style)
 
-Expressions (precedence from low to high)
+### Expressions (precedence from low to high)
 ```
 expr        ::= conditional
 conditional ::= nullish [ '?' expr ':' expr ]
@@ -209,7 +236,7 @@ args        ::= [ expr { ',' expr } ]
 struct_lit  ::= id '{' ( id ':' expr { ',' id ':' expr } )? '}'
 ```
 
-Statements
+### Statements
 ```
 program      ::= statement*
 statement    ::= import_stmt | if_stmt | if_let_stmt | while_stmt | while_let_stmt
@@ -244,7 +271,7 @@ expr_stmt    ::= expr ';'
 block_stmt   ::= '{' statement* '}'
 ```
 
-Patterns
+### Patterns
 ```
 pattern      ::= literal | '_' | id | list_pat | map_pat | or_pat | guard_pat | range_pat
 list_pat     ::= '[' pattern { ',' pattern } [ ',' '..' id ] ']'
@@ -266,7 +293,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 
 
 
-### Types
+## Runtime Value Types
 - `String` - UTF-8 strings
 - `Int` - 64-bit signed integers
 - `Float` - 64-bit floating point

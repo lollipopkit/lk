@@ -1,15 +1,15 @@
-## 语言概览
+# 语言概览
 
 本文档描述了本仓库所实现的 LK 语言（解析器、求值器、语句、类型以及标准库的对接）。
 
-注释
+### 注释
 - 行注释：`// ...`
 - 块注释：`/* ... */`
 
-标识符
+### 标识符
 - 由字母、数字、`_` 与 `-` 组成。关键字保留不可用。（注意：词法分析器允许标识符中包含 `-`。）
 
-字面量
+### 字面量
 - 字符串：`"..."` 或 `'...'` 的 UTF‑8 字符串。支持转义 `\n \r \t \\ \" \' \$ \0`。
 - 原始字符串（Rust 风格，无转义/插值）：`r"..."`、`r#"..."#`、`r##"..."##`（可多行）。
 - 整数：64 位有符号；支持前导符号。（浮点数支持科学计数法。）
@@ -17,34 +17,34 @@
 - 布尔：`true`、`false`
 - 空值：`nil`
 
-集合
+### 集合
 - 列表：`[a, b, c]`（允许异质元素）。索引：`list[0]`。通过标准库/元方法提供安全访问辅助。
 - 映射：`{ key: value, ... }`。键是求值表达式，运行期会被转为字符串（string/int/float/bool）；访问可用 `map.key` 或 `map["key"]`。
 
-模板字符串
+### 模板字符串
 - 仅在普通引号（`"..."` 和 `'...'`）内用 `${expr}` 做插值。
 - 原始字符串不支持插值。
 - 示例：`"Hello, ${user.name}!"`，`"Sum: ${1 + 2}"`。
 
-输入与变量
+### 输入与变量
 - 不再存在隐式的运行期上下文。标识符必须在词法作用域中定义（例如通过语句中的 `let`、函数参数或导入）。
 - 通过标准库显式读取外部输入：`io.read()`（字符串）。解析请手动调用 `json.parse(...)`、`yaml.parse(...)`、`toml.parse(...)`。
 - 示例：`import io; import json; let data = json.parse(io.read()); return data.req.user.id == 1;`
 
-函数调用与方法
+### 函数调用与方法
 - 可调用任意表达式：`f(x, y)`，`(g)(z)`。
 - 属性访问：`expr.field` 或 `expr[expr]`。可选链：`expr?.field` 与 `expr?[index]`。
 - 方法语法糖：`value.method(args...)` 的分派规则：
   1) 若 `value.method` 产生可调用对象（闭包/原生），则直接调用；
   2) 否则按值的运行时类型分派已注册的元方法，并将接收者作为第一个参数（如：`"abc".len()`；参见标准库）。
 
-闭包
+### 闭包
 - 仅表达式形式：`|a, b| a + b`。
 
-区间
+### 区间
 - `a..b` 与 `a..=b` 在求值时产生整数列表（末端分别为开区间/闭区间）。亦可用于模式。
 
-空合并与三元
+### 空合并与三元
 - `lhs ?? rhs`：若 `lhs` 非 `nil` 则为 `lhs`，否则为 `rhs`。
 - `cond ? then : else`（右结合）。在表达式中 `cond` 必须是布尔；在 `if`/`while` 中使用“真值”语义（见下）。
 
@@ -59,7 +59,7 @@
 - 空合并：`??`
 - 三元：`? :`（表达式运算符中最低）
 
-注意
+### 注意
 - `+` 支持字符串与字符串拼接。其它“字符串/数字”混合受功能门控，默认未启用。
 - `in` 支持：子串（`str in str`）、列表成员、映射键存在性。对 `list in list`，检查左侧所有元素是否都包含于右侧。
 
@@ -72,7 +72,7 @@
   - `recv(channel)` → `[ok, value]`
   - `select { case recv(c) => expr; case send(c, v) => expr; default => expr }`
 
-匹配表达式（Match）
+### 匹配表达式（Match）
 - `match value { pattern => expr, ... }`（分隔符可用 `,` 或 `;`）。返回匹配分支的值。模式见下。
 
 ## 模式（Patterns）
@@ -86,7 +86,7 @@
 - 带守卫：`pat if expr`
 - 区间模式：`1..10`、`0..=n`
 
-for 循环模式
+### for 循环模式
 - 支持扩展形式：
   - 变量：`x`
   - 忽略：`_`
@@ -97,7 +97,7 @@ for 循环模式
 ## 语句
 - 程序由语句序列组成。分号 `;` 结束简单语句与表达式语句。
 
-控制流
+### 控制流
 - `if (cond) stmt` 或 `if cond stmt`（括号可选）。真值语义：`false` 与 `nil` 为假，其余为真。
 - `if let pattern = expr stmt [else stmt]`
 - `while (cond) stmt` 或 `while cond stmt`
@@ -106,20 +106,20 @@ for 循环模式
 - `break;`、`continue;`
 - `return;` 或 `return expr;`
 
-变量
+### 变量
 - 声明/解构：`let pattern [: Type] = expr;`
 - 赋值：`name = expr;`
 - 复合赋值：`name += expr;`、`-=`、`*=`、`/=`、`%=`
 - 简写定义：`name := expr;`（定义并初始化）
 - 词法作用域：块 `{ ... }` 引入新作用域。
 
-结构体（Struct）
+### 结构体（Struct）
 - 定义：`struct User { id: Int, name: String? }`
 - 实例化（字面量）：`User { id: 1, name: "Ann" }`
 - 实例化（构造语法糖）：`User(id: 1, name: "Ann")`
 - 访问：`user.name`
 
-函数
+### 函数
 - 定义：`fn name(param1[: Type], param2[: Type]) [-> Type] { statements }`
 - 参数与返回类型可选；函数默认返回 `nil`，除非显式 `return`。
 - 一等公民：闭包与函数值可被传递、返回与调用。
@@ -127,7 +127,7 @@ for 循环模式
 - 默认值仅在调用方省略该具名参数时惰性求值，表达式可以访问同一调用帧内已绑定的其它参数。
 - 调用时使用 `name: expr` 语法置于位置参数之后，如 `f(1, 2, label: "demo", flag: false)`；具名参数之间无顺序要求，但不得夹在位置参数之前。
 
-导入
+### 导入
 - 形式：
   - `import math;` —— 将标准库模块作为命名空间导入
   - `import "path/to/file.lk";` —— 将文件模块作为命名空间导入（命名为文件名的主干）
@@ -137,18 +137,45 @@ for 循环模式
   - `import math as m;` —— 模块别名
 
 - 文件导入解析与安全：
+  - 文件之间默认互不可见；跨文件依赖必须显式 `import`。
+  - 带引号的文件导入不需要 `Lk.toml`，它从发起导入的当前文件目录开始解析。
   - 仅允许相对且净化后的路径：拒绝绝对路径与任何包含 `..` 的路径。
   - 解析顺序：优先尝试 `${MOD_NAME}.lk`，若不存在再尝试 `${MOD_NAME}/mod.lk`（相对于当前文件目录）。
   - 若传入已带 `.lk` 的相对路径（如 `"lib/foo.lk"`），在存在时将被直接使用。
   - 在包内，裸模块导入先查标准库，再查 `Lk.toml` 中的 workspace/dependency package。package 导入解析到 `src/mod.lk` 或 `src/<package-name>.lk`。
+  - 因为 `..` 会被拒绝，嵌套目录中的代码不能用 `../...` 导入父目录文件；当嵌套代码需要依赖子树外的代码时，应使用 package/workspace 模块。
 
-包
+#### 文件导入示例
+
+```text
+a.lk
+b.lk
+c/c1.lk
+c/d/d1.lk
+```
+
+从 `a.lk`：
+
+```lk
+import "b";       // b.lk，导入后命名为 b
+import "c/c1";    // c/c1.lk，导入后命名为 c1
+import "c/d/d1";  // c/d/d1.lk，导入后命名为 d1
+```
+
+从 `c/c1.lk`：
+
+```lk
+import "d/d1";    // c/d/d1.lk，导入后命名为 d1
+// import "../a"; // 被拒绝：不允许父目录导入
+```
+
+## 包
 - `Lk.toml` 定义 `[package]`、`[dependencies]`、`[workspace]` 与 `[workspace.dependencies]`。
 - 字符串依赖默认是 GitHub，例如 `util = "owner/repo"`。
 - `Lk.lock` 保存已获取 git 源的具体 revision。
-- 包管理器命令和 manifest 示例见 `docs/packages.md`。
+- 包管理器命令和 manifest 示例见 `docs/packages.md`。可运行的 workspace 示例位于 `examples/lk-example-workspace`。
 
-内建与标准库
+## 内建与标准库
 - 内建全局：`print(fmt, ...args)`、`println(fmt, ...args)`、`panic([msg])`。
 - 标准库模块（按需导入）：`math`、`string`、`list`、`map`、`iter`、`datetime`、`os`、`tcp`。启用 `concurrency` 功能后：`task`、`chan`、`time`。
 - `iter` 模块要点：`enumerate(list)`、`range([start,] end [, step])`、`zip(list1, list2)`、
@@ -163,7 +190,7 @@ for 循环模式
 - REPL 与 CLI 仅在结果值非 `nil` 时打印输出。这样可以避免对默认返回 `nil` 的语句（如 `let`、函数定义、`println(...)` 等）多输出一行。若需要展示 `nil`，请显式调用 `println(nil)` 或在格式化输出中包含它。
 
 ## 类型与标注
-原始与复合类型
+### 原始与复合类型
 - `Int`、`Float`、`String`、`Bool`、`Nil`、`Any`
 - `List<T>`、`Map<K, V>`
 - `Task<T>`、`Channel<T>`（并发）
@@ -171,14 +198,14 @@ for 循环模式
 - 联合：`A | B | Nil`；可选：`T?`（是 `T | Nil` 的语法糖；同时兼容前缀 `?T`）
 - 支持命名与泛型类型（如 `List<Int>`、`Map<String, Int>`）
 
-类型标注
+### 类型标注
 - `let x: Int = 1;`
 - `fn f(a: Int, b: String) -> Bool { ... }`
 - 类型检查/推断尽力而为且保守；运行时仍为动态类型。
 
 ## 文法（EBNF 风格）
 
-表达式（从低到高的优先级）
+### 表达式（从低到高的优先级）
 ```ebnf
 expr        ::= conditional
 conditional ::= nullish [ '?' expr ':' expr ]
@@ -209,7 +236,7 @@ args        ::= [ expr { ',' expr } ]
 struct_lit  ::= id '{' ( id ':' expr { ',' id ':' expr } )? '}'
 ```
 
-语句
+### 语句
 ```ebnf
 program      ::= statement*
 statement    ::= import_stmt | if_stmt | if_let_stmt | while_stmt | while_let_stmt
@@ -244,7 +271,7 @@ expr_stmt    ::= expr ';'
 block_stmt   ::= '{' statement* '}'
 ```
 
-模式
+### 模式
 ```
 pattern      ::= literal | '_' | id | list_pat | map_pat | or_pat | guard_pat | range_pat
 list_pat     ::= '[' pattern { ',' pattern } [ ',' '..' id ] ']'
@@ -265,7 +292,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - CLI 仅在结果值非 `nil` 时打印输出
 
 
-### 类型
+## 运行时值类型
 - `String` —— UTF‑8 字符串
 - `Int` —— 64 位有符号整数
 - `Float` —— 64 位浮点数
