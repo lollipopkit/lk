@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Once};
-use std::{collections::BTreeMap, fs};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+};
 
 static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str =
@@ -19,11 +22,14 @@ use lk_core::{
         PackageModule, PackageSection, cache_dir_for_source, find_manifest,
     },
     rt,
-    stmt::{ModuleResolver, Program, deserialize_imports, execute_imports, serialize_imports, stmt_parser::StmtParser},
+    stmt::{
+        ImportSource, ImportStmt, ModuleResolver, Program, Stmt, deserialize_imports, execute_imports,
+        serialize_imports, stmt_parser::StmtParser,
+    },
     token::Tokenizer,
     typ::TypeChecker,
     val::Val,
-    vm::{self, BundledModule, BytecodeModule, ModuleFlags, ModuleMeta, Vm, VmContext, compile_program},
+    vm::{self, BundledModule, BytecodeModule, Compiler, ModuleFlags, ModuleMeta, Vm, VmContext, compile_program},
 };
 
 use anyhow::Context;
@@ -38,15 +44,32 @@ mod repl;
 use bundler::ModuleBundler;
 
 #[cfg(feature = "llvm")]
-const RUNTIME_CRATE_NAME: &str = "lk-core";
-#[cfg(feature = "llvm")]
-const RUNTIME_STDLIB_CRATE: &str = "lk-stdlib";
+const RUNTIME_CRATE_NAME: &str = "lk-aot-runtime";
 
 #[cfg(feature = "llvm")]
 struct EncodedBundledModule {
     path: String,
     bytes: Vec<u8>,
 }
+
+#[cfg(feature = "llvm")]
+struct NativeModuleFunction {
+    module: String,
+    export: String,
+    symbol: String,
+    arity: usize,
+}
+
+#[cfg(feature = "llvm")]
+#[derive(Default)]
+struct NativeModuleIr {
+    final_ir: String,
+    unoptimised_ir: String,
+    functions: Vec<NativeModuleFunction>,
+}
+
+#[cfg(feature = "llvm")]
+type NativeModuleFunctionDecl<'a> = (&'a str, &'a [String], &'a [lk_core::stmt::NamedParamDecl], &'a Stmt);
 
 #[cfg(feature = "llvm")]
 #[derive(Default)]
@@ -655,6 +678,8 @@ fn build_runtime_init_plan(
     imports_json: Option<&str>,
     package_modules_json: Option<&str>,
     modules: &[EncodedBundledModule],
+    native_functions: &[NativeModuleFunction],
+    native_imports_only: bool,
 ) -> RuntimeInitPlan {
     let mut plan = RuntimeInitPlan::default();
 
@@ -662,9 +687,11 @@ fn build_runtime_init_plan(
         "declare void @lk_rt_begin_session()",
         "declare void @lk_rt_register_search_path(i8*, i64)",
         "declare i32 @lk_rt_register_bundled_module(i8*, i64, i8*, i64)",
+        "declare i32 @lk_rt_register_native_module_function(i8*, i64, i8*, i64, i8*, i64)",
         "declare i32 @lk_rt_register_imports(i8*, i64)",
         "declare i32 @lk_rt_register_package_modules(i8*, i64)",
         "declare i32 @lk_rt_apply_imports()",
+        "declare i32 @lk_rt_apply_native_imports()",
     ];
     for decl in decls {
         if !module_ir.contains(decl) {
@@ -673,6 +700,18 @@ fn build_runtime_init_plan(
     }
 
     plan.body_lines.push("call void @lk_rt_begin_session()".to_string());
+
+    if let Some(imports) = imports_json.and_then(|raw| deserialize_imports(raw).ok()) {
+        for module in stdlib_module_names_from_imports(&imports) {
+            if let Some(symbol) = stdlib_require_symbol(&module) {
+                let decl = format!("declare void @{symbol}()");
+                if !module_ir.contains(&decl) && !plan.declarations.iter().any(|existing| existing == &decl) {
+                    plan.declarations.push(decl);
+                }
+                plan.body_lines.push(format!("call void @{symbol}()"));
+            }
+        }
+    }
 
     for (idx, path) in search_paths.iter().enumerate() {
         let bytes = path.as_bytes();
@@ -714,6 +753,32 @@ fn build_runtime_init_plan(
         ));
     }
 
+    for (idx, function) in native_functions.iter().enumerate() {
+        let module_bytes = function.module.as_bytes();
+        let export_bytes = function.export.as_bytes();
+        if module_bytes.is_empty() || export_bytes.is_empty() {
+            continue;
+        }
+        let module_len = module_bytes.len();
+        let export_len = export_bytes.len();
+        let module_name = format!("@.lk_native_module.{}", idx);
+        let export_name = format!("@.lk_native_export.{}", idx);
+        let module_literal = llvm_bytes_literal(module_bytes);
+        let export_literal = llvm_bytes_literal(export_bytes);
+        plan.globals.push(format!(
+            "{module_name} = private unnamed_addr constant [{module_len} x i8] {module_literal}, align 1"
+        ));
+        plan.globals.push(format!(
+            "{export_name} = private unnamed_addr constant [{export_len} x i8] {export_literal}, align 1"
+        ));
+        plan.body_lines.push(format!(
+            "call i32 @lk_rt_register_native_module_function(i8* getelementptr inbounds ([{module_len} x i8], [{module_len} x i8]* {module_name}, i64 0, i64 0), i64 {module_len}, i8* getelementptr inbounds ([{export_len} x i8], [{export_len} x i8]* {export_name}, i64 0, i64 0), i64 {export_len}, i8* bitcast (i64 ({params})* @{symbol} to i8*), i64 {arity})",
+            params = std::iter::repeat_n("i64", function.arity).collect::<Vec<_>>().join(", "),
+            symbol = function.symbol,
+            arity = function.arity
+        ));
+    }
+
     if let Some(imports) = imports_json {
         let bytes = imports.as_bytes();
         if !bytes.is_empty() {
@@ -744,9 +809,212 @@ fn build_runtime_init_plan(
         }
     }
 
-    plan.body_lines.push("call i32 @lk_rt_apply_imports()".to_string());
+    if native_imports_only {
+        plan.body_lines
+            .push("call i32 @lk_rt_apply_native_imports()".to_string());
+    } else {
+        plan.body_lines.push("call i32 @lk_rt_apply_imports()".to_string());
+    }
 
     plan
+}
+
+#[cfg(feature = "llvm")]
+fn stdlib_module_names_from_imports(imports: &[ImportStmt]) -> Vec<String> {
+    let mut names = Vec::new();
+    for import in imports {
+        match import {
+            ImportStmt::Module { module } | ImportStmt::ModuleAlias { module, .. } => {
+                push_unique_stdlib_module(&mut names, module);
+            }
+            ImportStmt::Items {
+                source: ImportSource::Module(module),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::Module(module),
+                ..
+            } => {
+                push_unique_stdlib_module(&mut names, module);
+            }
+            ImportStmt::File { .. }
+            | ImportStmt::Items {
+                source: ImportSource::File(_),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::File(_),
+                ..
+            } => {}
+        }
+    }
+    names
+}
+
+#[cfg(feature = "llvm")]
+fn push_unique_stdlib_module(names: &mut Vec<String>, candidate: &str) {
+    if stdlib_require_symbol(candidate).is_some() && !names.iter().any(|name| name == candidate) {
+        names.push(candidate.to_string());
+    }
+}
+
+#[cfg(feature = "llvm")]
+fn stdlib_require_symbol(module: &str) -> Option<&'static str> {
+    match module {
+        "io" => Some("lk_rt_require_stdlib_io"),
+        "json" => Some("lk_rt_require_stdlib_json"),
+        "yaml" => Some("lk_rt_require_stdlib_yaml"),
+        "toml" => Some("lk_rt_require_stdlib_toml"),
+        "iter" => Some("lk_rt_require_stdlib_iter"),
+        "math" => Some("lk_rt_require_stdlib_math"),
+        "string" => Some("lk_rt_require_stdlib_string"),
+        "list" => Some("lk_rt_require_stdlib_list"),
+        "map" => Some("lk_rt_require_stdlib_map"),
+        "datetime" => Some("lk_rt_require_stdlib_datetime"),
+        "os" => Some("lk_rt_require_stdlib_os"),
+        "tcp" => Some("lk_rt_require_stdlib_tcp"),
+        "stream" => Some("lk_rt_require_stdlib_stream"),
+        "task" => Some("lk_rt_require_stdlib_task"),
+        "chan" => Some("lk_rt_require_stdlib_chan"),
+        "time" => Some("lk_rt_require_stdlib_time"),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "llvm")]
+fn compile_native_package_modules(
+    graph: Option<&PackageGraph>,
+    imports: &[ImportStmt],
+    options: &LlvmBackendOptions,
+) -> anyhow::Result<Option<NativeModuleIr>> {
+    let Some(graph) = graph else {
+        return Ok(None);
+    };
+    let package_roots: BTreeMap<&str, &Path> = graph
+        .modules
+        .iter()
+        .map(|module| (module.name.as_str(), module.root.as_path()))
+        .collect();
+    let mut requested = BTreeSet::new();
+    for import in imports {
+        match import {
+            ImportStmt::Module { module } | ImportStmt::ModuleAlias { module, .. } => {
+                if package_roots.contains_key(module.as_str()) {
+                    requested.insert(module.clone());
+                }
+            }
+            ImportStmt::Items {
+                source: ImportSource::Module(module),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::Module(module),
+                ..
+            } => {
+                if package_roots.contains_key(module.as_str()) {
+                    requested.insert(module.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    if requested.is_empty() {
+        return Ok(None);
+    }
+
+    let mut out = NativeModuleIr::default();
+    for module in requested {
+        let root = package_roots
+            .get(module.as_str())
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("package module '{module}' not found"))?;
+        let program = parse_program_file(root)?;
+        let functions = match native_module_functions(&program) {
+            Ok(functions) => functions,
+            Err(_) => return Ok(None),
+        };
+        if functions.is_empty() {
+            return Ok(None);
+        }
+        for (export, params, named_params, body) in functions {
+            if !named_params.is_empty() {
+                return Ok(None);
+            }
+            let function = Compiler::new().compile_function(params, named_params, body);
+            let symbol = format!(
+                "lk_mod_{}_{}",
+                llvm_symbol_fragment(module.as_str()),
+                llvm_symbol_fragment(export)
+            );
+            let mut function_options = options.clone();
+            function_options.module_name = symbol.clone();
+            let artifact = compile_function_to_llvm(&function, &symbol, function_options)
+                .with_context(|| format!("compile native package function {module}.{export}"))?;
+            out.final_ir.push_str(&strip_llvm_module_header(
+                artifact.optimised_ir.as_deref().unwrap_or(&artifact.module.ir),
+            ));
+            out.final_ir.push('\n');
+            out.unoptimised_ir
+                .push_str(&strip_llvm_module_header(&artifact.module.ir));
+            out.unoptimised_ir.push('\n');
+            out.functions.push(NativeModuleFunction {
+                module: module.clone(),
+                export: export.to_string(),
+                symbol,
+                arity: params.len(),
+            });
+        }
+    }
+    Ok(Some(out))
+}
+
+#[cfg(feature = "llvm")]
+fn native_module_functions(program: &Program) -> anyhow::Result<Vec<NativeModuleFunctionDecl<'_>>> {
+    let mut functions = Vec::new();
+    for stmt in &program.statements {
+        match stmt.as_ref() {
+            Stmt::Function {
+                name,
+                params,
+                named_params,
+                body,
+                ..
+            } => functions.push((name.as_str(), params.as_slice(), named_params.as_slice(), body.as_ref())),
+            Stmt::Import(_) => {}
+            other => {
+                return Err(anyhow::anyhow!(
+                    "native package module lowering only supports top-level functions, found {other:?}"
+                ));
+            }
+        }
+    }
+    Ok(functions)
+}
+
+#[cfg(feature = "llvm")]
+fn strip_llvm_module_header(ir: &str) -> String {
+    ir.lines()
+        .filter(|line| {
+            !line.starts_with("; ModuleID")
+                && !line.starts_with("source_filename")
+                && !line.starts_with("target triple")
+                && !line.starts_with("declare ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(feature = "llvm")]
+fn llvm_symbol_fragment(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() { "module".to_string() } else { out }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -960,26 +1228,58 @@ fn main() -> anyhow::Result<()> {
                             run_optimizations: !skip_opt,
                             opt_level: opt_level_cli.into(),
                         };
+                        let native_modules =
+                            compile_native_package_modules(package_graph.as_ref(), &import_stmts, &options)?;
+                        let native_imports_only = native_modules
+                            .as_ref()
+                            .is_some_and(|native| !native.functions.is_empty());
+                        let active_package_modules_json = if native_imports_only {
+                            None
+                        } else {
+                            package_modules_json.as_deref()
+                        };
+                        let active_encoded_modules: &[EncodedBundledModule] =
+                            if native_imports_only { &[] } else { &encoded_modules };
                         let llvm_artifact = compile_function_to_llvm(&func, "lk_entry", options);
                         let (ll_with_main, unopt_with_main, bytecode_trampoline_c_src) = match llvm_artifact {
                             Ok(artifact) => {
                                 let final_ir = artifact.optimised_ir.as_deref().unwrap_or(&artifact.module.ir);
+                                let combined_final_ir = if let Some(native) = native_modules.as_ref() {
+                                    format!("{final_ir}\n{}", native.final_ir)
+                                } else {
+                                    final_ir.to_string()
+                                };
                                 let runtime_plan = build_runtime_init_plan(
-                                    final_ir,
+                                    &combined_final_ir,
                                     &search_paths,
                                     imports_serialized.as_deref(),
-                                    package_modules_json.as_deref(),
-                                    &encoded_modules,
+                                    active_package_modules_json,
+                                    active_encoded_modules,
+                                    native_modules
+                                        .as_ref()
+                                        .map(|native| native.functions.as_slice())
+                                        .unwrap_or(&[]),
+                                    native_imports_only,
                                 );
-                                let ll_with_main = append_main_stub(final_ir, "lk_entry", &runtime_plan);
+                                let ll_with_main = append_main_stub(&combined_final_ir, "lk_entry", &runtime_plan);
+                                let combined_unopt_ir = if let Some(native) = native_modules.as_ref() {
+                                    format!("{}\n{}", artifact.module.ir, native.unoptimised_ir)
+                                } else {
+                                    artifact.module.ir.clone()
+                                };
                                 let unopt_plan = build_runtime_init_plan(
-                                    &artifact.module.ir,
+                                    &combined_unopt_ir,
                                     &search_paths,
                                     imports_serialized.as_deref(),
-                                    package_modules_json.as_deref(),
-                                    &encoded_modules,
+                                    active_package_modules_json,
+                                    active_encoded_modules,
+                                    native_modules
+                                        .as_ref()
+                                        .map(|native| native.functions.as_slice())
+                                        .unwrap_or(&[]),
+                                    native_imports_only,
                                 );
-                                let unopt_with_main = append_main_stub(&artifact.module.ir, "lk_entry", &unopt_plan);
+                                let unopt_with_main = append_main_stub(&combined_unopt_ir, "lk_entry", &unopt_plan);
                                 (ll_with_main, Some(unopt_with_main), None)
                             }
                             Err(err) => {
@@ -1078,6 +1378,7 @@ fn main() -> anyhow::Result<()> {
                             .map(|triple| triple.contains("apple"))
                             .unwrap_or(cfg!(target_os = "macos"));
                         if target_is_apple {
+                            cc_cmd.arg("-Wl,-dead_strip");
                             cc_cmd.arg("-framework").arg("CoreFoundation");
                             cc_cmd.arg("-framework").arg("CoreServices");
                         }
@@ -1501,11 +1802,7 @@ fn ensure_runtime_staticlib(target_triple: Option<&str>, use_release: bool) -> a
     if let Some(packaged) = find_packaged_staticlibs(target_triple, use_release) {
         return Ok(packaged);
     }
-    let libs = vec![
-        build_staticlib(RUNTIME_CRATE_NAME, target_triple, use_release)?,
-        build_staticlib(RUNTIME_STDLIB_CRATE, target_triple, use_release)?,
-    ];
-    Ok(libs)
+    Ok(vec![build_staticlib(RUNTIME_CRATE_NAME, target_triple, use_release)?])
 }
 
 #[cfg(feature = "llvm")]
@@ -1527,7 +1824,14 @@ fn build_staticlib(crate_name: &str, target_triple: Option<&str>, use_release: b
         .unwrap_or_else(|_| workspace_root.join("target").join("lk-native"));
 
     let mut cmd = Command::new(&cargo);
-    cmd.arg("build").arg("-p").arg(crate_name).arg("--lib");
+    cmd.arg("build");
+    if crate_name == RUNTIME_CRATE_NAME {
+        cmd.arg("--manifest-path")
+            .arg(workspace_root.join("aot-runtime").join("Cargo.toml"));
+    } else {
+        cmd.arg("-p").arg(crate_name);
+    }
+    cmd.arg("--lib");
     if use_release {
         cmd.arg("--release");
     }
@@ -1618,17 +1922,13 @@ fn staticlibs_from_dir(dir: &Path) -> Option<Vec<PathBuf>> {
         return None;
     }
 
-    let mut libs = Vec::new();
-    for crate_name in [RUNTIME_CRATE_NAME, RUNTIME_STDLIB_CRATE] {
-        let filename = format!("lib{}.a", crate_name.replace('-', "_"));
-        let path = dir.join(filename);
-        if !path.exists() {
-            return None;
-        }
-        libs.push(path);
+    let filename = format!("lib{}.a", RUNTIME_CRATE_NAME.replace('-', "_"));
+    let path = dir.join(filename);
+    if !path.exists() {
+        return None;
     }
 
-    Some(libs)
+    Some(vec![path])
 }
 
 #[cfg(all(test, feature = "llvm"))]
@@ -1639,13 +1939,11 @@ mod packaged_staticlib_tests {
     #[test]
     fn uses_env_dir_when_all_libs_present() {
         let temp = tempfile::tempdir().expect("tempdir");
-        for name in ["liblk_core.a", "liblk_stdlib.a"] {
-            let path = temp.path().join(name);
-            fs::write(&path, []).expect("write stub lib");
-        }
+        let path = temp.path().join("liblk_aot_runtime.a");
+        fs::write(&path, []).expect("write stub lib");
 
         let libs = staticlibs_from_dir(temp.path()).expect("should discover libs");
-        assert_eq!(libs.len(), 2);
+        assert_eq!(libs.len(), 1);
         assert!(libs.iter().all(|p| p.exists()));
     }
 }

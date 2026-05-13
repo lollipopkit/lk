@@ -1,12 +1,18 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 
 use crate::stmt::{ImportContext, ModuleResolver};
-use crate::typ::{TraitDef, TraitImpl, TypeChecker};
+use crate::typ::TypeChecker;
 use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_new, fast_hash_set_new};
-use crate::val::{ObjectValue, Type, Val, methods::find_method_for_val};
+use crate::val::{Type, Val};
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+use crate::typ::{TraitDef, TraitImpl};
+#[cfg(not(feature = "aot-minimal-runtime"))]
+use crate::val::{ObjectValue, methods::find_method_for_val};
+#[cfg(not(feature = "aot-minimal-runtime"))]
+use std::collections::HashMap;
 
 /// VM 运行期全局上下文。
 ///
@@ -51,7 +57,24 @@ pub struct CallFrameInfo {
 impl VmContext {
     /// 创建一个空上下文。
     pub fn new() -> Self {
-        let mut ctx = Self {
+        #[cfg(not(feature = "aot-minimal-runtime"))]
+        {
+            let mut ctx = Self::new_without_core_vm_builtins();
+            ctx.install_core_vm_builtins();
+            ctx
+        }
+        #[cfg(feature = "aot-minimal-runtime")]
+        {
+            Self::new_without_core_vm_builtins()
+        }
+    }
+
+    /// Create an empty context without VM-only core builtins.
+    ///
+    /// LLVM AOT executables use this to avoid linking method-dispatch and
+    /// trait-registration fallback paths when imports are replayed natively.
+    pub fn new_without_core_vm_builtins() -> Self {
+        Self {
             globals: fast_hash_map_new(),
             const_globals: fast_hash_set_new(),
             locals: Vec::new(),
@@ -63,9 +86,7 @@ impl VmContext {
             slot_values: Vec::new(),
             slot_scopes: vec![fast_hash_map_new()],
             call_stack: Vec::new(),
-        };
-        ctx.install_core_vm_builtins();
-        ctx
+        }
     }
 
     /// 当前全局缓存版本。
@@ -425,6 +446,7 @@ impl VmContext {
         }
     }
 
+    #[cfg(not(feature = "aot-minimal-runtime"))]
     fn install_core_vm_builtins(&mut self) {
         if !self.globals.contains_key("__lk_register_trait") {
             self.globals.insert(
@@ -473,6 +495,7 @@ impl VmContext {
     }
 }
 
+#[cfg(not(feature = "aot-minimal-runtime"))]
 fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!(
@@ -541,6 +564,7 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
     Ok(Val::Nil)
 }
 
+#[cfg(not(feature = "aot-minimal-runtime"))]
 fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 3 {
         return Err(anyhow!(
@@ -637,6 +661,7 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
     Ok(Val::Nil)
 }
 
+#[cfg(not(feature = "aot-minimal-runtime"))]
 fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 3 {
         return Err(anyhow!(
@@ -709,6 +734,7 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
     Err(anyhow!("{} has no method '{}'", receiver.type_name(), method_arc))
 }
 
+#[cfg(not(feature = "aot-minimal-runtime"))]
 fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 4 {
         return Err(anyhow!(
@@ -800,6 +826,7 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
     Err(anyhow!("{} has no method '{}'", receiver.type_name(), method_arc))
 }
 
+#[cfg(not(feature = "aot-minimal-runtime"))]
 fn core_make_struct_builtin(args: &[Val], _ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!(

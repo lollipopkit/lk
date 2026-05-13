@@ -50,9 +50,10 @@ impl LkAnalyzer {
                     for (k, v) in exports {
                         let label = format!("{}.{}", module_name, k);
                         let (kind, detail) = match v {
-                            Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::Closure(_) => {
-                                (CompletionItemKind::FUNCTION, "function".to_string())
-                            }
+                            Val::RustFunction(_)
+                            | Val::RustFunctionNamed(_)
+                            | Val::AotFunction(_)
+                            | Val::Closure(_) => (CompletionItemKind::FUNCTION, "function".to_string()),
                             Val::Int(_) | Val::Float(_) | Val::Bool(_) | Val::Str(_) => {
                                 (CompletionItemKind::CONSTANT, "const".to_string())
                             }

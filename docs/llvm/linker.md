@@ -13,8 +13,8 @@ LLVM 后端已经能够将大部分 VM 字节码指令翻译成 LLVM IR，并在
 3. **实现 helper**：以 `#[no_mangle] extern "C"` 暴露的函数为入口，内部桥接到现有解释器实现：
    - 字符串常量、全局读写、集合构造（list/map）、`Len`/`Index`、`Call` 等操作。
    - 函数调用 helper 需要能够调用闭包、Rust 原生函数等。
-4. **集成构建**：调整 `Cargo.toml` 导出 `staticlib`，让 CLI 在 `compile exe` 时自动链接 release runtime 库。
-5. **提供最小 `main` stub**：在链接路径中包含一个 `main`，负责初始化 runtime（例如构建 `VmContext`、安装 stdlib），然后调用 `lk_entry`。
+4. **集成构建**：通过 `lk-aot-runtime` 导出专用 `staticlib`，让 CLI 在 `compile exe` 时自动链接 release AOT runtime 库。
+5. **提供最小 `main` stub**：在链接路径中包含一个 `main`，负责初始化 runtime（例如构建轻量 `VmContext`、按需安装 stdlib/native package module），然后调用 `lk_entry`。
 6. **验证**：
    - 添加新的集成测试，生成 `.ll`、`llc` 为 `.o`、`clang` 链接，与 runtime 库静态链接后运行产物。
    - CI 增加 step，确保 LLVM AOT 流程可用。
@@ -46,8 +46,8 @@ LLVM 后端已经能够将大部分 VM 字节码指令翻译成 LLVM IR，并在
 1. `docs/llvm/linker.md`：记录设计与约定（本文）。
 2. `core/src/llvm/runtime.rs`：实现 helper，定义 value encoding。
 3. `core/src/lib.rs`：导出 runtime 模块。
-4. `Cargo.toml`：添加 `crate-type = ["rlib", "staticlib"]`；CLI 构建时链接。
-5. CLI：在 `compile exe` 时追加 release runtime staticlib，并对本机目标链接产物执行 `strip`。
+4. `aot-runtime/Cargo.toml`：添加 `crate-type = ["staticlib"]`，把 AOT 链接边界收敛到 `liblk_aot_runtime.a`。
+5. CLI：在 `compile exe` 时追加 release AOT runtime staticlib，Apple 目标使用 `-Wl,-dead_strip`，并对本机目标链接产物执行 `strip`。
 6. 添加 `tests/llvm_link.rs` 集成测试，执行 end-to-end 构建。
 
 ## 未决问题

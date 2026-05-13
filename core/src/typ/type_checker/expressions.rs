@@ -1366,7 +1366,7 @@ impl TypeChecker {
             }
             // Other types return Any for now
             Val::Closure(_) => Ok(Type::Any),
-            Val::RustFunction(_) | Val::RustFunctionNamed(_) => Ok(Type::Any),
+            Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => Ok(Type::Any),
             Val::Task(_) => Ok(Type::Any),
             Val::Channel(_) => Ok(Type::Any),
             Val::Stream(_) => Ok(Type::Any),
@@ -1407,7 +1407,7 @@ impl TypeChecker {
                 }
             }
             Val::Closure(_) => Ok(Type::Any),
-            Val::RustFunction(_) | Val::RustFunctionNamed(_) => Ok(Type::Any),
+            Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => Ok(Type::Any),
             Val::Task(_) => Ok(Type::Any),
             Val::Channel(_) => Ok(Type::Any),
             Val::Stream(_) => Ok(Type::Any),

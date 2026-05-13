@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "aot-minimal-runtime", allow(dead_code))]
+
 pub mod ast;
 pub mod expr;
 pub mod module;

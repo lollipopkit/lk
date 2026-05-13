@@ -5,6 +5,8 @@
 //! module provides those helpers and bridges them back to the VM runtime so we
 //! can reuse existing semantics while sharing a common value encoding.
 
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -17,24 +19,78 @@ use crate::{
     llvm::encoding,
     module::ModuleRegistry,
     op::BinOp,
-    stmt::{ImportStmt, ModuleResolver, deserialize_imports, execute_imports},
-    typ::TypeChecker,
+    stmt::{ImportSource, ImportStmt, ModuleResolver, deserialize_imports, execute_imports},
     util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_map_with_capacity},
-    val::Val,
+    val::{AotFunction, Val},
     vm::{BytecodeModule, Vm, VmContext, decode_module},
 };
 
 #[cfg(not(test))]
 unsafe extern "Rust" {
-    fn lk_stdlib_register_globals(registry: &mut ModuleRegistry);
-    fn lk_stdlib_register_modules(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_core_globals(registry: &mut ModuleRegistry);
+    fn lk_stdlib_register_concurrency_globals(registry: &mut ModuleRegistry);
+    fn lk_stdlib_register_module_io(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_json(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_yaml(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_toml(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_iter(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_math(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_string(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_list(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_map(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_datetime(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_os(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_tcp(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_stream(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_task(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_chan(registry: &mut ModuleRegistry) -> Result<()>;
+    fn lk_stdlib_register_module_time(registry: &mut ModuleRegistry) -> Result<()>;
 }
 
 #[cfg(test)]
-fn lk_stdlib_register_globals(_registry: &mut ModuleRegistry) {}
+fn lk_stdlib_register_core_globals(_registry: &mut ModuleRegistry) {}
 
 #[cfg(test)]
-fn lk_stdlib_register_modules(_registry: &mut ModuleRegistry) -> Result<()> {
+fn lk_stdlib_register_concurrency_globals(_registry: &mut ModuleRegistry) {}
+
+type StdlibRegistrar = fn(&mut ModuleRegistry) -> Result<()>;
+
+macro_rules! stdlib_registrar_bridge {
+    ($bridge:ident, $extern_name:ident) => {
+        #[cfg(not(test))]
+        fn $bridge(registry: &mut ModuleRegistry) -> Result<()> {
+            unsafe { $extern_name(registry) }
+        }
+
+        #[cfg(test)]
+        fn $bridge(_registry: &mut ModuleRegistry) -> Result<()> {
+            Ok(())
+        }
+    };
+}
+
+stdlib_registrar_bridge!(register_stdlib_io_bridge, lk_stdlib_register_module_io);
+stdlib_registrar_bridge!(register_stdlib_json_bridge, lk_stdlib_register_module_json);
+stdlib_registrar_bridge!(register_stdlib_yaml_bridge, lk_stdlib_register_module_yaml);
+stdlib_registrar_bridge!(register_stdlib_toml_bridge, lk_stdlib_register_module_toml);
+stdlib_registrar_bridge!(register_stdlib_iter_bridge, lk_stdlib_register_module_iter);
+stdlib_registrar_bridge!(register_stdlib_math_bridge, lk_stdlib_register_module_math);
+stdlib_registrar_bridge!(register_stdlib_string_bridge, lk_stdlib_register_module_string);
+stdlib_registrar_bridge!(register_stdlib_list_bridge, lk_stdlib_register_module_list);
+stdlib_registrar_bridge!(register_stdlib_map_bridge, lk_stdlib_register_module_map);
+stdlib_registrar_bridge!(register_stdlib_datetime_bridge, lk_stdlib_register_module_datetime);
+stdlib_registrar_bridge!(register_stdlib_os_bridge, lk_stdlib_register_module_os);
+stdlib_registrar_bridge!(register_stdlib_tcp_bridge, lk_stdlib_register_module_tcp);
+stdlib_registrar_bridge!(register_stdlib_stream_bridge, lk_stdlib_register_module_stream);
+stdlib_registrar_bridge!(register_stdlib_task_bridge, lk_stdlib_register_module_task);
+stdlib_registrar_bridge!(register_stdlib_chan_bridge, lk_stdlib_register_module_chan);
+stdlib_registrar_bridge!(register_stdlib_time_bridge, lk_stdlib_register_module_time);
+
+fn register_stdlib_concurrency_globals_bridge(registry: &mut ModuleRegistry) -> Result<()> {
+    #[cfg_attr(test, allow(unused_unsafe))]
+    unsafe {
+        lk_stdlib_register_concurrency_globals(registry);
+    }
     Ok(())
 }
 
@@ -150,6 +206,38 @@ pub extern "C" fn lk_rt_register_package_modules(ptr: *const i8, len: i64) -> i3
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_register_native_module_function(
+    module_ptr: *const i8,
+    module_len: i64,
+    name_ptr: *const i8,
+    name_len: i64,
+    fn_ptr: *const (),
+    arity: i64,
+) -> i32 {
+    if fn_ptr.is_null() || arity < 0 || arity > u8::MAX as i64 {
+        return -1;
+    }
+    let module = read_string(module_ptr, module_len);
+    let name = read_string(name_ptr, name_len);
+    if module.is_empty() || name.is_empty() {
+        return -1;
+    }
+    let function = Val::AotFunction(AotFunction {
+        ptr: fn_ptr as usize,
+        arity: arity as u8,
+    });
+    with_state(move |state| {
+        state
+            .pending_native_modules
+            .entry(module)
+            .or_insert_with(fast_hash_map_new)
+            .insert(Arc::from(name), function);
+        state.imports_applied = false;
+    });
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_apply_imports() -> i32 {
     let result: Result<()> = with_state(|state| state.apply_pending());
     match result {
@@ -158,6 +246,79 @@ pub extern "C" fn lk_rt_apply_imports() -> i32 {
             eprintln!("lk_rt_apply_imports error: {err}");
             -1
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_apply_native_imports() -> i32 {
+    let result: Result<()> = with_state(|state| state.apply_pending_native_only());
+    match result {
+        Ok(()) => 0,
+        Err(err) => {
+            eprintln!("lk_rt_apply_native_imports error: {err}");
+            -1
+        }
+    }
+}
+
+macro_rules! require_stdlib_module {
+    ($fn_name:ident, $registrar:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $fn_name() {
+            with_state(|state| {
+                push_unique_registrar(&mut state.pending_stdlib_registrars, $registrar);
+                state.imports_applied = false;
+            });
+        }
+    };
+}
+
+require_stdlib_module!(lk_rt_require_stdlib_io, register_stdlib_io_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_json, register_stdlib_json_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_yaml, register_stdlib_yaml_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_toml, register_stdlib_toml_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_iter, register_stdlib_iter_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_math, register_stdlib_math_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_string, register_stdlib_string_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_list, register_stdlib_list_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_map, register_stdlib_map_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_datetime, register_stdlib_datetime_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_os, register_stdlib_os_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_tcp, register_stdlib_tcp_bridge);
+require_stdlib_module!(lk_rt_require_stdlib_stream, register_stdlib_stream_bridge);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_require_stdlib_task() {
+    require_stdlib_concurrency_module(register_stdlib_task_bridge);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_require_stdlib_chan() {
+    require_stdlib_concurrency_module(register_stdlib_chan_bridge);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_require_stdlib_time() {
+    require_stdlib_concurrency_module(register_stdlib_time_bridge);
+}
+
+fn require_stdlib_concurrency_module(registrar: StdlibRegistrar) {
+    with_state(|state| {
+        push_unique_registrar(
+            &mut state.pending_stdlib_registrars,
+            register_stdlib_concurrency_globals_bridge,
+        );
+        push_unique_registrar(&mut state.pending_stdlib_registrars, registrar);
+        state.imports_applied = false;
+    });
+}
+
+fn push_unique_registrar(registrars: &mut Vec<StdlibRegistrar>, registrar: StdlibRegistrar) {
+    if !registrars
+        .iter()
+        .any(|existing| std::ptr::fn_addr_eq(*existing, registrar))
+    {
+        registrars.push(registrar);
     }
 }
 
@@ -175,17 +336,19 @@ struct RuntimeState {
     pending_imports: Vec<ImportStmt>,
     pending_bundled: Vec<DecodedBundledModule>,
     pending_package_modules: Vec<(String, String)>,
+    pending_native_modules: FastHashMap<String, FastHashMap<Arc<str>, Val>>,
+    pending_stdlib_registrars: Vec<StdlibRegistrar>,
     imports_applied: bool,
 }
 
 impl RuntimeState {
     fn new() -> Self {
-        let (ctx, resolver) = match Self::build_context(&[], &[], &[]) {
+        let (ctx, resolver) = match Self::build_native_context(&[], &[]) {
             Ok(pair) => pair,
             Err(err) => {
                 eprintln!("lk_rt: failed to initialise stdlib context: {err}");
                 let resolver = Arc::new(ModuleResolver::new());
-                let ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
+                let ctx = VmContext::new_without_core_vm_builtins().with_resolver(Arc::clone(&resolver));
                 (ctx, resolver)
             }
         };
@@ -198,6 +361,8 @@ impl RuntimeState {
             pending_imports: Vec::new(),
             pending_bundled: Vec::new(),
             pending_package_modules: Vec::new(),
+            pending_native_modules: fast_hash_map_new(),
+            pending_stdlib_registrars: Vec::new(),
             imports_applied: false,
         }
     }
@@ -207,10 +372,12 @@ impl RuntimeState {
         self.pending_imports.clear();
         self.pending_bundled.clear();
         self.pending_package_modules.clear();
+        self.pending_native_modules.clear();
+        self.pending_stdlib_registrars.clear();
         self.imports_applied = false;
         self.handles = HandleTable::default();
         self.interned_strings.clear();
-        match Self::build_context(&[], &[], &[]) {
+        match Self::build_native_context(&[], &[]) {
             Ok((ctx, resolver)) => {
                 self.ctx = ctx;
                 self.resolver = resolver;
@@ -218,7 +385,7 @@ impl RuntimeState {
             Err(err) => {
                 eprintln!("lk_rt: failed to reset stdlib context: {err}");
                 let resolver = Arc::new(ModuleResolver::new());
-                self.ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
+                self.ctx = VmContext::new_without_core_vm_builtins().with_resolver(Arc::clone(&resolver));
                 self.resolver = resolver;
             }
         }
@@ -229,6 +396,7 @@ impl RuntimeState {
             &self.pending_search_paths,
             &self.pending_bundled,
             &self.pending_package_modules,
+            &self.pending_stdlib_registrars,
         )?;
         if !self.pending_imports.is_empty() {
             execute_imports(&self.pending_imports, resolver.as_ref(), &mut ctx)?;
@@ -241,16 +409,109 @@ impl RuntimeState {
         Ok(())
     }
 
+    fn apply_pending_native_only(&mut self) -> Result<()> {
+        let (mut ctx, resolver) =
+            Self::build_native_context(&self.pending_search_paths, &self.pending_stdlib_registrars)?;
+        if !self.pending_imports.is_empty() {
+            let native_modules = self.pending_native_modules.clone();
+            Self::apply_native_imports(&self.pending_imports, &native_modules, resolver.as_ref(), &mut ctx)?;
+        }
+        self.ctx = ctx;
+        self.resolver = resolver;
+        self.handles = HandleTable::default();
+        self.interned_strings.clear();
+        self.imports_applied = true;
+        Ok(())
+    }
+
+    fn apply_native_imports(
+        imports: &[ImportStmt],
+        native_modules: &FastHashMap<String, FastHashMap<Arc<str>, Val>>,
+        resolver: &ModuleResolver,
+        ctx: &mut VmContext,
+    ) -> Result<()> {
+        for import in imports {
+            match import {
+                ImportStmt::Module { module } => {
+                    let value = Self::resolve_native_import_module(module, native_modules, resolver)?;
+                    ctx.define(module.clone(), value);
+                }
+                ImportStmt::ModuleAlias { module, alias } => {
+                    let value = Self::resolve_native_import_module(module, native_modules, resolver)?;
+                    ctx.define(alias.clone(), value);
+                }
+                ImportStmt::Items { items, source } => {
+                    let value = Self::resolve_native_import_source(source, native_modules, resolver)?;
+                    let Val::Map(exports) = value else {
+                        return Err(anyhow!("import source is not a module map"));
+                    };
+                    for item in items {
+                        let export_value = exports
+                            .get(item.name.as_str())
+                            .ok_or_else(|| anyhow!("Export '{}' not found in module", item.name))?;
+                        let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
+                        ctx.define(symbol_name.clone(), export_value.clone());
+                    }
+                }
+                ImportStmt::Namespace { alias, source } => {
+                    let value = Self::resolve_native_import_source(source, native_modules, resolver)?;
+                    ctx.define(alias.clone(), value);
+                }
+                ImportStmt::File { path } => {
+                    let module_name = std::path::Path::new(path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("module")
+                        .to_string();
+                    let value = Self::resolve_native_import_module(&module_name, native_modules, resolver)?;
+                    ctx.define(module_name, value);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_native_import_source(
+        source: &ImportSource,
+        native_modules: &FastHashMap<String, FastHashMap<Arc<str>, Val>>,
+        resolver: &ModuleResolver,
+    ) -> Result<Val> {
+        match source {
+            ImportSource::Module(module) => Self::resolve_native_import_module(module, native_modules, resolver),
+            ImportSource::File(path) => {
+                let module_name = std::path::Path::new(path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("module");
+                Self::resolve_native_import_module(module_name, native_modules, resolver)
+            }
+        }
+    }
+
+    fn resolve_native_import_module(
+        module: &str,
+        native_modules: &FastHashMap<String, FastHashMap<Arc<str>, Val>>,
+        resolver: &ModuleResolver,
+    ) -> Result<Val> {
+        if let Some(exports) = native_modules.get(module) {
+            return Ok(Val::Map(Arc::new(exports.clone())));
+        }
+        resolver.resolve_registered_module(module)
+    }
+
     fn build_context(
         search_paths: &[String],
         bundled: &[DecodedBundledModule],
         package_modules: &[(String, String)],
+        stdlib_registrars: &[StdlibRegistrar],
     ) -> Result<(VmContext, Arc<ModuleResolver>)> {
         let mut registry = ModuleRegistry::new();
         #[cfg_attr(test, allow(unused_unsafe))]
         unsafe {
-            lk_stdlib_register_globals(&mut registry);
-            lk_stdlib_register_modules(&mut registry)?;
+            lk_stdlib_register_core_globals(&mut registry);
+        }
+        for register in stdlib_registrars {
+            register(&mut registry)?;
         }
 
         let mut resolver = ModuleResolver::with_registry(registry);
@@ -265,9 +526,30 @@ impl RuntimeState {
         }
 
         let resolver_arc = Arc::new(resolver);
-        let ctx = VmContext::new()
-            .with_resolver(Arc::clone(&resolver_arc))
-            .with_type_checker(Some(TypeChecker::new_strict()));
+        let ctx = VmContext::new().with_resolver(Arc::clone(&resolver_arc));
+        Ok((ctx, resolver_arc))
+    }
+
+    fn build_native_context(
+        search_paths: &[String],
+        stdlib_registrars: &[StdlibRegistrar],
+    ) -> Result<(VmContext, Arc<ModuleResolver>)> {
+        let mut registry = ModuleRegistry::new();
+        #[cfg_attr(test, allow(unused_unsafe))]
+        unsafe {
+            lk_stdlib_register_core_globals(&mut registry);
+        }
+        for register in stdlib_registrars {
+            register(&mut registry)?;
+        }
+
+        let mut resolver = ModuleResolver::with_registry(registry);
+        for path in search_paths {
+            resolver.add_search_path(PathBuf::from(path));
+        }
+
+        let resolver_arc = Arc::new(resolver);
+        let ctx = VmContext::new_without_core_vm_builtins().with_resolver(Arc::clone(&resolver_arc));
         Ok((ctx, resolver_arc))
     }
 
@@ -374,6 +656,85 @@ fn read_string(ptr: *const i8, len: i64) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_owned(),
         Err(_) => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+fn stdlib_module_names_from_imports(imports: &[ImportStmt]) -> Vec<String> {
+    let mut names = Vec::new();
+    for import in imports {
+        match import {
+            ImportStmt::Module { module } | ImportStmt::ModuleAlias { module, .. } => {
+                push_unique(&mut names, module);
+            }
+            ImportStmt::Items {
+                source: ImportSource::Module(module),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::Module(module),
+                ..
+            } => {
+                push_unique(&mut names, module);
+            }
+            ImportStmt::File { .. }
+            | ImportStmt::Items {
+                source: ImportSource::File(_),
+                ..
+            }
+            | ImportStmt::Namespace {
+                source: ImportSource::File(_),
+                ..
+            } => {}
+        }
+    }
+    names
+}
+
+#[cfg(test)]
+fn imports_need_concurrency_globals(imports: &[ImportStmt]) -> bool {
+    stdlib_module_names_from_imports(imports)
+        .iter()
+        .any(|name| matches!(name.as_str(), "task" | "chan" | "time"))
+}
+
+fn stdlib_registrars_from_imports(imports: &[ImportStmt]) -> Vec<StdlibRegistrar> {
+    let mut registrars = Vec::new();
+    for name in stdlib_module_names_from_imports(imports) {
+        match name.as_str() {
+            "io" => push_unique_registrar(&mut registrars, register_stdlib_io_bridge),
+            "json" => push_unique_registrar(&mut registrars, register_stdlib_json_bridge),
+            "yaml" => push_unique_registrar(&mut registrars, register_stdlib_yaml_bridge),
+            "toml" => push_unique_registrar(&mut registrars, register_stdlib_toml_bridge),
+            "iter" => push_unique_registrar(&mut registrars, register_stdlib_iter_bridge),
+            "math" => push_unique_registrar(&mut registrars, register_stdlib_math_bridge),
+            "string" => push_unique_registrar(&mut registrars, register_stdlib_string_bridge),
+            "list" => push_unique_registrar(&mut registrars, register_stdlib_list_bridge),
+            "map" => push_unique_registrar(&mut registrars, register_stdlib_map_bridge),
+            "datetime" => push_unique_registrar(&mut registrars, register_stdlib_datetime_bridge),
+            "os" => push_unique_registrar(&mut registrars, register_stdlib_os_bridge),
+            "tcp" => push_unique_registrar(&mut registrars, register_stdlib_tcp_bridge),
+            "stream" => push_unique_registrar(&mut registrars, register_stdlib_stream_bridge),
+            "task" => {
+                push_unique_registrar(&mut registrars, register_stdlib_concurrency_globals_bridge);
+                push_unique_registrar(&mut registrars, register_stdlib_task_bridge);
+            }
+            "chan" => {
+                push_unique_registrar(&mut registrars, register_stdlib_concurrency_globals_bridge);
+                push_unique_registrar(&mut registrars, register_stdlib_chan_bridge);
+            }
+            "time" => {
+                push_unique_registrar(&mut registrars, register_stdlib_concurrency_globals_bridge);
+                push_unique_registrar(&mut registrars, register_stdlib_time_bridge);
+            }
+            _ => {}
+        }
+    }
+    registrars
+}
+
+fn push_unique(names: &mut Vec<String>, candidate: &str) {
+    if !names.iter().any(|name| name == candidate) {
+        names.push(candidate.to_string());
     }
 }
 
@@ -552,10 +913,14 @@ pub extern "C" fn lk_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32 
                 module: child.module.clone(),
             })
             .collect();
-        let (mut ctx, resolver) = RuntimeState::build_context(&[], &bundled, &[])?;
         if let Some(imports) = imports.as_ref() {
+            let stdlib_registrars = stdlib_registrars_from_imports(imports);
+            let (mut ctx, resolver) = RuntimeState::build_context(&[], &bundled, &[], &stdlib_registrars)?;
             execute_imports(imports, resolver.as_ref(), &mut ctx)?;
+            let mut vm = Vm::new();
+            return vm.exec(&module.entry, &mut ctx);
         }
+        let (mut ctx, _resolver) = RuntimeState::build_context(&[], &bundled, &[], &[])?;
         let mut vm = Vm::new();
         vm.exec(&module.entry, &mut ctx)
     })();
@@ -571,11 +936,150 @@ pub extern "C" fn lk_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_call(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
+    let argc_usize = argc.max(0) as usize;
+    let aot_function = with_state(|state| match state.decode_value(func) {
+        Val::AotFunction(function) => Some(function),
+        _ => None,
+    });
+    if let Some(function) = aot_function {
+        return match call_aot_function_raw(function, args_ptr, argc_usize) {
+            Ok(raw) => {
+                if retc <= 0 {
+                    encoding::NIL_VALUE
+                } else {
+                    raw
+                }
+            }
+            Err(err) => {
+                eprintln!("lk_rt_call error: {err}");
+                encoding::NIL_VALUE
+            }
+        };
+    }
     with_state(|state| {
         let callee = state.decode_value(func);
-        let argc_usize = argc.max(0) as usize;
         let args = state.decode_values(args_ptr, argc_usize);
-        let result = callee.call(&args, &mut state.ctx);
+        let result: Result<i64> = callee.call(&args, &mut state.ctx).map(|val| {
+            if retc <= 0 {
+                encoding::NIL_VALUE
+            } else {
+                state.encode_value(val)
+            }
+        });
+        match result {
+            Ok(val) => {
+                if retc <= 0 {
+                    encoding::NIL_VALUE
+                } else {
+                    val
+                }
+            }
+            Err(err) => {
+                eprintln!("lk_rt_call error: {err}");
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_call_method(receiver: i64, method: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
+    let argc_usize = argc.max(0) as usize;
+    let aot_function = with_state(|state| {
+        let receiver_val = state.decode_value(receiver);
+        let method_val = state.decode_value(method);
+        let method_name = method_val
+            .as_str()
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|| method_val.to_string());
+        match receiver_val
+            .access(&Val::Str(Arc::from(method_name.as_str())))
+            .unwrap_or(Val::Nil)
+        {
+            Val::AotFunction(function) => Some(function),
+            _ => None,
+        }
+    });
+    if let Some(function) = aot_function {
+        return match call_aot_function_raw(function, args_ptr, argc_usize) {
+            Ok(raw) => {
+                if retc <= 0 {
+                    encoding::NIL_VALUE
+                } else {
+                    raw
+                }
+            }
+            Err(err) => {
+                eprintln!("lk_rt_call_method error: {err}");
+                encoding::NIL_VALUE
+            }
+        };
+    }
+    with_state(|state| {
+        let receiver_val = state.decode_value(receiver);
+        let method_val = state.decode_value(method);
+        let method_name = method_val
+            .as_str()
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|| method_val.to_string());
+        let callee = receiver_val
+            .access(&Val::Str(Arc::from(method_name.as_str())))
+            .unwrap_or(Val::Nil);
+        let args = state.decode_values(args_ptr, argc_usize);
+        let result: Result<i64> = callee.call(&args, &mut state.ctx).map(|val| {
+            if retc <= 0 {
+                encoding::NIL_VALUE
+            } else {
+                state.encode_value(val)
+            }
+        });
+        match result {
+            Ok(val) => {
+                if retc <= 0 {
+                    encoding::NIL_VALUE
+                } else {
+                    val
+                }
+            }
+            Err(err) => {
+                eprintln!("lk_rt_call_method error: {err}");
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_call_native(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
+    let argc_usize = argc.max(0) as usize;
+    let aot_function = with_state(|state| match state.decode_value(func) {
+        Val::AotFunction(function) => Some(function),
+        _ => None,
+    });
+    if let Some(function) = aot_function {
+        return match call_aot_function_raw(function, args_ptr, argc_usize) {
+            Ok(raw) => {
+                if retc <= 0 {
+                    encoding::NIL_VALUE
+                } else {
+                    raw
+                }
+            }
+            Err(err) => {
+                eprintln!("lk_rt_call_native error: {err}");
+                encoding::NIL_VALUE
+            }
+        };
+    }
+
+    with_state(|state| {
+        let callee = state.decode_value(func);
+        let args = state.decode_values(args_ptr, argc_usize);
+        let result = match callee {
+            Val::RustFunction(function) => function(&args, &mut state.ctx),
+            Val::RustFunctionNamed(function) => function(&args, &[], &mut state.ctx),
+            other => Err(anyhow!("{} is not a native function", other.type_name())),
+        };
         match result {
             Ok(val) => {
                 if retc <= 0 {
@@ -585,11 +1089,59 @@ pub extern "C" fn lk_rt_call(func: i64, args_ptr: *const i64, argc: i64, retc: i
                 }
             }
             Err(err) => {
-                eprintln!("lk_rt_call error: {err}");
+                eprintln!("lk_rt_call_native error: {err}");
                 encoding::NIL_VALUE
             }
         }
     })
+}
+
+fn call_aot_function_raw(function: AotFunction, args_ptr: *const i64, argc: usize) -> Result<i64> {
+    if argc != function.arity as usize {
+        return Err(anyhow!(
+            "AOT function expects {} arguments, got {}",
+            function.arity,
+            argc
+        ));
+    }
+    if argc > 0 && args_ptr.is_null() {
+        return Err(anyhow!("AOT function arguments pointer is null"));
+    }
+    let raw = unsafe {
+        match argc {
+            0 => {
+                let f: extern "C" fn() -> i64 = std::mem::transmute(function.ptr);
+                f()
+            }
+            1 => {
+                let args = std::slice::from_raw_parts(args_ptr, 1);
+                let f: extern "C" fn(i64) -> i64 = std::mem::transmute(function.ptr);
+                f(args[0])
+            }
+            2 => {
+                let args = std::slice::from_raw_parts(args_ptr, 2);
+                let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(function.ptr);
+                f(args[0], args[1])
+            }
+            3 => {
+                let args = std::slice::from_raw_parts(args_ptr, 3);
+                let f: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(function.ptr);
+                f(args[0], args[1], args[2])
+            }
+            4 => {
+                let args = std::slice::from_raw_parts(args_ptr, 4);
+                let f: extern "C" fn(i64, i64, i64, i64) -> i64 = std::mem::transmute(function.ptr);
+                f(args[0], args[1], args[2], args[3])
+            }
+            _ => {
+                return Err(anyhow!(
+                    "AOT function arity {} exceeds runtime call bridge limit",
+                    function.arity
+                ));
+            }
+        }
+    };
+    Ok(raw)
 }
 
 #[unsafe(no_mangle)]
@@ -787,6 +1339,42 @@ mod tests {
         let arg = 41i64;
         let result = lk_rt_call(func_handle, &arg, 1, 1);
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn stdlib_module_names_are_collected_from_module_imports() {
+        let imports = vec![
+            ImportStmt::Module {
+                module: "math".to_string(),
+            },
+            ImportStmt::Items {
+                items: Vec::new(),
+                source: ImportSource::Module("json".to_string()),
+            },
+            ImportStmt::Namespace {
+                alias: "m".to_string(),
+                source: ImportSource::File("local.lk".to_string()),
+            },
+            ImportStmt::ModuleAlias {
+                module: "math".to_string(),
+                alias: "m".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            stdlib_module_names_from_imports(&imports),
+            vec!["math".to_string(), "json".to_string()]
+        );
+    }
+
+    #[test]
+    fn concurrency_globals_are_registered_only_for_concurrency_imports() {
+        assert!(!imports_need_concurrency_globals(&[ImportStmt::Module {
+            module: "math".to_string(),
+        }]));
+        assert!(imports_need_concurrency_globals(&[ImportStmt::Module {
+            module: "chan".to_string(),
+        }]));
     }
 
     fn compile_module_from_path(path: &Path) -> BytecodeModule {

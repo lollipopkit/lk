@@ -846,7 +846,9 @@ impl Expr {
                                     Val::Iterator(_) => "[Iterator]".to_string(),
                                     Val::MutationGuard(_) => "[MutationGuard]".to_string(),
                                     Val::Closure(_) => "[Closure]".to_string(),
-                                    Val::RustFunction(_) | Val::RustFunctionNamed(_) => "[Function]".to_string(),
+                                    Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
+                                        "[Function]".to_string()
+                                    }
                                 };
                                 TemplateStringPart::Literal(str_val)
                             } else {

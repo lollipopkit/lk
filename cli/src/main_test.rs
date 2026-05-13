@@ -242,7 +242,15 @@ mod tests {
             bytes: b"LKB".to_vec(),
         }];
 
-        let plan = build_runtime_init_plan(module_ir, &search_paths, imports_json.as_deref(), None, &modules);
+        let plan = build_runtime_init_plan(
+            module_ir,
+            &search_paths,
+            imports_json.as_deref(),
+            None,
+            &modules,
+            &[],
+            false,
+        );
 
         assert!(
             plan.declarations

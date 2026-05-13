@@ -27,7 +27,7 @@ pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction>
         Val::Bool(_) => "Bool",
         Val::List(_) => "List",
         Val::Map(_) => "Map",
-        Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => "Function",
+        Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => "Function",
         Val::Task(_) => "Task",
         Val::Channel(_) => "Channel",
         Val::Stream(_) => "Stream",

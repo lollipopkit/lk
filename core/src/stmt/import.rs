@@ -192,6 +192,22 @@ impl ModuleResolver {
         Err(anyhow!("Module '{}' not found", name))
     }
 
+    /// Resolve only modules already present in the registry.
+    ///
+    /// This is used by native AOT import replay, where falling back to package
+    /// or file execution would pull the VM into otherwise native executables.
+    pub fn resolve_registered_module(&self, name: &str) -> Result<Val> {
+        if let Some(value) = self.stdlib_modules.get(name) {
+            return Ok(value.value().clone());
+        }
+
+        let module = self.stdlib_registry.get_module(name)?;
+        let exports = module.exports();
+        let module_val = Val::from(exports);
+        self.stdlib_modules.insert(name.to_string(), module_val.clone());
+        Ok(module_val)
+    }
+
     /// Resolve a file module - loads if not already cached
     pub fn resolve_file(&self, path: &str) -> Result<Val> {
         let resolved_path = self.resolve_file_path(path)?;

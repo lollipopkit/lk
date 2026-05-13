@@ -6,7 +6,7 @@ mod backend;
 mod encoding;
 mod options;
 mod passes;
-mod runtime;
+pub mod runtime;
 
 #[cfg(test)]
 mod tests;

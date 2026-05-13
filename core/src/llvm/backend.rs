@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use crate::{
     stmt::Program,
     val::Val,
-    vm::{Function, Op, compile_program},
+    vm::{Function, Op, compile_program, rk_index, rk_is_const},
 };
 
 use super::{
@@ -109,6 +109,13 @@ struct ForRangeLoopParams {
     ofs: i16,
 }
 
+#[derive(Clone)]
+enum KnownReg {
+    Global(String),
+    StringHandle(String),
+    List { base: u16, len: u16 },
+}
+
 struct FunctionTranslator<'a> {
     function: &'a Function,
     function_name: &'a str,
@@ -118,6 +125,7 @@ struct FunctionTranslator<'a> {
     blocks: Vec<BlockRange>,
     block_index_by_start: BTreeMap<usize, usize>,
     runtime_helpers: BTreeSet<RuntimeHelper>,
+    known_regs: Vec<Option<KnownReg>>,
     string_constants: BTreeMap<u16, StringConstant>,
     string_const_counter: usize,
 }
@@ -133,6 +141,7 @@ impl<'a> FunctionTranslator<'a> {
             blocks: Vec::new(),
             block_index_by_start: BTreeMap::new(),
             runtime_helpers: BTreeSet::new(),
+            known_regs: vec![None; function.n_regs as usize],
             string_constants: BTreeMap::new(),
             string_const_counter: 0,
         }
@@ -287,7 +296,12 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     fn write_function_signature(&mut self) {
-        self.writer.line(format!("define i64 @{}() {{", self.function_name));
+        let args = (0..self.function.param_regs.len())
+            .map(|idx| format!("i64 %arg{idx}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.writer
+            .line(format!("define i64 @{}({}) {{", self.function_name, args));
         self.writer.indent();
     }
 
@@ -297,6 +311,9 @@ impl<'a> FunctionTranslator<'a> {
             self.writer.line(format!("%r{reg} = alloca i64, align 8"));
             self.writer
                 .line(format!("store i64 {}, i64* %r{reg}, align 8", encoding::NIL_LITERAL));
+        }
+        for (idx, reg) in self.function.param_regs.iter().copied().enumerate() {
+            self.writer.line(format!("store i64 %arg{idx}, i64* %r{reg}, align 8"));
         }
         if !self.blocks.is_empty() {
             self.writer.line(format!("br label %{}", self.blocks[0].label));
@@ -618,6 +635,16 @@ impl<'a> FunctionTranslator<'a> {
         label
     }
 
+    fn set_known(&mut self, reg: u16, value: Option<KnownReg>) {
+        if let Some(slot) = self.known_regs.get_mut(reg as usize) {
+            *slot = value;
+        }
+    }
+
+    fn known(&self, reg: u16) -> Option<&KnownReg> {
+        self.known_regs.get(reg as usize).and_then(Option::as_ref)
+    }
+
     fn ensure_reg(&self, reg: u16) -> Result<()> {
         if reg as usize >= self.function.n_regs as usize {
             Err(anyhow!("register {} out of bounds", reg))
@@ -633,10 +660,41 @@ impl<'a> FunctionTranslator<'a> {
         Ok(tmp)
     }
 
+    fn load_rk(&mut self, operand: u16) -> Result<String> {
+        if rk_is_const(operand) {
+            self.load_const_value(rk_index(operand))
+        } else {
+            self.load_reg(operand)
+        }
+    }
+
+    fn load_const_value(&mut self, kidx: u16) -> Result<String> {
+        let val = self
+            .function
+            .consts
+            .get(kidx as usize)
+            .ok_or_else(|| anyhow!("constant index {} out of range", kidx))?;
+        match val {
+            Val::Int(_) | Val::Bool(_) | Val::Nil => Ok(encoding::encode_immediate(val)?.to_string()),
+            Val::Float(f) => {
+                let literal = Self::format_double(*f);
+                let tmp = self.fresh("constf");
+                self.writer.line(format!("{tmp} = bitcast double {literal} to i64"));
+                Ok(tmp)
+            }
+            Val::Str(s) => self.intern_string_constant(kidx, s.as_ref()),
+            other => Err(anyhow!(
+                "unsupported constant {:?} in LLVM backend; only Int/Float/Bool/Str/Nil are accepted",
+                other
+            )),
+        }
+    }
+
     fn store_reg(&mut self, reg: u16, value: impl AsRef<str>) -> Result<()> {
         self.ensure_reg(reg)?;
         self.writer
             .line(format!("store i64 {}, i64* %r{reg}, align 8", value.as_ref()));
+        self.set_known(reg, None);
         Ok(())
     }
 
@@ -652,16 +710,16 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
-    fn load_reg_as_double(&mut self, reg: u16) -> Result<String> {
-        let raw = self.load_reg(reg)?;
+    fn load_rk_as_double(&mut self, operand: u16) -> Result<String> {
+        let raw = self.load_rk(operand)?;
         let dbl = self.fresh("asdouble");
         self.writer.line(format!("{dbl} = bitcast i64 {raw} to double"));
         Ok(dbl)
     }
 
     fn emit_float_binary(&mut self, dst: u16, a: u16, b: u16, op: &str) -> Result<()> {
-        let lhs = self.load_reg_as_double(a)?;
-        let rhs = self.load_reg_as_double(b)?;
+        let lhs = self.load_rk_as_double(a)?;
+        let rhs = self.load_rk_as_double(b)?;
         let tmp = self.fresh(op);
         self.writer.line(format!("{tmp} = {op} double {lhs}, {rhs}"));
         self.store_double(dst, &tmp)?;
@@ -697,7 +755,18 @@ impl<'a> FunctionTranslator<'a> {
 
     fn ensure_string_constant(&mut self, kidx: u16, value: &str) -> &StringConstant {
         self.string_constants.entry(kidx).or_insert_with(|| {
-            let label = format!(".str{}", self.string_const_counter);
+            let function = self
+                .function_name
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() || ch == '_' {
+                        ch
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>();
+            let label = format!(".{function}.str{}", self.string_const_counter);
             self.string_const_counter += 1;
             let bytes = value.as_bytes();
             let len = bytes.len();
@@ -740,6 +809,7 @@ impl<'a> FunctionTranslator<'a> {
             Val::Str(s) => {
                 let handle = self.intern_string_constant(kidx, s.as_ref())?;
                 self.store_reg(dst, &handle)?;
+                self.set_known(dst, Some(KnownReg::StringHandle(handle)));
             }
             other => {
                 return Err(anyhow!(
@@ -757,8 +827,10 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     fn emit_copy(&mut self, dst: u16, src: u16) -> Result<()> {
+        let known = self.known(src).cloned();
         let value = self.load_reg(src)?;
         self.store_reg(dst, &value)?;
+        self.set_known(dst, known);
         Ok(())
     }
 
@@ -769,14 +841,16 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     fn emit_load_local(&mut self, dst: u16, idx: u16) -> Result<()> {
+        let known = self.known(idx).cloned();
         let value = self.load_reg(idx)?;
         self.store_reg(dst, &value)?;
+        self.set_known(dst, known);
         Ok(())
     }
 
     fn emit_binary(&mut self, dst: u16, a: u16, b: u16, op: &str) -> Result<()> {
-        let lhs = self.load_reg(a)?;
-        let rhs = self.load_reg(b)?;
+        let lhs = self.load_rk(a)?;
+        let rhs = self.load_rk(b)?;
         let tmp = self.fresh(op);
         self.writer.line(format!("{tmp} = {op} i64 {lhs}, {rhs}"));
         self.store_reg(dst, &tmp)?;
@@ -808,8 +882,8 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     fn emit_add_value(&mut self, dst: u16, a: u16, b: u16) -> Result<()> {
-        let lhs = self.load_reg(a)?;
-        let rhs = self.load_reg(b)?;
+        let lhs = self.load_rk(a)?;
+        let rhs = self.load_rk(b)?;
         self.require_helper(RuntimeHelper::AddValue);
         let tmp = self.fresh("addval");
         self.writer.line(format!(
@@ -821,8 +895,8 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     fn emit_compare(&mut self, dst: u16, a: u16, b: u16, op: &str) -> Result<()> {
-        let lhs = self.load_reg(a)?;
-        let rhs = self.load_reg(b)?;
+        let lhs = self.load_rk(a)?;
+        let rhs = self.load_rk(b)?;
         let tmp = self.fresh("cmp");
         self.writer.line(format!("{tmp} = icmp {op} i64 {lhs}, {rhs}"));
         let select = self.fresh("boolsel");
@@ -900,6 +974,11 @@ impl<'a> FunctionTranslator<'a> {
                 return Err(anyhow!("LoadGlobal expects string constant; found {:?}", other));
             }
         };
+        if matches!(name_str, "__lk_call_method" | "__lk_call_method_named") {
+            self.store_reg(dst, encoding::NIL_LITERAL)?;
+            self.set_known(dst, Some(KnownReg::Global(name_str.to_string())));
+            return Ok(());
+        }
         let handle = self.intern_string_constant(kidx, name_str)?;
         self.require_helper(RuntimeHelper::LoadGlobal);
         let global = self.fresh("loadglobal");
@@ -908,6 +987,7 @@ impl<'a> FunctionTranslator<'a> {
             RuntimeHelper::LoadGlobal.symbol()
         ));
         self.store_reg(dst, &global)?;
+        self.set_known(dst, Some(KnownReg::Global(name_str.to_string())));
         Ok(())
     }
 
@@ -982,6 +1062,7 @@ impl<'a> FunctionTranslator<'a> {
         self.writer
             .line(format!("call void @llvm.stackrestore(i8* {stack_guard})"));
         self.store_reg(dst, &list)?;
+        self.set_known(dst, Some(KnownReg::List { base, len }));
         Ok(())
     }
 
@@ -989,6 +1070,13 @@ impl<'a> FunctionTranslator<'a> {
         if retc > 1 {
             return Err(anyhow!("multiple return values are not supported by the LLVM backend"));
         }
+        if self.try_emit_method_call(rf, base, argc, retc)? {
+            return Ok(());
+        }
+        let use_native_call = matches!(
+            self.known(rf),
+            Some(KnownReg::Global(name)) if matches!(name.as_str(), "print" | "println" | "panic")
+        );
         let func = self.load_reg(rf)?;
 
         let (args_expr, len, stack_restore) = if argc == 0 {
@@ -1021,11 +1109,16 @@ impl<'a> FunctionTranslator<'a> {
             (ptr, len, Some(stack_guard))
         };
 
-        self.require_helper(RuntimeHelper::Call);
+        let helper = if use_native_call {
+            RuntimeHelper::CallNative
+        } else {
+            RuntimeHelper::Call
+        };
+        self.require_helper(helper);
         let result = self.fresh("callres");
         self.writer.line(format!(
             "{result} = call i64 @{}(i64 {func}, i64* {args}, i64 {argc}, i64 {retc})",
-            RuntimeHelper::Call.symbol(),
+            helper.symbol(),
             args = args_expr,
             argc = len,
             retc = retc
@@ -1038,6 +1131,72 @@ impl<'a> FunctionTranslator<'a> {
             self.store_reg(base, &result)?;
         }
         Ok(())
+    }
+
+    fn try_emit_method_call(&mut self, rf: u16, base: u16, argc: u8, retc: u8) -> Result<bool> {
+        if argc != 3 {
+            return Ok(false);
+        }
+        if !matches!(self.known(rf), Some(KnownReg::Global(name)) if name == "__lk_call_method") {
+            return Ok(false);
+        }
+        let Some(KnownReg::StringHandle(method_handle)) = self.known(base + 1).cloned() else {
+            return Ok(false);
+        };
+        let Some(KnownReg::List { base: args_base, len }) = self.known(base + 2).cloned() else {
+            return Ok(false);
+        };
+
+        let receiver = self.load_reg(base)?;
+        let (args_expr, stack_restore) = self.emit_arg_array(args_base, len)?;
+        self.require_helper(RuntimeHelper::CallMethod);
+        let result = self.fresh("methodres");
+        self.writer.line(format!(
+            "{result} = call i64 @{}(i64 {receiver}, i64 {method}, i64* {args}, i64 {argc}, i64 {retc})",
+            RuntimeHelper::CallMethod.symbol(),
+            method = method_handle,
+            args = args_expr,
+            argc = len
+        ));
+        if let Some(stack_guard) = stack_restore {
+            self.writer
+                .line(format!("call void @llvm.stackrestore(i8* {stack_guard})"));
+        }
+        if retc == 1 {
+            self.store_reg(base, &result)?;
+        }
+        Ok(true)
+    }
+
+    fn emit_arg_array(&mut self, base: u16, len: u16) -> Result<(String, Option<String>)> {
+        if len == 0 {
+            return Ok((String::from("null"), None));
+        }
+        let len_usize = len as usize;
+        let base_idx = base as usize;
+        if base_idx + len_usize > self.function.n_regs as usize {
+            return Err(anyhow!("Call reads out of bounds registers"));
+        }
+        let stack_guard = self.fresh("stacksp");
+        self.writer.line(format!("{stack_guard} = call i8* @llvm.stacksave()"));
+        let array = self.fresh("callargs");
+        self.writer.line(format!("{array} = alloca [{len} x i64], align 8"));
+        for i in 0..len_usize {
+            let value = self.load_reg(base + i as u16)?;
+            let slot = self.fresh("callarg");
+            self.writer.line(format!(
+                "{slot} = getelementptr inbounds [{len} x i64], [{len} x i64]* {array}, i64 0, i64 {idx}",
+                len = len,
+                idx = i
+            ));
+            self.writer.line(format!("store i64 {value}, i64* {slot}, align 8"));
+        }
+        let ptr = self.fresh("callargv");
+        self.writer.line(format!(
+            "{ptr} = getelementptr inbounds [{len} x i64], [{len} x i64]* {array}, i64 0, i64 0",
+            len = len
+        ));
+        Ok((ptr, Some(stack_guard)))
     }
 
     fn emit_build_map(&mut self, dst: u16, base: u16, len: u16) -> Result<()> {
@@ -1331,6 +1490,8 @@ enum RuntimeHelper {
     BuildList,
     BuildMap,
     Call,
+    CallNative,
+    CallMethod,
     Access,
     Index,
     In,
@@ -1350,6 +1511,8 @@ impl RuntimeHelper {
             RuntimeHelper::BuildList => "lk_rt_build_list",
             RuntimeHelper::BuildMap => "lk_rt_build_map",
             RuntimeHelper::Call => "lk_rt_call",
+            RuntimeHelper::CallNative => "lk_rt_call_native",
+            RuntimeHelper::CallMethod => "lk_rt_call_method",
             RuntimeHelper::Access => "lk_rt_access",
             RuntimeHelper::Index => "lk_rt_index",
             RuntimeHelper::In => "lk_rt_in",
@@ -1368,6 +1531,8 @@ impl RuntimeHelper {
             RuntimeHelper::DefineGlobal => "declare void @lk_rt_define_global(i64, i64)",
             RuntimeHelper::BuildList => "declare i64 @lk_rt_build_list(i64*, i64)",
             RuntimeHelper::Call => "declare i64 @lk_rt_call(i64, i64*, i64, i64)",
+            RuntimeHelper::CallNative => "declare i64 @lk_rt_call_native(i64, i64*, i64, i64)",
+            RuntimeHelper::CallMethod => "declare i64 @lk_rt_call_method(i64, i64, i64*, i64, i64)",
             RuntimeHelper::BuildMap => "declare i64 @lk_rt_build_map(i64*, i64)",
             RuntimeHelper::Access => "declare i64 @lk_rt_access(i64, i64)",
             RuntimeHelper::Index => "declare i64 @lk_rt_index(i64, i64)",

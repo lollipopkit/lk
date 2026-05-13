@@ -43,6 +43,12 @@ pub type RustFunction = fn(args: &[Val], ctx: &mut VmContext) -> Result<Val>;
 /// New VM-optimized function type that supports named arguments and uses VmContext
 pub type RustFunctionNamed = fn(positional: &[Val], named: &[(String, Val)], ctx: &mut VmContext) -> Result<Val>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AotFunction {
+    pub ptr: usize,
+    pub arity: u8,
+}
+
 thread_local! {
     static VM_FORCE_FAST_PATH: Cell<bool> = const { Cell::new(false) };
 }
@@ -505,6 +511,8 @@ pub enum Val {
     RustFunction(RustFunction),
     /// Rust function with native named-argument support
     RustFunctionNamed(RustFunctionNamed),
+    /// LLVM AOT function registered by the executable runtime.
+    AotFunction(AotFunction),
     /// Task - represents a concurrent task
     Task(Arc<TaskValue>),
     /// Channel - represents a communication channel
@@ -580,6 +588,7 @@ impl Type {
             (Type::Function { .. }, Val::Closure(_)) => Ok(()),
             (Type::Function { .. }, Val::RustFunction(_)) => Ok(()),
             (Type::Function { .. }, Val::RustFunctionNamed(_)) => Ok(()),
+            (Type::Function { .. }, Val::AotFunction(_)) => Ok(()),
 
             // Concurrency types
             (Type::Task(inner_type), Val::Task(task)) => {
@@ -667,6 +676,7 @@ impl Val {
             Val::Closure(_) => "Function",
             Val::RustFunction(_) => "Function",
             Val::RustFunctionNamed(_) => "Function",
+            Val::AotFunction(_) => "Function",
             Val::Task(_) => "Task",
             Val::Channel(_) => "Channel",
             Val::Stream(_) => "Stream",
@@ -732,6 +742,9 @@ impl Val {
         let _ = force_vm;
         let _ = vm_fast_path_forced();
         match self {
+            #[cfg(feature = "aot-minimal-runtime")]
+            Val::Closure(_) => Err(anyhow!("AOT minimal runtime cannot call VM closures")),
+            #[cfg(not(feature = "aot-minimal-runtime"))]
             Val::Closure(closure_arc) => {
                 let closure = closure_arc.as_ref();
                 let params = closure.params.as_ref();
@@ -780,6 +793,9 @@ impl Val {
         let _ = force_vm;
         let _ = vm_fast_path_forced();
         match self {
+            #[cfg(feature = "aot-minimal-runtime")]
+            Val::Closure(_) => Err(anyhow!("AOT minimal runtime cannot call VM closures")),
+            #[cfg(not(feature = "aot-minimal-runtime"))]
             Val::Closure(closure_arc) => {
                 let closure = closure_arc.as_ref();
                 let params = closure.params.as_ref();
@@ -1096,6 +1112,7 @@ impl PartialEq for Val {
                 std::ptr::fn_addr_eq(*a, *b)
             }
             (Val::RustFunctionNamed(a), Val::RustFunctionNamed(b)) => std::ptr::fn_addr_eq(*a, *b),
+            (Val::AotFunction(a), Val::AotFunction(b)) => a == b,
             (Val::Task(a), Val::Task(b)) => {
                 let (a, b) = (a.as_ref(), b.as_ref());
                 a.id == b.id && a.value == b.value
@@ -1143,7 +1160,7 @@ impl Serialize for Val {
             Val::Bool(b) => serializer.serialize_bool(*b),
             Val::Map(m) => (**m).serialize(serializer),
             Val::List(l) => (**l).serialize(serializer),
-            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
+            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
                 // Functions can't be serialized, use placeholder
                 serializer.serialize_str("<function>")
             }
@@ -1208,7 +1225,7 @@ impl core::fmt::Display for Val {
             Val::Closure(closure) => {
                 write!(f, "fn({})", closure.params.join(", "))
             }
-            Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
+            Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
                 write!(f, "<native function>")
             }
             Val::Task(task) => match &task.value {
@@ -1267,11 +1284,13 @@ impl Val {
             Val::Iterator(_) => Type::Named("Iterator".to_string()),
             Val::MutationGuard(guard) => Type::Named(guard.guard_type().to_string()),
             Val::StreamCursor(_) => Type::Named("StreamCursor".to_string()),
-            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => Type::Function {
-                params: vec![],
-                named_params: Vec::new(),
-                return_type: Box::new(Type::Any),
-            },
+            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
+                Type::Function {
+                    params: vec![],
+                    named_params: Vec::new(),
+                    return_type: Box::new(Type::Any),
+                }
+            }
             Val::Nil => Type::Nil,
         }
     }
