@@ -16,7 +16,6 @@ pub mod val;
 pub mod vm;
 
 // Name resolution to slot indices
-pub mod perf;
 pub mod resolve;
 
 #[cfg(feature = "llvm")]

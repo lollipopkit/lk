@@ -32,26 +32,3 @@ llvm-tools = { workspace = true, optional = true }
 rustc-hash = { version = "2" }
 itoa = { version = "1" }
 ryu = { version = "1" }
-
-[dev-dependencies]
-criterion = "0"
-
-[[bench]]
-name = "bench_main"
-harness = false
-
-[[bench]]
-name = "slots_bench"
-harness = false
-
-[[bench]]
-name = "call_named_bench"
-harness = false
-
-[[bench]]
-name = "scripts_bench"
-harness = false
-
-[[bin]]
-name = "perf_dashboard"
-path = "../scripts/perf_dashboard.rs"
