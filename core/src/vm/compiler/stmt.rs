@@ -168,7 +168,7 @@ impl FunctionBuilder {
         }))))
     }
 
-    fn simple_return_expr(stmt: &Stmt) -> Option<&Expr> {
+    pub(super) fn simple_return_expr(stmt: &Stmt) -> Option<&Expr> {
         match stmt {
             Stmt::Return { value: Some(value) } => Some(value.as_ref()),
             Stmt::Expr(expr) => Some(expr.as_ref()),

@@ -1044,8 +1044,7 @@ impl Val {
                 if s.is_ascii() {
                     let bs = s.as_bytes();
                     if idx < bs.len() {
-                        let ch = bs[idx] as char;
-                        Some(Val::Str(ch.to_string().into()))
+                        Some(Val::ascii_char_value(bs[idx]))
                     } else {
                         None
                     }
@@ -1067,15 +1066,14 @@ impl Val {
                 if *i < 0 {
                     return None;
                 }
-                let mut keys: Vec<&str> = m.keys().map(|k| k.as_ref()).collect();
-                keys.sort(); // stable order by key for deterministic iteration
+                let mut entries: Vec<_> = m.iter().collect();
+                entries.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
                 let idx = *i as usize;
-                if idx >= keys.len() {
+                if idx >= entries.len() {
                     return None;
                 }
-                let k = keys[idx];
-                let v = m.get(k)?.clone();
-                Some(Val::List(vec![Val::Str(k.to_string().into()), v].into()))
+                let (key, value) = entries[idx];
+                Some(Val::List(vec![Val::Str(Arc::clone(key)), value.clone()].into()))
             }
             (Val::Object(object), Val::Str(s)) => object.fields.get(s.as_ref()).cloned(),
             (Val::Task(task), Val::Str(s)) if s.as_ref() == "value" => match &task.value {
@@ -1142,6 +1140,21 @@ impl Val {
             Val::Nil => Val::Str(Arc::from("nil")),
             other => Val::Str(other.to_string().into()),
         }
+    }
+
+    #[inline]
+    pub(crate) fn ascii_char_value(byte: u8) -> Val {
+        debug_assert!(byte.is_ascii());
+
+        static ASCII_CHARS: OnceCell<[Arc<str>; 128]> = OnceCell::new();
+        let chars = ASCII_CHARS.get_or_init(|| {
+            std::array::from_fn(|idx| {
+                let ch = idx as u8 as char;
+                Arc::<str>::from(ch.to_string())
+            })
+        });
+
+        Val::Str(Arc::clone(&chars[byte as usize]))
     }
 
     #[inline]

@@ -10,7 +10,7 @@ use crate::vm::vm::frame::FrameInfo;
 // LK uses polymorphic inline caches (ICs) at each instruction site to
 // accelerate property access, indexing, global lookups, and function calls.
 //
-//  AccessIc (MapStr/ObjectStr): 4-entry LRU cache keyed by (base_ptr, key_ptr).
+//  AccessIc (ObjectStr): 4-entry LRU cache keyed by (base_ptr, key).
 //  IndexIc (List/Str): 4-entry LRU cache keyed by (base_ptr, index).
 //  GlobalEntry: Single-entry per site, with generation tracking for invalidation.
 //  CallIc: ClosurePositional (closure_ptr+argc), Rust, RustNamed.
@@ -20,13 +20,6 @@ use crate::vm::vm::frame::FrameInfo;
 // Small polymorphic inline caches (4-way) for property/index access per instruction site.
 // This reduces churn at megamorphic sites while staying allocation-free.
 #[derive(Clone)]
-pub(super) struct MapStrEntry {
-    pub(super) map_ptr: usize,
-    pub(super) key_ptr: usize,
-    pub(super) value: Val,
-}
-
-#[derive(Clone)]
 pub(super) struct ObjectStrEntry {
     pub(super) obj_ptr: usize,
     pub(super) key: String,
@@ -35,7 +28,6 @@ pub(super) struct ObjectStrEntry {
 
 #[derive(Clone)]
 pub(super) enum AccessIc {
-    MapStr([Option<MapStrEntry>; 4]),
     ObjectStr([Option<ObjectStrEntry>; 4]),
 }
 
@@ -959,6 +951,13 @@ pub(super) enum PackedHotKind {
     ToStr {
         dst: u16,
         src: u16,
+    },
+    ToStrAddRhs {
+        tmp: u16,
+        src: u16,
+        out: u16,
+        lhs: u16,
+        add_pc: usize,
     },
     MakeClosure {
         dst: u16,

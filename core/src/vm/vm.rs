@@ -6,7 +6,7 @@ mod runtime;
 use crate::val::Val;
 use crate::vm::alloc::RegionAllocator;
 
-use caches::{AccessIc, CallIc, ForRangeState, GlobalEntry, IndexIc, PackedHotEntry};
+use caches::{AccessIc, CallIc, ClosureFastCache, ForRangeState, GlobalEntry, IndexIc, PackedHotEntry};
 use frame::CallFrameMeta;
 pub(crate) use frame::FrameInfo;
 pub(crate) use guards::with_current_vm;
@@ -43,6 +43,7 @@ pub struct Vm {
     regs: Vec<Val>,
     reg_pool: Vec<Vec<Val>>,
     reg_stack: Vec<Vec<Val>>,
+    nested_cache_pool: Vec<ClosureFastCache>,
     access_ic: Vec<Option<AccessIc>>,
     index_ic: Vec<Option<IndexIc>>,
     global_ic: Vec<Option<GlobalEntry>>,
@@ -61,6 +62,7 @@ impl Vm {
             regs: Vec::new(),
             reg_pool: Vec::new(),
             reg_stack: Vec::new(),
+            nested_cache_pool: Vec::new(),
             access_ic: Vec::new(),
             index_ic: Vec::new(),
             global_ic: Vec::new(),

@@ -1,5 +1,7 @@
 use anyhow::{Result, anyhow};
+use std::sync::Arc;
 
+use crate::util::fast_map::FastHashMap;
 use crate::val::Val;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::ForRangeState;
@@ -65,6 +67,27 @@ pub(super) fn assign_reg_slice(_frame_raw: *mut FrameState<'_>, regs: &mut [Val]
 
 #[inline(always)]
 pub(super) fn mark_reg_written(_frame_raw: *mut FrameState<'_>, _idx: usize) {}
+
+const DYNAMIC_MAP_FIRST_MUTATION_RESERVE: usize = 64;
+const DYNAMIC_LIST_FIRST_MUTATION_RESERVE: usize = 128;
+
+#[inline]
+pub(super) fn push_list_entry(arc: &mut Arc<Vec<Val>>, value: Val) {
+    let list = Arc::make_mut(arc);
+    if list.is_empty() && list.capacity() < DYNAMIC_LIST_FIRST_MUTATION_RESERVE {
+        list.reserve(DYNAMIC_LIST_FIRST_MUTATION_RESERVE);
+    }
+    list.push(value);
+}
+
+#[inline]
+pub(super) fn insert_map_entry(arc: &mut Arc<FastHashMap<Arc<str>, Val>>, key: Arc<str>, value: Val) {
+    let map = Arc::make_mut(arc);
+    if map.is_empty() && map.capacity() < DYNAMIC_MAP_FIRST_MUTATION_RESERVE {
+        map.reserve(DYNAMIC_MAP_FIRST_MUTATION_RESERVE);
+    }
+    map.insert(key, value);
+}
 
 #[inline]
 pub(super) fn fetch_for_range_state(slots: &mut [Option<ForRangeState>], pc: usize) -> Result<&mut ForRangeState> {

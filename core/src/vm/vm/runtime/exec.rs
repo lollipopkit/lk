@@ -10,9 +10,7 @@ use crate::{
 use crate::vm::bytecode::{CaptureSpec, Function};
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::{
-    AccessIc, CallIc, ClosureFastCache, ForRangeState, GlobalEntry, IndexIc, PackedHotEntry, VmCaches,
-};
+use crate::vm::vm::caches::{ClosureFastCache, VmCaches};
 use crate::vm::vm::frame::{CallArgs, CallFrame, CallFrameMeta, FrameInfo, FrameState};
 use crate::vm::vm::guards::{VmCurrentGuard, VmNestedCallGuard};
 use crate::vm::vm::runtime::frame::run_frame;
@@ -381,45 +379,41 @@ impl Vm {
                 positional_span.len
             ));
         }
-        let mut positional_values = Vec::with_capacity(positional_span.len);
-        for idx in 0..positional_span.len {
-            let src_idx = positional_span.base + idx;
-            let value = vm
-                .read_reg(positional_span.window, src_idx)
-                .cloned()
-                .unwrap_or(Val::Nil);
-            positional_values.push(value);
-        }
         if vm.regs.len() >= reg_count {
             vm.regs.truncate(reg_count);
         } else {
             vm.regs.resize(reg_count, Val::Nil);
         }
-        let mut i = 0;
-        while i < reg_count {
-            vm.regs[i] = Val::Nil;
-            i += 1;
+        for (idx, param_reg) in fun.param_regs.iter().take(positional_span.len).enumerate() {
+            let src_idx = positional_span.base + idx;
+            let value = vm
+                .read_reg(positional_span.window, src_idx)
+                .cloned()
+                .unwrap_or(Val::Nil);
+            let reg_idx = reg_base + (*param_reg as usize);
+            vm.regs[reg_idx] = value;
         }
         let region_plan = fun.analysis.as_ref().map(|analysis| analysis.region_plan.clone());
         let mut call_frame = CallFrame::new(fun, reg_base, reg_count, captures, capture_specs, region_plan);
         let region_alloc_ptr: *const RegionAllocator = &vm.region_alloc;
         let mut callee_state = FrameState::new(&mut call_frame, &mut vm.regs, region_alloc_ptr);
-        for (idx, param_reg) in fun.param_regs.iter().enumerate() {
-            if let Some(value) = positional_values.get(idx) {
-                let reg_idx = reg_base + (*param_reg as usize);
-                callee_state.write_reg(reg_idx, value.clone());
-            }
-        }
         for (reg_idx, value) in named_seed {
             let slot = reg_base + (*reg_idx as usize);
             callee_state.write_reg(slot, value.clone());
         }
-        let mut nested_access_ic: Vec<Option<AccessIc>> = Vec::new();
-        let mut nested_index_ic: Vec<Option<IndexIc>> = Vec::new();
-        let mut nested_global_ic: Vec<Option<GlobalEntry>> = Vec::new();
-        let mut nested_call_ic: Vec<Option<CallIc>> = Vec::new();
-        let mut nested_for_range_ic: Vec<Option<ForRangeState>> = Vec::new();
-        let mut nested_packed_hot: Vec<Option<PackedHotEntry>> = Vec::new();
+        let mut nested_cache = vm.nested_cache_pool.pop().unwrap_or_else(ClosureFastCache::new);
+        let func_key = fun as *const Function as usize;
+        if nested_cache.prepared_func_key != func_key {
+            nested_cache.access_ic.clear();
+            nested_cache.index_ic.clear();
+            nested_cache.global_ic.clear();
+            nested_cache.call_ic.clear();
+            nested_cache.for_range.clear();
+            nested_cache.packed_hot.clear();
+            nested_cache.packed_hot_key = 0;
+            nested_cache.prepared_func_key = func_key;
+            nested_cache.prepared_code_len = 0;
+        }
         let mut pushed_frame = false;
         if let Some(ref info) = frame_info {
             ctx.push_call_frame(Arc::clone(&info.name), info.location.as_ref().map(Arc::clone));
@@ -430,17 +424,18 @@ impl Vm {
             &mut callee_state,
             ctx,
             VmCaches {
-                access_ic: &mut nested_access_ic,
-                index_ic: &mut nested_index_ic,
-                global_ic: &mut nested_global_ic,
-                call_ic: &mut nested_call_ic,
-                for_range: &mut nested_for_range_ic,
-                packed_hot: &mut nested_packed_hot,
+                access_ic: &mut nested_cache.access_ic,
+                index_ic: &mut nested_cache.index_ic,
+                global_ic: &mut nested_cache.global_ic,
+                call_ic: &mut nested_cache.call_ic,
+                for_range: &mut nested_cache.for_range,
+                packed_hot: &mut nested_cache.packed_hot,
             },
             self_ptr,
         );
         let exec_result = exec_raw;
         drop(callee_state);
+        vm.nested_cache_pool.push(nested_cache);
         if pushed_frame {
             match exec_result {
                 Ok(val) => {

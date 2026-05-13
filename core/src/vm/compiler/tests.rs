@@ -715,8 +715,36 @@ fn runtime_assignment_invalidates_known_mutable_binding() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(101));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::Call { .. })),
-        "runtime assignment must invalidate the stale known value"
+        !function.consts.contains(&Val::Int(42)),
+        "runtime assignment must not fold through a stale known value"
+    );
+}
+
+#[test]
+fn straight_line_known_call_inlines_without_runtime_call() {
+    let source = r#"
+        fn score(price, qty, discount) {
+            let subtotal = price * qty;
+            let fee = (subtotal % 17) + 3;
+            return subtotal + fee - discount;
+        }
+        let p = unknown_price;
+        let result = score(p, 4, 2);
+        return result;
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokenize");
+    let mut parser = StmtParser::new(&tokens);
+    let program = parser.parse_program().expect("parse program");
+    let function = compile_program(&program);
+    let mut ctx = VmContext::new();
+    ctx.define("unknown_price", Val::Int(20));
+    let mut vm = Vm::new();
+    let result = vm.exec_with(&function, &mut ctx, None);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(93));
+    assert!(
+        !function.code.iter().any(|op| matches!(op, Op::Call { .. })),
+        "straight-line pure helper call should inline into arithmetic opcodes"
     );
 }
 
@@ -1191,6 +1219,45 @@ fn map_set_preserves_variable_key_value_registers() {
 }
 
 #[test]
+fn stdlib_map_get_on_known_local_map_lowers_to_access() {
+    let source = r#"
+        import map;
+        let data = {};
+        let key = "answer";
+        data.set(key, 42);
+        return map.get(data, key);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::Access(_, _, _))),
+        "expected stdlib map.get(data, key) to lower to Access in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn dynamic_list_access_stays_current_after_mutation() {
+    let source = r#"
+        let values = [];
+        values.push(10);
+        let idx = 0;
+        let first = values[idx];
+        values.push(32);
+        return first + values[1];
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::Access(_, _, _))),
+        "expected dynamic list access to use Access in {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn template_string_starts_from_first_literal() {
     let source = r#"
         let i = 42;
@@ -1211,6 +1278,23 @@ fn template_string_starts_from_first_literal() {
         function.code.iter().filter(|op| matches!(op, Op::Add(_, _, _))).count(),
         1,
         "template lowering should append only once in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn template_string_numeric_expr_uses_direct_concat() {
+    let source = r#"
+        let r = 42;
+        return "key-${r % 7}-${r}";
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Str("key-0-42".into()));
+    assert_eq!(
+        function.code.iter().filter(|op| matches!(op, Op::ToStr(_, _))).count(),
+        0,
+        "known-int interpolations should concatenate without ToStr in {:?}",
         function.code
     );
 }

@@ -18,7 +18,7 @@
 //! constant expressions, emitting `LoadK` for pre-computed results instead
 //! of runtime operations.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use super::builder::ArithFlavor;
 use crate::{
@@ -92,7 +92,129 @@ impl FunctionBuilder {
         dst
     }
 
+    fn collect_inline_straight_line_body(stmt: &Stmt) -> Option<(Vec<&Stmt>, &Expr)> {
+        match stmt {
+            Stmt::Return { value: Some(value) } | Stmt::Expr(value) => Some((Vec::new(), value.as_ref())),
+            Stmt::Block { statements } if !statements.is_empty() && statements.len() <= 8 => {
+                let (last, prefix) = statements.split_last()?;
+                let returned = match last.as_ref() {
+                    Stmt::Return { value: Some(value) } | Stmt::Expr(value) => value.as_ref(),
+                    _ => return None,
+                };
+                let mut inline_prefix = Vec::with_capacity(prefix.len());
+                for stmt in prefix {
+                    let Stmt::Let {
+                        pattern: crate::expr::Pattern::Variable(_),
+                        value,
+                        ..
+                    } = stmt.as_ref()
+                    else {
+                        return None;
+                    };
+                    if Self::expr_contains_call(value) {
+                        return None;
+                    }
+                    inline_prefix.push(stmt.as_ref());
+                }
+                Some((inline_prefix, returned))
+            }
+            _ => None,
+        }
+    }
+
+    fn inline_expr_uses_only(expr: &Expr, allowed: &HashSet<String>) -> bool {
+        expr.requested_ctx().iter().all(|name| allowed.contains(name))
+    }
+
+    fn template_expr_can_concat_direct(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Val(Val::Int(_) | Val::Float(_) | Val::Str(_)) => true,
+            Expr::Var(name) => self
+                .lookup(name)
+                .map(|reg| self.int_regs.contains(&reg))
+                .unwrap_or(false),
+            Expr::Paren(inner) => self.template_expr_can_concat_direct(inner),
+            Expr::Bin(_, op, _) => matches!(op, BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod),
+            _ => false,
+        }
+    }
+
+    fn try_inline_simple_known_call(&mut self, name: &str, args: &[Box<Expr>]) -> Option<u16> {
+        let Some(Val::Closure(closure)) = self.const_env.get(name).cloned() else {
+            return None;
+        };
+        if !closure.named_params.is_empty() || !closure.capture_specs.is_empty() || closure.params.len() != args.len() {
+            return None;
+        }
+        let (prefix, returned) = Self::collect_inline_straight_line_body(closure.body.as_ref())?;
+        if prefix.is_empty() {
+            return None;
+        }
+        if Self::expr_contains_call(returned) {
+            return None;
+        }
+        let mut allowed_names = closure.params.iter().cloned().collect::<HashSet<_>>();
+        for stmt in &prefix {
+            let Stmt::Let {
+                pattern: crate::expr::Pattern::Variable(local_name),
+                value,
+                ..
+            } = stmt
+            else {
+                return None;
+            };
+            if !Self::inline_expr_uses_only(value, &allowed_names) {
+                return None;
+            }
+            allowed_names.insert(local_name.clone());
+        }
+        if !Self::inline_expr_uses_only(returned, &allowed_names) {
+            return None;
+        }
+
+        let mut arg_regs = Vec::with_capacity(args.len());
+        for arg in args {
+            arg_regs.push(self.expr(arg));
+        }
+
+        self.push_var_scope();
+        for (param, reg) in closure.params.iter().zip(arg_regs) {
+            self.define_var_as(param, reg);
+        }
+        for stmt in prefix {
+            let Stmt::Let {
+                pattern: crate::expr::Pattern::Variable(name),
+                value,
+                ..
+            } = stmt
+            else {
+                unreachable!("inline prefix was validated before emission");
+            };
+            let reg = self.expr(value);
+            self.define_var_as(name, reg);
+        }
+        let result = self.expr(returned);
+        self.pop_var_scope();
+        Some(result)
+    }
+
     fn compile_method_call(&mut self, obj_expr: &Expr, field_expr: &Expr, args: &[Box<Expr>]) -> u16 {
+        // Fast path: stdlib map.get(m, k) when m is a known local Map.
+        if args.len() == 2
+            && let Expr::Var(module_name) = obj_expr
+            && module_name == "map"
+            && self.lookup(module_name).is_none()
+            && let Expr::Val(Val::Str(method)) = field_expr
+            && method.as_ref() == "get"
+            && let Expr::Var(map_name) = args[0].as_ref()
+            && let Some(map_reg) = self.lookup(map_name)
+            && self.map_locals.contains(&map_reg)
+        {
+            let key_reg = self.expr(&args[1]);
+            let dst = self.alloc();
+            self.emit(Op::Access(dst, map_reg, key_reg));
+            return dst;
+        }
         // Fast path: t.push(val) — emit ListPush opcode
         if args.len() == 1
             && let Expr::Var(var_name) = obj_expr
@@ -801,6 +923,10 @@ impl FunctionBuilder {
                                 initialized = true;
                                 continue;
                             }
+                            if self.template_expr_can_concat_direct(expr) {
+                                self.emit(Op::Add(out, out, rv));
+                                continue;
+                            }
                             let rs = self.alloc();
                             self.emit(Op::ToStr(rs, rv));
                             self.emit(Op::Add(out, out, rs));
@@ -1076,6 +1202,9 @@ impl FunctionBuilder {
                 base
             }
             Expr::Call(name, args) => {
+                if let Some(inlined) = self.try_inline_simple_known_call(name, args) {
+                    return inlined;
+                }
                 // If the callee is a locally-defined function registered in const_env,
                 // load it from the constant pool instead of via LoadGlobal (avoids hashtable lookup).
                 let use_direct_call = self.const_env.get(name).is_some() && self.call_safe_to_fold(name);
@@ -1107,6 +1236,11 @@ impl FunctionBuilder {
             Expr::CallExpr(callee, args) => {
                 if let Expr::Access(obj_expr, field_expr) = callee.as_ref() {
                     return self.compile_method_call(obj_expr, field_expr, args.as_slice());
+                }
+                if let Expr::Var(name) = callee.as_ref()
+                    && let Some(inlined) = self.try_inline_simple_known_call(name, args)
+                {
+                    return inlined;
                 }
                 let f = if let Expr::Var(name) = callee.as_ref() {
                     self.lookup(name).unwrap_or_else(|| self.expr(callee))

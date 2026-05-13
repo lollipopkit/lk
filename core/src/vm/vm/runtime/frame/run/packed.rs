@@ -50,7 +50,9 @@ use crate::vm::vm::caches::{
 };
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan, RegisterWindowRef};
 
-use super::helpers::{assign_reg, fetch_for_range_state, frame_return_common, handle_return_common};
+use super::helpers::{
+    assign_reg, fetch_for_range_state, frame_return_common, handle_return_common, insert_map_entry, push_list_entry,
+};
 use super::invoke::{invoke_rust_function, invoke_rust_function_named};
 use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, int_binop, int_binop_imm, rk_read};
 use super::plan::build_named_call_plan;
@@ -241,7 +243,18 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
             }
             Tag::ToStr => {
                 let (dst, src, _) = decode_abc(word, reg_ext);
-                PackedHotKind::ToStr { dst, src }
+                if let Some((out, lhs, fused_next_pc)) = decode_tostr_add_rhs(code32, next_pc, dst) {
+                    next_pc = fused_next_pc;
+                    PackedHotKind::ToStrAddRhs {
+                        tmp: dst,
+                        src,
+                        out,
+                        lhs,
+                        add_pc: next_pc,
+                    }
+                } else {
+                    PackedHotKind::ToStr { dst, src }
+                }
             }
             Tag::MakeClosure => {
                 let (dst, proto, _) = decode_abc(word, reg_ext);
@@ -468,6 +481,27 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
     } else {
         None
     }
+}
+
+#[inline(always)]
+fn decode_tostr_add_rhs(code32: &[u32], add_pc: usize, tmp: u16) -> Option<(u16, u16, usize)> {
+    let add_word = *code32.get(add_pc)?;
+    let bc32::DecodedTag::Regular { tag: Tag::Add, flags } = bc32::decode_tag_byte(bc32::tag_of(add_word)) else {
+        return None;
+    };
+
+    let mut next_pc = add_pc + 1;
+    let mut reg_ext = None;
+    if next_pc < code32.len() && bc32::tag_of(code32[next_pc]) == bc32::TAG_REG_EXT {
+        reg_ext = Some(code32[next_pc]);
+        next_pc += 1;
+    }
+
+    let (out, lhs, rhs) = decode_rk_pair(add_word, reg_ext, flags);
+    if rk_is_const(rhs) || rhs != tmp {
+        return None;
+    }
+    Some((out, lhs, next_pc))
 }
 
 fn detect_for_range_fusion(code32: &[u32], body_pc: usize, idx: u16) -> Option<PackedRangeFusion> {
@@ -1099,6 +1133,25 @@ fn exec_hot_slot(
             assign_reg(frame_raw, regs, *dst as usize, s);
             None
         }
+        PackedHotKind::ToStrAddRhs {
+            tmp,
+            src,
+            out,
+            lhs,
+            add_pc,
+        } => {
+            let lhs_val = rk_read(regs, &func.consts, *lhs);
+            if let Val::Str(lhs_str) = &lhs_val
+                && let Some(value) = Val::concat_str_add_rhs(lhs_str, &regs[*src as usize])
+            {
+                assign_reg(frame_raw, regs, *out as usize, value);
+                None
+            } else {
+                let s = Val::to_str_value(&regs[*src as usize]);
+                assign_reg(frame_raw, regs, *tmp as usize, s);
+                Some(*add_pc)
+            }
+        }
         PackedHotKind::MakeClosure { dst, proto } => {
             let clo = make_closure_value(func, *proto, ctx, regs, frame_base)?;
             assign_reg(frame_raw, regs, *dst as usize, clo);
@@ -1275,11 +1328,7 @@ fn exec_hot_slot(
             let pushed_val = regs[*val as usize].clone();
             match &mut regs[*list as usize] {
                 Val::List(arc) => {
-                    if let Some(items) = Arc::get_mut(arc) {
-                        items.push(pushed_val);
-                    } else {
-                        Arc::make_mut(arc).push(pushed_val);
-                    }
+                    push_list_entry(arc, pushed_val);
                 }
                 _ => return Err(anyhow!("ListPush target is not a List")),
             }
@@ -1293,11 +1342,7 @@ fn exec_hot_slot(
             let pushed_val = regs[*val as usize].clone();
             match &mut regs[*map as usize] {
                 Val::Map(arc) => {
-                    if let Some(map) = Arc::get_mut(arc) {
-                        map.insert(key_arc, pushed_val);
-                    } else {
-                        Arc::make_mut(arc).insert(key_arc, pushed_val);
-                    }
+                    insert_map_entry(arc, key_arc, pushed_val);
                 }
                 _ => return Err(anyhow!("MapSet target is not a Map")),
             }
@@ -1315,11 +1360,7 @@ fn exec_hot_slot(
                 let pushed_val = regs[val_idx].clone();
                 match &mut regs[map_idx] {
                     Val::Map(arc) => {
-                        if let Some(map) = Arc::get_mut(arc) {
-                            map.insert(key_arc, pushed_val);
-                        } else {
-                            Arc::make_mut(arc).insert(key_arc, pushed_val);
-                        }
+                        insert_map_entry(arc, key_arc, pushed_val);
                     }
                     _ => return Err(anyhow!("MapSet target is not a Map")),
                 }
@@ -1339,11 +1380,7 @@ fn exec_hot_slot(
             let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
             match &mut regs[map_idx] {
                 Val::Map(arc) => {
-                    if let Some(map) = Arc::get_mut(arc) {
-                        map.insert(key_arc, pushed_val);
-                    } else {
-                        Arc::make_mut(arc).insert(key_arc, pushed_val);
-                    }
+                    insert_map_entry(arc, key_arc, pushed_val);
                 }
                 _ => unreachable!("MapSet target was checked before moving key/value"),
             }
@@ -1793,7 +1830,11 @@ pub(super) fn run_packed_code(
                 if let PackedHotKind::Ret { base, retc } = &entry.kind {
                     let retc = *retc as usize;
                     let base_idx = *base as usize;
-                    let ret_val = if retc > 0 { regs[base_idx].clone() } else { Val::Nil };
+                    let ret_val = if retc > 0 {
+                        std::mem::replace(&mut regs[base_idx], Val::Nil)
+                    } else {
+                        Val::Nil
+                    };
                     if packed_hot.len() <= pc {
                         packed_hot.resize(pc + 1, None);
                     }
@@ -2190,8 +2231,7 @@ pub(super) fn run_packed_code(
                                     let bi = *i as usize;
                                     let bs = s.as_bytes();
                                     if bi < bs.len() {
-                                        let ch = bs[bi] as char;
-                                        Val::Str(ch.to_string().into())
+                                        Val::ascii_char_value(bs[bi])
                                     } else {
                                         Val::Nil
                                     }
@@ -2294,7 +2334,11 @@ pub(super) fn run_packed_code(
             Op::Ret { base, retc } => {
                 let retc = retc as usize;
                 let base_idx = base as usize;
-                let ret_val = if retc > 0 { regs[base_idx].clone() } else { Val::Nil };
+                let ret_val = if retc > 0 {
+                    std::mem::replace(&mut regs[base_idx], Val::Nil)
+                } else {
+                    Val::Nil
+                };
                 return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
             }
             Op::Break(ofs) => {
@@ -2355,17 +2399,34 @@ pub(super) fn run_packed_code(
             }
             Op::Access(dst, base, field) => {
                 let hit_val = match (&regs[base as usize], &regs[field as usize]) {
-                    (Val::Map(m), Val::Str(s)) => {
-                        let mp = Arc::as_ptr(m) as usize;
-                        let kp = s.as_ref().as_ptr() as usize;
-                        match access_ic[pc].as_mut() {
-                            Some(AccessIc::MapStr(slots)) => {
-                                Vm::lookup_promote(slots, |e| e.map_ptr == mp && e.key_ptr == kp)
-                                    .map(|entry| entry.value.clone())
-                            }
-                            _ => None,
+                    (Val::List(l), Val::Int(i)) => {
+                        if *i < 0 {
+                            Some(Val::Nil)
+                        } else {
+                            Some(l.get(*i as usize).cloned().unwrap_or(Val::Nil))
                         }
                     }
+                    (Val::Str(s), Val::Int(i)) => {
+                        if *i < 0 {
+                            Some(Val::Nil)
+                        } else if s.is_ascii() {
+                            let idx = *i as usize;
+                            let bs = s.as_bytes();
+                            if idx < bs.len() {
+                                Some(Val::ascii_char_value(bs[idx]))
+                            } else {
+                                Some(Val::Nil)
+                            }
+                        } else {
+                            Some(
+                                s.chars()
+                                    .nth(*i as usize)
+                                    .map(|ch| Val::Str(ch.to_string().into()))
+                                    .unwrap_or(Val::Nil),
+                            )
+                        }
+                    }
+                    (Val::Map(m), Val::Str(s)) => m.get(s.as_ref()).cloned(),
                     (Val::Object(object), Val::Str(s)) => {
                         let fields = &object.fields;
                         let optr = Arc::as_ptr(fields) as usize;
@@ -2385,11 +2446,6 @@ pub(super) fn run_packed_code(
                 } else {
                     let v = regs[base as usize].access(&regs[field as usize]).unwrap_or(Val::Nil);
                     match (&regs[base as usize], &regs[field as usize]) {
-                        (Val::Map(m), Val::Str(s)) => {
-                            let mp = Arc::as_ptr(m) as usize;
-                            let kp = s.as_ref().as_ptr() as usize;
-                            Vm::update_map_ic(access_ic.as_mut_slice(), pc, mp, kp, &v);
-                        }
                         (Val::Object(object), Val::Str(s)) => {
                             let fields = &object.fields;
                             let optr = Arc::as_ptr(fields) as usize;
@@ -2405,18 +2461,10 @@ pub(super) fn run_packed_code(
             Op::AccessK(dst, base, kidx) => {
                 let key = &f.consts[kidx as usize];
                 let res = if let Val::Str(s) = key {
-                    let (hit_val, mp, kp, obj_ptr) = match &regs[base as usize] {
+                    let (hit_val, obj_ptr) = match &regs[base as usize] {
                         Val::Map(m) => {
-                            let mp = Arc::as_ptr(m) as usize;
-                            let kp = s.as_ref().as_ptr() as usize;
-                            let out = match access_ic[pc].as_mut() {
-                                Some(AccessIc::MapStr(slots)) => {
-                                    Vm::lookup_promote(slots, |e| e.map_ptr == mp && e.key_ptr == kp)
-                                        .map(|entry| entry.value.clone())
-                                }
-                                _ => None,
-                            };
-                            (out, Some(mp), Some(kp), None)
+                            let out = m.get(s.as_ref()).cloned().unwrap_or(Val::Nil);
+                            (Some(out), None)
                         }
                         Val::Object(object) => {
                             let fields = &object.fields;
@@ -2428,17 +2476,15 @@ pub(super) fn run_packed_code(
                                 }
                                 _ => None,
                             };
-                            (out, None, None, Some(optr))
+                            (out, Some(optr))
                         }
-                        _ => (None, None, None, None),
+                        _ => (None, None),
                     };
                     if let Some(v) = hit_val {
                         v
                     } else {
                         let v = regs[base as usize].access(key).unwrap_or(Val::Nil);
-                        if let (Some(mp), Some(kp)) = (mp, kp) {
-                            Vm::update_map_ic(access_ic.as_mut_slice(), pc, mp, kp, &v);
-                        } else if let Some(optr) = obj_ptr {
+                        if let Some(optr) = obj_ptr {
                             Vm::update_object_ic(access_ic.as_mut_slice(), pc, optr, s.as_ref(), &v);
                         }
                         v
@@ -2467,8 +2513,7 @@ pub(super) fn run_packed_code(
                                 let bi = *i as usize;
                                 let bs = s.as_bytes();
                                 if bi < bs.len() {
-                                    let ch = bs[bi] as char;
-                                    Val::Str(ch.to_string().into())
+                                    Val::ascii_char_value(bs[bi])
                                 } else {
                                     Val::Nil
                                 }

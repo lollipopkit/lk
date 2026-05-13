@@ -127,6 +127,19 @@ mod tests {
     }
 
     #[test]
+    fn test_ascii_string_access_reuses_cached_single_char_arc() {
+        let val: Val = "abc".into();
+        let first = val.access(&Val::Int(1)).expect("first access");
+        let second = val.access(&Val::Int(1)).expect("second access");
+
+        assert_eq!(first, Val::Str("b".into()));
+        match (first, second) {
+            (Val::Str(a), Val::Str(b)) => assert!(std::sync::Arc::ptr_eq(&a, &b)),
+            _ => panic!("expected string access results"),
+        }
+    }
+
+    #[test]
     fn test_access_out_of_bounds() {
         let list = vec![10, 20, 30];
         let val: Val = list.into();

@@ -1,7 +1,7 @@
 use crate::val::Val;
 use crate::vm::bytecode::{rk_index, rk_is_const};
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::{AccessIc, IndexIc, ListEntry, MapStrEntry, ObjectStrEntry, StrEntry};
+use crate::vm::vm::caches::{AccessIc, IndexIc, ListEntry, ObjectStrEntry, StrEntry};
 
 use super::helpers::assign_reg_slice;
 
@@ -101,44 +101,6 @@ impl Vm {
                     Some(StrEntry {
                         base_ptr,
                         idx,
-                        value: value.clone(),
-                    }),
-                    None,
-                    None,
-                    None,
-                ]));
-            }
-        }
-    }
-
-    #[inline(always)]
-    pub(super) fn update_map_ic(
-        access_ic: &mut [Option<AccessIc>],
-        pc: usize,
-        map_ptr: usize,
-        key_ptr: usize,
-        value: &Val,
-    ) {
-        match access_ic[pc].as_mut() {
-            Some(AccessIc::MapStr(slots)) => {
-                let (hit, entry) = Vm::promote_or_insert(
-                    slots,
-                    |e| e.map_ptr == map_ptr && e.key_ptr == key_ptr,
-                    || MapStrEntry {
-                        map_ptr,
-                        key_ptr,
-                        value: value.clone(),
-                    },
-                );
-                if hit {
-                    entry.value = value.clone();
-                }
-            }
-            _ => {
-                access_ic[pc] = Some(AccessIc::MapStr([
-                    Some(MapStrEntry {
-                        map_ptr,
-                        key_ptr,
                         value: value.clone(),
                     }),
                     None,

@@ -28,7 +28,7 @@ use crate::vm::vm::caches::{
 };
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan, RegisterWindowRef};
 
-use super::helpers::{assign_reg, frame_return_common, handle_return_common};
+use super::helpers::{assign_reg, frame_return_common, handle_return_common, insert_map_entry, push_list_entry};
 use super::invoke::{invoke_rust_function, invoke_rust_function_named};
 use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, int_binop, int_binop_imm, rk_read};
 use super::plan::build_named_call_plan;
@@ -439,17 +439,34 @@ pub(super) fn run_opcode_code(
             Op::Access(dst, base, field) => {
                 // Polymorphic 2-way IC for Map[String] and Object[String]
                 let hit_val = match (&regs[*base as usize], &regs[*field as usize]) {
-                    (Val::Map(m), Val::Str(s)) => {
-                        let mp = Arc::as_ptr(m) as usize;
-                        let kp = s.as_ref().as_ptr() as usize;
-                        match access_ic[pc].as_mut() {
-                            Some(AccessIc::MapStr(slots)) => {
-                                Vm::lookup_promote(slots, |e| e.map_ptr == mp && e.key_ptr == kp)
-                                    .map(|entry| entry.value.clone())
-                            }
-                            _ => None,
+                    (Val::List(l), Val::Int(i)) => {
+                        if *i < 0 {
+                            Some(Val::Nil)
+                        } else {
+                            Some(l.get(*i as usize).cloned().unwrap_or(Val::Nil))
                         }
                     }
+                    (Val::Str(s), Val::Int(i)) => {
+                        if *i < 0 {
+                            Some(Val::Nil)
+                        } else if s.is_ascii() {
+                            let idx = *i as usize;
+                            let bs = s.as_bytes();
+                            if idx < bs.len() {
+                                Some(Val::ascii_char_value(bs[idx]))
+                            } else {
+                                Some(Val::Nil)
+                            }
+                        } else {
+                            Some(
+                                s.chars()
+                                    .nth(*i as usize)
+                                    .map(|ch| Val::Str(ch.to_string().into()))
+                                    .unwrap_or(Val::Nil),
+                            )
+                        }
+                    }
+                    (Val::Map(m), Val::Str(s)) => m.get(s.as_ref()).cloned(),
                     (Val::Object(object), Val::Str(s)) => {
                         let fields = &object.fields;
                         let optr = Arc::as_ptr(fields) as usize;
@@ -468,11 +485,6 @@ pub(super) fn run_opcode_code(
                 } else {
                     let v = regs[*base as usize].access(&regs[*field as usize]).unwrap_or(Val::Nil);
                     match (&regs[*base as usize], &regs[*field as usize]) {
-                        (Val::Map(m), Val::Str(s)) => {
-                            let mp = Arc::as_ptr(m) as usize;
-                            let kp = s.as_ref().as_ptr() as usize;
-                            Vm::update_map_ic(access_ic.as_mut_slice(), pc, mp, kp, &v);
-                        }
                         (Val::Object(object), Val::Str(s)) => {
                             let fields = &object.fields;
                             let optr = Arc::as_ptr(fields) as usize;
@@ -489,18 +501,10 @@ pub(super) fn run_opcode_code(
                 let key = &f.consts[*kidx as usize];
                 // Only valid for string constants; otherwise yield Nil
                 let res = if let Val::Str(s) = key {
-                    let (hit_val, mp, kp, obj_ptr) = match &regs[*base as usize] {
+                    let (hit_val, obj_ptr) = match &regs[*base as usize] {
                         Val::Map(m) => {
-                            let mp = Arc::as_ptr(m) as usize;
-                            let kp = s.as_ref().as_ptr() as usize;
-                            let out = match access_ic[pc].as_mut() {
-                                Some(AccessIc::MapStr(slots)) => {
-                                    Vm::lookup_promote(slots, |e| e.map_ptr == mp && e.key_ptr == kp)
-                                        .map(|entry| entry.value.clone())
-                                }
-                                _ => None,
-                            };
-                            (out, Some(mp), Some(kp), None)
+                            let out = m.get(s.as_ref()).cloned().unwrap_or(Val::Nil);
+                            (Some(out), None)
                         }
                         Val::Object(object) => {
                             let fields = &object.fields;
@@ -512,17 +516,15 @@ pub(super) fn run_opcode_code(
                                 }
                                 _ => None,
                             };
-                            (out, None, None, Some(optr))
+                            (out, Some(optr))
                         }
-                        _ => (None, None, None, None),
+                        _ => (None, None),
                     };
                     if let Some(v) = hit_val {
                         v
                     } else {
                         let v = regs[*base as usize].access(key).unwrap_or(Val::Nil);
-                        if let (Some(mp), Some(kp)) = (mp, kp) {
-                            Vm::update_map_ic(access_ic.as_mut_slice(), pc, mp, kp, &v);
-                        } else if let Some(optr) = obj_ptr {
+                        if let Some(optr) = obj_ptr {
                             Vm::update_object_ic(access_ic.as_mut_slice(), pc, optr, s.as_ref(), &v);
                         }
                         v
@@ -658,8 +660,7 @@ pub(super) fn run_opcode_code(
                                 let v = if s.is_ascii() {
                                     let bs = s.as_bytes();
                                     if idx < bs.len() {
-                                        let ch = bs[idx] as char;
-                                        Val::Str(ch.to_string().into())
+                                        Val::ascii_char_value(bs[idx])
                                     } else {
                                         Val::Nil
                                     }
@@ -697,8 +698,7 @@ pub(super) fn run_opcode_code(
                                 let bi = *i as usize;
                                 let bs = s.as_bytes();
                                 if bi < bs.len() {
-                                    let ch = bs[bi] as char;
-                                    Val::Str(ch.to_string().into())
+                                    Val::ascii_char_value(bs[bi])
                                 } else {
                                     Val::Nil
                                 }
@@ -795,28 +795,23 @@ pub(super) fn run_opcode_code(
                 let out = match &regs[*src as usize] {
                     Val::List(_) | Val::Str(_) => regs[*src as usize].clone(),
                     Val::Map(m) => {
-                        let mut keys: Vec<&str> = m.keys().map(|k| k.as_ref()).collect();
-                        keys.sort();
-                        if use_thread_local && !keys.is_empty() {
+                        let mut entries: Vec<_> = m.iter().collect();
+                        entries.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+                        if use_thread_local && !entries.is_empty() {
                             let allocator = unsafe { &*region_allocator_ptr };
-                            allocator.with_val_buffer(keys.len(), |scratch| {
-                                for key in keys.iter() {
-                                    if let Some(v) = m.get(*key) {
-                                        let pair =
-                                            Val::List(vec![Val::Str((*key).to_string().into()), v.clone()].into());
-                                        scratch.push(pair);
-                                    }
+                            allocator.with_val_buffer(entries.len(), |scratch| {
+                                for (key, value) in entries.iter() {
+                                    let pair = Val::List(vec![Val::Str(Arc::clone(key)), (*value).clone()].into());
+                                    scratch.push(pair);
                                 }
                                 let data = scratch.split_off(0);
                                 Val::List(data.into())
                             })
                         } else {
-                            let mut pairs = Vec::with_capacity(keys.len());
-                            for key in keys {
-                                if let Some(v) = m.get(key) {
-                                    let pair = Val::List(vec![Val::Str(key.to_string().into()), v.clone()].into());
-                                    pairs.push(pair);
-                                }
+                            let mut pairs = Vec::with_capacity(entries.len());
+                            for (key, value) in entries {
+                                let pair = Val::List(vec![Val::Str(Arc::clone(key)), value.clone()].into());
+                                pairs.push(pair);
                             }
                             Val::List(pairs.into())
                         }
@@ -953,11 +948,7 @@ pub(super) fn run_opcode_code(
                 let pushed_val = regs[*val as usize].clone();
                 match &mut regs[*list as usize] {
                     Val::List(arc) => {
-                        if let Some(items) = Arc::get_mut(arc) {
-                            items.push(pushed_val);
-                        } else {
-                            Arc::make_mut(arc).push(pushed_val);
-                        }
+                        push_list_entry(arc, pushed_val);
                     }
                     _ => {
                         return frame_return_common(frame_raw, pc, Err(anyhow!("ListPush target is not a List")))
@@ -977,11 +968,7 @@ pub(super) fn run_opcode_code(
                 let pushed_val = regs[*val as usize].clone();
                 match &mut regs[*map as usize] {
                     Val::Map(arc) => {
-                        if let Some(map) = Arc::get_mut(arc) {
-                            map.insert(key_arc, pushed_val);
-                        } else {
-                            Arc::make_mut(arc).insert(key_arc, pushed_val);
-                        }
+                        insert_map_entry(arc, key_arc, pushed_val);
                     }
                     _ => {
                         return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map")))
@@ -1005,11 +992,7 @@ pub(super) fn run_opcode_code(
                     let pushed_val = regs[val_idx].clone();
                     match &mut regs[map_idx] {
                         Val::Map(arc) => {
-                            if let Some(map) = Arc::get_mut(arc) {
-                                map.insert(key_arc, pushed_val);
-                            } else {
-                                Arc::make_mut(arc).insert(key_arc, pushed_val);
-                            }
+                            insert_map_entry(arc, key_arc, pushed_val);
                         }
                         _ => {
                             return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map")))
@@ -1034,11 +1017,7 @@ pub(super) fn run_opcode_code(
                 let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
                 match &mut regs[map_idx] {
                     Val::Map(arc) => {
-                        if let Some(map) = Arc::get_mut(arc) {
-                            map.insert(key_arc, pushed_val);
-                        } else {
-                            Arc::make_mut(arc).insert(key_arc, pushed_val);
-                        }
+                        insert_map_entry(arc, key_arc, pushed_val);
                     }
                     _ => unreachable!("MapSet target was checked before moving key/value"),
                 }
