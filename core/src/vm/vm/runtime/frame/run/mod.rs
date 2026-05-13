@@ -1,7 +1,6 @@
 use anyhow::Result;
 
 use crate::val::Val;
-use crate::vm::alloc::RegionAllocator;
 use crate::vm::bc32;
 use crate::vm::bytecode::Function;
 use crate::vm::context::VmContext;
@@ -31,11 +30,7 @@ pub(crate) fn run_frame(
     let mut pc: usize = frame.pc();
     let frame_raw: *mut FrameState<'_> = frame;
     let frame_base = frame.reg_base();
-    let frame_captures = frame.capture_arc();
-    let frame_capture_specs = frame.capture_specs_arc();
-    let region_plan = frame.region_plan().cloned();
-    let region_allocator_ptr = frame.region_allocator() as *const RegionAllocator;
-    let regs = frame.regs();
+    let (regs, frame_captures, frame_capture_specs, region_plan, region_allocator_ptr) = frame.execution_parts();
 
     if let Some(code32) = f.code32.as_ref()
         && supports_bc32_fast_path(f)
@@ -49,8 +44,8 @@ pub(crate) fn run_frame(
             frame_base,
             code32,
             f.bc32_decoded.as_deref(),
-            &frame_captures,
-            &frame_capture_specs,
+            frame_captures,
+            frame_capture_specs,
             region_plan.as_deref(),
             region_allocator_ptr,
             self_ptr,
@@ -67,8 +62,8 @@ pub(crate) fn run_frame(
         f,
         &mut pc,
         frame_base,
-        &frame_captures,
-        &frame_capture_specs,
+        frame_captures,
+        frame_capture_specs,
         region_plan.as_deref(),
         region_allocator_ptr,
         self_ptr,

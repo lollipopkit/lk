@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use crate::val::{RustFunction, RustFunctionNamed, Val};
+use crate::val::{ClosureCapture, RustFunction, RustFunctionNamed, Val};
 use crate::vm::RegionPlan;
-use crate::vm::bytecode::Function;
+use crate::vm::bytecode::{Function, Op, rk_index, rk_is_const};
 use crate::vm::vm::frame::FrameInfo;
 
 // ────────────── Inline Cache Architecture ──────────────
@@ -75,6 +75,7 @@ pub(super) enum CallIc {
         closure_ptr: usize,
         fun_ptr: *const Function,
         argc: u8,
+        tiny: Option<TinyCallPlan>,
         cache: ClosureFastCache,
         frame_info: FrameInfo,
     },
@@ -94,12 +95,14 @@ impl Clone for CallIc {
                 closure_ptr,
                 fun_ptr,
                 argc,
+                tiny,
                 cache,
                 frame_info,
             } => CallIc::ClosurePositional {
                 closure_ptr: *closure_ptr,
                 fun_ptr: *fun_ptr,
                 argc: *argc,
+                tiny: tiny.clone(),
                 cache: cache.clone(),
                 frame_info: frame_info.clone(),
             },
@@ -117,6 +120,693 @@ impl Clone for CallIc {
 }
 
 #[derive(Clone)]
+pub(super) enum TinyCallPlan {
+    Return(TinyOperand),
+    Add(TinyOperand, TinyOperand),
+    AddMod {
+        lhs: TinyOperand,
+        rhs: TinyOperand,
+        modulo: TinyOperand,
+    },
+    IntExpr(TinyIntProgram),
+    Expr(TinyExpr),
+}
+
+#[derive(Clone)]
+pub(super) enum TinyOperand {
+    Param(usize),
+    Capture(usize),
+    Const(Val),
+}
+
+#[derive(Clone)]
+pub(super) enum TinyExpr {
+    Operand(TinyOperand),
+    Add(Box<TinyExpr>, Box<TinyExpr>),
+    Sub(Box<TinyExpr>, Box<TinyExpr>),
+    Mul(Box<TinyExpr>, Box<TinyExpr>),
+    Mod(Box<TinyExpr>, Box<TinyExpr>),
+}
+
+#[derive(Clone)]
+pub(super) struct TinyIntProgram {
+    ops: Vec<TinyIntOp>,
+    max_stack: usize,
+}
+
+#[derive(Clone)]
+enum TinyIntOp {
+    Param(usize),
+    Capture(usize),
+    Const(i64),
+    Add,
+    Sub,
+    Mul,
+    Mod,
+}
+
+impl TinyCallPlan {
+    pub(super) fn analyze(fun: &Function) -> Option<Self> {
+        let ret_pos = fun.code.iter().position(|op| matches!(op, Op::Ret { retc: 1, .. }))?;
+        let Op::Ret { base, retc: 1 } = fun.code.get(ret_pos)? else {
+            return None;
+        };
+        let base = *base;
+        let mut reg_operands: Vec<Option<TinyOperand>> = vec![None; fun.n_regs as usize];
+        let mut local_operands: Vec<Option<TinyOperand>> = vec![None; fun.n_regs as usize];
+        for op in &fun.code[..ret_pos] {
+            match op {
+                Op::LoadK(dst, kidx) => {
+                    let value = fun.consts.get(*kidx as usize)?.clone();
+                    *reg_operands.get_mut(*dst as usize)? = Some(TinyOperand::Const(value));
+                }
+                Op::LoadCapture { dst, idx } => {
+                    *reg_operands.get_mut(*dst as usize)? = Some(TinyOperand::Capture(*idx as usize));
+                }
+                Op::Move(dst, src) => {
+                    let operand = Self::operand_for_reg(*src, fun, &reg_operands)?;
+                    *reg_operands.get_mut(*dst as usize)? = Some(operand);
+                }
+                Op::LoadLocal(dst, idx) => {
+                    let operand = local_operands.get(*idx as usize)?.clone()?;
+                    *reg_operands.get_mut(*dst as usize)? = Some(operand);
+                }
+                Op::StoreLocal(idx, src) => {
+                    let operand = Self::operand_for_reg(*src, fun, &reg_operands)?;
+                    *local_operands.get_mut(*idx as usize)? = Some(operand);
+                }
+                Op::Add(_, _, _)
+                | Op::AddInt(_, _, _)
+                | Op::AddFloat(_, _, _)
+                | Op::AddIntImm(_, _, _)
+                | Op::Sub(_, _, _)
+                | Op::SubInt(_, _, _)
+                | Op::SubFloat(_, _, _)
+                | Op::Mul(_, _, _)
+                | Op::MulInt(_, _, _)
+                | Op::MulFloat(_, _, _)
+                | Op::Mod(_, _, _)
+                | Op::ModInt(_, _, _)
+                | Op::ModFloat(_, _, _) => {}
+                _ => return None,
+            }
+        }
+        let return_operand = || Self::operand_for_reg(base, fun, &reg_operands);
+        let defining_op = fun.code[..ret_pos].iter().rev().find(|op| Self::defines_reg(op, base));
+        match defining_op {
+            Some(Op::Mod(dst, lhs, modulo)) if *dst == base => {
+                Self::add_mod_plan_for_rk(*lhs, *modulo, fun, &reg_operands)
+                    .or_else(|| Self::analyze_expr_plan(fun, ret_pos, base))
+            }
+            Some(Op::ModInt(dst, lhs, modulo)) | Some(Op::ModFloat(dst, lhs, modulo)) if *dst == base => {
+                Self::add_mod_plan_for_reg(*lhs, *modulo, fun, &reg_operands)
+                    .or_else(|| Self::analyze_expr_plan(fun, ret_pos, base))
+            }
+            Some(Op::Add(dst, a, b)) if *dst == base => Some(Self::Add(
+                Self::operand_for_rk(*a, fun, &reg_operands)?,
+                Self::operand_for_rk(*b, fun, &reg_operands)?,
+            )),
+            Some(Op::AddInt(dst, a, b)) | Some(Op::AddFloat(dst, a, b)) if *dst == base => Some(Self::Add(
+                Self::operand_for_reg(*a, fun, &reg_operands)?,
+                Self::operand_for_reg(*b, fun, &reg_operands)?,
+            )),
+            Some(Op::AddIntImm(dst, src, imm)) if *dst == base => Some(Self::Add(
+                Self::operand_for_reg(*src, fun, &reg_operands)?,
+                TinyOperand::Const(Val::Int(*imm as i64)),
+            )),
+            Some(Op::Move(dst, src)) if *dst == base => {
+                Some(Self::Return(Self::operand_for_reg(*src, fun, &reg_operands)?))
+            }
+            Some(Op::LoadCapture { dst, idx }) if *dst == base => {
+                Some(Self::Return(TinyOperand::Capture(*idx as usize)))
+            }
+            Some(Op::LoadK(dst, _)) if *dst == base => Some(Self::Return(return_operand()?)),
+            None => Some(Self::Return(return_operand()?)),
+            _ => Self::analyze_expr_plan(fun, ret_pos, base),
+        }
+    }
+
+    #[inline]
+    pub(super) fn try_eval(&self, args: &[Val], captures: Option<&ClosureCapture>) -> Option<Val> {
+        match self {
+            Self::Return(operand) => operand.resolve(args, captures).cloned(),
+            Self::Add(lhs, rhs) => {
+                let lhs = lhs.resolve(args, captures)?;
+                let rhs = rhs.resolve(args, captures)?;
+                Self::eval_add(lhs, rhs)
+            }
+            Self::AddMod { lhs, rhs, modulo } => {
+                let lhs = lhs.resolve(args, captures)?;
+                let rhs = rhs.resolve(args, captures)?;
+                let modulo = modulo.resolve(args, captures)?;
+                let sum = Self::eval_add(lhs, rhs)?;
+                Self::eval_mod(&sum, modulo)
+            }
+            Self::IntExpr(program) => program.eval(args, captures).map(Val::Int),
+            Self::Expr(expr) => expr
+                .eval_int(args, captures)
+                .map(Val::Int)
+                .or_else(|| expr.eval(args, captures)),
+        }
+    }
+
+    #[inline]
+    pub(super) fn try_eval_add_mod_int_params(&self, a: i64, b: i64) -> Option<i64> {
+        let Self::AddMod { lhs, rhs, modulo } = self else {
+            return None;
+        };
+        let (TinyOperand::Param(0), TinyOperand::Param(1), TinyOperand::Const(Val::Int(modulo))) = (lhs, rhs, modulo)
+        else {
+            return None;
+        };
+        if *modulo == 0 {
+            return None;
+        }
+        Some(a.wrapping_add(b) % *modulo)
+    }
+
+    #[inline]
+    pub(super) fn try_eval_int3_params(&self, a: i64, b: i64, c: i64) -> Option<i64> {
+        let Self::IntExpr(program) = self else {
+            return None;
+        };
+        program.eval_params3(a, b, c)
+    }
+
+    fn add_mod_plan_for_rk(
+        lhs: u16,
+        modulo: u16,
+        fun: &Function,
+        reg_operands: &[Option<TinyOperand>],
+    ) -> Option<Self> {
+        if rk_is_const(lhs) {
+            return None;
+        }
+        let add_reg = rk_index(lhs);
+        let modulo = Self::operand_for_rk(modulo, fun, reg_operands)?;
+        Self::add_mod_plan_for_add_reg(add_reg, modulo, fun, reg_operands)
+    }
+
+    fn add_mod_plan_for_reg(
+        lhs: u16,
+        modulo: u16,
+        fun: &Function,
+        reg_operands: &[Option<TinyOperand>],
+    ) -> Option<Self> {
+        let modulo = Self::operand_for_reg(modulo, fun, reg_operands)?;
+        Self::add_mod_plan_for_add_reg(lhs, modulo, fun, reg_operands)
+    }
+
+    fn add_mod_plan_for_add_reg(
+        add_reg: u16,
+        modulo: TinyOperand,
+        fun: &Function,
+        reg_operands: &[Option<TinyOperand>],
+    ) -> Option<Self> {
+        let add_op = fun.code.iter().rev().find(|op| Self::defines_reg(op, add_reg))?;
+        match add_op {
+            Op::Add(dst, a, b) if *dst == add_reg => Some(Self::AddMod {
+                lhs: Self::operand_for_rk(*a, fun, reg_operands)?,
+                rhs: Self::operand_for_rk(*b, fun, reg_operands)?,
+                modulo,
+            }),
+            Op::AddInt(dst, a, b) | Op::AddFloat(dst, a, b) if *dst == add_reg => Some(Self::AddMod {
+                lhs: Self::operand_for_reg(*a, fun, reg_operands)?,
+                rhs: Self::operand_for_reg(*b, fun, reg_operands)?,
+                modulo,
+            }),
+            Op::AddIntImm(dst, src, imm) if *dst == add_reg => Some(Self::AddMod {
+                lhs: Self::operand_for_reg(*src, fun, reg_operands)?,
+                rhs: TinyOperand::Const(Val::Int(*imm as i64)),
+                modulo,
+            }),
+            _ => None,
+        }
+    }
+
+    fn operand_for_rk(rk: u16, fun: &Function, reg_operands: &[Option<TinyOperand>]) -> Option<TinyOperand> {
+        if rk_is_const(rk) {
+            fun.consts.get(rk_index(rk) as usize).cloned().map(TinyOperand::Const)
+        } else {
+            Self::operand_for_reg(rk_index(rk), fun, reg_operands)
+        }
+    }
+
+    fn operand_for_reg(reg: u16, fun: &Function, reg_operands: &[Option<TinyOperand>]) -> Option<TinyOperand> {
+        if let Some(idx) = fun.param_regs.iter().position(|param_reg| *param_reg == reg) {
+            return Some(TinyOperand::Param(idx));
+        }
+        reg_operands.get(reg as usize)?.clone()
+    }
+
+    fn analyze_expr(fun: &Function, ret_pos: usize, base: u16) -> Option<TinyExpr> {
+        let mut reg_exprs: Vec<Option<TinyExpr>> = vec![None; fun.n_regs as usize];
+        let mut local_exprs: Vec<Option<TinyExpr>> = vec![None; fun.n_regs as usize];
+        for op in &fun.code[..ret_pos] {
+            match op {
+                Op::LoadK(dst, kidx) => {
+                    let value = fun.consts.get(*kidx as usize)?.clone();
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Operand(TinyOperand::Const(value)));
+                }
+                Op::LoadCapture { dst, idx } => {
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Operand(TinyOperand::Capture(*idx as usize)));
+                }
+                Op::Move(dst, src) => {
+                    let expr = Self::expr_for_reg(*src, fun, &reg_exprs)?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(expr);
+                }
+                Op::LoadLocal(dst, idx) => {
+                    let expr = local_exprs.get(*idx as usize)?.clone()?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(expr);
+                }
+                Op::StoreLocal(idx, src) => {
+                    let expr = Self::expr_for_reg(*src, fun, &reg_exprs)?;
+                    *local_exprs.get_mut(*idx as usize)? = Some(expr);
+                }
+                Op::Add(dst, a, b) => {
+                    let lhs = Self::expr_for_rk(*a, fun, &reg_exprs)?;
+                    let rhs = Self::expr_for_rk(*b, fun, &reg_exprs)?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Add(Box::new(lhs), Box::new(rhs)));
+                }
+                Op::AddInt(dst, a, b) | Op::AddFloat(dst, a, b) => {
+                    let lhs = Self::expr_for_reg(*a, fun, &reg_exprs)?;
+                    let rhs = Self::expr_for_reg(*b, fun, &reg_exprs)?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Add(Box::new(lhs), Box::new(rhs)));
+                }
+                Op::AddIntImm(dst, src, imm) => {
+                    let lhs = Self::expr_for_reg(*src, fun, &reg_exprs)?;
+                    let rhs = TinyExpr::Operand(TinyOperand::Const(Val::Int(*imm as i64)));
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Add(Box::new(lhs), Box::new(rhs)));
+                }
+                Op::Sub(dst, a, b) => {
+                    let lhs = Self::expr_for_rk(*a, fun, &reg_exprs)?;
+                    let rhs = Self::expr_for_rk(*b, fun, &reg_exprs)?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Sub(Box::new(lhs), Box::new(rhs)));
+                }
+                Op::SubInt(dst, a, b) | Op::SubFloat(dst, a, b) => {
+                    let lhs = Self::expr_for_reg(*a, fun, &reg_exprs)?;
+                    let rhs = Self::expr_for_reg(*b, fun, &reg_exprs)?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Sub(Box::new(lhs), Box::new(rhs)));
+                }
+                Op::Mul(dst, a, b) => {
+                    let lhs = Self::expr_for_rk(*a, fun, &reg_exprs)?;
+                    let rhs = Self::expr_for_rk(*b, fun, &reg_exprs)?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Mul(Box::new(lhs), Box::new(rhs)));
+                }
+                Op::MulInt(dst, a, b) | Op::MulFloat(dst, a, b) => {
+                    let lhs = Self::expr_for_reg(*a, fun, &reg_exprs)?;
+                    let rhs = Self::expr_for_reg(*b, fun, &reg_exprs)?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Mul(Box::new(lhs), Box::new(rhs)));
+                }
+                Op::Mod(dst, a, b) => {
+                    let lhs = Self::expr_for_rk(*a, fun, &reg_exprs)?;
+                    let rhs = Self::expr_for_rk(*b, fun, &reg_exprs)?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Mod(Box::new(lhs), Box::new(rhs)));
+                }
+                Op::ModInt(dst, a, b) | Op::ModFloat(dst, a, b) => {
+                    let lhs = Self::expr_for_reg(*a, fun, &reg_exprs)?;
+                    let rhs = Self::expr_for_reg(*b, fun, &reg_exprs)?;
+                    *reg_exprs.get_mut(*dst as usize)? = Some(TinyExpr::Mod(Box::new(lhs), Box::new(rhs)));
+                }
+                _ => return None,
+            }
+        }
+        Self::expr_for_reg(base, fun, &reg_exprs)
+    }
+
+    fn analyze_expr_plan(fun: &Function, ret_pos: usize, base: u16) -> Option<Self> {
+        let expr = Self::analyze_expr(fun, ret_pos, base)?;
+        TinyIntProgram::compile(&expr)
+            .map(Self::IntExpr)
+            .or(Some(Self::Expr(expr)))
+    }
+
+    fn expr_for_rk(rk: u16, fun: &Function, reg_exprs: &[Option<TinyExpr>]) -> Option<TinyExpr> {
+        if rk_is_const(rk) {
+            fun.consts
+                .get(rk_index(rk) as usize)
+                .cloned()
+                .map(TinyOperand::Const)
+                .map(TinyExpr::Operand)
+        } else {
+            Self::expr_for_reg(rk_index(rk), fun, reg_exprs)
+        }
+    }
+
+    fn expr_for_reg(reg: u16, fun: &Function, reg_exprs: &[Option<TinyExpr>]) -> Option<TinyExpr> {
+        if let Some(idx) = fun.param_regs.iter().position(|param_reg| *param_reg == reg) {
+            return Some(TinyExpr::Operand(TinyOperand::Param(idx)));
+        }
+        reg_exprs.get(reg as usize)?.clone()
+    }
+
+    fn defines_reg(op: &Op, reg: u16) -> bool {
+        match op {
+            Op::LoadK(dst, _)
+            | Op::LoadCapture { dst, .. }
+            | Op::Move(dst, _)
+            | Op::LoadLocal(dst, _)
+            | Op::Add(dst, _, _)
+            | Op::AddInt(dst, _, _)
+            | Op::AddFloat(dst, _, _)
+            | Op::AddIntImm(dst, _, _)
+            | Op::Sub(dst, _, _)
+            | Op::SubInt(dst, _, _)
+            | Op::SubFloat(dst, _, _)
+            | Op::Mul(dst, _, _)
+            | Op::MulInt(dst, _, _)
+            | Op::MulFloat(dst, _, _)
+            | Op::Mod(dst, _, _)
+            | Op::ModInt(dst, _, _)
+            | Op::ModFloat(dst, _, _) => *dst == reg,
+            _ => false,
+        }
+    }
+
+    #[inline]
+    fn eval_add(lhs: &Val, rhs: &Val) -> Option<Val> {
+        match (lhs, rhs) {
+            (Val::Int(a), Val::Int(b)) => Some(Val::Int(a.wrapping_add(*b))),
+            (Val::Float(a), Val::Float(b)) => Some(Val::Float(a + b)),
+            (Val::Int(a), Val::Float(b)) => Some(Val::Float(*a as f64 + b)),
+            (Val::Float(a), Val::Int(b)) => Some(Val::Float(a + *b as f64)),
+            (Val::Str(a), Val::Str(b)) => Some(Val::concat_strings(a, b)),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn eval_mod(lhs: &Val, rhs: &Val) -> Option<Val> {
+        match (lhs, rhs) {
+            (Val::Int(_), Val::Int(0)) => None,
+            (Val::Int(a), Val::Int(b)) => Some(Val::Int(a % b)),
+            (Val::Float(_), Val::Float(b)) if *b == 0.0 => None,
+            (Val::Float(a), Val::Float(b)) => Some(Val::Float(a % b)),
+            _ => None,
+        }
+    }
+}
+
+impl TinyOperand {
+    #[inline]
+    fn resolve<'a>(&'a self, args: &'a [Val], captures: Option<&'a ClosureCapture>) -> Option<&'a Val> {
+        match self {
+            Self::Param(idx) => args.get(*idx),
+            Self::Capture(idx) => captures?.value_at(*idx),
+            Self::Const(value) => Some(value),
+        }
+    }
+}
+
+impl TinyIntProgram {
+    const MAX_STACK: usize = 32;
+
+    fn compile(expr: &TinyExpr) -> Option<Self> {
+        let mut ops = Vec::new();
+        Self::compile_expr(expr, &mut ops)?;
+        let max_stack = Self::validate_stack(&ops)?;
+        Some(Self { ops, max_stack })
+    }
+
+    fn compile_expr(expr: &TinyExpr, ops: &mut Vec<TinyIntOp>) -> Option<()> {
+        match expr {
+            TinyExpr::Operand(TinyOperand::Param(idx)) => ops.push(TinyIntOp::Param(*idx)),
+            TinyExpr::Operand(TinyOperand::Capture(idx)) => ops.push(TinyIntOp::Capture(*idx)),
+            TinyExpr::Operand(TinyOperand::Const(Val::Int(value))) => ops.push(TinyIntOp::Const(*value)),
+            TinyExpr::Operand(TinyOperand::Const(_)) => return None,
+            TinyExpr::Add(lhs, rhs) => {
+                Self::compile_expr(lhs, ops)?;
+                Self::compile_expr(rhs, ops)?;
+                ops.push(TinyIntOp::Add);
+            }
+            TinyExpr::Sub(lhs, rhs) => {
+                Self::compile_expr(lhs, ops)?;
+                Self::compile_expr(rhs, ops)?;
+                ops.push(TinyIntOp::Sub);
+            }
+            TinyExpr::Mul(lhs, rhs) => {
+                Self::compile_expr(lhs, ops)?;
+                Self::compile_expr(rhs, ops)?;
+                ops.push(TinyIntOp::Mul);
+            }
+            TinyExpr::Mod(lhs, rhs) => {
+                Self::compile_expr(lhs, ops)?;
+                Self::compile_expr(rhs, ops)?;
+                ops.push(TinyIntOp::Mod);
+            }
+        }
+        Some(())
+    }
+
+    fn validate_stack(ops: &[TinyIntOp]) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut max_depth = 0usize;
+        for op in ops {
+            match op {
+                TinyIntOp::Param(_) | TinyIntOp::Capture(_) | TinyIntOp::Const(_) => {
+                    depth = depth.checked_add(1)?;
+                    max_depth = max_depth.max(depth);
+                }
+                TinyIntOp::Add | TinyIntOp::Sub | TinyIntOp::Mul | TinyIntOp::Mod => {
+                    if depth < 2 {
+                        return None;
+                    }
+                    depth -= 1;
+                }
+            }
+        }
+        if depth == 1 && max_depth <= Self::MAX_STACK {
+            Some(max_depth)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn eval(&self, args: &[Val], captures: Option<&ClosureCapture>) -> Option<i64> {
+        let mut stack = [0i64; Self::MAX_STACK];
+        let mut sp = 0usize;
+        debug_assert!(self.max_stack <= Self::MAX_STACK);
+        for op in &self.ops {
+            match op {
+                TinyIntOp::Param(idx) => {
+                    let Val::Int(value) = args.get(*idx)? else {
+                        return None;
+                    };
+                    stack[sp] = *value;
+                    sp += 1;
+                }
+                TinyIntOp::Capture(idx) => {
+                    let Val::Int(value) = captures?.value_at(*idx)? else {
+                        return None;
+                    };
+                    stack[sp] = *value;
+                    sp += 1;
+                }
+                TinyIntOp::Const(value) => {
+                    stack[sp] = *value;
+                    sp += 1;
+                }
+                TinyIntOp::Add => {
+                    sp -= 1;
+                    stack[sp - 1] = stack[sp - 1].wrapping_add(stack[sp]);
+                }
+                TinyIntOp::Sub => {
+                    sp -= 1;
+                    stack[sp - 1] = stack[sp - 1].wrapping_sub(stack[sp]);
+                }
+                TinyIntOp::Mul => {
+                    sp -= 1;
+                    stack[sp - 1] = stack[sp - 1].wrapping_mul(stack[sp]);
+                }
+                TinyIntOp::Mod => {
+                    sp -= 1;
+                    let rhs = stack[sp];
+                    if rhs == 0 {
+                        return None;
+                    }
+                    stack[sp - 1] %= rhs;
+                }
+            }
+        }
+        (sp == 1).then_some(stack[0])
+    }
+
+    #[inline]
+    fn eval_params3(&self, a: i64, b: i64, c: i64) -> Option<i64> {
+        let mut stack = [0i64; Self::MAX_STACK];
+        let mut sp = 0usize;
+        debug_assert!(self.max_stack <= Self::MAX_STACK);
+        for op in &self.ops {
+            match op {
+                TinyIntOp::Param(0) => {
+                    stack[sp] = a;
+                    sp += 1;
+                }
+                TinyIntOp::Param(1) => {
+                    stack[sp] = b;
+                    sp += 1;
+                }
+                TinyIntOp::Param(2) => {
+                    stack[sp] = c;
+                    sp += 1;
+                }
+                TinyIntOp::Param(_) | TinyIntOp::Capture(_) => return None,
+                TinyIntOp::Const(value) => {
+                    stack[sp] = *value;
+                    sp += 1;
+                }
+                TinyIntOp::Add => {
+                    sp -= 1;
+                    stack[sp - 1] = stack[sp - 1].wrapping_add(stack[sp]);
+                }
+                TinyIntOp::Sub => {
+                    sp -= 1;
+                    stack[sp - 1] = stack[sp - 1].wrapping_sub(stack[sp]);
+                }
+                TinyIntOp::Mul => {
+                    sp -= 1;
+                    stack[sp - 1] = stack[sp - 1].wrapping_mul(stack[sp]);
+                }
+                TinyIntOp::Mod => {
+                    sp -= 1;
+                    let rhs = stack[sp];
+                    if rhs == 0 {
+                        return None;
+                    }
+                    stack[sp - 1] %= rhs;
+                }
+            }
+        }
+        (sp == 1).then_some(stack[0])
+    }
+}
+
+impl TinyExpr {
+    #[inline]
+    fn eval_int(&self, args: &[Val], captures: Option<&ClosureCapture>) -> Option<i64> {
+        match self {
+            Self::Operand(operand) => match operand.resolve(args, captures)? {
+                Val::Int(value) => Some(*value),
+                _ => None,
+            },
+            Self::Add(lhs, rhs) => Some(
+                lhs.eval_int(args, captures)?
+                    .wrapping_add(rhs.eval_int(args, captures)?),
+            ),
+            Self::Sub(lhs, rhs) => Some(
+                lhs.eval_int(args, captures)?
+                    .wrapping_sub(rhs.eval_int(args, captures)?),
+            ),
+            Self::Mul(lhs, rhs) => Some(
+                lhs.eval_int(args, captures)?
+                    .wrapping_mul(rhs.eval_int(args, captures)?),
+            ),
+            Self::Mod(lhs, rhs) => {
+                let rhs = rhs.eval_int(args, captures)?;
+                if rhs == 0 {
+                    None
+                } else {
+                    Some(lhs.eval_int(args, captures)? % rhs)
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn eval(&self, args: &[Val], captures: Option<&ClosureCapture>) -> Option<Val> {
+        match self {
+            Self::Operand(operand) => operand.resolve(args, captures).cloned(),
+            Self::Add(lhs, rhs) => {
+                let lhs = lhs.eval(args, captures)?;
+                let rhs = rhs.eval(args, captures)?;
+                TinyCallPlan::eval_add(&lhs, &rhs)
+            }
+            Self::Sub(lhs, rhs) => {
+                let lhs = lhs.eval(args, captures)?;
+                let rhs = rhs.eval(args, captures)?;
+                match (&lhs, &rhs) {
+                    (Val::Int(a), Val::Int(b)) => Some(Val::Int(a.wrapping_sub(*b))),
+                    (Val::Float(a), Val::Float(b)) => Some(Val::Float(a - b)),
+                    (Val::Int(a), Val::Float(b)) => Some(Val::Float(*a as f64 - b)),
+                    (Val::Float(a), Val::Int(b)) => Some(Val::Float(a - *b as f64)),
+                    _ => None,
+                }
+            }
+            Self::Mul(lhs, rhs) => {
+                let lhs = lhs.eval(args, captures)?;
+                let rhs = rhs.eval(args, captures)?;
+                match (&lhs, &rhs) {
+                    (Val::Int(a), Val::Int(b)) => Some(Val::Int(a.wrapping_mul(*b))),
+                    (Val::Float(a), Val::Float(b)) => Some(Val::Float(a * b)),
+                    (Val::Int(a), Val::Float(b)) => Some(Val::Float(*a as f64 * b)),
+                    (Val::Float(a), Val::Int(b)) => Some(Val::Float(a * *b as f64)),
+                    _ => None,
+                }
+            }
+            Self::Mod(lhs, rhs) => {
+                let lhs = lhs.eval(args, captures)?;
+                let rhs = rhs.eval(args, captures)?;
+                TinyCallPlan::eval_mod(&lhs, &rhs)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stmt::stmt_parser::StmtParser;
+    use crate::token::Tokenizer;
+    use crate::vm::compile_program;
+
+    #[test]
+    fn tiny_call_plan_handles_add_then_mod_return() {
+        let source = r#"
+            fn mix(a, b) {
+                return (a + b) % 1000000007;
+            }
+        "#;
+        let tokens = Tokenizer::tokenize(source).expect("tokenize");
+        let mut parser = StmtParser::new(&tokens);
+        let program = parser.parse_program().expect("parse program");
+        let function = compile_program(&program);
+        let proto_function = function.protos[0].func.as_ref().expect("compiled proto");
+        let plan = TinyCallPlan::analyze(proto_function).expect("tiny plan");
+
+        let result = plan
+            .try_eval(&[Val::Int(10), Val::Int(5)], Some(&ClosureCapture::empty()))
+            .expect("tiny eval");
+
+        assert_eq!(result, Val::Int(15));
+    }
+
+    #[test]
+    fn tiny_call_plan_handles_generic_arithmetic_return() {
+        let source = r#"
+            fn mix(a, b, c) {
+                return (((a * 3) + (b % 11)) + (c * 5)) % 1000000007;
+            }
+        "#;
+        let tokens = Tokenizer::tokenize(source).expect("tokenize");
+        let mut parser = StmtParser::new(&tokens);
+        let program = parser.parse_program().expect("parse program");
+        let function = compile_program(&program);
+        let proto_function = function.protos[0].func.as_ref().expect("compiled proto");
+        let plan = TinyCallPlan::analyze(proto_function).expect("tiny plan");
+
+        let result = plan
+            .try_eval(
+                &[Val::Int(7), Val::Int(23), Val::Int(5)],
+                Some(&ClosureCapture::empty()),
+            )
+            .expect("tiny eval");
+
+        assert_eq!(result, Val::Int((((7 * 3) + (23 % 11)) + (5 * 5)) % 1000000007));
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct ClosureFastCache {
     pub(super) regs: Vec<Val>,
     pub(super) access_ic: Vec<Option<AccessIc>>,
@@ -126,6 +816,8 @@ pub(super) struct ClosureFastCache {
     pub(super) for_range: Vec<Option<ForRangeState>>,
     pub(super) packed_hot: Vec<Option<PackedHotEntry>>,
     pub(super) packed_hot_key: usize,
+    pub(super) prepared_func_key: usize,
+    pub(super) prepared_code_len: usize,
     /// Cached region plan — avoids Arc clone per call for closure calls.
     pub(super) region_plan: Option<Arc<RegionPlan>>,
 }
@@ -142,6 +834,8 @@ impl ClosureFastCache {
             for_range: Vec::new(),
             packed_hot: Vec::new(),
             packed_hot_key: 0,
+            prepared_func_key: 0,
+            prepared_code_len: 0,
             region_plan: None,
         }
     }
@@ -255,7 +949,9 @@ pub(super) enum PackedHotKind {
     },
     ForRangeLoop {
         idx: u16,
+        write_idx: bool,
         ofs: i16,
+        fusion: Option<PackedRangeFusion>,
     },
     ForRangeStep {
         back_ofs: i16,
@@ -311,6 +1007,11 @@ pub(super) enum PackedHotKind {
         key: u16,
         val: u16,
     },
+    MapSetMove {
+        map: u16,
+        key: u16,
+        val: u16,
+    },
     CmpLtImmJmp {
         r: u16,
         imm: i16,
@@ -325,6 +1026,32 @@ pub(super) enum PackedHotKind {
         r: u16,
         imm: i16,
         ofs: i16,
+    },
+}
+
+#[derive(Clone)]
+pub(super) enum PackedRangeFusion {
+    AddModulo {
+        acc: u16,
+        modulo: u16,
+        step_pc: usize,
+        back_ofs: i16,
+    },
+    TinyAddModCall {
+        func: u16,
+        acc: u16,
+        modulo: u16,
+        call_pc: usize,
+        step_pc: usize,
+        back_ofs: i16,
+    },
+    TinyIntCall3 {
+        func: u16,
+        acc: u16,
+        modulo: u16,
+        call_pc: usize,
+        step_pc: usize,
+        back_ofs: i16,
     },
 }
 

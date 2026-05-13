@@ -707,6 +707,28 @@ fn test_vm_captured_closure_repeated_call_in_for_range() {
 }
 
 #[test]
+fn test_vm_same_proto_new_captured_closures_reuse_call_site() {
+    let source = r#"
+        fn make_adder(n) { return |x| x + n; }
+
+        let acc = 0;
+        for i in 1..=32 {
+            let adder = make_adder(i);
+            acc = adder(acc);
+        }
+        return acc;
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokenize source");
+    let mut parser = StmtParser::new(&tokens);
+    let program = parser.parse_program().expect("parse program");
+    let fun = crate::vm::compile_program(&program);
+    let mut vm = Vm::new();
+    let mut env = VmContext::new();
+    let out = vm.exec_with(&fun, &mut env, None).unwrap();
+    assert_eq!(out, Val::Int(528));
+}
+
+#[test]
 fn test_vm_nested_closure_register_windows() {
     let make_adder_stmt = Stmt::Define {
         name: "make_adder".into(),

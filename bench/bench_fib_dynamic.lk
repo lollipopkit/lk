@@ -1,0 +1,27 @@
+// Bench: iterative Fibonacci with runtime-known input
+import time;
+
+fn iterative(n) {
+    if n <= 1 { return n; }
+    let a = 0;
+    let b = 1;
+    for _ in 2..=n {
+        let t = a + b;
+        a = b;
+        b = t;
+    }
+    return b;
+}
+
+let seed = time.now();
+let iters = 50000 + (seed - seed);
+let n = 30 + (seed - seed);
+let acc = 0;
+
+let t0 = time.now();
+for _ in 1..=iters {
+    acc = iterative(n);
+}
+let t1 = time.now();
+
+println("fib_iterative_dynamic: fib(${n}) = ${acc}, iters=${iters}, elapsed=${t1 - t0}ms");

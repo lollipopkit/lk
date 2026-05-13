@@ -222,6 +222,7 @@ fn lowers_for_range_loop() {
                 limit: 1,
                 step: 2,
                 inclusive: false,
+                write_idx: true,
                 ofs: 1,
             },
             Op::ForRangeStep {

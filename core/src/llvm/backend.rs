@@ -577,6 +577,7 @@ impl<'a> FunctionTranslator<'a> {
                     limit,
                     step,
                     inclusive,
+                    write_idx: _,
                     ofs,
                 } => {
                     let guard_params = ForRangeLoopParams {

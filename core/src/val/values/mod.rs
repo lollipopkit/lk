@@ -90,21 +90,79 @@ pub struct VmCallEnv {
 #[derive(Debug, Clone)]
 pub struct ClosureCapture {
     names: Arc<[String]>,
-    values: Arc<Vec<Val>>,
+    values: CaptureValues,
+}
+
+#[derive(Debug, Clone)]
+enum CaptureValues {
+    Empty,
+    One(Val),
+    Many(Vec<Val>),
+}
+
+impl CaptureValues {
+    fn from_vec(values: Vec<Val>) -> Self {
+        match values.len() {
+            0 => Self::Empty,
+            1 => Self::One(values.into_iter().next().expect("one capture value")),
+            _ => Self::Many(values),
+        }
+    }
+
+    fn iter(&self) -> CaptureValuesIter<'_> {
+        CaptureValuesIter { values: self, idx: 0 }
+    }
+
+    fn get(&self, idx: usize) -> Option<&Val> {
+        match self {
+            Self::Empty => None,
+            Self::One(value) => (idx == 0).then_some(value),
+            Self::Many(values) => values.get(idx),
+        }
+    }
+}
+
+struct CaptureValuesIter<'a> {
+    values: &'a CaptureValues,
+    idx: usize,
+}
+
+impl<'a> Iterator for CaptureValuesIter<'a> {
+    type Item = &'a Val;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.values.get(self.idx);
+        self.idx += 1;
+        item
+    }
 }
 
 impl ClosureCapture {
     pub fn empty() -> Arc<Self> {
         Arc::new(Self {
             names: Arc::<[String]>::from(Vec::new()),
-            values: Arc::new(Vec::new()),
+            values: CaptureValues::Empty,
         })
     }
 
     pub fn from_pairs(names: Vec<String>, values: Vec<Val>) -> Arc<Self> {
         Arc::new(Self {
             names: Arc::<[String]>::from(names),
-            values: Arc::new(values),
+            values: CaptureValues::from_vec(values),
+        })
+    }
+
+    pub fn from_shared_names(names: Arc<[String]>, values: Vec<Val>) -> Arc<Self> {
+        Arc::new(Self {
+            names,
+            values: CaptureValues::from_vec(values),
+        })
+    }
+
+    pub fn from_shared_names_one(names: Arc<[String]>, value: Val) -> Arc<Self> {
+        Arc::new(Self {
+            names,
+            values: CaptureValues::One(value),
         })
     }
 
@@ -128,7 +186,6 @@ impl ClosureCapture {
     }
 }
 
-#[derive(Clone)]
 pub struct ClosureValue {
     pub params: Arc<Vec<String>>,
     pub named_params: Arc<Vec<NamedParamDecl>>,
@@ -138,17 +195,17 @@ pub struct ClosureValue {
     pub captures: Arc<ClosureCapture>,
     pub capture_specs: Arc<Vec<CaptureSpec>>,
     pub default_funcs: Arc<Vec<Option<Function>>>,
-    pub code: Arc<OnceCell<Function>>,
-    pub call_env_pool: Arc<Mutex<Vec<VmCallEnv>>>,
-    pub layout: Arc<OnceCell<FunctionLayout>>,
-    call_layout: Arc<OnceCell<CallLayoutInfo>>,
+    pub code: Arc<OnceCell<Arc<Function>>>,
+    pub call_env_pool: OnceCell<Mutex<Vec<VmCallEnv>>>,
+    pub layout: OnceCell<FunctionLayout>,
+    call_layout: OnceCell<CallLayoutInfo>,
     debug_name: Option<String>,
     debug_location: Option<String>,
-    frame_info_cache: Arc<OnceCell<FrameInfo>>,
-    default_frame_infos: Arc<OnceCell<Vec<Option<FrameInfo>>>>,
-    named_param_index: Arc<OnceCell<FastHashMap<Arc<str>, usize>>>,
-    named_param_kinds: Arc<OnceCell<Vec<NamedParamKind>>>,
-    default_seed_reg_layout: Arc<OnceCell<DefaultSeedRegLayout>>,
+    frame_info_cache: OnceCell<FrameInfo>,
+    default_frame_infos: OnceCell<Vec<Option<FrameInfo>>>,
+    named_param_index: OnceCell<FastHashMap<Arc<str>, usize>>,
+    named_param_kinds: OnceCell<Vec<NamedParamKind>>,
+    default_seed_reg_layout: OnceCell<DefaultSeedRegLayout>,
 }
 
 pub struct ClosureInit {
@@ -160,6 +217,7 @@ pub struct ClosureInit {
     pub captures: Arc<ClosureCapture>,
     pub capture_specs: Arc<Vec<CaptureSpec>>,
     pub default_funcs: Arc<Vec<Option<Function>>>,
+    pub code: Arc<OnceCell<Arc<Function>>>,
     pub debug_name: Option<String>,
     pub debug_location: Option<String>,
 }
@@ -188,6 +246,15 @@ impl ClosureValue {
         self.named_params.is_empty() && self.default_funcs.iter().all(|opt| opt.is_none())
     }
 
+    #[inline]
+    pub(crate) fn frame_captures(&self) -> (Option<Arc<ClosureCapture>>, Option<Arc<Vec<CaptureSpec>>>) {
+        if self.captures.is_empty() && self.capture_specs.is_empty() {
+            (None, None)
+        } else {
+            (Some(Arc::clone(&self.captures)), Some(Arc::clone(&self.capture_specs)))
+        }
+    }
+
     pub fn new(init: ClosureInit) -> Self {
         let ClosureInit {
             params,
@@ -198,6 +265,7 @@ impl ClosureValue {
             captures,
             capture_specs,
             default_funcs,
+            code,
             debug_name,
             debug_location,
         } = init;
@@ -210,17 +278,17 @@ impl ClosureValue {
             captures,
             capture_specs,
             default_funcs,
-            code: Arc::new(OnceCell::new()),
-            call_env_pool: Arc::new(Mutex::new(Vec::new())),
-            layout: Arc::new(OnceCell::new()),
-            call_layout: Arc::new(OnceCell::new()),
+            code,
+            call_env_pool: OnceCell::new(),
+            layout: OnceCell::new(),
+            call_layout: OnceCell::new(),
             debug_name,
             debug_location,
-            frame_info_cache: Arc::new(OnceCell::new()),
-            default_frame_infos: Arc::new(OnceCell::new()),
-            named_param_index: Arc::new(OnceCell::new()),
-            named_param_kinds: Arc::new(OnceCell::new()),
-            default_seed_reg_layout: Arc::new(OnceCell::new()),
+            frame_info_cache: OnceCell::new(),
+            default_frame_infos: OnceCell::new(),
+            named_param_index: OnceCell::new(),
+            named_param_kinds: OnceCell::new(),
+            default_seed_reg_layout: OnceCell::new(),
         }
     }
 }
@@ -234,11 +302,9 @@ pub(crate) enum NamedParamKind {
 
 impl ClosureValue {
     fn acquire_call_env(&self, caller_ctx: &mut VmContext, scope_capacity: usize) -> Result<VmCallEnv> {
+        let pool = self.call_env_pool.get_or_init(|| Mutex::new(Vec::new()));
         let mut wrapper = {
-            let mut guard = self
-                .call_env_pool
-                .lock()
-                .map_err(|_| anyhow!("Call environment pool poisoned"))?;
+            let mut guard = pool.lock().map_err(|_| anyhow!("Call environment pool poisoned"))?;
             guard.pop().unwrap_or_else(|| VmCallEnv {
                 _generation: caller_ctx.generation(),
                 param_scope: fast_hash_map_with_capacity(0),
@@ -254,10 +320,8 @@ impl ClosureValue {
     }
 
     fn release_call_env(&self, wrapper: VmCallEnv) -> Result<()> {
-        let mut guard = self
-            .call_env_pool
-            .lock()
-            .map_err(|_| anyhow!("Call environment pool poisoned"))?;
+        let pool = self.call_env_pool.get_or_init(|| Mutex::new(Vec::new()));
+        let mut guard = pool.lock().map_err(|_| anyhow!("Call environment pool poisoned"))?;
         guard.push(wrapper);
         Ok(())
     }
@@ -421,7 +485,7 @@ impl ClosureValue {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct CallLayoutInfo {
     _total_locals: usize,
     param_slots: Vec<Option<u16>>,
@@ -838,12 +902,12 @@ impl Val {
         let named_kinds = closure.named_param_kinds();
         let fun = closure.code.get_or_init(|| {
             let c = Compiler::new();
-            c.compile_function_with_captures(
+            Arc::new(c.compile_function_with_captures(
                 params,
                 named_params,
                 closure.body.as_ref(),
                 closure.capture_specs.as_ref(),
-            )
+            ))
         });
         Self::bind_positional_params(call_env, params, pos, layout_info);
         let named_regs = &fun.named_param_regs;
@@ -904,7 +968,7 @@ impl Val {
         }
         call_env.preload_slot_mappings_per_depth(&layout_info.locals);
         Self::exec_function_with_bindings(
-            fun,
+            fun.as_ref(),
             call_env,
             pos,
             named_seed.as_slice(),
@@ -1059,6 +1123,57 @@ impl Val {
         let ptr = Arc::into_raw(bytes) as *const str;
         let concatenated = unsafe { Arc::from_raw(ptr) };
         Val::Str(concatenated)
+    }
+
+    #[inline]
+    pub(crate) fn to_str_value(value: &Val) -> Val {
+        match value {
+            Val::Str(s) => Val::Str(Arc::clone(s)),
+            Val::Int(i) => {
+                let mut buf = itoa::Buffer::new();
+                Val::Str(Arc::from(buf.format(*i)))
+            }
+            Val::Float(f) => {
+                let mut buf = ryu::Buffer::new();
+                Val::Str(Arc::from(buf.format(*f)))
+            }
+            Val::Bool(true) => Val::Str(Arc::from("true")),
+            Val::Bool(false) => Val::Str(Arc::from("false")),
+            Val::Nil => Val::Str(Arc::from("nil")),
+            other => Val::Str(other.to_string().into()),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn concat_str_add_rhs(prefix: &str, rhs: &Val) -> Option<Val> {
+        match rhs {
+            Val::Str(s) => Some(Self::concat_strings(prefix, s)),
+            Val::Int(i) => {
+                let mut buf = itoa::Buffer::new();
+                Some(Self::concat_strings(prefix, buf.format(*i)))
+            }
+            Val::Float(f) => {
+                let mut buf = ryu::Buffer::new();
+                Some(Self::concat_strings(prefix, buf.format(*f)))
+            }
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn concat_add_lhs_str(lhs: &Val, suffix: &str) -> Option<Val> {
+        match lhs {
+            Val::Str(s) => Some(Self::concat_strings(s, suffix)),
+            Val::Int(i) => {
+                let mut buf = itoa::Buffer::new();
+                Some(Self::concat_strings(buf.format(*i), suffix))
+            }
+            Val::Float(f) => {
+                let mut buf = ryu::Buffer::new();
+                Some(Self::concat_strings(buf.format(*f), suffix))
+            }
+            _ => None,
+        }
     }
 
     #[inline]

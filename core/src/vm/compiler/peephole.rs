@@ -12,6 +12,7 @@
 //! | `CmpLtImm + JmpFalse` | `CmpLtImmJmp` | 1 dispatch/iteration savings in while loops |
 //! | `CmpLeImm + JmpFalse` | `CmpLeImmJmp` | Same for <= based loops |
 //! | `AddIntImm + Jmp` | `AddIntImmJmp` | Loop increment tail fusion |
+//! | `AddIntImm + ForRangeStep` | `AddIntImmJmp` | Range-loop accumulator tail fusion |
 //!
 //! These fused ops are handled natively in `opcode.rs`. BC32 packing sees
 //! them as unsupported opcodes and gracefully skips those functions, which
@@ -24,6 +25,7 @@ use crate::vm::bytecode::Op;
 /// 1. `CmpLtImm(dst, src, imm)` + `JmpFalse(dst, ofs)` → `CmpLtImmJmp { src, imm, ofs+1 }`
 /// 2. `CmpLeImm(dst, src, imm)` + `JmpFalse(dst, ofs)` → `CmpLeImmJmp { src, imm, ofs+1 }`
 /// 3. `AddIntImm(dst, src, imm)` + `Jmp(ofs)` (when dst==src) → `AddIntImmJmp { dst, imm, ofs+1 }`
+/// 4. `AddIntImm(dst, src, imm)` + `ForRangeStep(back)` (when dst==src) → `AddIntImmJmp { dst, imm, back+1 }`
 ///
 /// The second instruction is removed and all relative jump offsets are adjusted.
 pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
@@ -61,6 +63,17 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
                     r: *dst,
                     imm: *imm,
                     ofs: *ofs + 1,
+                };
+                removals.push(i + 1);
+                i += 2;
+            }
+            (Op::AddIntImm(dst, src, imm), Op::ForRangeStep { back_ofs, .. })
+                if dst == src && (-128..=127).contains(imm) && (-128..=127).contains(back_ofs) =>
+            {
+                code[i] = Op::AddIntImmJmp {
+                    r: *dst,
+                    imm: *imm,
+                    ofs: *back_ofs + 1,
                 };
                 removals.push(i + 1);
                 i += 2;

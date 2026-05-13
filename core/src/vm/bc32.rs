@@ -101,11 +101,13 @@ impl Bc32Decoded {
                     let flags = ((w2 >> 16) & 0xFF) as u8;
                     let ofs_raw = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
                     let inclusive = (flags & 1) != 0;
+                    let write_idx = (flags & 2) == 0;
                     Op::ForRangeLoop {
                         idx,
                         limit,
                         step,
                         inclusive,
+                        write_idx,
                         ofs: ofs_raw,
                     }
                 }
@@ -480,13 +482,16 @@ impl Bc32Function {
                             let c = combine_reg(hi_c, (w & 0xFF) as u16);
                             let w2 = self.code32[next];
                             next += 1;
-                            let inclusive = (((w2 >> 16) & 0xFF) as u8 & 1) != 0;
+                            let flags = ((w2 >> 16) & 0xFF) as u8;
+                            let inclusive = (flags & 1) != 0;
+                            let write_idx = (flags & 2) == 0;
                             let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
                             code.push(Op::ForRangeLoop {
                                 idx: a,
                                 limit: b,
                                 step: c,
                                 inclusive,
+                                write_idx,
                                 ofs,
                             });
                             pc = next;
@@ -949,6 +954,8 @@ fn opcode_name(op: &Op) -> &'static str {
         Op::AccessK(..) => "AccessK",
         Op::IndexK(..) => "IndexK",
         Op::Len { .. } => "Len",
+        Op::ListFoldAdd { .. } => "ListFoldAdd",
+        Op::MapValuesFoldAdd { .. } => "MapValuesFoldAdd",
         Op::Index { .. } => "Index",
         Op::ToIter { .. } => "ToIter",
         Op::BuildList { .. } => "BuildList",
@@ -956,6 +963,7 @@ fn opcode_name(op: &Op) -> &'static str {
         Op::ListSlice { .. } => "ListSlice",
         Op::ListPush { .. } => "ListPush",
         Op::MapSet { .. } => "MapSet",
+        Op::MapSetMove { .. } => "MapSetMove",
         Op::MakeClosure { .. } => "MakeClosure",
         Op::Jmp(..) => "Jmp",
         Op::JmpFalse(..) => "JmpFalse",
@@ -976,6 +984,18 @@ fn opcode_name(op: &Op) -> &'static str {
 
 fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
     match *op {
+        Op::AddRangeCountImm { .. } => Err(Bc32Reject::UnsupportedOpcode {
+            opcode: "AddRangeCountImm",
+            detail: "runtime range aggregate is currently opcode-only",
+        }),
+        Op::ListFoldAdd { .. } => Err(Bc32Reject::UnsupportedOpcode {
+            opcode: "ListFoldAdd",
+            detail: "list fold is currently opcode-only",
+        }),
+        Op::MapValuesFoldAdd { .. } => Err(Bc32Reject::UnsupportedOpcode {
+            opcode: "MapValuesFoldAdd",
+            detail: "map values fold is currently opcode-only",
+        }),
         Op::Move(d, s) => {
             ensure_regs_u8("Move", d, s, 0)?;
             let word = pack(Tag::Move, 0, d as u8, s as u8, 0);
@@ -1269,6 +1289,11 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let word = pack(Tag::MapSet, 0, map as u8, key as u8, val as u8);
             Ok(EncodedOp::new(word, None))
         }
+        Op::MapSetMove { map, key, val } => {
+            ensure_regs_u8("MapSetMove", map, key, val)?;
+            let word = pack(Tag::MapSet, 1, map as u8, key as u8, val as u8);
+            Ok(EncodedOp::new(word, None))
+        }
         Op::BuildList { dst, base, len } => {
             ensure_regs_u8("BuildList", dst, base, len)?;
             let word = pack(Tag::BuildList, 0, dst as u8, base as u8, len as u8);
@@ -1407,6 +1432,11 @@ pub(crate) fn decode_word_with_hi(tag: Tag, flags: u8, w: u32, hi: (u16, u16, u1
             start: c_reg,
         },
         Tag::ListPush => Op::ListPush { list: a, val: b_reg },
+        Tag::MapSet if flags & 1 != 0 => Op::MapSetMove {
+            map: a,
+            key: b_reg,
+            val: c_reg,
+        },
         Tag::MapSet => Op::MapSet {
             map: a,
             key: b_reg,
@@ -1733,11 +1763,12 @@ impl Bc32Function {
                     limit,
                     step,
                     inclusive,
+                    write_idx,
                     ofs,
                 } => {
                     let tgt = ((i as isize) + *ofs as isize) as usize;
                     let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
-                    let flags = if *inclusive { 1 } else { 0 };
+                    let flags = u8::from(*inclusive) | if *write_idx { 0 } else { 2 };
                     out.push(pack(Tag::ForRangeLoop, 0, *idx as u8, *limit as u8, *step as u8));
                     if let Some(ext) = pack_reg_ext_bits(*idx, *limit, *step) {
                         out.push(ext);
@@ -2064,12 +2095,18 @@ mod tests {
             protos: {
                 let proto_template = ClosureProto {
                     self_name: None,
-                    params: Vec::new(),
-                    named_params: Vec::new(),
-                    default_funcs: Vec::new(),
+                    params: Arc::new(Vec::new()),
+                    named_params: Arc::new(Vec::new()),
+                    default_funcs: Arc::new(Vec::new()),
                     func: None,
-                    body: Stmt::Block { statements: Vec::new() },
-                    captures: Vec::new(),
+                    body: Arc::new(Stmt::Block { statements: Vec::new() }),
+                    captures: Arc::new(Vec::new()),
+                    capture_names: Arc::<[String]>::from(Vec::new()),
+                    code: crate::vm::closure_code_cell(None),
+                    empty_env: crate::vm::closure_empty_env(),
+                    empty_upvalues: crate::vm::closure_empty_upvalues(),
+                    empty_captures: crate::vm::closure_empty_captures(),
+                    empty_closure: crate::vm::closure_empty_closure_cell(),
                 };
                 vec![proto_template; 301]
             },

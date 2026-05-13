@@ -40,16 +40,15 @@ use crate::val::{ClosureCapture, ClosureInit, ClosureValue, Type, Val};
 use crate::vm::RegionPlan;
 use crate::vm::alloc::{AllocationRegion, RegionAllocator};
 use crate::vm::bc32::{self, Bc32Decoded, Tag};
-use crate::vm::bytecode::{CaptureSpec, Function, Op, rk_make_const};
+use crate::vm::bytecode::{CaptureSpec, Function, Op, rk_index, rk_is_const, rk_make_const};
 use crate::vm::compiler::Compiler;
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{
     AccessIc, CallIc, ClosureFastCache, ForRangeState, GlobalEntry, IndexIc, PackedArithOp, PackedCmpImmOp,
-    PackedCmpOp, PackedHotEntry, PackedHotKind, PackedHotSlot, VmCaches,
+    PackedCmpOp, PackedHotEntry, PackedHotKind, PackedHotSlot, PackedRangeFusion, TinyCallPlan, VmCaches,
 };
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan, RegisterWindowRef};
-use crate::vm::vm::guards::VmCurrentGuard;
 
 use super::helpers::{assign_reg, fetch_for_range_state, frame_return_common, handle_return_common};
 use super::invoke::{invoke_rust_function, invoke_rust_function_named};
@@ -220,8 +219,16 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
                     return None;
                 }
                 let ofs = (((((ext_word >> 8) & 0xFF) as u16) << 8) | ((ext_word & 0xFF) as u16)) as i16;
+                let flags = ((ext_word >> 16) & 0xFF) as u8;
+                let write_idx = (flags & 2) == 0;
                 next_pc += 1;
-                PackedHotKind::ForRangeLoop { idx, ofs }
+                let fusion = detect_for_range_fusion(code32, next_pc, idx);
+                PackedHotKind::ForRangeLoop {
+                    idx,
+                    write_idx,
+                    ofs,
+                    fusion,
+                }
             }
             Tag::ForRangeStep => {
                 let ext_word = *code32.get(next_pc)?;
@@ -362,7 +369,11 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
             }
             Tag::MapSet => {
                 let (map, key, val) = decode_abc(word, reg_ext);
-                PackedHotKind::MapSet { map, key, val }
+                if flags & 1 != 0 {
+                    PackedHotKind::MapSetMove { map, key, val }
+                } else {
+                    PackedHotKind::MapSet { map, key, val }
+                }
             }
             Tag::Eq => {
                 let (dst, a, b) = decode_rk_pair(word, reg_ext, flags);
@@ -459,48 +470,294 @@ fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<P
     }
 }
 
+fn detect_for_range_fusion(code32: &[u32], body_pc: usize, idx: u16) -> Option<PackedRangeFusion> {
+    let (mod_op, add_pc) = fetch_packed_op(None, code32, body_pc).ok()?;
+    if let Op::Mod(mod_dst, value, modulo) = mod_op
+        && value == idx
+        && rk_is_const(modulo)
+    {
+        let (add_op, step_pc) = fetch_packed_op(None, code32, add_pc).ok()?;
+        if let Op::Add(acc_dst, acc_src, add_rhs) = add_op
+            && acc_dst == acc_src
+            && add_rhs == mod_dst
+        {
+            let (step_op, _) = fetch_packed_op(None, code32, step_pc).ok()?;
+            if let Op::ForRangeStep { back_ofs, .. } = step_op {
+                return Some(PackedRangeFusion::AddModulo {
+                    acc: acc_dst,
+                    modulo,
+                    step_pc,
+                    back_ofs,
+                });
+            }
+        }
+    }
+
+    detect_tiny_add_mod_call_fusion(code32, body_pc, idx).or_else(|| detect_tiny_int_call3_fusion(code32, body_pc, idx))
+}
+
+fn detect_tiny_int_call3_fusion(code32: &[u32], body_pc: usize, idx: u16) -> Option<PackedRangeFusion> {
+    let (move_acc_op, move_idx_pc) = fetch_packed_op(None, code32, body_pc).ok()?;
+    let Op::Move(call_base, acc_local) = move_acc_op else {
+        return None;
+    };
+
+    let (move_idx_op, mod_pc) = fetch_packed_op(None, code32, move_idx_pc).ok()?;
+    let Op::Move(call_arg_1, move_idx_src) = move_idx_op else {
+        return None;
+    };
+    if call_arg_1 != call_base + 1 || move_idx_src != idx {
+        return None;
+    }
+
+    let (mod_op, call_pc) = fetch_packed_op(None, code32, mod_pc).ok()?;
+    let (mod_dst, mod_value, modulo) = match mod_op {
+        Op::Mod(dst, value, modulo) | Op::ModInt(dst, value, modulo) => (dst, value, modulo),
+        _ => return None,
+    };
+    if mod_dst != call_base + 2 || mod_value != idx || !rk_is_const(modulo) {
+        return None;
+    }
+
+    let (call_op, store_pc) = fetch_packed_op(None, code32, call_pc).ok()?;
+    let Op::Call {
+        f,
+        base,
+        argc: 3,
+        retc: 1,
+    } = call_op
+    else {
+        return None;
+    };
+    if base != call_base {
+        return None;
+    }
+
+    let (store_op, step_pc) = fetch_packed_op(None, code32, store_pc).ok()?;
+    let Op::StoreLocal(store_local, store_src) = store_op else {
+        return None;
+    };
+    if store_local != acc_local || store_src != call_base {
+        return None;
+    }
+
+    let (step_op, _) = fetch_packed_op(None, code32, step_pc).ok()?;
+    let Op::ForRangeStep { back_ofs, .. } = step_op else {
+        return None;
+    };
+
+    Some(PackedRangeFusion::TinyIntCall3 {
+        func: f,
+        acc: acc_local,
+        modulo,
+        call_pc,
+        step_pc,
+        back_ofs,
+    })
+}
+
+fn detect_tiny_add_mod_call_fusion(code32: &[u32], body_pc: usize, idx: u16) -> Option<PackedRangeFusion> {
+    let (load_op, move_acc_pc) = fetch_packed_op(None, code32, body_pc).ok()?;
+    if let Op::Move(call_base, acc_local) = load_op {
+        let (mod_op, call_pc) = fetch_packed_op(None, code32, move_acc_pc).ok()?;
+        let (mod_dst, mod_value, modulo) = match mod_op {
+            Op::Mod(dst, value, modulo) | Op::ModInt(dst, value, modulo) => (dst, value, modulo),
+            _ => return None,
+        };
+        if mod_dst != call_base + 1 || mod_value != idx || !rk_is_const(modulo) {
+            return None;
+        }
+
+        let (call_op, store_pc) = fetch_packed_op(None, code32, call_pc).ok()?;
+        let Op::Call {
+            f,
+            base,
+            argc: 2,
+            retc: 1,
+        } = call_op
+        else {
+            return None;
+        };
+        if base != call_base {
+            return None;
+        }
+
+        let (store_op, step_pc) = fetch_packed_op(None, code32, store_pc).ok()?;
+        let Op::StoreLocal(store_local, store_src) = store_op else {
+            return None;
+        };
+        if store_local != acc_local || store_src != call_base {
+            return None;
+        }
+
+        let (step_op, _) = fetch_packed_op(None, code32, step_pc).ok()?;
+        let Op::ForRangeStep { back_ofs, .. } = step_op else {
+            return None;
+        };
+
+        return Some(PackedRangeFusion::TinyAddModCall {
+            func: f,
+            acc: acc_local,
+            modulo,
+            call_pc,
+            step_pc,
+            back_ofs,
+        });
+    }
+
+    let Op::LoadLocal(acc_arg, acc_local) = load_op else {
+        return None;
+    };
+
+    let (move_acc_op, mod_pc) = fetch_packed_op(None, code32, move_acc_pc).ok()?;
+    let Op::Move(call_base, move_acc_src) = move_acc_op else {
+        return None;
+    };
+    if move_acc_src != acc_arg {
+        return None;
+    }
+
+    let (mod_op, move_mod_pc) = fetch_packed_op(None, code32, mod_pc).ok()?;
+    let (mod_dst, mod_value, modulo) = match mod_op {
+        Op::Mod(dst, value, modulo) | Op::ModInt(dst, value, modulo) => (dst, value, modulo),
+        _ => return None,
+    };
+    if mod_value != idx || !rk_is_const(modulo) {
+        return None;
+    }
+
+    let (move_mod_op, call_pc) = fetch_packed_op(None, code32, move_mod_pc).ok()?;
+    let Op::Move(call_arg_1, move_mod_src) = move_mod_op else {
+        return None;
+    };
+    if call_arg_1 != call_base + 1 || move_mod_src != mod_dst {
+        return None;
+    }
+
+    let (call_op, store_pc) = fetch_packed_op(None, code32, call_pc).ok()?;
+    let Op::Call {
+        f,
+        base,
+        argc: 2,
+        retc: 1,
+    } = call_op
+    else {
+        return None;
+    };
+    if base != call_base {
+        return None;
+    }
+
+    let (store_op, step_pc) = fetch_packed_op(None, code32, store_pc).ok()?;
+    let Op::StoreLocal(store_local, store_src) = store_op else {
+        return None;
+    };
+    if store_local != acc_local || store_src != call_base {
+        return None;
+    }
+
+    let (step_op, _) = fetch_packed_op(None, code32, step_pc).ok()?;
+    let Op::ForRangeStep { back_ofs, .. } = step_op else {
+        return None;
+    };
+
+    Some(PackedRangeFusion::TinyAddModCall {
+        func: f,
+        acc: acc_local,
+        modulo,
+        call_pc,
+        step_pc,
+        back_ofs,
+    })
+}
+
 fn make_closure_value(f: &Function, proto: u16, ctx: &mut VmContext, regs: &[Val], frame_base: usize) -> Result<Val> {
     let p = f
         .protos
         .get(proto as usize)
         .ok_or_else(|| anyhow!("closure proto out of range"))?;
-    let captured_env = Arc::new(ctx.snapshot());
-    let captures = if p.captures.is_empty() {
-        ClosureCapture::empty()
+    if p.self_name.is_none() && p.captures.is_empty() {
+        return Ok(p
+            .empty_closure
+            .get_or_init(|| {
+                let clo = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
+                    params: Arc::clone(&p.params),
+                    named_params: Arc::clone(&p.named_params),
+                    body: Arc::clone(&p.body),
+                    env: Arc::clone(&p.empty_env),
+                    upvalues: Arc::clone(&p.empty_upvalues),
+                    captures: Arc::clone(&p.empty_captures),
+                    capture_specs: Arc::clone(&p.captures),
+                    default_funcs: Arc::clone(&p.default_funcs),
+                    code: Arc::clone(&p.code),
+                    debug_name: None,
+                    debug_location: None,
+                })));
+                if p.func.is_none()
+                    && p.code.get().is_none()
+                    && let Val::Closure(closure_arc) = &clo
+                {
+                    let c = Compiler::new();
+                    let compiled = c.compile_function_with_captures(
+                        p.params.as_ref(),
+                        p.named_params.as_ref(),
+                        p.body.as_ref(),
+                        p.captures.as_ref(),
+                    );
+                    let _ = closure_arc.code.set(Arc::new(compiled));
+                }
+                clo
+            })
+            .clone());
+    }
+    let captured_env = if p.self_name.is_some() {
+        Arc::new(ctx.snapshot())
     } else {
-        let mut names: Vec<String> = Vec::with_capacity(p.captures.len());
+        Arc::clone(&p.empty_env)
+    };
+    let captures = if p.captures.is_empty() {
+        Arc::clone(&p.empty_captures)
+    } else if let [spec] = p.captures.as_ref().as_slice() {
+        let value = match spec {
+            CaptureSpec::Register { src, .. } => {
+                let idx = frame_base + (*src as usize);
+                regs.get(idx).cloned().unwrap_or(Val::Nil)
+            }
+            CaptureSpec::Const { kidx, .. } => f.consts.get(*kidx as usize).cloned().unwrap_or(Val::Nil),
+            CaptureSpec::Global { name } => ctx.get(name.as_str()).cloned().unwrap_or(Val::Nil),
+        };
+        ClosureCapture::from_shared_names_one(Arc::clone(&p.capture_names), value)
+    } else {
         let mut values: Vec<Val> = Vec::with_capacity(p.captures.len());
-        for spec in &p.captures {
+        for spec in p.captures.iter() {
             match spec {
-                CaptureSpec::Register { name, src } => {
+                CaptureSpec::Register { src, .. } => {
                     let idx = frame_base + (*src as usize);
                     let val = regs.get(idx).cloned().unwrap_or(Val::Nil);
-                    names.push(name.clone());
                     values.push(val);
                 }
-                CaptureSpec::Const { name, kidx } => {
+                CaptureSpec::Const { kidx, .. } => {
                     let val = f.consts.get(*kidx as usize).cloned().unwrap_or(Val::Nil);
-                    names.push(name.clone());
                     values.push(val);
                 }
                 CaptureSpec::Global { name } => {
                     let val = ctx.get(name.as_str()).cloned().unwrap_or(Val::Nil);
-                    names.push(name.clone());
                     values.push(val);
                 }
             }
         }
-        ClosureCapture::from_pairs(names, values)
+        ClosureCapture::from_shared_names(Arc::clone(&p.capture_names), values)
     };
     let mut clo = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
-        params: Arc::new(p.params.clone()),
-        named_params: Arc::new(p.named_params.clone()),
-        body: Arc::new(p.body.clone()),
+        params: Arc::clone(&p.params),
+        named_params: Arc::clone(&p.named_params),
+        body: Arc::clone(&p.body),
         env: captured_env,
-        upvalues: Arc::new(Vec::new()),
+        upvalues: Arc::clone(&p.empty_upvalues),
         captures,
-        capture_specs: Arc::new(p.captures.clone()),
-        default_funcs: Arc::new(p.default_funcs.clone()),
+        capture_specs: Arc::clone(&p.captures),
+        default_funcs: Arc::clone(&p.default_funcs),
+        code: Arc::clone(&p.code),
         debug_name: p.self_name.clone(),
         debug_location: None,
     })));
@@ -514,15 +771,19 @@ fn make_closure_value(f: &Function, proto: u16, ctx: &mut VmContext, regs: &[Val
             (*env_ptr).define(name.clone(), clone_for_env);
         }
     }
-    if let Val::Closure(closure_arc) = &clo
-        && let Some(inner) = &p.func
+    if p.func.is_none()
+        && p.code.get().is_none()
+        && let Val::Closure(closure_arc) = &clo
     {
-        let _ = closure_arc.code.set((**inner).clone());
-    } else if let Val::Closure(closure_arc) = &clo {
         // Eagerly pre-compile closures to eliminate OnceCell overhead from hot calls
         let c = Compiler::new();
-        let compiled = c.compile_function_with_captures(&p.params, &p.named_params.to_vec(), &p.body, &p.captures);
-        let _ = closure_arc.code.set(compiled);
+        let compiled = c.compile_function_with_captures(
+            p.params.as_ref(),
+            p.named_params.as_ref(),
+            p.body.as_ref(),
+            p.captures.as_ref(),
+        );
+        let _ = closure_arc.code.set(Arc::new(compiled));
     }
     Ok(clo)
 }
@@ -536,6 +797,7 @@ fn exec_hot_slot(
     func: &Function,
     ctx: &mut VmContext,
     global_ic: &mut [Option<GlobalEntry>],
+    call_ic: &[Option<CallIc>],
     for_range_ic: &mut [Option<ForRangeState>],
     pc: usize,
     frame_base: usize,
@@ -646,7 +908,12 @@ fn exec_hot_slot(
             }
             None
         }
-        PackedHotKind::ForRangeLoop { idx, ofs } => {
+        PackedHotKind::ForRangeLoop {
+            idx,
+            write_idx,
+            ofs,
+            fusion,
+        } => {
             let state_entry = match for_range_ic.get_mut(pc).and_then(Option::as_mut) {
                 Some(state) => state,
                 None => return Err(anyhow!("For-range state missing at pc {}", pc)),
@@ -663,7 +930,140 @@ fn exec_hot_slot(
                 state_entry.current > state_entry.limit
             };
             if keep_going {
-                assign_reg(frame_raw, regs, *idx as usize, Val::Int(state_entry.current));
+                let current = state_entry.current;
+                let fused_next_pc = match fusion {
+                    Some(PackedRangeFusion::AddModulo {
+                        acc,
+                        modulo,
+                        step_pc,
+                        back_ofs,
+                    }) => {
+                        let acc_value = match &regs[*acc as usize] {
+                            Val::Int(value) => Some(*value),
+                            _ => None,
+                        };
+                        let modulo = match func.consts.get(rk_index(*modulo) as usize) {
+                            Some(Val::Int(value)) if *value != 0 => Some(*value),
+                            _ => None,
+                        };
+                        match (acc_value, modulo) {
+                            (Some(acc_value), Some(modulo)) => {
+                                regs[*acc as usize] = Val::Int(acc_value.wrapping_add(current % modulo));
+                                Some(((*step_pc as isize) + (*back_ofs as isize)) as usize)
+                            }
+                            _ => None,
+                        }
+                    }
+                    Some(PackedRangeFusion::TinyAddModCall {
+                        func: call_func,
+                        acc,
+                        modulo,
+                        call_pc,
+                        step_pc,
+                        back_ofs,
+                    }) => {
+                        let acc_value = match &regs[*acc as usize] {
+                            Val::Int(value) => Some(*value),
+                            _ => None,
+                        };
+                        let modulo = match func.consts.get(rk_index(*modulo) as usize) {
+                            Some(Val::Int(value)) if *value != 0 => Some(*value),
+                            _ => None,
+                        };
+                        match (acc_value, modulo, call_ic.get(*call_pc).and_then(Option::as_ref)) {
+                            (
+                                Some(acc_value),
+                                Some(modulo),
+                                Some(CallIc::ClosurePositional {
+                                    closure_ptr,
+                                    fun_ptr,
+                                    argc: 2,
+                                    tiny: Some(tiny),
+                                    ..
+                                }),
+                            ) => {
+                                if let Val::Closure(arc) = &regs[*call_func as usize] {
+                                    let closure_matches = Arc::as_ptr(arc) as usize == *closure_ptr
+                                        || arc
+                                            .code
+                                            .get()
+                                            .map(|fun| std::ptr::eq(Arc::as_ptr(fun), *fun_ptr))
+                                            .unwrap_or(false);
+                                    if closure_matches
+                                        && let Some(out) = tiny.try_eval_add_mod_int_params(acc_value, current % modulo)
+                                    {
+                                        regs[*acc as usize] = Val::Int(out);
+                                        Some(((*step_pc as isize) + (*back_ofs as isize)) as usize)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    }
+                    Some(PackedRangeFusion::TinyIntCall3 {
+                        func: call_func,
+                        acc,
+                        modulo,
+                        call_pc,
+                        step_pc,
+                        back_ofs,
+                    }) => {
+                        let acc_value = match &regs[*acc as usize] {
+                            Val::Int(value) => Some(*value),
+                            _ => None,
+                        };
+                        let modulo = match func.consts.get(rk_index(*modulo) as usize) {
+                            Some(Val::Int(value)) if *value != 0 => Some(*value),
+                            _ => None,
+                        };
+                        match (acc_value, modulo, call_ic.get(*call_pc).and_then(Option::as_ref)) {
+                            (
+                                Some(acc_value),
+                                Some(modulo),
+                                Some(CallIc::ClosurePositional {
+                                    closure_ptr,
+                                    fun_ptr,
+                                    argc: 3,
+                                    tiny: Some(tiny),
+                                    ..
+                                }),
+                            ) => {
+                                if let Val::Closure(arc) = &regs[*call_func as usize] {
+                                    let closure_matches = Arc::as_ptr(arc) as usize == *closure_ptr
+                                        || arc
+                                            .code
+                                            .get()
+                                            .map(|fun| std::ptr::eq(Arc::as_ptr(fun), *fun_ptr))
+                                            .unwrap_or(false);
+                                    if closure_matches
+                                        && let Some(out) =
+                                            tiny.try_eval_int3_params(acc_value, current, current % modulo)
+                                    {
+                                        regs[*acc as usize] = Val::Int(out);
+                                        Some(((*step_pc as isize) + (*back_ofs as isize)) as usize)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    }
+                    None => None,
+                };
+                if let Some(next_pc) = fused_next_pc {
+                    state_entry.current += state_entry.step;
+                    return Ok(Some(next_pc));
+                }
+                if *write_idx {
+                    assign_reg(frame_raw, regs, *idx as usize, Val::Int(current));
+                }
                 state_entry.current += state_entry.step;
                 // ForRange fusion: peek at next BC32 word. If it's ForRangeStep,
                 // jump directly back to the loop guard — saves one PackedHotSlot
@@ -695,8 +1095,8 @@ fn exec_hot_slot(
             Some(guard_pc)
         }
         PackedHotKind::ToStr { dst, src } => {
-            let s = regs[*src as usize].to_string();
-            assign_reg(frame_raw, regs, *dst as usize, Val::Str(s.into()));
+            let s = Val::to_str_value(&regs[*src as usize]);
+            assign_reg(frame_raw, regs, *dst as usize, s);
             None
         }
         PackedHotKind::MakeClosure { dst, proto } => {
@@ -719,8 +1119,14 @@ fn exec_hot_slot(
                     PackedArithOp::Add => {
                         let a_val = rk_read(regs, &func.consts, *a);
                         let b_val = rk_read(regs, &func.consts, *b);
-                        if let (Val::Str(a_str), Val::Str(b_str)) = (&a_val, &b_val) {
-                            assign_reg(frame_raw, regs, *dst as usize, Val::concat_strings(a_str, b_str));
+                        if let Val::Str(a_str) = &a_val
+                            && let Some(out) = Val::concat_str_add_rhs(a_str, &b_val)
+                        {
+                            assign_reg(frame_raw, regs, *dst as usize, out);
+                        } else if let Val::Str(b_str) = &b_val
+                            && let Some(out) = Val::concat_add_lhs_str(&a_val, b_str)
+                        {
+                            assign_reg(frame_raw, regs, *dst as usize, out);
                         } else if !Vm::arith2_try_numeric(
                             frame_raw,
                             regs,
@@ -869,7 +1275,11 @@ fn exec_hot_slot(
             let pushed_val = regs[*val as usize].clone();
             match &mut regs[*list as usize] {
                 Val::List(arc) => {
-                    Arc::make_mut(arc).push(pushed_val);
+                    if let Some(items) = Arc::get_mut(arc) {
+                        items.push(pushed_val);
+                    } else {
+                        Arc::make_mut(arc).push(pushed_val);
+                    }
                 }
                 _ => return Err(anyhow!("ListPush target is not a List")),
             }
@@ -883,9 +1293,59 @@ fn exec_hot_slot(
             let pushed_val = regs[*val as usize].clone();
             match &mut regs[*map as usize] {
                 Val::Map(arc) => {
-                    Arc::make_mut(arc).insert(key_arc, pushed_val);
+                    if let Some(map) = Arc::get_mut(arc) {
+                        map.insert(key_arc, pushed_val);
+                    } else {
+                        Arc::make_mut(arc).insert(key_arc, pushed_val);
+                    }
                 }
                 _ => return Err(anyhow!("MapSet target is not a Map")),
+            }
+            None
+        }
+        PackedHotKind::MapSetMove { map, key, val } => {
+            let map_idx = *map as usize;
+            let key_idx = *key as usize;
+            let val_idx = *val as usize;
+            if map_idx == key_idx || map_idx == val_idx || key_idx == val_idx {
+                let key_arc = match &regs[key_idx] {
+                    Val::Str(s) => s.clone(),
+                    _ => return Err(anyhow!("MapSet key must be a String")),
+                };
+                let pushed_val = regs[val_idx].clone();
+                match &mut regs[map_idx] {
+                    Val::Map(arc) => {
+                        if let Some(map) = Arc::get_mut(arc) {
+                            map.insert(key_arc, pushed_val);
+                        } else {
+                            Arc::make_mut(arc).insert(key_arc, pushed_val);
+                        }
+                    }
+                    _ => return Err(anyhow!("MapSet target is not a Map")),
+                }
+                return Ok(None);
+            }
+            if !matches!(regs[map_idx], Val::Map(_)) {
+                return Err(anyhow!("MapSet target is not a Map"));
+            }
+            let key_val = std::mem::replace(&mut regs[key_idx], Val::Nil);
+            let key_arc = match key_val {
+                Val::Str(s) => s,
+                other => {
+                    regs[key_idx] = other;
+                    return Err(anyhow!("MapSet key must be a String"));
+                }
+            };
+            let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+            match &mut regs[map_idx] {
+                Val::Map(arc) => {
+                    if let Some(map) = Arc::get_mut(arc) {
+                        map.insert(key_arc, pushed_val);
+                    } else {
+                        Arc::make_mut(arc).insert(key_arc, pushed_val);
+                    }
+                }
+                _ => unreachable!("MapSet target was checked before moving key/value"),
             }
             None
         }
@@ -1053,12 +1513,14 @@ fn decode_packed_op(code32: &[u32], pc: usize, w: u32, tag: u8) -> anyhow::Resul
                 next += 1;
                 let flags = ((w2 >> 16) & 0xFF) as u8;
                 let inclusive = (flags & 1) != 0;
+                let write_idx = (flags & 2) == 0;
                 let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
                 Op::ForRangeLoop {
                     idx,
                     limit,
                     step,
                     inclusive,
+                    write_idx,
                     ofs,
                 }
             }
@@ -1281,8 +1743,18 @@ pub(super) fn run_packed_code(
                             return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr)
                                 .map(Some);
                         }
-                        let override_pc =
-                            exec_hot_slot(slot, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc, frame_base)?;
+                        let override_pc = exec_hot_slot(
+                            slot,
+                            frame_raw,
+                            regs,
+                            f,
+                            ctx,
+                            global_ic,
+                            call_ic,
+                            for_range_ic,
+                            pc,
+                            frame_base,
+                        )?;
                         pc = override_pc.unwrap_or(slot.next_pc);
                         continue;
                     }
@@ -1328,8 +1800,18 @@ pub(super) fn run_packed_code(
                     packed_hot[pc] = Some(PackedHotEntry::Slot(entry));
                     return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
                 }
-                let override_pc =
-                    exec_hot_slot(&entry, frame_raw, regs, f, ctx, global_ic, for_range_ic, pc, frame_base)?;
+                let override_pc = exec_hot_slot(
+                    &entry,
+                    frame_raw,
+                    regs,
+                    f,
+                    ctx,
+                    global_ic,
+                    call_ic,
+                    for_range_ic,
+                    pc,
+                    frame_base,
+                )?;
                 if packed_hot.len() <= pc {
                     packed_hot.resize(pc + 1, None);
                 }
@@ -1359,12 +1841,32 @@ pub(super) fn run_packed_code(
                 pc = next_pc_default;
             }
             Op::ToStr(dst, src) => {
-                let s = regs[src as usize].to_string();
-                assign_reg(frame_raw, regs, dst as usize, Val::Str(s.into()));
+                let s = Val::to_str_value(&regs[src as usize]);
+                assign_reg(frame_raw, regs, dst as usize, s);
                 pc = next_pc_default;
             }
             Op::Add(dst, a, b) => {
-                if !Vm::arith2_try_numeric(frame_raw, regs, &f.consts, dst, a, b, "add", |x, y| x + y, |x, y| x + y) {
+                let a_val = rk_read(regs, &f.consts, a);
+                let b_val = rk_read(regs, &f.consts, b);
+                if let Val::Str(a_str) = &a_val
+                    && let Some(out) = Val::concat_str_add_rhs(a_str, &b_val)
+                {
+                    assign_reg(frame_raw, regs, dst as usize, out);
+                } else if let Val::Str(b_str) = &b_val
+                    && let Some(out) = Val::concat_add_lhs_str(&a_val, b_str)
+                {
+                    assign_reg(frame_raw, regs, dst as usize, out);
+                } else if !Vm::arith2_try_numeric(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    dst,
+                    a,
+                    b,
+                    "add",
+                    |x, y| x + y,
+                    |x, y| x + y,
+                ) {
                     let out = BinOp::Add.eval_vals(rk_read(regs, &f.consts, a), rk_read(regs, &f.consts, b))?;
                     assign_reg(frame_raw, regs, dst as usize, out);
                 }
@@ -1572,6 +2074,78 @@ pub(super) fn run_packed_code(
                     _ => Val::Int(0),
                 };
                 assign_reg(frame_raw, regs, dst as usize, out);
+                pc = next_pc_default;
+            }
+            Op::ListFoldAdd { acc, list } => {
+                let folded = if let Val::List(items) = &regs[list as usize] {
+                    Some(if let Val::Int(mut total) = regs[acc as usize] {
+                        let mut all_int = true;
+                        for item in items.iter() {
+                            if let Val::Int(value) = item {
+                                total = total.wrapping_add(*value);
+                            } else {
+                                all_int = false;
+                                break;
+                            }
+                        }
+                        if all_int {
+                            Val::Int(total)
+                        } else {
+                            let mut out = regs[acc as usize].clone();
+                            for item in items.iter() {
+                                out = BinOp::Add.eval_vals(&out, item)?;
+                            }
+                            out
+                        }
+                    } else {
+                        let mut out = regs[acc as usize].clone();
+                        for item in items.iter() {
+                            out = BinOp::Add.eval_vals(&out, item)?;
+                        }
+                        out
+                    })
+                } else {
+                    None
+                };
+                if let Some(out) = folded {
+                    assign_reg(frame_raw, regs, acc as usize, out);
+                }
+                pc = next_pc_default;
+            }
+            Op::MapValuesFoldAdd { acc, map } => {
+                let folded = if let Val::Map(values) = &regs[map as usize] {
+                    Some(if let Val::Int(mut total) = regs[acc as usize] {
+                        let mut all_int = true;
+                        for item in values.values() {
+                            if let Val::Int(value) = item {
+                                total = total.wrapping_add(*value);
+                            } else {
+                                all_int = false;
+                                break;
+                            }
+                        }
+                        if all_int {
+                            Val::Int(total)
+                        } else {
+                            let mut out = regs[acc as usize].clone();
+                            for item in values.values() {
+                                out = BinOp::Add.eval_vals(&out, item)?;
+                            }
+                            out
+                        }
+                    } else {
+                        let mut out = regs[acc as usize].clone();
+                        for item in values.values() {
+                            out = BinOp::Add.eval_vals(&out, item)?;
+                        }
+                        out
+                    })
+                } else {
+                    None
+                };
+                if let Some(out) = folded {
+                    assign_reg(frame_raw, regs, acc as usize, out);
+                }
                 pc = next_pc_default;
             }
             Op::Index { dst, base, idx } => {
@@ -1967,7 +2541,9 @@ pub(super) fn run_packed_code(
                 }
                 pc = next_pc_default;
             }
-            Op::ForRangeLoop { idx, ofs, .. } => {
+            Op::ForRangeLoop {
+                idx, write_idx, ofs, ..
+            } => {
                 let idx_reg = idx as usize;
                 let state_entry = match fetch_for_range_state(for_range_ic, pc) {
                     Ok(state) => state,
@@ -1976,7 +2552,9 @@ pub(super) fn run_packed_code(
                     }
                 };
                 if state_entry.should_continue() {
-                    assign_reg(frame_raw, regs, idx_reg, Val::Int(state_entry.current));
+                    if write_idx {
+                        assign_reg(frame_raw, regs, idx_reg, Val::Int(state_entry.current));
+                    }
                     pc = next_pc_default;
                 } else {
                     for_range_ic[pc] = None;
@@ -2182,49 +2760,64 @@ pub(super) fn run_packed_code(
                     closure_ptr,
                     fun_ptr,
                     argc: ic_argc,
+                    tiny,
                     ..
                 }) = call_ic[pc as usize].as_ref()
                     && *ic_argc == argc
                 {
                     let reg_val = &regs[rf as usize];
                     if let Val::Closure(arc) = reg_val {
-                        if Arc::as_ptr(arc) as usize == *closure_ptr {
+                        let closure_matches = Arc::as_ptr(arc) as usize == *closure_ptr
+                            || arc
+                                .code
+                                .get()
+                                .map(|fun| std::ptr::eq(Arc::as_ptr(fun), *fun_ptr))
+                                .unwrap_or(false);
+                        if closure_matches {
                             let fun_ptr_val = *fun_ptr;
                             let fun = unsafe { &*fun_ptr_val };
                             let args_slice_fast = &regs[start..start + n];
-                            let return_meta = CallFrameMeta {
-                                resume_pc,
-                                ret_base: base,
-                                retc,
-                                caller_window: RegisterWindowRef::Current,
-                            };
-                            let captures = Arc::clone(&arc.captures);
-                            let capture_specs = Arc::clone(&arc.capture_specs);
-                            let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
-                            if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) =
-                                call_ic[pc as usize].as_mut()
+                            if let Some(val) = tiny
+                                .as_ref()
+                                .and_then(|plan| plan.try_eval(args_slice_fast, Some(&arc.captures)))
                             {
-                                let val = unsafe { &mut *self_ptr }.exec_function_positional_fast(
-                                    fun,
-                                    args_slice_fast,
-                                    ctx,
-                                    Some(frame_info),
-                                    Some(captures),
-                                    Some(capture_specs),
-                                    Some(cache),
-                                    Some(return_meta),
-                                );
-                                match val {
-                                    Ok(val) => {
-                                        if retc > 0 {
-                                            assign_reg(frame_raw, regs, base as usize, val);
-                                        }
-                                    }
-                                    Err(err) => {
-                                        return frame_return_common(frame_raw, pc, Err(err)).map(Some);
-                                    }
+                                if retc > 0 {
+                                    assign_reg(frame_raw, regs, base as usize, val);
                                 }
                                 ic_fast_path_taken = true;
+                            } else {
+                                let return_meta = CallFrameMeta {
+                                    resume_pc,
+                                    ret_base: base,
+                                    retc,
+                                    caller_window: RegisterWindowRef::Current,
+                                };
+                                let (captures, capture_specs) = arc.frame_captures();
+                                if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) =
+                                    call_ic[pc as usize].as_mut()
+                                {
+                                    let val = unsafe { &mut *self_ptr }.exec_function_positional_fast(
+                                        fun,
+                                        args_slice_fast,
+                                        ctx,
+                                        Some(frame_info),
+                                        captures,
+                                        capture_specs,
+                                        Some(cache),
+                                        Some(return_meta),
+                                    );
+                                    match val {
+                                        Ok(val) => {
+                                            if retc > 0 {
+                                                assign_reg(frame_raw, regs, base as usize, val);
+                                            }
+                                        }
+                                        Err(err) => {
+                                            return frame_return_common(frame_raw, pc, Err(err)).map(Some);
+                                        }
+                                    }
+                                    ic_fast_path_taken = true;
+                                }
                             }
                         }
                     }
@@ -2237,14 +2830,13 @@ pub(super) fn run_packed_code(
                     continue;
                 }
                 // Slow path.
-                let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
                 let args_slice = &regs[start..start + n];
                 let func = regs[rf as usize].clone();
                 let call_args = CallArgs::registers(RegisterSpan::current(start, n));
                 match &func {
                     Val::Closure(closure_arc) => {
                         let closure_ptr = Arc::as_ptr(closure_arc) as usize;
-                        let cached_fast = matches!(call_ic[pc].as_ref(), Some(CallIc::ClosurePositional { closure_ptr: cached_ptr, argc: cached_argc, .. }) if *cached_ptr == closure_ptr && *cached_argc == argc);
+                        let mut cached_fast = matches!(call_ic[pc].as_ref(), Some(CallIc::ClosurePositional { closure_ptr: cached_ptr, argc: cached_argc, .. }) if *cached_ptr == closure_ptr && *cached_argc == argc);
                         let supports_fast = cached_fast || closure_arc.supports_vm_positional_fast_path();
                         if supports_fast && closure_arc.named_params.is_empty() {
                             if !cached_fast && args_slice.len() != closure_arc.params.len() {
@@ -2281,23 +2873,37 @@ pub(super) fn run_packed_code(
                             let fun: &Function = if let Some(ptr) = cached_fun_ptr {
                                 unsafe { &*ptr }
                             } else {
-                                closure.code.get_or_init(|| {
-                                    let c = Compiler::new();
-                                    c.compile_function_with_captures(
-                                        closure.params.as_ref(),
-                                        closure.named_params.as_ref(),
-                                        closure.body.as_ref(),
-                                        closure.capture_specs.as_ref(),
-                                    )
-                                })
+                                closure
+                                    .code
+                                    .get_or_init(|| {
+                                        let c = Compiler::new();
+                                        Arc::new(c.compile_function_with_captures(
+                                            closure.params.as_ref(),
+                                            closure.named_params.as_ref(),
+                                            closure.body.as_ref(),
+                                            closure.capture_specs.as_ref(),
+                                        ))
+                                    })
+                                    .as_ref()
                             };
-                            let captures = Arc::clone(&closure.captures);
-                            let capture_specs = Arc::clone(&closure.capture_specs);
+                            if !cached_fast
+                                && let Some(CallIc::ClosurePositional {
+                                    fun_ptr,
+                                    argc: cached_argc,
+                                    ..
+                                }) = call_ic[pc].as_ref()
+                                && *cached_argc == argc
+                                && std::ptr::eq(*fun_ptr, fun as *const Function)
+                            {
+                                cached_fast = true;
+                            }
+                            let (captures, capture_specs) = closure.frame_captures();
                             let vm_mut = unsafe { &mut *self_ptr };
                             if let Some(CallIc::ClosurePositional {
                                 closure_ptr: _,
                                 fun_ptr: _,
                                 argc: _,
+                                tiny: _,
                                 cache,
                                 frame_info,
                             }) = call_ic[pc].as_mut()
@@ -2308,8 +2914,8 @@ pub(super) fn run_packed_code(
                                     args_slice,
                                     ctx,
                                     Some(&*frame_info),
-                                    Some(Arc::clone(&captures)),
-                                    Some(Arc::clone(&capture_specs)),
+                                    captures.clone(),
+                                    capture_specs.clone(),
                                     Some(cache),
                                     Some(return_meta),
                                 ) {
@@ -2330,8 +2936,8 @@ pub(super) fn run_packed_code(
                                     args_slice,
                                     ctx,
                                     Some(&frame_info),
-                                    Some(captures),
-                                    Some(capture_specs),
+                                    captures,
+                                    capture_specs,
                                     Some(&mut cache),
                                     Some(return_meta),
                                 ) {
@@ -2343,6 +2949,7 @@ pub(super) fn run_packed_code(
                                             closure_ptr,
                                             fun_ptr: fun as *const Function,
                                             argc,
+                                            tiny: TinyCallPlan::analyze(fun),
                                             cache,
                                             frame_info,
                                         });
@@ -2377,19 +2984,19 @@ pub(super) fn run_packed_code(
                             let closure = closure_arc.as_ref();
                             let fun = closure.code.get_or_init(|| {
                                 let c = Compiler::new();
-                                c.compile_function_with_captures(
+                                Arc::new(c.compile_function_with_captures(
                                     closure.params.as_ref(),
                                     closure.named_params.as_ref(),
                                     closure.body.as_ref(),
                                     closure.capture_specs.as_ref(),
-                                )
+                                ))
                             });
                             let frame_info = closure.frame_info();
                             let captures_arc = Arc::clone(&closure.captures);
                             let capture_specs_arc = Arc::clone(&closure.capture_specs);
                             let call_result = if closure.named_params.is_empty() {
                                 Vm::exec_function_with_args(
-                                    fun,
+                                    fun.as_ref(),
                                     call_args,
                                     &[],
                                     Some(Arc::clone(&captures_arc)),
@@ -2533,7 +3140,6 @@ pub(super) fn run_packed_code(
                         caller_window: RegisterWindowRef::Current,
                     },
                 );
-                let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
                 let func = regs[rf as usize].clone();
                 let pos_start = base_pos as usize;
                 let pos_len = posc as usize;
@@ -2561,12 +3167,12 @@ pub(super) fn run_packed_code(
                         let closure = closure_arc.as_ref();
                         let fun = closure.code.get_or_init(|| {
                             let c = Compiler::new();
-                            c.compile_function_with_captures(
+                            Arc::new(c.compile_function_with_captures(
                                 closure.params.as_ref(),
                                 closure.named_params.as_ref(),
                                 closure.body.as_ref(),
                                 closure.capture_specs.as_ref(),
-                            )
+                            ))
                         });
                         let frame_info = closure.frame_info();
                         let captures_arc = Arc::clone(&closure.captures);
@@ -2662,7 +3268,7 @@ pub(super) fn run_packed_code(
                                         seed_regs.push((reg, seed_val.clone()));
                                     }
                                     Vm::exec_function_with_args(
-                                        fun,
+                                        fun.as_ref(),
                                         call_args,
                                         seed_regs.as_slice(),
                                         Some(Arc::clone(&captures_arc)),

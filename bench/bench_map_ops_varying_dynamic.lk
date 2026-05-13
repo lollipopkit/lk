@@ -1,0 +1,23 @@
+// Bench: map operations with per-iteration changing values
+import os;
+
+let seed = os.epoch();
+let iters = 3000 + (seed - seed);
+let width = 50 + (seed - seed);
+let total = 0;
+
+let t0 = os.clock();
+for outer in 1..=iters {
+    let m = {};
+    for i in 1..=width {
+        m.set("key${i}", (i * 2) + (outer % 5));
+    }
+    let sum = 0;
+    for v in m.values() {
+        sum += v;
+    }
+    total += sum;
+}
+let t1 = os.clock();
+
+println("map_ops_varying_dynamic: iters=${iters}, total=${total}, elapsed=${(t1 - t0) * 1000}ms");

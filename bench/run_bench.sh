@@ -1,80 +1,138 @@
 #!/bin/bash
-# Benchmark script for LK peephole optimization experiments
-# Categories: 1) unit tests  2) VM subsystem (criterion)  3) overall (script-level)
-# Uses python3 for arithmetic
+# bench_runner.sh — Run LK vs Lua benchmarks with multiple iterations for stability
+set -uo pipefail
 
-LK=./target/release/lk
-LUA=lua5.4
+BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
+RUNS=7
 
-########################################
-# CATEGORY 1: Unit tests (just run; full tests take too long; report time)
-########################################
-echo "=== UNIT TESTS ==="
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+RESET='\033[0m'
 
-########################################
-# CATEGORY 2: VM subsystem (criterion micro-benchmarks)
-########################################
-echo "=== VM SUBSYSTEM (criterion) ==="
-echo "METRIC vm_subsystem_ms=1"
+LK_BIN="/Users/lk/proj/lk/target/release/lk"
+LUA_BIN="lua"
 
-########################################
-# CATEGORY 3: Overall script-level benchmarks
-########################################
+# Store results in temp files
+TMPDIR=$(mktemp -d)
+trap "rm -rf $TMPDIR" EXIT
 
-LK_TMP=$(mktemp)
-trap "rm -f $LK_TMP" EXIT
-
-run_bench() {
-    local label="$1"
-    local runner="$2"
-    local script="$3"
-    local metric_key="$4"
-
-    echo "=== OVERALL: ${label} ==="
-    local result
-    result=$($runner "$script" 2>&1) || true
-    echo "$result"
-    local t
-    t=$(echo "$result" | grep -oP 'time=\K[0-9.]+' || echo "0")
-    local us
-    us=$(python3 -c "print(int(float('${t}') * 1000000))")
-    echo "METRIC ${metric_key}=${us}"
-
-    # If this is an LK benchmark (not Lua), record value for aggregate
-    if [[ "$label" == LK* ]]; then
-        echo "$us" >> "$LK_TMP"
-    fi
+median_of() {
+    local file="$1"
+    local sorted=$(sort -n "$file" | head -$((RUNS / 2 + 1)) | tail -1)
+    echo "$sorted"
 }
 
-# LK benchmarks
-run_bench "LK empty_loop" "$LK" "bench/empty_loop.lk" "empty_loop_us"
-run_bench "LK arith"      "$LK" "bench/arith.lk"      "arith_us"
-run_bench "LK fib"        "$LK" "bench/fib.lk"        "fib_us"
-run_bench "LK calls"      "$LK" "bench/calls.lk"      "calls_us"
-run_bench "LK strcat"     "$LK" "bench/strcat.lk"     "strcat_us"
-run_bench "LK list"       "$LK" "bench/list.lk"       "list_us"
-run_bench "LK map"        "$LK" "bench/map.lk"        "map_us"
+run_single() {
+    local cmd="$1"
+    local script="$2"
+    local pattern="$3"
+    local output=$($cmd "$BENCH_DIR/$script" 2>/dev/null | tail -1)
+    echo "$output" | sed -E "s/.*$pattern/\1/" | head -1
+}
 
-# Lua baselines
-run_bench "Lua empty_loop" "$LUA" "bench/empty_loop.lua" "lua_empty_loop_us"
-run_bench "Lua arith"      "$LUA" "bench/arith.lua"      "lua_arith_us"
-run_bench "Lua fib"        "$LUA" "bench/fib.lua"        "lua_fib_us"
-run_bench "Lua calls"      "$LUA" "bench/calls.lua"      "lua_calls_us"
-run_bench "Lua strcat"     "$LUA" "bench/strcat.lua"     "lua_strcat_us"
-run_bench "Lua table"      "$LUA" "bench/table.lua"      "lua_table_us"
-run_bench "Lua map"        "$LUA" "bench/map.lua"        "lua_map_us"
+print_banner() {
+    echo ""
+    echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BOLD}${CYAN}║           LK vs Lua — Performance Benchmark Suite           ║${RESET}"
+    echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════════╝${RESET}"
+    echo ""
+    echo -e "  ${BOLD}LK:${RESET}    target/release/lk (Rust VM, release build)"
+    echo -e "  ${BOLD}Lua:${RESET}   $($LUA_BIN -v 2>&1 | head -1)"
+    echo -e "  ${BOLD}Runs:${RESET}  ${RUNS} (median reported)"
+    echo -e "  ${BOLD}Note:${RESET}  Measuring runtime only (excluding startup overhead)"
+    echo ""
+}
 
-# Compute aggregate LK overall metric (geometric mean of 7 benchmarks)
-echo "=== AGGREGATE ==="
-GM=$(python3 -c "
-import math
-vals = [float(line.strip()) for line in open('$LK_TMP') if line.strip() and float(line.strip()) > 0]
-if vals:
-    log_sum = sum(math.log(v) for v in vals)
-    print(int(math.exp(log_sum / len(vals))))
-else:
-    print(0)
-")
-echo "METRIC lk_overall_geomean_us=${GM}"
+run_bench() {
+    local name="$1"
+    local lk_script="$2"
+    local lua_script="$3"
+    local idx="$4"
 
-echo "=== DONE ==="
+    echo -e "${BOLD}${YELLOW}▶ ${name}${RESET}"
+
+    local lk_file="$TMPDIR/lk_${idx}.dat"
+    local lua_file="$TMPDIR/lua_${idx}.dat"
+    > "$lk_file"
+    > "$lua_file"
+
+    for i in $(seq 1 $RUNS); do
+        local lk_output=$($LK_BIN "$BENCH_DIR/$lk_script" 2>/dev/null | tail -1)
+        local lk_ms=$(echo "$lk_output" | grep -oE 'elapsed=[0-9.]+ms' | grep -oE '[0-9.]+')
+        echo "$lk_ms" >> "$lk_file"
+
+        local lua_output=$($LUA_BIN "$BENCH_DIR/$lua_script" | tail -1)
+        local lua_ms=$(echo "$lua_output" | grep -oE 'elapsed=[0-9.]+ms' | grep -oE '[0-9.]+' | head -1)
+        echo "$lua_ms" >> "$lua_file"
+    done
+
+    local lk_median=$(median_of "$lk_file")
+    local lua_median=$(median_of "$lua_file")
+
+    echo -e "  ${GREEN}LK:${RESET}  ${lk_median}ms"
+    echo -e "  ${RED}Lua:${RESET} ${lua_median}ms"
+
+    # ratio
+    local ratio=$(echo "scale=2; $lk_median / $lua_median" | bc 2>/dev/null || echo "?")
+    echo -e "  ${BOLD}Ratio (LK/Lua):${RESET} ${ratio}x"
+    echo ""
+}
+
+print_banner
+
+# Run benchmarks - collect data
+idx=0
+for bench_spec in \
+    "Empty Loop|bench_empty_loop.lk|bench_empty_loop.lua" \
+    "Fibonacci Iterative (n=30,50k)|bench_fib.lk|bench_fib.lua" \
+    "Fibonacci Recursive (n=15,5k)|bench_fib_recursive.lk|bench_fib_recursive.lua" \
+    "Function Call (100k)|bench_func_call.lk|bench_func_call.lua" \
+    "Empty Function Call (1M)|bench_empty_func_call.lk|bench_empty_func_call.lua" \
+    "List Ops (10k x 100)|bench_list_ops.lk|bench_list_ops.lua" \
+    "Map Ops (10k x 50)|bench_map_ops.lk|bench_map_ops.lua" \
+    "String Concat (10k x 100)|bench_string_concat.lk|bench_string_concat.lua" \
+    "Closure Call (100k)|bench_closure.lk|bench_closure.lua" \
+    "Closure No Capture (1M)|bench_closure_no_capture.lk|bench_closure_no_capture.lua" \
+    "Closure Create No Capture+Call (100k)|bench_closure_create_no_capture.lk|bench_closure_create_no_capture.lua" \
+    "Closure Create+Call (100k)|bench_closure_create.lk|bench_closure_create.lua" \
+    "Dynamic Empty Loop (1M)|bench_empty_loop_dynamic.lk|bench_empty_loop_dynamic.lua" \
+    "Dynamic Numeric Loop Varying (1M)|bench_numeric_loop_varying_dynamic.lk|bench_numeric_loop_varying_dynamic.lua" \
+    "Dynamic Function Call (100k)|bench_func_call_dynamic.lk|bench_func_call_dynamic.lua" \
+    "Dynamic Function Call Varying (100k)|bench_func_call_varying_dynamic.lk|bench_func_call_varying_dynamic.lua" \
+    "Dynamic Function Call Generic (100k)|bench_func_call_generic_dynamic.lk|bench_func_call_generic_dynamic.lua" \
+    "Dynamic Fibonacci Iterative (n=30,50k)|bench_fib_dynamic.lk|bench_fib_dynamic.lua" \
+    "Dynamic Fibonacci Recursive (n=15,5k)|bench_fib_recursive_dynamic.lk|bench_fib_recursive_dynamic.lua" \
+    "Dynamic List Ops (10k x 100)|bench_list_ops_dynamic.lk|bench_list_ops_dynamic.lua" \
+    "Dynamic List Ops Varying (5k x 100)|bench_list_ops_varying_dynamic.lk|bench_list_ops_varying_dynamic.lua" \
+    "Dynamic Map Ops (10k x 50)|bench_map_ops_dynamic.lk|bench_map_ops_dynamic.lua" \
+    "Dynamic Map Ops Varying (3k x 50)|bench_map_ops_varying_dynamic.lk|bench_map_ops_varying_dynamic.lua"
+do
+    name=$(echo "$bench_spec" | cut -d'|' -f1)
+    lk_script=$(echo "$bench_spec" | cut -d'|' -f2)
+    lua_script=$(echo "$bench_spec" | cut -d'|' -f3)
+    run_bench "$name" "$lk_script" "$lua_script" "$idx"
+
+    # Store for summary
+    lk_med=$(median_of "$TMPDIR/lk_${idx}.dat")
+    lua_med=$(median_of "$TMPDIR/lua_${idx}.dat")
+    ratio=$(echo "scale=2; $lk_med / $lua_med" | bc 2>/dev/null || echo "?")
+    echo "$name|$lk_med|$lua_med|$ratio" >> "$TMPDIR/summary.dat"
+
+    idx=$((idx + 1))
+done
+
+# Summary table
+echo -e "${BOLD}${CYAN}═════════════════════════════════════════════════════════════════${RESET}"
+echo -e "${BOLD}Summary (median of ${RUNS} runs)${RESET}"
+echo -e "${BOLD}${CYAN}═════════════════════════════════════════════════════════════════${RESET}"
+printf "${BOLD}%-40s %10s %10s %12s${RESET}\n" "Benchmark" "LK (ms)" "Lua (ms)" "Ratio"
+printf "%-40s %10s %10s %12s\n" "───────────────────────────────────────" "──────────" "──────────" "────────────"
+while IFS='|' read -r name lk lua ratio; do
+    printf "%-40s %10s %10s %12s\n" "$name" "$lk" "$lua" "${ratio}x"
+done < "$TMPDIR/summary.dat"
+echo -e "${BOLD}${CYAN}═════════════════════════════════════════════════════════════════${RESET}"
+echo ""

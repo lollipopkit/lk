@@ -1,0 +1,23 @@
+// Bench: map operations with consumed result
+import time;
+
+let seed = time.now();
+let iters = 10000 + (seed - seed);
+let width = 50 + (seed - seed);
+let total = 0;
+
+let t0 = time.now();
+for _ in 1..=iters {
+    let m = {};
+    for i in 1..=width {
+        m.set("key${i}", i * 2);
+    }
+    let sum = 0;
+    for v in m.values() {
+        sum += v;
+    }
+    total += sum;
+}
+let t1 = time.now();
+
+println("map_ops_dynamic: iters=${iters}, total=${total}, elapsed=${t1 - t0}ms");

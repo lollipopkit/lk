@@ -1,0 +1,14 @@
+// Bench: dynamic numeric loop with per-iteration varying work
+import os;
+
+let seed = os.epoch();
+let iters = 1000000 + (seed - seed);
+let acc = 0;
+
+let t0 = os.clock();
+for i in 1..=iters {
+    acc += i % 7;
+}
+let t1 = os.clock();
+
+println("numeric_loop_varying_dynamic: iters=${iters}, acc=${acc}, elapsed=${(t1 - t0) * 1000}ms");

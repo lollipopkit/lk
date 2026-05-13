@@ -1,11 +1,13 @@
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 
 use crate::expr::Pattern;
-use crate::val::Val;
+use crate::val::{ClosureCapture, Val};
 use crate::vm::analysis::FunctionAnalysis;
 use crate::vm::bc32::Bc32Decoded;
+use crate::vm::context::VmContext;
 
 /// Compact bytecode representation and constant pool.
 ///
@@ -101,19 +103,31 @@ pub struct ClosureProto {
     /// Optional function name used to self-bind recursive closures.
     pub self_name: Option<String>,
     // Parameter names for arity check and binding
-    pub params: Vec<String>,
+    pub params: Arc<Vec<String>>,
     // Named parameter declarations for named-arg binding
-    pub named_params: Vec<crate::stmt::NamedParamDecl>,
+    pub named_params: Arc<Vec<crate::stmt::NamedParamDecl>>,
     // Optional default value thunks for each named parameter (aligned with `named_params`)
-    pub default_funcs: Vec<Option<Function>>,
+    pub default_funcs: Arc<Vec<Option<Function>>>,
     // Optional precompiled nested function (used by VM/LKB). When None, the
     // bytecode compiler will materialize it from `body` on demand.
-    pub func: Option<Box<Function>>,
+    pub func: Option<Arc<Function>>,
     // AST body retained for tooling (formatters, doc generators) now that the
     // legacy interpreter has been retired.
-    pub body: crate::stmt::Stmt,
+    pub body: Arc<crate::stmt::Stmt>,
     /// Captured bindings for this closure prototype.
-    pub captures: Vec<CaptureSpec>,
+    pub captures: Arc<Vec<CaptureSpec>>,
+    /// Capture names derived from `captures`, shared by every closure instance.
+    pub capture_names: Arc<[String]>,
+    /// Shared compiled-code cell for all closure instances created from this prototype.
+    pub code: Arc<OnceCell<Arc<Function>>>,
+    /// Shared empty environment for non-recursive closure instances.
+    pub empty_env: Arc<VmContext>,
+    /// Shared empty upvalue list for closure instances.
+    pub empty_upvalues: Arc<Vec<Val>>,
+    /// Shared empty capture set for zero-capture closure instances.
+    pub empty_captures: Arc<ClosureCapture>,
+    /// Shared closure instance for non-recursive zero-capture closures.
+    pub empty_closure: Arc<OnceCell<Val>>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +138,42 @@ pub enum CaptureSpec {
     Const { name: String, kidx: u16 },
     /// Capture a global binding by name (looked up when the closure is created).
     Global { name: String },
+}
+
+pub fn capture_names_from_specs(captures: &[CaptureSpec]) -> Arc<[String]> {
+    captures
+        .iter()
+        .map(|capture| match capture {
+            CaptureSpec::Register { name, .. } | CaptureSpec::Const { name, .. } | CaptureSpec::Global { name } => {
+                name.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+pub fn closure_code_cell(func: Option<&Arc<Function>>) -> Arc<OnceCell<Arc<Function>>> {
+    let cell = Arc::new(OnceCell::new());
+    if let Some(func) = func {
+        let _ = cell.set(Arc::clone(func));
+    }
+    cell
+}
+
+pub fn closure_empty_env() -> Arc<VmContext> {
+    Arc::new(VmContext::new_without_core_vm_builtins())
+}
+
+pub fn closure_empty_upvalues() -> Arc<Vec<Val>> {
+    Arc::new(Vec::new())
+}
+
+pub fn closure_empty_captures() -> Arc<ClosureCapture> {
+    ClosureCapture::empty()
+}
+
+pub fn closure_empty_closure_cell() -> Arc<OnceCell<Val>> {
+    Arc::new(OnceCell::new())
 }
 
 #[derive(Copy, Clone)]
@@ -210,6 +260,18 @@ pub enum Op {
         dst: u16,
         src: u16,
     },
+    // Fold list values into an accumulator with Add semantics.
+    // Semantically equivalent to: for v in list { acc += v }
+    ListFoldAdd {
+        acc: u16,
+        list: u16,
+    },
+    // Fold map values into an accumulator with Add semantics.
+    // Semantically equivalent to: for v in map.values() { acc += v }
+    MapValuesFoldAdd {
+        acc: u16,
+        map: u16,
+    },
     Index {
         dst: u16,
         base: u16,
@@ -263,6 +325,12 @@ pub enum Op {
         key: u16,
         val: u16,
     },
+    // Set a key-value pair and consume temporary key/value registers.
+    MapSetMove {
+        map: u16,
+        key: u16,
+        val: u16,
+    },
     MakeClosure {
         dst: u16,
         proto: u16,
@@ -285,6 +353,17 @@ pub enum Op {
         r: u16,
         imm: i16,
         ofs: i16,
+    },
+    // Fused: add `imm * iteration_count(range(idx, limit, step))` to target.
+    // Used for ignored range loops whose body is only `target += imm`.
+    AddRangeCountImm {
+        target: u16,
+        idx: u16,
+        limit: u16,
+        step: u16,
+        inclusive: bool,
+        explicit: bool,
+        imm: i16,
     },
     // Fused: compare src <= imm, if false jump by ofs. Like CmpLtImmJmp but for <=.
     CmpLeImmJmp {
@@ -329,6 +408,7 @@ pub enum Op {
         limit: u16,
         step: u16,
         inclusive: bool,
+        write_idx: bool,
         ofs: i16, // jump to end when guard fails
     },
     ForRangeStep {
@@ -391,6 +471,8 @@ impl fmt::Debug for Op {
             Op::AccessK(d, b, k) => write!(f, "AccessK r{}, r{}, k{}", d, b, k),
             Op::IndexK(d, b, k) => write!(f, "IndexK r{}, r{}, k{}", d, b, k),
             Op::Len { dst, src } => write!(f, "Len r{}, r{}", dst, src),
+            Op::ListFoldAdd { acc, list } => write!(f, "ListFoldAdd r{}, r{}", acc, list),
+            Op::MapValuesFoldAdd { acc, map } => write!(f, "MapValuesFoldAdd r{}, r{}", acc, map),
             Op::Index { dst, base, idx } => write!(f, "Index r{}, r{}, r{}", dst, base, idx),
             Op::PatternMatch { dst, src, plan } => write!(f, "PatternMatch r{}, r{}, plan{}", dst, src, plan),
             Op::PatternMatchOrFail {
@@ -416,12 +498,26 @@ impl fmt::Debug for Op {
             }
             Op::ListPush { list, val } => write!(f, "ListPush r{}, r{}", list, val),
             Op::MapSet { map, key, val } => write!(f, "MapSet r{}, r{}, r{}", map, key, val),
+            Op::MapSetMove { map, key, val } => write!(f, "MapSetMove r{}, r{}, r{}", map, key, val),
             Op::MakeClosure { dst, proto } => write!(f, "MakeClosure r{}, p{}", dst, proto),
             Op::Jmp(ofs) => write!(f, "Jmp {}", ofs),
             Op::JmpFalse(r, ofs) => write!(f, "JmpFalse r{}, {}", r, ofs),
             Op::CmpLtImmJmp { r, imm, ofs } => write!(f, "CmpLtImmJmp r{}, {}, {}", r, imm, ofs),
             Op::JmpNilOrFalseJmp { r, ofs } => write!(f, "JmpNilOrFalseJmp r{}, {}", r, ofs),
             Op::AddIntImmJmp { r, imm, ofs } => write!(f, "AddIntImmJmp r{}, {}, {}", r, imm, ofs),
+            Op::AddRangeCountImm {
+                target,
+                idx,
+                limit,
+                step,
+                inclusive,
+                explicit,
+                imm,
+            } => write!(
+                f,
+                "AddRangeCountImm target=r{}, idx=r{}, limit=r{}, step=r{}, inclusive={}, explicit={}, imm={}",
+                target, idx, limit, step, inclusive, explicit, imm
+            ),
             Op::CmpLeImmJmp { r, imm, ofs } => write!(f, "CmpLeImmJmp r{}, {}, {}", r, imm, ofs),
             Op::Call {
                 f: rf,
@@ -460,11 +556,12 @@ impl fmt::Debug for Op {
                 limit,
                 step,
                 inclusive,
+                write_idx,
                 ofs,
             } => write!(
                 f,
-                "ForRangeLoop idx=r{}, limit=r{}, step=r{}, inclusive={}, ofs={}",
-                idx, limit, step, inclusive, ofs
+                "ForRangeLoop idx=r{}, limit=r{}, step=r{}, inclusive={}, write_idx={}, ofs={}",
+                idx, limit, step, inclusive, write_idx, ofs
             ),
             Op::ForRangeStep { idx, step, back_ofs } => {
                 write!(f, "ForRangeStep idx=r{}, step=r{}, back_ofs={}", idx, step, back_ofs)

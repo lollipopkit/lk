@@ -18,6 +18,8 @@
 //! constant expressions, emitting `LoadK` for pre-computed results instead
 //! of runtime operations.
 
+use std::sync::Arc;
+
 use super::builder::ArithFlavor;
 use crate::{
     expr::{Expr, SelectPattern, TemplateStringPart},
@@ -27,6 +29,8 @@ use crate::{
     vm::{
         ClosureProto, Op,
         bytecode::{rk_as_const, rk_index, rk_is_const, rk_make_const},
+        capture_names_from_specs, closure_code_cell, closure_empty_captures, closure_empty_closure_cell,
+        closure_empty_env, closure_empty_upvalues,
     },
 };
 
@@ -34,6 +38,21 @@ use super::FunctionBuilder;
 use super::driver::Compiler;
 
 impl FunctionBuilder {
+    fn lookup_loop_invariant_expr(&self, expr: &Expr) -> Option<u16> {
+        self.loop_invariant_expr_regs
+            .iter()
+            .rev()
+            .find_map(|(candidate, reg)| (candidate == expr).then_some(*reg))
+    }
+
+    fn expr_result_is_temporary(expr: &Expr) -> bool {
+        match expr {
+            Expr::Var(_) => false,
+            Expr::Paren(inner) => Self::expr_result_is_temporary(inner),
+            _ => true,
+        }
+    }
+
     fn emit_list_from_exprs(&mut self, items: &[Box<Expr>]) -> u16 {
         let dst = self.alloc();
         let count = items.len() as u16;
@@ -81,7 +100,11 @@ impl FunctionBuilder {
             && method.as_ref() == "push"
             && let Some(list_reg) = self.lookup(var_name)
         {
-            let val_reg = self.expr(&args[0]);
+            let val_reg = if let Expr::Var(arg_name) = args[0].as_ref() {
+                self.lookup(arg_name).unwrap_or_else(|| self.expr(&args[0]))
+            } else {
+                self.expr(&args[0])
+            };
             self.emit(Op::ListPush {
                 list: list_reg,
                 val: val_reg,
@@ -107,13 +130,34 @@ impl FunctionBuilder {
             && let Some(map_reg) = self.lookup(var_name)
             && self.map_locals.contains(&map_reg)
         {
-            let key_reg = self.expr(&args[0]);
-            let val_reg = self.expr(&args[1]);
-            self.emit(Op::MapSet {
-                map: map_reg,
-                key: key_reg,
-                val: val_reg,
-            });
+            let key_reg = if let Expr::Var(arg_name) = args[0].as_ref() {
+                self.lookup(arg_name).unwrap_or_else(|| self.expr(&args[0]))
+            } else {
+                self.expr(&args[0])
+            };
+            let val_reg = if let Expr::Var(arg_name) = args[1].as_ref() {
+                self.lookup(arg_name).unwrap_or_else(|| self.expr(&args[1]))
+            } else {
+                self.expr(&args[1])
+            };
+            if key_reg != map_reg
+                && val_reg != map_reg
+                && key_reg != val_reg
+                && Self::expr_result_is_temporary(&args[0])
+                && Self::expr_result_is_temporary(&args[1])
+            {
+                self.emit(Op::MapSetMove {
+                    map: map_reg,
+                    key: key_reg,
+                    val: val_reg,
+                });
+            } else {
+                self.emit(Op::MapSet {
+                    map: map_reg,
+                    key: key_reg,
+                    val: val_reg,
+                });
+            }
             return map_reg;
         }
         // Fast path: m.get(k) — emit Access for map locals to avoid method dispatch
@@ -271,6 +315,51 @@ impl FunctionBuilder {
         }
     }
 
+    fn emit_expr_into(&mut self, dst: u16, expr: &Expr) {
+        match expr {
+            Expr::Val(value) => {
+                let kidx = self.k(value.clone());
+                self.emit(Op::LoadK(dst, kidx));
+            }
+            Expr::Var(name) => {
+                if let Some(src) = self.lookup(name) {
+                    if src != dst {
+                        self.emit(Op::Move(dst, src));
+                    }
+                } else if let Some(value) = self.lookup_const(name).cloned() {
+                    let kidx = self.k(value);
+                    self.emit(Op::LoadK(dst, kidx));
+                } else {
+                    let kname = self.k(Val::Str(name.clone().into()));
+                    self.emit(Op::LoadGlobal(dst, kname));
+                }
+            }
+            Expr::Paren(inner) => self.emit_expr_into(dst, inner),
+            Expr::Bin(left, op, right) if Self::op_supports_rk(op) => {
+                if let Some(value) = self.try_fold_bin(op, left, right) {
+                    let kidx = self.k(value);
+                    self.emit(Op::LoadK(dst, kidx));
+                    return;
+                }
+                let left_operand = self.expr_operand(left);
+                let flavor = self.select_arith_flavor(op, left, right, expr);
+                if let Some(imm) = self.try_small_int_const(right)
+                    && self.try_emit_binop_imm(dst, left_operand, imm, op, flavor)
+                {
+                    return;
+                }
+                let right_operand = self.expr_operand(right);
+                self.emit_bin_op(dst, left_operand, right_operand, op, flavor);
+            }
+            _ => {
+                let src = self.expr(expr);
+                if src != dst {
+                    self.emit(Op::Move(dst, src));
+                }
+            }
+        }
+    }
+
     fn op_supports_rk(op: &BinOp) -> bool {
         matches!(
             op,
@@ -300,11 +389,14 @@ impl FunctionBuilder {
                 }
             }
             Expr::Paren(inner) => self.try_const_operand(inner),
-            _ => None,
+            _ => {
+                let val = self.try_eval_const_expr(expr)?;
+                Some(self.k(val))
+            }
         }
     }
 
-    fn try_small_int_const(&self, expr: &Expr) -> Option<i16> {
+    pub(super) fn try_small_int_const(&mut self, expr: &Expr) -> Option<i16> {
         fn fits_i8(value: i64) -> Option<i16> {
             if (-128..=127).contains(&value) {
                 Some(value as i16)
@@ -320,7 +412,10 @@ impl FunctionBuilder {
                 _ => None,
             }),
             Expr::Paren(inner) => self.try_small_int_const(inner),
-            _ => None,
+            _ => match self.try_eval_const_expr(expr)? {
+                Val::Int(v) => fits_i8(v),
+                _ => None,
+            },
         }
     }
 
@@ -457,6 +552,10 @@ impl FunctionBuilder {
     }
 
     pub fn expr(&mut self, e: &Expr) -> u16 {
+        if let Some(reg) = self.lookup_loop_invariant_expr(e) {
+            return reg;
+        }
+
         match e {
             // Concurrency: select { case pat <= recv(ch) => expr; case _ <= send(ch, v) => expr; default => expr }
             // Blocking semantics via stdlib builtin `select$block` and runtime SelectOperation.
@@ -676,26 +775,41 @@ impl FunctionBuilder {
             }
             // Template string lowering: accumulate into a string using ToStr + Add
             Expr::TemplateString(parts) => {
-                // out = ""
                 let out = self.alloc();
-                let k_empty = self.k(Val::Str("".into()));
-                self.emit(Op::LoadK(out, k_empty));
+                let mut initialized = false;
                 for part in parts {
                     match part {
                         TemplateStringPart::Literal(s) => {
+                            if s.is_empty() {
+                                continue;
+                            }
+                            if !initialized {
+                                let k = self.k(Val::Str(s.as_str().into()));
+                                self.emit(Op::LoadK(out, k));
+                                initialized = true;
+                                continue;
+                            }
                             let r = self.alloc();
                             let k = self.k(Val::Str(s.as_str().into()));
                             self.emit(Op::LoadK(r, k));
                             self.emit(Op::Add(out, out, r));
                         }
                         TemplateStringPart::Expr(expr) => {
-                            // Compile inner expr, convert to string, then append
                             let rv = self.expr(expr);
+                            if !initialized {
+                                self.emit(Op::ToStr(out, rv));
+                                initialized = true;
+                                continue;
+                            }
                             let rs = self.alloc();
                             self.emit(Op::ToStr(rs, rv));
                             self.emit(Op::Add(out, out, rs));
                         }
                     }
+                }
+                if !initialized {
+                    let k_empty = self.k(Val::Str("".into()));
+                    self.emit(Op::LoadK(out, k_empty));
                 }
                 out
             }
@@ -704,14 +818,21 @@ impl FunctionBuilder {
                 let captures = self.collect_captures(None, params, &[], &body_stmt);
                 let compiled = Compiler::new().compile_function_with_captures(params, &[], &body_stmt, &captures);
                 let proto_idx = self.protos.len() as u16;
+                let func = Arc::new(compiled);
                 self.protos.push(ClosureProto {
                     self_name: None,
-                    params: params.clone(),
-                    named_params: Vec::new(),
-                    default_funcs: Vec::new(),
-                    func: Some(Box::new(compiled)),
-                    body: body_stmt.clone(),
-                    captures,
+                    params: Arc::new(params.clone()),
+                    named_params: Arc::new(Vec::new()),
+                    default_funcs: Arc::new(Vec::new()),
+                    func: Some(Arc::clone(&func)),
+                    body: Arc::new(body_stmt.clone()),
+                    capture_names: capture_names_from_specs(&captures),
+                    captures: Arc::new(captures),
+                    code: closure_code_cell(Some(&func)),
+                    empty_env: closure_empty_env(),
+                    empty_upvalues: closure_empty_upvalues(),
+                    empty_captures: closure_empty_captures(),
+                    empty_closure: closure_empty_closure_cell(),
                 });
                 let dst = self.alloc();
                 self.emit(Op::MakeClosure { dst, proto: proto_idx });
@@ -958,26 +1079,27 @@ impl FunctionBuilder {
                 // If the callee is a locally-defined function registered in const_env,
                 // load it from the constant pool instead of via LoadGlobal (avoids hashtable lookup).
                 let use_direct_call = self.const_env.get(name).is_some() && self.call_safe_to_fold(name);
-                let f = self.alloc();
-                if use_direct_call {
+                let f = if use_direct_call {
                     let func_val = self.const_env.get(name).unwrap().clone();
                     let kidx = self.k(func_val);
+                    let f = self.alloc();
                     self.emit(Op::LoadK(f, kidx));
+                    f
+                } else if let Some(local) = self.lookup(name) {
+                    local
                 } else {
                     let kname = self.k(Val::Str(name.clone().into()));
+                    let f = self.alloc();
                     self.emit(Op::LoadGlobal(f, kname));
-                }
+                    f
+                };
                 let argc = args.len() as u8;
                 let base = self.n_regs;
                 for _ in 0..args.len() {
                     let _ = self.alloc();
                 }
                 for (i, arg) in args.iter().enumerate() {
-                    let ri = self.expr(arg);
-                    let dst = base + i as u16;
-                    if ri != dst {
-                        self.emit(Op::Move(dst, ri));
-                    }
+                    self.emit_expr_into(base + i as u16, arg);
                 }
                 self.emit(Op::Call { f, base, argc, retc: 1 });
                 base
@@ -986,18 +1108,18 @@ impl FunctionBuilder {
                 if let Expr::Access(obj_expr, field_expr) = callee.as_ref() {
                     return self.compile_method_call(obj_expr, field_expr, args.as_slice());
                 }
-                let f = self.expr(callee);
+                let f = if let Expr::Var(name) = callee.as_ref() {
+                    self.lookup(name).unwrap_or_else(|| self.expr(callee))
+                } else {
+                    self.expr(callee)
+                };
                 let argc = args.len() as u8;
                 let base = self.n_regs;
                 for _ in 0..args.len() {
                     let _ = self.alloc();
                 }
                 for (i, arg) in args.iter().enumerate() {
-                    let ri = self.expr(arg);
-                    let dst = base + i as u16;
-                    if ri != dst {
-                        self.emit(Op::Move(dst, ri));
-                    }
+                    self.emit_expr_into(base + i as u16, arg);
                 }
                 self.emit(Op::Call { f, base, argc, retc: 1 });
                 base

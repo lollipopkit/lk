@@ -23,14 +23,40 @@ use crate::vm::bytecode::{CaptureSpec, Function, Op};
 use crate::vm::compiler::Compiler;
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::{AccessIc, CallIc, ClosureFastCache, ForRangeState, GlobalEntry, IndexIc, VmCaches};
+use crate::vm::vm::caches::{
+    AccessIc, CallIc, ClosureFastCache, ForRangeState, GlobalEntry, IndexIc, TinyCallPlan, VmCaches,
+};
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan, RegisterWindowRef};
-use crate::vm::vm::guards::VmCurrentGuard;
 
 use super::helpers::{assign_reg, frame_return_common, handle_return_common};
 use super::invoke::{invoke_rust_function, invoke_rust_function_named};
 use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, int_binop, int_binop_imm, rk_read};
 use super::plan::build_named_call_plan;
+
+fn range_iteration_count(start: i64, limit: i64, step: i64, inclusive: bool) -> i64 {
+    if step > 0 {
+        if inclusive {
+            if start > limit { 0 } else { ((limit - start) / step) + 1 }
+        } else if start >= limit {
+            0
+        } else {
+            ((limit - start - 1) / step) + 1
+        }
+    } else {
+        let stride = -step;
+        if inclusive {
+            if start < limit {
+                0
+            } else {
+                ((start - limit) / stride) + 1
+            }
+        } else if start <= limit {
+            0
+        } else {
+            ((start - limit - 1) / stride) + 1
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_opcode_code(
@@ -80,15 +106,21 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::ToStr(dst, src) => {
-                let s = regs[*src as usize].to_string();
-                assign_reg(frame_raw, regs, *dst as usize, Val::Str(s.into()));
+                let s = Val::to_str_value(&regs[*src as usize]);
+                assign_reg(frame_raw, regs, *dst as usize, s);
                 pc += 1;
             }
             Op::Add(dst, a, b) => {
                 let a_val = rk_read(regs, &f.consts, *a);
                 let b_val = rk_read(regs, &f.consts, *b);
-                if let (Val::Str(a_str), Val::Str(b_str)) = (&a_val, &b_val) {
-                    assign_reg(frame_raw, regs, *dst as usize, Val::concat_strings(a_str, b_str));
+                if let Val::Str(a_str) = &a_val
+                    && let Some(out) = Val::concat_str_add_rhs(a_str, &b_val)
+                {
+                    assign_reg(frame_raw, regs, *dst as usize, out);
+                } else if let Val::Str(b_str) = &b_val
+                    && let Some(out) = Val::concat_add_lhs_str(&a_val, b_str)
+                {
+                    assign_reg(frame_raw, regs, *dst as usize, out);
                 } else if !Vm::arith2_try_numeric(
                     frame_raw,
                     regs,
@@ -512,6 +544,78 @@ pub(super) fn run_opcode_code(
                 assign_reg(frame_raw, regs, *dst as usize, out);
                 pc += 1;
             }
+            Op::ListFoldAdd { acc, list } => {
+                let folded = if let Val::List(items) = &regs[*list as usize] {
+                    Some(if let Val::Int(mut total) = regs[*acc as usize] {
+                        let mut all_int = true;
+                        for item in items.iter() {
+                            if let Val::Int(value) = item {
+                                total = total.wrapping_add(*value);
+                            } else {
+                                all_int = false;
+                                break;
+                            }
+                        }
+                        if all_int {
+                            Val::Int(total)
+                        } else {
+                            let mut out = regs[*acc as usize].clone();
+                            for item in items.iter() {
+                                out = BinOp::Add.eval_vals(&out, item)?;
+                            }
+                            out
+                        }
+                    } else {
+                        let mut out = regs[*acc as usize].clone();
+                        for item in items.iter() {
+                            out = BinOp::Add.eval_vals(&out, item)?;
+                        }
+                        out
+                    })
+                } else {
+                    None
+                };
+                if let Some(out) = folded {
+                    assign_reg(frame_raw, regs, *acc as usize, out);
+                }
+                pc += 1;
+            }
+            Op::MapValuesFoldAdd { acc, map } => {
+                let folded = if let Val::Map(values) = &regs[*map as usize] {
+                    Some(if let Val::Int(mut total) = regs[*acc as usize] {
+                        let mut all_int = true;
+                        for item in values.values() {
+                            if let Val::Int(value) = item {
+                                total = total.wrapping_add(*value);
+                            } else {
+                                all_int = false;
+                                break;
+                            }
+                        }
+                        if all_int {
+                            Val::Int(total)
+                        } else {
+                            let mut out = regs[*acc as usize].clone();
+                            for item in values.values() {
+                                out = BinOp::Add.eval_vals(&out, item)?;
+                            }
+                            out
+                        }
+                    } else {
+                        let mut out = regs[*acc as usize].clone();
+                        for item in values.values() {
+                            out = BinOp::Add.eval_vals(&out, item)?;
+                        }
+                        out
+                    })
+                } else {
+                    None
+                };
+                if let Some(out) = folded {
+                    assign_reg(frame_raw, regs, *acc as usize, out);
+                }
+                pc += 1;
+            }
             Op::Index { dst, base, idx } => {
                 let res = match (&regs[*base as usize], &regs[*idx as usize]) {
                     (Val::List(l), Val::Int(i)) => {
@@ -849,7 +953,11 @@ pub(super) fn run_opcode_code(
                 let pushed_val = regs[*val as usize].clone();
                 match &mut regs[*list as usize] {
                     Val::List(arc) => {
-                        Arc::make_mut(arc).push(pushed_val);
+                        if let Some(items) = Arc::get_mut(arc) {
+                            items.push(pushed_val);
+                        } else {
+                            Arc::make_mut(arc).push(pushed_val);
+                        }
                     }
                     _ => {
                         return frame_return_common(frame_raw, pc, Err(anyhow!("ListPush target is not a List")))
@@ -869,12 +977,70 @@ pub(super) fn run_opcode_code(
                 let pushed_val = regs[*val as usize].clone();
                 match &mut regs[*map as usize] {
                     Val::Map(arc) => {
-                        Arc::make_mut(arc).insert(key_arc, pushed_val);
+                        if let Some(map) = Arc::get_mut(arc) {
+                            map.insert(key_arc, pushed_val);
+                        } else {
+                            Arc::make_mut(arc).insert(key_arc, pushed_val);
+                        }
                     }
                     _ => {
                         return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map")))
                             .map(Some);
                     }
+                }
+                pc += 1;
+            }
+            Op::MapSetMove { map, key, val } => {
+                let map_idx = *map as usize;
+                let key_idx = *key as usize;
+                let val_idx = *val as usize;
+                if map_idx == key_idx || map_idx == val_idx || key_idx == val_idx {
+                    let key_arc = match &regs[key_idx] {
+                        Val::Str(s) => s.clone(),
+                        _ => {
+                            return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet key must be a String")))
+                                .map(Some);
+                        }
+                    };
+                    let pushed_val = regs[val_idx].clone();
+                    match &mut regs[map_idx] {
+                        Val::Map(arc) => {
+                            if let Some(map) = Arc::get_mut(arc) {
+                                map.insert(key_arc, pushed_val);
+                            } else {
+                                Arc::make_mut(arc).insert(key_arc, pushed_val);
+                            }
+                        }
+                        _ => {
+                            return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map")))
+                                .map(Some);
+                        }
+                    }
+                    pc += 1;
+                    continue;
+                }
+                if !matches!(regs[map_idx], Val::Map(_)) {
+                    return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map"))).map(Some);
+                }
+                let key_val = std::mem::replace(&mut regs[key_idx], Val::Nil);
+                let key_arc = match key_val {
+                    Val::Str(s) => s,
+                    other => {
+                        regs[key_idx] = other;
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet key must be a String")))
+                            .map(Some);
+                    }
+                };
+                let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+                match &mut regs[map_idx] {
+                    Val::Map(arc) => {
+                        if let Some(map) = Arc::get_mut(arc) {
+                            map.insert(key_arc, pushed_val);
+                        } else {
+                            Arc::make_mut(arc).insert(key_arc, pushed_val);
+                        }
+                    }
+                    _ => unreachable!("MapSet target was checked before moving key/value"),
                 }
                 pc += 1;
             }
@@ -932,7 +1098,9 @@ pub(super) fn run_opcode_code(
                 }
                 pc += 1;
             }
-            Op::ForRangeLoop { idx, ofs, .. } => {
+            Op::ForRangeLoop {
+                idx, write_idx, ofs, ..
+            } => {
                 let idx_reg = *idx as usize;
                 let slot = unsafe { for_range_ic.get_unchecked_mut(pc) };
                 if let Some(state) = slot {
@@ -949,7 +1117,9 @@ pub(super) fn run_opcode_code(
                         state.current > state.limit
                     };
                     if keep_going {
-                        assign_reg(frame_raw, regs, idx_reg, Val::Int(state.current));
+                        if *write_idx {
+                            assign_reg(frame_raw, regs, idx_reg, Val::Int(state.current));
+                        }
                         state.current += state.step;
                         pc += 1;
                     } else {
@@ -972,45 +1142,93 @@ pub(super) fn run_opcode_code(
                     .protos
                     .get(*proto as usize)
                     .ok_or_else(|| anyhow!("closure proto out of range"))?;
-                let captured_env = Arc::new(ctx.snapshot());
+                if p.self_name.is_none() && p.captures.is_empty() {
+                    let clo = p
+                        .empty_closure
+                        .get_or_init(|| {
+                            let clo = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
+                                params: Arc::clone(&p.params),
+                                named_params: Arc::clone(&p.named_params),
+                                body: Arc::clone(&p.body),
+                                env: Arc::clone(&p.empty_env),
+                                upvalues: Arc::clone(&p.empty_upvalues),
+                                captures: Arc::clone(&p.empty_captures),
+                                capture_specs: Arc::clone(&p.captures),
+                                default_funcs: Arc::clone(&p.default_funcs),
+                                code: Arc::clone(&p.code),
+                                debug_name: None,
+                                debug_location: None,
+                            })));
+                            if p.func.is_none()
+                                && p.code.get().is_none()
+                                && let Val::Closure(closure_arc) = &clo
+                            {
+                                let c = Compiler::new();
+                                let compiled = c.compile_function_with_captures(
+                                    p.params.as_ref(),
+                                    p.named_params.as_ref(),
+                                    p.body.as_ref(),
+                                    p.captures.as_ref(),
+                                );
+                                let _ = closure_arc.code.set(Arc::new(compiled));
+                            }
+                            clo
+                        })
+                        .clone();
+                    assign_reg(frame_raw, regs, *dst as usize, clo);
+                    pc += 1;
+                    continue;
+                }
+                let captured_env = if p.self_name.is_some() {
+                    Arc::new(ctx.snapshot())
+                } else {
+                    Arc::clone(&p.empty_env)
+                };
 
                 let captures = if p.captures.is_empty() {
-                    ClosureCapture::empty()
+                    Arc::clone(&p.empty_captures)
+                } else if let [spec] = p.captures.as_ref().as_slice() {
+                    let value = match spec {
+                        CaptureSpec::Register { src, .. } => {
+                            let idx = frame_base + (*src as usize);
+                            regs.get(idx).cloned().unwrap_or(Val::Nil)
+                        }
+                        CaptureSpec::Const { kidx, .. } => f.consts.get(*kidx as usize).cloned().unwrap_or(Val::Nil),
+                        CaptureSpec::Global { name } => ctx.get(name.as_str()).cloned().unwrap_or(Val::Nil),
+                    };
+                    ClosureCapture::from_shared_names_one(Arc::clone(&p.capture_names), value)
                 } else {
-                    let mut names: Vec<String> = Vec::with_capacity(p.captures.len());
                     let mut values: Vec<Val> = Vec::with_capacity(p.captures.len());
-                    for spec in &p.captures {
+                    for spec in p.captures.iter() {
                         match spec {
-                            CaptureSpec::Register { name, src } => {
+                            CaptureSpec::Register { src, .. } => {
                                 let idx = frame_base + (*src as usize);
                                 let val = regs.get(idx).cloned().unwrap_or(Val::Nil);
-                                names.push(name.clone());
                                 values.push(val);
                             }
-                            CaptureSpec::Const { name, kidx } => {
+                            CaptureSpec::Const { kidx, .. } => {
                                 let val = f.consts.get(*kidx as usize).cloned().unwrap_or(Val::Nil);
-                                names.push(name.clone());
                                 values.push(val);
                             }
                             CaptureSpec::Global { name } => {
                                 let val = ctx.get(name.as_str()).cloned().unwrap_or(Val::Nil);
-                                names.push(name.clone());
                                 values.push(val);
                             }
                         }
                     }
-                    ClosureCapture::from_pairs(names, values)
+                    ClosureCapture::from_shared_names(Arc::clone(&p.capture_names), values)
                 };
 
                 let mut clo = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
-                    params: Arc::new(p.params.clone()),
-                    named_params: Arc::new(p.named_params.clone()),
-                    body: Arc::new(p.body.clone()),
+                    params: Arc::clone(&p.params),
+                    named_params: Arc::clone(&p.named_params),
+                    body: Arc::clone(&p.body),
                     env: captured_env,
-                    upvalues: Arc::new(Vec::new()),
+                    upvalues: Arc::clone(&p.empty_upvalues),
                     captures,
-                    capture_specs: Arc::new(p.captures.clone()),
-                    default_funcs: Arc::new(p.default_funcs.clone()),
+                    capture_specs: Arc::clone(&p.captures),
+                    default_funcs: Arc::clone(&p.default_funcs),
+                    code: Arc::clone(&p.code),
                     debug_name: p.self_name.clone(),
                     debug_location: None,
                 })));
@@ -1024,16 +1242,19 @@ pub(super) fn run_opcode_code(
                         (*env_ptr).define(name.clone(), clone_for_env);
                     }
                 }
-                if let Val::Closure(closure_arc) = &clo
-                    && let Some(inner) = &p.func
+                if p.func.is_none()
+                    && p.code.get().is_none()
+                    && let Val::Closure(closure_arc) = &clo
                 {
-                    let _ = closure_arc.code.set((**inner).clone());
-                } else if let Val::Closure(closure_arc) = &clo {
                     // Eagerly pre-compile closures to eliminate OnceCell overhead from hot calls
                     let c = Compiler::new();
-                    let compiled =
-                        c.compile_function_with_captures(&p.params, &p.named_params.to_vec(), &p.body, &p.captures);
-                    let _ = closure_arc.code.set(compiled);
+                    let compiled = c.compile_function_with_captures(
+                        p.params.as_ref(),
+                        p.named_params.as_ref(),
+                        p.body.as_ref(),
+                        p.captures.as_ref(),
+                    );
+                    let _ = closure_arc.code.set(Arc::new(compiled));
                 }
                 assign_reg(frame_raw, regs, *dst as usize, clo);
                 pc += 1;
@@ -1093,6 +1314,69 @@ pub(super) fn run_opcode_code(
                     regs[*r as usize] = Val::Int(result);
                 }
                 pc = ((pc as isize) + (*ofs as isize)) as usize;
+            }
+            Op::AddRangeCountImm {
+                target,
+                idx,
+                limit,
+                step,
+                inclusive,
+                explicit,
+                imm,
+            } => {
+                let (start, end) = match (&regs[*idx as usize], &regs[*limit as usize]) {
+                    (Val::Int(start), Val::Int(end)) => (*start, *end),
+                    _ => {
+                        return frame_return_common(
+                            frame_raw,
+                            pc,
+                            Err(anyhow!(
+                                "For-range requires integer bounds, got idx={:?}, limit={:?}",
+                                regs[*idx as usize],
+                                regs[*limit as usize]
+                            )),
+                        )
+                        .map(Some);
+                    }
+                };
+                let step_val = if !*explicit {
+                    if start <= end { 1 } else { -1 }
+                } else {
+                    match &regs[*step as usize] {
+                        Val::Int(0) => {
+                            return frame_return_common(frame_raw, pc, Err(anyhow!("For-range step cannot be zero")))
+                                .map(Some);
+                        }
+                        Val::Int(value) => *value,
+                        other => {
+                            return frame_return_common(
+                                frame_raw,
+                                pc,
+                                Err(anyhow!("For-range step must be Int when explicit, got {:?}", other)),
+                            )
+                            .map(Some);
+                        }
+                    }
+                };
+                let count = range_iteration_count(start, end, step_val, *inclusive);
+                if count > 0 {
+                    let target_idx = *target as usize;
+                    match &regs[target_idx] {
+                        Val::Int(value) => {
+                            let delta = count.wrapping_mul(*imm as i64);
+                            assign_reg(frame_raw, regs, target_idx, Val::Int((*value).wrapping_add(delta)));
+                        }
+                        other => {
+                            return frame_return_common(
+                                frame_raw,
+                                pc,
+                                Err(anyhow!("AddRangeCountImm target must be Int, got {:?}", other)),
+                            )
+                            .map(Some);
+                        }
+                    }
+                }
+                pc += 1;
             }
             Op::CmpLeImmJmp { r, imm, ofs } => {
                 // Fused CmpLeImm + JmpFalse: if r <= imm, fall through; else jump.
@@ -1163,49 +1447,65 @@ pub(super) fn run_opcode_code(
                     closure_ptr,
                     fun_ptr,
                     argc: ic_argc,
+                    tiny,
                     ..
                 }) = call_ic[pc].as_ref()
                     && *ic_argc == *argc
                 {
                     let reg_val = &regs[*rf as usize];
                     if let Val::Closure(arc) = reg_val {
-                        if Arc::as_ptr(arc) as usize == *closure_ptr {
+                        let closure_matches = Arc::as_ptr(arc) as usize == *closure_ptr
+                            || arc
+                                .code
+                                .get()
+                                .map(|fun| std::ptr::eq(Arc::as_ptr(fun), *fun_ptr))
+                                .unwrap_or(false);
+                        if closure_matches {
                             // IC hit — skip Arc clone and go straight to fast path.
                             let fun_ptr_val = *fun_ptr;
                             let fun = unsafe { &*fun_ptr_val };
                             let args_slice_fast = &regs[*base as usize..*base as usize + *argc as usize];
-                            let return_meta = CallFrameMeta {
-                                resume_pc,
-                                ret_base: *base,
-                                retc: *retc,
-                                caller_window: RegisterWindowRef::Current,
-                            };
-                            let captures = Arc::clone(&arc.captures);
-                            let capture_specs = Arc::clone(&arc.capture_specs);
-                            let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
-                            // Now get mutable access to the IC cache.
-                            if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) = call_ic[pc].as_mut() {
-                                let val = unsafe { &mut *self_ptr }.exec_function_positional_fast(
-                                    fun,
-                                    args_slice_fast,
-                                    ctx,
-                                    Some(frame_info),
-                                    Some(captures),
-                                    Some(capture_specs),
-                                    Some(cache),
-                                    Some(return_meta),
-                                );
-                                match val {
-                                    Ok(val) => {
-                                        if *retc > 0 {
-                                            assign_reg(frame_raw, regs, *base as usize, val);
-                                        }
-                                    }
-                                    Err(err) => {
-                                        return frame_return_common(frame_raw, pc, Err(err)).map(Some);
-                                    }
+                            if let Some(val) = tiny
+                                .as_ref()
+                                .and_then(|plan| plan.try_eval(args_slice_fast, Some(&arc.captures)))
+                            {
+                                if *retc > 0 {
+                                    assign_reg(frame_raw, regs, *base as usize, val);
                                 }
                                 ic_fast_path_taken = true;
+                            } else {
+                                let return_meta = CallFrameMeta {
+                                    resume_pc,
+                                    ret_base: *base,
+                                    retc: *retc,
+                                    caller_window: RegisterWindowRef::Current,
+                                };
+                                let (captures, capture_specs) = arc.frame_captures();
+                                // Now get mutable access to the IC cache.
+                                if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) = call_ic[pc].as_mut()
+                                {
+                                    let val = unsafe { &mut *self_ptr }.exec_function_positional_fast(
+                                        fun,
+                                        args_slice_fast,
+                                        ctx,
+                                        Some(frame_info),
+                                        captures,
+                                        capture_specs,
+                                        Some(cache),
+                                        Some(return_meta),
+                                    );
+                                    match val {
+                                        Ok(val) => {
+                                            if *retc > 0 {
+                                                assign_reg(frame_raw, regs, *base as usize, val);
+                                            }
+                                        }
+                                        Err(err) => {
+                                            return frame_return_common(frame_raw, pc, Err(err)).map(Some);
+                                        }
+                                    }
+                                    ic_fast_path_taken = true;
+                                }
                             }
                         }
                     }
@@ -1218,13 +1518,12 @@ pub(super) fn run_opcode_code(
                     continue;
                 }
                 // Slow path: clone and dispatch as before.
-                let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
                 let func = regs[*rf as usize].clone();
                 let args_slice = &regs[*base as usize..*base as usize + *argc as usize];
                 match &func {
                     Val::Closure(closure_arc) => {
                         let closure_ptr = Arc::as_ptr(closure_arc) as usize;
-                        let cached_fast = matches!(call_ic[pc].as_ref(), Some(CallIc::ClosurePositional { closure_ptr: cached_ptr, argc: cached_argc, .. }) if *cached_ptr == closure_ptr && *cached_argc == *argc);
+                        let mut cached_fast = matches!(call_ic[pc].as_ref(), Some(CallIc::ClosurePositional { closure_ptr: cached_ptr, argc: cached_argc, .. }) if *cached_ptr == closure_ptr && *cached_argc == *argc);
                         let supports_fast = cached_fast || closure_arc.supports_vm_positional_fast_path();
                         if supports_fast && closure_arc.named_params.is_empty() {
                             if !cached_fast && args_slice.len() != closure_arc.params.len() {
@@ -1255,29 +1554,43 @@ pub(super) fn run_opcode_code(
                             let fun: &Function = if let Some(ptr) = cached_fun_ptr {
                                 unsafe { &*ptr }
                             } else {
-                                closure.code.get_or_init(|| {
-                                    let c = Compiler::new();
-                                    c.compile_function_with_captures(
-                                        closure.params.as_ref(),
-                                        closure.named_params.as_ref(),
-                                        closure.body.as_ref(),
-                                        closure.capture_specs.as_ref(),
-                                    )
-                                })
+                                closure
+                                    .code
+                                    .get_or_init(|| {
+                                        let c = Compiler::new();
+                                        Arc::new(c.compile_function_with_captures(
+                                            closure.params.as_ref(),
+                                            closure.named_params.as_ref(),
+                                            closure.body.as_ref(),
+                                            closure.capture_specs.as_ref(),
+                                        ))
+                                    })
+                                    .as_ref()
                             };
+                            if !cached_fast
+                                && let Some(CallIc::ClosurePositional {
+                                    fun_ptr,
+                                    argc: cached_argc,
+                                    ..
+                                }) = call_ic[pc].as_ref()
+                                && *cached_argc == *argc
+                                && std::ptr::eq(*fun_ptr, fun as *const Function)
+                            {
+                                cached_fast = true;
+                            }
                             let return_meta = CallFrameMeta {
                                 resume_pc,
                                 ret_base: *base,
                                 retc: *retc,
                                 caller_window: RegisterWindowRef::Current,
                             };
-                            let captures = Arc::clone(&closure.captures);
-                            let capture_specs = Arc::clone(&closure.capture_specs);
+                            let (captures, capture_specs) = closure.frame_captures();
                             let vm_mut = unsafe { &mut *self_ptr };
                             if let Some(CallIc::ClosurePositional {
                                 closure_ptr: _,
                                 fun_ptr: _,
                                 argc: _,
+                                tiny: _,
                                 cache,
                                 frame_info,
                             }) = call_ic[pc].as_mut()
@@ -1288,8 +1601,8 @@ pub(super) fn run_opcode_code(
                                     args_slice,
                                     ctx,
                                     Some(&*frame_info),
-                                    Some(Arc::clone(&captures)),
-                                    Some(Arc::clone(&capture_specs)),
+                                    captures.clone(),
+                                    capture_specs.clone(),
                                     Some(cache),
                                     Some(return_meta),
                                 ) {
@@ -1310,8 +1623,8 @@ pub(super) fn run_opcode_code(
                                     args_slice,
                                     ctx,
                                     Some(&frame_info),
-                                    Some(captures),
-                                    Some(capture_specs),
+                                    captures,
+                                    capture_specs,
                                     Some(&mut cache),
                                     Some(return_meta),
                                 ) {
@@ -1323,6 +1636,7 @@ pub(super) fn run_opcode_code(
                                             closure_ptr,
                                             fun_ptr: fun as *const Function,
                                             argc: *argc,
+                                            tiny: TinyCallPlan::analyze(fun),
                                             cache,
                                             frame_info,
                                         });
@@ -1358,19 +1672,19 @@ pub(super) fn run_opcode_code(
                             let closure = closure_arc.as_ref();
                             let fun = closure.code.get_or_init(|| {
                                 let c = Compiler::new();
-                                c.compile_function_with_captures(
+                                Arc::new(c.compile_function_with_captures(
                                     closure.params.as_ref(),
                                     closure.named_params.as_ref(),
                                     closure.body.as_ref(),
                                     closure.capture_specs.as_ref(),
-                                )
+                                ))
                             });
                             let frame_info = closure.frame_info();
                             let captures_arc = Arc::clone(&closure.captures);
                             let capture_specs_arc = Arc::clone(&closure.capture_specs);
                             let call_result = if closure.named_params.is_empty() {
                                 Vm::exec_function_with_args(
-                                    fun,
+                                    fun.as_ref(),
                                     call_args,
                                     &[],
                                     Some(Arc::clone(&captures_arc)),
@@ -1423,7 +1737,7 @@ pub(super) fn run_opcode_code(
                                     allocator.with_reg_val_pairs(resolved_seed.len(), |seed_regs| {
                                         Vm::map_named_seed(fun, resolved_seed.as_slice(), seed_regs)?;
                                         Vm::exec_function_with_args(
-                                            fun,
+                                            fun.as_ref(),
                                             call_args,
                                             seed_regs.as_slice(),
                                             Some(Arc::clone(&captures_arc)),
@@ -1516,7 +1830,6 @@ pub(super) fn run_opcode_code(
                         caller_window: RegisterWindowRef::Current,
                     },
                 );
-                let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
                 let func = regs[*rf as usize].clone();
                 let start_pos = *base_pos as usize;
                 let npos = *posc as usize;
@@ -1539,12 +1852,12 @@ pub(super) fn run_opcode_code(
                         let named_params = closure.named_params.as_ref();
                         let fun = closure.code.get_or_init(|| {
                             let c = Compiler::new();
-                            c.compile_function_with_captures(
+                            Arc::new(c.compile_function_with_captures(
                                 closure.params.as_ref(),
                                 named_params,
                                 closure.body.as_ref(),
                                 closure.capture_specs.as_ref(),
-                            )
+                            ))
                         });
                         let layout = &fun.named_param_layout;
                         if layout.len() != named_params.len() {
@@ -1648,7 +1961,7 @@ pub(super) fn run_opcode_code(
                                     let captures = Some(Arc::clone(&closure.captures));
                                     let capture_specs = Some(Arc::clone(&closure.capture_specs));
                                     let result = Vm::exec_function_with_args(
-                                        fun,
+                                        fun.as_ref(),
                                         call_args,
                                         seed_regs.as_slice(),
                                         captures,

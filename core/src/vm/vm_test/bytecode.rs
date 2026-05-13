@@ -360,7 +360,7 @@ fn test_bc32_for_range_ascending_exclusive() {
                 value: Box::new(Expr::Val(Val::Int(0))),
             }),
             Box::new(Stmt::For {
-                pattern: ForPattern::Ignore,
+                pattern: ForPattern::Variable("i".into()),
                 iterable: Box::new(Expr::Range {
                     start: Some(Box::new(Expr::Val(Val::Int(0)))),
                     end: Some(Box::new(Expr::Val(Val::Int(3)))),
@@ -373,7 +373,7 @@ fn test_bc32_for_range_ascending_exclusive() {
                         value: Box::new(Expr::Bin(
                             Box::new(Expr::Var("x".into())),
                             BinOp::Add,
-                            Box::new(Expr::Val(Val::Int(1))),
+                            Box::new(Expr::Var("i".into())),
                         )),
                         span: None,
                     })],

@@ -1,0 +1,12 @@
+// Bench: Closure dispatch without captured values
+import time;
+
+let inc = |x| x + 1;
+let iters = 1000000;
+let t0 = time.now();
+let acc = 0;
+for _ in 1..=iters {
+    acc = inc(acc);
+}
+let t1 = time.now();
+println("closure_no_capture: iters=${iters}, acc=${acc}, elapsed=${t1 - t0}ms");

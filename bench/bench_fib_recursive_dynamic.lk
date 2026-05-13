@@ -1,0 +1,20 @@
+// Bench: recursive Fibonacci with runtime-known input
+import time;
+
+fn fib(n) {
+    if n <= 1 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+let seed = time.now();
+let iters = 5000 + (seed - seed);
+let n = 15 + (seed - seed);
+let acc = 0;
+
+let t0 = time.now();
+for _ in 1..=iters {
+    acc = fib(n);
+}
+let t1 = time.now();
+
+println("fib_recursive_dynamic: fib(${n}) = ${acc}, iters=${iters}, elapsed=${t1 - t0}ms");

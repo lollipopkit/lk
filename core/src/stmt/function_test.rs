@@ -267,6 +267,7 @@ mod tests {
             captures: ClosureCapture::empty(),
             capture_specs: Arc::new(Vec::new()),
             default_funcs: Arc::new(Vec::new()),
+            code: Arc::new(once_cell::sync::OnceCell::new()),
             debug_name: Some("<test-fn>".to_string()),
             debug_location: None,
         })));

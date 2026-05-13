@@ -14,7 +14,7 @@ use crate::vm::vm::caches::{
     AccessIc, CallIc, ClosureFastCache, ForRangeState, GlobalEntry, IndexIc, PackedHotEntry, VmCaches,
 };
 use crate::vm::vm::frame::{CallArgs, CallFrame, CallFrameMeta, FrameInfo, FrameState};
-use crate::vm::vm::guards::VmNestedCallGuard;
+use crate::vm::vm::guards::{VmCurrentGuard, VmNestedCallGuard};
 use crate::vm::vm::runtime::frame::run_frame;
 
 impl Vm {
@@ -57,6 +57,7 @@ impl Vm {
     ) -> Result<Val> {
         let _vm_fast_path_guard = VmFastPathGuard::enable();
         let self_ptr: *mut Vm = self;
+        let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
         let initial_reg_stack_depth = self.reg_stack.len();
         let initial_frame_depth = self.frames.len();
         let exec_result = {
@@ -225,18 +226,15 @@ impl Vm {
         let reg_count = fun.n_regs as usize;
         let self_ptr: *mut Vm = self;
 
-        // Swap caller's registers into pooled_regs and callee's cache.regs into self.regs.
-        // This avoids the overhead of enter_nested_call() which does redundant pool push/pop.
-        let pooled_regs = std::mem::take(&mut self.regs);
-        let mut regs = std::mem::take(&mut cache.regs);
-        if regs.len() >= reg_count {
-            regs.truncate(reg_count);
+        // Swap caller registers with the callee register cache. This avoids the
+        // heavier nested-call guard and keeps the callee window reusable at the
+        // call-site cache.
+        std::mem::swap(&mut self.regs, &mut cache.regs);
+        if self.regs.len() >= reg_count {
+            self.regs.truncate(reg_count);
         } else {
-            regs.resize(reg_count, Val::Nil);
+            self.regs.resize(reg_count, Val::Nil);
         }
-        // No need for separate Nil loop — resize already filled with Nil
-
-        self.regs = regs;
 
         // Use cached region_plan if available (avoids Arc clone per call), otherwise compute and cache.
         let region_plan = if let Some(ref rp) = cache.region_plan {
@@ -248,52 +246,50 @@ impl Vm {
         };
         let mut call_frame = CallFrame::new(fun, 0, reg_count, captures, capture_specs, region_plan);
         let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
-        let mut callee_state = FrameState::new(&mut call_frame, &mut self.regs, region_alloc_ptr);
+        let mut callee_state = FrameState::new_ephemeral(&mut call_frame, &mut self.regs, region_alloc_ptr);
         for (idx, param_reg) in fun.param_regs.iter().enumerate() {
-            callee_state.write_reg(*param_reg as usize, args[idx].clone());
+            callee_state.regs[*param_reg as usize] = args[idx].clone();
         }
         if let Some(meta) = return_meta {
             callee_state.set_inline_return_meta(meta);
         }
 
-        let mut access_ic = std::mem::take(&mut cache.access_ic);
-        let mut index_ic = std::mem::take(&mut cache.index_ic);
-        let mut global_ic = std::mem::take(&mut cache.global_ic);
-        let mut call_ic_cache = std::mem::take(&mut cache.call_ic);
-        let mut for_range_ic = std::mem::take(&mut cache.for_range);
-        let mut packed_hot = std::mem::take(&mut cache.packed_hot);
         let func_key = fun as *const Function as usize;
         if cache.packed_hot_key != func_key {
-            packed_hot.clear();
+            cache.packed_hot.clear();
             cache.packed_hot_key = func_key;
         }
         let code_len = fun.code.len();
-        if access_ic.len() < code_len {
-            access_ic.resize(code_len, None);
-        }
-        if index_ic.len() < code_len {
-            index_ic.resize(code_len, None);
-        }
-        if global_ic.len() < code_len {
-            global_ic.resize(code_len, None);
-        }
-        if call_ic_cache.len() < code_len {
-            call_ic_cache.resize(code_len, None);
-        }
-        if for_range_ic.len() < code_len {
-            for_range_ic.resize(code_len, None);
+        if cache.prepared_func_key != func_key || cache.prepared_code_len < code_len {
+            if cache.access_ic.len() < code_len {
+                cache.access_ic.resize(code_len, None);
+            }
+            if cache.index_ic.len() < code_len {
+                cache.index_ic.resize(code_len, None);
+            }
+            if cache.global_ic.len() < code_len {
+                cache.global_ic.resize(code_len, None);
+            }
+            if cache.call_ic.len() < code_len {
+                cache.call_ic.resize(code_len, None);
+            }
+            if cache.for_range.len() < code_len {
+                cache.for_range.resize(code_len, None);
+            }
+            cache.prepared_func_key = func_key;
+            cache.prepared_code_len = code_len;
         }
 
         let exec_raw = run_frame(
             &mut callee_state,
             ctx,
             VmCaches {
-                access_ic: &mut access_ic,
-                index_ic: &mut index_ic,
-                global_ic: &mut global_ic,
-                call_ic: &mut call_ic_cache,
-                for_range: &mut for_range_ic,
-                packed_hot: &mut packed_hot,
+                access_ic: &mut cache.access_ic,
+                index_ic: &mut cache.index_ic,
+                global_ic: &mut cache.global_ic,
+                call_ic: &mut cache.call_ic,
+                for_range: &mut cache.for_range,
+                packed_hot: &mut cache.packed_hot,
             },
             self_ptr,
         );
@@ -311,16 +307,7 @@ impl Vm {
 
         drop(callee_state);
 
-        cache.access_ic = access_ic;
-        cache.index_ic = index_ic;
-        cache.global_ic = global_ic;
-        cache.call_ic = call_ic_cache;
-        cache.for_range = for_range_ic;
-        cache.packed_hot = packed_hot;
-
-        let regs_back = std::mem::take(&mut self.regs);
-        cache.regs = regs_back;
-        self.regs = pooled_regs;
+        std::mem::swap(&mut self.regs, &mut cache.regs);
 
         exec_result
     }

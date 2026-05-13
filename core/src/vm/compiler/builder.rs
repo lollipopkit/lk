@@ -14,7 +14,8 @@ use crate::{
     val::{ClosureCapture, ClosureInit, ClosureValue, Type, Val},
     vm::{
         Bc32Function, CaptureSpec, ClosureProto, Function, FunctionAnalysis, NamedParamLayoutEntry, Op, PatternBinding,
-        PatternPlan, context::VmContext,
+        PatternPlan, capture_names_from_specs, closure_code_cell, closure_empty_captures, closure_empty_closure_cell,
+        closure_empty_env, closure_empty_upvalues, context::VmContext,
     },
 };
 
@@ -43,6 +44,14 @@ pub(crate) struct FunctionBuilder {
     /// Registers known to hold Map values (set when initialized from {} or map exprs).
     /// Used to safely emit MapSet opcode in compile_method_call.
     pub(crate) map_locals: HashSet<u16>,
+    /// Registers known to hold List values (set when initialized from [] or list exprs).
+    pub(crate) list_locals: HashSet<u16>,
+    /// Registers known to currently hold Int values.
+    /// This is a best-effort local fact used to select typed arithmetic opcodes
+    /// in hot loops even when full type inference did not provide hints.
+    pub(crate) int_regs: HashSet<u16>,
+    /// Loop-invariant pure expressions already materialized for the current loop body.
+    pub(crate) loop_invariant_expr_regs: Vec<(Expr, u16)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +122,9 @@ impl FunctionBuilder {
             const_names: HashSet::new(),
             expr_type_hints: None,
             map_locals: HashSet::new(),
+            list_locals: HashSet::new(),
+            int_regs: HashSet::new(),
+            loop_invariant_expr_regs: Vec::new(),
         };
         for (idx, cap) in captures.iter().enumerate() {
             let name = match cap {
@@ -143,6 +155,10 @@ impl FunctionBuilder {
             return ArithFlavor::Float;
         }
 
+        if self.expr_known_int(left) && self.expr_known_int(right) {
+            return ArithFlavor::Int;
+        }
+
         let result_class = self.numeric_class_hint(whole);
         let left_class = self.numeric_class_hint(left);
         let right_class = self.numeric_class_hint(right);
@@ -165,6 +181,23 @@ impl FunctionBuilder {
                     ArithFlavor::Any
                 }
             }
+        }
+    }
+
+    fn expr_known_int(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Val(Val::Int(_)) => true,
+            Expr::Var(name) => {
+                self.lookup(name).is_some_and(|reg| self.int_regs.contains(&reg))
+                    || self
+                        .lookup_const(name)
+                        .is_some_and(|value| matches!(value, Val::Int(_)))
+            }
+            Expr::Paren(inner) => self.expr_known_int(inner),
+            Expr::Bin(left, op, right) if !matches!(op, BinOp::Div) && op.is_arith() => {
+                self.expr_known_int(left) && self.expr_known_int(right)
+            }
+            _ => false,
         }
     }
 
@@ -224,7 +257,142 @@ impl FunctionBuilder {
     }
 
     pub fn emit(&mut self, op: Op) {
+        self.update_int_reg_facts(&op);
         self.code.push(op);
+    }
+
+    fn update_int_reg_facts(&mut self, op: &Op) {
+        match *op {
+            Op::LoadK(dst, kidx) => match self.consts.get(kidx as usize) {
+                Some(Val::Int(_)) => {
+                    self.int_regs.insert(dst);
+                    self.list_locals.remove(&dst);
+                    self.map_locals.remove(&dst);
+                }
+                Some(Val::List(_)) => {
+                    self.int_regs.remove(&dst);
+                    self.list_locals.insert(dst);
+                    self.map_locals.remove(&dst);
+                }
+                Some(Val::Map(_)) => {
+                    self.int_regs.remove(&dst);
+                    self.list_locals.remove(&dst);
+                    self.map_locals.insert(dst);
+                }
+                _ => {
+                    self.int_regs.remove(&dst);
+                    self.list_locals.remove(&dst);
+                    self.map_locals.remove(&dst);
+                }
+            },
+            Op::Move(dst, src) | Op::StoreLocal(dst, src) => {
+                if self.int_regs.contains(&src) {
+                    self.int_regs.insert(dst);
+                } else {
+                    self.int_regs.remove(&dst);
+                }
+                if self.list_locals.contains(&src) {
+                    self.list_locals.insert(dst);
+                } else {
+                    self.list_locals.remove(&dst);
+                }
+                if self.map_locals.contains(&src) {
+                    self.map_locals.insert(dst);
+                } else {
+                    self.map_locals.remove(&dst);
+                }
+            }
+            Op::AddInt(dst, _, _)
+            | Op::SubInt(dst, _, _)
+            | Op::MulInt(dst, _, _)
+            | Op::ModInt(dst, _, _)
+            | Op::AddIntImm(dst, _, _)
+            | Op::AddIntImmJmp { r: dst, .. }
+            | Op::AddRangeCountImm { target: dst, .. }
+            | Op::Len { dst, .. } => {
+                self.int_regs.insert(dst);
+            }
+            Op::ForRangePrep { step, .. } => {
+                self.int_regs.insert(step);
+            }
+            Op::ForRangeLoop {
+                idx, write_idx: true, ..
+            } => {
+                self.int_regs.insert(idx);
+            }
+            Op::Add(dst, _, _)
+            | Op::Sub(dst, _, _)
+            | Op::Mul(dst, _, _)
+            | Op::Div(dst, _, _)
+            | Op::Mod(dst, _, _)
+            | Op::AddFloat(dst, _, _)
+            | Op::SubFloat(dst, _, _)
+            | Op::MulFloat(dst, _, _)
+            | Op::DivFloat(dst, _, _)
+            | Op::ModFloat(dst, _, _)
+            | Op::LoadGlobal(dst, _)
+            | Op::LoadCapture { dst, .. }
+            | Op::Access(dst, _, _)
+            | Op::AccessK(dst, _, _)
+            | Op::IndexK(dst, _, _)
+            | Op::MakeClosure { dst, .. }
+            | Op::BuildMap { dst, .. }
+            | Op::Call { base: dst, retc: 1, .. }
+            | Op::CallNamed {
+                base_pos: dst, retc: 1, ..
+            }
+            | Op::ToStr(dst, _)
+            | Op::ToBool(dst, _)
+            | Op::Not(dst, _)
+            | Op::CmpEq(dst, _, _)
+            | Op::CmpNe(dst, _, _)
+            | Op::CmpLt(dst, _, _)
+            | Op::CmpLe(dst, _, _)
+            | Op::CmpGt(dst, _, _)
+            | Op::CmpGe(dst, _, _)
+            | Op::CmpEqImm(dst, _, _)
+            | Op::CmpNeImm(dst, _, _)
+            | Op::CmpLtImm(dst, _, _)
+            | Op::CmpLeImm(dst, _, _)
+            | Op::CmpGtImm(dst, _, _)
+            | Op::CmpGeImm(dst, _, _)
+            | Op::In(dst, _, _)
+            | Op::NullishPick { dst, .. }
+            | Op::JmpFalseSet { dst, .. }
+            | Op::JmpTrueSet { dst, .. }
+            | Op::ToIter { dst, .. }
+            | Op::ListSlice { dst, .. }
+            | Op::PatternMatch { dst, .. } => {
+                self.int_regs.remove(&dst);
+                self.list_locals.remove(&dst);
+            }
+            Op::BuildList { dst, .. } => {
+                self.int_regs.remove(&dst);
+                self.list_locals.insert(dst);
+            }
+            Op::ListFoldAdd { acc, .. } | Op::MapValuesFoldAdd { acc, .. } => {
+                self.int_regs.remove(&acc);
+            }
+            Op::MapSetMove { key, val, .. } => {
+                self.int_regs.remove(&key);
+                self.int_regs.remove(&val);
+                self.list_locals.remove(&key);
+                self.list_locals.remove(&val);
+                self.map_locals.remove(&key);
+                self.map_locals.remove(&val);
+            }
+            Op::Call { base, retc, .. } if retc > 1 => {
+                for reg in base..base.saturating_add(retc as u16) {
+                    self.int_regs.remove(&reg);
+                }
+            }
+            Op::CallNamed { base_pos, retc, .. } if retc > 1 => {
+                for reg in base_pos..base_pos.saturating_add(retc as u16) {
+                    self.int_regs.remove(&reg);
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn alloc(&mut self) -> u16 {
@@ -345,14 +513,21 @@ impl FunctionBuilder {
             })
             .collect();
 
+        let func = Arc::new(compiled);
         self.protos.push(ClosureProto {
             self_name: name.map(|n| n.to_string()),
-            params: params.to_vec(),
-            named_params: named_params.to_vec(),
-            default_funcs,
-            func: Some(Box::new(compiled)),
-            body: body.clone(),
-            captures,
+            params: Arc::new(params.to_vec()),
+            named_params: Arc::new(named_params.to_vec()),
+            default_funcs: Arc::new(default_funcs),
+            func: Some(Arc::clone(&func)),
+            body: Arc::new(body.clone()),
+            capture_names: capture_names_from_specs(&captures),
+            captures: Arc::new(captures),
+            code: closure_code_cell(Some(&func)),
+            empty_env: closure_empty_env(),
+            empty_upvalues: closure_empty_upvalues(),
+            empty_captures: closure_empty_captures(),
+            empty_closure: closure_empty_closure_cell(),
         });
 
         let dst = self.alloc();
@@ -435,6 +610,7 @@ impl FunctionBuilder {
             captures: ClosureCapture::empty(),
             capture_specs: Arc::new(Vec::new()),
             default_funcs: Arc::new(Vec::new()),
+            code: Arc::new(once_cell::sync::OnceCell::new()),
             debug_name: Some(name.to_string()),
             debug_location: None,
         })));
@@ -449,6 +625,30 @@ impl FunctionBuilder {
             }
         }
         self.const_env.set(name.to_string(), func_val);
+    }
+
+    pub(crate) fn register_closure_const_env(&mut self, name: &str, params: &[String], body: &Expr) -> bool {
+        let body_stmt = Stmt::Expr(Box::new(body.clone()));
+        let captures = self.collect_captures(None, params, &[], &body_stmt);
+        if !captures.is_empty() {
+            return false;
+        }
+
+        let func_val = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
+            params: Arc::new(params.to_vec()),
+            named_params: Arc::new(Vec::new()),
+            body: Arc::new(body_stmt),
+            env: Arc::new(self.const_env.clone()),
+            upvalues: Arc::new(Vec::<Val>::new()),
+            captures: ClosureCapture::empty(),
+            capture_specs: Arc::new(Vec::new()),
+            default_funcs: Arc::new(Vec::new()),
+            code: Arc::new(once_cell::sync::OnceCell::new()),
+            debug_name: Some(name.to_string()),
+            debug_location: None,
+        })));
+        self.const_env.define(name.to_string(), func_val);
+        true
     }
 
     /// Check if an expression contains a function call or other effects that make

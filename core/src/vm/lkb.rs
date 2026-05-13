@@ -311,7 +311,7 @@ fn encode_function(func: &Function, version: u16) -> Result<Vec<u8>> {
                 "too many params in nested closure"
             );
             write_u16(&mut out, proto.params.len() as u16);
-            for p in &proto.params {
+            for p in proto.params.iter() {
                 write_str(&mut out, p);
             }
             if version >= 3 {
@@ -328,7 +328,7 @@ fn encode_function(func: &Function, version: u16) -> Result<Vec<u8>> {
                     "too many captures in nested closure"
                 );
                 write_u16(&mut out, proto.captures.len() as u16);
-                for cap in &proto.captures {
+                for cap in proto.captures.iter() {
                     match cap {
                         CaptureSpec::Register { name, src } => {
                             write_u8(&mut out, 0);
@@ -503,14 +503,21 @@ fn decode_function(bytes: &[u8], version: u16) -> Result<Function> {
             ensure!(cursor + sz <= bytes.len(), "nested function overruns payload");
             let nested = decode_function(&bytes[cursor..cursor + sz], version)?;
             cursor += sz;
+            let func = Arc::new(nested);
             protos.push(ClosureProto {
                 self_name,
-                params,
-                named_params: Vec::new(),
-                default_funcs: Vec::new(),
-                func: Some(Box::new(nested)),
-                body: crate::stmt::Stmt::Empty,
-                captures,
+                params: Arc::new(params),
+                named_params: Arc::new(Vec::new()),
+                default_funcs: Arc::new(Vec::new()),
+                func: Some(Arc::clone(&func)),
+                body: Arc::new(crate::stmt::Stmt::Empty),
+                capture_names: crate::vm::capture_names_from_specs(&captures),
+                captures: Arc::new(captures),
+                code: crate::vm::closure_code_cell(Some(&func)),
+                empty_env: crate::vm::closure_empty_env(),
+                empty_upvalues: crate::vm::closure_empty_upvalues(),
+                empty_captures: crate::vm::closure_empty_captures(),
+                empty_closure: crate::vm::closure_empty_closure_cell(),
             });
         }
     }
@@ -921,6 +928,7 @@ fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             limit,
             step,
             inclusive,
+            write_idx,
             ofs,
         } => {
             write_u8(out, 41);
@@ -928,6 +936,7 @@ fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u16(out, limit);
             write_u16(out, step);
             write_u8(out, inclusive as u8);
+            write_u8(out, write_idx as u8);
             write_i16(out, ofs);
         }
         Op::ForRangeStep { idx, step, back_ofs } => {
@@ -993,6 +1002,40 @@ fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u16(out, map);
             write_u16(out, key);
             write_u16(out, val);
+        }
+        Op::MapSetMove { map, key, val } => {
+            write_u8(out, 66);
+            write_u16(out, map);
+            write_u16(out, key);
+            write_u16(out, val);
+        }
+        Op::AddRangeCountImm {
+            target,
+            idx,
+            limit,
+            step,
+            inclusive,
+            explicit,
+            imm,
+        } => {
+            write_u8(out, 63);
+            write_u16(out, target);
+            write_u16(out, idx);
+            write_u16(out, limit);
+            write_u16(out, step);
+            write_u8(out, inclusive as u8);
+            write_u8(out, explicit as u8);
+            write_i16(out, imm);
+        }
+        Op::ListFoldAdd { acc, list } => {
+            write_u8(out, 64);
+            write_u16(out, acc);
+            write_u16(out, list);
+        }
+        Op::MapValuesFoldAdd { acc, map } => {
+            write_u8(out, 65);
+            write_u16(out, acc);
+            write_u16(out, map);
         }
         Op::PatternMatch { dst, src, plan } => {
             write_u8(out, 47);
@@ -1170,6 +1213,28 @@ fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             key: read_u16(bytes, cursor)?,
             val: read_u16(bytes, cursor)?,
         },
+        63 => Op::AddRangeCountImm {
+            target: read_u16(bytes, cursor)?,
+            idx: read_u16(bytes, cursor)?,
+            limit: read_u16(bytes, cursor)?,
+            step: read_u16(bytes, cursor)?,
+            inclusive: read_u8(bytes, cursor)? != 0,
+            explicit: read_u8(bytes, cursor)? != 0,
+            imm: read_i16(bytes, cursor)?,
+        },
+        64 => Op::ListFoldAdd {
+            acc: read_u16(bytes, cursor)?,
+            list: read_u16(bytes, cursor)?,
+        },
+        65 => Op::MapValuesFoldAdd {
+            acc: read_u16(bytes, cursor)?,
+            map: read_u16(bytes, cursor)?,
+        },
+        66 => Op::MapSetMove {
+            map: read_u16(bytes, cursor)?,
+            key: read_u16(bytes, cursor)?,
+            val: read_u16(bytes, cursor)?,
+        },
         36 => Op::Jmp(read_i16(bytes, cursor)?),
         37 => Op::JmpFalse(read_u16(bytes, cursor)?, read_i16(bytes, cursor)?),
         38 => Op::Call {
@@ -1194,6 +1259,7 @@ fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             limit: read_u16(bytes, cursor)?,
             step: read_u16(bytes, cursor)?,
             inclusive: read_u8(bytes, cursor)? != 0,
+            write_idx: read_u8(bytes, cursor)? != 0,
             ofs: read_i16(bytes, cursor)?,
         },
         42 => Op::ForRangeStep {

@@ -154,6 +154,7 @@ pub(super) struct FrameState<'func> {
     pub(super) region_plan: Option<Arc<RegionPlan>>,
     region_allocator: *const RegionAllocator,
     inline_return_meta: Option<CallFrameMeta>,
+    sync_on_drop: bool,
 }
 
 impl<'func> FrameState<'func> {
@@ -174,7 +175,18 @@ impl<'func> FrameState<'func> {
             region_plan: frame.region_plan.take(),
             region_allocator,
             inline_return_meta: None,
+            sync_on_drop: true,
         }
+    }
+
+    pub(super) fn new_ephemeral(
+        frame: &mut CallFrame<'func>,
+        regs: &'func mut Vec<Val>,
+        region_allocator: *const RegionAllocator,
+    ) -> Self {
+        let mut state = Self::new(frame, regs, region_allocator);
+        state.sync_on_drop = false;
+        state
     }
 
     #[inline]
@@ -207,21 +219,6 @@ impl<'func> FrameState<'func> {
     }
 
     #[inline]
-    pub(super) fn regs(&mut self) -> &mut Vec<Val> {
-        &mut *self.regs
-    }
-
-    #[inline]
-    pub(super) fn capture_arc(&self) -> Option<Arc<ClosureCapture>> {
-        self.captures.as_ref().map(Arc::clone)
-    }
-
-    #[inline]
-    pub(super) fn capture_specs_arc(&self) -> Option<Arc<Vec<CaptureSpec>>> {
-        self.capture_specs.as_ref().map(Arc::clone)
-    }
-
-    #[inline]
     pub(super) fn set_inline_return_meta(&mut self, meta: CallFrameMeta) {
         self.inline_return_meta = Some(meta);
     }
@@ -249,19 +246,30 @@ impl<'func> FrameState<'func> {
     }
 
     #[inline]
-    pub(super) fn region_plan(&self) -> Option<&Arc<RegionPlan>> {
-        self.region_plan.as_ref()
-    }
-
-    #[inline]
-    pub(super) fn region_allocator(&self) -> &RegionAllocator {
-        // SAFETY: lifetime由 VM 保证，FrameState 生命周期内 VM 不会被移动
-        unsafe { &*self.region_allocator }
+    pub(super) fn execution_parts(
+        &mut self,
+    ) -> (
+        &mut Vec<Val>,
+        &Option<Arc<ClosureCapture>>,
+        &Option<Arc<Vec<CaptureSpec>>>,
+        Option<&RegionPlan>,
+        *const RegionAllocator,
+    ) {
+        (
+            self.regs,
+            &self.captures,
+            &self.capture_specs,
+            self.region_plan.as_deref(),
+            self.region_allocator,
+        )
     }
 }
 
 impl<'func> Drop for FrameState<'func> {
     fn drop(&mut self) {
+        if !self.sync_on_drop {
+            return;
+        }
         unsafe {
             if let Some(frame) = self.frame_ptr.as_mut() {
                 frame.pc = self.pc;
@@ -328,7 +336,7 @@ mod tests {
         let plan = state.region_plan.as_ref().expect("region plan available");
         assert_eq!(plan.region_for(0), AllocationRegion::Heap);
         assert_eq!(plan.region_for(1), AllocationRegion::ThreadLocal);
-        let ptr = state.region_allocator() as *const RegionAllocator;
+        let ptr = state.region_allocator;
         assert_eq!(ptr, alloc_ptr);
     }
 }

@@ -24,12 +24,12 @@ use crate::{
     expr::{Expr, Pattern},
     op::BinOp,
     stmt::{ForPattern, Stmt},
-    val::{FunctionNamedParamType, Type, Val},
-    vm::Op,
+    val::{ClosureCapture, ClosureInit, ClosureValue, FunctionNamedParamType, Type, Val},
+    vm::{CaptureSpec, Op},
 };
 
 use super::FunctionBuilder;
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 fn detect_mutating_receiver(expr: &Expr) -> Option<&str> {
     if let Expr::CallExpr(callee, _args) = expr
@@ -67,7 +67,1066 @@ fn strip_trailing_increment(stmt: &Stmt, counter_name: &str) -> Stmt {
 }
 
 impl FunctionBuilder {
+    fn call_expr_name<'a>(expr: &'a Expr) -> Option<(&'a str, &'a [Box<Expr>])> {
+        match expr {
+            Expr::Call(name, args) => Some((name.as_str(), args.as_slice())),
+            Expr::CallExpr(callee, args) => {
+                let Expr::Var(name) = callee.as_ref() else {
+                    return None;
+                };
+                Some((name.as_str(), args.as_slice()))
+            }
+            _ => None,
+        }
+    }
+
+    fn simple_call_operand<'a>(params: &'a [String], args: &'a [Box<Expr>], operand: &'a Expr) -> Option<&'a Expr> {
+        match operand {
+            Expr::Var(param_name) => {
+                if let Some(param_idx) = params.iter().position(|param| param == param_name) {
+                    args.get(param_idx).map(|arg| arg.as_ref())
+                } else {
+                    Some(operand)
+                }
+            }
+            other => Some(other),
+        }
+    }
+
+    fn small_int_from_capture(captures: &ClosureCapture, expr: &Expr) -> Option<i16> {
+        let Expr::Var(name) = expr else {
+            return None;
+        };
+        let (_, value) = captures
+            .iter()
+            .find(|(capture_name, _)| *capture_name == name.as_str())?;
+        let Val::Int(value) = value else {
+            return None;
+        };
+        (-128..=127).contains(value).then_some(*value as i16)
+    }
+
+    fn try_eval_arg_const(&mut self, expr: &Expr) -> Option<Val> {
+        match expr {
+            Expr::Val(value) => Some(value.clone()),
+            Expr::Var(name) => self.lookup_const(name).cloned(),
+            Expr::Paren(inner) => self.try_eval_arg_const(inner),
+            _ => self.try_eval_const_expr(expr),
+        }
+    }
+
+    fn try_specialize_const_closure_factory(&mut self, value: &Expr) -> Option<Val> {
+        let (func_name, args) = Self::call_expr_name(value)?;
+        if !self.call_safe_to_fold(func_name) {
+            return None;
+        }
+
+        let Some(Val::Closure(factory)) = self.const_env.get(func_name).cloned() else {
+            return None;
+        };
+        if !factory.named_params.is_empty() || factory.params.len() != args.len() {
+            return None;
+        }
+
+        let Some(returned) = Self::simple_return_expr(factory.body.as_ref()) else {
+            return None;
+        };
+        let Expr::Closure { params, body } = returned else {
+            return None;
+        };
+
+        let mut captures = Vec::new();
+        let mut capture_specs = Vec::new();
+        for (idx, param) in factory.params.iter().enumerate() {
+            if params.iter().any(|inner| inner == param) {
+                continue;
+            }
+            let arg_value = self.try_eval_arg_const(args[idx].as_ref())?;
+            let kidx = self.k(arg_value.clone());
+            captures.push((param.clone(), arg_value));
+            capture_specs.push(CaptureSpec::Const {
+                name: param.clone(),
+                kidx,
+            });
+        }
+
+        let capture_names = captures.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+        let capture_values = captures.into_iter().map(|(_, value)| value).collect::<Vec<_>>();
+        let body_stmt = Stmt::Expr(body.clone());
+        Some(Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
+            params: Arc::new(params.clone()),
+            named_params: Arc::new(Vec::new()),
+            body: Arc::new(body_stmt),
+            env: Arc::new(self.const_env.clone()),
+            upvalues: Arc::new(Vec::new()),
+            captures: ClosureCapture::from_pairs(capture_names, capture_values),
+            capture_specs: Arc::new(capture_specs),
+            default_funcs: Arc::new(Vec::new()),
+            code: Arc::new(once_cell::sync::OnceCell::new()),
+            debug_name: Some(func_name.to_string()),
+            debug_location: None,
+        }))))
+    }
+
+    fn simple_return_expr(stmt: &Stmt) -> Option<&Expr> {
+        match stmt {
+            Stmt::Return { value: Some(value) } => Some(value.as_ref()),
+            Stmt::Expr(expr) => Some(expr.as_ref()),
+            Stmt::Block { statements } if statements.len() == 1 => Self::simple_return_expr(statements[0].as_ref()),
+            _ => None,
+        }
+    }
+
+    fn expr_mentions_name(expr: &Expr, target: &str) -> bool {
+        match expr {
+            Expr::Var(name) => name == target,
+            Expr::Paren(inner) | Expr::Unary(_, inner) => Self::expr_mentions_name(inner, target),
+            Expr::Bin(left, _, right)
+            | Expr::And(left, right)
+            | Expr::Or(left, right)
+            | Expr::NullishCoalescing(left, right)
+            | Expr::Access(left, right)
+            | Expr::OptionalAccess(left, right) => {
+                Self::expr_mentions_name(left, target) || Self::expr_mentions_name(right, target)
+            }
+            Expr::Conditional(condition, then_expr, else_expr) => {
+                Self::expr_mentions_name(condition, target)
+                    || Self::expr_mentions_name(then_expr, target)
+                    || Self::expr_mentions_name(else_expr, target)
+            }
+            Expr::List(items) => items.iter().any(|item| Self::expr_mentions_name(item, target)),
+            Expr::Map(pairs) => pairs
+                .iter()
+                .any(|(key, value)| Self::expr_mentions_name(key, target) || Self::expr_mentions_name(value, target)),
+            Expr::Range { start, end, step, .. } => {
+                start
+                    .as_deref()
+                    .is_some_and(|expr| Self::expr_mentions_name(expr, target))
+                    || end
+                        .as_deref()
+                        .is_some_and(|expr| Self::expr_mentions_name(expr, target))
+                    || step
+                        .as_deref()
+                        .is_some_and(|expr| Self::expr_mentions_name(expr, target))
+            }
+            Expr::TemplateString(parts) => parts.iter().any(|part| match part {
+                crate::expr::TemplateStringPart::Literal(_) => false,
+                crate::expr::TemplateStringPart::Expr(expr) => Self::expr_mentions_name(expr, target),
+            }),
+            Expr::Call(_, args) => args.iter().any(|arg| Self::expr_mentions_name(arg, target)),
+            Expr::CallExpr(callee, args) => {
+                Self::expr_mentions_name(callee, target) || args.iter().any(|arg| Self::expr_mentions_name(arg, target))
+            }
+            Expr::CallNamed(callee, pos_args, named_args) => {
+                Self::expr_mentions_name(callee, target)
+                    || pos_args.iter().any(|arg| Self::expr_mentions_name(arg, target))
+                    || named_args
+                        .iter()
+                        .any(|(_, expr)| Self::expr_mentions_name(expr, target))
+            }
+            Expr::Match { value, arms } => {
+                Self::expr_mentions_name(value, target)
+                    || arms.iter().any(|arm| Self::expr_mentions_name(&arm.body, target))
+            }
+            Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, expr)| Self::expr_mentions_name(expr, target)),
+            Expr::Val(_) | Expr::Closure { .. } | Expr::Select { .. } => false,
+        }
+    }
+
+    fn expr_is_loop_cacheable(expr: &Expr) -> bool {
+        match expr {
+            Expr::Val(_) | Expr::Var(_) => true,
+            Expr::Paren(inner) | Expr::Unary(_, inner) => Self::expr_is_loop_cacheable(inner),
+            Expr::Bin(left, _, right)
+            | Expr::And(left, right)
+            | Expr::Or(left, right)
+            | Expr::NullishCoalescing(left, right) => {
+                Self::expr_is_loop_cacheable(left) && Self::expr_is_loop_cacheable(right)
+            }
+            Expr::Conditional(condition, then_expr, else_expr) => {
+                Self::expr_is_loop_cacheable(condition)
+                    && Self::expr_is_loop_cacheable(then_expr)
+                    && Self::expr_is_loop_cacheable(else_expr)
+            }
+            _ => false,
+        }
+    }
+
+    fn collect_for_pattern_names(pattern: &ForPattern, out: &mut HashSet<String>) {
+        match pattern {
+            ForPattern::Variable(name) => {
+                out.insert(name.clone());
+            }
+            ForPattern::Ignore => {}
+            ForPattern::Tuple(patterns) | ForPattern::Array { patterns, rest: None } => {
+                for pattern in patterns {
+                    Self::collect_for_pattern_names(pattern, out);
+                }
+            }
+            ForPattern::Array {
+                patterns,
+                rest: Some(rest),
+            } => {
+                for pattern in patterns {
+                    Self::collect_for_pattern_names(pattern, out);
+                }
+                out.insert(rest.clone());
+            }
+            ForPattern::Object(entries) => {
+                for (_, pattern) in entries {
+                    Self::collect_for_pattern_names(pattern, out);
+                }
+            }
+        }
+    }
+
+    fn expr_worth_loop_hoisting(expr: &Expr) -> bool {
+        match expr {
+            Expr::Bin(_, _, _)
+            | Expr::Unary(_, _)
+            | Expr::Conditional(_, _, _)
+            | Expr::And(_, _)
+            | Expr::Or(_, _)
+            | Expr::NullishCoalescing(_, _) => true,
+            Expr::Paren(inner) => Self::expr_worth_loop_hoisting(inner),
+            _ => false,
+        }
+    }
+
+    fn collect_loop_invariant_exprs_from_expr(
+        &self,
+        expr: &Expr,
+        loop_names: &HashSet<String>,
+        body: &Stmt,
+        out: &mut Vec<Expr>,
+    ) {
+        if Self::expr_worth_loop_hoisting(expr) && Self::expr_is_loop_cacheable(expr) {
+            let names = expr.requested_ctx();
+            let safe = !names.is_empty()
+                && names.iter().all(|name| {
+                    !loop_names.contains(name) && self.lookup(name).is_some() && !Self::stmt_assigns_name(body, name)
+                });
+            if safe {
+                if !out.iter().any(|existing| existing == expr) {
+                    out.push(expr.clone());
+                }
+                return;
+            }
+        }
+
+        match expr {
+            Expr::Paren(inner) | Expr::Unary(_, inner) => {
+                self.collect_loop_invariant_exprs_from_expr(inner, loop_names, body, out);
+            }
+            Expr::Bin(left, _, right)
+            | Expr::And(left, right)
+            | Expr::Or(left, right)
+            | Expr::NullishCoalescing(left, right)
+            | Expr::Access(left, right)
+            | Expr::OptionalAccess(left, right) => {
+                self.collect_loop_invariant_exprs_from_expr(left, loop_names, body, out);
+                self.collect_loop_invariant_exprs_from_expr(right, loop_names, body, out);
+            }
+            Expr::Conditional(condition, then_expr, else_expr) => {
+                self.collect_loop_invariant_exprs_from_expr(condition, loop_names, body, out);
+                self.collect_loop_invariant_exprs_from_expr(then_expr, loop_names, body, out);
+                self.collect_loop_invariant_exprs_from_expr(else_expr, loop_names, body, out);
+            }
+            Expr::List(items) => {
+                for item in items {
+                    self.collect_loop_invariant_exprs_from_expr(item, loop_names, body, out);
+                }
+            }
+            Expr::Map(pairs) => {
+                for (key, value) in pairs {
+                    self.collect_loop_invariant_exprs_from_expr(key, loop_names, body, out);
+                    self.collect_loop_invariant_exprs_from_expr(value, loop_names, body, out);
+                }
+            }
+            Expr::Range { start, end, step, .. } => {
+                if let Some(expr) = start {
+                    self.collect_loop_invariant_exprs_from_expr(expr, loop_names, body, out);
+                }
+                if let Some(expr) = end {
+                    self.collect_loop_invariant_exprs_from_expr(expr, loop_names, body, out);
+                }
+                if let Some(expr) = step {
+                    self.collect_loop_invariant_exprs_from_expr(expr, loop_names, body, out);
+                }
+            }
+            Expr::TemplateString(parts) => {
+                for part in parts {
+                    if let crate::expr::TemplateStringPart::Expr(expr) = part {
+                        self.collect_loop_invariant_exprs_from_expr(expr, loop_names, body, out);
+                    }
+                }
+            }
+            Expr::Call(_, args) => {
+                for arg in args {
+                    self.collect_loop_invariant_exprs_from_expr(arg, loop_names, body, out);
+                }
+            }
+            Expr::CallExpr(callee, args) => {
+                self.collect_loop_invariant_exprs_from_expr(callee, loop_names, body, out);
+                for arg in args {
+                    self.collect_loop_invariant_exprs_from_expr(arg, loop_names, body, out);
+                }
+            }
+            Expr::CallNamed(callee, pos_args, named_args) => {
+                self.collect_loop_invariant_exprs_from_expr(callee, loop_names, body, out);
+                for arg in pos_args {
+                    self.collect_loop_invariant_exprs_from_expr(arg, loop_names, body, out);
+                }
+                for (_, arg) in named_args {
+                    self.collect_loop_invariant_exprs_from_expr(arg, loop_names, body, out);
+                }
+            }
+            Expr::Match { value, arms } => {
+                self.collect_loop_invariant_exprs_from_expr(value, loop_names, body, out);
+                for arm in arms {
+                    self.collect_loop_invariant_exprs_from_expr(&arm.body, loop_names, body, out);
+                }
+            }
+            Expr::StructLiteral { fields, .. } => {
+                for (_, value) in fields {
+                    self.collect_loop_invariant_exprs_from_expr(value, loop_names, body, out);
+                }
+            }
+            Expr::Val(_) | Expr::Var(_) | Expr::Closure { .. } | Expr::Select { .. } => {}
+        }
+    }
+
+    fn collect_loop_invariant_exprs_from_stmt(
+        &self,
+        stmt: &Stmt,
+        loop_names: &HashSet<String>,
+        body: &Stmt,
+        out: &mut Vec<Expr>,
+    ) {
+        match stmt {
+            Stmt::Block { statements } => {
+                for statement in statements {
+                    self.collect_loop_invariant_exprs_from_stmt(statement, loop_names, body, out);
+                }
+            }
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::Define { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Return { value: Some(value) }
+            | Stmt::CompoundAssign { value, .. } => {
+                self.collect_loop_invariant_exprs_from_expr(value, loop_names, body, out);
+            }
+            Stmt::If {
+                condition,
+                then_stmt,
+                else_stmt,
+            } => {
+                self.collect_loop_invariant_exprs_from_expr(condition, loop_names, body, out);
+                self.collect_loop_invariant_exprs_from_stmt(then_stmt, loop_names, body, out);
+                if let Some(else_stmt) = else_stmt {
+                    self.collect_loop_invariant_exprs_from_stmt(else_stmt, loop_names, body, out);
+                }
+            }
+            Stmt::While {
+                condition,
+                body: nested_body,
+            } => {
+                self.collect_loop_invariant_exprs_from_expr(condition, loop_names, body, out);
+                self.collect_loop_invariant_exprs_from_stmt(nested_body, loop_names, body, out);
+            }
+            Stmt::For {
+                iterable,
+                body: nested_body,
+                ..
+            } => {
+                self.collect_loop_invariant_exprs_from_expr(iterable, loop_names, body, out);
+                self.collect_loop_invariant_exprs_from_stmt(nested_body, loop_names, body, out);
+            }
+            Stmt::IfLet {
+                value,
+                then_stmt,
+                else_stmt,
+                ..
+            } => {
+                self.collect_loop_invariant_exprs_from_expr(value, loop_names, body, out);
+                self.collect_loop_invariant_exprs_from_stmt(then_stmt, loop_names, body, out);
+                if let Some(else_stmt) = else_stmt {
+                    self.collect_loop_invariant_exprs_from_stmt(else_stmt, loop_names, body, out);
+                }
+            }
+            Stmt::WhileLet {
+                value, body: then_stmt, ..
+            } => {
+                self.collect_loop_invariant_exprs_from_expr(value, loop_names, body, out);
+                self.collect_loop_invariant_exprs_from_stmt(then_stmt, loop_names, body, out);
+            }
+            Stmt::Function { .. } | Stmt::Impl { .. } => {}
+            Stmt::Return { value: None }
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Import { .. }
+            | Stmt::Struct { .. }
+            | Stmt::TypeAlias { .. }
+            | Stmt::Trait { .. }
+            | Stmt::Empty => {}
+        }
+    }
+
+    fn collect_loop_invariant_exprs(&self, pattern: &ForPattern, body: &Stmt) -> Vec<Expr> {
+        let mut loop_names = HashSet::new();
+        Self::collect_for_pattern_names(pattern, &mut loop_names);
+        let mut exprs = Vec::new();
+        self.collect_loop_invariant_exprs_from_stmt(body, &loop_names, body, &mut exprs);
+        exprs
+    }
+
+    fn try_emit_simple_self_call(&mut self, name: &str, value: &Expr) -> bool {
+        let Some(dst) = self.lookup(name) else {
+            return false;
+        };
+        let Some((func_name, args)) = Self::call_expr_name(value) else {
+            return false;
+        };
+        if !self.call_safe_to_fold(func_name) {
+            return false;
+        }
+
+        let Some(Val::Closure(closure)) = self.const_env.get(func_name) else {
+            return false;
+        };
+        if !closure.named_params.is_empty() || closure.params.len() != args.len() {
+            return false;
+        }
+
+        let params = closure.params.clone();
+        let body = closure.body.clone();
+        let captures = closure.captures.clone();
+        let Some(ret) = Self::simple_return_expr(body.as_ref()) else {
+            return false;
+        };
+        let Expr::Bin(left, op, right) = ret else {
+            return false;
+        };
+
+        let Some(left_arg) = Self::simple_call_operand(params.as_ref(), args, left.as_ref()) else {
+            return false;
+        };
+        let Expr::Var(left_name) = left_arg else {
+            return false;
+        };
+        if left_name != name {
+            return false;
+        }
+
+        let Some(right_arg) = Self::simple_call_operand(params.as_ref(), args, right.as_ref()) else {
+            return false;
+        };
+
+        if matches!(op, BinOp::Add)
+            && let Some(imm) = self
+                .try_small_int_const(right_arg)
+                .or_else(|| Self::small_int_from_capture(captures.as_ref(), right_arg))
+        {
+            self.emit(Op::AddIntImm(dst, dst, imm));
+            return true;
+        }
+        if matches!(op, BinOp::Add)
+            && let Expr::Var(rhs_name) = right_arg
+            && let Some(rhs) = self.lookup(rhs_name)
+        {
+            if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs) {
+                self.emit(Op::AddInt(dst, dst, rhs));
+            } else {
+                self.emit(Op::Add(dst, dst, rhs));
+            }
+            return true;
+        }
+        if matches!(op, BinOp::Sub)
+            && let Some(imm) = self
+                .try_small_int_const(right_arg)
+                .or_else(|| Self::small_int_from_capture(captures.as_ref(), right_arg))
+            && let Some(neg) = imm.checked_neg()
+            && (-128..=127).contains(&neg)
+        {
+            self.emit(Op::AddIntImm(dst, dst, neg));
+            return true;
+        }
+        if matches!(op, BinOp::Sub)
+            && let Expr::Var(rhs_name) = right_arg
+            && let Some(rhs) = self.lookup(rhs_name)
+        {
+            if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs) {
+                self.emit(Op::SubInt(dst, dst, rhs));
+            } else {
+                self.emit(Op::Sub(dst, dst, rhs));
+            }
+            return true;
+        }
+
+        false
+    }
+
+    fn try_emit_immediate_closure_factory_call_pair(&mut self, first: &Stmt, second: &Stmt) -> bool {
+        let Stmt::Let {
+            pattern: Pattern::Variable(closure_name),
+            value: factory_call,
+            is_const: false,
+            ..
+        } = first
+        else {
+            return false;
+        };
+        let Stmt::Assign {
+            name: dst_name,
+            value: call_value,
+            ..
+        } = second
+        else {
+            return false;
+        };
+        let Some(dst) = self.lookup(dst_name) else {
+            return false;
+        };
+
+        let Some((factory_name, factory_args)) = Self::call_expr_name(factory_call) else {
+            return false;
+        };
+        if factory_args.len() != 1 || !self.call_safe_to_fold(factory_name) {
+            return false;
+        }
+
+        let Some(Val::Closure(factory)) = self.const_env.get(factory_name).cloned() else {
+            return false;
+        };
+        if !factory.named_params.is_empty() || factory.params.len() != 1 {
+            return false;
+        }
+
+        let Some(returned) = Self::simple_return_expr(factory.body.as_ref()) else {
+            return false;
+        };
+        let Expr::Closure { params, body } = returned else {
+            return false;
+        };
+        if params.len() != 1 {
+            return false;
+        }
+
+        let Some((callee_name, call_args)) = Self::call_expr_name(call_value) else {
+            return false;
+        };
+        if callee_name != closure_name || call_args.len() != 1 {
+            return false;
+        }
+        let Expr::Var(call_arg_name) = call_args[0].as_ref() else {
+            return false;
+        };
+        if call_arg_name != dst_name {
+            return false;
+        }
+
+        let Expr::Bin(left, op, right) = body.as_ref() else {
+            return false;
+        };
+        let Expr::Var(left_name) = left.as_ref() else {
+            return false;
+        };
+        if left_name != &params[0] {
+            return false;
+        }
+        let Expr::Var(right_name) = right.as_ref() else {
+            return false;
+        };
+        if right_name != &factory.params[0] {
+            return false;
+        }
+
+        let capture_reg = match factory_args[0].as_ref() {
+            Expr::Var(name) => self.lookup(name).unwrap_or_else(|| self.expr(factory_args[0].as_ref())),
+            expr => self.expr(expr),
+        };
+        match op {
+            BinOp::Add => self.emit(Op::AddInt(dst, dst, capture_reg)),
+            BinOp::Sub => self.emit(Op::SubInt(dst, dst, capture_reg)),
+            _ => return false,
+        }
+        true
+    }
+
+    fn cached_loop_call_assignment<'a>(&self, body: &'a Stmt) -> Option<(&'a str, &'a Expr)> {
+        let stmt = match body {
+            Stmt::Block { statements } if statements.len() == 1 => statements[0].as_ref(),
+            other => other,
+        };
+        let Stmt::Assign { name, value, .. } = stmt else {
+            return None;
+        };
+        let (func_name, args) = Self::call_expr_name(value)?;
+        let Some(Val::Closure(closure)) = self.const_env.get(func_name) else {
+            return None;
+        };
+        if !self.closure_safe_for_known_eval(func_name, closure.as_ref()) {
+            return None;
+        }
+        if args
+            .iter()
+            .any(|arg| Self::expr_mentions_name(arg, name) || !Self::expr_is_loop_cacheable(arg))
+        {
+            return None;
+        }
+        Some((name.as_str(), value.as_ref()))
+    }
+
+    fn emit_cached_loop_call_assignment(&mut self, target: &str, value: &Expr, flag_reg: u16, cache_reg: u16) -> bool {
+        let Some(target_reg) = self.lookup(target) else {
+            return false;
+        };
+        self.forget_known_value(target);
+
+        let j_compute = self.code.len();
+        self.emit(Op::JmpFalse(flag_reg, 0));
+        let j_assign = self.code.len();
+        self.emit(Op::Jmp(0));
+
+        let compute_pos = self.code.len();
+        if let Op::JmpFalse(_, ref mut ofs) = self.code[j_compute] {
+            *ofs = (compute_pos as isize - j_compute as isize) as i16;
+        }
+
+        let rv = self.expr(value);
+        if rv != cache_reg {
+            self.emit(Op::Move(cache_reg, rv));
+        }
+        let true_idx = self.k(Val::Bool(true));
+        self.emit(Op::LoadK(flag_reg, true_idx));
+
+        let assign_pos = self.code.len();
+        if let Op::Jmp(ref mut ofs) = self.code[j_assign] {
+            *ofs = (assign_pos as isize - j_assign as isize) as i16;
+        }
+        self.store_named(target, target_reg, cache_reg);
+        true
+    }
+
+    fn cached_loop_delta<'a>(&self, body: &'a Stmt) -> Option<(&'a str, &'a Expr, Vec<Box<Stmt>>)> {
+        let Stmt::Block { statements } = body else {
+            return None;
+        };
+        let (last, prefix) = statements.split_last()?;
+        let (name, value) = match last.as_ref() {
+            Stmt::CompoundAssign {
+                name,
+                op: BinOp::Add,
+                value,
+                ..
+            } => (name.as_str(), value.as_ref()),
+            Stmt::Assign { name, value, .. } => {
+                let Expr::Bin(left, BinOp::Add, right) = value.as_ref() else {
+                    return None;
+                };
+                let Expr::Var(left_name) = left.as_ref() else {
+                    return None;
+                };
+                if left_name != name {
+                    return None;
+                }
+                (name.as_str(), right.as_ref())
+            }
+            _ => return None,
+        };
+        let mut locals = HashSet::new();
+        for stmt in prefix {
+            if Self::stmt_mentions_name(stmt, name) {
+                return None;
+            }
+            if !Self::stmt_is_cache_prefix_only(stmt, &mut locals) {
+                return None;
+            }
+        }
+        if locals.contains(name)
+            || !Self::expr_is_cache_prefix_pure(value, &locals)
+            || Self::expr_mentions_name(value, name)
+        {
+            return None;
+        }
+        Some((name, value, prefix.to_vec()))
+    }
+
+    fn range_count_accumulator_delta(body: &Stmt) -> Option<(&str, i16)> {
+        let stmt = match body {
+            Stmt::Block { statements } if statements.len() == 1 => statements[0].as_ref(),
+            other => other,
+        };
+        match stmt {
+            Stmt::CompoundAssign {
+                name,
+                op: BinOp::Add,
+                value,
+                ..
+            } => {
+                let Expr::Val(Val::Int(delta)) = value.as_ref() else {
+                    return None;
+                };
+                i16::try_from(*delta).ok().map(|delta| (name.as_str(), delta))
+            }
+            Stmt::CompoundAssign {
+                name,
+                op: BinOp::Sub,
+                value,
+                ..
+            } => {
+                let Expr::Val(Val::Int(delta)) = value.as_ref() else {
+                    return None;
+                };
+                let delta = delta.checked_neg().and_then(|value| i16::try_from(value).ok())?;
+                Some((name.as_str(), delta))
+            }
+            Stmt::Assign { name, value, .. } => {
+                let Expr::Bin(left, op @ (BinOp::Add | BinOp::Sub), right) = value.as_ref() else {
+                    return None;
+                };
+                let Expr::Var(left_name) = left.as_ref() else {
+                    return None;
+                };
+                if left_name != name {
+                    return None;
+                }
+                let Expr::Val(Val::Int(delta)) = right.as_ref() else {
+                    return None;
+                };
+                let delta = match op {
+                    BinOp::Add => i16::try_from(*delta).ok()?,
+                    BinOp::Sub => delta.checked_neg().and_then(|value| i16::try_from(value).ok())?,
+                    _ => unreachable!(),
+                };
+                Some((name.as_str(), delta))
+            }
+            _ => None,
+        }
+    }
+
+    fn try_emit_range_count_accumulator(
+        &mut self,
+        pattern: &ForPattern,
+        body: &Stmt,
+        idx: u16,
+        limit: u16,
+        step: u16,
+        inclusive: bool,
+        explicit: bool,
+    ) -> bool {
+        if explicit || !matches!(pattern, ForPattern::Ignore) {
+            return false;
+        }
+        let Some((target, imm)) = Self::range_count_accumulator_delta(body) else {
+            return false;
+        };
+        let Some(target_reg) = self.lookup(target) else {
+            return false;
+        };
+        self.forget_known_value(target);
+        self.emit(Op::AddRangeCountImm {
+            target: target_reg,
+            idx,
+            limit,
+            step,
+            inclusive,
+            explicit,
+            imm,
+        });
+        true
+    }
+
+    fn stmt_mentions_name(stmt: &Stmt, target: &str) -> bool {
+        match stmt {
+            Stmt::Block { statements } => statements.iter().any(|stmt| Self::stmt_mentions_name(stmt, target)),
+            Stmt::Let { pattern, value, .. } => {
+                matches!(pattern, Pattern::Variable(name) if name == target) || Self::expr_mentions_name(value, target)
+            }
+            Stmt::Assign { name, value, .. } | Stmt::CompoundAssign { name, value, .. } => {
+                name == target || Self::expr_mentions_name(value, target)
+            }
+            Stmt::Expr(expr) | Stmt::Return { value: Some(expr) } => Self::expr_mentions_name(expr, target),
+            Stmt::Return { value: None } | Stmt::Break | Stmt::Continue | Stmt::Empty => false,
+            Stmt::Define { name, value } => name == target || Self::expr_mentions_name(value, target),
+            Stmt::Function { name, body, .. } => name == target || Self::stmt_mentions_name(body, target),
+            Stmt::If {
+                condition,
+                then_stmt,
+                else_stmt,
+            } => {
+                Self::expr_mentions_name(condition, target)
+                    || Self::stmt_mentions_name(then_stmt, target)
+                    || else_stmt
+                        .as_deref()
+                        .is_some_and(|stmt| Self::stmt_mentions_name(stmt, target))
+            }
+            Stmt::IfLet {
+                pattern,
+                value,
+                then_stmt,
+                else_stmt,
+            } => {
+                Self::pattern_mentions_name(pattern, target)
+                    || Self::expr_mentions_name(value, target)
+                    || Self::stmt_mentions_name(then_stmt, target)
+                    || else_stmt
+                        .as_deref()
+                        .is_some_and(|stmt| Self::stmt_mentions_name(stmt, target))
+            }
+            Stmt::While { condition, body } => {
+                Self::expr_mentions_name(condition, target) || Self::stmt_mentions_name(body, target)
+            }
+            Stmt::WhileLet { pattern, value, body } => {
+                Self::pattern_mentions_name(pattern, target)
+                    || Self::expr_mentions_name(value, target)
+                    || Self::stmt_mentions_name(body, target)
+            }
+            Stmt::For {
+                pattern,
+                iterable,
+                body,
+            } => {
+                Self::for_pattern_mentions_name(pattern, target)
+                    || Self::expr_mentions_name(iterable, target)
+                    || Self::stmt_mentions_name(body, target)
+            }
+            Stmt::Struct { name, .. } | Stmt::TypeAlias { name, .. } | Stmt::Trait { name, .. } => name == target,
+            Stmt::Impl {
+                trait_name, methods, ..
+            } => trait_name == target || methods.iter().any(|stmt| Self::stmt_mentions_name(stmt, target)),
+            Stmt::Import(_) => false,
+        }
+    }
+
+    fn pattern_mentions_name(pattern: &Pattern, target: &str) -> bool {
+        match pattern {
+            Pattern::Variable(name) => name == target,
+            Pattern::Wildcard | Pattern::Literal(_) => false,
+            Pattern::Range { start, end, .. } => {
+                Self::expr_mentions_name(start, target) || Self::expr_mentions_name(end, target)
+            }
+            Pattern::List { patterns, rest } => {
+                rest.as_deref() == Some(target)
+                    || patterns
+                        .iter()
+                        .any(|pattern| Self::pattern_mentions_name(pattern, target))
+            }
+            Pattern::Or(patterns) => patterns
+                .iter()
+                .any(|pattern| Self::pattern_mentions_name(pattern, target)),
+            Pattern::Map { patterns, rest } => {
+                rest.as_deref() == Some(target)
+                    || patterns
+                        .iter()
+                        .any(|(_, pattern)| Self::pattern_mentions_name(pattern, target))
+            }
+            Pattern::Guard { pattern, guard } => {
+                Self::pattern_mentions_name(pattern, target) || Self::expr_mentions_name(guard, target)
+            }
+        }
+    }
+
+    fn for_pattern_mentions_name(pattern: &ForPattern, target: &str) -> bool {
+        match pattern {
+            ForPattern::Variable(name) => name == target,
+            ForPattern::Ignore => false,
+            ForPattern::Tuple(patterns) | ForPattern::Array { patterns, rest: None } => patterns
+                .iter()
+                .any(|pattern| Self::for_pattern_mentions_name(pattern, target)),
+            ForPattern::Array {
+                patterns,
+                rest: Some(rest),
+            } => {
+                rest == target
+                    || patterns
+                        .iter()
+                        .any(|pattern| Self::for_pattern_mentions_name(pattern, target))
+            }
+            ForPattern::Object(entries) => entries
+                .iter()
+                .any(|(_, pattern)| Self::for_pattern_mentions_name(pattern, target)),
+        }
+    }
+
+    fn stmt_is_cache_prefix_only(stmt: &Stmt, locals: &mut HashSet<String>) -> bool {
+        match stmt {
+            Stmt::Block { statements } => {
+                let mut scoped = locals.clone();
+                statements
+                    .iter()
+                    .all(|stmt| Self::stmt_is_cache_prefix_only(stmt, &mut scoped))
+            }
+            Stmt::Let {
+                pattern: Pattern::Variable(name),
+                value,
+                ..
+            } => {
+                if !Self::expr_is_cache_prefix_pure(value, locals) {
+                    return false;
+                }
+                locals.insert(name.clone());
+                true
+            }
+            Stmt::Assign { name, value, .. } | Stmt::CompoundAssign { name, value, .. } => {
+                locals.contains(name) && Self::expr_is_cache_prefix_pure(value, locals)
+            }
+            Stmt::Expr(expr) => Self::expr_stmt_is_cache_prefix_only(expr, locals),
+            Stmt::For {
+                pattern,
+                iterable,
+                body,
+            } => {
+                if !Self::expr_is_cache_prefix_pure(iterable, locals) {
+                    return false;
+                }
+                let mut scoped = locals.clone();
+                if !Self::bind_for_pattern_names(pattern, &mut scoped) {
+                    return false;
+                }
+                Self::stmt_is_cache_prefix_only(body, &mut scoped)
+            }
+            Stmt::If {
+                condition,
+                then_stmt,
+                else_stmt,
+            } => {
+                Self::expr_is_cache_prefix_pure(condition, locals)
+                    && Self::stmt_is_cache_prefix_only(then_stmt, &mut locals.clone())
+                    && else_stmt
+                        .as_deref()
+                        .map(|stmt| Self::stmt_is_cache_prefix_only(stmt, &mut locals.clone()))
+                        .unwrap_or(true)
+            }
+            Stmt::Empty => true,
+            _ => false,
+        }
+    }
+
+    fn expr_stmt_is_cache_prefix_only(expr: &Expr, locals: &HashSet<String>) -> bool {
+        if let Expr::CallExpr(callee, args) = expr
+            && let Expr::Access(obj, field) = callee.as_ref()
+            && let Expr::Var(receiver) = obj.as_ref()
+            && locals.contains(receiver)
+            && let Expr::Val(Val::Str(method)) = field.as_ref()
+            && matches!(method.as_ref(), "push" | "set")
+        {
+            return args.iter().all(|arg| Self::expr_is_cache_prefix_pure(arg, locals));
+        }
+        Self::expr_is_cache_prefix_pure(expr, locals)
+    }
+
+    fn expr_is_cache_prefix_pure(expr: &Expr, locals: &HashSet<String>) -> bool {
+        match expr {
+            Expr::Val(_) | Expr::Var(_) => true,
+            Expr::Paren(inner) | Expr::Unary(_, inner) => Self::expr_is_cache_prefix_pure(inner, locals),
+            Expr::Bin(left, _, right)
+            | Expr::And(left, right)
+            | Expr::Or(left, right)
+            | Expr::NullishCoalescing(left, right)
+            | Expr::Access(left, right)
+            | Expr::OptionalAccess(left, right) => {
+                Self::expr_is_cache_prefix_pure(left, locals) && Self::expr_is_cache_prefix_pure(right, locals)
+            }
+            Expr::Conditional(condition, then_expr, else_expr) => {
+                Self::expr_is_cache_prefix_pure(condition, locals)
+                    && Self::expr_is_cache_prefix_pure(then_expr, locals)
+                    && Self::expr_is_cache_prefix_pure(else_expr, locals)
+            }
+            Expr::List(items) => items.iter().all(|item| Self::expr_is_cache_prefix_pure(item, locals)),
+            Expr::Map(pairs) => pairs.iter().all(|(key, value)| {
+                Self::expr_is_cache_prefix_pure(key, locals) && Self::expr_is_cache_prefix_pure(value, locals)
+            }),
+            Expr::Range { start, end, step, .. } => {
+                start
+                    .as_deref()
+                    .map(|expr| Self::expr_is_cache_prefix_pure(expr, locals))
+                    .unwrap_or(true)
+                    && end
+                        .as_deref()
+                        .map(|expr| Self::expr_is_cache_prefix_pure(expr, locals))
+                        .unwrap_or(true)
+                    && step
+                        .as_deref()
+                        .map(|expr| Self::expr_is_cache_prefix_pure(expr, locals))
+                        .unwrap_or(true)
+            }
+            Expr::TemplateString(parts) => parts.iter().all(|part| match part {
+                crate::expr::TemplateStringPart::Literal(_) => true,
+                crate::expr::TemplateStringPart::Expr(expr) => Self::expr_is_cache_prefix_pure(expr, locals),
+            }),
+            Expr::CallExpr(callee, args) => {
+                if let Expr::Access(obj, field) = callee.as_ref()
+                    && let Expr::Var(receiver) = obj.as_ref()
+                    && locals.contains(receiver)
+                    && let Expr::Val(Val::Str(method)) = field.as_ref()
+                    && matches!(method.as_ref(), "values" | "keys" | "len")
+                {
+                    return args.is_empty();
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn emit_cached_loop_delta(
+        &mut self,
+        target: &str,
+        value: &Expr,
+        prefix: &[Box<Stmt>],
+        flag_reg: u16,
+        cache_reg: u16,
+    ) -> bool {
+        let Some(target_reg) = self.lookup(target) else {
+            return false;
+        };
+        self.forget_known_value(target);
+
+        let j_compute = self.code.len();
+        self.emit(Op::JmpFalse(flag_reg, 0));
+        let j_add = self.code.len();
+        self.emit(Op::Jmp(0));
+
+        let compute_pos = self.code.len();
+        if let Op::JmpFalse(_, ref mut ofs) = self.code[j_compute] {
+            *ofs = (compute_pos as isize - j_compute as isize) as i16;
+        }
+
+        self.push_var_scope();
+        self.with_const_scope(|builder| {
+            for stmt in prefix {
+                builder.stmt(stmt);
+            }
+        });
+        let delta = self.expr(value);
+        self.pop_var_scope();
+
+        if delta != cache_reg {
+            self.emit(Op::Move(cache_reg, delta));
+        }
+        let true_idx = self.k(Val::Bool(true));
+        self.emit(Op::LoadK(flag_reg, true_idx));
+
+        let add_pos = self.code.len();
+        if let Op::Jmp(ref mut ofs) = self.code[j_add] {
+            *ofs = (add_pos as isize - j_add as isize) as i16;
+        }
+
+        if self.int_regs.contains(&target_reg) && self.int_regs.contains(&cache_reg) {
+            self.emit(Op::AddInt(target_reg, target_reg, cache_reg));
+        } else {
+            self.emit(Op::Add(target_reg, target_reg, cache_reg));
+        }
+        true
+    }
+
     fn try_emit_simple_self_assign(&mut self, name: &str, value: &Expr) -> bool {
+        if self.try_emit_simple_self_call(name, value) {
+            return true;
+        }
+
         let Some(dst) = self.lookup(name) else {
             return false;
         };
@@ -79,6 +1138,21 @@ impl FunctionBuilder {
         };
         if left_name != name {
             return false;
+        }
+
+        if matches!(op, BinOp::Add)
+            && let Some(imm) = self.try_small_int_const(right)
+        {
+            self.emit(Op::AddIntImm(dst, dst, imm));
+            return true;
+        }
+        if matches!(op, BinOp::Sub)
+            && let Some(imm) = self.try_small_int_const(right)
+            && let Some(neg) = imm.checked_neg()
+            && (-128..=127).contains(&neg)
+        {
+            self.emit(Op::AddIntImm(dst, dst, neg));
+            return true;
         }
 
         match (op, right.as_ref()) {
@@ -268,6 +1342,7 @@ impl FunctionBuilder {
             limit: limit_reg,
             step: step_reg,
             inclusive: false,
+            write_idx: true,
             ofs: 0,
         });
 
@@ -356,6 +1431,188 @@ impl FunctionBuilder {
         true
     }
 
+    fn try_elide_dead_range_loop(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> bool {
+        if !matches!(pattern, ForPattern::Ignore) {
+            return false;
+        }
+        let Expr::Range {
+            start,
+            end,
+            inclusive,
+            step,
+        } = iterable
+        else {
+            return false;
+        };
+        if self
+            .range_iteration_count(start.as_deref(), end.as_deref(), *inclusive, step.as_deref())
+            .is_none()
+        {
+            return false;
+        }
+        let mut locals = HashSet::new();
+        Self::stmt_is_local_only(body, &mut locals)
+    }
+
+    fn stmt_is_local_only(stmt: &Stmt, locals: &mut HashSet<String>) -> bool {
+        match stmt {
+            Stmt::Block { statements } => {
+                let mut scoped = locals.clone();
+                statements
+                    .iter()
+                    .all(|stmt| Self::stmt_is_local_only(stmt, &mut scoped))
+            }
+            Stmt::Let {
+                pattern: Pattern::Variable(name),
+                value,
+                ..
+            } => {
+                if !Self::expr_is_local_pure(value, locals) {
+                    return false;
+                }
+                locals.insert(name.clone());
+                true
+            }
+            Stmt::Assign { name, value, .. } | Stmt::CompoundAssign { name, value, .. } => {
+                locals.contains(name) && Self::expr_is_local_pure(value, locals)
+            }
+            Stmt::Expr(expr) => Self::expr_stmt_is_local_only(expr, locals),
+            Stmt::For {
+                pattern,
+                iterable,
+                body,
+            } => {
+                if !Self::expr_is_local_pure(iterable, locals) {
+                    return false;
+                }
+                let mut scoped = locals.clone();
+                if !Self::bind_for_pattern_names(pattern, &mut scoped) {
+                    return false;
+                }
+                Self::stmt_is_local_only(body, &mut scoped)
+            }
+            Stmt::If {
+                condition,
+                then_stmt,
+                else_stmt,
+            } => {
+                Self::expr_is_local_pure(condition, locals)
+                    && Self::stmt_is_local_only(then_stmt, &mut locals.clone())
+                    && else_stmt
+                        .as_deref()
+                        .map(|stmt| Self::stmt_is_local_only(stmt, &mut locals.clone()))
+                        .unwrap_or(true)
+            }
+            Stmt::Empty => true,
+            _ => false,
+        }
+    }
+
+    fn bind_for_pattern_names(pattern: &ForPattern, locals: &mut HashSet<String>) -> bool {
+        match pattern {
+            ForPattern::Variable(name) => {
+                locals.insert(name.clone());
+                true
+            }
+            ForPattern::Ignore => true,
+            ForPattern::Tuple(patterns) | ForPattern::Array { patterns, rest: None } => patterns
+                .iter()
+                .all(|pattern| Self::bind_for_pattern_names(pattern, locals)),
+            ForPattern::Array {
+                patterns,
+                rest: Some(rest),
+            } => {
+                for pattern in patterns {
+                    if !Self::bind_for_pattern_names(pattern, locals) {
+                        return false;
+                    }
+                }
+                locals.insert(rest.clone());
+                true
+            }
+            ForPattern::Object(entries) => entries
+                .iter()
+                .all(|(_, pattern)| Self::bind_for_pattern_names(pattern, locals)),
+        }
+    }
+
+    fn expr_stmt_is_local_only(expr: &Expr, locals: &HashSet<String>) -> bool {
+        if let Expr::CallExpr(callee, args) = expr
+            && let Expr::Access(obj, field) = callee.as_ref()
+            && let Expr::Var(receiver) = obj.as_ref()
+            && locals.contains(receiver)
+            && let Expr::Val(Val::Str(method)) = field.as_ref()
+            && method.as_ref() == "push"
+        {
+            return args.iter().all(|arg| Self::expr_is_local_pure(arg, locals));
+        }
+        if let Expr::CallExpr(callee, args) = expr
+            && let Expr::Access(obj, field) = callee.as_ref()
+            && let Expr::Var(receiver) = obj.as_ref()
+            && locals.contains(receiver)
+            && let Expr::Val(Val::Str(method)) = field.as_ref()
+            && method.as_ref() == "set"
+        {
+            return args.iter().all(|arg| Self::expr_is_local_pure(arg, locals));
+        }
+        Self::expr_is_local_pure(expr, locals)
+    }
+
+    fn expr_is_local_pure(expr: &Expr, locals: &HashSet<String>) -> bool {
+        match expr {
+            Expr::Val(_) => true,
+            Expr::Var(name) => locals.contains(name),
+            Expr::Paren(inner) | Expr::Unary(_, inner) => Self::expr_is_local_pure(inner, locals),
+            Expr::Bin(left, _, right)
+            | Expr::And(left, right)
+            | Expr::Or(left, right)
+            | Expr::NullishCoalescing(left, right)
+            | Expr::Access(left, right)
+            | Expr::OptionalAccess(left, right) => {
+                Self::expr_is_local_pure(left, locals) && Self::expr_is_local_pure(right, locals)
+            }
+            Expr::Conditional(condition, then_expr, else_expr) => {
+                Self::expr_is_local_pure(condition, locals)
+                    && Self::expr_is_local_pure(then_expr, locals)
+                    && Self::expr_is_local_pure(else_expr, locals)
+            }
+            Expr::List(items) => items.iter().all(|item| Self::expr_is_local_pure(item, locals)),
+            Expr::Map(pairs) => pairs
+                .iter()
+                .all(|(key, value)| Self::expr_is_local_pure(key, locals) && Self::expr_is_local_pure(value, locals)),
+            Expr::Range { start, end, step, .. } => {
+                start
+                    .as_deref()
+                    .map(|expr| Self::expr_is_local_pure(expr, locals))
+                    .unwrap_or(true)
+                    && end
+                        .as_deref()
+                        .map(|expr| Self::expr_is_local_pure(expr, locals))
+                        .unwrap_or(true)
+                    && step
+                        .as_deref()
+                        .map(|expr| Self::expr_is_local_pure(expr, locals))
+                        .unwrap_or(true)
+            }
+            Expr::TemplateString(parts) => parts.iter().all(|part| match part {
+                crate::expr::TemplateStringPart::Literal(_) => true,
+                crate::expr::TemplateStringPart::Expr(expr) => Self::expr_is_local_pure(expr, locals),
+            }),
+            Expr::CallExpr(callee, args) => {
+                if let Expr::Access(obj, field) = callee.as_ref()
+                    && let Expr::Var(receiver) = obj.as_ref()
+                    && locals.contains(receiver)
+                    && let Expr::Val(Val::Str(method)) = field.as_ref()
+                    && matches!(method.as_ref(), "values" | "keys" | "len")
+                {
+                    return args.is_empty();
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     fn range_iteration_count(
         &mut self,
         start: Option<&Expr>,
@@ -403,9 +1660,41 @@ impl FunctionBuilder {
     }
 
     fn eval_const_int(&mut self, expr: &Expr) -> Option<i64> {
+        if self.expr_uses_only_known_values(expr)
+            && let Ok(Val::Int(i)) = expr.eval_with_ctx(&mut self.const_env.clone())
+        {
+            return Some(i);
+        }
         match self.try_eval_const_expr(expr)? {
             Val::Int(i) => Some(i),
             _ => None,
+        }
+    }
+
+    fn stmt_assigns_name(stmt: &Stmt, target: &str) -> bool {
+        match stmt {
+            Stmt::Block { statements } => statements.iter().any(|stmt| Self::stmt_assigns_name(stmt, target)),
+            Stmt::Assign { name, .. } | Stmt::CompoundAssign { name, .. } => name == target,
+            Stmt::Let {
+                pattern: Pattern::Variable(name),
+                ..
+            } => name == target,
+            Stmt::If {
+                then_stmt, else_stmt, ..
+            }
+            | Stmt::IfLet {
+                then_stmt, else_stmt, ..
+            } => {
+                Self::stmt_assigns_name(then_stmt, target)
+                    || else_stmt
+                        .as_deref()
+                        .is_some_and(|branch| Self::stmt_assigns_name(branch, target))
+            }
+            Stmt::While { body, .. } | Stmt::WhileLet { body, .. } | Stmt::For { body, .. } => {
+                Self::stmt_assigns_name(body, target)
+            }
+            Stmt::Function { body, .. } => Self::stmt_assigns_name(body, target),
+            _ => false,
         }
     }
 
@@ -421,6 +1710,25 @@ impl FunctionBuilder {
     fn eval_const_stmt(&mut self, stmt: &Stmt, mutated: &mut HashSet<String>) -> bool {
         match stmt {
             Stmt::Block { statements } => self.eval_const_block(statements, mutated),
+            Stmt::CompoundAssign { name, op, value, .. } => {
+                let Some(current) = self.const_env.get(name).cloned() else {
+                    return false;
+                };
+                let Some(rhs) = self.try_eval_const_expr(value) else {
+                    return false;
+                };
+                let Ok(val) = op.eval_vals(&current, &rhs) else {
+                    return false;
+                };
+                if self.const_env.assign(name, val.clone()).is_err() {
+                    return false;
+                }
+                if self.const_bindings.contains_key(name) {
+                    self.const_bindings.insert(name.clone(), val);
+                }
+                mutated.insert(name.clone());
+                true
+            }
             Stmt::Assign { name, value, .. } => {
                 let Some(val) = self.try_eval_const_expr(value) else {
                     return false;
@@ -439,10 +1747,125 @@ impl FunctionBuilder {
         }
     }
 
+    fn try_emit_list_fold_add(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> bool {
+        let ForPattern::Variable(item_name) = pattern else {
+            return false;
+        };
+        let Expr::Var(list_name) = iterable else {
+            return false;
+        };
+        let Some(list_reg) = self.lookup(list_name) else {
+            return false;
+        };
+        if !self.list_locals.contains(&list_reg) {
+            return false;
+        }
+
+        let folded_body = match body {
+            Stmt::CompoundAssign {
+                name,
+                op: BinOp::Add,
+                value,
+                ..
+            } => Some((name, value.as_ref())),
+            Stmt::Block { statements } if statements.len() == 1 => match statements[0].as_ref() {
+                Stmt::CompoundAssign {
+                    name,
+                    op: BinOp::Add,
+                    value,
+                    ..
+                } => Some((name, value.as_ref())),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((acc_name, Expr::Var(value_name))) = folded_body else {
+            return false;
+        };
+        if value_name != item_name {
+            return false;
+        }
+        let Some(acc_reg) = self.lookup(acc_name) else {
+            return false;
+        };
+
+        self.emit(Op::ListFoldAdd {
+            acc: acc_reg,
+            list: list_reg,
+        });
+        true
+    }
+
+    fn try_emit_map_values_fold_add(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> bool {
+        let ForPattern::Variable(item_name) = pattern else {
+            return false;
+        };
+        let Expr::CallExpr(callee, args) = iterable else {
+            return false;
+        };
+        if !args.is_empty() {
+            return false;
+        }
+        let Expr::Access(obj_expr, field_expr) = callee.as_ref() else {
+            return false;
+        };
+        let (Expr::Var(map_name), Expr::Val(Val::Str(method))) = (obj_expr.as_ref(), field_expr.as_ref()) else {
+            return false;
+        };
+        if method.as_ref() != "values" {
+            return false;
+        }
+        let Some(map_reg) = self.lookup(map_name) else {
+            return false;
+        };
+        if !self.map_locals.contains(&map_reg) {
+            return false;
+        }
+
+        let folded_body = match body {
+            Stmt::CompoundAssign {
+                name,
+                op: BinOp::Add,
+                value,
+                ..
+            } => Some((name, value.as_ref())),
+            Stmt::Block { statements } if statements.len() == 1 => match statements[0].as_ref() {
+                Stmt::CompoundAssign {
+                    name,
+                    op: BinOp::Add,
+                    value,
+                    ..
+                } => Some((name, value.as_ref())),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((acc_name, Expr::Var(value_name))) = folded_body else {
+            return false;
+        };
+        if value_name != item_name {
+            return false;
+        }
+        let Some(acc_reg) = self.lookup(acc_name) else {
+            return false;
+        };
+
+        self.emit(Op::MapValuesFoldAdd {
+            acc: acc_reg,
+            map: map_reg,
+        });
+        true
+    }
+
     pub fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Block { statements } => {
                 self.with_const_scope(|builder| {
+                    if statements.len() == 2
+                        && builder.try_emit_immediate_closure_factory_call_pair(&statements[0], &statements[1])
+                    {
+                        return;
+                    }
                     for st in statements {
                         builder.stmt(st);
                     }
@@ -454,6 +1877,15 @@ impl FunctionBuilder {
                 body,
             } => {
                 if self.try_precompute_range_loop(pattern, iterable, body) {
+                    return;
+                }
+                if self.try_elide_dead_range_loop(pattern, iterable, body) {
+                    return;
+                }
+                if self.try_emit_list_fold_add(pattern, iterable, body) {
+                    return;
+                }
+                if self.try_emit_map_values_fold_add(pattern, iterable, body) {
                     return;
                 }
                 if let Expr::Range {
@@ -489,8 +1921,66 @@ impl FunctionBuilder {
                     } else {
                         self.alloc()
                     };
+                    if self.try_emit_range_count_accumulator(
+                        pattern,
+                        body,
+                        r_idx,
+                        r_lim,
+                        r_step,
+                        *inclusive,
+                        step.is_some(),
+                    ) {
+                        self.loop_depth = self.loop_depth.saturating_sub(1);
+                        self.break_locations = saved_breaks;
+                        self.continue_locations = saved_conts;
+                        return;
+                    }
+                    let cached_loop_call = if matches!(pattern, ForPattern::Ignore) {
+                        self.cached_loop_call_assignment(body)
+                            .map(|(target, value)| (target.to_string(), value.clone()))
+                    } else {
+                        None
+                    };
+                    let cached_loop_delta = if matches!(pattern, ForPattern::Ignore) && cached_loop_call.is_none() {
+                        self.cached_loop_delta(body)
+                            .map(|(target, value, prefix)| (target.to_string(), value.clone(), prefix))
+                    } else {
+                        None
+                    };
+                    let cached_loop_regs = cached_loop_call.as_ref().map(|_| {
+                        let flag = self.alloc();
+                        let value = self.alloc();
+                        let false_idx = self.k(Val::Bool(false));
+                        self.emit(Op::LoadK(flag, false_idx));
+                        (flag, value)
+                    });
+                    let cached_delta_regs = cached_loop_delta.as_ref().map(|_| {
+                        let flag = self.alloc();
+                        let value = self.alloc();
+                        let false_idx = self.k(Val::Bool(false));
+                        self.emit(Op::LoadK(flag, false_idx));
+                        (flag, value)
+                    });
+                    let loop_invariant_exprs = if cached_loop_call.is_none() && cached_loop_delta.is_none() {
+                        self.collect_loop_invariant_exprs(pattern, body)
+                    } else {
+                        Vec::new()
+                    };
+                    let loop_invariant_start = self.loop_invariant_expr_regs.len();
+                    for expr in loop_invariant_exprs {
+                        let reg = self.expr(&expr);
+                        self.loop_invariant_expr_regs.push((expr, reg));
+                    }
+                    let direct_range_var = match pattern {
+                        ForPattern::Variable(name) => !Self::stmt_assigns_name(body, name),
+                        _ => false,
+                    };
                     self.push_var_scope();
-                    self.declare_for_pattern(pattern);
+                    if let (true, ForPattern::Variable(name)) = (direct_range_var, pattern) {
+                        self.define_var_as(name, r_idx);
+                    } else {
+                        self.declare_for_pattern(pattern);
+                    }
 
                     self.emit(Op::ForRangePrep {
                         idx: r_idx,
@@ -506,6 +1996,7 @@ impl FunctionBuilder {
                         limit: r_lim,
                         step: r_step,
                         inclusive: *inclusive,
+                        write_idx: !matches!(pattern, ForPattern::Ignore),
                         ofs: 0,
                     });
 
@@ -532,13 +2023,29 @@ impl FunctionBuilder {
                         if let Op::Jmp(ref mut ofs) = self.code[skip_pos] {
                             *ofs = (after_fail as isize - skip_pos as isize) as i16;
                         }
-                    } else if let ForPattern::Variable(name) = pattern
+                    } else if !direct_range_var
+                        && let ForPattern::Variable(name) = pattern
                         && let Some(idx) = self.lookup(name)
                     {
                         self.emit(Op::StoreLocal(idx, r_idx));
                     }
 
-                    self.with_const_scope(|builder| builder.stmt(body));
+                    if let (Some((target, value)), Some((flag_reg, cache_reg))) =
+                        (cached_loop_call.as_ref(), cached_loop_regs)
+                    {
+                        if !self.emit_cached_loop_call_assignment(target, value, flag_reg, cache_reg) {
+                            self.with_const_scope(|builder| builder.stmt(body));
+                        }
+                    } else if let (Some((target, value, prefix)), Some((flag_reg, cache_reg))) =
+                        (cached_loop_delta.as_ref(), cached_delta_regs)
+                    {
+                        if !self.emit_cached_loop_delta(target, value, prefix, flag_reg, cache_reg) {
+                            self.with_const_scope(|builder| builder.stmt(body));
+                        }
+                    } else {
+                        self.with_const_scope(|builder| builder.stmt(body));
+                    }
+                    self.loop_invariant_expr_regs.truncate(loop_invariant_start);
 
                     let pending_continues = std::mem::take(&mut self.continue_locations);
                     let step_pos = self.code.len();
@@ -598,7 +2105,17 @@ impl FunctionBuilder {
                     });
 
                     self.push_var_scope();
-                    self.declare_for_pattern(pattern);
+                    let simple_var_pattern = match pattern {
+                        ForPattern::Variable(name) => {
+                            self.define_var_as(name, r_item);
+                            true
+                        }
+                        ForPattern::Ignore => true,
+                        _ => false,
+                    };
+                    if !simple_var_pattern {
+                        self.declare_for_pattern(pattern);
+                    }
                     if Self::pattern_requires_check(pattern) {
                         let plan = Self::pattern_from_for(pattern);
                         let plan_idx = self.register_pattern_plan(&plan);
@@ -622,20 +2139,13 @@ impl FunctionBuilder {
                         if let Op::Jmp(ref mut ofs) = self.code[skip_pos] {
                             *ofs = (after_fail as isize - skip_pos as isize) as i16;
                         }
-                    } else if let ForPattern::Variable(name) = pattern
-                        && let Some(idx) = self.lookup(name)
-                    {
-                        self.emit(Op::StoreLocal(idx, r_item));
                     }
 
                     self.with_const_scope(|builder| builder.stmt(body));
 
                     let cont_target = self.code.len();
                     let pending_continues = std::mem::take(&mut self.continue_locations);
-                    let k1 = self.k(Val::Int(1));
-                    let r_one = self.alloc();
-                    self.emit(Op::LoadK(r_one, k1));
-                    self.emit(Op::Add(r_i, r_i, r_one));
+                    self.emit(Op::AddIntImm(r_i, r_i, 1));
                     let back = (guard_pos as isize - self.code.len() as isize) as i16;
                     self.emit(Op::Jmp(back));
                     let end_pos = self.code.len();
@@ -674,10 +2184,20 @@ impl FunctionBuilder {
                 is_const,
                 ..
             } => {
-                let const_value = self.try_eval_const_expr(value);
+                let mut const_value = self.try_eval_const_expr(value);
                 if let Pattern::Variable(name) = pattern {
+                    if !*is_const && let Some(specialized) = self.try_specialize_const_closure_factory(value) {
+                        self.const_env.define(name.clone(), specialized.clone());
+                        const_value = Some(specialized);
+                    }
                     if let (false, Some(v)) = (*is_const, const_value.as_ref()) {
-                        self.const_env.define(name.clone(), v.clone());
+                        self.bind_known_value(name.clone(), v.clone());
+                    }
+                    if !*is_const
+                        && const_value.is_none()
+                        && let Expr::Closure { params, body } = value.as_ref()
+                    {
+                        self.register_closure_const_env(name, params, body);
                     }
                     if !*is_const {
                         let rv = if let Some(v) = const_value.clone() {
@@ -756,13 +2276,28 @@ impl FunctionBuilder {
             }
             Stmt::Assign { name, value, .. } => {
                 let is_const_target = self.const_names.contains(name);
-                if !is_const_target && let Some(val) = self.try_eval_const_expr(value) {
-                    let _ = self.const_env.assign(name, val.clone());
-                    if self.const_bindings.contains_key(name) {
-                        self.const_bindings.insert(name.clone(), val);
-                    }
-                }
                 if !is_const_target && self.try_emit_simple_self_assign(name, value) {
+                    return;
+                }
+                let const_value = if is_const_target {
+                    None
+                } else {
+                    self.try_eval_const_expr(value)
+                };
+                if let Some(val) = const_value.as_ref() {
+                    if self.const_env.assign(name, val.clone()).is_ok() {
+                        self.const_bindings.insert(name.clone(), val.clone());
+                    }
+                } else if !is_const_target {
+                    self.forget_known_value(name);
+                }
+                if let Some(val) = const_value.as_ref()
+                    && let Some(idx) = self.lookup(name)
+                {
+                    let dst = self.alloc();
+                    let k = self.k(val.clone());
+                    self.emit(Op::LoadK(dst, k));
+                    self.store_named(name, idx, dst);
                     return;
                 }
                 // Quick path: `a = b` where b is a simple local variable.
@@ -793,6 +2328,7 @@ impl FunctionBuilder {
                 let reg = self.expr(e);
                 if let Some(var_name) = detect_mutating_receiver(e)
                     && let Some(idx) = self.lookup(var_name)
+                    && idx != reg
                 {
                     self.emit(Op::StoreLocal(idx, reg));
                 }
@@ -1113,11 +2649,46 @@ impl FunctionBuilder {
                     }
                 }
                 if let Some(idx) = self.lookup(name) {
+                    if matches!(op, BinOp::Add)
+                        && let Some(imm) = self.try_small_int_const(value)
+                    {
+                        self.emit(Op::AddIntImm(idx, idx, imm));
+                        return;
+                    }
+                    if matches!(op, BinOp::Sub)
+                        && let Some(imm) = self.try_small_int_const(value)
+                        && let Some(neg) = imm.checked_neg()
+                        && (-128..=127).contains(&neg)
+                    {
+                        self.emit(Op::AddIntImm(idx, idx, neg));
+                        return;
+                    }
+
+                    if !Self::expr_contains_call(value) {
+                        let r_value = if let Expr::Var(rhs_name) = value.as_ref() {
+                            self.lookup(rhs_name).unwrap_or_else(|| self.expr(value))
+                        } else {
+                            self.expr(value)
+                        };
+                        let int_operands = self.int_regs.contains(&idx) && self.int_regs.contains(&r_value);
+                        match op {
+                            BinOp::Add if int_operands => self.emit(Op::AddInt(idx, idx, r_value)),
+                            BinOp::Add => self.emit(Op::Add(idx, idx, r_value)),
+                            BinOp::Sub if int_operands => self.emit(Op::SubInt(idx, idx, r_value)),
+                            BinOp::Sub => self.emit(Op::Sub(idx, idx, r_value)),
+                            BinOp::Mul if int_operands => self.emit(Op::MulInt(idx, idx, r_value)),
+                            BinOp::Mul => self.emit(Op::Mul(idx, idx, r_value)),
+                            BinOp::Mod if int_operands => self.emit(Op::ModInt(idx, idx, r_value)),
+                            BinOp::Mod => self.emit(Op::Mod(idx, idx, r_value)),
+                            BinOp::Div => self.emit(Op::Div(idx, idx, r_value)),
+                            _ => return,
+                        }
+                        return;
+                    }
+
                     let r_current = self.alloc();
                     self.emit(Op::LoadLocal(r_current, idx));
-
                     let r_value = self.expr(value);
-
                     let r_result = self.alloc();
                     match op {
                         BinOp::Add => self.emit(Op::Add(r_result, r_current, r_value)),
