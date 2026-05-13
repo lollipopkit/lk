@@ -1,0 +1,17 @@
+// Bench: Recursive Fibonacci (call depth + recursion)
+import time;
+
+fn fib(n) {
+    if n <= 1 { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+let iters = 5000;
+let n = 15;
+let t0 = time.now();
+let acc = 0;
+for _ in 1..=iters {
+    acc = fib(n);
+}
+let t1 = time.now();
+println("fib_recursive: fib(${n}) = ${acc}, iters=${iters}, elapsed=${t1 - t0}ms");

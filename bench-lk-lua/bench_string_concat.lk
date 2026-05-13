@@ -1,0 +1,14 @@
+// Bench: String concatenation
+import time;
+
+let iters = 10000;
+let n = 100;
+let t0 = time.now();
+for _ in 1..=iters {
+    let s = "";
+    for i in 1..=n {
+        s = s + "x";
+    }
+}
+let t1 = time.now();
+println("string_concat: iters=${iters}, n=${n}, elapsed=${t1 - t0}ms");

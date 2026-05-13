@@ -172,6 +172,8 @@ impl Vm {
         args: &[Val],
         ctx: &mut VmContext,
         frame_info: Option<&FrameInfo>,
+        captures: Option<Arc<ClosureCapture>>,
+        capture_specs: Option<Arc<Vec<CaptureSpec>>>,
         cache: Option<&mut ClosureFastCache>,
         return_meta: Option<CallFrameMeta>,
     ) -> Result<Val> {
@@ -183,12 +185,28 @@ impl Vm {
             ));
         }
         match cache {
-            Some(cache_ref) => {
-                self.exec_function_positional_fast_impl(fun, args, ctx, frame_info, cache_ref, return_meta)
-            }
+            Some(cache_ref) => self.exec_function_positional_fast_impl(
+                fun,
+                args,
+                ctx,
+                frame_info,
+                captures,
+                capture_specs,
+                cache_ref,
+                return_meta,
+            ),
             None => {
                 let mut temp_cache = ClosureFastCache::new();
-                self.exec_function_positional_fast_impl(fun, args, ctx, frame_info, &mut temp_cache, return_meta)
+                self.exec_function_positional_fast_impl(
+                    fun,
+                    args,
+                    ctx,
+                    frame_info,
+                    captures,
+                    capture_specs,
+                    &mut temp_cache,
+                    return_meta,
+                )
             }
         }
     }
@@ -199,6 +217,8 @@ impl Vm {
         args: &[Val],
         ctx: &mut VmContext,
         frame_info: Option<&FrameInfo>,
+        captures: Option<Arc<ClosureCapture>>,
+        capture_specs: Option<Arc<Vec<CaptureSpec>>>,
         cache: &mut ClosureFastCache,
         return_meta: Option<CallFrameMeta>,
     ) -> Result<Val> {
@@ -226,7 +246,7 @@ impl Vm {
             cache.region_plan = rp.clone();
             rp
         };
-        let mut call_frame = CallFrame::new(fun, 0, reg_count, None, None, region_plan);
+        let mut call_frame = CallFrame::new(fun, 0, reg_count, captures, capture_specs, region_plan);
         let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
         let mut callee_state = FrameState::new(&mut call_frame, &mut self.regs, region_alloc_ptr);
         for (idx, param_reg) in fun.param_regs.iter().enumerate() {

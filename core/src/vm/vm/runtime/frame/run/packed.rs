@@ -2177,10 +2177,13 @@ pub(super) fn run_packed_code(
                 let allocator = unsafe { &*region_allocator_ptr };
                 let mut next_pc = resume_pc;
                 // Fast path: check IC first to avoid cloning the closure Arc.
-                // DISABLED: causes For-range state errors on second call.
-                /*
                 let mut ic_fast_path_taken = false;
-                if let Some(CallIc::ClosurePositional { closure_ptr, fun_ptr, argc: ic_argc, .. }) = call_ic[pc as usize].as_ref()
+                if let Some(CallIc::ClosurePositional {
+                    closure_ptr,
+                    fun_ptr,
+                    argc: ic_argc,
+                    ..
+                }) = call_ic[pc as usize].as_ref()
                     && *ic_argc == argc
                 {
                     let reg_val = &regs[rf as usize];
@@ -2195,13 +2198,19 @@ pub(super) fn run_packed_code(
                                 retc,
                                 caller_window: RegisterWindowRef::Current,
                             };
+                            let captures = Arc::clone(&arc.captures);
+                            let capture_specs = Arc::clone(&arc.capture_specs);
                             let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
-                            if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) = call_ic[pc as usize].as_mut() {
+                            if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) =
+                                call_ic[pc as usize].as_mut()
+                            {
                                 let val = unsafe { &mut *self_ptr }.exec_function_positional_fast(
                                     fun,
                                     args_slice_fast,
                                     ctx,
                                     Some(frame_info),
+                                    Some(captures),
+                                    Some(capture_specs),
                                     Some(cache),
                                     Some(return_meta),
                                 );
@@ -2221,10 +2230,12 @@ pub(super) fn run_packed_code(
                     }
                 }
                 if ic_fast_path_taken {
+                    if let Some(pending) = unsafe { &mut *self_ptr }.pending_resume_pc.take() {
+                        next_pc = pending;
+                    }
                     pc = next_pc;
                     continue;
                 }
-                */
                 // Slow path.
                 let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
                 let args_slice = &regs[start..start + n];
@@ -2280,6 +2291,8 @@ pub(super) fn run_packed_code(
                                     )
                                 })
                             };
+                            let captures = Arc::clone(&closure.captures);
+                            let capture_specs = Arc::clone(&closure.capture_specs);
                             let vm_mut = unsafe { &mut *self_ptr };
                             if let Some(CallIc::ClosurePositional {
                                 closure_ptr: _,
@@ -2295,6 +2308,8 @@ pub(super) fn run_packed_code(
                                     args_slice,
                                     ctx,
                                     Some(&*frame_info),
+                                    Some(Arc::clone(&captures)),
+                                    Some(Arc::clone(&capture_specs)),
                                     Some(cache),
                                     Some(return_meta),
                                 ) {
@@ -2315,6 +2330,8 @@ pub(super) fn run_packed_code(
                                     args_slice,
                                     ctx,
                                     Some(&frame_info),
+                                    Some(captures),
+                                    Some(capture_specs),
                                     Some(&mut cache),
                                     Some(return_meta),
                                 ) {

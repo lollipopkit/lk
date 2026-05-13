@@ -1,0 +1,13 @@
+// Bench: Function call overhead
+import time;
+
+fn add(a, b) { return a + b; }
+
+let iters = 100000;
+let t0 = time.now();
+let acc = 0;
+for _ in 1..=iters {
+    acc = add(acc, 1);
+}
+let t1 = time.now();
+println("func_call: iters=${iters}, acc=${acc}, elapsed=${t1 - t0}ms");

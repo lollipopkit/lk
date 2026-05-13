@@ -12,3 +12,5 @@ vsc-ext/*/*.vsix
 
 lk-lsp-debug.log
 main
+
+lua-5.5.0/

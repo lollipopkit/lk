@@ -185,10 +185,7 @@ impl core::fmt::Debug for ClosureValue {
 impl ClosureValue {
     #[inline]
     pub(crate) fn supports_vm_positional_fast_path(&self) -> bool {
-        self.named_params.is_empty()
-            && self.captures.is_empty()
-            && self.capture_specs.is_empty()
-            && self.default_funcs.iter().all(|opt| opt.is_none())
+        self.named_params.is_empty() && self.default_funcs.iter().all(|opt| opt.is_none())
     }
 
     pub fn new(init: ClosureInit) -> Self {
