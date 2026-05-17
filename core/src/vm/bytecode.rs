@@ -260,6 +260,13 @@ pub enum Op {
         dst: u16,
         src: u16,
     },
+    // Floor: convert float to int (truncates toward negative infinity)
+    Floor {
+        dst: u16,
+        src: u16,
+    },
+    // String starts_with with constant prefix
+    StartsWithK(u16 /*dst*/, u16 /*src*/, u16 /*kidx*/),
     // Fold list values into an accumulator with Add semantics.
     // Semantically equivalent to: for v in list { acc += v }
     ListFoldAdd {
@@ -371,6 +378,13 @@ pub enum Op {
         imm: i16,
         ofs: i16,
     },
+    // Fused: compare src != imm, if false (i.e., src == imm) jump by ofs.
+    // Common for while(x != N) loop exit checks.
+    CmpNeImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
+    },
     Call {
         f: u16,
         base: u16,
@@ -471,6 +485,8 @@ impl fmt::Debug for Op {
             Op::AccessK(d, b, k) => write!(f, "AccessK r{}, r{}, k{}", d, b, k),
             Op::IndexK(d, b, k) => write!(f, "IndexK r{}, r{}, k{}", d, b, k),
             Op::Len { dst, src } => write!(f, "Len r{}, r{}", dst, src),
+            Op::Floor { dst, src } => write!(f, "Floor r{}, r{}", dst, src),
+            Op::StartsWithK(dst, src, kidx) => write!(f, "StartsWithK r{}, r{}, k{}", dst, src, kidx),
             Op::ListFoldAdd { acc, list } => write!(f, "ListFoldAdd r{}, r{}", acc, list),
             Op::MapValuesFoldAdd { acc, map } => write!(f, "MapValuesFoldAdd r{}, r{}", acc, map),
             Op::Index { dst, base, idx } => write!(f, "Index r{}, r{}, r{}", dst, base, idx),
@@ -519,6 +535,7 @@ impl fmt::Debug for Op {
                 target, idx, limit, step, inclusive, explicit, imm
             ),
             Op::CmpLeImmJmp { r, imm, ofs } => write!(f, "CmpLeImmJmp r{}, {}, {}", r, imm, ofs),
+            Op::CmpNeImmJmp { r, imm, ofs } => write!(f, "CmpNeImmJmp r{}, {}, {}", r, imm, ofs),
             Op::Call {
                 f: rf,
                 base,

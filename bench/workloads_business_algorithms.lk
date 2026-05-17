@@ -1,6 +1,7 @@
 // Business-style algorithm workloads for LK vs Lua comparison.
 // Each block measures runtime only and prints: workload|name|checksum=...|elapsed=...ms
 import os;
+import math;
 import map;
 import string;
 
@@ -57,7 +58,7 @@ fn binary_search_implicit(target, n) {
     let lo = 0;
     let hi = n - 1;
     while (lo <= hi) {
-        let mid = (lo + hi) / 2;
+        let mid = math.floor((lo + hi) / 2);
         let value = mid * 2;
         if value == target {
             return mid;
@@ -280,11 +281,11 @@ fn cart_line_total(sku, qty, region, prices, tax_rates) {
     let subtotal = price * qty;
     let discount = 0;
     if qty >= 5 {
-        discount = subtotal / 10;
+        discount = math.floor(subtotal / 10);
     } else if sku.starts_with("pro") {
-        discount = subtotal / 20;
+        discount = math.floor(subtotal / 20);
     }
-    return subtotal - discount + ((subtotal * tax) / 100);
+    return subtotal - discount + math.floor((subtotal * tax) / 100);
 }
 
 t0 = os.clock();

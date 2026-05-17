@@ -869,6 +869,12 @@ fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u16(out, dst);
             write_u16(out, src);
         }
+        Op::Floor { dst, src } => {
+            write_u8(out, 68);
+            write_u16(out, dst);
+            write_u16(out, src);
+        }
+        Op::StartsWithK(dst, src, kidx) => encode_op3(out, 67, dst, src, kidx),
         Op::Index { dst, base, idx } => encode_op3(out, 30, dst, base, idx),
         Op::ToIter { dst, src } => {
             write_u8(out, 31);
@@ -993,6 +999,12 @@ fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
         }
         Op::CmpLeImmJmp { r, imm, ofs } => {
             write_u8(out, 60);
+            write_u16(out, r);
+            write_i16(out, imm);
+            write_i16(out, ofs);
+        }
+        Op::CmpNeImmJmp { r, imm, ofs } => {
+            write_u8(out, 69);
             write_u16(out, r);
             write_i16(out, imm);
             write_i16(out, ofs);
@@ -1127,6 +1139,10 @@ fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             dst: read_u16(bytes, cursor)?,
             src: read_u16(bytes, cursor)?,
         },
+        68 => Op::Floor {
+            dst: read_u16(bytes, cursor)?,
+            src: read_u16(bytes, cursor)?,
+        },
         30 => Op::Index {
             dst: read_u16(bytes, cursor)?,
             base: read_u16(bytes, cursor)?,
@@ -1209,6 +1225,11 @@ fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             imm: read_i16(bytes, cursor)?,
             ofs: read_i16(bytes, cursor)?,
         },
+        69 => Op::CmpNeImmJmp {
+            r: read_u16(bytes, cursor)?,
+            imm: read_i16(bytes, cursor)?,
+            ofs: read_i16(bytes, cursor)?,
+        },
         61 => Op::ListPush {
             list: read_u16(bytes, cursor)?,
             val: read_u16(bytes, cursor)?,
@@ -1240,6 +1261,7 @@ fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             key: read_u16(bytes, cursor)?,
             val: read_u16(bytes, cursor)?,
         },
+        67 => decode_op3(Op::StartsWithK, bytes, cursor)?,
         36 => Op::Jmp(read_i16(bytes, cursor)?),
         37 => Op::JmpFalse(read_u16(bytes, cursor)?, read_i16(bytes, cursor)?),
         38 => Op::Call {

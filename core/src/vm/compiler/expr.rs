@@ -280,11 +280,19 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("set")
             && let Expr::Var(map_name) = args[0].as_ref()
-            && let Some(map_reg) = self.lookup(map_name)
-            && self.map_locals.contains(&map_reg)
         {
-            self.emit_map_set(map_reg, &args[1], &args[2]);
-            return map_reg;
+            if let Some(map_reg) = self.lookup(map_name)
+                && self.map_locals.contains(&map_reg)
+            {
+                self.emit_map_set(map_reg, &args[1], &args[2]);
+                return map_reg;
+            }
+            // map.set on non-tracked variable — still emit MapSet for any Map var
+            // (runtime will error if it's not a Map)
+            if let Some(map_reg) = self.lookup(map_name) {
+                self.emit_map_set(map_reg, &args[1], &args[2]);
+                return map_reg;
+            }
         }
         // Fast path: t.push(val) — emit ListPush opcode
         if args.len() == 1
@@ -312,6 +320,31 @@ impl FunctionBuilder {
             let obj_reg = self.expr(obj_expr);
             let dst = self.alloc();
             self.emit(Op::Len { dst, src: obj_reg });
+            return dst;
+        }
+        // Fast path: math.floor(x) — emit Floor opcode directly (avoids method dispatch)
+        if args.len() == 1
+            && let Expr::Var(obj_name) = obj_expr
+            && obj_name == "math"
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("floor")
+        {
+            let src_reg = self.expr(&args[0]);
+            let dst = self.alloc();
+            self.emit(Op::Floor { dst, src: src_reg });
+            return dst;
+        }
+        // Fast path: str.starts_with("literal") — emit StartsWithK directly
+        if args.len() == 1
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("starts_with")
+            && let Expr::Val(arg_val) = args[0].as_ref()
+            && arg_val.as_str().is_some()
+        {
+            let obj_reg = self.expr(obj_expr);
+            let kidx = self.k(arg_val.clone());
+            let dst = self.alloc();
+            self.emit(Op::StartsWithK(dst, obj_reg, kidx));
             return dst;
         }
         // Fast path: m.set(k, v) — emit MapSet for locals tracked as Maps

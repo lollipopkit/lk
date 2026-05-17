@@ -17,9 +17,48 @@ pub fn register_method(type_name: &str, method: &str, func: RustFunction) {
         .insert(method.to_string(), func);
 }
 
-/// Find a method function for a given receiver value and method name
+/// Per-thread inline cache for method lookups.
+/// Avoids DashMap overhead on monomorphic call sites (same type + method name every time).
+/// Uses a simple single-entry cache per thread — this is highly effective because
+/// in tight loops, the same type+method pattern repeats 100% of the time.
+thread_local! {
+    static METHOD_IC: std::cell::RefCell<(u8, usize, Option<RustFunction>)> =
+        std::cell::RefCell::new((0, 0, None));
+}
+
+/// Find a method function for a given receiver value and method name.
+/// Uses a per-thread inline cache to avoid DashMap lookup on monomorphic sites.
+#[inline]
 pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction> {
-    // Avoid allocation by using static names or borrowed object name
+    let disc = match receiver {
+        Val::ShortStr(_) | Val::Str(_) => 0u8,
+        Val::Int(_) => 1,
+        Val::Float(_) => 2,
+        Val::Bool(_) => 3,
+        Val::List(_) => 4,
+        Val::Map(_) => 5,
+        Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => 6,
+        Val::Task(_) => 7,
+        Val::Channel(_) => 8,
+        Val::Stream(_) => 9,
+        Val::Iterator(_) => 10,
+        Val::MutationGuard(_) => 11,
+        Val::StreamCursor(_) => 12,
+        Val::Object(_) => 13,
+        Val::Nil => 14,
+    };
+    let method_ptr = method.as_ptr() as usize;
+
+    // Fast path: check thread-local inline cache
+    let hit = METHOD_IC.with(|ic| {
+        let ic = ic.borrow();
+        ic.0 == disc && ic.1 == method_ptr && ic.2.is_some()
+    });
+    if hit {
+        return METHOD_IC.with(|ic| ic.borrow().2);
+    }
+
+    // Slow path: full registry lookup + cache update
     let tname: &str = match receiver {
         Val::ShortStr(_) | Val::Str(_) => "String",
         Val::Int(_) => "Int",
@@ -37,7 +76,15 @@ pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction>
         Val::Object(object) => object.type_name.as_ref(),
         Val::Nil => "Nil",
     };
-    METHOD_REGISTRY
+    let result = METHOD_REGISTRY
         .get(tname)
-        .and_then(|methods| methods.get(method).copied())
+        .and_then(|methods| methods.get(method).copied());
+
+    if let Some(func) = result {
+        METHOD_IC.with(|ic| {
+            *ic.borrow_mut() = (disc, method_ptr, Some(func));
+        });
+    }
+
+    result
 }

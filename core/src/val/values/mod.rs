@@ -1318,9 +1318,8 @@ impl Val {
 impl PartialEq for Val {
     fn eq(&self, other: &Self) -> bool {
         // Unify string comparisons across ShortStr and Str variants
-        match (self.as_str(), other.as_str()) {
-            (Some(a), Some(b)) => return a == b,
-            _ => {}
+        if let (Some(a), Some(b)) = (self.as_str(), other.as_str()) {
+            return a == b;
         }
         match (self, other) {
             (Val::Int(a), Val::Int(b)) => a == b,

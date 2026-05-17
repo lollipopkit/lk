@@ -1121,6 +1121,10 @@ fn exec_hot_slot(
                 }
                 None
             } else {
+                // Write final counter value on exit for correct post-loop counter value.
+                if *write_idx {
+                    assign_reg(frame_raw, regs, *idx as usize, Val::Int(state_entry.current));
+                }
                 for_range_ic[pc] = None;
                 Some(((pc as isize) + (*ofs as isize)) as usize)
             }
@@ -1160,25 +1164,40 @@ fn exec_hot_slot(
         }
         PackedHotKind::Arith { op, dst, a, b } => {
             if let (Val::Int(x), Val::Int(y)) = (rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b)) {
-                let out = match op {
-                    PackedArithOp::Add => *x + *y,
-                    PackedArithOp::Sub => *x - *y,
-                    PackedArithOp::Mul => *x * *y,
-                    PackedArithOp::Div => *x / *y,
-                    PackedArithOp::Mod => *x % *y,
-                };
-                assign_reg(frame_raw, regs, *dst as usize, Val::Int(out));
+                match op {
+                    PackedArithOp::Add => {
+                        assign_reg(frame_raw, regs, *dst as usize, Val::Int(*x + *y));
+                    }
+                    PackedArithOp::Sub => {
+                        assign_reg(frame_raw, regs, *dst as usize, Val::Int(*x - *y));
+                    }
+                    PackedArithOp::Mul => {
+                        assign_reg(frame_raw, regs, *dst as usize, Val::Int(*x * *y));
+                    }
+                    PackedArithOp::Div => {
+                        // Consistent with eval_vals: Int/Int returns Int when divisible, Float otherwise
+                        let res = *x as f64 / *y as f64;
+                        if res.fract() == 0.0 {
+                            assign_reg(frame_raw, regs, *dst as usize, Val::Int(res as i64));
+                        } else {
+                            assign_reg(frame_raw, regs, *dst as usize, Val::Float(res));
+                        }
+                    }
+                    PackedArithOp::Mod => {
+                        assign_reg(frame_raw, regs, *dst as usize, Val::Int(*x % *y));
+                    }
+                }
             } else {
                 match op {
                     PackedArithOp::Add => {
                         let a_val = rk_read(regs, &func.consts, *a);
                         let b_val = rk_read(regs, &func.consts, *b);
                         if let Some(a_str) = a_val.as_str()
-                            && let Some(out) = Val::concat_str_add_rhs(a_str, &b_val)
+                            && let Some(out) = Val::concat_str_add_rhs(a_str, b_val)
                         {
                             assign_reg(frame_raw, regs, *dst as usize, out);
                         } else if let Some(b_str) = b_val.as_str()
-                            && let Some(out) = Val::concat_add_lhs_str(&a_val, b_str)
+                            && let Some(out) = Val::concat_add_lhs_str(a_val, b_str)
                         {
                             assign_reg(frame_raw, regs, *dst as usize, out);
                         } else if !Vm::arith2_try_numeric(
@@ -1232,20 +1251,31 @@ fn exec_hot_slot(
                         }
                     }
                     PackedArithOp::Div => {
-                        if !Vm::arith2_try_numeric(
-                            frame_raw,
-                            regs,
-                            &func.consts,
-                            *dst,
-                            *a,
-                            *b,
-                            "div",
-                            |x, y| x / y,
-                            |x, y| x / y,
-                        ) {
-                            let out = BinOp::Div
-                                .eval_vals(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
-                            assign_reg(frame_raw, regs, *dst as usize, out);
+                        let ar = rk_read(regs, &func.consts, *a);
+                        let br = rk_read(regs, &func.consts, *b);
+                        let dst_idx = *dst as usize;
+                        match (ar, br) {
+                            (Val::Int(x), Val::Int(y)) => {
+                                let res = *x as f64 / *y as f64;
+                                if res.fract() == 0.0 {
+                                    assign_reg(frame_raw, regs, dst_idx, Val::Int(res as i64));
+                                } else {
+                                    assign_reg(frame_raw, regs, dst_idx, Val::Float(res));
+                                }
+                            }
+                            (Val::Float(x), Val::Float(y)) => {
+                                assign_reg(frame_raw, regs, dst_idx, Val::Float(x / y));
+                            }
+                            (Val::Int(x), Val::Float(y)) => {
+                                assign_reg(frame_raw, regs, dst_idx, Val::Float(*x as f64 / y));
+                            }
+                            (Val::Float(x), Val::Int(y)) => {
+                                assign_reg(frame_raw, regs, dst_idx, Val::Float(x / *y as f64));
+                            }
+                            _ => {
+                                let out = BinOp::Div.eval_vals(ar, br)?;
+                                assign_reg(frame_raw, regs, dst_idx, out);
+                            }
                         }
                     }
                     PackedArithOp::Mod => {
@@ -1894,11 +1924,11 @@ pub(super) fn run_packed_code(
                 let a_val = rk_read(regs, &f.consts, a);
                 let b_val = rk_read(regs, &f.consts, b);
                 if let Some(a_str) = a_val.as_str()
-                    && let Some(out) = Val::concat_str_add_rhs(a_str, &b_val)
+                    && let Some(out) = Val::concat_str_add_rhs(a_str, b_val)
                 {
                     assign_reg(frame_raw, regs, dst as usize, out);
                 } else if let Some(b_str) = b_val.as_str()
-                    && let Some(out) = Val::concat_add_lhs_str(&a_val, b_str)
+                    && let Some(out) = Val::concat_add_lhs_str(a_val, b_str)
                 {
                     assign_reg(frame_raw, regs, dst as usize, out);
                 } else if !Vm::arith2_try_numeric(
@@ -1932,9 +1962,31 @@ pub(super) fn run_packed_code(
                 pc = next_pc_default;
             }
             Op::Div(dst, a, b) => {
-                if !Vm::arith2_try_numeric(frame_raw, regs, &f.consts, dst, a, b, "div", |x, y| x / y, |x, y| x / y) {
-                    let out = BinOp::Div.eval_vals(rk_read(regs, &f.consts, a), rk_read(regs, &f.consts, b))?;
-                    assign_reg(frame_raw, regs, dst as usize, out);
+                let ar = rk_read(regs, &f.consts, a);
+                let br = rk_read(regs, &f.consts, b);
+                let dst_idx = dst as usize;
+                match (ar, br) {
+                    (Val::Int(x), Val::Int(y)) => {
+                        let res = *x as f64 / *y as f64;
+                        if res.fract() == 0.0 {
+                            assign_reg(frame_raw, regs, dst_idx, Val::Int(res as i64));
+                        } else {
+                            assign_reg(frame_raw, regs, dst_idx, Val::Float(res));
+                        }
+                    }
+                    (Val::Float(x), Val::Float(y)) => {
+                        assign_reg(frame_raw, regs, dst_idx, Val::Float(x / y));
+                    }
+                    (Val::Int(x), Val::Float(y)) => {
+                        assign_reg(frame_raw, regs, dst_idx, Val::Float(*x as f64 / y));
+                    }
+                    (Val::Float(x), Val::Int(y)) => {
+                        assign_reg(frame_raw, regs, dst_idx, Val::Float(x / *y as f64));
+                    }
+                    _ => {
+                        let out = BinOp::Div.eval_vals(ar, br)?;
+                        assign_reg(frame_raw, regs, dst_idx, out);
+                    }
                 }
                 pc = next_pc_default;
             }
@@ -2118,6 +2170,25 @@ pub(super) fn run_packed_code(
                     Val::Str(s) => Val::Int(s.len() as i64),
                     Val::Map(m) => Val::Int(m.len() as i64),
                     _ => Val::Int(0),
+                };
+                assign_reg(frame_raw, regs, dst as usize, out);
+                pc = next_pc_default;
+            }
+            Op::Floor { dst, src } => {
+                let out = match &regs[src as usize] {
+                    Val::Float(f) => Val::Int(f.floor() as i64),
+                    Val::Int(i) => Val::Int(*i),
+                    _ => Val::Int(0),
+                };
+                assign_reg(frame_raw, regs, dst as usize, out);
+                pc = next_pc_default;
+            }
+            Op::StartsWithK(dst, src, kidx) => {
+                let prefix = f.consts[kidx as usize].as_str().unwrap_or("");
+                let out = match &regs[src as usize] {
+                    Val::ShortStr(s) => Val::Bool(s.as_str().starts_with(prefix)),
+                    Val::Str(s) => Val::Bool(s.as_str().starts_with(prefix)),
+                    _ => Val::Bool(false),
                 };
                 assign_reg(frame_raw, regs, dst as usize, out);
                 pc = next_pc_default;
@@ -2854,7 +2925,7 @@ pub(super) fn run_packed_code(
                     argc: ic_argc,
                     tiny,
                     ..
-                }) = call_ic[pc as usize].as_ref()
+                }) = call_ic[pc].as_ref()
                     && *ic_argc == argc
                 {
                     let reg_val = &regs[rf as usize];
@@ -2885,8 +2956,7 @@ pub(super) fn run_packed_code(
                                     caller_window: RegisterWindowRef::Base(frame_base),
                                 };
                                 let (captures, capture_specs) = arc.frame_captures();
-                                if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) =
-                                    call_ic[pc as usize].as_mut()
+                                if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) = call_ic[pc].as_mut()
                                 {
                                     let val = unsafe { &mut *self_ptr }.exec_function_positional_fast(
                                         fun,

@@ -1773,7 +1773,7 @@ impl Bc32Function {
                     if let Some(ext) = pack_reg_ext_bits(*idx, *limit, *step) {
                         out.push(ext);
                     }
-                    out.push(pack_ext_word(flags as u8, (wofs >> 8) as u8, (wofs & 0xFF) as u8));
+                    out.push(pack_ext_word(flags, (wofs >> 8) as u8, (wofs & 0xFF) as u8));
                 }
                 Op::ForRangeStep { idx, step, back_ofs } => {
                     let tgt = ((i as isize) + *back_ofs as isize) as usize;

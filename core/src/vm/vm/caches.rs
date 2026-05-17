@@ -794,7 +794,7 @@ mod tests {
             )
             .expect("tiny eval");
 
-        assert_eq!(result, Val::Int((((7 * 3) + (23 % 11)) + (5 * 5)) % 1000000007));
+        assert_eq!(result, Val::Int(((7 * 3) + (23 % 11)) + (5 * 5)));
     }
 }
 

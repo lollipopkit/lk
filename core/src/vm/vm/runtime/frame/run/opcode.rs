@@ -115,11 +115,11 @@ pub(super) fn run_opcode_code(
                 let a_val = rk_read(regs, &f.consts, *a);
                 let b_val = rk_read(regs, &f.consts, *b);
                 if let Some(a_str) = a_val.as_str()
-                    && let Some(out) = Val::concat_str_add_rhs(a_str, &b_val)
+                    && let Some(out) = Val::concat_str_add_rhs(a_str, b_val)
                 {
                     assign_reg(frame_raw, regs, *dst as usize, out);
                 } else if let Some(b_str) = b_val.as_str()
-                    && let Some(out) = Val::concat_add_lhs_str(&a_val, b_str)
+                    && let Some(out) = Val::concat_add_lhs_str(a_val, b_str)
                 {
                     assign_reg(frame_raw, regs, *dst as usize, out);
                 } else if !Vm::arith2_try_numeric(
@@ -174,19 +174,31 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::Div(dst, a, b) => {
-                if !Vm::arith2_try_numeric(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    *dst,
-                    *a,
-                    *b,
-                    "div",
-                    |x, y| x / y,
-                    |x, y| x / y,
-                ) {
-                    let out = BinOp::Div.eval_vals(rk_read(regs, &f.consts, *a), rk_read(regs, &f.consts, *b))?;
-                    assign_reg(frame_raw, regs, *dst as usize, out);
+                let ar = rk_read(regs, &f.consts, *a);
+                let br = rk_read(regs, &f.consts, *b);
+                let dst_idx = *dst as usize;
+                match (ar, br) {
+                    (Val::Int(x), Val::Int(y)) => {
+                        let res = *x as f64 / *y as f64;
+                        if res.fract() == 0.0 {
+                            assign_reg(frame_raw, regs, dst_idx, Val::Int(res as i64));
+                        } else {
+                            assign_reg(frame_raw, regs, dst_idx, Val::Float(res));
+                        }
+                    }
+                    (Val::Float(x), Val::Float(y)) => {
+                        assign_reg(frame_raw, regs, dst_idx, Val::Float(x / y));
+                    }
+                    (Val::Int(x), Val::Float(y)) => {
+                        assign_reg(frame_raw, regs, dst_idx, Val::Float(*x as f64 / y));
+                    }
+                    (Val::Float(x), Val::Int(y)) => {
+                        assign_reg(frame_raw, regs, dst_idx, Val::Float(x / *y as f64));
+                    }
+                    _ => {
+                        let out = BinOp::Div.eval_vals(ar, br)?;
+                        assign_reg(frame_raw, regs, dst_idx, out);
+                    }
                 }
                 pc += 1;
             }
@@ -559,6 +571,25 @@ pub(super) fn run_opcode_code(
                     Val::Str(s) => Val::Int(s.len() as i64),
                     Val::Map(m) => Val::Int(m.len() as i64),
                     _ => Val::Int(0),
+                };
+                assign_reg(frame_raw, regs, *dst as usize, out);
+                pc += 1;
+            }
+            Op::Floor { dst, src } => {
+                let out = match &regs[*src as usize] {
+                    Val::Float(f) => Val::Int(f.floor() as i64),
+                    Val::Int(i) => Val::Int(*i),
+                    _ => Val::Int(0),
+                };
+                assign_reg(frame_raw, regs, *dst as usize, out);
+                pc += 1;
+            }
+            Op::StartsWithK(dst, src, kidx) => {
+                let prefix = f.consts[*kidx as usize].as_str().unwrap_or("");
+                let out = match &regs[*src as usize] {
+                    Val::ShortStr(s) => Val::Bool(s.as_str().starts_with(prefix)),
+                    Val::Str(s) => Val::Bool(s.as_str().starts_with(prefix)),
+                    _ => Val::Bool(false),
                 };
                 assign_reg(frame_raw, regs, *dst as usize, out);
                 pc += 1;
@@ -1148,6 +1179,15 @@ pub(super) fn run_opcode_code(
                         state.current += state.step;
                         pc += 1;
                     } else {
+                        // Write final counter value on exit. For while-lowered
+                        // loops like `while (i < N) { ...; i += 1; }`, the user expects
+                        // i == N after the loop. For-range writes 0..N-1 per iteration, so
+                        // on exit we write state.current (== N or limit) to complete the
+                        // semantics. For native `for i in 0..N {}`, the loop variable is scoped
+                        // so this extra write is harmless.
+                        if *write_idx {
+                            assign_reg(frame_raw, regs, idx_reg, Val::Int(state.current));
+                        }
                         *slot = None;
                         pc = ((pc as isize) + (*ofs as isize)) as usize;
                     }
@@ -1407,6 +1447,19 @@ pub(super) fn run_opcode_code(
                 // Fused CmpLeImm + JmpFalse: if r <= imm, fall through; else jump.
                 let skip = match &regs[*r as usize] {
                     Val::Int(x) => *x > (*imm as i64),
+                    _ => true,
+                };
+                if skip {
+                    pc = ((pc as isize) + (*ofs as isize)) as usize;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::CmpNeImmJmp { r, imm, ofs } => {
+                // Fused CmpNeImm + JmpFalse: if r == imm, jump; else fall through.
+                // Common for while (x != N) loop exit checks.
+                let skip = match &regs[*r as usize] {
+                    Val::Int(x) => *x == (*imm as i64),
                     _ => true,
                 };
                 if skip {

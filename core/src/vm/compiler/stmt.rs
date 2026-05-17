@@ -67,7 +67,7 @@ fn strip_trailing_increment(stmt: &Stmt, counter_name: &str) -> Stmt {
 }
 
 impl FunctionBuilder {
-    fn call_expr_name<'a>(expr: &'a Expr) -> Option<(&'a str, &'a [Box<Expr>])> {
+    fn call_expr_name(expr: &Expr) -> Option<(&str, &[Box<Expr>])> {
         match expr {
             Expr::Call(name, args) => Some((name.as_str(), args.as_slice())),
             Expr::CallExpr(callee, args) => {

@@ -46,7 +46,7 @@ pub(crate) fn run_frame(
             f.bc32_decoded.as_deref(),
             frame_captures,
             frame_capture_specs,
-            region_plan.as_deref(),
+            region_plan,
             region_allocator_ptr,
             self_ptr,
         )?
@@ -64,7 +64,7 @@ pub(crate) fn run_frame(
         frame_base,
         frame_captures,
         frame_capture_specs,
-        region_plan.as_deref(),
+        region_plan,
         region_allocator_ptr,
         self_ptr,
     )? {
