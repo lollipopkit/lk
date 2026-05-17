@@ -13,6 +13,7 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 lk-core = { path = "../core", default-features = false }
 anyhow = { workspace = true }
+arcstr = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 once_cell = { workspace = true }

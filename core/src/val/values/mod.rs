@@ -1,11 +1,11 @@
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    fmt::Debug,
-    mem::MaybeUninit,
-    ptr,
+    fmt::{self, Debug},
     sync::{Arc, Mutex},
 };
+
+use arcstr::ArcStr;
 
 use crate::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
 
@@ -24,12 +24,14 @@ use crate::resolve::slots::{FunctionLayout, SlotResolver};
 
 mod cache;
 mod convert;
+mod intern;
 mod ops;
 mod types;
 
 mod iter;
 
 use cache::cached_list_contains;
+use intern::intern;
 
 pub use types::{FunctionNamedParamType, Type};
 
@@ -47,6 +49,88 @@ pub type RustFunctionNamed = fn(positional: &[Val], named: &[(String, Val)], ctx
 pub struct AotFunction {
     pub ptr: usize,
     pub arity: u8,
+}
+
+/// 内联短字符串：0–7 字节 UTF-8，完全存储在 Val 内（零堆分配）。
+/// 实现了 Copy，克隆无需原子操作。
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ShortStr {
+    len: u8,
+    data: [u8; 7],
+}
+
+impl ShortStr {
+    /// 从 str 创建。若 s.len() > 7 返回 None。
+    #[inline]
+    pub fn new(s: &str) -> Option<Self> {
+        let bytes = s.as_bytes();
+        if bytes.len() > 7 {
+            return None;
+        }
+        let mut data = [0u8; 7];
+        data[..bytes.len()].copy_from_slice(bytes);
+        Some(Self {
+            len: bytes.len() as u8,
+            data,
+        })
+    }
+
+    #[inline]
+    pub fn from_char(ch: char) -> Self {
+        let mut data = [0u8; 7];
+        let encoded = ch.encode_utf8(&mut data);
+        Self {
+            len: encoded.len() as u8,
+            data,
+        }
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        // SAFETY: data 在构造时已验证为合法 UTF-8
+        std::str::from_utf8(&self.data[..self.len as usize]).expect("ShortStr contains valid UTF-8")
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl fmt::Debug for ShortStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.as_str())
+    }
+}
+
+impl fmt::Display for ShortStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<ShortStr> for ArcStr {
+    fn from(s: ShortStr) -> ArcStr {
+        ArcStr::from(s.as_str())
+    }
+}
+
+impl serde::Serialize for ShortStr {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ShortStr {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        ShortStr::new(&s).ok_or_else(|| serde::de::Error::custom("string too long for ShortStr"))
+    }
 }
 
 thread_local! {
@@ -203,7 +287,7 @@ pub struct ClosureValue {
     debug_location: Option<String>,
     frame_info_cache: OnceCell<FrameInfo>,
     default_frame_infos: OnceCell<Vec<Option<FrameInfo>>>,
-    named_param_index: OnceCell<FastHashMap<Arc<str>, usize>>,
+    named_param_index: OnceCell<FastHashMap<ArcStr, usize>>,
     named_param_kinds: OnceCell<Vec<NamedParamKind>>,
     default_seed_reg_layout: OnceCell<DefaultSeedRegLayout>,
 }
@@ -416,11 +500,11 @@ impl ClosureValue {
         cache.get(idx).and_then(|info| info.clone())
     }
 
-    pub(crate) fn named_param_index(&self) -> &FastHashMap<Arc<str>, usize> {
+    pub(crate) fn named_param_index(&self) -> &FastHashMap<ArcStr, usize> {
         self.named_param_index.get_or_init(|| {
             let mut map = fast_hash_map_with_capacity(self.named_params.len());
             for (idx, decl) in self.named_params.iter().enumerate() {
-                map.insert(Arc::<str>::from(decl.name.as_str()), idx);
+                map.insert(ArcStr::from(decl.name.as_str()), idx);
             }
             map
         })
@@ -550,46 +634,79 @@ pub struct StreamCursorValue {
 
 #[derive(Debug, Clone)]
 pub struct ObjectValue {
-    pub type_name: Arc<str>,
+    pub type_name: ArcStr,
     pub fields: Arc<HashMap<String, Val>>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub enum Val {
-    /// String type, wrapped in Arc<str> for efficient cloning
-    Str(Arc<str>),
-    Int(i64), // Since most arch are 64 bit, we can use i64 for int
+    /// 内联短字符串（≤7 字节），零堆分配，实现 Copy
+    ShortStr(ShortStr),
+    /// 堆字符串，thin Arc 指针（8B），任意长度
+    Str(ArcStr),
+    Int(i64),
     Float(f64),
     Bool(bool),
-    /// Map type, wrapped in Arc<FastHashMap> to avoid deep cloning
-    /// Keys use Arc<str> to reduce key-string cloning and allocations
-    Map(Arc<FastHashMap<Arc<str>, Val>>),
-    /// List type, stored as Arc<Vec<Val>> for compact, immutable sharing
+    /// Map 类型，key 使用 ArcStr（thin 8B 指针，deref 到 &str）
+    Map(Arc<FastHashMap<ArcStr, Val>>),
+    /// List 类型，Arc<Vec<Val>> 共享不可变存储
     List(Arc<Vec<Val>>),
-    /// Closure - contains parameters and body with captured environment
+    /// 闭包
     Closure(Arc<ClosureValue>),
-    /// Rust function - contains a function pointer that can be called
+    /// Rust 函数指针
     RustFunction(RustFunction),
-    /// Rust function with native named-argument support
+    /// Rust 具名参数函数
     RustFunctionNamed(RustFunctionNamed),
-    /// LLVM AOT function registered by the executable runtime.
-    AotFunction(AotFunction),
-    /// Task - represents a concurrent task
+    /// LLVM AOT 编译函数，Box 包装消除 padding（8B thin 指针）
+    AotFunction(Box<AotFunction>),
+    /// Task
     Task(Arc<TaskValue>),
-    /// Channel - represents a communication channel
+    /// Channel
     Channel(Arc<ChannelValue>),
-    /// Stream - lazy, cold stream specification (multi-consumer)
+    /// Stream
     Stream(Arc<StreamValue>),
-    /// Iterator handle
+    /// Iterator
     Iterator(Arc<IteratorValue>),
-    /// Mutation guard - encapsulates in-place collection mutation
+    /// Mutation guard
     MutationGuard(Arc<MutationGuardValue>),
-    /// Stream cursor - a subscribed iterator with independent progress
+    /// Stream cursor
     StreamCursor(Arc<StreamCursorValue>),
-    /// Runtime object with named type and fields
+    /// 具名类型的运行时对象
     Object(Arc<ObjectValue>),
     #[default]
     Nil,
+}
+
+impl Val {
+    /// 从 &str 构造 Val，≤7 字节走 ShortStr（零分配），更长走 Str(ArcStr)。
+    #[inline]
+    pub fn from_str(s: &str) -> Val {
+        if let Some(short) = ShortStr::new(s) {
+            Val::ShortStr(short)
+        } else {
+            Val::Str(intern(s))
+        }
+    }
+
+    #[inline]
+    pub fn str_intern(s: &str) -> Val {
+        Val::Str(intern(s))
+    }
+
+    #[inline]
+    pub fn intern_str(s: &str) -> ArcStr {
+        intern(s)
+    }
+
+    /// 若 Val 是字符串变体，返回 &str；否则返回 None。
+    #[inline]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Val::ShortStr(s) => Some(s.as_str()),
+            Val::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
 }
 
 impl Type {
@@ -599,7 +716,7 @@ impl Type {
             (Type::Int, Val::Int(_)) => Ok(()),
             (Type::Float, Val::Float(_)) => Ok(()),
             (Type::Float, Val::Int(_)) => Ok(()),
-            (Type::String, Val::Str(_)) => Ok(()),
+            (Type::String, Val::ShortStr(_)) | (Type::String, Val::Str(_)) => Ok(()),
             (Type::Bool, Val::Bool(_)) => Ok(()),
             (Type::Nil, Val::Nil) => Ok(()),
             (Type::Boxed(inner), value) => {
@@ -624,7 +741,7 @@ impl Type {
             (Type::Map(key_type, val_type), Val::Map(map)) => {
                 // Validate all keys and values match expected types
                 for (k, v) in map.iter() {
-                    let key_val = Val::Str(k.clone());
+                    let key_val = Val::from_str(k.as_str());
                     key_type.validate(&key_val)?;
                     val_type.validate(v)?;
                 }
@@ -728,7 +845,7 @@ impl Val {
     #[inline]
     pub fn type_name(&self) -> &'static str {
         match self {
-            Val::Str(_) => "String",
+            Val::ShortStr(_) | Val::Str(_) => "String",
             Val::Int(_) => "Int",
             Val::Float(_) => "Float",
             Val::Bool(_) => "Bool",
@@ -767,7 +884,7 @@ impl Val {
     #[inline]
     pub fn object<T: AsRef<str>>(type_name: T, fields: HashMap<String, Val>) -> Val {
         Val::Object(Arc::new(ObjectValue {
-            type_name: Arc::from(type_name.as_ref()),
+            type_name: ArcStr::from(type_name.as_ref()),
             fields: Arc::new(fields),
         }))
     }
@@ -988,7 +1105,6 @@ impl Val {
         frame_info: Option<FrameInfo>,
     ) -> Result<Val> {
         if let Some(res) = with_current_vm(|vm| {
-            let _guard = vm.enter_nested_call();
             vm.exec_with_bindings(
                 fun,
                 env,
@@ -1034,23 +1150,24 @@ impl Val {
     pub(crate) fn access(&self, field: &Val) -> Option<Val> {
         match (self, field) {
             // Map: field lookup by key only (do not shadow keys with synthetic fields)
-            (Val::Map(m), Val::Str(s)) => m.get(s.as_ref()).cloned(),
+            (Val::Map(m), key) if key.as_str().is_some() => m.get(key.as_str().unwrap()).cloned(),
             // String indexing and metadata
-            (Val::Str(s), Val::Int(i)) => {
+            (lhs, Val::Int(i)) if lhs.as_str().is_some() => {
+                let s_str = lhs.as_str().unwrap();
                 if *i < 0 {
                     return None;
                 }
                 let idx = *i as usize;
-                if s.is_ascii() {
-                    let bs = s.as_bytes();
+                if s_str.is_ascii() {
+                    let bs = s_str.as_bytes();
                     if idx < bs.len() {
                         Some(Val::ascii_char_value(bs[idx]))
                     } else {
                         None
                     }
                 } else {
-                    let ch = s.chars().nth(idx)?;
-                    Some(Val::Str(ch.to_string().into()))
+                    let ch = s_str.chars().nth(idx)?;
+                    Some(Val::from_str(&ch.to_string()))
                 }
             }
             (Val::List(l), Val::Int(i)) => {
@@ -1059,30 +1176,32 @@ impl Val {
                 }
                 l.get(*i as usize).cloned()
             }
-            (Val::List(l), Val::Str(s)) if s.as_ref() == "len" => Some(Val::Int(l.len() as i64)),
-            (Val::Str(s), Val::Str(field)) if field.as_ref() == "len" => Some(Val::Int(s.len() as i64)),
+            (Val::List(l), key) if key.as_str() == Some("len") => Some(Val::Int(l.len() as i64)),
+            (lhs, key) if lhs.as_str().is_some() && key.as_str() == Some("len") => {
+                Some(Val::Int(lhs.as_str().unwrap().len() as i64))
+            }
             // Map index -> [key, value]
             (Val::Map(m), Val::Int(i)) => {
                 if *i < 0 {
                     return None;
                 }
                 let mut entries: Vec<_> = m.iter().collect();
-                entries.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+                entries.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
                 let idx = *i as usize;
                 if idx >= entries.len() {
                     return None;
                 }
                 let (key, value) = entries[idx];
-                Some(Val::List(vec![Val::Str(Arc::clone(key)), value.clone()].into()))
+                Some(Val::List(vec![Val::from_str(key.as_str()), value.clone()].into()))
             }
-            (Val::Object(object), Val::Str(s)) => object.fields.get(s.as_ref()).cloned(),
-            (Val::Task(task), Val::Str(s)) if s.as_ref() == "value" => match &task.value {
+            (Val::Object(object), key) if key.as_str().is_some() => object.fields.get(key.as_str().unwrap()).cloned(),
+            (Val::Task(task), key) if key.as_str() == Some("value") => match &task.value {
                 Some(v) => Some(v.clone()),
                 None => Some(Val::Nil),
             },
-            (Val::Channel(channel), Val::Str(s)) => match s.as_ref() {
-                "capacity" => Some(Val::Int(channel.capacity.unwrap_or(0))),
-                "type" => Some(Val::Str(format!("{:?}", channel.inner_type).into())),
+            (Val::Channel(channel), key) => match key.as_str() {
+                Some("capacity") => Some(Val::Int(channel.capacity.unwrap_or(0))),
+                Some("type") => Some(Val::from_str(&format!("{:?}", channel.inner_type))),
                 _ => None,
             },
             _ => None,
@@ -1090,77 +1209,52 @@ impl Val {
     }
 
     /// Fast string concatenation — hot path for `s = s + "x"` loops.
-    /// Optimized to avoid redundant allocations:
-    ///  1. Returns empty-string operand directly (no allocation)
-    ///  2. Uses `MaybeUninit` buffer to avoid zero-initialization
-    ///  3. `ptr::copy_nonoverlapping` (memcpy-equivalent) for byte copying
-    ///  4. Raw pointer casting `Arc<[u8]>` → `Arc<str>` (valid UTF-8 preserved)
     #[inline]
     pub(crate) fn concat_strings(a: &str, b: &str) -> Val {
         if a.is_empty() {
-            return Val::Str(Arc::from(b));
+            return Val::from_str(b);
         }
         if b.is_empty() {
-            return Val::Str(Arc::from(a));
+            return Val::from_str(a);
         }
-
-        let total_len = a.len() + b.len();
-        let mut buffer = Arc::<[MaybeUninit<u8>]>::new_uninit_slice(total_len);
-        {
-            let slice = Arc::get_mut(&mut buffer).expect("new_uninit_slice returns unique arc");
-            let (left, right) = slice.split_at_mut(a.len());
-            unsafe {
-                ptr::copy_nonoverlapping(a.as_ptr(), left.as_mut_ptr() as *mut u8, a.len());
-                ptr::copy_nonoverlapping(b.as_ptr(), right.as_mut_ptr() as *mut u8, b.len());
-            }
-        }
-
-        let raw = Arc::into_raw(buffer) as *const [MaybeUninit<u8>];
-        let bytes: Arc<[u8]> = unsafe { Arc::from_raw(raw as *const [u8]) };
-        // SAFETY: `a` and `b` are valid UTF-8; copying their bytes preserves validity.
-        let ptr = Arc::into_raw(bytes) as *const str;
-        let concatenated = unsafe { Arc::from_raw(ptr) };
-        Val::Str(concatenated)
+        let total = a.len() + b.len();
+        let mut s = String::with_capacity(total);
+        s.push_str(a);
+        s.push_str(b);
+        Val::from_str(&s)
     }
 
     #[inline]
     pub(crate) fn to_str_value(value: &Val) -> Val {
         match value {
-            Val::Str(s) => Val::Str(Arc::clone(s)),
+            Val::ShortStr(s) => Val::ShortStr(*s),
+            Val::Str(s) => Val::Str(s.clone()),
             Val::Int(i) => {
                 let mut buf = itoa::Buffer::new();
-                Val::Str(Arc::from(buf.format(*i)))
+                Val::from_str(buf.format(*i))
             }
             Val::Float(f) => {
                 let mut buf = ryu::Buffer::new();
-                Val::Str(Arc::from(buf.format(*f)))
+                Val::from_str(buf.format(*f))
             }
-            Val::Bool(true) => Val::Str(Arc::from("true")),
-            Val::Bool(false) => Val::Str(Arc::from("false")),
-            Val::Nil => Val::Str(Arc::from("nil")),
-            other => Val::Str(other.to_string().into()),
+            Val::Bool(true) => Val::ShortStr(ShortStr::new("true").unwrap()),
+            Val::Bool(false) => Val::ShortStr(ShortStr::new("false").unwrap()),
+            Val::Nil => Val::ShortStr(ShortStr::new("nil").unwrap()),
+            other => Val::from_str(&other.to_string()),
         }
     }
 
     #[inline]
     pub(crate) fn ascii_char_value(byte: u8) -> Val {
         debug_assert!(byte.is_ascii());
-
-        static ASCII_CHARS: OnceCell<[Arc<str>; 128]> = OnceCell::new();
-        let chars = ASCII_CHARS.get_or_init(|| {
-            std::array::from_fn(|idx| {
-                let ch = idx as u8 as char;
-                Arc::<str>::from(ch.to_string())
-            })
-        });
-
-        Val::Str(Arc::clone(&chars[byte as usize]))
+        Val::ShortStr(ShortStr::from_char(byte as char))
     }
 
     #[inline]
     pub(crate) fn concat_str_add_rhs(prefix: &str, rhs: &Val) -> Option<Val> {
         match rhs {
-            Val::Str(s) => Some(Self::concat_strings(prefix, s)),
+            Val::ShortStr(s) => Some(Self::concat_strings(prefix, s.as_str())),
+            Val::Str(s) => Some(Self::concat_strings(prefix, s.as_str())),
             Val::Int(i) => {
                 let mut buf = itoa::Buffer::new();
                 Some(Self::concat_strings(prefix, buf.format(*i)))
@@ -1176,7 +1270,8 @@ impl Val {
     #[inline]
     pub(crate) fn concat_add_lhs_str(lhs: &Val, suffix: &str) -> Option<Val> {
         match lhs {
-            Val::Str(s) => Some(Self::concat_strings(s, suffix)),
+            Val::ShortStr(s) => Some(Self::concat_strings(s.as_str(), suffix)),
+            Val::Str(s) => Some(Self::concat_strings(s.as_str(), suffix)),
             Val::Int(i) => {
                 let mut buf = itoa::Buffer::new();
                 Some(Self::concat_strings(buf.format(*i), suffix))
@@ -1222,8 +1317,12 @@ impl Val {
 
 impl PartialEq for Val {
     fn eq(&self, other: &Self) -> bool {
+        // Unify string comparisons across ShortStr and Str variants
+        match (self.as_str(), other.as_str()) {
+            (Some(a), Some(b)) => return a == b,
+            _ => {}
+        }
         match (self, other) {
-            (Val::Str(a), Val::Str(b)) => a == b,
             (Val::Int(a), Val::Int(b)) => a == b,
             (Val::Float(a), Val::Float(b)) => a == b,
             (Val::Bool(a), Val::Bool(b)) => a == b,
@@ -1232,10 +1331,7 @@ impl PartialEq for Val {
             (Val::Closure(a), Val::Closure(b)) => {
                 a.params == b.params && Arc::ptr_eq(&a.body, &b.body) && Arc::ptr_eq(&a.env, &b.env)
             }
-            (Val::RustFunction(a), Val::RustFunction(b)) => {
-                // Use fn_addr_eq for meaningful function pointer comparison
-                std::ptr::fn_addr_eq(*a, *b)
-            }
+            (Val::RustFunction(a), Val::RustFunction(b)) => std::ptr::fn_addr_eq(*a, *b),
             (Val::RustFunctionNamed(a), Val::RustFunctionNamed(b)) => std::ptr::fn_addr_eq(*a, *b),
             (Val::AotFunction(a), Val::AotFunction(b)) => a == b,
             (Val::Task(a), Val::Task(b)) => {
@@ -1267,8 +1363,10 @@ impl PartialOrd for Val {
             (Val::Float(a), Val::Float(b)) => a.partial_cmp(b),
             (Val::Int(a), Val::Float(b)) => (*a as f64).partial_cmp(b),
             (Val::Float(a), Val::Int(b)) => a.partial_cmp(&(*b as f64)),
-            (Val::Str(a), Val::Str(b)) => a.partial_cmp(b),
-            _ => None,
+            _ => match (self.as_str(), other.as_str()) {
+                (Some(a), Some(b)) => a.partial_cmp(b),
+                _ => None,
+            },
         }
     }
 }
@@ -1279,6 +1377,7 @@ impl Serialize for Val {
         S: Serializer,
     {
         match self {
+            Val::ShortStr(s) => serializer.serialize_str(s.as_str()),
             Val::Str(s) => serializer.serialize_str(s.as_ref()),
             Val::Int(i) => serializer.serialize_i64(*i),
             Val::Float(f) => serializer.serialize_f64(*f),
@@ -1318,7 +1417,7 @@ impl Serialize for Val {
             }
             Val::Object(object) => {
                 let mut map = serializer.serialize_map(Some(object.fields.len() + 1))?;
-                map.serialize_entry("__type", object.type_name.as_ref())?;
+                map.serialize_entry("__type", object.type_name.as_str())?;
                 for (k, v) in object.fields.iter() {
                     map.serialize_entry(k, v)?;
                 }
@@ -1335,7 +1434,8 @@ impl core::fmt::Display for Val {
             Val::Int(i) => write!(f, "{i}"),
             Val::Float(fl) => write!(f, "{fl}"),
             Val::Bool(b) => write!(f, "{b}"),
-            Val::Str(s) => write!(f, "{}", s.as_ref()),
+            Val::ShortStr(s) => f.write_str(s.as_str()),
+            Val::Str(s) => write!(f, "{s}"),
             Val::Map(m) => {
                 // Avoid serialization errors by using debug fallback
                 match serde_json::to_string(&**m) {
@@ -1396,10 +1496,10 @@ impl Val {
             Val::Int(_) => Type::Int,
             Val::Float(_) => Type::Float,
             Val::Bool(_) => Type::Bool,
-            Val::Str(_) => Type::String,
+            Val::ShortStr(_) | Val::Str(_) => Type::String,
             Val::List(_) => Type::List(Box::new(Type::Any)),
             Val::Map(_) => Type::Map(Box::new(Type::Any), Box::new(Type::Any)),
-            Val::Object(object) => Type::Named(object.type_name.as_ref().to_string()),
+            Val::Object(object) => Type::Named(object.type_name.as_str().to_string()),
             Val::Task(_) => Type::Task(Box::new(Type::Any)),
             Val::Channel(channel) => Type::Channel(Box::new(channel.inner_type.clone())),
             Val::Stream(stream) => Type::Generic {
@@ -1428,7 +1528,8 @@ impl Val {
     pub fn display_string(&self, ctx: Option<&VmContext>) -> String {
         // Fast path for primitives that don't need trait lookup
         match self {
-            Val::Str(s) => return s.as_ref().to_string(),
+            Val::ShortStr(s) => return s.as_str().to_string(),
+            Val::Str(s) => return s.to_string(),
             Val::Int(i) => return i.to_string(),
             Val::Float(f) => return f.to_string(),
             Val::Bool(b) => return b.to_string(),
@@ -1450,9 +1551,9 @@ impl Val {
                 let call_res = fun_val.call(std::slice::from_ref(self), &mut temp_ctx);
                 if let Ok(v) = call_res {
                     // If the method returned a string, use it directly; otherwise use default formatting of returned value
-                    return match v {
-                        Val::Str(s) => s.as_ref().to_string(),
-                        other => format!("{}", other),
+                    return match v.as_str() {
+                        Some(s) => s.to_string(),
+                        None => format!("{}", v),
                     };
                 }
             }

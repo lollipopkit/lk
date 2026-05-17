@@ -35,8 +35,8 @@ fn detect_mutating_receiver(expr: &Expr) -> Option<&str> {
     if let Expr::CallExpr(callee, _args) = expr
         && let Expr::Access(obj, field) = callee.as_ref()
         && let Expr::Var(var_name) = obj.as_ref()
-        && let Expr::Val(Val::Str(method)) = field.as_ref()
-        && method.as_ref() == "push"
+        && let Expr::Val(method_val) = field.as_ref()
+        && method_val.as_str() == Some("push")
     {
         return Some(var_name);
     }
@@ -1009,8 +1009,8 @@ impl FunctionBuilder {
             && let Expr::Access(obj, field) = callee.as_ref()
             && let Expr::Var(receiver) = obj.as_ref()
             && locals.contains(receiver)
-            && let Expr::Val(Val::Str(method)) = field.as_ref()
-            && matches!(method.as_ref(), "push" | "set")
+            && let Expr::Val(method_val) = field.as_ref()
+            && matches!(method_val.as_str(), Some("push") | Some("set"))
         {
             return args.iter().all(|arg| Self::expr_is_cache_prefix_pure(arg, locals));
         }
@@ -1060,8 +1060,8 @@ impl FunctionBuilder {
                 if let Expr::Access(obj, field) = callee.as_ref()
                     && let Expr::Var(receiver) = obj.as_ref()
                     && locals.contains(receiver)
-                    && let Expr::Val(Val::Str(method)) = field.as_ref()
-                    && matches!(method.as_ref(), "values" | "keys" | "len")
+                    && let Expr::Val(method_val3) = field.as_ref()
+                    && matches!(method_val3.as_str(), Some("values") | Some("keys") | Some("len"))
                 {
                     return args.is_empty();
                 }
@@ -1541,8 +1541,8 @@ impl FunctionBuilder {
             && let Expr::Access(obj, field) = callee.as_ref()
             && let Expr::Var(receiver) = obj.as_ref()
             && locals.contains(receiver)
-            && let Expr::Val(Val::Str(method)) = field.as_ref()
-            && method.as_ref() == "push"
+            && let Expr::Val(method_val) = field.as_ref()
+            && method_val.as_str() == Some("push")
         {
             return args.iter().all(|arg| Self::expr_is_local_pure(arg, locals));
         }
@@ -1550,8 +1550,9 @@ impl FunctionBuilder {
             && let Expr::Access(obj, field) = callee.as_ref()
             && let Expr::Var(receiver) = obj.as_ref()
             && locals.contains(receiver)
-            && let Expr::Val(Val::Str(method)) = field.as_ref()
-            && method.as_ref() == "set"
+            && let Expr::Val(method_val) = field.as_ref()
+            && method_val.as_str() == Some("set")
+            && args.iter().all(|arg| Self::expr_is_local_pure(arg, locals))
         {
             return args.iter().all(|arg| Self::expr_is_local_pure(arg, locals));
         }
@@ -1602,8 +1603,8 @@ impl FunctionBuilder {
                 if let Expr::Access(obj, field) = callee.as_ref()
                     && let Expr::Var(receiver) = obj.as_ref()
                     && locals.contains(receiver)
-                    && let Expr::Val(Val::Str(method)) = field.as_ref()
-                    && matches!(method.as_ref(), "values" | "keys" | "len")
+                    && let Expr::Val(method_val5) = field.as_ref()
+                    && matches!(method_val5.as_str(), Some("values") | Some("keys") | Some("len"))
                 {
                     return args.is_empty();
                 }
@@ -1809,10 +1810,10 @@ impl FunctionBuilder {
         let Expr::Access(obj_expr, field_expr) = callee.as_ref() else {
             return false;
         };
-        let (Expr::Var(map_name), Expr::Val(Val::Str(method))) = (obj_expr.as_ref(), field_expr.as_ref()) else {
+        let (Expr::Var(map_name), Expr::Val(method_val)) = (obj_expr.as_ref(), field_expr.as_ref()) else {
             return false;
         };
-        if method.as_ref() != "values" {
+        if method_val.as_str() != Some("values") {
             return false;
         }
         let Some(map_reg) = self.lookup(map_name) else {
@@ -2014,7 +2015,7 @@ impl FunctionBuilder {
                         let skip_pos = self.code.len();
                         self.emit(Op::Jmp(0));
                         let fail_pos = self.code.len();
-                        let err_idx = self.k(Val::Str("Pattern does not match value".into()));
+                        let err_idx = self.k(Val::from_str("Pattern does not match value"));
                         self.emit(Op::Raise { err_kidx: err_idx });
                         let after_fail = self.code.len();
                         if let Op::JmpFalse(_, ref mut ofs) = self.code[jf] {
@@ -2130,7 +2131,7 @@ impl FunctionBuilder {
                         let skip_pos = self.code.len();
                         self.emit(Op::Jmp(0));
                         let fail_pos = self.code.len();
-                        let err_idx = self.k(Val::Str("Pattern does not match value".into()));
+                        let err_idx = self.k(Val::from_str("Pattern does not match value"));
                         self.emit(Op::Raise { err_kidx: err_idx });
                         let after_fail = self.code.len();
                         if let Op::JmpFalse(_, ref mut ofs) = self.code[jf] {
@@ -2175,7 +2176,7 @@ impl FunctionBuilder {
                 let idx = self.get_or_define(name);
                 let rv = self.expr(value);
                 self.emit(Op::StoreLocal(idx, rv));
-                let kname = self.k(Val::Str(name.clone().into()));
+                let kname = self.k(Val::from_str(name.as_str()));
                 self.emit(Op::DefineGlobal(kname, idx));
             }
             Stmt::Let {
@@ -2218,14 +2219,14 @@ impl FunctionBuilder {
                         if !Self::expr_contains_call(value) {
                             self.define_var_as(name, rv);
                             if self.loop_depth == 0 && self.var_scope_depth() == 0 {
-                                let kname = self.k(Val::Str(name.clone().into()));
+                                let kname = self.k(Val::from_str(name.as_str()));
                                 self.emit(Op::DefineGlobal(kname, rv));
                             }
                         } else {
                             let idx = self.get_or_define(name);
                             self.store_named(name, idx, rv);
                             if self.loop_depth == 0 && self.var_scope_depth() == 0 {
-                                let kname = self.k(Val::Str(name.clone().into()));
+                                let kname = self.k(Val::from_str(name.as_str()));
                                 self.emit(Op::DefineGlobal(kname, idx));
                             }
                         }
@@ -2258,7 +2259,7 @@ impl FunctionBuilder {
                     self.expr(value)
                 };
                 let plan_idx = self.register_pattern_plan(pattern);
-                let err_idx = self.k(Val::Str("Pattern does not match value".into()));
+                let err_idx = self.k(Val::from_str("Pattern does not match value"));
                 self.emit(Op::PatternMatchOrFail {
                     src: rv,
                     plan: plan_idx,
@@ -2269,7 +2270,7 @@ impl FunctionBuilder {
                 if let Pattern::Variable(name) = pattern {
                     let idx = self.get_or_define(name);
                     if self.loop_depth == 0 && self.var_scope_depth() == 0 {
-                        let kname = self.k(Val::Str(name.clone().into()));
+                        let kname = self.k(Val::from_str(name.as_str()));
                         self.emit(Op::DefineGlobal(kname, idx));
                     }
                 }
@@ -2320,7 +2321,7 @@ impl FunctionBuilder {
                     } else {
                         format!("Undefined variable: {}", name)
                     };
-                    let msg_idx = self.k(Val::Str(msg.into()));
+                    let msg_idx = self.k(Val::from_str(msg.as_str()));
                     self.emit(Op::Raise { err_kidx: msg_idx });
                 }
             }
@@ -2427,12 +2428,12 @@ impl FunctionBuilder {
                 let dst = self.emit_function_closure(Some(name.as_str()), params, named_params, body.as_ref(), true);
                 let idx = self.get_or_define(name);
                 self.emit(Op::StoreLocal(idx, dst));
-                let kname = self.k(Val::Str(name.clone().into()));
+                let kname = self.k(Val::from_str(name.as_str()));
                 self.emit(Op::DefineGlobal(kname, idx));
             }
             Stmt::Break => {
                 if self.loop_depth == 0 {
-                    let msg_idx = self.k(Val::Str("break statement outside of loop".into()));
+                    let msg_idx = self.k(Val::from_str("break statement outside of loop"));
                     self.emit(Op::Raise { err_kidx: msg_idx });
                 } else {
                     self.break_locations.push(self.code.len());
@@ -2441,7 +2442,7 @@ impl FunctionBuilder {
             }
             Stmt::Continue => {
                 if self.loop_depth == 0 {
-                    let msg_idx = self.k(Val::Str("continue statement outside of loop".into()));
+                    let msg_idx = self.k(Val::from_str("continue statement outside of loop"));
                     self.emit(Op::Raise { err_kidx: msg_idx });
                 } else {
                     self.continue_locations.push(self.code.len());
@@ -2706,19 +2707,19 @@ impl FunctionBuilder {
             }
             Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {}
             Stmt::Trait { name, methods } => {
-                let builtin_idx = self.k(Val::Str("__lk_register_trait".into()));
+                let builtin_idx = self.k(Val::from_str("__lk_register_trait"));
                 let reg_fn = self.alloc();
                 self.emit(Op::LoadGlobal(reg_fn, builtin_idx));
 
                 let arg_base = self.alloc();
-                let name_idx = self.k(Val::Str(name.clone().into()));
+                let name_idx = self.k(Val::from_str(name.as_str()));
                 self.emit(Op::LoadK(arg_base, name_idx));
 
                 let method_entries: Vec<Val> = methods
                     .iter()
                     .map(|(method_name, ty)| {
                         let type_str = ty.display();
-                        Val::List(vec![Val::Str(method_name.clone().into()), Val::Str(type_str.into())].into())
+                        Val::List(vec![Val::from_str(method_name.as_str()), Val::from_str(type_str.as_str())].into())
                     })
                     .collect();
                 let methods_list = Val::List(method_entries.into());
@@ -2738,7 +2739,7 @@ impl FunctionBuilder {
                 target_type,
                 methods,
             } => {
-                let builtin_idx = self.k(Val::Str("__lk_register_trait_impl".into()));
+                let builtin_idx = self.k(Val::from_str("__lk_register_trait_impl"));
                 let reg_fn = self.alloc();
                 self.emit(Op::LoadGlobal(reg_fn, builtin_idx));
 
@@ -2746,11 +2747,11 @@ impl FunctionBuilder {
                 let arg_target = self.alloc();
                 let arg_methods = self.alloc();
 
-                let trait_name_idx = self.k(Val::Str(trait_name.clone().into()));
+                let trait_name_idx = self.k(Val::from_str(trait_name.as_str()));
                 self.emit(Op::LoadK(arg_base, trait_name_idx));
 
                 let target_type_str = target_type.display();
-                let target_type_idx = self.k(Val::Str(target_type_str.into()));
+                let target_type_idx = self.k(Val::from_str(target_type_str.as_str()));
                 self.emit(Op::LoadK(arg_target, target_type_idx));
 
                 let mut entry_regs: Vec<u16> = Vec::with_capacity(methods.len());
@@ -2768,7 +2769,7 @@ impl FunctionBuilder {
                             self.emit_function_closure(Some(name.as_str()), params, named_params, body.as_ref(), false);
 
                         let entry_base = self.alloc();
-                        let name_idx = self.k(Val::Str(name.clone().into()));
+                        let name_idx = self.k(Val::from_str(name.as_str()));
                         self.emit(Op::LoadK(entry_base, name_idx));
 
                         let closure_slot = self.alloc();
@@ -2794,7 +2795,7 @@ impl FunctionBuilder {
                             return_type: Box::new(return_ty),
                         };
                         let signature_str = signature.display();
-                        let signature_idx = self.k(Val::Str(signature_str.into()));
+                        let signature_idx = self.k(Val::from_str(signature_str.as_str()));
                         let signature_slot = self.alloc();
                         self.emit(Op::LoadK(signature_slot, signature_idx));
 

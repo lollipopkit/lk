@@ -67,7 +67,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Str(Arc::from("Alice")));
+        assert_eq!(result, Val::from_str("Alice"));
     }
 
     #[test]
@@ -81,7 +81,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Str(Arc::from("Bob")));
+        assert_eq!(result, Val::from_str("Bob"));
     }
 
     #[test]
@@ -154,7 +154,7 @@ mod tests {
 
         // Should concatenate first two characters
         match result {
-            Val::Str(s) => assert_eq!(s.as_ref(), "he"),
+            v if v.as_str().is_some() => assert_eq!(v.as_str().unwrap(), "he"),
             _ => panic!("Expected string result"),
         }
     }
@@ -184,7 +184,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Str(Arc::from("success")));
+        assert_eq!(result, Val::from_str("success"));
     }
 
     #[test]
@@ -198,7 +198,7 @@ mod tests {
         let program = parse_program(program);
         let result = run_program_default(&program).unwrap();
 
-        assert_eq!(result, Val::Str(Arc::from("success")));
+        assert_eq!(result, Val::from_str("success"));
     }
 
     #[test]

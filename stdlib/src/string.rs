@@ -74,9 +74,9 @@ impl StringModule {
             return Err(anyhow!("len() takes exactly 1 argument"));
         }
 
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Int(s.len() as i64)),
-            _ => Err(anyhow!("len() argument must be a string")),
+        match args[0].as_str() {
+            Some(s) => Ok(Val::Int(s.len() as i64)),
+            None => Err(anyhow!("len() argument must be a string")),
         }
     }
 
@@ -86,9 +86,9 @@ impl StringModule {
             return Err(anyhow!("lower() takes exactly 1 argument"));
         }
 
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Str(s.to_lowercase().into())),
-            _ => Err(anyhow!("lower() argument must be a string")),
+        match args[0].as_str() {
+            Some(s) => Ok(Val::from_str(&s.to_lowercase())),
+            None => Err(anyhow!("lower() argument must be a string")),
         }
     }
 
@@ -98,9 +98,9 @@ impl StringModule {
             return Err(anyhow!("upper() takes exactly 1 argument"));
         }
 
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Str(s.to_uppercase().into())),
-            _ => Err(anyhow!("upper() argument must be a string")),
+        match args[0].as_str() {
+            Some(s) => Ok(Val::from_str(&s.to_uppercase())),
+            None => Err(anyhow!("upper() argument must be a string")),
         }
     }
 
@@ -110,9 +110,9 @@ impl StringModule {
             return Err(anyhow!("trim() takes exactly 1 argument"));
         }
 
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Str(s.trim().into())),
-            _ => Err(anyhow!("trim() argument must be a string")),
+        match args[0].as_str() {
+            Some(s) => Ok(Val::from_str(s.trim())),
+            None => Err(anyhow!("trim() argument must be a string")),
         }
     }
 
@@ -122,20 +122,12 @@ impl StringModule {
             return Err(anyhow!("starts_with() takes exactly 2 arguments: string, prefix"));
         }
 
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("starts_with() first argument must be a string"));
-            }
-        };
-
-        let prefix = match &args[1] {
-            Val::Str(p) => &**p,
-            _ => {
-                return Err(anyhow!("starts_with() second argument must be a string"));
-            }
-        };
-
+        let string = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("starts_with() first argument must be a string"))?;
+        let prefix = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow!("starts_with() second argument must be a string"))?;
         Ok(Val::Bool(string.starts_with(prefix)))
     }
 
@@ -145,20 +137,12 @@ impl StringModule {
             return Err(anyhow!("ends_with() takes exactly 2 arguments: string, suffix"));
         }
 
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("ends_with() first argument must be a string"));
-            }
-        };
-
-        let suffix = match &args[1] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("ends_with() second argument must be a string"));
-            }
-        };
-
+        let string = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("ends_with() first argument must be a string"))?;
+        let suffix = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow!("ends_with() second argument must be a string"))?;
         Ok(Val::Bool(string.ends_with(suffix)))
     }
 
@@ -168,20 +152,12 @@ impl StringModule {
             return Err(anyhow!("contains() takes exactly 2 arguments: string, substring"));
         }
 
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("contains() first argument must be a string"));
-            }
-        };
-
-        let substring = match &args[1] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("contains() second argument must be a string"));
-            }
-        };
-
+        let string = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("contains() first argument must be a string"))?;
+        let substring = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow!("contains() second argument must be a string"))?;
         Ok(Val::Bool(string.contains(substring)))
     }
 
@@ -203,10 +179,9 @@ impl StringModule {
         }
 
         let extract_str = |val: &Val, ctx: &str| -> Result<String> {
-            match val {
-                Val::Str(s) => Ok(s.as_ref().to_string()),
-                _ => Err(anyhow!("replace() {} must be a string", ctx)),
-            }
+            val.as_str()
+                .ok_or_else(|| anyhow!("replace() {} must be a string", ctx))
+                .map(str::to_owned)
         };
         let extract_bool = |val: &Val, ctx: &str| -> Result<bool> {
             match val {
@@ -215,10 +190,10 @@ impl StringModule {
             }
         };
 
-        let source = match &pos[0] {
-            Val::Str(s) => s.as_ref().to_string(),
-            _ => return Err(anyhow!("replace() first argument must be a string")),
-        };
+        let source = pos[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("replace() first argument must be a string"))?
+            .to_owned();
 
         let mut pattern: Option<String> = None;
         let mut with: Option<String> = None;
@@ -276,7 +251,7 @@ impl StringModule {
             source.replacen(pattern.as_str(), with.as_str(), 1)
         };
 
-        Ok(Val::Str(result.into()))
+        Ok(Val::from_str(&result))
     }
 
     fn replace_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
@@ -289,12 +264,9 @@ impl StringModule {
             return Err(anyhow!("substring() takes exactly 3 arguments: string, start, length"));
         }
 
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => {
-                return Err(anyhow!("substring() first argument must be a string"));
-            }
-        };
+        let string = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("substring() first argument must be a string"))?;
 
         let start = match &args[1] {
             Val::Int(i) => *i as usize,
@@ -315,7 +287,7 @@ impl StringModule {
         }
 
         let end = std::cmp::min(start + length, string.len());
-        Ok(Val::Str(string[start..end].into()))
+        Ok(Val::from_str(&string[start..end]))
     }
 
     /// Split string by delimiter
@@ -324,20 +296,17 @@ impl StringModule {
             return Err(anyhow!("split() takes exactly 2 arguments: string, delimiter"));
         }
 
-        let string = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("split() first argument must be a string")),
-        };
-
-        let delimiter = match &args[1] {
-            Val::Str(d) => &**d,
-            _ => return Err(anyhow!("split() second argument must be a string")),
-        };
+        let string = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("split() first argument must be a string"))?;
+        let delimiter = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow!("split() second argument must be a string"))?;
 
         let parts: Vec<Val> = if delimiter.is_empty() {
-            string.chars().map(|c| Val::Str(c.to_string().into())).collect()
+            string.chars().map(|c| Val::from_str(&c.to_string())).collect()
         } else {
-            string.split(delimiter).map(|s| Val::Str(s.into())).collect()
+            string.split(delimiter).map(Val::from_str).collect()
         };
 
         Ok(Val::List(Arc::from(parts)))
@@ -348,9 +317,9 @@ impl StringModule {
         if args.len() != 1 {
             return Err(anyhow!("reverse() takes exactly 1 argument"));
         }
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Str(s.chars().rev().collect::<String>().into())),
-            _ => Err(anyhow!("reverse() argument must be a string")),
+        match args[0].as_str() {
+            Some(s) => Ok(Val::from_str(&s.chars().rev().collect::<String>())),
+            None => Err(anyhow!("reverse() argument must be a string")),
         }
     }
 
@@ -359,10 +328,9 @@ impl StringModule {
         if args.len() != 2 {
             return Err(anyhow!("repeat() takes exactly 2 arguments: string, count"));
         }
-        let s = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("repeat() first argument must be a string")),
-        };
+        let s = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("repeat() first argument must be a string"))?;
         let n = match &args[1] {
             Val::Int(i) => *i,
             _ => return Err(anyhow!("repeat() second argument must be an integer")),
@@ -370,7 +338,7 @@ impl StringModule {
         if n < 0 {
             return Err(anyhow!("repeat() count must be non-negative"));
         }
-        Ok(Val::Str(s.repeat(n as usize).into()))
+        Ok(Val::from_str(&s.repeat(n as usize)))
     }
 
     /// Get character at index (returns single-char string)
@@ -378,16 +346,15 @@ impl StringModule {
         if args.len() != 2 {
             return Err(anyhow!("char() takes exactly 2 arguments: string, index"));
         }
-        let s = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("char() first argument must be a string")),
-        };
+        let s = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("char() first argument must be a string"))?;
         let idx = match &args[1] {
             Val::Int(i) => *i as usize,
             _ => return Err(anyhow!("char() second argument must be an integer")),
         };
         match s.chars().nth(idx) {
-            Some(c) => Ok(Val::Str(c.to_string().into())),
+            Some(c) => Ok(Val::from_str(&c.to_string())),
             None => Ok(Val::Nil),
         }
     }
@@ -397,10 +364,9 @@ impl StringModule {
         if args.len() != 2 {
             return Err(anyhow!("byte() takes exactly 2 arguments: string, index"));
         }
-        let s = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("byte() first argument must be a string")),
-        };
+        let s = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("byte() first argument must be a string"))?;
         let idx = match &args[1] {
             Val::Int(i) => *i as usize,
             _ => return Err(anyhow!("byte() second argument must be an integer")),
@@ -416,12 +382,12 @@ impl StringModule {
         if args.len() != 1 {
             return Err(anyhow!("chars() takes exactly 1 argument"));
         }
-        match &args[0] {
-            Val::Str(s) => {
-                let list: Vec<Val> = s.chars().map(|c| Val::Str(c.to_string().into())).collect();
+        match args[0].as_str() {
+            Some(s) => {
+                let list: Vec<Val> = s.chars().map(|c| Val::from_str(&c.to_string())).collect();
                 Ok(Val::List(Arc::from(list)))
             }
-            _ => Err(anyhow!("chars() argument must be a string")),
+            None => Err(anyhow!("chars() argument must be a string")),
         }
     }
 
@@ -430,14 +396,12 @@ impl StringModule {
         if args.len() != 2 && args.len() != 3 {
             return Err(anyhow!("find() takes 2 or 3 arguments: string, pattern[, start]"));
         }
-        let s = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("find() first argument must be a string")),
-        };
-        let pattern = match &args[1] {
-            Val::Str(p) => &**p,
-            _ => return Err(anyhow!("find() second argument must be a string")),
-        };
+        let s = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("find() first argument must be a string"))?;
+        let pattern = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow!("find() second argument must be a string"))?;
         let start = if args.len() >= 3 {
             match &args[2] {
                 Val::Int(i) => *i as usize,
@@ -460,9 +424,9 @@ impl StringModule {
         if args.len() != 1 {
             return Err(anyhow!("is_empty() takes exactly 1 argument"));
         }
-        match &args[0] {
-            Val::Str(s) => Ok(Val::Bool(s.is_empty())),
-            _ => Err(anyhow!("is_empty() argument must be a string")),
+        match args[0].as_str() {
+            Some(s) => Ok(Val::Bool(s.is_empty())),
+            None => Err(anyhow!("is_empty() argument must be a string")),
         }
     }
 
@@ -471,10 +435,10 @@ impl StringModule {
         if args.is_empty() {
             return Err(anyhow!("format() requires at least 1 argument (format string)"));
         }
-        let fmt = match &args[0] {
-            Val::Str(s) => s.clone(),
-            _ => return Err(anyhow!("format() first argument must be a string")),
-        };
+        let fmt = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("format() first argument must be a string"))?
+            .to_owned();
         let rest = &args[1..];
         let mut out = String::with_capacity(fmt.len());
         let chars: Vec<char> = fmt.chars().collect();
@@ -506,7 +470,7 @@ impl StringModule {
                 out.push_str(&v.display_string(Some(ctx)));
             }
         }
-        Ok(Val::Str(out.into()))
+        Ok(Val::from_str(&out))
     }
 
     /// Join list of strings with delimiter
@@ -520,20 +484,19 @@ impl StringModule {
             _ => return Err(anyhow!("join() first argument must be a list")),
         };
 
-        let delimiter = match &args[1] {
-            Val::Str(d) => &**d,
-            _ => return Err(anyhow!("join() second argument must be a string")),
-        };
+        let delimiter = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow!("join() second argument must be a string"))?;
 
-        let mut strings = Vec::new();
-        for item in list {
-            match item {
-                Val::Str(s) => strings.push(&**s),
-                _ => return Err(anyhow!("join() list must contain only strings")),
+        let mut strings: Vec<&str> = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            match item.as_str() {
+                Some(s) => strings.push(s),
+                None => return Err(anyhow!("join() list must contain only strings")),
             }
         }
 
-        Ok(Val::Str(strings.join(delimiter).into()))
+        Ok(Val::from_str(&strings.join(delimiter)))
     }
 }
 

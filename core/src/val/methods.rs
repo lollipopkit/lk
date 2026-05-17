@@ -21,7 +21,7 @@ pub fn register_method(type_name: &str, method: &str, func: RustFunction) {
 pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction> {
     // Avoid allocation by using static names or borrowed object name
     let tname: &str = match receiver {
-        Val::Str(_) => "String",
+        Val::ShortStr(_) | Val::Str(_) => "String",
         Val::Int(_) => "Int",
         Val::Float(_) => "Float",
         Val::Bool(_) => "Bool",

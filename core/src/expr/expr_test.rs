@@ -12,7 +12,7 @@ mod test {
         env.define("pub".to_string(), Val::Bool(true));
 
         let mut user = HashMap::new();
-        user.insert("name".to_string(), Val::Str("lk".into()));
+        user.insert("name".to_string(), Val::from_str("lk"));
         user.insert("age".to_string(), Val::Int(18));
         env.define("user".to_string(), user.into());
 
@@ -27,7 +27,7 @@ mod test {
         env.define("index".to_string(), Val::Int(1));
 
         let mut nested_l2 = HashMap::new();
-        nested_l2.insert("level2".to_string(), Val::Str("value".into()));
+        nested_l2.insert("level2".to_string(), Val::from_str("value"));
         let mut nested_l1: HashMap<String, Val> = HashMap::new();
         nested_l1.insert("level1".to_string(), nested_l2.into());
         env.define("nested".to_string(), nested_l1.into());
@@ -185,7 +185,7 @@ mod test {
         // Mixed types
         expect(
             r#"[1, "hello", true]"#,
-            vec![Val::Int(1), Val::Str("hello".into()), Val::Bool(true)],
+            vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)],
         );
 
         // Nested lists
@@ -207,7 +207,7 @@ mod test {
 
         // Simple map
         let mut expected = HashMap::new();
-        expected.insert("name".to_string(), Val::Str("Alice".into()));
+        expected.insert("name".to_string(), Val::from_str("Alice"));
         expected.insert("age".to_string(), Val::Int(30));
         expect(r#"{"name": "Alice", "age": 30}"#, expected);
 
@@ -219,15 +219,15 @@ mod test {
 
         // Map with member access
         let mut expected = HashMap::new();
-        expected.insert("user_name".to_string(), Val::Str("lk".into()));
+        expected.insert("user_name".to_string(), Val::from_str("lk"));
         expected.insert("user_age".to_string(), Val::Int(18));
         expect(r#"{"user_name": user.name, "user_age": user.age}"#, expected);
 
         // Map with different key types
         let mut expected = HashMap::new();
-        expected.insert("42".to_string(), Val::Str("number".into()));
-        expected.insert("true".to_string(), Val::Str("bool".into()));
-        expected.insert("key".to_string(), Val::Str("string".into()));
+        expected.insert("42".to_string(), Val::from_str("number"));
+        expected.insert("true".to_string(), Val::from_str("bool"));
+        expected.insert("key".to_string(), Val::from_str("string"));
         expect(r#"{42: "number", true: "bool", "key": "string"}"#, expected);
     }
 
@@ -237,11 +237,11 @@ mod test {
 
         // List of maps
         let mut map1 = HashMap::new();
-        map1.insert("name".to_string(), Val::Str("Alice".into()));
+        map1.insert("name".to_string(), Val::from_str("Alice"));
         map1.insert("age".to_string(), Val::Int(30));
 
         let mut map2 = HashMap::new();
-        map2.insert("name".to_string(), Val::Str("Bob".into()));
+        map2.insert("name".to_string(), Val::from_str("Bob"));
         map2.insert("age".to_string(), Val::Int(25));
 
         expect(
@@ -323,7 +323,7 @@ mod test {
         // Existing path succeeds with or without optional access
         let expr = Expr::try_from("nested?.level1?.level2").unwrap();
         let out = expr.eval_with_ctx(&mut ctx).unwrap();
-        assert_eq!(out, Val::Str("value".into()));
+        assert_eq!(out, Val::from_str("value"));
 
         // Missing intermediate field yields nil rather than error
         let expr = Expr::try_from("nested?.missing?.level2").unwrap();
@@ -442,8 +442,8 @@ mod test {
         // Test that template strings with constant expressions are folded
         let expr = Expr::try_from("\"Hello \\\"World\\\"!\"").unwrap();
         // Should fold to a single string constant during parsing
-        if let Expr::Val(Val::Str(s)) = expr {
-            assert_eq!(s.as_ref(), "Hello \"World\"!");
+        if let Expr::Val(v) = expr {
+            assert_eq!(v.as_str(), Some("Hello \"World\"!"));
         } else {
             panic!("Template string with constants should be folded to Val");
         }

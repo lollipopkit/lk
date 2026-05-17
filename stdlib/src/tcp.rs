@@ -64,10 +64,7 @@ impl TcpModule {
             return Err(anyhow!("connect requires 2 arguments: host, port"));
         }
 
-        let host = match &args[0] {
-            Val::Str(s) => s.as_ref(),
-            _ => return Err(anyhow!("Host must be a string")),
-        };
+        let host = args[0].as_str().ok_or_else(|| anyhow!("Host must be a string"))?;
 
         let port = match &args[1] {
             Val::Int(i) if *i > 0 && *i <= 65535 => *i as u16,
@@ -92,10 +89,7 @@ impl TcpModule {
             return Err(anyhow!("bind requires 2 arguments: host, port"));
         }
 
-        let host = match &args[0] {
-            Val::Str(s) => s.as_ref(),
-            _ => return Err(anyhow!("Host must be a string")),
-        };
+        let host = args[0].as_str().ok_or_else(|| anyhow!("Host must be a string"))?;
 
         let port = match &args[1] {
             Val::Int(i) if *i > 0 && *i <= 65535 => *i as u16,
@@ -181,7 +175,7 @@ impl TcpModule {
         buffer.truncate(bytes_read);
         let data = String::from_utf8(buffer).map_err(|_| anyhow!("Data is not valid UTF-8"))?;
 
-        Ok(Val::Str(data.into()))
+        Ok(Val::from_str(&data))
     }
 
     /// Write data to a connection: tcp.write(connection_id, data) -> bytes_written
@@ -196,12 +190,11 @@ impl TcpModule {
         };
 
         let data_string;
-        let data = match &args[1] {
-            Val::Str(s) => s.as_bytes(),
-            v => {
-                data_string = v.to_string();
-                data_string.as_bytes()
-            }
+        let data = if let Some(s) = args[1].as_str() {
+            s.as_bytes()
+        } else {
+            data_string = args[1].to_string();
+            data_string.as_bytes()
         };
 
         let registry = TcpRegistry::get_global();

@@ -25,8 +25,8 @@ mod tests {
 
             // Check first arm: 1 => "one"
             assert!(matches!(arms[0].pattern, Pattern::Literal(Val::Int(1))));
-            if let Expr::Val(Val::Str(s)) = &*arms[0].body {
-                assert_eq!(s.as_ref(), "one");
+            if let Expr::Val(v) = &*arms[0].body {
+                assert_eq!(v.as_str(), Some("one"));
             } else {
                 panic!("Expected string literal");
             }

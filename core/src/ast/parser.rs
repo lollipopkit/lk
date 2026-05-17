@@ -5,7 +5,6 @@ use crate::{
     val::Val,
 };
 use anyhow::{Result, anyhow};
-use std::sync::Arc;
 
 pub struct Parser<'a> {
     tokens: &'a [Token],
@@ -548,7 +547,7 @@ impl<'a> Parser<'a> {
             }
             Token::Str(s) => {
                 self.pos += 1;
-                Ok(Expr::Val(Val::Str(Arc::from(s.as_str()))))
+                Ok(Expr::Val(Val::from_str(s.as_str())))
             }
             Token::TemplateString(content) => {
                 self.pos += 1;
@@ -816,7 +815,7 @@ impl<'a> Parser<'a> {
                 }
             }
             Token::Str(s) => {
-                let val = Val::Str(Arc::from(s.clone()));
+                let val = Val::from_str(s.as_str());
                 self.pos += 1;
                 Ok(Pattern::Literal(val))
             }
@@ -1370,12 +1369,12 @@ impl<'a> Parser<'a> {
         match &self.tokens[self.pos] {
             Token::Id(id) => {
                 // For field access, treat identifiers as literal strings
-                let expr = Expr::Val(Val::Str(Arc::from(id.as_str())));
+                let expr = Expr::Val(Val::from_str(id.as_str()));
                 self.pos += 1;
                 Ok(expr)
             }
             Token::Str(s) => {
-                let expr = Expr::Val(Val::Str(Arc::from(s.as_str())));
+                let expr = Expr::Val(Val::from_str(s.as_str()));
                 self.pos += 1;
                 Ok(expr)
             }

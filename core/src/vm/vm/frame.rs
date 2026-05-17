@@ -18,7 +18,7 @@ pub(super) struct CallFrameMeta {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RegisterWindowRef {
     Current,
-    StackIndex(usize),
+    Base(usize),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +40,7 @@ impl RegisterSpan {
     pub(super) fn relocate(self, window: RegisterWindowRef) -> Self {
         let relocated = match self.window {
             RegisterWindowRef::Current => window,
-            RegisterWindowRef::StackIndex(idx) => RegisterWindowRef::StackIndex(idx),
+            RegisterWindowRef::Base(base) => RegisterWindowRef::Base(base),
         };
         Self {
             window: relocated,
@@ -145,7 +145,7 @@ impl Drop for CallFrameStackGuard {
 pub(super) struct FrameState<'func> {
     pub(super) func: &'func Function,
     pub(super) pc: usize,
-    pub(super) regs: &'func mut Vec<Val>,
+    pub(super) regs: &'func mut [Val],
     pub(super) reg_base: usize,
     pub(super) reg_count: usize,
     pub(super) frame_ptr: *mut CallFrame<'func>,
@@ -160,7 +160,7 @@ pub(super) struct FrameState<'func> {
 impl<'func> FrameState<'func> {
     pub(super) fn new(
         frame: &mut CallFrame<'func>,
-        regs: &'func mut Vec<Val>,
+        regs: &'func mut [Val],
         region_allocator: *const RegionAllocator,
     ) -> Self {
         Self {
@@ -181,7 +181,7 @@ impl<'func> FrameState<'func> {
 
     pub(super) fn new_ephemeral(
         frame: &mut CallFrame<'func>,
-        regs: &'func mut Vec<Val>,
+        regs: &'func mut [Val],
         region_allocator: *const RegionAllocator,
     ) -> Self {
         let mut state = Self::new(frame, regs, region_allocator);
@@ -237,19 +237,15 @@ impl<'func> FrameState<'func> {
     #[inline]
     pub(super) fn write_reg(&mut self, idx: usize, value: Val) {
         self.record_reg_write(idx);
-        if idx < self.regs.len() {
-            self.regs[idx] = value;
-        } else {
-            self.regs.resize(idx + 1, Val::Nil);
-            self.regs[idx] = value;
-        }
+        debug_assert!(idx < self.regs.len(), "register write out of frame window");
+        self.regs[idx] = value;
     }
 
     #[inline]
     pub(super) fn execution_parts(
         &mut self,
     ) -> (
-        &mut Vec<Val>,
+        &mut [Val],
         &Option<Arc<ClosureCapture>>,
         &Option<Arc<Vec<CaptureSpec>>>,
         Option<&RegionPlan>,

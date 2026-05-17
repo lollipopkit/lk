@@ -60,16 +60,15 @@ impl DateTimeModule {
             }
         };
 
-        let format_str = match &args[1] {
-            Val::Str(fmt) => &**fmt,
-            _ => return Err(anyhow::anyhow!("second argument must be a format string")),
-        };
+        let format_str = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("second argument must be a format string"))?;
 
         use chrono::{DateTime, Utc};
         let dt = DateTime::<Utc>::from_timestamp(timestamp, 0).ok_or_else(|| anyhow::anyhow!("invalid timestamp"))?;
 
         let formatted = dt.format(format_str).to_string();
-        Ok(Val::Str(formatted.into()))
+        Ok(Val::from_str(&formatted))
     }
 
     /// Parse string to timestamp
@@ -80,15 +79,13 @@ impl DateTimeModule {
             ));
         }
 
-        let datetime_str = match &args[0] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow::anyhow!("first argument must be a datetime string")),
-        };
+        let datetime_str = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("first argument must be a datetime string"))?;
 
-        let format_str = match &args[1] {
-            Val::Str(fmt) => &**fmt,
-            _ => return Err(anyhow::anyhow!("second argument must be a format string")),
-        };
+        let format_str = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("second argument must be a format string"))?;
 
         use chrono::{DateTime, NaiveDateTime, Utc};
         let naive = NaiveDateTime::parse_from_str(datetime_str, format_str)

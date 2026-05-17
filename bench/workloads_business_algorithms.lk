@@ -2,6 +2,7 @@
 // Each block measures runtime only and prints: workload|name|checksum=...|elapsed=...ms
 import os;
 import map;
+import string;
 
 let seed = os.epoch();
 
@@ -222,3 +223,190 @@ for i in 1..=pipeline_iters {
 }
 t1 = os.clock();
 emit("order_score_pipeline", checksum, t0, t1);
+
+t0 = os.clock();
+checksum = 0;
+let log_rounds = 2200 + (seed - seed);
+let log_width = 72 + (seed - seed);
+for r in 1..=log_rounds {
+    let status_counts = {};
+    for i in 1..=log_width {
+        let status = "ok";
+        if (((i + r) % 17) == 0) {
+            let line = "ts=${r}|tenant=t${i % 13}|status=error|path=/api/v1/orders/${i % 19}";
+            let parsed_len = line.split("|").join("|").len();
+            checksum += parsed_len % 7;
+            let prev = map.get(status_counts, "error");
+            if prev == nil {
+                status_counts.set("error", 1);
+            } else {
+                status_counts.set("error", prev + 1);
+            }
+        } else if (((i + r) % 5) == 0) {
+            let line = "ts=${r}|tenant=t${i % 13}|status=warn|path=/api/v1/orders/${i % 19}";
+            let parsed_len = line.split("|").join("|").len();
+            checksum += parsed_len % 7;
+            let prev = map.get(status_counts, "warn");
+            if prev == nil {
+                status_counts.set("warn", 1);
+            } else {
+                status_counts.set("warn", prev + 1);
+            }
+        } else {
+            let line = "ts=${r}|tenant=t${i % 13}|status=${status}|path=/api/v1/orders/${i % 19}";
+            let parsed_len = line.split("|").join("|").len();
+            checksum += parsed_len % 7;
+            let prev = map.get(status_counts, status);
+            if prev == nil {
+                status_counts.set(status, 1);
+            } else {
+                status_counts.set(status, prev + 1);
+            }
+        }
+    }
+    let ok_count = map.get(status_counts, "ok");
+    let warn_count = map.get(status_counts, "warn");
+    let error_count = map.get(status_counts, "error");
+    if ok_count != nil { checksum += ok_count; }
+    if warn_count != nil { checksum += warn_count * 7; }
+    if error_count != nil { checksum += error_count * 31; }
+}
+t1 = os.clock();
+emit("log_parse_filter", checksum, t0, t1);
+
+fn cart_line_total(sku, qty, region, prices, tax_rates) {
+    let price = map.get(prices, sku);
+    let tax = map.get(tax_rates, region);
+    let subtotal = price * qty;
+    let discount = 0;
+    if qty >= 5 {
+        discount = subtotal / 10;
+    } else if sku.starts_with("pro") {
+        discount = subtotal / 20;
+    }
+    return subtotal - discount + ((subtotal * tax) / 100);
+}
+
+t0 = os.clock();
+checksum = 0;
+let cart_rounds = 5000 + (seed - seed);
+let prices = {"basic": 19, "pro": 49, "team": 99, "addon": 7};
+let tax_rates = {"us": 8, "eu": 20, "apac": 12};
+for r in 1..=cart_rounds {
+    let region = "us";
+    if ((r % 3) == 1) {
+        region = "eu";
+    } else if ((r % 3) == 2) {
+        region = "apac";
+    }
+    checksum += cart_line_total("basic", (r % 6) + 1, region, prices, tax_rates);
+    checksum += cart_line_total("pro", (r % 4) + 1, region, prices, tax_rates);
+    checksum += cart_line_total("team", (r % 3) + 1, region, prices, tax_rates);
+    if ((r % 2) == 0) {
+        checksum += cart_line_total("addon", (r % 8) + 1, region, prices, tax_rates);
+    }
+}
+t1 = os.clock();
+emit("cart_pricing_rules", checksum, t0, t1);
+
+t0 = os.clock();
+checksum = 0;
+let route_rounds = 90000 + (seed - seed);
+let role_levels = {"guest": 0, "user": 10, "analyst": 40, "ops": 70, "admin": 100};
+for i in 1..=route_rounds {
+    if ((i % 11) == 0) {
+        checksum += (i % 97) + map.get(role_levels, "admin") + "/admin/users".len();
+    } else if ((i % 7) == 0) {
+        checksum += (i % 97) + map.get(role_levels, "ops") + "DELETE".len();
+    } else if ((i % 5) == 0) {
+        checksum += (i % 97) + map.get(role_levels, "analyst") + "/reports/daily".len();
+    } else if ((i % 2) == 0) {
+        checksum += (i % 97) + map.get(role_levels, "user") + "/api/orders".len();
+    } else {
+        checksum += 3 + map.get(role_levels, "guest");
+    }
+}
+t1 = os.clock();
+emit("route_permission_check", checksum, t0, t1);
+
+t0 = os.clock();
+checksum = 0;
+let inventory_rounds = 2800 + (seed - seed);
+for r in 1..=inventory_rounds {
+    let stock = {};
+    let reorder = [];
+    for i in 1..=64 {
+        let sku = "sku-${i % 23}";
+        let current = map.get(stock, sku);
+        let delta = ((i * 11) + r) % 37;
+        if current == nil {
+            stock.set(sku, delta);
+        } else {
+            stock.set(sku, current + delta);
+        }
+    }
+    for i in 0..23 {
+        let sku = "sku-${i}";
+        let available = map.get(stock, sku);
+        if available == nil {
+            available = 0;
+        }
+        let demand = ((r + i * 7) % 41) + 5;
+        if available < demand {
+            reorder.push(sku);
+            checksum += (demand - available) * (i + 1);
+        } else {
+            checksum += available % 17;
+        }
+    }
+    checksum += reorder.join(",").len();
+}
+t1 = os.clock();
+emit("inventory_reorder", checksum, t0, t1);
+
+fn fraud_score(amount, country, device, prior_declines, risky_countries) {
+    let score = 0;
+    if amount > 900 {
+        score += 40;
+    } else if amount > 400 {
+        score += 15;
+    }
+    if map.get(risky_countries, country) != nil {
+        score += 35;
+    }
+    if device.starts_with("emu") {
+        score += 30;
+    }
+    score += prior_declines * 9;
+    return score;
+}
+
+t0 = os.clock();
+checksum = 0;
+let fraud_rounds = 85000 + (seed - seed);
+let risky_countries = {"ng": true, "ru": true, "kp": true};
+for i in 1..=fraud_rounds {
+    let country = "us";
+    if ((i % 29) == 0) {
+        country = "ng";
+    } else if ((i % 31) == 0) {
+        country = "ru";
+    } else if ((i % 7) == 0) {
+        country = "de";
+    }
+    let device = "ios";
+    if ((i % 19) == 0) {
+        device = "emu-android";
+    } else if ((i % 5) == 0) {
+        device = "web";
+    }
+    let amount = ((i * 37) % 1200) + 1;
+    let score = fraud_score(amount, country, device, i % 4, risky_countries);
+    if score >= 70 {
+        checksum += score * 2;
+    } else {
+        checksum += score + 1;
+    }
+}
+t1 = os.clock();
+emit("fraud_rule_scoring", checksum, t0, t1);

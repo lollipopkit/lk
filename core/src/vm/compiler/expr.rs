@@ -53,6 +53,51 @@ impl FunctionBuilder {
         }
     }
 
+    fn emit_map_access(&mut self, map_reg: u16, key_expr: &Expr) -> u16 {
+        let dst = self.alloc();
+        if let Expr::Val(key) = key_expr
+            && key.as_str().is_some()
+        {
+            let key_idx = self.k(key.clone());
+            self.emit(Op::AccessK(dst, map_reg, key_idx));
+        } else {
+            let key_reg = self.expr(key_expr);
+            self.emit(Op::Access(dst, map_reg, key_reg));
+        }
+        dst
+    }
+
+    fn emit_map_set(&mut self, map_reg: u16, key_expr: &Expr, value_expr: &Expr) {
+        let key_reg = if let Expr::Var(arg_name) = key_expr {
+            self.lookup(arg_name).unwrap_or_else(|| self.expr(key_expr))
+        } else {
+            self.expr(key_expr)
+        };
+        let val_reg = if let Expr::Var(arg_name) = value_expr {
+            self.lookup(arg_name).unwrap_or_else(|| self.expr(value_expr))
+        } else {
+            self.expr(value_expr)
+        };
+        if key_reg != map_reg
+            && val_reg != map_reg
+            && key_reg != val_reg
+            && Self::expr_result_is_temporary(key_expr)
+            && Self::expr_result_is_temporary(value_expr)
+        {
+            self.emit(Op::MapSetMove {
+                map: map_reg,
+                key: key_reg,
+                val: val_reg,
+            });
+        } else {
+            self.emit(Op::MapSet {
+                map: map_reg,
+                key: key_reg,
+                val: val_reg,
+            });
+        }
+    }
+
     fn emit_list_from_exprs(&mut self, items: &[Box<Expr>]) -> u16 {
         let dst = self.alloc();
         let count = items.len() as u16;
@@ -80,7 +125,7 @@ impl FunctionBuilder {
         }
         for (i, (name, expr)) in named_args.iter().enumerate() {
             let key_reg = base + (2 * i) as u16;
-            let key_idx = self.k(Val::Str(name.clone().into()));
+            let key_idx = self.k(Val::from_str(name.as_str()));
             self.emit(Op::LoadK(key_reg, key_idx));
             let val_reg = self.expr(expr);
             let dst_reg = key_reg + 1;
@@ -128,7 +173,7 @@ impl FunctionBuilder {
 
     fn template_expr_can_concat_direct(&self, expr: &Expr) -> bool {
         match expr {
-            Expr::Val(Val::Int(_) | Val::Float(_) | Val::Str(_)) => true,
+            Expr::Val(Val::Int(_) | Val::Float(_) | Val::Str(_) | Val::ShortStr(_)) => true,
             Expr::Var(name) => self
                 .lookup(name)
                 .map(|reg| self.int_regs.contains(&reg))
@@ -199,27 +244,53 @@ impl FunctionBuilder {
     }
 
     fn compile_method_call(&mut self, obj_expr: &Expr, field_expr: &Expr, args: &[Box<Expr>]) -> u16 {
-        // Fast path: stdlib map.get(m, k) when m is a known local Map.
+        // Fast path: s.split(sep).join(sep) is the original string.
+        if args.len() == 1
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("join")
+            && let Expr::CallExpr(split_callee, split_args) = obj_expr
+            && split_args.len() == 1
+            && split_args[0].as_ref() == args[0].as_ref()
+            && let Expr::Access(split_receiver, split_field) = split_callee.as_ref()
+            && let Expr::Val(split_method) = split_field.as_ref()
+            && split_method.as_str() == Some("split")
+        {
+            return self.expr(split_receiver);
+        }
+        // Fast path: stdlib map.get(m, k) — emit direct map access instead of a stdlib call.
         if args.len() == 2
             && let Expr::Var(module_name) = obj_expr
             && module_name == "map"
             && self.lookup(module_name).is_none()
-            && let Expr::Val(Val::Str(method)) = field_expr
-            && method.as_ref() == "get"
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("get")
+        {
+            let map_reg = if let Expr::Var(map_name) = args[0].as_ref() {
+                self.lookup(map_name).unwrap_or_else(|| self.expr(&args[0]))
+            } else {
+                self.expr(&args[0])
+            };
+            return self.emit_map_access(map_reg, &args[1]);
+        }
+        // Fast path: stdlib map.set(m, k, v) when m is a local Map variable.
+        if args.len() == 3
+            && let Expr::Var(module_name) = obj_expr
+            && module_name == "map"
+            && self.lookup(module_name).is_none()
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("set")
             && let Expr::Var(map_name) = args[0].as_ref()
             && let Some(map_reg) = self.lookup(map_name)
             && self.map_locals.contains(&map_reg)
         {
-            let key_reg = self.expr(&args[1]);
-            let dst = self.alloc();
-            self.emit(Op::Access(dst, map_reg, key_reg));
-            return dst;
+            self.emit_map_set(map_reg, &args[1], &args[2]);
+            return map_reg;
         }
         // Fast path: t.push(val) — emit ListPush opcode
         if args.len() == 1
             && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(Val::Str(method)) = field_expr
-            && method.as_ref() == "push"
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("push")
             && let Some(list_reg) = self.lookup(var_name)
         {
             let val_reg = if let Expr::Var(arg_name) = args[0].as_ref() {
@@ -233,13 +304,12 @@ impl FunctionBuilder {
             });
             return list_reg;
         }
-        // Fast path: t.len() — emit Len opcode directly (avoids method dispatch)
+        // Fast path: value.len() — emit Len opcode directly (avoids method dispatch)
         if args.is_empty()
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(Val::Str(method)) = field_expr
-            && method.as_ref() == "len"
-            && let Some(obj_reg) = self.lookup(var_name)
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("len")
         {
+            let obj_reg = self.expr(obj_expr);
             let dst = self.alloc();
             self.emit(Op::Len { dst, src: obj_reg });
             return dst;
@@ -247,53 +317,23 @@ impl FunctionBuilder {
         // Fast path: m.set(k, v) — emit MapSet for locals tracked as Maps
         if args.len() == 2
             && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(Val::Str(method)) = field_expr
-            && method.as_ref() == "set"
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("set")
             && let Some(map_reg) = self.lookup(var_name)
             && self.map_locals.contains(&map_reg)
         {
-            let key_reg = if let Expr::Var(arg_name) = args[0].as_ref() {
-                self.lookup(arg_name).unwrap_or_else(|| self.expr(&args[0]))
-            } else {
-                self.expr(&args[0])
-            };
-            let val_reg = if let Expr::Var(arg_name) = args[1].as_ref() {
-                self.lookup(arg_name).unwrap_or_else(|| self.expr(&args[1]))
-            } else {
-                self.expr(&args[1])
-            };
-            if key_reg != map_reg
-                && val_reg != map_reg
-                && key_reg != val_reg
-                && Self::expr_result_is_temporary(&args[0])
-                && Self::expr_result_is_temporary(&args[1])
-            {
-                self.emit(Op::MapSetMove {
-                    map: map_reg,
-                    key: key_reg,
-                    val: val_reg,
-                });
-            } else {
-                self.emit(Op::MapSet {
-                    map: map_reg,
-                    key: key_reg,
-                    val: val_reg,
-                });
-            }
+            self.emit_map_set(map_reg, &args[0], &args[1]);
             return map_reg;
         }
         // Fast path: m.get(k) — emit Access for map locals to avoid method dispatch
         if args.len() == 1
             && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(Val::Str(method)) = field_expr
-            && method.as_ref() == "get"
+            && let Expr::Val(method_val2) = field_expr
+            && method_val2.as_str() == Some("get")
             && let Some(map_reg) = self.lookup(var_name)
             && self.map_locals.contains(&map_reg)
         {
-            let key_reg = self.expr(&args[0]);
-            let dst = self.alloc();
-            self.emit(Op::Access(dst, map_reg, key_reg));
-            return dst;
+            return self.emit_map_access(map_reg, &args[0]);
         }
 
         let obj_reg = self.expr(obj_expr);
@@ -301,7 +341,7 @@ impl FunctionBuilder {
         let method_reg = self.expr(field_expr);
 
         let builtin_reg = self.alloc();
-        let builtin_idx = self.k(Val::Str("__lk_call_method".into()));
+        let builtin_idx = self.k(Val::from_str("__lk_call_method"));
         self.emit(Op::LoadGlobal(builtin_reg, builtin_idx));
 
         let base = self.alloc();
@@ -341,7 +381,7 @@ impl FunctionBuilder {
         let method_reg = self.expr(field_expr);
 
         let builtin_reg = self.alloc();
-        let builtin_idx = self.k(Val::Str("__lk_call_method_named".into()));
+        let builtin_idx = self.k(Val::from_str("__lk_call_method_named"));
         self.emit(Op::LoadGlobal(builtin_reg, builtin_idx));
 
         let base = self.alloc();
@@ -452,7 +492,7 @@ impl FunctionBuilder {
                     let kidx = self.k(value);
                     self.emit(Op::LoadK(dst, kidx));
                 } else {
-                    let kname = self.k(Val::Str(name.clone().into()));
+                    let kname = self.k(Val::from_str(name.as_str()));
                     self.emit(Op::LoadGlobal(dst, kname));
                 }
             }
@@ -790,7 +830,7 @@ impl FunctionBuilder {
 
                 // Call builtin select$block(types, channels, values, guards, has_default)
                 let r_f = self.alloc();
-                let kf = self.k(Val::Str("select$block".into()));
+                let kf = self.k(Val::from_str("select$block"));
                 self.emit(Op::LoadGlobal(r_f, kf));
                 let base = self.n_regs;
                 let _ = self.alloc(); // arg0
@@ -906,13 +946,13 @@ impl FunctionBuilder {
                                 continue;
                             }
                             if !initialized {
-                                let k = self.k(Val::Str(s.as_str().into()));
+                                let k = self.k(Val::from_str(s.as_str()));
                                 self.emit(Op::LoadK(out, k));
                                 initialized = true;
                                 continue;
                             }
                             let r = self.alloc();
-                            let k = self.k(Val::Str(s.as_str().into()));
+                            let k = self.k(Val::from_str(s.as_str()));
                             self.emit(Op::LoadK(r, k));
                             self.emit(Op::Add(out, out, r));
                         }
@@ -934,7 +974,7 @@ impl FunctionBuilder {
                     }
                 }
                 if !initialized {
-                    let k_empty = self.k(Val::Str("".into()));
+                    let k_empty = self.k(Val::from_str(""));
                     self.emit(Op::LoadK(out, k_empty));
                 }
                 out
@@ -985,7 +1025,7 @@ impl FunctionBuilder {
                     self.emit(Op::LoadCapture { dst, idx: *cidx });
                 } else {
                     // Try global lookup at runtime
-                    let kname = self.k(Val::Str(name.clone().into()));
+                    let kname = self.k(Val::from_str(name.as_str()));
                     self.emit(Op::LoadGlobal(dst, kname));
                 }
                 dst
@@ -1055,8 +1095,10 @@ impl FunctionBuilder {
                 }
                 let b = self.expr(base);
                 let out = self.alloc();
-                if let Expr::Val(Val::Str(s)) = field.as_ref() {
-                    let k = self.k(Val::Str(s.clone()));
+                if let Expr::Val(field_val) = field.as_ref()
+                    && let Some(s) = field_val.as_str()
+                {
+                    let k = self.k(Val::from_str(s));
                     self.emit(Op::AccessK(out, b, k));
                 } else if let Expr::Val(Val::Int(i)) = field.as_ref() {
                     let k = self.k(Val::Int(*i));
@@ -1075,8 +1117,10 @@ impl FunctionBuilder {
                 if let Expr::Val(Val::Int(i)) = field.as_ref() {
                     let k = self.k(Val::Int(*i));
                     self.emit(Op::IndexK(out, b, k));
-                } else if let Expr::Val(Val::Str(s)) = field.as_ref() {
-                    let k = self.k(Val::Str(s.clone()));
+                } else if let Expr::Val(field_val2) = field.as_ref()
+                    && let Some(s) = field_val2.as_str()
+                {
+                    let k = self.k(Val::from_str(s));
                     self.emit(Op::AccessK(out, b, k));
                 } else {
                     let f = self.expr(field);
@@ -1175,11 +1219,11 @@ impl FunctionBuilder {
             Expr::StructLiteral { name, fields } => {
                 let fields_map = self.emit_map_from_named_args(fields);
                 let type_reg = self.alloc();
-                let type_idx = self.k(Val::Str(name.clone().into()));
+                let type_idx = self.k(Val::from_str(name.as_str()));
                 self.emit(Op::LoadK(type_reg, type_idx));
 
                 let builtin_reg = self.alloc();
-                let builtin_idx = self.k(Val::Str("__lk_make_struct".into()));
+                let builtin_idx = self.k(Val::from_str("__lk_make_struct"));
                 self.emit(Op::LoadGlobal(builtin_reg, builtin_idx));
 
                 let base = self.alloc();
@@ -1217,7 +1261,7 @@ impl FunctionBuilder {
                 } else if let Some(local) = self.lookup(name) {
                     local
                 } else {
-                    let kname = self.k(Val::Str(name.clone().into()));
+                    let kname = self.k(Val::from_str(name.as_str()));
                     let f = self.alloc();
                     self.emit(Op::LoadGlobal(f, kname));
                     f
@@ -1284,7 +1328,7 @@ impl FunctionBuilder {
                     let _ = self.alloc();
                 }
                 for (i, (name, expr)) in named_args.iter().enumerate() {
-                    let kname = self.k(Val::Str(name.clone().into()));
+                    let kname = self.k(Val::from_str(name.as_str()));
                     let name_reg = base_named + (2 * i) as u16;
                     self.emit(Op::LoadK(name_reg, kname));
                     let vreg = self.expr(expr);

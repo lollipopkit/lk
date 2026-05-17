@@ -1,12 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
+use arcstr::ArcStr;
 
 use crate::{
     stmt::Program,
+    util::fast_map::FastHashMap,
     val::Val,
-    vm::{Function, Op, compile_program, rk_index, rk_is_const},
+    vm::{CaptureSpec, Function, Op, compile_program, rk_index, rk_is_const},
 };
 
 use super::{
@@ -91,6 +93,27 @@ pub fn compile_function_to_llvm(
     LlvmBackend::new(options).compile_function_with_name(function, name)
 }
 
+fn strip_nested_module_header(ir: &str) -> String {
+    ir.lines()
+        .filter(|line| {
+            !line.starts_with("; ModuleID")
+                && !line.starts_with("source_filename")
+                && !line.starts_with("target triple")
+                && !line.starts_with("declare ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn function_translator_with_captures<'a>(
+    function: &'a Function,
+    name: &'a str,
+    options: &'a LlvmBackendOptions,
+    capture_specs: Option<&'a [CaptureSpec]>,
+) -> FunctionTranslator<'a> {
+    FunctionTranslator::new(function, name, options).with_capture_specs(capture_specs)
+}
+
 struct BlockRange {
     start: usize,
     end: usize,
@@ -127,7 +150,17 @@ struct FunctionTranslator<'a> {
     runtime_helpers: BTreeSet<RuntimeHelper>,
     known_regs: Vec<Option<KnownReg>>,
     string_constants: BTreeMap<u16, StringConstant>,
+    anonymous_string_constants: Vec<StringConstant>,
     string_const_counter: usize,
+    native_closures: BTreeMap<u16, NativeClosureBinding>,
+    native_closure_ir: Vec<String>,
+    capture_specs: Option<&'a [CaptureSpec]>,
+}
+
+#[derive(Clone)]
+struct NativeClosureBinding {
+    symbol: String,
+    arity: usize,
 }
 
 impl<'a> FunctionTranslator<'a> {
@@ -143,8 +176,17 @@ impl<'a> FunctionTranslator<'a> {
             runtime_helpers: BTreeSet::new(),
             known_regs: vec![None; function.n_regs as usize],
             string_constants: BTreeMap::new(),
+            anonymous_string_constants: Vec::new(),
             string_const_counter: 0,
+            native_closures: BTreeMap::new(),
+            native_closure_ir: Vec::new(),
+            capture_specs: None,
         }
+    }
+
+    fn with_capture_specs(mut self, capture_specs: Option<&'a [CaptureSpec]>) -> Self {
+        self.capture_specs = capture_specs;
+        self
     }
 
     fn translate(mut self) -> Result<String> {
@@ -152,6 +194,7 @@ impl<'a> FunctionTranslator<'a> {
             return Err(anyhow!("cannot compile empty function to LLVM IR"));
         }
 
+        self.prepare_native_closures()?;
         self.build_blocks()?;
         self.write_function()?;
 
@@ -166,13 +209,17 @@ impl<'a> FunctionTranslator<'a> {
         }
         module.push('\n');
 
-        for const_data in self.string_constants.values() {
+        for const_data in self
+            .string_constants
+            .values()
+            .chain(self.anonymous_string_constants.iter())
+        {
             module.push_str(&format!(
                 "@{} = private constant [{} x i8] c\"{}\"\n",
                 const_data.label, const_data.array_len, const_data.encoded
             ));
         }
-        if !self.string_constants.is_empty() {
+        if !self.string_constants.is_empty() || !self.anonymous_string_constants.is_empty() {
             module.push('\n');
         }
 
@@ -185,8 +232,56 @@ impl<'a> FunctionTranslator<'a> {
         }
 
         module.push_str(&function_ir);
+        for ir in &self.native_closure_ir {
+            module.push('\n');
+            module.push_str(ir);
+            module.push('\n');
+        }
 
         Ok(module)
+    }
+
+    fn prepare_native_closures(&mut self) -> Result<()> {
+        for (idx, proto) in self.function.protos.iter().enumerate() {
+            let captures_are_global = proto
+                .captures
+                .iter()
+                .all(|capture| matches!(capture, crate::vm::CaptureSpec::Global { .. }));
+            if !captures_are_global {
+                continue;
+            }
+            if !proto.named_params.is_empty() || !proto.default_funcs.is_empty() {
+                continue;
+            }
+            let Some(func) = proto.func.as_ref() else {
+                continue;
+            };
+            let symbol = format!("{}_proto_{}", self.function_name, idx);
+            let translator =
+                function_translator_with_captures(func, &symbol, self.options, Some(proto.captures.as_ref()));
+            let ir = translator
+                .translate()
+                .with_context(|| format!("compile native closure proto {}", idx))?;
+            self.merge_runtime_helpers_from_ir(&ir);
+            self.native_closures.insert(
+                idx as u16,
+                NativeClosureBinding {
+                    symbol,
+                    arity: proto.params.len(),
+                },
+            );
+            self.native_closure_ir.push(strip_nested_module_header(&ir));
+        }
+        Ok(())
+    }
+
+    fn merge_runtime_helpers_from_ir(&mut self, ir: &str) {
+        for helper in RuntimeHelper::ALL {
+            let needle = format!("@{}(", helper.symbol());
+            if ir.contains(&needle) {
+                self.runtime_helpers.insert(helper);
+            }
+        }
     }
 
     fn build_blocks(&mut self) -> Result<()> {
@@ -195,12 +290,16 @@ impl<'a> FunctionTranslator<'a> {
 
         for (idx, op) in self.function.code.iter().enumerate() {
             match op {
-                Op::Jmp(ofs) | Op::Break(ofs) | Op::Continue(ofs) | Op::ForRangeStep { back_ofs: ofs, .. } => {
+                Op::Jmp(ofs)
+                | Op::Break(ofs)
+                | Op::Continue(ofs)
+                | Op::AddIntImmJmp { ofs, .. }
+                | Op::ForRangeStep { back_ofs: ofs, .. } => {
                     let target = Self::compute_target(idx, *ofs, self.function.code.len())?;
                     starts.insert(target);
                     starts.insert(idx + 1);
                 }
-                Op::JmpFalse(_, ofs) => {
+                Op::JmpFalse(_, ofs) | Op::CmpLtImmJmp { ofs, .. } => {
                     let target = Self::compute_target(idx, *ofs, self.function.code.len())?;
                     starts.insert(target);
                     starts.insert(idx + 1);
@@ -340,20 +439,20 @@ impl<'a> FunctionTranslator<'a> {
                 Op::StoreLocal(idx, src) => self.emit_store_local(*idx, *src)?,
                 Op::LoadLocal(dst, idx) => self.emit_load_local(*dst, *idx)?,
                 Op::Add(dst, a, b) => self.emit_add_value(*dst, *a, *b)?,
-                Op::Sub(dst, a, b) => self.emit_binary(*dst, *a, *b, "sub")?,
-                Op::Mul(dst, a, b) => self.emit_binary(*dst, *a, *b, "mul")?,
-                Op::Div(dst, a, b) => self.emit_binary(*dst, *a, *b, "sdiv")?,
-                Op::Mod(dst, a, b) => self.emit_binary(*dst, *a, *b, "srem")?,
+                Op::Sub(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::SubValue)?,
+                Op::Mul(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::MulValue)?,
+                Op::Div(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::DivValue)?,
+                Op::Mod(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::ModValue)?,
                 Op::AddInt(dst, a, b) => self.emit_binary(*dst, *a, *b, "add")?,
                 Op::AddIntImm(dst, a, imm) => self.emit_add_int_imm(*dst, *a, *imm)?,
                 Op::SubInt(dst, a, b) => self.emit_binary(*dst, *a, *b, "sub")?,
                 Op::MulInt(dst, a, b) => self.emit_binary(*dst, *a, *b, "mul")?,
                 Op::ModInt(dst, a, b) => self.emit_binary(*dst, *a, *b, "srem")?,
-                Op::AddFloat(dst, a, b) => self.emit_float_binary(*dst, *a, *b, "fadd")?,
-                Op::SubFloat(dst, a, b) => self.emit_float_binary(*dst, *a, *b, "fsub")?,
-                Op::MulFloat(dst, a, b) => self.emit_float_binary(*dst, *a, *b, "fmul")?,
-                Op::DivFloat(dst, a, b) => self.emit_float_binary(*dst, *a, *b, "fdiv")?,
-                Op::ModFloat(dst, a, b) => self.emit_float_binary(*dst, *a, *b, "frem")?,
+                Op::AddFloat(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::AddValue)?,
+                Op::SubFloat(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::SubValue)?,
+                Op::MulFloat(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::MulValue)?,
+                Op::DivFloat(dst, a, b) => self.emit_binary(*dst, *a, *b, "sdiv")?,
+                Op::ModFloat(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::ModValue)?,
                 Op::CmpEq(dst, a, b) => self.emit_compare(*dst, *a, *b, "eq")?,
                 Op::CmpNe(dst, a, b) => self.emit_compare(*dst, *a, *b, "ne")?,
                 Op::CmpLt(dst, a, b) => self.emit_compare(*dst, *a, *b, "slt")?,
@@ -371,8 +470,10 @@ impl<'a> FunctionTranslator<'a> {
                 Op::Not(dst, src) => self.emit_not(*dst, *src)?,
                 Op::ToStr(dst, src) => self.emit_to_str(*dst, *src)?,
                 Op::LoadGlobal(dst, kidx) => self.emit_load_global(*dst, *kidx)?,
+                Op::LoadCapture { dst, idx } => self.emit_load_capture(*dst, *idx)?,
                 Op::DefineGlobal(kidx, src) => self.emit_define_global(*kidx, *src)?,
                 Op::BuildList { dst, base, len } => self.emit_build_list(*dst, *base, *len)?,
+                Op::ListPush { list, val } => self.emit_list_push(*list, *val)?,
                 Op::Call { f, base, argc, retc } => self.emit_call(*f, *base, *argc, *retc)?,
                 Op::Access(dst, base, field) => self.emit_access(*dst, *base, *field)?,
                 Op::AccessK(dst, base, kidx) => self.emit_access_const(*dst, *base, *kidx)?,
@@ -381,6 +482,10 @@ impl<'a> FunctionTranslator<'a> {
                 Op::Len { dst, src } => self.emit_len(*dst, *src)?,
                 Op::ToIter { dst, src } => self.emit_to_iter(*dst, *src)?,
                 Op::BuildMap { dst, base, len } => self.emit_build_map(*dst, *base, *len)?,
+                Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => {
+                    self.emit_map_set(*map, *key, *val)?
+                }
+                Op::MakeClosure { dst, proto } => self.emit_make_closure(*dst, *proto)?,
                 Op::ListSlice { dst, src, start } => self.emit_list_slice(*dst, *src, *start)?,
                 Op::Jmp(ofs) => {
                     let target = Self::compute_target(instr_idx, *ofs, self.function.code.len())?;
@@ -419,6 +524,16 @@ impl<'a> FunctionTranslator<'a> {
                     self.writer.line(format!("{falsey} = or i1 {is_false}, {is_nil}"));
                     self.writer
                         .line(format!("br i1 {falsey}, label %{}, label %{}", label, fallthrough));
+                    terminated = true;
+                    break;
+                }
+                Op::CmpLtImmJmp { r, imm, ofs } => {
+                    self.emit_cmp_lt_imm_jmp(block_idx, instr_idx, *r, *imm, *ofs)?;
+                    terminated = true;
+                    break;
+                }
+                Op::AddIntImmJmp { r, imm, ofs } => {
+                    self.emit_add_int_imm_jmp(instr_idx, *r, *imm, *ofs)?;
                     terminated = true;
                     break;
                 }
@@ -674,18 +789,19 @@ impl<'a> FunctionTranslator<'a> {
             .function
             .consts
             .get(kidx as usize)
+            .cloned()
             .ok_or_else(|| anyhow!("constant index {} out of range", kidx))?;
-        match val {
-            Val::Int(_) | Val::Bool(_) | Val::Nil => Ok(encoding::encode_immediate(val)?.to_string()),
+        match &val {
+            Val::Int(_) | Val::Bool(_) | Val::Nil => Ok(encoding::encode_immediate(&val)?.to_string()),
             Val::Float(f) => {
                 let literal = Self::format_double(*f);
-                let tmp = self.fresh("constf");
-                self.writer.line(format!("{tmp} = bitcast double {literal} to i64"));
-                Ok(tmp)
+                Ok(self.emit_float_value(&literal))
             }
-            Val::Str(s) => self.intern_string_constant(kidx, s.as_ref()),
+            val if val.as_str().is_some() => self.intern_string_constant(kidx, val.as_str().unwrap()),
+            Val::List(items) => self.emit_const_list(items),
+            Val::Map(map) => self.emit_const_map(map),
             other => Err(anyhow!(
-                "unsupported constant {:?} in LLVM backend; only Int/Float/Bool/Str/Nil are accepted",
+                "unsupported constant {:?} in LLVM backend; only primitive/List/Map constants are accepted",
                 other
             )),
         }
@@ -703,28 +819,14 @@ impl<'a> FunctionTranslator<'a> {
         self.store_reg(reg, encoding::bool_literal(value))
     }
 
-    fn store_double(&mut self, reg: u16, value: impl AsRef<str>) -> Result<()> {
-        let bits = self.fresh("fcast");
-        self.writer
-            .line(format!("{bits} = bitcast double {} to i64", value.as_ref()));
-        self.store_reg(reg, &bits)?;
-        Ok(())
-    }
-
-    fn load_rk_as_double(&mut self, operand: u16) -> Result<String> {
-        let raw = self.load_rk(operand)?;
-        let dbl = self.fresh("asdouble");
-        self.writer.line(format!("{dbl} = bitcast i64 {raw} to double"));
-        Ok(dbl)
-    }
-
-    fn emit_float_binary(&mut self, dst: u16, a: u16, b: u16, op: &str) -> Result<()> {
-        let lhs = self.load_rk_as_double(a)?;
-        let rhs = self.load_rk_as_double(b)?;
-        let tmp = self.fresh(op);
-        self.writer.line(format!("{tmp} = {op} double {lhs}, {rhs}"));
-        self.store_double(dst, &tmp)?;
-        Ok(())
+    fn emit_float_value(&mut self, literal: &str) -> String {
+        self.require_helper(RuntimeHelper::MakeFloat);
+        let tmp = self.fresh("constf");
+        self.writer.line(format!(
+            "{tmp} = call i64 @{}(double {literal})",
+            RuntimeHelper::MakeFloat.symbol()
+        ));
+        tmp
     }
 
     fn require_helper(&mut self, helper: RuntimeHelper) {
@@ -733,6 +835,20 @@ impl<'a> FunctionTranslator<'a> {
 
     fn intern_string_constant(&mut self, kidx: u16, value: &str) -> Result<String> {
         let const_data = self.ensure_string_constant(kidx, value).clone();
+        let ptr = self.emit_string_pointer(&const_data);
+        self.require_helper(RuntimeHelper::InternString);
+        let handle = self.fresh("conststr");
+        self.writer.line(format!(
+            "{handle} = call i64 @{}(i8* {ptr}, i64 {})",
+            RuntimeHelper::InternString.symbol(),
+            const_data.len
+        ));
+        Ok(handle)
+    }
+
+    fn intern_anonymous_string(&mut self, value: &str) -> Result<String> {
+        let const_data = self.make_string_constant(value);
+        self.anonymous_string_constants.push(const_data.clone());
         let ptr = self.emit_string_pointer(&const_data);
         self.require_helper(RuntimeHelper::InternString);
         let handle = self.fresh("conststr");
@@ -755,30 +871,36 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     fn ensure_string_constant(&mut self, kidx: u16, value: &str) -> &StringConstant {
-        self.string_constants.entry(kidx).or_insert_with(|| {
-            let function = self
-                .function_name
-                .chars()
-                .map(|ch| {
-                    if ch.is_ascii_alphanumeric() || ch == '_' {
-                        ch
-                    } else {
-                        '_'
-                    }
-                })
-                .collect::<String>();
-            let label = format!(".{function}.str{}", self.string_const_counter);
-            self.string_const_counter += 1;
-            let bytes = value.as_bytes();
-            let len = bytes.len();
-            let encoded = Self::encode_string_literal(bytes);
-            StringConstant {
-                label,
-                encoded,
-                len,
-                array_len: len + 1,
-            }
-        })
+        if !self.string_constants.contains_key(&kidx) {
+            let const_data = self.make_string_constant(value);
+            self.string_constants.insert(kidx, const_data);
+        }
+        self.string_constants.get(&kidx).expect("string constant inserted")
+    }
+
+    fn make_string_constant(&mut self, value: &str) -> StringConstant {
+        let function = self
+            .function_name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '_' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let label = format!(".{function}.str{}", self.string_const_counter);
+        self.string_const_counter += 1;
+        let bytes = value.as_bytes();
+        let len = bytes.len();
+        let encoded = Self::encode_string_literal(bytes);
+        StringConstant {
+            label,
+            encoded,
+            len,
+            array_len: len + 1,
+        }
     }
 
     fn encode_string_literal(bytes: &[u8]) -> String {
@@ -795,31 +917,133 @@ impl<'a> FunctionTranslator<'a> {
             .function
             .consts
             .get(kidx as usize)
+            .cloned()
             .ok_or_else(|| anyhow!("constant index {} out of range", kidx))?;
-        match val {
+        match &val {
             Val::Int(_) | Val::Bool(_) | Val::Nil => {
-                let encoded = encoding::encode_immediate(val)?;
+                let encoded = encoding::encode_immediate(&val)?;
                 self.store_reg(dst, encoded.to_string())?;
             }
             Val::Float(f) => {
                 let literal = Self::format_double(*f);
-                let tmp = self.fresh("constf");
-                self.writer.line(format!("{tmp} = bitcast double {literal} to i64"));
+                let tmp = self.emit_float_value(&literal);
                 self.store_reg(dst, &tmp)?;
             }
-            Val::Str(s) => {
-                let handle = self.intern_string_constant(kidx, s.as_ref())?;
+            val if val.as_str().is_some() => {
+                let handle = self.intern_string_constant(kidx, val.as_str().unwrap())?;
                 self.store_reg(dst, &handle)?;
                 self.set_known(dst, Some(KnownReg::StringHandle(handle)));
             }
+            Val::List(items) => {
+                let handle = self.emit_const_list(items)?;
+                self.store_reg(dst, &handle)?;
+                self.set_known(dst, None);
+            }
+            Val::Map(map) => {
+                let handle = self.emit_const_map(map)?;
+                self.store_reg(dst, &handle)?;
+                self.set_known(dst, None);
+            }
             other => {
                 return Err(anyhow!(
-                    "unsupported constant {:?} in LLVM backend; only Int/Float/Bool/Str/Nil are accepted",
+                    "unsupported constant {:?} in LLVM backend; only primitive/List/Map constants are accepted",
                     other
                 ));
             }
         }
         Ok(())
+    }
+
+    fn emit_const_value(&mut self, val: &Val) -> Result<String> {
+        match val {
+            Val::Int(_) | Val::Bool(_) | Val::Nil => Ok(encoding::encode_immediate(val)?.to_string()),
+            Val::Float(f) => {
+                let literal = Self::format_double(*f);
+                Ok(self.emit_float_value(&literal))
+            }
+            val if val.as_str().is_some() => self.intern_anonymous_string(val.as_str().unwrap()),
+            Val::List(items) => self.emit_const_list(items),
+            Val::Map(map) => self.emit_const_map(map),
+            other => Err(anyhow!("unsupported nested constant {:?} in LLVM backend", other)),
+        }
+    }
+
+    fn emit_const_list(&mut self, items: &[Val]) -> Result<String> {
+        self.require_helper(RuntimeHelper::BuildList);
+        if items.is_empty() {
+            let list = self.fresh("constlist");
+            self.writer.line(format!(
+                "{list} = call i64 @{}(i64* null, i64 0)",
+                RuntimeHelper::BuildList.symbol()
+            ));
+            return Ok(list);
+        }
+        let len = items.len();
+        let stack_guard = self.fresh("stacksp");
+        self.writer.line(format!("{stack_guard} = call i8* @llvm.stacksave()"));
+        let array = self.fresh("constlistbuf");
+        self.writer.line(format!("{array} = alloca [{len} x i64], align 8"));
+        for (idx, item) in items.iter().enumerate() {
+            let value = self.emit_const_value(item)?;
+            let slot = self.fresh("constlistelt");
+            self.writer.line(format!(
+                "{slot} = getelementptr inbounds [{len} x i64], [{len} x i64]* {array}, i64 0, i64 {idx}"
+            ));
+            self.writer.line(format!("store i64 {value}, i64* {slot}, align 8"));
+        }
+        let ptr = self.fresh("constlistptr");
+        self.writer.line(format!(
+            "{ptr} = getelementptr inbounds [{len} x i64], [{len} x i64]* {array}, i64 0, i64 0"
+        ));
+        let list = self.fresh("constlist");
+        self.writer.line(format!(
+            "{list} = call i64 @{}(i64* {ptr}, i64 {len})",
+            RuntimeHelper::BuildList.symbol()
+        ));
+        self.writer
+            .line(format!("call void @llvm.stackrestore(i8* {stack_guard})"));
+        Ok(list)
+    }
+
+    fn emit_const_map(&mut self, map: &FastHashMap<ArcStr, Val>) -> Result<String> {
+        self.require_helper(RuntimeHelper::BuildMap);
+        if map.is_empty() {
+            let out = self.fresh("constmap");
+            self.writer.line(format!(
+                "{out} = call i64 @{}(i64* null, i64 0)",
+                RuntimeHelper::BuildMap.symbol()
+            ));
+            return Ok(out);
+        }
+        let len = map.len();
+        let total = len * 2;
+        let stack_guard = self.fresh("stacksp");
+        self.writer.line(format!("{stack_guard} = call i8* @llvm.stacksave()"));
+        let array = self.fresh("constmapbuf");
+        self.writer.line(format!("{array} = alloca [{total} x i64], align 8"));
+        for (idx, (key, value)) in map.iter().enumerate() {
+            let key_value = self.intern_anonymous_string(key.as_str())?;
+            let val_value = self.emit_const_value(value)?;
+            for (offset, raw) in [(idx * 2, key_value), (idx * 2 + 1, val_value)] {
+                let slot = self.fresh("constmapelt");
+                self.writer.line(format!(
+                    "{slot} = getelementptr inbounds [{total} x i64], [{total} x i64]* {array}, i64 0, i64 {offset}"
+                ));
+                self.writer.line(format!("store i64 {raw}, i64* {slot}, align 8"));
+            }
+        }
+        let ptr = self.fresh("constmapptr");
+        self.writer.line(format!(
+            "{ptr} = getelementptr inbounds [{total} x i64], [{total} x i64]* {array}, i64 0, i64 0"
+        ));
+        let out = self.fresh("constmap");
+        self.writer.line(format!(
+            "{out} = call i64 @{}(i64* {ptr}, i64 {len})",
+            RuntimeHelper::BuildMap.symbol()
+        ));
+        self.writer
+            .line(format!("call void @llvm.stackrestore(i8* {stack_guard})"));
+        Ok(out)
     }
 
     fn format_double(value: f64) -> String {
@@ -860,10 +1084,32 @@ impl<'a> FunctionTranslator<'a> {
 
     fn emit_add_int_imm(&mut self, dst: u16, src: u16, imm: i16) -> Result<()> {
         let lhs = self.load_reg(src)?;
-        let literal = encoding::encode_immediate(&Val::Int(imm as i64))?;
+        self.require_helper(RuntimeHelper::AddValue);
         let tmp = self.fresh("addi");
-        self.writer.line(format!("{tmp} = add i64 {lhs}, {literal}"));
+        self.writer.line(format!(
+            "{tmp} = call i64 @{}(i64 {lhs}, i64 {})",
+            RuntimeHelper::AddValue.symbol(),
+            imm as i64
+        ));
         self.store_reg(dst, &tmp)?;
+        Ok(())
+    }
+
+    fn emit_add_int_imm_jmp(&mut self, instr_idx: usize, r: u16, imm: i16, ofs: i16) -> Result<()> {
+        let lhs = self.load_reg(r)?;
+        let tmp = self.fresh("addijmp");
+        self.writer.line(format!("{tmp} = add i64 {lhs}, {}", imm as i64));
+        self.store_reg(r, &tmp)?;
+        let target = Self::compute_target(instr_idx, ofs, self.function.code.len())?;
+        if let Some(Op::ForRangeLoop { idx, step, .. }) = self.function.code.get(target) {
+            let current = self.load_reg(*idx)?;
+            let step_val = self.load_reg(*step)?;
+            let next = self.fresh("forjmp_next");
+            self.writer.line(format!("{next} = add i64 {current}, {step_val}"));
+            self.store_reg(*idx, &next)?;
+        }
+        let label = self.block_label_for_index(target)?;
+        self.writer.line(format!("br label %{}", label));
         Ok(())
     }
 
@@ -882,15 +1128,48 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
+    fn emit_cmp_lt_imm_jmp(&mut self, block_idx: usize, instr_idx: usize, r: u16, imm: i16, ofs: i16) -> Result<()> {
+        let target = Self::compute_target(instr_idx, ofs, self.function.code.len())?;
+        let target_label = self.block_label_for_index(target)?;
+        let fallthrough = self
+            .blocks
+            .get(block_idx + 1)
+            .map(|b| b.label.clone())
+            .unwrap_or_else(|| DEFAULT_RETURN_LABEL.to_string());
+        let value = self.load_reg(r)?;
+        let is_sentinel = self.fresh("cmpimm_sentinel");
+        self.writer.line(format!(
+            "{is_sentinel} = icmp sle i64 {value}, {sentinel_max}",
+            sentinel_max = encoding::BOOL_TRUE_VALUE
+        ));
+        let is_lt = self.fresh("cmpimm_lt");
+        self.writer
+            .line(format!("{is_lt} = icmp slt i64 {value}, {}", imm as i64));
+        let not_sentinel = self.fresh("cmpimm_not_sentinel");
+        self.writer.line(format!("{not_sentinel} = xor i1 {is_sentinel}, true"));
+        let is_int_lt = self.fresh("cmpimm_int_lt");
+        self.writer
+            .line(format!("{is_int_lt} = and i1 {is_lt}, {not_sentinel}"));
+        let should_jump = self.fresh("cmpimm_jump");
+        self.writer.line(format!("{should_jump} = xor i1 {is_int_lt}, true"));
+        self.writer.line(format!(
+            "br i1 {should_jump}, label %{}, label %{}",
+            target_label, fallthrough
+        ));
+        Ok(())
+    }
+
     fn emit_add_value(&mut self, dst: u16, a: u16, b: u16) -> Result<()> {
+        self.emit_value_binary(dst, a, b, RuntimeHelper::AddValue)
+    }
+
+    fn emit_value_binary(&mut self, dst: u16, a: u16, b: u16, helper: RuntimeHelper) -> Result<()> {
         let lhs = self.load_rk(a)?;
         let rhs = self.load_rk(b)?;
-        self.require_helper(RuntimeHelper::AddValue);
-        let tmp = self.fresh("addval");
-        self.writer.line(format!(
-            "{tmp} = call i64 @{}(i64 {lhs}, i64 {rhs})",
-            RuntimeHelper::AddValue.symbol()
-        ));
+        self.require_helper(helper);
+        let tmp = self.fresh(helper.temp_prefix());
+        self.writer
+            .line(format!("{tmp} = call i64 @{}(i64 {lhs}, i64 {rhs})", helper.symbol()));
         self.store_reg(dst, &tmp)?;
         Ok(())
     }
@@ -898,13 +1177,20 @@ impl<'a> FunctionTranslator<'a> {
     fn emit_compare(&mut self, dst: u16, a: u16, b: u16, op: &str) -> Result<()> {
         let lhs = self.load_rk(a)?;
         let rhs = self.load_rk(b)?;
-        let tmp = self.fresh("cmp");
-        self.writer.line(format!("{tmp} = icmp {op} i64 {lhs}, {rhs}"));
-        let select = self.fresh("boolsel");
+        let code = match op {
+            "eq" => 0,
+            "ne" => 1,
+            "slt" => 2,
+            "sle" => 3,
+            "sgt" => 4,
+            "sge" => 5,
+            _ => return Err(anyhow!("unsupported LLVM compare op {op}")),
+        };
+        self.require_helper(RuntimeHelper::Compare);
+        let select = self.fresh("cmpval");
         self.writer.line(format!(
-            "{select} = select i1 {tmp}, i64 {true_val}, i64 {false_val}",
-            true_val = encoding::BOOL_TRUE_VALUE,
-            false_val = encoding::BOOL_FALSE_VALUE
+            "{select} = call i64 @{}(i64 {lhs}, i64 {rhs}, i64 {code})",
+            RuntimeHelper::Compare.symbol()
         ));
         self.store_reg(dst, &select)?;
         Ok(())
@@ -969,11 +1255,9 @@ impl<'a> FunctionTranslator<'a> {
             .consts
             .get(kidx as usize)
             .ok_or_else(|| anyhow!("constant index {} out of range", kidx))?;
-        let name_str = match name {
-            Val::Str(s) => s.as_ref(),
-            other => {
-                return Err(anyhow!("LoadGlobal expects string constant; found {:?}", other));
-            }
+        let name_str = match name.as_str() {
+            Some(s) => s,
+            None => return Err(anyhow!("LoadGlobal expects string constant; found {:?}", name)),
         };
         if matches!(name_str, "__lk_call_method" | "__lk_call_method_named") {
             self.store_reg(dst, encoding::NIL_LITERAL)?;
@@ -992,17 +1276,48 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
+    fn emit_load_capture(&mut self, dst: u16, idx: u16) -> Result<()> {
+        let specs = self
+            .capture_specs
+            .ok_or_else(|| anyhow!("LoadCapture c{} has no capture metadata in LLVM backend", idx))?;
+        let spec = specs
+            .get(idx as usize)
+            .ok_or_else(|| anyhow!("capture index {} out of range in LLVM backend", idx))?;
+        match spec {
+            CaptureSpec::Global { name } => {
+                let handle = self.intern_anonymous_string(name.as_str())?;
+                self.require_helper(RuntimeHelper::LoadGlobal);
+                let global = self.fresh("loadcapture_global");
+                self.writer.line(format!(
+                    "{global} = call i64 @{}(i64 {handle})",
+                    RuntimeHelper::LoadGlobal.symbol()
+                ));
+                self.store_reg(dst, &global)?;
+                self.set_known(dst, Some(KnownReg::Global(name.clone())));
+                Ok(())
+            }
+            CaptureSpec::Const { kidx, .. } => {
+                let value = self.load_const_value(*kidx)?;
+                self.store_reg(dst, &value)?;
+                Ok(())
+            }
+            CaptureSpec::Register { name, .. } => Err(anyhow!(
+                "unsupported register capture `{}` in LLVM native closure p{}",
+                name,
+                idx
+            )),
+        }
+    }
+
     fn emit_define_global(&mut self, kidx: u16, src: u16) -> Result<()> {
         let name = self
             .function
             .consts
             .get(kidx as usize)
             .ok_or_else(|| anyhow!("constant index {} out of range", kidx))?;
-        let name_str = match name {
-            Val::Str(s) => s.as_ref(),
-            other => {
-                return Err(anyhow!("DefineGlobal expects string constant; found {:?}", other));
-            }
+        let name_str = match name.as_str() {
+            Some(s) => s,
+            None => return Err(anyhow!("DefineGlobal expects string constant; found {:?}", name)),
         };
         let handle = self.intern_string_constant(kidx, name_str)?;
         let value = self.load_reg(src)?;
@@ -1023,6 +1338,7 @@ impl<'a> FunctionTranslator<'a> {
                 RuntimeHelper::BuildList.symbol()
             ));
             self.store_reg(dst, &list)?;
+            self.set_known(dst, Some(KnownReg::List { base, len }));
             return Ok(());
         }
 
@@ -1064,6 +1380,20 @@ impl<'a> FunctionTranslator<'a> {
             .line(format!("call void @llvm.stackrestore(i8* {stack_guard})"));
         self.store_reg(dst, &list)?;
         self.set_known(dst, Some(KnownReg::List { base, len }));
+        Ok(())
+    }
+
+    fn emit_list_push(&mut self, list: u16, val: u16) -> Result<()> {
+        let list_value = self.load_reg(list)?;
+        let item_value = self.load_reg(val)?;
+        self.require_helper(RuntimeHelper::ListPush);
+        let updated = self.fresh("listpush");
+        self.writer.line(format!(
+            "{updated} = call i64 @{}(i64 {list_value}, i64 {item_value})",
+            RuntimeHelper::ListPush.symbol()
+        ));
+        self.store_reg(list, &updated)?;
+        self.set_known(list, None);
         Ok(())
     }
 
@@ -1263,6 +1593,41 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
+    fn emit_map_set(&mut self, map: u16, key: u16, val: u16) -> Result<()> {
+        let map_value = self.load_reg(map)?;
+        let key_value = self.load_reg(key)?;
+        let val_value = self.load_reg(val)?;
+        self.require_helper(RuntimeHelper::MapSet);
+        let updated = self.fresh("mapset");
+        self.writer.line(format!(
+            "{updated} = call i64 @{}(i64 {map_value}, i64 {key_value}, i64 {val_value})",
+            RuntimeHelper::MapSet.symbol()
+        ));
+        self.store_reg(map, &updated)?;
+        self.set_known(map, None);
+        Ok(())
+    }
+
+    fn emit_make_closure(&mut self, dst: u16, proto: u16) -> Result<()> {
+        let binding = self
+            .native_closures
+            .get(&proto)
+            .cloned()
+            .ok_or_else(|| anyhow!("unsupported closure proto in LLVM backend: p{}", proto))?;
+        self.require_helper(RuntimeHelper::MakeAotFunction);
+        let closure = self.fresh("aotclosure");
+        let params = std::iter::repeat_n("i64", binding.arity).collect::<Vec<_>>().join(", ");
+        self.writer.line(format!(
+            "{closure} = call i64 @{}(i8* bitcast (i64 ({params})* @{} to i8*), i64 {})",
+            RuntimeHelper::MakeAotFunction.symbol(),
+            binding.symbol,
+            binding.arity
+        ));
+        self.store_reg(dst, &closure)?;
+        self.set_known(dst, None);
+        Ok(())
+    }
+
     fn emit_list_slice(&mut self, dst: u16, src: u16, start: u16) -> Result<()> {
         let list = self.load_reg(src)?;
         let start_idx = self.load_reg(start)?;
@@ -1299,11 +1664,9 @@ impl<'a> FunctionTranslator<'a> {
             .consts
             .get(kidx as usize)
             .ok_or_else(|| anyhow!("constant index {} out of range", kidx))?;
-        let name_str = match name {
-            Val::Str(s) => s.as_ref(),
-            other => {
-                return Err(anyhow!("AccessK expects string constant; found {:?}", other));
-            }
+        let name_str = match name.as_str() {
+            Some(s) => s,
+            None => return Err(anyhow!("AccessK expects string constant; found {:?}", name)),
         };
         let key = self.intern_string_constant(kidx, name_str)?;
         self.emit_access_with_key(dst, base, key.as_str())
@@ -1490,6 +1853,9 @@ enum RuntimeHelper {
     DefineGlobal,
     BuildList,
     BuildMap,
+    ListPush,
+    MapSet,
+    MakeAotFunction,
     Call,
     CallNative,
     CallMethod,
@@ -1499,10 +1865,44 @@ enum RuntimeHelper {
     Len,
     ListSlice,
     ToIter,
+    MakeFloat,
+    Compare,
     AddValue,
+    SubValue,
+    MulValue,
+    DivValue,
+    ModValue,
 }
 
 impl RuntimeHelper {
+    const ALL: [RuntimeHelper; 25] = [
+        RuntimeHelper::InternString,
+        RuntimeHelper::ToString,
+        RuntimeHelper::LoadGlobal,
+        RuntimeHelper::DefineGlobal,
+        RuntimeHelper::BuildList,
+        RuntimeHelper::BuildMap,
+        RuntimeHelper::ListPush,
+        RuntimeHelper::MapSet,
+        RuntimeHelper::MakeAotFunction,
+        RuntimeHelper::Call,
+        RuntimeHelper::CallNative,
+        RuntimeHelper::CallMethod,
+        RuntimeHelper::Access,
+        RuntimeHelper::Index,
+        RuntimeHelper::In,
+        RuntimeHelper::Len,
+        RuntimeHelper::ListSlice,
+        RuntimeHelper::ToIter,
+        RuntimeHelper::MakeFloat,
+        RuntimeHelper::Compare,
+        RuntimeHelper::AddValue,
+        RuntimeHelper::SubValue,
+        RuntimeHelper::MulValue,
+        RuntimeHelper::DivValue,
+        RuntimeHelper::ModValue,
+    ];
+
     fn symbol(self) -> &'static str {
         match self {
             RuntimeHelper::InternString => "lk_rt_intern_string",
@@ -1511,6 +1911,9 @@ impl RuntimeHelper {
             RuntimeHelper::DefineGlobal => "lk_rt_define_global",
             RuntimeHelper::BuildList => "lk_rt_build_list",
             RuntimeHelper::BuildMap => "lk_rt_build_map",
+            RuntimeHelper::ListPush => "lk_rt_list_push",
+            RuntimeHelper::MapSet => "lk_rt_map_set",
+            RuntimeHelper::MakeAotFunction => "lk_rt_make_aot_function",
             RuntimeHelper::Call => "lk_rt_call",
             RuntimeHelper::CallNative => "lk_rt_call_native",
             RuntimeHelper::CallMethod => "lk_rt_call_method",
@@ -1520,7 +1923,24 @@ impl RuntimeHelper {
             RuntimeHelper::Len => "lk_rt_len",
             RuntimeHelper::ListSlice => "lk_rt_list_slice",
             RuntimeHelper::ToIter => "lk_rt_to_iter",
+            RuntimeHelper::MakeFloat => "lk_rt_float",
+            RuntimeHelper::Compare => "lk_rt_cmp",
             RuntimeHelper::AddValue => "lk_rt_add",
+            RuntimeHelper::SubValue => "lk_rt_sub",
+            RuntimeHelper::MulValue => "lk_rt_mul",
+            RuntimeHelper::DivValue => "lk_rt_div",
+            RuntimeHelper::ModValue => "lk_rt_mod",
+        }
+    }
+
+    fn temp_prefix(self) -> &'static str {
+        match self {
+            RuntimeHelper::AddValue => "addval",
+            RuntimeHelper::SubValue => "subval",
+            RuntimeHelper::MulValue => "mulval",
+            RuntimeHelper::DivValue => "divval",
+            RuntimeHelper::ModValue => "modval",
+            _ => "rtval",
         }
     }
 
@@ -1531,6 +1951,9 @@ impl RuntimeHelper {
             RuntimeHelper::LoadGlobal => "declare i64 @lk_rt_load_global(i64)",
             RuntimeHelper::DefineGlobal => "declare void @lk_rt_define_global(i64, i64)",
             RuntimeHelper::BuildList => "declare i64 @lk_rt_build_list(i64*, i64)",
+            RuntimeHelper::ListPush => "declare i64 @lk_rt_list_push(i64, i64)",
+            RuntimeHelper::MapSet => "declare i64 @lk_rt_map_set(i64, i64, i64)",
+            RuntimeHelper::MakeAotFunction => "declare i64 @lk_rt_make_aot_function(i8*, i64)",
             RuntimeHelper::Call => "declare i64 @lk_rt_call(i64, i64*, i64, i64)",
             RuntimeHelper::CallNative => "declare i64 @lk_rt_call_native(i64, i64*, i64, i64)",
             RuntimeHelper::CallMethod => "declare i64 @lk_rt_call_method(i64, i64, i64*, i64, i64)",
@@ -1541,7 +1964,13 @@ impl RuntimeHelper {
             RuntimeHelper::Len => "declare i64 @lk_rt_len(i64)",
             RuntimeHelper::ListSlice => "declare i64 @lk_rt_list_slice(i64, i64)",
             RuntimeHelper::ToIter => "declare i64 @lk_rt_to_iter(i64)",
+            RuntimeHelper::MakeFloat => "declare i64 @lk_rt_float(double)",
+            RuntimeHelper::Compare => "declare i64 @lk_rt_cmp(i64, i64, i64)",
             RuntimeHelper::AddValue => "declare i64 @lk_rt_add(i64, i64)",
+            RuntimeHelper::SubValue => "declare i64 @lk_rt_sub(i64, i64)",
+            RuntimeHelper::MulValue => "declare i64 @lk_rt_mul(i64, i64)",
+            RuntimeHelper::DivValue => "declare i64 @lk_rt_div(i64, i64)",
+            RuntimeHelper::ModValue => "declare i64 @lk_rt_mod(i64, i64)",
         }
     }
 }

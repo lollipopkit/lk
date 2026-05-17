@@ -664,10 +664,10 @@ mod tests {
                     let mut found_a = false;
                     let mut found_b = false;
                     for i in 0..keys.len() {
-                        if let Val::Str(key) = &keys[i] {
-                            if **key == *"a" && values[i] == Val::Int(1) {
+                        if let Some(key_str) = keys[i].as_str() {
+                            if key_str == "a" && values[i] == Val::Int(1) {
                                 found_a = true;
-                            } else if **key == *"b" && values[i] == Val::Int(2) {
+                            } else if key_str == "b" && values[i] == Val::Int(2) {
                                 found_b = true;
                             }
                         }

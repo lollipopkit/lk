@@ -109,7 +109,7 @@ mod tests {
         let program = parser.parse_program()?;
 
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::Str(Arc::from("Hello!")));
+        assert_eq!(result, Val::from_str("Hello!"));
 
         Ok(())
     }

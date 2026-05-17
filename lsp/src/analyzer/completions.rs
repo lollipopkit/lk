@@ -54,7 +54,7 @@ impl LkAnalyzer {
                             | Val::RustFunctionNamed(_)
                             | Val::AotFunction(_)
                             | Val::Closure(_) => (CompletionItemKind::FUNCTION, "function".to_string()),
-                            Val::Int(_) | Val::Float(_) | Val::Bool(_) | Val::Str(_) => {
+                            Val::Int(_) | Val::Float(_) | Val::Bool(_) | Val::Str(_) | Val::ShortStr(_) => {
                                 (CompletionItemKind::CONSTANT, "const".to_string())
                             }
                             Val::List(_) => (CompletionItemKind::VARIABLE, "list".to_string()),

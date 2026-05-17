@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
+use arcstr::ArcStr;
 use core::fmt;
 
 use crate::vm::VmContext;
@@ -28,7 +29,7 @@ pub trait IteratorState: Send + Sync + 'static {
 
 /// Runtime handle for immutable iterators.
 pub struct IteratorValue {
-    origin: Option<Arc<str>>,
+    origin: Option<ArcStr>,
     state: Mutex<Box<dyn IteratorState>>,
 }
 
@@ -49,7 +50,7 @@ impl IteratorValue {
         })
     }
 
-    pub fn with_origin<S>(state: S, origin: Arc<str>) -> Arc<Self>
+    pub fn with_origin<S>(state: S, origin: ArcStr) -> Arc<Self>
     where
         S: IteratorState,
     {
@@ -72,7 +73,7 @@ impl IteratorValue {
         }
     }
 
-    pub fn origin(&self) -> Option<&Arc<str>> {
+    pub fn origin(&self) -> Option<&ArcStr> {
         self.origin.as_ref()
     }
 }

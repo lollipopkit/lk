@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
     use crate::val::{Val, de::*};
-    use std::sync::Arc;
 
     #[test]
     fn test_from_json_str_basic() {
@@ -9,7 +8,7 @@ mod tests {
         let val = from_json_str(json).unwrap();
 
         if let Val::Map(map) = val {
-            assert_eq!(map.get("name"), Some(&Val::Str(Arc::from("test"))));
+            assert_eq!(map.get("name"), Some(&Val::from_str("test")));
             assert_eq!(map.get("age"), Some(&Val::Int(25)));
             assert_eq!(map.get("active"), Some(&Val::Bool(true)));
         } else {
@@ -26,7 +25,7 @@ mod tests {
             assert_eq!(list.len(), 5);
             assert_eq!(list[0], Val::Int(1));
             assert_eq!(list[1], Val::Float(2.5));
-            assert_eq!(list[2], Val::Str(Arc::from("hello")));
+            assert_eq!(list[2], Val::from_str("hello"));
             assert_eq!(list[3], Val::Bool(true));
             assert_eq!(list[4], Val::Nil);
         } else {
@@ -41,11 +40,11 @@ mod tests {
 
         if let Val::Map(map) = val {
             if let Some(Val::Map(user_map)) = map.get("user") {
-                assert_eq!(user_map.get("name"), Some(&Val::Str(Arc::from("admin"))));
+                assert_eq!(user_map.get("name"), Some(&Val::from_str("admin")));
                 if let Some(Val::List(perms)) = user_map.get("permissions") {
                     assert_eq!(perms.len(), 2);
-                    assert_eq!(perms[0], Val::Str(Arc::from("read")));
-                    assert_eq!(perms[1], Val::Str(Arc::from("write")));
+                    assert_eq!(perms[0], Val::from_str("read"));
+                    assert_eq!(perms[1], Val::from_str("write"));
                 } else {
                     panic!("Expected permissions list");
                 }
@@ -68,7 +67,7 @@ active: true
         let val = from_yaml_str(yaml).unwrap();
 
         if let Val::Map(map) = val {
-            assert_eq!(map.get("name"), Some(&Val::Str(Arc::from("test"))));
+            assert_eq!(map.get("name"), Some(&Val::from_str("test")));
             assert_eq!(map.get("age"), Some(&Val::Int(25)));
             assert_eq!(map.get("active"), Some(&Val::Bool(true)));
         } else {
@@ -91,7 +90,7 @@ active: true
             assert_eq!(list.len(), 5);
             assert_eq!(list[0], Val::Int(1));
             assert_eq!(list[1], Val::Float(2.5));
-            assert_eq!(list[2], Val::Str(Arc::from("hello")));
+            assert_eq!(list[2], Val::from_str("hello"));
             assert_eq!(list[3], Val::Bool(true));
             assert_eq!(list[4], Val::Nil);
         } else {
@@ -113,11 +112,11 @@ count: 42
 
         if let Val::Map(map) = val {
             if let Some(Val::Map(user_map)) = map.get("user") {
-                assert_eq!(user_map.get("name"), Some(&Val::Str(Arc::from("admin"))));
+                assert_eq!(user_map.get("name"), Some(&Val::from_str("admin")));
                 if let Some(Val::List(perms)) = user_map.get("permissions") {
                     assert_eq!(perms.len(), 2);
-                    assert_eq!(perms[0], Val::Str(Arc::from("read")));
-                    assert_eq!(perms[1], Val::Str(Arc::from("write")));
+                    assert_eq!(perms[0], Val::from_str("read"));
+                    assert_eq!(perms[1], Val::from_str("write"));
                 } else {
                     panic!("Expected permissions list");
                 }
@@ -168,7 +167,7 @@ active = true
         let val = from_toml_str(toml).unwrap();
 
         if let Val::Map(map) = val {
-            assert_eq!(map.get("name"), Some(&Val::Str(Arc::from("test"))));
+            assert_eq!(map.get("name"), Some(&Val::from_str("test")));
             assert_eq!(map.get("age"), Some(&Val::Int(25)));
             assert_eq!(map.get("active"), Some(&Val::Bool(true)));
         } else {
@@ -197,8 +196,8 @@ mixed = [1, "hello", true]
 
             if let Some(Val::List(strings)) = map.get("strings") {
                 assert_eq!(strings.len(), 2);
-                assert_eq!(strings[0], Val::Str(Arc::from("hello")));
-                assert_eq!(strings[1], Val::Str(Arc::from("world")));
+                assert_eq!(strings[0], Val::from_str("hello"));
+                assert_eq!(strings[1], Val::from_str("world"));
             } else {
                 panic!("Expected strings array");
             }
@@ -206,7 +205,7 @@ mixed = [1, "hello", true]
             if let Some(Val::List(mixed)) = map.get("mixed") {
                 assert_eq!(mixed.len(), 3);
                 assert_eq!(mixed[0], Val::Int(1));
-                assert_eq!(mixed[1], Val::Str(Arc::from("hello")));
+                assert_eq!(mixed[1], Val::from_str("hello"));
                 assert_eq!(mixed[2], Val::Bool(true));
             } else {
                 panic!("Expected mixed array");
@@ -231,11 +230,11 @@ port = 5432
 
         if let Val::Map(map) = val {
             if let Some(Val::Map(user_map)) = map.get("user") {
-                assert_eq!(user_map.get("name"), Some(&Val::Str(Arc::from("admin"))));
+                assert_eq!(user_map.get("name"), Some(&Val::from_str("admin")));
                 if let Some(Val::List(perms)) = user_map.get("permissions") {
                     assert_eq!(perms.len(), 2);
-                    assert_eq!(perms[0], Val::Str(Arc::from("read")));
-                    assert_eq!(perms[1], Val::Str(Arc::from("write")));
+                    assert_eq!(perms[0], Val::from_str("read"));
+                    assert_eq!(perms[1], Val::from_str("write"));
                 } else {
                     panic!("Expected permissions list");
                 }
@@ -244,7 +243,7 @@ port = 5432
             }
 
             if let Some(Val::Map(db_map)) = map.get("database") {
-                assert_eq!(db_map.get("host"), Some(&Val::Str(Arc::from("localhost"))));
+                assert_eq!(db_map.get("host"), Some(&Val::from_str("localhost")));
                 assert_eq!(db_map.get("port"), Some(&Val::Int(5432)));
             } else {
                 panic!("Expected database map");
@@ -270,15 +269,15 @@ name = "test.txt"
         if let Val::Map(map) = val {
             if let Some(Val::Map(req_map)) = map.get("req") {
                 if let Some(Val::Map(user_map)) = req_map.get("user") {
-                    assert_eq!(user_map.get("role"), Some(&Val::Str(Arc::from("admin"))));
+                    assert_eq!(user_map.get("role"), Some(&Val::from_str("admin")));
                     assert_eq!(user_map.get("id"), Some(&Val::Int(123)));
                 } else {
                     panic!("Expected user map");
                 }
 
                 if let Some(Val::Map(resource_map)) = req_map.get("resource") {
-                    assert_eq!(resource_map.get("type"), Some(&Val::Str(Arc::from("document"))));
-                    assert_eq!(resource_map.get("name"), Some(&Val::Str(Arc::from("test.txt"))));
+                    assert_eq!(resource_map.get("type"), Some(&Val::from_str("document")));
+                    assert_eq!(resource_map.get("name"), Some(&Val::from_str("test.txt")));
                 } else {
                     panic!("Expected resource map");
                 }
@@ -308,15 +307,15 @@ role = "user"
                 assert_eq!(users.len(), 2);
 
                 if let Val::Map(alice) = &users[0] {
-                    assert_eq!(alice.get("name"), Some(&Val::Str(Arc::from("alice"))));
-                    assert_eq!(alice.get("role"), Some(&Val::Str(Arc::from("admin"))));
+                    assert_eq!(alice.get("name"), Some(&Val::from_str("alice")));
+                    assert_eq!(alice.get("role"), Some(&Val::from_str("admin")));
                 } else {
                     panic!("Expected alice map");
                 }
 
                 if let Val::Map(bob) = &users[1] {
-                    assert_eq!(bob.get("name"), Some(&Val::Str(Arc::from("bob"))));
-                    assert_eq!(bob.get("role"), Some(&Val::Str(Arc::from("user"))));
+                    assert_eq!(bob.get("name"), Some(&Val::from_str("bob")));
+                    assert_eq!(bob.get("role"), Some(&Val::from_str("user")));
                 } else {
                     panic!("Expected bob map");
                 }
@@ -375,7 +374,7 @@ role = "user"
         // Test JSON override
         let val = parse_with_format(json_data, Some(Format::Json)).unwrap();
         if let Val::Map(map) = val {
-            assert_eq!(map.get("key"), Some(&Val::Str(Arc::from("value"))));
+            assert_eq!(map.get("key"), Some(&Val::from_str("value")));
         } else {
             panic!("Expected Map");
         }
@@ -383,7 +382,7 @@ role = "user"
         // Test auto-detection
         let val = parse_with_format(json_data, None).unwrap();
         if let Val::Map(map) = val {
-            assert_eq!(map.get("key"), Some(&Val::Str(Arc::from("value"))));
+            assert_eq!(map.get("key"), Some(&Val::from_str("value")));
         } else {
             panic!("Expected Map");
         }
@@ -396,7 +395,7 @@ role = "user"
         // Test YAML override
         let val = parse_with_format(yaml_data, Some(Format::Yaml)).unwrap();
         if let Val::Map(map) = val {
-            assert_eq!(map.get("key"), Some(&Val::Str(Arc::from("value"))));
+            assert_eq!(map.get("key"), Some(&Val::from_str("value")));
             assert_eq!(map.get("other"), Some(&Val::Int(123)));
         } else {
             panic!("Expected Map");
@@ -410,7 +409,7 @@ role = "user"
         // Test TOML override
         let val = parse_with_format(toml_data, Some(Format::Toml)).unwrap();
         if let Val::Map(map) = val {
-            assert_eq!(map.get("key"), Some(&Val::Str(Arc::from("value"))));
+            assert_eq!(map.get("key"), Some(&Val::from_str("value")));
             assert_eq!(map.get("other"), Some(&Val::Int(123)));
         } else {
             panic!("Expected Map");

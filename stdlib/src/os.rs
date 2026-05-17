@@ -22,17 +22,16 @@ impl EnvObject {
             ));
         }
 
-        let var_name = match &args[0] {
-            Val::Str(name) => &**name,
-            _ => return Err(anyhow::anyhow!("first argument must be a string")),
-        };
+        let var_name = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("first argument must be a string"))?;
 
         // Get default value if provided
         let default_val = if args.len() == 2 {
-            match &args[1] {
-                Val::Str(val) => Some(&**val),
-                Val::Nil => None,
-                _ => return Err(anyhow::anyhow!("second argument must be a string or nil")),
+            match args[1].as_str() {
+                Some(s) => Some(s),
+                None if args[1] == Val::Nil => None,
+                None => return Err(anyhow::anyhow!("second argument must be a string or nil")),
             }
         } else {
             None
@@ -40,11 +39,11 @@ impl EnvObject {
 
         match std::env::var_os(var_name) {
             Some(value) => match value.into_string() {
-                Ok(value_str) => Ok(Val::Str(value_str.into())),
+                Ok(value_str) => Ok(Val::from_str(&value_str)),
                 Err(_) => Ok(Val::Nil),
             },
             None => match default_val {
-                Some(default) => Ok(Val::Str(default.into())),
+                Some(default) => Ok(Val::from_str(default)),
                 None => Ok(Val::Nil),
             },
         }
@@ -57,15 +56,13 @@ impl EnvObject {
             ));
         }
 
-        let var_name = match &args[0] {
-            Val::Str(name) => &**name,
-            _ => return Err(anyhow::anyhow!("first argument must be a string")),
-        };
+        let var_name = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("first argument must be a string"))?;
 
-        let value = match &args[1] {
-            Val::Str(val) => &**val,
-            _ => return Err(anyhow::anyhow!("second argument must be a string")),
-        };
+        let value = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("second argument must be a string"))?;
 
         unsafe {
             std::env::set_var(var_name, value);
@@ -78,10 +75,9 @@ impl EnvObject {
             return Err(anyhow::anyhow!("env.unset() takes exactly 1 argument: variable_name"));
         }
 
-        let var_name = match &args[0] {
-            Val::Str(name) => &**name,
-            _ => return Err(anyhow::anyhow!("argument must be a string")),
-        };
+        let var_name = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("argument must be a string"))?;
 
         unsafe {
             std::env::remove_var(var_name);
@@ -106,10 +102,9 @@ impl DirObject {
             return Err(anyhow::anyhow!("dir.list() takes exactly 1 argument: path"));
         }
 
-        let path = match &args[0] {
-            Val::Str(p) => &**p,
-            _ => return Err(anyhow::anyhow!("argument must be a string")),
-        };
+        let path = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("argument must be a string"))?;
 
         let mut entries = Vec::new();
         match std::fs::read_dir(path) {
@@ -118,7 +113,7 @@ impl DirObject {
                     match entry {
                         Ok(dir_entry) => {
                             if let Some(name) = dir_entry.file_name().to_str() {
-                                entries.push(Val::Str(name.into()))
+                                entries.push(Val::from_str(name))
                             }
                         }
                         Err(_) => continue,
@@ -132,7 +127,7 @@ impl DirObject {
 
     fn temp_dir(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         Ok(match std::env::temp_dir().into_os_string().into_string() {
-            Ok(path) => Val::Str(path.into()),
+            Ok(path) => Val::from_str(&path),
             Err(_) => Val::Nil,
         })
     }
@@ -140,7 +135,7 @@ impl DirObject {
     fn current_dir(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         Ok(match std::env::current_dir() {
             Ok(path) => match path.into_os_string().into_string() {
-                Ok(path_str) => Val::Str(path_str.into()),
+                Ok(path_str) => Val::from_str(&path_str),
                 Err(_) => Val::Nil,
             },
             Err(_) => Val::Nil,
@@ -230,15 +225,15 @@ impl OsModule {
 
         match std::env::var_os("HOSTNAME") {
             Some(hostname) => match hostname.into_string() {
-                Ok(hostname_str) => Ok(Val::Str(hostname_str.into())),
-                Err(_) => Ok(Val::Str("localhost".into())),
+                Ok(hostname_str) => Ok(Val::from_str(&hostname_str)),
+                Err(_) => Ok(Val::from_str("localhost")),
             },
             None => match std::env::var_os("COMPUTERNAME") {
                 Some(hostname) => match hostname.into_string() {
-                    Ok(hostname_str) => Ok(Val::Str(hostname_str.into())),
-                    Err(_) => Ok(Val::Str("localhost".into())),
+                    Ok(hostname_str) => Ok(Val::from_str(&hostname_str)),
+                    Err(_) => Ok(Val::from_str("localhost")),
                 },
-                None => Ok(Val::Str("localhost".into())),
+                None => Ok(Val::from_str("localhost")),
             },
         }
     }
@@ -249,7 +244,7 @@ impl OsModule {
             return Err(anyhow::anyhow!("arch() takes no arguments"));
         }
 
-        Ok(Val::Str(std::env::consts::ARCH.into()))
+        Ok(Val::from_str(std::env::consts::ARCH))
     }
 
     /// Get operating system
@@ -258,7 +253,7 @@ impl OsModule {
             return Err(anyhow::anyhow!("os() takes no arguments"));
         }
 
-        Ok(Val::Str(std::env::consts::OS.into()))
+        Ok(Val::from_str(std::env::consts::OS))
     }
 
     /// Exit the program
@@ -294,10 +289,9 @@ impl OsModule {
         }
 
         // cmd
-        let cmd = match &args[0] {
-            Val::Str(s) => s.as_ref(),
-            _ => return Err(anyhow!("first argument (cmd) must be a string")),
-        };
+        let cmd = args[0]
+            .as_str()
+            .ok_or_else(|| anyhow!("first argument (cmd) must be a string"))?;
 
         // parse args list and stream flag
         let mut argv: Vec<String> = Vec::new();
@@ -307,9 +301,9 @@ impl OsModule {
             match &args[1] {
                 Val::List(list) => {
                     for v in list.iter() {
-                        match v {
-                            Val::Str(s) => argv.push(s.to_string()),
-                            other => argv.push(other.to_string()),
+                        match v.as_str() {
+                            Some(s) => argv.push(s.to_owned()),
+                            None => argv.push(v.to_string()),
                         }
                     }
                 }
@@ -343,7 +337,7 @@ impl OsModule {
                 if line.ends_with('\r') {
                     line.pop();
                 }
-                items.push(Val::Str(line.into()));
+                items.push(Val::from_str(&line));
             }
             let list_val = Val::List(items.into());
             if let Some(to_stream) = lk_core::val::methods::find_method_for_val(&list_val, "to_stream") {
@@ -359,7 +353,7 @@ impl OsModule {
             .output()
             .map_err(|e| anyhow!("failed to execute '{}': {}", cmd, e))?;
         match String::from_utf8(output.stdout) {
-            Ok(s) => Ok(Val::Str(s.into())),
+            Ok(s) => Ok(Val::from_str(&s)),
             Err(_) => Ok(Val::Nil),
         }
     }

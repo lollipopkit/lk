@@ -158,7 +158,7 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
         if args.is_empty() {
             return String::new();
         }
-        if let Val::Str(fmt) = &args[0] {
+        if let Some(fmt) = args[0].as_str() {
             // Simple {} placeholder formatting; additional args appended with spaces
             let rest = &args[1..];
             let mut out = String::with_capacity(fmt.len() + rest.len() * 8);
@@ -302,7 +302,7 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
         };
         let inner_type = if args.len() >= 2 {
             match &args[1] {
-                Val::Str(s) => LkType::parse(s.as_ref()).unwrap_or(LkType::Nil),
+                val if val.as_str().is_some() => LkType::parse(val.as_str().unwrap()).unwrap_or(LkType::Nil),
                 Val::Nil => LkType::Nil,
                 other => {
                     return Err(anyhow!(

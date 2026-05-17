@@ -800,7 +800,6 @@ mod tests {
 
 #[derive(Clone)]
 pub(super) struct ClosureFastCache {
-    pub(super) regs: Vec<Val>,
     pub(super) access_ic: Vec<Option<AccessIc>>,
     pub(super) index_ic: Vec<Option<IndexIc>>,
     pub(super) global_ic: Vec<Option<GlobalEntry>>,
@@ -818,7 +817,6 @@ impl ClosureFastCache {
     #[inline]
     pub(super) fn new() -> Self {
         Self {
-            regs: Vec::new(),
             access_ic: Vec::new(),
             index_ic: Vec::new(),
             global_ic: Vec::new(),

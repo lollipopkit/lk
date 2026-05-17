@@ -133,7 +133,7 @@ mod tests {
             function.code.iter().any(|op| match op {
                 Op::DefineGlobal(name_idx, _) => matches!(
                     function.consts.get(*name_idx as usize),
-                    Some(Val::Str(s)) if s.as_ref() == "acc"
+                    Some(v) if v.as_str() == Some("acc")
                 ),
                 _ => false,
             }),

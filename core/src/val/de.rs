@@ -1,5 +1,6 @@
 use crate::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
 use crate::val::Val;
+use arcstr::ArcStr;
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::fmt;
 use std::sync::Arc;
@@ -36,11 +37,11 @@ impl<'de> Visitor<'de> for ValVisitor {
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Val, E> {
-        Ok(Val::Str(Arc::from(value)))
+        Ok(Val::from_str(value))
     }
 
     fn visit_string<E>(self, value: String) -> Result<Val, E> {
-        Ok(Val::Str(Arc::<str>::from(value)))
+        Ok(Val::from_str(&value))
     }
 
     fn visit_none<E>(self) -> Result<Val, E> {
@@ -68,9 +69,9 @@ impl<'de> Visitor<'de> for ValVisitor {
         M: MapAccess<'de>,
     {
         let size_hint = map_access.size_hint().unwrap_or(0);
-        let mut map: FastHashMap<Arc<str>, Val> = fast_hash_map_with_capacity(size_hint);
+        let mut map: FastHashMap<ArcStr, Val> = fast_hash_map_with_capacity(size_hint);
         while let Some((key, value)) = map_access.next_entry::<String, Val>()? {
-            map.insert(Arc::<str>::from(key), value);
+            map.insert(Val::intern_str(key.as_str()), value);
         }
         Ok(Val::Map(Arc::new(map)))
     }

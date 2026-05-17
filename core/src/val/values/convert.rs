@@ -3,20 +3,21 @@ use std::{collections::HashMap, sync::Arc};
 use anyhow::Result;
 
 use crate::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
+use arcstr::ArcStr;
 
 use super::{ChannelValue, TaskValue, Type, Val};
 
 impl From<String> for Val {
     #[inline]
     fn from(s: String) -> Self {
-        Val::Str(Arc::<str>::from(s))
+        Val::from_str(&s)
     }
 }
 
 impl From<&str> for Val {
     #[inline]
     fn from(s: &str) -> Self {
-        Val::Str(Arc::from(s))
+        Val::from_str(s)
     }
 }
 
@@ -48,9 +49,9 @@ where
     H: core::hash::BuildHasher,
 {
     fn from(m: HashMap<S, V, H>) -> Self {
-        let mut inner: FastHashMap<Arc<str>, Val> = fast_hash_map_with_capacity(m.len());
+        let mut inner: FastHashMap<ArcStr, Val> = fast_hash_map_with_capacity(m.len());
         for (k, v) in m.into_iter() {
-            inner.insert(Arc::from(k.as_ref()), v.into());
+            inner.insert(Val::intern_str(k.as_ref()), v.into());
         }
         Val::Map(Arc::new(inner))
     }
@@ -112,7 +113,7 @@ impl From<(u64, i64, Type)> for Val {
 impl From<serde_json::Value> for Val {
     fn from(val: serde_json::Value) -> Self {
         match val {
-            serde_json::Value::String(s) => Val::Str(Arc::<str>::from(s)),
+            serde_json::Value::String(s) => Val::from_str(&s),
             serde_json::Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     Val::Int(i)
@@ -128,9 +129,9 @@ impl From<serde_json::Value> for Val {
                 Val::List(Arc::from(v))
             }
             serde_json::Value::Object(o) => {
-                let m: FastHashMap<Arc<str>, Val> = o
+                let m: FastHashMap<ArcStr, Val> = o
                     .into_iter()
-                    .map(|(k, v)| (Arc::<str>::from(k), Val::from(v)))
+                    .map(|(k, v)| (Val::intern_str(k.as_str()), Val::from(v)))
                     .collect();
                 Val::Map(Arc::new(m))
             }
@@ -142,7 +143,7 @@ impl From<serde_json::Value> for Val {
 impl From<serde_yaml::Value> for Val {
     fn from(val: serde_yaml::Value) -> Self {
         match val {
-            serde_yaml::Value::String(s) => Val::Str(Arc::<str>::from(s)),
+            serde_yaml::Value::String(s) => Val::from_str(&s),
             serde_yaml::Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     Val::Int(i)
@@ -158,11 +159,11 @@ impl From<serde_yaml::Value> for Val {
                 Val::List(Arc::from(v))
             }
             serde_yaml::Value::Mapping(o) => {
-                let m: FastHashMap<Arc<str>, Val> = o
+                let m: FastHashMap<ArcStr, Val> = o
                     .into_iter()
                     .filter_map(|(k, v)| {
                         if let serde_yaml::Value::String(key) = k {
-                            Some((Arc::<str>::from(key), Val::from(v)))
+                            Some((Val::intern_str(key.as_str()), Val::from(v)))
                         } else {
                             None
                         }

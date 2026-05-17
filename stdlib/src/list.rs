@@ -1,3 +1,4 @@
+use arcstr::ArcStr;
 use std::collections::HashMap;
 use std::{mem, sync::Arc};
 
@@ -400,18 +401,17 @@ impl ListModule {
             Val::List(l) => &**l,
             _ => return Err(anyhow!("join() first argument must be a list")),
         };
-        let delimiter = match &args[1] {
-            Val::Str(d) => &**d,
-            _ => return Err(anyhow!("join() second argument must be a string")),
-        };
+        let delimiter = args[1]
+            .as_str()
+            .ok_or_else(|| anyhow!("join() second argument must be a string"))?;
         let mut strings: Vec<&str> = Vec::with_capacity(list.len());
         for item in list.iter() {
-            match item {
-                Val::Str(s) => strings.push(&**s),
-                _ => return Err(anyhow!("join() list must contain only strings")),
+            match item.as_str() {
+                Some(s) => strings.push(s),
+                None => return Err(anyhow!("join() list must contain only strings")),
             }
         }
-        Ok(Val::Str(strings.join(delimiter).into()))
+        Ok(Val::from_str(&strings.join(delimiter)))
     }
 
     // Safe index access: get(index) -> value|nil
@@ -539,7 +539,7 @@ impl ListModule {
             other => return Err(anyhow!("into_iter expects a list, got {}", other.type_name())),
         };
         let iter_state = ListIteratorState::new(list);
-        let handle = IteratorValue::with_origin(iter_state, Arc::from("list.into_iter"));
+        let handle = IteratorValue::with_origin(iter_state, ArcStr::from("list.into_iter"));
         Ok(Val::Iterator(handle))
     }
 

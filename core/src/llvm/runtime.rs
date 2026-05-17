@@ -14,6 +14,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
+use arcstr::ArcStr;
 
 use crate::{
     llvm::encoding,
@@ -21,7 +22,7 @@ use crate::{
     op::BinOp,
     stmt::{ImportSource, ImportStmt, ModuleResolver, deserialize_imports, execute_imports},
     util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_map_with_capacity},
-    val::{AotFunction, Val},
+    val::{AotFunction, Val, methods::find_method_for_val},
     vm::{BytecodeModule, Vm, VmContext, decode_module},
 };
 
@@ -222,19 +223,32 @@ pub extern "C" fn lk_rt_register_native_module_function(
     if module.is_empty() || name.is_empty() {
         return -1;
     }
-    let function = Val::AotFunction(AotFunction {
+    let function = Val::AotFunction(Box::new(AotFunction {
         ptr: fn_ptr as usize,
         arity: arity as u8,
-    });
+    }));
     with_state(move |state| {
         state
             .pending_native_modules
             .entry(module)
             .or_insert_with(fast_hash_map_new)
-            .insert(Arc::from(name), function);
+            .insert(ArcStr::from(name), function);
         state.imports_applied = false;
     });
     0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_make_aot_function(fn_ptr: *const (), arity: i64) -> i64 {
+    if fn_ptr.is_null() || arity < 0 || arity > u8::MAX as i64 {
+        return encoding::NIL_VALUE;
+    }
+    with_state(|state| {
+        state.encode_value(Val::AotFunction(Box::new(AotFunction {
+            ptr: fn_ptr as usize,
+            arity: arity as u8,
+        })))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -336,7 +350,7 @@ struct RuntimeState {
     pending_imports: Vec<ImportStmt>,
     pending_bundled: Vec<DecodedBundledModule>,
     pending_package_modules: Vec<(String, String)>,
-    pending_native_modules: FastHashMap<String, FastHashMap<Arc<str>, Val>>,
+    pending_native_modules: FastHashMap<String, FastHashMap<ArcStr, Val>>,
     pending_stdlib_registrars: Vec<StdlibRegistrar>,
     imports_applied: bool,
 }
@@ -426,7 +440,7 @@ impl RuntimeState {
 
     fn apply_native_imports(
         imports: &[ImportStmt],
-        native_modules: &FastHashMap<String, FastHashMap<Arc<str>, Val>>,
+        native_modules: &FastHashMap<String, FastHashMap<ArcStr, Val>>,
         resolver: &ModuleResolver,
         ctx: &mut VmContext,
     ) -> Result<()> {
@@ -473,7 +487,7 @@ impl RuntimeState {
 
     fn resolve_native_import_source(
         source: &ImportSource,
-        native_modules: &FastHashMap<String, FastHashMap<Arc<str>, Val>>,
+        native_modules: &FastHashMap<String, FastHashMap<ArcStr, Val>>,
         resolver: &ModuleResolver,
     ) -> Result<Val> {
         match source {
@@ -490,7 +504,7 @@ impl RuntimeState {
 
     fn resolve_native_import_module(
         module: &str,
-        native_modules: &FastHashMap<String, FastHashMap<Arc<str>, Val>>,
+        native_modules: &FastHashMap<String, FastHashMap<ArcStr, Val>>,
         resolver: &ModuleResolver,
     ) -> Result<Val> {
         if let Some(exports) = native_modules.get(module) {
@@ -510,6 +524,7 @@ impl RuntimeState {
         unsafe {
             lk_stdlib_register_core_globals(&mut registry);
         }
+        register_aot_stdlib_method_modules(&mut registry)?;
         for register in stdlib_registrars {
             register(&mut registry)?;
         }
@@ -526,7 +541,8 @@ impl RuntimeState {
         }
 
         let resolver_arc = Arc::new(resolver);
-        let ctx = VmContext::new().with_resolver(Arc::clone(&resolver_arc));
+        let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver_arc));
+        install_aot_core_vm_builtins(&mut ctx);
         Ok((ctx, resolver_arc))
     }
 
@@ -539,6 +555,7 @@ impl RuntimeState {
         unsafe {
             lk_stdlib_register_core_globals(&mut registry);
         }
+        register_aot_stdlib_method_modules(&mut registry)?;
         for register in stdlib_registrars {
             register(&mut registry)?;
         }
@@ -549,7 +566,8 @@ impl RuntimeState {
         }
 
         let resolver_arc = Arc::new(resolver);
-        let ctx = VmContext::new_without_core_vm_builtins().with_resolver(Arc::clone(&resolver_arc));
+        let mut ctx = VmContext::new_without_core_vm_builtins().with_resolver(Arc::clone(&resolver_arc));
+        install_aot_core_vm_builtins(&mut ctx);
         Ok((ctx, resolver_arc))
     }
 
@@ -565,7 +583,7 @@ impl RuntimeState {
             immediate
         } else {
             match value {
-                Val::Str(s) => self.intern_string(s.as_ref()),
+                value if value.as_str().is_some() => self.intern_string(value.as_str().unwrap()),
                 other => self.handles.alloc(other),
             }
         }
@@ -591,7 +609,7 @@ impl RuntimeState {
         if let Some(&handle) = self.interned_strings.get(value) {
             return handle;
         }
-        let handle = self.handles.alloc(Val::Str(Arc::<str>::from(value)));
+        let handle = self.handles.alloc(Val::from_str(value));
         self.interned_strings.insert(value.to_owned(), handle);
         handle
     }
@@ -603,6 +621,138 @@ impl RuntimeState {
             .or_else(|| self.ctx.resolver().get_builtin(name).cloned())
             .unwrap_or(Val::Nil)
     }
+}
+
+fn install_aot_core_vm_builtins(ctx: &mut VmContext) {
+    ctx.globals_mut()
+        .entry("__lk_call_method".to_string())
+        .or_insert(Val::RustFunction(aot_core_call_method_builtin));
+    ctx.globals_mut()
+        .entry("__lk_call_method_named".to_string())
+        .or_insert(Val::RustFunction(aot_core_call_method_named_builtin));
+}
+
+fn register_aot_stdlib_method_modules(registry: &mut ModuleRegistry) -> Result<()> {
+    for register in [
+        register_stdlib_iter_bridge,
+        register_stdlib_string_bridge,
+        register_stdlib_list_bridge,
+        register_stdlib_map_bridge,
+        register_stdlib_stream_bridge,
+    ] {
+        register(registry)?;
+    }
+    Ok(())
+}
+
+fn aot_core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
+    if args.len() != 3 {
+        return Err(anyhow!(
+            "__lk_call_method expects 3 arguments: receiver, method name, positional args list"
+        ));
+    }
+
+    let receiver = args[0].clone();
+    let method_name = args[1].as_str().ok_or_else(|| {
+        anyhow!(
+            "__lk_call_method expects method name as string, got {}",
+            args[1].type_name()
+        )
+    })?;
+    let method_key = Val::from_str(method_name);
+    let positional_args: Vec<Val> = match &args[2] {
+        Val::List(list) => list.iter().cloned().collect(),
+        Val::Nil => Vec::new(),
+        other => {
+            return Err(anyhow!(
+                "__lk_call_method expects positional arguments as list, got {}",
+                other.type_name()
+            ));
+        }
+    };
+
+    if let Some(prop_val) = receiver.access(&method_key) {
+        match prop_val {
+            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
+                return prop_val.call(&positional_args, ctx);
+            }
+            other if positional_args.is_empty() => return Ok(other),
+            _ => {}
+        }
+    }
+
+    if let Some(func) = find_method_for_val(&receiver, method_name) {
+        let mut full_args = Vec::with_capacity(positional_args.len() + 1);
+        full_args.push(receiver);
+        full_args.extend(positional_args);
+        return func(&full_args, ctx);
+    }
+
+    Err(anyhow!("{} has no method '{}'", args[0].type_name(), method_name))
+}
+
+fn aot_core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
+    if args.len() != 4 {
+        return Err(anyhow!(
+            "__lk_call_method_named expects 4 arguments: receiver, method name, positional args list, named args map"
+        ));
+    }
+
+    let receiver = args[0].clone();
+    let method_name = args[1].as_str().ok_or_else(|| {
+        anyhow!(
+            "__lk_call_method_named expects method name as string, got {}",
+            args[1].type_name()
+        )
+    })?;
+    let method_key = Val::from_str(method_name);
+    let positional_args: Vec<Val> = match &args[2] {
+        Val::List(list) => list.iter().cloned().collect(),
+        Val::Nil => Vec::new(),
+        other => {
+            return Err(anyhow!(
+                "__lk_call_method_named expects positional arguments as list, got {}",
+                other.type_name()
+            ));
+        }
+    };
+    let named_pairs: Vec<(String, Val)> = match &args[3] {
+        Val::Map(map) => map
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect(),
+        Val::Nil => Vec::new(),
+        other => {
+            return Err(anyhow!(
+                "__lk_call_method_named expects named arguments as map, got {}",
+                other.type_name()
+            ));
+        }
+    };
+
+    if let Some(prop_val) = receiver.access(&method_key) {
+        match prop_val {
+            Val::Closure(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
+                return prop_val.call_named(&positional_args, &named_pairs, ctx);
+            }
+            Val::RustFunction(_) if named_pairs.is_empty() => {
+                return prop_val.call(&positional_args, ctx);
+            }
+            other if positional_args.is_empty() && named_pairs.is_empty() => return Ok(other),
+            _ => {}
+        }
+    }
+
+    if named_pairs.is_empty()
+        && let Some(func) = find_method_for_val(&receiver, method_name)
+    {
+        let mut full_args = Vec::with_capacity(positional_args.len() + 1);
+        full_args.push(receiver);
+        full_args.extend(positional_args);
+        return func(&full_args, ctx);
+    }
+
+    Err(anyhow!("{} has no method '{}'", args[0].type_name(), method_name))
 }
 
 impl Default for RuntimeState {
@@ -742,23 +892,24 @@ fn bool_to_str(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
-fn encode_map_key(value: &Val) -> Result<Arc<str>> {
+fn encode_map_key(value: &Val) -> Result<ArcStr> {
     match value {
+        Val::ShortStr(s) => Ok(Val::intern_str(s.as_str())),
         Val::Str(s) => Ok(s.clone()),
-        Val::Int(i) => Ok(Arc::from(i.to_string())),
-        Val::Float(f) => Ok(Arc::from(f.to_string())),
-        Val::Bool(b) => Ok(Arc::from(bool_to_str(*b))),
+        Val::Int(i) => Ok(Val::intern_str(i.to_string().as_str())),
+        Val::Float(f) => Ok(Val::intern_str(f.to_string().as_str())),
+        Val::Bool(b) => Ok(Val::intern_str(bool_to_str(*b))),
         other => Err(anyhow!("map key must be primitive, got {}", other.type_name())),
     }
 }
 
-fn map_to_iterable(map: &FastHashMap<Arc<str>, Val>) -> Val {
-    let mut keys: Vec<&str> = map.keys().map(|k| k.as_ref()).collect();
+fn map_to_iterable(map: &FastHashMap<ArcStr, Val>) -> Val {
+    let mut keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
     keys.sort();
     let mut pairs = Vec::with_capacity(keys.len());
     for key in keys {
         if let Some(value) = map.get(key) {
-            let pair = Val::List(vec![Val::Str(key.to_string().into()), value.clone()].into());
+            let pair = Val::List(vec![Val::from_str(key), value.clone()].into());
             pairs.push(pair);
         }
     }
@@ -786,7 +937,8 @@ fn index_value(base: &Val, idx: &Val) -> Val {
                 list.get(*i as usize).cloned().unwrap_or(Val::Nil)
             }
         }
-        (Val::Str(s), Val::Int(i)) => {
+        (base, Val::Int(i)) if base.as_str().is_some() => {
+            let s = base.as_str().unwrap();
             if *i < 0 {
                 Val::Nil
             } else if s.is_ascii() {
@@ -794,14 +946,14 @@ fn index_value(base: &Val, idx: &Val) -> Val {
                 let bytes = s.as_bytes();
                 if i < bytes.len() {
                     let ch = bytes[i] as char;
-                    Val::Str(ch.to_string().into())
+                    Val::from_str(&ch.to_string())
                 } else {
                     Val::Nil
                 }
             } else {
                 s.chars()
                     .nth(*i as usize)
-                    .map(|ch| Val::Str(ch.to_string().into()))
+                    .map(|ch| Val::from_str(&ch.to_string()))
                     .unwrap_or(Val::Nil)
             }
         }
@@ -860,6 +1012,23 @@ pub extern "C" fn lk_rt_build_list(ptr: *const i64, len: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_list_push(list: i64, value: i64) -> i64 {
+    with_state(|state| {
+        let item = state.decode_value(value);
+        match state.decode_value(list) {
+            Val::List(mut items) => {
+                Arc::make_mut(&mut items).push(item);
+                state.encode_value(Val::List(items))
+            }
+            other => {
+                eprintln!("lk_rt_list_push: target is not a List, got {}", other.type_name());
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_build_map(ptr: *const i64, len: i64) -> i64 {
     let len_usize = len.max(0) as usize;
     with_state(|state| {
@@ -885,6 +1054,31 @@ pub extern "C" fn lk_rt_build_map(ptr: *const i64, len: i64) -> i64 {
             }
         }
         state.encode_value(Val::Map(Arc::new(map)))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_set(map: i64, key: i64, value: i64) -> i64 {
+    with_state(|state| {
+        let key_value = state.decode_value(key);
+        let item = state.decode_value(value);
+        let encoded_key = match encode_map_key(&key_value) {
+            Ok(key) => key,
+            Err(err) => {
+                eprintln!("lk_rt_map_set: {err}");
+                return encoding::NIL_VALUE;
+            }
+        };
+        match state.decode_value(map) {
+            Val::Map(mut items) => {
+                Arc::make_mut(&mut items).insert(encoded_key, item);
+                state.encode_value(Val::Map(items))
+            }
+            other => {
+                eprintln!("lk_rt_map_set: target is not a Map, got {}", other.type_name());
+                encoding::NIL_VALUE
+            }
+        }
     })
 }
 
@@ -938,7 +1132,7 @@ pub extern "C" fn lk_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32 
 pub extern "C" fn lk_rt_call(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
     let argc_usize = argc.max(0) as usize;
     let aot_function = with_state(|state| match state.decode_value(func) {
-        Val::AotFunction(function) => Some(function),
+        Val::AotFunction(function) => Some(*function),
         _ => None,
     });
     if let Some(function) = aot_function {
@@ -993,10 +1187,10 @@ pub extern "C" fn lk_rt_call_method(receiver: i64, method: i64, args_ptr: *const
             .map(|s| s.to_owned())
             .unwrap_or_else(|| method_val.to_string());
         match receiver_val
-            .access(&Val::Str(Arc::from(method_name.as_str())))
+            .access(&Val::from_str(method_name.as_str()))
             .unwrap_or(Val::Nil)
         {
-            Val::AotFunction(function) => Some(function),
+            Val::AotFunction(function) => Some(*function),
             _ => None,
         }
     });
@@ -1022,17 +1216,53 @@ pub extern "C" fn lk_rt_call_method(receiver: i64, method: i64, args_ptr: *const
             .as_str()
             .map(|s| s.to_owned())
             .unwrap_or_else(|| method_val.to_string());
-        let callee = receiver_val
-            .access(&Val::Str(Arc::from(method_name.as_str())))
-            .unwrap_or(Val::Nil);
+        let method_key = Val::from_str(method_name.as_str());
         let args = state.decode_values(args_ptr, argc_usize);
-        let result: Result<i64> = callee.call(&args, &mut state.ctx).map(|val| {
-            if retc <= 0 {
-                encoding::NIL_VALUE
-            } else {
-                state.encode_value(val)
-            }
-        });
+        if let Some(callee) = receiver_val.access(&method_key) {
+            let result: Result<i64> = callee.call(&args, &mut state.ctx).map(|val| {
+                if retc <= 0 {
+                    encoding::NIL_VALUE
+                } else {
+                    state.encode_value(val)
+                }
+            });
+            return match result {
+                Ok(val) => {
+                    if retc <= 0 {
+                        encoding::NIL_VALUE
+                    } else {
+                        val
+                    }
+                }
+                Err(err) => {
+                    eprintln!("lk_rt_call_method error: {err}");
+                    encoding::NIL_VALUE
+                }
+            };
+        }
+        let result: Result<i64> = if let Some(function) = find_method_for_val(&receiver_val, method_name.as_str()) {
+            let mut full_args = Vec::with_capacity(args.len() + 1);
+            full_args.push(receiver_val);
+            full_args.extend(args);
+            function(&full_args, &mut state.ctx).map(|val| {
+                if retc <= 0 {
+                    encoding::NIL_VALUE
+                } else {
+                    state.encode_value(val)
+                }
+            })
+        } else {
+            let callee = receiver_val
+                .access(&Val::from_str(method_name.as_str()))
+                .unwrap_or(Val::Nil);
+            callee.call(&args, &mut state.ctx).map(|val| {
+                if retc <= 0 {
+                    encoding::NIL_VALUE
+                } else {
+                    state.encode_value(val)
+                }
+            })
+        };
         match result {
             Ok(val) => {
                 if retc <= 0 {
@@ -1053,7 +1283,7 @@ pub extern "C" fn lk_rt_call_method(receiver: i64, method: i64, args_ptr: *const
 pub extern "C" fn lk_rt_call_native(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
     let argc_usize = argc.max(0) as usize;
     let aot_function = with_state(|state| match state.decode_value(func) {
-        Val::AotFunction(function) => Some(function),
+        Val::AotFunction(function) => Some(*function),
         _ => None,
     });
     if let Some(function) = aot_function {
@@ -1133,6 +1363,11 @@ fn call_aot_function_raw(function: AotFunction, args_ptr: *const i64, argc: usiz
                 let f: extern "C" fn(i64, i64, i64, i64) -> i64 = std::mem::transmute(function.ptr);
                 f(args[0], args[1], args[2], args[3])
             }
+            5 => {
+                let args = std::slice::from_raw_parts(args_ptr, 5);
+                let f: extern "C" fn(i64, i64, i64, i64, i64) -> i64 = std::mem::transmute(function.ptr);
+                f(args[0], args[1], args[2], args[3], args[4])
+            }
             _ => {
                 return Err(anyhow!(
                     "AOT function arity {} exceeds runtime call bridge limit",
@@ -1145,18 +1380,85 @@ fn call_aot_function_raw(function: AotFunction, args_ptr: *const i64, argc: usiz
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_add(lhs: i64, rhs: i64) -> i64 {
+pub extern "C" fn lk_rt_float(value: f64) -> i64 {
+    with_state(|state| state.encode_value(Val::Float(value)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_cmp(lhs: i64, rhs: i64, code: i64) -> i64 {
     with_state(|state| {
         let left = state.decode_value(lhs);
         let right = state.decode_value(rhs);
-        match BinOp::Add.eval_vals(&left, &right) {
-            Ok(value) => state.encode_value(value),
+        let op = match code {
+            0 => BinOp::Eq,
+            1 => BinOp::Ne,
+            2 => BinOp::Lt,
+            3 => BinOp::Le,
+            4 => BinOp::Gt,
+            5 => BinOp::Ge,
+            _ => {
+                eprintln!("lk_rt_cmp error: unknown compare code {code}");
+                return encoding::NIL_VALUE;
+            }
+        };
+        match op.cmp(&left, &right) {
+            Ok(value) => state.encode_value(Val::Bool(value)),
             Err(err) => {
-                eprintln!("lk_rt_add error: {err}");
+                eprintln!("lk_rt_cmp error: {err}");
                 encoding::NIL_VALUE
             }
         }
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_add(lhs: i64, rhs: i64) -> i64 {
+    lk_rt_binop(lhs, rhs, BinOp::Add)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_sub(lhs: i64, rhs: i64) -> i64 {
+    lk_rt_binop(lhs, rhs, BinOp::Sub)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_mul(lhs: i64, rhs: i64) -> i64 {
+    lk_rt_binop(lhs, rhs, BinOp::Mul)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_div(lhs: i64, rhs: i64) -> i64 {
+    lk_rt_binop(lhs, rhs, BinOp::Div)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_mod(lhs: i64, rhs: i64) -> i64 {
+    lk_rt_binop(lhs, rhs, BinOp::Mod)
+}
+
+fn lk_rt_binop(lhs: i64, rhs: i64, op: BinOp) -> i64 {
+    with_state(|state| {
+        let left = state.decode_value(lhs);
+        let right = state.decode_value(rhs);
+        match op.eval_vals(&left, &right) {
+            Ok(value) => state.encode_value(value),
+            Err(err) => {
+                eprintln!("{} error: {err}", binop_helper_name(op));
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+fn binop_helper_name(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "lk_rt_add",
+        BinOp::Sub => "lk_rt_sub",
+        BinOp::Mul => "lk_rt_mul",
+        BinOp::Div => "lk_rt_div",
+        BinOp::Mod => "lk_rt_mod",
+        _ => "lk_rt_binop",
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1200,7 +1502,7 @@ pub extern "C" fn lk_rt_len(value: i64) -> i64 {
         let val = state.decode_value(value);
         let len = match val {
             Val::List(ref l) => l.len() as i64,
-            Val::Str(ref s) => s.len() as i64,
+            val if val.as_str().is_some() => val.as_str().unwrap().len() as i64,
             Val::Map(ref m) => m.len() as i64,
             _ => 0,
         };
@@ -1226,7 +1528,7 @@ pub extern "C" fn lk_rt_to_iter(value: i64) -> i64 {
     with_state(|state| {
         let val = state.decode_value(value);
         let iter = match val {
-            Val::List(_) | Val::Str(_) => val,
+            Val::List(_) | Val::Str(_) | Val::ShortStr(_) => val,
             Val::Map(ref map) => map_to_iterable(map),
             other => match other {
                 Val::Nil => Val::List(Arc::new(Vec::new())),
@@ -1238,19 +1540,6 @@ pub extern "C" fn lk_rt_to_iter(value: i64) -> i64 {
         };
         state.encode_value(iter)
     })
-}
-
-trait ValStrExt {
-    fn as_str(&self) -> Option<&str>;
-}
-
-impl ValStrExt for Val {
-    fn as_str(&self) -> Option<&str> {
-        match self {
-            Val::Str(s) => Some(s.as_ref()),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1290,7 +1579,7 @@ mod tests {
         let handle = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
         let handle_again = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
         assert_eq!(handle, handle_again);
-        assert!(matches!(decode_for_tests(handle), Val::Str(s) if s.as_ref() == "hello"));
+        assert!(matches!(decode_for_tests(handle), ref v if v.as_str() == Some("hello")));
     }
 
     #[test]

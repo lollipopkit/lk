@@ -19,25 +19,15 @@ mod tests {
     #[test]
     fn test_os_arch() -> Result<()> {
         let out = run("import os; return os.arch();")?;
-        match out {
-            Val::Str(s) => {
-                // Should match the compile-time target arch
-                assert_eq!(&*s, std::env::consts::ARCH);
-            }
-            other => panic!("expected Str, got {:?}", other),
-        }
+        // Should match the compile-time target arch
+        assert_eq!(out.as_str(), Some(std::env::consts::ARCH));
         Ok(())
     }
 
     #[test]
     fn test_os_os() -> Result<()> {
         let out = run("import os; return os.os();")?;
-        match out {
-            Val::Str(s) => {
-                assert_eq!(&*s, std::env::consts::OS);
-            }
-            other => panic!("expected Str, got {:?}", other),
-        }
+        assert_eq!(out.as_str(), Some(std::env::consts::OS));
         Ok(())
     }
 
@@ -48,7 +38,7 @@ mod tests {
         // Get default when unset
         let src_default = format!("import os; let e = os.env; return e.get(\"{}\", \"dflt\");", var);
         let out = run(&src_default)?;
-        assert_eq!(out, Val::Str("dflt".into()));
+        assert_eq!(out, Val::from_str("dflt"));
 
         // Set and then read
         let src_set_get = format!(
@@ -56,7 +46,7 @@ mod tests {
             var, var
         );
         let out = run(&src_set_get)?;
-        assert_eq!(out, Val::Str("X".into()));
+        assert_eq!(out, Val::from_str("X"));
 
         // Unset and confirm Nil
         let src_unset = format!(
@@ -92,16 +82,14 @@ mod tests {
 
         // os.dir.temp() returns a string
         let out = run("import os; return os.dir.temp();")?;
-        match out {
-            Val::Str(_) | Val::Nil => (),
-            other => panic!("expected Str or Nil, got {:?}", other),
+        if !matches!(out, Val::Nil) {
+            assert!(out.as_str().is_some(), "expected string or nil, got {out:?}");
         }
 
         // os.dir.current() returns a string
         let out = run("import os; return os.dir.current();")?;
-        match out {
-            Val::Str(_) | Val::Nil => (),
-            other => panic!("expected Str or Nil, got {:?}", other),
+        if !matches!(out, Val::Nil) {
+            assert!(out.as_str().is_some(), "expected string or nil, got {out:?}");
         }
 
         // os.dir.list(tempdir) should include created file names
@@ -112,13 +100,7 @@ mod tests {
         let out = run(&src)?;
         match out {
             Val::List(list) => {
-                let names: Vec<String> = list
-                    .iter()
-                    .filter_map(|v| match v {
-                        Val::Str(s) => Some(s.to_string()),
-                        _ => None,
-                    })
-                    .collect();
+                let names: Vec<String> = list.iter().filter_map(|v| v.as_str().map(ToOwned::to_owned)).collect();
                 assert!(names.contains(&"a.txt".to_string()));
                 assert!(names.contains(&"b.txt".to_string()));
             }
@@ -136,12 +118,7 @@ mod tests {
     #[cfg(unix)]
     fn test_os_exec_capture_unix() -> Result<()> {
         let out = run("import os; return os.exec(\"/bin/echo\", [\"hello\"]);")?;
-        match out {
-            Val::Str(s) => {
-                assert_eq!(s.trim_end(), "hello");
-            }
-            other => panic!("expected Str, got {:?}", other),
-        }
+        assert_eq!(out.as_str().map(str::trim_end), Some("hello"));
         Ok(())
     }
 
@@ -149,12 +126,7 @@ mod tests {
     #[cfg(windows)]
     fn test_os_exec_capture_windows() -> Result<()> {
         let out = run("import os; return os.exec(\"cmd.exe\", [\"/C\", \"echo\", \"hello\"]);")?;
-        match out {
-            Val::Str(s) => {
-                assert_eq!(s.trim_end(), "hello");
-            }
-            other => panic!("expected Str, got {:?}", other),
-        }
+        assert_eq!(out.as_str().map(str::trim_end), Some("hello"));
         Ok(())
     }
 
@@ -167,7 +139,7 @@ mod tests {
         match out {
             Val::List(l) => {
                 assert_eq!(l.len(), 1);
-                assert_eq!(l[0], Val::Str("a b".into()));
+                assert_eq!(l[0], Val::from_str("a b"));
             }
             other => panic!("expected List, got {:?}", other),
         }
@@ -184,7 +156,7 @@ mod tests {
         match out {
             Val::List(l) => {
                 assert_eq!(l.len(), 1);
-                assert_eq!(l[0], Val::Str("a b".into()));
+                assert_eq!(l[0], Val::from_str("a b"));
             }
             other => panic!("expected List, got {:?}", other),
         }

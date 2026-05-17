@@ -12,6 +12,8 @@ use crate::typ::{TraitDef, TraitImpl};
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use crate::val::{ObjectValue, methods::find_method_for_val};
 #[cfg(not(feature = "aot-minimal-runtime"))]
+use arcstr::ArcStr;
+#[cfg(not(feature = "aot-minimal-runtime"))]
 use std::collections::HashMap;
 
 /// VM 运行期全局上下文。
@@ -503,12 +505,12 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
         ));
     }
 
-    let name = match &args[0] {
-        Val::Str(s) => s.as_ref().to_string(),
-        other => {
+    let name = match args[0].as_str() {
+        Some(s) => s.to_string(),
+        None => {
             return Err(anyhow!(
                 "__lk_register_trait expects trait name as string, got {}",
-                other.type_name()
+                args[0].type_name()
             ));
         }
     };
@@ -539,17 +541,23 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
             ));
         }
 
-        let method_name = match &inner[0] {
-            Val::Str(s) => s.as_ref().to_string(),
-            other => {
-                return Err(anyhow!("trait method name must be string, got {}", other.type_name()));
+        let method_name = match inner[0].as_str() {
+            Some(s) => s.to_string(),
+            None => {
+                return Err(anyhow!(
+                    "trait method name must be string, got {}",
+                    inner[0].type_name()
+                ));
             }
         };
 
-        let type_str = match &inner[1] {
-            Val::Str(s) => s.as_ref(),
-            other => {
-                return Err(anyhow!("trait method type must be string, got {}", other.type_name()));
+        let type_str = match inner[1].as_str() {
+            Some(s) => s,
+            None => {
+                return Err(anyhow!(
+                    "trait method type must be string, got {}",
+                    inner[1].type_name()
+                ));
             }
         };
 
@@ -572,22 +580,22 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
         ));
     }
 
-    let trait_name = match &args[0] {
-        Val::Str(s) => s.as_ref().to_string(),
-        other => {
+    let trait_name = match args[0].as_str() {
+        Some(s) => s.to_string(),
+        None => {
             return Err(anyhow!(
                 "__lk_register_trait_impl expects trait name string, got {}",
-                other.type_name()
+                args[0].type_name()
             ));
         }
     };
 
-    let target_type_str = match &args[1] {
-        Val::Str(s) => s.as_ref(),
-        other => {
+    let target_type_str = match args[1].as_str() {
+        Some(s) => s,
+        None => {
             return Err(anyhow!(
                 "__lk_register_trait_impl expects target type string, got {}",
-                other.type_name()
+                args[1].type_name()
             ));
         }
     };
@@ -620,20 +628,21 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
             ));
         }
 
-        let method_name = match &inner[0] {
-            Val::Str(s) => s.as_ref().to_string(),
-            other => {
+        let method_name = match inner[0].as_str() {
+            Some(s) => s.to_string(),
+            None => {
                 return Err(anyhow!(
                     "trait impl method name must be string, got {}",
-                    other.type_name()
+                    inner[0].type_name()
                 ));
             }
         };
 
         let closure_val = inner[1].clone();
         let signature_ty = match &inner[2] {
-            Val::Str(s) => {
-                let parsed = Type::parse(s.as_ref()).ok_or_else(|| anyhow!("failed to parse method type '{}'", s))?;
+            val if val.as_str().is_some() => {
+                let s = val.as_str().unwrap();
+                let parsed = Type::parse(s).ok_or_else(|| anyhow!("failed to parse method type '{}'", s))?;
                 Some(parsed)
             }
             Val::Nil => None,
@@ -670,8 +679,9 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
     }
 
     let receiver = args[0].clone();
-    let method_arc = match &args[1] {
+    let method_arc: ArcStr = match &args[1] {
         Val::Str(s) => s.clone(),
+        Val::ShortStr(s) => Val::intern_str(s.as_str()),
         other => {
             return Err(anyhow!(
                 "__lk_call_method expects method name as string, got {}",
@@ -716,7 +726,7 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
 
     if let Some(tc) = ctx.type_checker().as_ref() {
         let obj_type = receiver.dispatch_type();
-        if let Some(method_val) = tc.registry().get_method(&obj_type, method_arc.as_ref()) {
+        if let Some(method_val) = tc.registry().get_method(&obj_type, method_arc.as_str()) {
             let mut full_args = Vec::with_capacity(positional_args.len() + 1);
             full_args.push(receiver.clone());
             full_args.extend(positional_args.iter().cloned());
@@ -724,7 +734,7 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
         }
     }
 
-    if let Some(func) = find_method_for_val(&receiver, method_arc.as_ref()) {
+    if let Some(func) = find_method_for_val(&receiver, method_arc.as_str()) {
         let mut full_args = Vec::with_capacity(positional_args.len() + 1);
         full_args.push(receiver.clone());
         full_args.extend(positional_args);
@@ -743,8 +753,9 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
     }
 
     let receiver = args[0].clone();
-    let method_arc = match &args[1] {
+    let method_arc: ArcStr = match &args[1] {
         Val::Str(s) => s.clone(),
+        Val::ShortStr(s) => Val::intern_str(s.as_str()),
         other => {
             return Err(anyhow!(
                 "__lk_call_method_named expects method name as string, got {}",
@@ -763,7 +774,7 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
         }
     };
     let named_pairs: Vec<(String, Val)> = match &args[3] {
-        Val::Map(map) => map.iter().map(|(k, v)| (k.as_ref().to_string(), v.clone())).collect(),
+        Val::Map(map) => map.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(),
         Val::Nil => Vec::new(),
         other => {
             return Err(anyhow!(
@@ -797,7 +808,7 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
         && let Some(tc) = ctx.type_checker().as_ref()
         && tc
             .registry()
-            .get_method(&receiver.dispatch_type(), method_arc.as_ref())
+            .get_method(&receiver.dispatch_type(), method_arc.as_str())
             .is_some()
     {
         return Err(anyhow!("Named arguments are not supported for trait methods"));
@@ -805,7 +816,7 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
 
     if let Some(tc) = ctx.type_checker().as_ref() {
         let obj_type = receiver.dispatch_type();
-        if let Some(method_val) = tc.registry().get_method(&obj_type, method_arc.as_ref()) {
+        if let Some(method_val) = tc.registry().get_method(&obj_type, method_arc.as_str()) {
             let mut full_args = Vec::with_capacity(positional_args.len() + 1);
             full_args.push(receiver.clone());
             full_args.extend(positional_args.iter().cloned());
@@ -813,7 +824,7 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
         }
     }
 
-    if let Some(func) = find_method_for_val(&receiver, method_arc.as_ref()) {
+    if let Some(func) = find_method_for_val(&receiver, method_arc.as_str()) {
         if !named_pairs.is_empty() {
             return Err(anyhow!("Named arguments are not supported for built-in methods"));
         }
@@ -836,6 +847,7 @@ fn core_make_struct_builtin(args: &[Val], _ctx: &mut VmContext) -> anyhow::Resul
 
     let type_name = match &args[0] {
         Val::Str(s) => s.clone(),
+        Val::ShortStr(s) => Val::intern_str(s.as_str()),
         other => {
             return Err(anyhow!(
                 "__lk_make_struct expects struct name as string, got {}",
@@ -862,7 +874,7 @@ fn core_make_struct_builtin(args: &[Val], _ctx: &mut VmContext) -> anyhow::Resul
 
     let mut fields = HashMap::with_capacity(fields_map.len());
     for (k, v) in fields_map.iter() {
-        fields.insert(k.as_ref().to_string(), v.clone());
+        fields.insert(k.to_string(), v.clone());
     }
 
     Ok(Val::Object(Arc::new(ObjectValue {

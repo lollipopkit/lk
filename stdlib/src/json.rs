@@ -42,9 +42,9 @@ fn parse(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow::anyhow!("json.parse(data) requires 1 argument"));
     }
-    let s: String = match &args[0] {
-        Val::Str(s) => s.as_ref().to_string(),
-        v => v.to_string(),
-    };
+    let s = args[0]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| args[0].to_string());
     de::parse_with_format(&s, Some(de::Format::Json))
 }

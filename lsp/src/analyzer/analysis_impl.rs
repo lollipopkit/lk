@@ -1124,10 +1124,10 @@ impl LkAnalyzer {
                 Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Id(id) if id == name))
             }
             Expr::Val(val) => match val {
-                val::Val::Str(s) => Self::find_token_range(
+                value if value.as_str().is_some() => Self::find_token_range(
                     tokens,
                     spans,
-                    |tok| matches!(tok, token::Token::Str(lit) if lit == s.as_ref()),
+                    |tok| matches!(tok, token::Token::Str(lit) if Some(lit.as_str()) == value.as_str()),
                 ),
                 val::Val::Int(i) => {
                     Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Int(n) if n == i))

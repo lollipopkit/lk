@@ -218,7 +218,7 @@ impl FunctionBuilder {
             return;
         }
         for (idx, decl) in named_params.iter().enumerate() {
-            let const_idx = self.k(Val::Str(decl.name.clone().into()));
+            let const_idx = self.k(Val::from_str(decl.name.as_str()));
             let dest = self.named_param_regs.get(idx).copied().unwrap_or(0);
             let default_index = decl.default.as_ref().map(|_| idx as u16);
             self.named_param_layout.push(NamedParamLayoutEntry {
@@ -587,7 +587,7 @@ impl FunctionBuilder {
     pub(crate) fn store_named(&mut self, name: &str, idx: u16, src: u16) {
         if self.const_names.contains(name) {
             let msg = format!("Cannot assign to const variable '{}'", name);
-            let msg_idx = self.k(Val::Str(msg.into()));
+            let msg_idx = self.k(Val::from_str(msg.as_str()));
             self.emit(Op::Raise { err_kidx: msg_idx });
         } else {
             self.emit(Op::StoreLocal(idx, src));

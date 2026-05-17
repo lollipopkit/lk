@@ -177,7 +177,7 @@ fn constant_for_loop_is_precomputed() {
         function.code.iter().any(|op| match op {
             Op::DefineGlobal(name_idx, _) => matches!(
                 function.consts.get(*name_idx as usize),
-                Some(Val::Str(s)) if s.as_ref() == "acc"
+                Some(v) if v.as_str() == Some("acc")
             ),
             _ => false,
         }),
@@ -300,7 +300,7 @@ fn range_count_accumulator_does_not_touch_target_on_zero_iterations() {
     };
     let (function, _ctx, result) = compile_and_run_with_ctx(
         vec![
-            make_const_let("value", Val::Str("unchanged".into()), false),
+            make_const_let("value", Val::from_str("unchanged"), false),
             loop_stmt,
             Stmt::Return {
                 value: Some(Box::new(Expr::Var("value".to_string()))),
@@ -311,7 +311,7 @@ fn range_count_accumulator_does_not_touch_target_on_zero_iterations() {
         },
     );
 
-    assert_eq!(result.expect("vm exec"), Val::Str("unchanged".into()));
+    assert_eq!(result.expect("vm exec"), Val::from_str("unchanged"));
     assert!(
         function.code.iter().any(|op| matches!(op, Op::AddRangeCountImm { .. })),
         "zero-iteration counter loop should still use aggregate opcode"
@@ -550,12 +550,12 @@ fn dynamic_self_call_inline_keeps_generic_add_when_type_is_unknown() {
             },
         ],
         |ctx| {
-            ctx.define("prefix", Val::Str("a".into()));
-            ctx.define("suffix", Val::Str("b".into()));
+            ctx.define("prefix", Val::from_str("a"));
+            ctx.define("suffix", Val::from_str("b"));
         },
     );
 
-    assert_eq!(result.expect("vm exec"), Val::Str("ab".into()));
+    assert_eq!(result.expect("vm exec"), Val::from_str("ab"));
     assert!(
         !function.code.iter().any(|op| matches!(op, Op::Call { .. })),
         "generic dynamic self-call should still inline the call"
@@ -1238,6 +1238,92 @@ fn stdlib_map_get_on_known_local_map_lowers_to_access() {
 }
 
 #[test]
+fn stdlib_map_get_literal_key_lowers_to_accessk() {
+    let source = r#"
+        import map;
+        let data = {};
+        data.set("answer", 42);
+        return map.get(data, "answer");
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::AccessK(_, _, _))),
+        "expected stdlib map.get(data, \"answer\") to lower to AccessK in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn stdlib_map_set_on_known_local_map_lowers_to_mapset() {
+    let source = r#"
+        import map;
+        let data = {};
+        map.set(data, "answer", 42);
+        return data.get("answer");
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::MapSet { .. } | Op::MapSetMove { .. })),
+        "expected stdlib map.set(data, \"answer\", 42) to lower to MapSet in {:?}",
+        function.code
+    );
+    assert!(
+        !function.code.iter().any(|op| matches!(op, Op::Call { .. })),
+        "expected stdlib map.set/data.get fast paths to avoid Call in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn len_on_expression_result_lowers_to_len_without_call() {
+    let source = r#"
+        let prefix = "ab";
+        return (prefix + "cd").len();
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(4));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::Len { .. })),
+        "expected expression .len() to lower to Len in {:?}",
+        function.code
+    );
+    assert!(
+        !function.code.iter().any(|op| matches!(op, Op::Call { .. })),
+        "expected expression .len() fast path to avoid Call in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn split_join_same_separator_lowers_to_original_value() {
+    let source = r#"
+        let line = "a|b|c";
+        return line.split("|").join("|").len();
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(5));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::Len { .. })),
+        "expected split/join/len peephole to keep direct Len in {:?}",
+        function.code
+    );
+    assert!(
+        !function.code.iter().any(|op| matches!(op, Op::Call { .. })),
+        "expected split/join same-separator peephole to avoid method calls in {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn dynamic_list_access_stays_current_after_mutation() {
     let source = r#"
         let values = [];
@@ -1265,7 +1351,7 @@ fn template_string_starts_from_first_literal() {
     "#;
     let (function, _ctx, result) = parse_compile_and_run(source);
 
-    assert_eq!(result.expect("vm exec"), Val::Str("key42".into()));
+    assert_eq!(result.expect("vm exec"), Val::from_str("key42"));
     assert!(
         !function
             .consts
@@ -1290,7 +1376,7 @@ fn template_string_numeric_expr_uses_direct_concat() {
     "#;
     let (function, _ctx, result) = parse_compile_and_run(source);
 
-    assert_eq!(result.expect("vm exec"), Val::Str("key-0-42".into()));
+    assert_eq!(result.expect("vm exec"), Val::from_str("key-0-42"));
     assert_eq!(
         function.code.iter().filter(|op| matches!(op, Op::ToStr(_, _))).count(),
         0,

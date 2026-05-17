@@ -20,34 +20,25 @@ impl Add for &Val {
             (Val::Float(a), Val::Float(b)) => Ok(Val::Float(a + b)),
             (Val::Float(a), Val::Int(b)) => Ok(Val::Float(a + *b as f64)),
             (Val::Int(a), Val::Float(b)) => Ok(Val::Float(*a as f64 + b)),
-            (Val::Str(a), Val::Str(b)) => {
-                if a.is_empty() {
-                    return Ok(Val::Str(b.clone()));
-                }
-                if b.is_empty() {
-                    return Ok(Val::Str(a.clone()));
-                }
-                Ok(Val::concat_strings(a.as_ref(), b.as_ref()))
-            }
-            (Val::Str(a), Val::Int(b)) => {
+            (Val::ShortStr(a), Val::ShortStr(b)) => Ok(Val::concat_strings(a.as_str(), b.as_str())),
+            (Val::ShortStr(a), Val::Str(b)) => Ok(Val::concat_strings(a.as_str(), b.as_str())),
+            (Val::Str(a), Val::ShortStr(b)) => Ok(Val::concat_strings(a.as_str(), b.as_str())),
+            (Val::Str(a), Val::Str(b)) => Ok(Val::concat_strings(a.as_str(), b.as_str())),
+            (lhs, Val::Int(b)) if lhs.as_str().is_some() => {
                 let mut buf = itoa::Buffer::new();
-                let b_str = buf.format(*b);
-                Ok(Val::concat_strings(a.as_ref(), b_str))
+                Ok(Val::concat_strings(lhs.as_str().unwrap(), buf.format(*b)))
             }
-            (Val::Str(a), Val::Float(b)) => {
+            (lhs, Val::Float(b)) if lhs.as_str().is_some() => {
                 let mut buf = ryu::Buffer::new();
-                let b_str = buf.format(*b);
-                Ok(Val::concat_strings(a.as_ref(), b_str))
+                Ok(Val::concat_strings(lhs.as_str().unwrap(), buf.format(*b)))
             }
-            (Val::Int(a), Val::Str(b)) => {
+            (Val::Int(a), rhs) if rhs.as_str().is_some() => {
                 let mut buf = itoa::Buffer::new();
-                let a_str = buf.format(*a);
-                Ok(Val::concat_strings(a_str, b.as_ref()))
+                Ok(Val::concat_strings(buf.format(*a), rhs.as_str().unwrap()))
             }
-            (Val::Float(a), Val::Str(b)) => {
+            (Val::Float(a), rhs) if rhs.as_str().is_some() => {
                 let mut buf = ryu::Buffer::new();
-                let a_str = buf.format(*a);
-                Ok(Val::concat_strings(a_str, b.as_ref()))
+                Ok(Val::concat_strings(buf.format(*a), rhs.as_str().unwrap()))
             }
             (Val::Map(l), Val::Map(r)) => {
                 let mut merged = fast_hash_map_with_capacity(l.len() + r.len());
@@ -100,17 +91,18 @@ impl Sub for &Val {
                         }
                         return Ok(out.into());
                     }
-                    if r.iter().all(|v| matches!(v, Val::Str(_))) {
-                        let mut set = fast_hash_set_with_capacity(r.len());
+                    if r.iter().all(|v| matches!(v, Val::ShortStr(_) | Val::Str(_))) {
+                        let mut set: std::collections::HashSet<&str> =
+                            std::collections::HashSet::with_capacity(r.len());
                         for v in r.iter() {
-                            if let Val::Str(s) = v {
-                                set.insert(s.clone());
+                            if let Some(s) = v.as_str() {
+                                set.insert(s);
                             }
                         }
                         let mut out = Vec::with_capacity(l.len());
                         for v in l.iter() {
-                            match v {
-                                Val::Str(s) if set.contains(s) => {}
+                            match v.as_str() {
+                                Some(s) if set.contains(s) => {}
                                 _ => out.push(v.clone()),
                             }
                         }
@@ -167,10 +159,10 @@ impl Sub for &Val {
                 Ok(result.into())
             }
             (Val::Map(l), r) => {
-                if let Val::Str(k) = r {
+                if let Some(k) = r.as_str() {
                     let mut result = fast_hash_map_with_capacity(l.len());
                     for (existing_k, v) in l.iter() {
-                        if existing_k.as_ref() != k.as_ref() {
+                        if existing_k.as_str() != k {
                             result.insert(existing_k.clone(), v.clone());
                         }
                     }

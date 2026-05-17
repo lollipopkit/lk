@@ -6,6 +6,7 @@ use crate::vm::{
     bc32::{Bc32Decoded, Bc32Function},
     bytecode::{Function, Op},
 };
+use arcstr::ArcStr;
 use std::sync::Arc;
 
 fn list_slice_function() -> Function {
@@ -48,8 +49,8 @@ fn list_slice_function() -> Function {
 
 fn map_to_iter_function() -> Function {
     let mut raw = fast_hash_map_with_capacity(2);
-    raw.insert(Arc::from("b"), Val::Int(2));
-    raw.insert(Arc::from("a"), Val::Int(1));
+    raw.insert(ArcStr::from("b"), Val::Int(2));
+    raw.insert(ArcStr::from("a"), Val::Int(1));
     let const_map = Val::Map(Arc::new(raw));
     let region_plan = RegionPlan {
         values: vec![
@@ -126,7 +127,7 @@ fn build_map_function() -> Function {
         return_region: AllocationRegion::Heap,
     };
     Function {
-        consts: vec![Val::Str(Arc::from("k")), Val::Int(10)],
+        consts: vec![Val::from_str("k"), Val::Int(10)],
         code: vec![
             Op::LoadK(0, 0),
             Op::LoadK(1, 1),
@@ -196,7 +197,7 @@ fn build_map_region_plan_thread_local_executes() {
     let mut fun = build_map_function();
     let expected = {
         let mut raw = fast_hash_map_with_capacity(1);
-        raw.insert(Arc::from("k"), Val::Int(10));
+        raw.insert(ArcStr::from("k"), Val::Int(10));
         Val::Map(Arc::new(raw))
     };
 
@@ -213,8 +214,8 @@ fn build_map_region_plan_thread_local_executes() {
 fn to_iter_region_plan_thread_local_executes() {
     let mut fun = map_to_iter_function();
     let expected_pairs = vec![
-        Val::List(vec![Val::Str(Arc::from("a")), Val::Int(1)].into()),
-        Val::List(vec![Val::Str(Arc::from("b")), Val::Int(2)].into()),
+        Val::List(vec![Val::from_str("a"), Val::Int(1)].into()),
+        Val::List(vec![Val::from_str("b"), Val::Int(2)].into()),
     ];
     let expected = Val::List(expected_pairs.into());
 

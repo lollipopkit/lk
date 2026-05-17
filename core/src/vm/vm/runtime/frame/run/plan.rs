@@ -20,7 +20,7 @@ pub(super) fn build_named_call_plan(closure: &ClosureValue, named_slice: &[Val])
     for pair in named_slice.chunks_exact(2) {
         let key_val = &pair[0];
         let key_str = match key_val {
-            Val::Str(s) => s.as_ref(),
+            val if val.as_str().is_some() => val.as_str().unwrap(),
             Val::Int(v) => return Err(anyhow!("Named argument key must be a string, got Int({})", v)),
             Val::Float(v) => return Err(anyhow!("Named argument key must be a string, got Float({})", v)),
             Val::Bool(v) => return Err(anyhow!("Named argument key must be a string, got Bool({})", v)),

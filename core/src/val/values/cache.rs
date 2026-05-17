@@ -1,5 +1,6 @@
 use std::sync::{Arc, Weak};
 
+use arcstr::ArcStr;
 use dashmap::{DashMap, mapref::entry::Entry};
 use once_cell::sync::Lazy;
 
@@ -15,7 +16,7 @@ struct HomogeneousListCache<T> {
 }
 
 static LIST_INT_CACHE: Lazy<DashMap<usize, HomogeneousListCache<i64>>> = Lazy::new(DashMap::new);
-static LIST_STR_CACHE: Lazy<DashMap<usize, HomogeneousListCache<Arc<str>>>> = Lazy::new(DashMap::new);
+static LIST_STR_CACHE: Lazy<DashMap<usize, HomogeneousListCache<ArcStr>>> = Lazy::new(DashMap::new);
 static LIST_BOOL_CACHE: Lazy<DashMap<usize, HomogeneousListCache<bool>>> = Lazy::new(DashMap::new);
 
 fn cleanup_cache<T>(map: &DashMap<usize, HomogeneousListCache<T>>) {
@@ -75,7 +76,7 @@ fn cached_list_contains_int(list: &Arc<Vec<Val>>, needle: i64) -> Option<bool> {
     })
 }
 
-fn cached_list_contains_str(list: &Arc<Vec<Val>>, needle: &Arc<str>) -> Option<bool> {
+fn cached_list_contains_str(list: &Arc<Vec<Val>>, needle: &str) -> Option<bool> {
     if list.len() < LIST_CACHE_MIN_LEN {
         return None;
     }
@@ -91,11 +92,11 @@ fn cached_list_contains_str(list: &Arc<Vec<Val>>, needle: &Arc<str>) -> Option<b
 
     let mut set = fast_hash_set_with_capacity(list.len());
     for item in list.iter() {
-        match item {
-            Val::Str(s) => {
-                set.insert(s.clone());
+        match item.as_str() {
+            Some(s) => {
+                set.insert(Val::intern_str(s));
             }
-            _ => return None,
+            None => return None,
         }
     }
 
@@ -176,7 +177,8 @@ fn cached_list_contains_bool(list: &Arc<Vec<Val>>, needle: bool) -> Option<bool>
 pub(super) fn cached_list_contains(list: &Arc<Vec<Val>>, needle: &Val) -> Option<bool> {
     match needle {
         Val::Int(i) => cached_list_contains_int(list, *i),
-        Val::Str(s) => cached_list_contains_str(list, s),
+        Val::ShortStr(s) => cached_list_contains_str(list, s.as_str()),
+        Val::Str(s) => cached_list_contains_str(list, s.as_str()),
         Val::Bool(b) => cached_list_contains_bool(list, *b),
         _ => None,
     }

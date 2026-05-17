@@ -811,7 +811,7 @@ impl TypeChecker {
         };
 
         let field_name = match field {
-            Expr::Val(Val::Str(name)) => name.as_ref().to_string(),
+            Expr::Val(val) if val.as_str().is_some() => val.as_str().unwrap().to_string(),
             Expr::Val(Val::Int(idx)) => idx.to_string(),
             _ => {
                 return Err(Self::type_err(
@@ -992,7 +992,9 @@ impl TypeChecker {
     fn check_function_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type> {
         if let Expr::Access(obj_expr, field_expr) = func {
             let receiver_ty = self.check_expr(obj_expr)?;
-            if let Expr::Val(Val::Str(name)) = field_expr.as_ref() {
+            if let Expr::Val(field_val) = field_expr.as_ref()
+                && let Some(name) = field_val.as_str()
+            {
                 if let Some(Type::Function {
                     params,
                     named_params,
@@ -1342,7 +1344,7 @@ impl TypeChecker {
             Val::Bool(_) => Ok(Type::Bool),
             Val::Int(_) => Ok(Type::Int),
             Val::Float(_) => Ok(Type::Float),
-            Val::Str(_) => Ok(Type::String),
+            Val::Str(_) | Val::ShortStr(_) => Ok(Type::String),
             Val::List(items) => {
                 if items.is_empty() {
                     let elem_type = self.registry.fresh_type_var();
@@ -1384,7 +1386,7 @@ impl TypeChecker {
             Val::Bool(_) => Ok(Type::Bool),
             Val::Int(_) => Ok(Type::Int),
             Val::Float(_) => Ok(Type::Float),
-            Val::Str(_) => Ok(Type::String),
+            Val::Str(_) | Val::ShortStr(_) => Ok(Type::String),
             Val::List(items) => {
                 if items.is_empty() {
                     let elem_type = self.registry.fresh_type_var();

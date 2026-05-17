@@ -211,11 +211,11 @@ fn test_vm_ascii_string_iter_index() {
         statements: vec![
             Box::new(Stmt::Define {
                 name: "s".into(),
-                value: Box::new(Expr::Val(Val::Str("abcd".into()))),
+                value: Box::new(Expr::Val(Val::from_str("abcd"))),
             }),
             Box::new(Stmt::Define {
                 name: "out".into(),
-                value: Box::new(Expr::Val(Val::Str("".into()))),
+                value: Box::new(Expr::Val(Val::from_str(""))),
             }),
             Box::new(Stmt::For {
                 pattern: ForPattern::Variable("ch".into()),
@@ -242,7 +242,7 @@ fn test_vm_ascii_string_iter_index() {
     let mut vm_bc32 = Vm::new();
     let mut env_bc32 = VmContext::new();
     let out_bc32 = vm_bc32.exec_with(&fun, &mut env_bc32, None).unwrap();
-    assert_eq!(out_bc32, Val::Str("abcd".into()));
+    assert_eq!(out_bc32, Val::from_str("abcd"));
 
     {
         let mut fallback_fun = fun.clone();
@@ -251,7 +251,7 @@ fn test_vm_ascii_string_iter_index() {
         let mut vm_fallback = Vm::new();
         let mut env_fallback = VmContext::new();
         let out_fallback = vm_fallback.exec_with(&fallback_fun, &mut env_fallback, None).unwrap();
-        assert_eq!(out_fallback, Val::Str("abcd".into()));
+        assert_eq!(out_fallback, Val::from_str("abcd"));
     }
 }
 
@@ -281,9 +281,7 @@ fn test_vm_compile_select_lowering() {
     let fun = Compiler::new().compile_expr(&expr);
 
     assert!(
-        fun.consts
-            .iter()
-            .any(|v| matches!(v, Val::Str(name) if name.as_ref() == "select$block")),
+        fun.consts.iter().any(|v| v.as_str() == Some("select$block")),
         "expected select$block builtin string constant"
     );
     let build_list_count = fun.code.iter().filter(|op| matches!(op, Op::BuildList { .. })).count();
@@ -318,9 +316,7 @@ fn test_vm_compile_select_with_guard_lowering() {
         "guard lowering should ToBool the guard expression"
     );
     assert!(
-        fun.consts
-            .iter()
-            .any(|v| matches!(v, Val::Str(name) if name.as_ref() == "select$block")),
+        fun.consts.iter().any(|v| v.as_str() == Some("select$block")),
         "guarded select still calls select$block"
     );
 }

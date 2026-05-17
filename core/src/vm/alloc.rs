@@ -3,9 +3,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use std::sync::Arc;
-
 use crate::val::Val;
+use arcstr::ArcStr;
 use tracing::trace;
 
 /// Allocation region selected by escape analysis.
@@ -38,7 +37,7 @@ thread_local! {
     static TLS_ARENA: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(32 * 1024));
     static TLS_VAL_BUF: RefCell<Vec<Val>> = const { RefCell::new(Vec::new()) };
     static TLS_BOOL_FLAGS: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
-    static TLS_MAP_ENTRIES: RefCell<Vec<(Arc<str>, Val)>> = const { RefCell::new(Vec::new()) };
+    static TLS_MAP_ENTRIES: RefCell<Vec<(ArcStr, Val)>> = const { RefCell::new(Vec::new()) };
     static TLS_INDEXED_VALS: RefCell<Vec<(usize, Val)>> = const { RefCell::new(Vec::new()) };
     static TLS_REG_VALS: RefCell<Vec<(u16, Val)>> = const { RefCell::new(Vec::new()) };
     static TLS_NAMED_PAIRS: RefCell<Vec<(String, Val)>> = const { RefCell::new(Vec::new()) };
@@ -112,10 +111,10 @@ impl RegionAllocator {
         })
     }
 
-    /// Borrow a reusable `(Arc<str>, Val)` entry buffer for map construction.
+    /// Borrow a reusable `(ArcStr, Val)` entry buffer for map construction.
     pub fn with_map_entries<F, R>(&self, min_capacity: usize, f: F) -> R
     where
-        F: FnOnce(&mut Vec<(Arc<str>, Val)>) -> R,
+        F: FnOnce(&mut Vec<(ArcStr, Val)>) -> R,
     {
         TLS_MAP_ENTRIES.with(|cell| {
             let mut buf = cell.borrow_mut();

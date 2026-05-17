@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use arcstr::ArcStr;
 use lk_core::module::Module;
 use lk_core::val::methods::register_method;
 use lk_core::val::{IteratorState, IteratorValue, Val};
@@ -107,14 +108,14 @@ impl IteratorState for FilterIteratorState {
 fn map_iterator_handle(source: Arc<IteratorValue>, mapper: Val) -> Result<Arc<IteratorValue>> {
     Ok(IteratorValue::with_origin(
         MapIteratorState { source, mapper },
-        Arc::<str>::from("iter.map"),
+        ArcStr::from("iter.map"),
     ))
 }
 
 fn filter_iterator_handle(source: Arc<IteratorValue>, predicate: Val) -> Result<Arc<IteratorValue>> {
     Ok(IteratorValue::with_origin(
         FilterIteratorState { source, predicate },
-        Arc::<str>::from("iter.filter"),
+        ArcStr::from("iter.filter"),
     ))
 }
 
@@ -531,9 +532,7 @@ fn next(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
 fn collect(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
     match args {
         [Val::Iterator(iter)] => collect_iterator_to_list(iter.clone(), ctx),
-        [Val::Iterator(iter), Val::Str(target)] if target.as_ref() == "list" => {
-            collect_iterator_to_list(iter.clone(), ctx)
-        }
+        [Val::Iterator(iter), target] if target.as_str() == Some("list") => collect_iterator_to_list(iter.clone(), ctx),
         [Val::Iterator(_), target] => Err(anyhow!("collect() unsupported target type {}", target.type_name())),
         _ => Err(anyhow!("collect() expects (iterator[, target_type])")),
     }

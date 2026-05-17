@@ -49,7 +49,7 @@ fn stdin_read(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
                         line.pop();
                     }
                 }
-                Ok(Val::Str(line.into()))
+                Ok(Val::from_str(&line))
             }
             Err(e) => Err(anyhow::anyhow!("stdin read error: {}", e)),
         }
@@ -59,7 +59,7 @@ fn stdin_read(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
             _ => return Err(anyhow::anyhow!("bytes must be a non-negative integer")),
         };
         if n == 0 {
-            return Ok(Val::Str("".into()));
+            return Ok(Val::from_str(""));
         }
         let mut buf = vec![0u8; n];
         match handle.read(&mut buf) {
@@ -67,7 +67,7 @@ fn stdin_read(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
             Ok(read) => {
                 buf.truncate(read);
                 match String::from_utf8(buf) {
-                    Ok(s) => Ok(Val::Str(s.into())),
+                    Ok(s) => Ok(Val::from_str(&s)),
                     Err(_) => Ok(Val::Nil),
                 }
             }
@@ -95,7 +95,7 @@ fn stdin_read_all(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     let mut s = String::new();
     let res = std::io::stdin().lock().read_to_string(&mut s);
     match res {
-        Ok(_) => Ok(Val::Str(s.into())),
+        Ok(_) => Ok(Val::from_str(&s)),
         Err(e) => Err(anyhow::anyhow!("stdin read error: {}", e)),
     }
 }
@@ -105,8 +105,11 @@ fn stdout_write(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         return Err(anyhow::anyhow!("stdout.write() requires 1 argument: data"));
     }
     let data = match &args[0] {
-        Val::Str(s) => s.as_ref(),
-        v => &v.to_string(),
+        v if v.as_str().is_some() => v.as_str().unwrap(),
+        v => {
+            let _ = v;
+            &args[0].to_string()
+        }
     };
     match std::io::stdout().write_all(data.as_bytes()) {
         Ok(()) => Ok(Val::Bool(true)),
@@ -119,8 +122,11 @@ fn stdout_writeln(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         return Err(anyhow::anyhow!("stdout.writeln() requires 1 argument: data"));
     }
     let data = match &args[0] {
-        Val::Str(s) => s.as_ref(),
-        v => &v.to_string(),
+        v if v.as_str().is_some() => v.as_str().unwrap(),
+        v => {
+            let _ = v;
+            &args[0].to_string()
+        }
     };
     match writeln!(std::io::stdout(), "{}", data) {
         Ok(()) => Ok(Val::Bool(true)),
@@ -140,8 +146,11 @@ fn stderr_write(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         return Err(anyhow::anyhow!("stderr.write() requires 1 argument: data"));
     }
     let data = match &args[0] {
-        Val::Str(s) => s.as_ref(),
-        v => &v.to_string(),
+        v if v.as_str().is_some() => v.as_str().unwrap(),
+        v => {
+            let _ = v;
+            &args[0].to_string()
+        }
     };
     match std::io::stderr().write_all(data.as_bytes()) {
         Ok(()) => Ok(Val::Bool(true)),
@@ -154,8 +163,11 @@ fn stderr_writeln(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         return Err(anyhow::anyhow!("stderr.writeln() requires 1 argument: data"));
     }
     let data = match &args[0] {
-        Val::Str(s) => s.as_ref(),
-        v => &v.to_string(),
+        v if v.as_str().is_some() => v.as_str().unwrap(),
+        v => {
+            let _ = v;
+            &args[0].to_string()
+        }
     };
     match writeln!(std::io::stderr(), "{}", data) {
         Ok(()) => Ok(Val::Bool(true)),
@@ -224,7 +236,7 @@ fn mod_read(args: &[Val], _ctx: &mut VmContext) -> anyhow::Result<Val> {
     if !args.is_empty() {
         return Err(anyhow::anyhow!("io.read() takes no arguments"));
     }
-    Ok(Val::Str(read_all_to_string()?.into()))
+    Ok(Val::from_str(&read_all_to_string()?))
 }
 
 #[cfg(test)]

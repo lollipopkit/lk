@@ -216,3 +216,179 @@ for i = 1, pipeline_iters do
 end
 t1 = os.clock()
 emit("order_score_pipeline", checksum, t0, t1)
+
+t0 = os.clock()
+checksum = 0
+local log_rounds = 2200 + (seed - seed)
+local log_width = 72 + (seed - seed)
+for r = 1, log_rounds do
+  local status_counts = {}
+  for i = 1, log_width do
+    local status = "ok"
+    if ((i + r) % 17) == 0 then
+      status = "error"
+    elseif ((i + r) % 5) == 0 then
+      status = "warn"
+    end
+    local line = "ts=" .. r .. "|tenant=t" .. (i % 13) .. "|status=" .. status .. "|path=/api/v1/orders/" .. (i % 19)
+    local fields = {}
+    for part in string.gmatch(line, "([^|]+)") do
+      fields[#fields + 1] = part
+    end
+    local parsed_len = #table.concat(fields, "|")
+    if string.find(line, "/api/v1", 1, true) ~= nil then
+      checksum = checksum + (parsed_len % 7)
+      local prev = status_counts[status]
+      if prev == nil then
+        status_counts[status] = 1
+      else
+        status_counts[status] = prev + 1
+      end
+    end
+  end
+  local ok_count = status_counts["ok"]
+  local warn_count = status_counts["warn"]
+  local error_count = status_counts["error"]
+  if ok_count ~= nil then checksum = checksum + ok_count end
+  if warn_count ~= nil then checksum = checksum + (warn_count * 7) end
+  if error_count ~= nil then checksum = checksum + (error_count * 31) end
+end
+t1 = os.clock()
+emit("log_parse_filter", checksum, t0, t1)
+
+local function cart_line_total(sku, qty, region, prices, tax_rates)
+  local price = prices[sku]
+  local tax = tax_rates[region]
+  local subtotal = price * qty
+  local discount = 0
+  if qty >= 5 then
+    discount = math.floor(subtotal / 10)
+  elseif string.sub(sku, 1, 3) == "pro" then
+    discount = math.floor(subtotal / 20)
+  end
+  return subtotal - discount + math.floor((subtotal * tax) / 100)
+end
+
+t0 = os.clock()
+checksum = 0
+local cart_rounds = 5000 + (seed - seed)
+local prices = {basic = 19, pro = 49, team = 99, addon = 7}
+local tax_rates = {us = 8, eu = 20, apac = 12}
+for r = 1, cart_rounds do
+  local region = "us"
+  if (r % 3) == 1 then
+    region = "eu"
+  elseif (r % 3) == 2 then
+    region = "apac"
+  end
+  checksum = checksum + cart_line_total("basic", (r % 6) + 1, region, prices, tax_rates)
+  checksum = checksum + cart_line_total("pro", (r % 4) + 1, region, prices, tax_rates)
+  checksum = checksum + cart_line_total("team", (r % 3) + 1, region, prices, tax_rates)
+  if (r % 2) == 0 then
+    checksum = checksum + cart_line_total("addon", (r % 8) + 1, region, prices, tax_rates)
+  end
+end
+t1 = os.clock()
+emit("cart_pricing_rules", checksum, t0, t1)
+
+t0 = os.clock()
+checksum = 0
+local route_rounds = 90000 + (seed - seed)
+local role_levels = {guest = 0, user = 10, analyst = 40, ops = 70, admin = 100}
+for i = 1, route_rounds do
+  if (i % 11) == 0 then
+    checksum = checksum + (i % 97) + role_levels["admin"] + #"/admin/users"
+  elseif (i % 7) == 0 then
+    checksum = checksum + (i % 97) + role_levels["ops"] + #"DELETE"
+  elseif (i % 5) == 0 then
+    checksum = checksum + (i % 97) + role_levels["analyst"] + #"/reports/daily"
+  elseif (i % 2) == 0 then
+    checksum = checksum + (i % 97) + role_levels["user"] + #"/api/orders"
+  else
+    checksum = checksum + 3 + role_levels["guest"]
+  end
+end
+t1 = os.clock()
+emit("route_permission_check", checksum, t0, t1)
+
+t0 = os.clock()
+checksum = 0
+local inventory_rounds = 2800 + (seed - seed)
+for r = 1, inventory_rounds do
+  local stock = {}
+  local reorder = {}
+  for i = 1, 64 do
+    local sku = "sku-" .. (i % 23)
+    local current = stock[sku]
+    local delta = ((i * 11) + r) % 37
+    if current == nil then
+      stock[sku] = delta
+    else
+      stock[sku] = current + delta
+    end
+  end
+  for i = 0, 22 do
+    local sku = "sku-" .. i
+    local available = stock[sku]
+    if available == nil then
+      available = 0
+    end
+    local demand = ((r + i * 7) % 41) + 5
+    if available < demand then
+      reorder[#reorder + 1] = sku
+      checksum = checksum + ((demand - available) * (i + 1))
+    else
+      checksum = checksum + (available % 17)
+    end
+  end
+  checksum = checksum + #table.concat(reorder, ",")
+end
+t1 = os.clock()
+emit("inventory_reorder", checksum, t0, t1)
+
+local function fraud_score(amount, country, device, prior_declines, risky_countries)
+  local score = 0
+  if amount > 900 then
+    score = score + 40
+  elseif amount > 400 then
+    score = score + 15
+  end
+  if risky_countries[country] ~= nil then
+    score = score + 35
+  end
+  if string.sub(device, 1, 3) == "emu" then
+    score = score + 30
+  end
+  score = score + (prior_declines * 9)
+  return score
+end
+
+t0 = os.clock()
+checksum = 0
+local fraud_rounds = 85000 + (seed - seed)
+local risky_countries = {ng = true, ru = true, kp = true}
+for i = 1, fraud_rounds do
+  local country = "us"
+  if (i % 29) == 0 then
+    country = "ng"
+  elseif (i % 31) == 0 then
+    country = "ru"
+  elseif (i % 7) == 0 then
+    country = "de"
+  end
+  local device = "ios"
+  if (i % 19) == 0 then
+    device = "emu-android"
+  elseif (i % 5) == 0 then
+    device = "web"
+  end
+  local amount = ((i * 37) % 1200) + 1
+  local score = fraud_score(amount, country, device, i % 4, risky_countries)
+  if score >= 70 then
+    checksum = checksum + (score * 2)
+  else
+    checksum = checksum + score + 1
+  end
+end
+t1 = os.clock()
+emit("fraud_rule_scoring", checksum, t0, t1)

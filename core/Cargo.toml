@@ -32,3 +32,4 @@ llvm-tools = { workspace = true, optional = true }
 rustc-hash = { version = "2" }
 itoa = { version = "1" }
 ryu = { version = "1" }
+arcstr = { workspace = true, features = ["serde"] }

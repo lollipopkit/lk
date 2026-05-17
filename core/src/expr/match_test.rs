@@ -16,37 +16,37 @@ mod tests {
             arms: vec![
                 MatchArm {
                     pattern: Pattern::Literal(Val::Int(42)),
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("matched")))),
+                    body: Box::new(Expr::Val(Val::from_str("matched"))),
                 },
                 MatchArm {
                     pattern: Pattern::Wildcard,
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("default")))),
+                    body: Box::new(Expr::Val(Val::from_str("default"))),
                 },
             ],
         };
 
         let mut env = VmContext::new();
         let result = match_expr.eval_with_ctx(&mut env).unwrap();
-        assert_eq!(result, Val::Str(Arc::from("matched")));
+        assert_eq!(result, Val::from_str("matched"));
 
         // Test string literal pattern
         let match_expr = Expr::Match {
-            value: Box::new(Expr::Val(Val::Str(Arc::from("hello")))),
+            value: Box::new(Expr::Val(Val::from_str("hello"))),
             arms: vec![
                 MatchArm {
-                    pattern: Pattern::Literal(Val::Str(Arc::from("world"))),
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("world")))),
+                    pattern: Pattern::Literal(Val::from_str("world")),
+                    body: Box::new(Expr::Val(Val::from_str("world"))),
                 },
                 MatchArm {
-                    pattern: Pattern::Literal(Val::Str(Arc::from("hello"))),
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("hello")))),
+                    pattern: Pattern::Literal(Val::from_str("hello")),
+                    body: Box::new(Expr::Val(Val::from_str("hello"))),
                 },
             ],
         };
 
         let mut env = VmContext::new();
         let result = match_expr.eval_with_ctx(&mut env).unwrap();
-        assert_eq!(result, Val::Str(Arc::from("hello")));
+        assert_eq!(result, Val::from_str("hello"));
     }
 
     #[test]
@@ -71,18 +71,18 @@ mod tests {
             arms: vec![
                 MatchArm {
                     pattern: Pattern::Literal(Val::Bool(false)),
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("false")))),
+                    body: Box::new(Expr::Val(Val::from_str("false"))),
                 },
                 MatchArm {
                     pattern: Pattern::Wildcard,
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("wildcard")))),
+                    body: Box::new(Expr::Val(Val::from_str("wildcard"))),
                 },
             ],
         };
 
         let mut env = VmContext::new();
         let result = match_expr.eval_with_ctx(&mut env).unwrap();
-        assert_eq!(result, Val::Str(Arc::from("wildcard")));
+        assert_eq!(result, Val::from_str("wildcard"));
     }
 
     #[test]
@@ -116,7 +116,7 @@ mod tests {
     fn test_map_pattern() {
         // Test {"name": name, "age": age} pattern
         let mut map = std::collections::HashMap::new();
-        map.insert("name".to_string(), Val::Str(Arc::from("Alice")));
+        map.insert("name".to_string(), Val::from_str("Alice"));
         map.insert("age".to_string(), Val::Int(30));
 
         let match_expr = Expr::Match {
@@ -135,7 +135,7 @@ mod tests {
 
         let mut env = VmContext::new();
         let result = match_expr.eval_with_ctx(&mut env).unwrap();
-        assert_eq!(result, Val::Str(Arc::from("Alice")));
+        assert_eq!(result, Val::from_str("Alice"));
     }
 
     #[test]
@@ -149,18 +149,18 @@ mod tests {
                         Pattern::Literal(Val::Int(2)),
                         Pattern::Literal(Val::Int(3)),
                     ]),
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("one_two_three")))),
+                    body: Box::new(Expr::Val(Val::from_str("one_two_three"))),
                 },
                 MatchArm {
                     pattern: Pattern::Wildcard,
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("other")))),
+                    body: Box::new(Expr::Val(Val::from_str("other"))),
                 },
             ],
         };
 
         let mut env = VmContext::new();
         let result = match_expr.eval_with_ctx(&mut env).unwrap();
-        assert_eq!(result, Val::Str(Arc::from("one_two_three")));
+        assert_eq!(result, Val::from_str("one_two_three"));
     }
 
     #[test]
@@ -177,18 +177,18 @@ mod tests {
                             Box::new(Expr::Val(Val::Int(10))),
                         )),
                     },
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("greater_than_10")))),
+                    body: Box::new(Expr::Val(Val::from_str("greater_than_10"))),
                 },
                 MatchArm {
                     pattern: Pattern::Wildcard,
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("not_greater")))),
+                    body: Box::new(Expr::Val(Val::from_str("not_greater"))),
                 },
             ],
         };
 
         let mut env = VmContext::new();
         let result = match_expr.eval_with_ctx(&mut env).unwrap();
-        assert_eq!(result, Val::Str(Arc::from("greater_than_10")));
+        assert_eq!(result, Val::from_str("greater_than_10"));
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
                         end: Box::new(Expr::Val(Val::Int(18))),
                         inclusive: true,
                     },
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("child")))),
+                    body: Box::new(Expr::Val(Val::from_str("child"))),
                 },
                 MatchArm {
                     pattern: Pattern::Range {
@@ -210,18 +210,18 @@ mod tests {
                         end: Box::new(Expr::Val(Val::Int(64))),
                         inclusive: true,
                     },
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("adult")))),
+                    body: Box::new(Expr::Val(Val::from_str("adult"))),
                 },
                 MatchArm {
                     pattern: Pattern::Wildcard,
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("senior")))),
+                    body: Box::new(Expr::Val(Val::from_str("senior"))),
                 },
             ],
         };
 
         let mut env = VmContext::new();
         let result = match_expr.eval_with_ctx(&mut env).unwrap();
-        assert_eq!(result, Val::Str(Arc::from("adult")));
+        assert_eq!(result, Val::from_str("adult"));
     }
 
     #[test]
@@ -231,11 +231,11 @@ mod tests {
             arms: vec![
                 MatchArm {
                     pattern: Pattern::Literal(Val::Int(1)),
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("one")))),
+                    body: Box::new(Expr::Val(Val::from_str("one"))),
                 },
                 MatchArm {
                     pattern: Pattern::Literal(Val::Int(2)),
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("two")))),
+                    body: Box::new(Expr::Val(Val::from_str("two"))),
                 },
             ],
         };
@@ -251,14 +251,14 @@ mod tests {
         // Test matching nested structure like {"users": [{"name": name}, ...]}
         let user1 = {
             let mut user = std::collections::HashMap::new();
-            user.insert("name".to_string(), Val::Str(Arc::from("Alice")));
+            user.insert("name".to_string(), Val::from_str("Alice"));
             user.insert("id".to_string(), Val::Int(1));
             user.into()
         };
 
         let user2 = {
             let mut user = std::collections::HashMap::new();
-            user.insert("name".to_string(), Val::Str(Arc::from("Bob")));
+            user.insert("name".to_string(), Val::from_str("Bob"));
             user.insert("id".to_string(), Val::Int(2));
             user.into()
         };
@@ -289,7 +289,7 @@ mod tests {
 
         let mut env = VmContext::new();
         let result = match_expr.eval_with_ctx(&mut env).unwrap();
-        assert_eq!(result, Val::Str(Arc::from("Alice")));
+        assert_eq!(result, Val::from_str("Alice"));
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
                         end: Box::new(Expr::Val(Val::Float(60.0))),
                         inclusive: false,
                     },
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("fail")))),
+                    body: Box::new(Expr::Val(Val::from_str("fail"))),
                 },
                 MatchArm {
                     pattern: Pattern::Range {
@@ -311,7 +311,7 @@ mod tests {
                         end: Box::new(Expr::Val(Val::Float(80.0))),
                         inclusive: false,
                     },
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("pass")))),
+                    body: Box::new(Expr::Val(Val::from_str("pass"))),
                 },
                 MatchArm {
                     pattern: Pattern::Range {
@@ -319,18 +319,18 @@ mod tests {
                         end: Box::new(Expr::Val(Val::Float(100.0))),
                         inclusive: true,
                     },
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("excellent")))),
+                    body: Box::new(Expr::Val(Val::from_str("excellent"))),
                 },
                 MatchArm {
                     pattern: Pattern::Wildcard,
-                    body: Box::new(Expr::Val(Val::Str(Arc::from("invalid")))),
+                    body: Box::new(Expr::Val(Val::from_str("invalid"))),
                 },
             ],
         };
 
         let mut env = VmContext::new();
         let result = match_expr.eval_with_ctx(&mut env).unwrap();
-        assert_eq!(result, Val::Str(Arc::from("excellent")));
+        assert_eq!(result, Val::from_str("excellent"));
 
         // Test boundary cases
         let boundary_tests = vec![
@@ -352,7 +352,7 @@ mod tests {
                             end: Box::new(Expr::Val(Val::Float(60.0))),
                             inclusive: false,
                         },
-                        body: Box::new(Expr::Val(Val::Str(Arc::from("fail")))),
+                        body: Box::new(Expr::Val(Val::from_str("fail"))),
                     },
                     MatchArm {
                         pattern: Pattern::Range {
@@ -360,7 +360,7 @@ mod tests {
                             end: Box::new(Expr::Val(Val::Float(80.0))),
                             inclusive: false,
                         },
-                        body: Box::new(Expr::Val(Val::Str(Arc::from("pass")))),
+                        body: Box::new(Expr::Val(Val::from_str("pass"))),
                     },
                     MatchArm {
                         pattern: Pattern::Range {
@@ -368,11 +368,11 @@ mod tests {
                             end: Box::new(Expr::Val(Val::Float(100.0))),
                             inclusive: true,
                         },
-                        body: Box::new(Expr::Val(Val::Str(Arc::from("excellent")))),
+                        body: Box::new(Expr::Val(Val::from_str("excellent"))),
                     },
                     MatchArm {
                         pattern: Pattern::Wildcard,
-                        body: Box::new(Expr::Val(Val::Str(Arc::from("invalid")))),
+                        body: Box::new(Expr::Val(Val::from_str("invalid"))),
                     },
                 ],
             };
@@ -381,7 +381,7 @@ mod tests {
             let result = match_expr.eval_with_ctx(&mut env).unwrap();
             assert_eq!(
                 result,
-                Val::Str(Arc::from(expected)),
+                Val::from_str(expected),
                 "Value {} should match {}",
                 value,
                 expected

@@ -178,9 +178,10 @@ impl Pattern {
             Pattern::List { patterns, rest } => {
                 let list_items: Vec<Val> = match value {
                     Val::List(list) => (*list).to_vec(),
-                    Val::Str(s) => {
+                    _ if value.as_str().is_some() => {
                         // Convert string to list of character strings for destructuring
-                        s.chars().map(|c| Val::Str(c.to_string().into())).collect::<Vec<_>>()
+                        let s = value.as_str().unwrap();
+                        s.chars().map(|c| Val::from_str(&c.to_string())).collect::<Vec<_>>()
                     }
                     _ => return Ok(false),
                 };
@@ -225,7 +226,7 @@ impl Pattern {
                         let matched_keys: HashSet<&str> = patterns.iter().map(|(k, _)| k.as_str()).collect();
                         let rest_map: HashMap<String, Val> = map_ref
                             .iter()
-                            .filter(|(k, _)| !matched_keys.contains(k.as_ref()))
+                            .filter(|(k, _)| !matched_keys.contains(k.as_str()))
                             .map(|(k, v)| (k.to_string(), v.clone()))
                             .collect();
                         bindings.push((rest_name.clone(), rest_map.into()));
@@ -674,7 +675,7 @@ impl Expr {
                     // subsequent call syntax (e.g. foo.bar()) can be intercepted for meta-method dispatch.
                     // This avoids turning `foo.bar` into a concrete value (e.g. Int), which would
                     // later cause `foo.bar()` to attempt calling a non-function value.
-                    if matches!(field_val, Val::Str(_)) {
+                    if field_val.as_str().is_some() {
                         return Expr::Access(Box::new(base.clone()), Box::new(field.clone()));
                     }
                     // For non-string fields (e.g. numeric indices), fold direct access where possible
@@ -692,7 +693,7 @@ impl Expr {
                 if let (Expr::Val(base_val), Expr::Val(field_val)) = (&base, &field) {
                     // Preserve OptionalAccess when field is a string literal to allow potential
                     // optional method-call sugar like `obj?.method()` to be handled later.
-                    if matches!(field_val, Val::Str(_)) {
+                    if field_val.as_str().is_some() {
                         return Expr::OptionalAccess(Box::new(base.clone()), Box::new(field.clone()));
                     }
                     // Direct access to constant structure with optional chaining
@@ -735,7 +736,7 @@ impl Expr {
                         if let (Expr::Val(k_val), Expr::Val(v_val)) = (&**k_expr, &**v_expr) {
                             // Convert key to string (only allow basic type keys)
                             let key_str = match k_val {
-                                Val::Str(s) => s.as_ref().to_string(),
+                                val if val.as_str().is_some() => val.as_str().unwrap().to_string(),
                                 Val::Int(i) => i.to_string(),
                                 Val::Float(f) => f.to_string(),
                                 Val::Bool(b) => b.to_string(),
@@ -832,7 +833,8 @@ impl Expr {
                             if let Expr::Val(val) = folded_expr {
                                 // Convert constant value to string
                                 let str_val = match val {
-                                    Val::Str(s) => s.as_ref().to_string(),
+                                    Val::ShortStr(s) => s.as_str().to_string(),
+                                    Val::Str(s) => s.as_str().to_string(),
                                     Val::Int(i) => i.to_string(),
                                     Val::Float(f) => f.to_string(),
                                     Val::Bool(b) => b.to_string(),
@@ -872,7 +874,7 @@ impl Expr {
                             }
                         })
                         .collect::<String>();
-                    return Expr::Val(Val::Str(Arc::from(result)));
+                    return Expr::Val(Val::from_str(&result));
                 }
                 Expr::TemplateString(folded_parts)
             }
@@ -1124,7 +1126,7 @@ impl Expr {
                     let key_val = k.eval_with_ctx(ctx)?;
                     let val_val = v.eval_with_ctx(ctx)?;
                     let key_str = match key_val {
-                        Val::Str(s) => s.as_ref().to_string(),
+                        val if val.as_str().is_some() => val.as_str().unwrap().to_string(),
                         Val::Int(i) => i.to_string(),
                         Val::Float(f) => f.to_string(),
                         Val::Bool(b) => b.to_string(),
@@ -1190,7 +1192,7 @@ impl Expr {
                         TemplateStringPart::Expr(e) => s.push_str(&e.eval_with_ctx(ctx)?.display_string(Some(ctx))),
                     }
                 }
-                Ok(Val::Str(Arc::from(s)))
+                Ok(Val::from_str(&s))
             }
             // 属性访问 / 下标访问
             Expr::Access(expr, field) => {
@@ -1231,9 +1233,10 @@ impl Expr {
                 if let Expr::Access(obj_expr, field_expr) = callee.as_ref() {
                     let obj_val = obj_expr.eval_with_ctx(ctx)?;
                     let field_val = field_expr.eval_with_ctx(ctx)?;
-                    if let Val::Str(method_name) = field_val {
+                    if let Some(method_name) = field_val.as_str() {
+                        let method_key = Val::from_str(method_name);
                         // 1) 直接属性可调用；若属性是非函数且无实参调用，则返回该属性值（如 list.len() -> list.len）
-                        if let Some(prop_val) = obj_val.access(&Val::Str(method_name.clone())) {
+                        if let Some(prop_val) = obj_val.access(&method_key) {
                             match prop_val {
                                 Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
                                     let mut argv = Vec::with_capacity(args.len());
@@ -1260,13 +1263,13 @@ impl Expr {
                         // 优先检查 trait 实现
                         if let Some(tc) = ctx.type_checker() {
                             let obj_type = obj_val.dispatch_type();
-                            if let Some(method_val) = tc.registry().get_method(&obj_type, method_name.as_ref()) {
+                            if let Some(method_val) = tc.registry().get_method(&obj_type, method_name) {
                                 return method_val.clone().call(&full_args, ctx);
                             }
                         }
 
                         // 回退到内置方法注册
-                        if let Some(func) = find_method_for_val(&obj_val, method_name.as_ref()) {
+                        if let Some(func) = find_method_for_val(&obj_val, method_name) {
                             let func_val = Val::RustFunction(func);
                             return func_val.call(&full_args, ctx);
                         }
@@ -1293,9 +1296,10 @@ impl Expr {
                 if let Expr::Access(obj_expr, field_expr) = callee.as_ref() {
                     let obj_val = obj_expr.eval_with_ctx(ctx)?;
                     let field_val = field_expr.eval_with_ctx(ctx)?;
-                    if let Val::Str(method_name) = field_val {
+                    if let Some(method_name) = field_val.as_str() {
+                        let method_key = Val::from_str(method_name);
                         // 1) 直接属性可调用
-                        if let Some(prop_val) = obj_val.access(&Val::Str(method_name.clone())) {
+                        if let Some(prop_val) = obj_val.access(&method_key) {
                             match prop_val {
                                 Val::Closure(_) | Val::RustFunctionNamed(_) => {
                                     let mut pos = Vec::with_capacity(pos_args.len());
@@ -1331,7 +1335,7 @@ impl Expr {
                             // trait 方法不支持具名参数，先检查避免评估工作
                             if let Some(tc) = ctx.type_checker() {
                                 let obj_type = obj_val.dispatch_type();
-                                if tc.registry().get_method(&obj_type, method_name.as_ref()).is_some() {
+                                if tc.registry().get_method(&obj_type, method_name).is_some() {
                                     return Err(anyhow!("Named arguments are not supported for trait methods"));
                                 }
                             }
@@ -1347,13 +1351,13 @@ impl Expr {
                         // 检查 trait 实现
                         if let Some(tc) = ctx.type_checker() {
                             let obj_type = obj_val.dispatch_type();
-                            if let Some(method_val) = tc.registry().get_method(&obj_type, method_name.as_ref()) {
+                            if let Some(method_val) = tc.registry().get_method(&obj_type, method_name) {
                                 return method_val.clone().call(&full_args, ctx);
                             }
                         }
 
                         // 回退到内置方法
-                        if let Some(func) = find_method_for_val(&obj_val, method_name.as_ref()) {
+                        if let Some(func) = find_method_for_val(&obj_val, method_name) {
                             let func_val = Val::RustFunction(func);
                             return func_val.call(&full_args, ctx);
                         }

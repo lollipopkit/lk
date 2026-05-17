@@ -18,8 +18,7 @@ pub(crate) use guards::with_current_vm_ctx;
 /// ## Architecture
 ///
 /// The VM executes compiled bytecode using a register-based model:
-/// - `regs`: Main register file (`Vec<Val>`). All operations read/write registers.
-/// - `reg_pool` / `reg_stack`: Multi-frame register windows for nested function calls.
+/// - `stack`: Single register stack. Each call frame owns a contiguous window.
 /// - Inline caches per instruction site:
 ///   - `access_ic`: `.field` / `[key]` on Maps and Objects (4-entry LRU)
 ///   - `index_ic`: `list[idx]` / `str[idx]` (4-entry LRU)
@@ -39,10 +38,11 @@ pub(crate) use guards::with_current_vm_ctx;
 /// 2. **Standard Match Dispatch**: `run_opcode_code` uses a `match` on the
 ///    `Op` enum and supports all opcodes including peephole-fused forms.
 ///    Functions without BC32 encoding always use this path.
+const INITIAL_STACK_CAPACITY: usize = 65_536;
+
 pub struct Vm {
-    regs: Vec<Val>,
-    reg_pool: Vec<Vec<Val>>,
-    reg_stack: Vec<Vec<Val>>,
+    pub(super) stack: Vec<Val>,
+    stack_top: usize,
     nested_cache_pool: Vec<ClosureFastCache>,
     access_ic: Vec<Option<AccessIc>>,
     index_ic: Vec<Option<IndexIc>>,
@@ -59,9 +59,8 @@ pub struct Vm {
 impl Vm {
     pub fn new() -> Self {
         Self {
-            regs: Vec::new(),
-            reg_pool: Vec::new(),
-            reg_stack: Vec::new(),
+            stack: Vec::with_capacity(INITIAL_STACK_CAPACITY),
+            stack_top: 0,
             nested_cache_pool: Vec::new(),
             access_ic: Vec::new(),
             index_ic: Vec::new(),
@@ -76,18 +75,10 @@ impl Vm {
         }
     }
 
-    pub(in crate::vm::vm) fn update_top_caller_window(&mut self, window: frame::RegisterWindowRef) {
-        if let Some(frame) = self.frames.last_mut() {
-            frame.caller_window = window;
-        }
-    }
-
     pub(super) fn read_reg(&self, window: frame::RegisterWindowRef, idx: usize) -> Option<&Val> {
         match window {
-            frame::RegisterWindowRef::Current => self.regs.get(idx),
-            frame::RegisterWindowRef::StackIndex(stack_idx) => {
-                self.reg_stack.get(stack_idx).and_then(|regs| regs.get(idx))
-            }
+            frame::RegisterWindowRef::Current => self.stack.get(idx),
+            frame::RegisterWindowRef::Base(base) => self.stack.get(base + idx),
         }
     }
 

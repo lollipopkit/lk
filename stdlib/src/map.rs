@@ -1,3 +1,4 @@
+use arcstr::ArcStr;
 use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
@@ -16,12 +17,12 @@ use lk_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGua
 const MAP_MUT_TYPE: &str = "MapMut";
 
 struct MapIteratorState {
-    entries: Vec<(Arc<str>, Val)>,
+    entries: Vec<(ArcStr, Val)>,
     index: usize,
 }
 
 impl MapIteratorState {
-    fn new(entries: Vec<(Arc<str>, Val)>) -> Self {
+    fn new(entries: Vec<(ArcStr, Val)>) -> Self {
         Self { entries, index: 0 }
     }
 }
@@ -33,7 +34,7 @@ impl IteratorState for MapIteratorState {
         }
         let (key, value) = &self.entries[self.index];
         self.index += 1;
-        let pair = Val::List(Arc::from(vec![Val::Str(key.clone()), value.clone()]));
+        let pair = Val::List(Arc::from(vec![Val::from_str(key.as_str()), value.clone()]));
         Ok(Some(pair))
     }
 
@@ -69,7 +70,7 @@ impl MapMutationGuardState {
         self.inner.contains_key(key)
     }
 
-    fn insert(&mut self, key: Arc<str>, value: Val) -> Val {
+    fn insert(&mut self, key: ArcStr, value: Val) -> Val {
         self.mark_mutated();
         self.inner.insert(key, value).unwrap_or(Val::Nil)
     }
@@ -89,7 +90,7 @@ impl MutationGuardState for MapMutationGuardState {
     }
 
     fn commit(&mut self) -> Result<Val> {
-        let empty: Arc<FastHashMap<Arc<str>, Val>> = Arc::new(FastHashMap::default());
+        let empty: Arc<FastHashMap<ArcStr, Val>> = Arc::new(FastHashMap::default());
         let current = mem::replace(&mut self.inner, MapMutation::new(empty));
         let updated = current.finish();
         self.inner = MapMutation::from_val(&updated)?;
@@ -98,7 +99,7 @@ impl MutationGuardState for MapMutationGuardState {
     }
 
     fn snapshot(&mut self) -> Result<Val> {
-        let empty: Arc<FastHashMap<Arc<str>, Val>> = Arc::new(FastHashMap::default());
+        let empty: Arc<FastHashMap<ArcStr, Val>> = Arc::new(FastHashMap::default());
         let current = mem::replace(&mut self.inner, MapMutation::new(empty));
         let snapshot = current.finish();
         self.inner = MapMutation::from_val(&snapshot)?;
@@ -174,10 +175,7 @@ fn map_mut_guard_contains(args: &[Val], _: &mut VmContext) -> Result<Val> {
         return Err(anyhow!("has() expects (guard, key)"));
     }
     let guard = expect_map_guard(&args[0])?;
-    let key = match &args[1] {
-        Val::Str(s) => s.as_ref(),
-        _ => return Err(anyhow!("has() key must be a string")),
-    };
+    let key = args[1].as_str().ok_or_else(|| anyhow!("has() key must be a string"))?;
     let result = with_map_guard(&guard, |state| Ok(state.contains(key)))?;
     Ok(Val::Bool(result))
 }
@@ -187,10 +185,10 @@ fn map_mut_guard_insert(args: &[Val], _: &mut VmContext) -> Result<Val> {
         return Err(anyhow!("insert() expects (guard, key, value)"));
     }
     let guard = expect_map_guard(&args[0])?;
-    let key = match &args[1] {
-        Val::Str(s) => s.clone(),
-        _ => return Err(anyhow!("insert() key must be a string")),
-    };
+    let key: ArcStr = args[1]
+        .as_str()
+        .map(Val::intern_str)
+        .ok_or_else(|| anyhow!("insert() key must be a string"))?;
     let value = args[2].clone();
     let previous = with_map_guard_mut(&guard, |state| Ok(state.insert(key, value)))?;
     Ok(previous)
@@ -201,10 +199,10 @@ fn map_mut_guard_remove(args: &[Val], _: &mut VmContext) -> Result<Val> {
         return Err(anyhow!("remove() expects (guard, key)"));
     }
     let guard = expect_map_guard(&args[0])?;
-    let key = match &args[1] {
-        Val::Str(s) => s.as_ref().to_string(),
-        _ => return Err(anyhow!("remove() key must be a string")),
-    };
+    let key = args[1]
+        .as_str()
+        .ok_or_else(|| anyhow!("remove() key must be a string"))?
+        .to_owned();
     let removed = with_map_guard_mut(&guard, |state| Ok(state.remove(&key)))?;
     Ok(removed)
 }
@@ -298,7 +296,7 @@ impl MapModule {
             Val::Map(m) => {
                 let mut out: Vec<Val> = Vec::with_capacity(m.len());
                 for k in m.keys() {
-                    out.push(Val::Str(k.clone()));
+                    out.push(Val::from_str(k.as_str()));
                 }
                 Ok(Val::List(Arc::from(out)))
             }
@@ -330,10 +328,7 @@ impl MapModule {
             Val::Map(m) => &**m,
             _ => return Err(anyhow!("has() first argument must be a map")),
         };
-        let key = match &args[1] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("has() key must be a string")),
-        };
+        let key = args[1].as_str().ok_or_else(|| anyhow!("has() key must be a string"))?;
         Ok(Val::Bool(map.contains_key(key)))
     }
 
@@ -345,10 +340,7 @@ impl MapModule {
             Val::Map(m) => &**m,
             _ => return Err(anyhow!("get() first argument must be a map")),
         };
-        let key = match &args[1] {
-            Val::Str(s) => &**s,
-            _ => return Err(anyhow!("get() key must be a string")),
-        };
+        let key = args[1].as_str().ok_or_else(|| anyhow!("get() key must be a string"))?;
         Ok(map.get(key).cloned().unwrap_or(Val::Nil))
     }
 
@@ -356,10 +348,10 @@ impl MapModule {
         if args.len() != 3 {
             return Err(anyhow!("set() takes exactly 3 arguments: map, key, value"));
         }
-        let key_arc = match &args[1] {
-            Val::Str(s) => s.clone(),
-            _ => return Err(anyhow!("set() key must be a string")),
-        };
+        let key_arc: ArcStr = args[1]
+            .as_str()
+            .map(Val::intern_str)
+            .ok_or_else(|| anyhow!("set() key must be a string"))?;
         let mut map_arc = match &args[0] {
             Val::Map(m) => m.clone(),
             other => return Err(anyhow!("set() first argument must be a map, got {}", other.type_name())),
@@ -374,10 +366,10 @@ impl MapModule {
         if args.len() != 2 {
             return Err(anyhow!("delete() takes exactly 2 arguments: map, key"));
         }
-        let key_arc = match &args[1] {
-            Val::Str(s) => s.clone(),
-            _ => return Err(anyhow!("delete() key must be a string")),
-        };
+        let key_arc: ArcStr = args[1]
+            .as_str()
+            .map(Val::intern_str)
+            .ok_or_else(|| anyhow!("delete() key must be a string"))?;
         match &args[0] {
             Val::Map(_) => {
                 let mut map = MapMutation::from_val(&args[0])?;
@@ -397,10 +389,10 @@ impl MapModule {
             Val::Map(map) => map.clone(),
             other => return Err(anyhow!("into_iter expects a map, got {}", other.type_name())),
         };
-        let mut entries: Vec<(Arc<str>, Val)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        entries.sort_by(|a, b| a.0.as_ref().cmp(b.0.as_ref()));
+        let mut entries: Vec<(ArcStr, Val)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        entries.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         let iter_state = MapIteratorState::new(entries);
-        let handle = IteratorValue::with_origin(iter_state, Arc::from("map.into_iter"));
+        let handle = IteratorValue::with_origin(iter_state, ArcStr::from("map.into_iter"));
         Ok(Val::Iterator(handle))
     }
 
@@ -499,7 +491,7 @@ mod tests {
         let keys = run("let m={\"a\":1, \"b\":2}; let ks = m.keys().join(\",\"); return ks;")?;
         // Order is not guaranteed; check either order
         match keys {
-            Val::Str(s) if s.as_ref() == "a,b" || s.as_ref() == "b,a" => {}
+            v if v.as_str() == Some("a,b") || v.as_str() == Some("b,a") => {}
             _ => panic!("unexpected keys output: {}", keys),
         }
         // has/get

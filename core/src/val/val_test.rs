@@ -112,9 +112,9 @@ mod tests {
         map.insert("age", 30.to_string());
 
         let val: Val = map.into();
-        let field = Val::Str("name".into());
+        let field = Val::from_str("name");
 
-        assert_eq!(val.access(&field), Some(Val::Str("alice".into())));
+        assert_eq!(val.access(&field), Some(Val::from_str("alice")));
     }
 
     #[test]
@@ -132,11 +132,10 @@ mod tests {
         let first = val.access(&Val::Int(1)).expect("first access");
         let second = val.access(&Val::Int(1)).expect("second access");
 
-        assert_eq!(first, Val::Str("b".into()));
-        match (first, second) {
-            (Val::Str(a), Val::Str(b)) => assert!(std::sync::Arc::ptr_eq(&a, &b)),
-            _ => panic!("expected string access results"),
-        }
+        // Single-char ASCII strings are now ShortStr (zero heap, Copy), no Arc needed.
+        assert_eq!(first, Val::from_str("b"));
+        assert_eq!(second, Val::from_str("b"));
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -160,12 +159,12 @@ mod tests {
     // Literal creation tests
     #[test]
     fn test_literal_list_creation() {
-        let list = vec![Val::Int(1), Val::Str("hello".into()), Val::Bool(true)];
+        let list = vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)];
         let val = Val::List(list.clone().into());
 
         // Test access
         assert_eq!(val.access(&Val::Int(0)), Some(Val::Int(1)));
-        assert_eq!(val.access(&Val::Int(1)), Some(Val::Str("hello".into())));
+        assert_eq!(val.access(&Val::Int(1)), Some(Val::from_str("hello")));
         assert_eq!(val.access(&Val::Int(2)), Some(Val::Bool(true)));
         assert_eq!(val.access(&Val::Int(3)), None);
     }
@@ -173,24 +172,24 @@ mod tests {
     #[test]
     fn test_literal_map_creation() {
         let mut map = HashMap::new();
-        map.insert("name".to_string(), Val::Str("Alice".into()));
+        map.insert("name".to_string(), Val::from_str("Alice"));
         map.insert("age".to_string(), Val::Int(30));
         map.insert("active".to_string(), Val::Bool(true));
 
         let val = Val::from(map);
 
         // Test access
-        assert_eq!(val.access(&Val::Str("name".into())), Some(Val::Str("Alice".into())));
-        assert_eq!(val.access(&Val::Str("age".into())), Some(Val::Int(30)));
-        assert_eq!(val.access(&Val::Str("active".into())), Some(Val::Bool(true)));
-        assert_eq!(val.access(&Val::Str("nonexistent".into())), None);
+        assert_eq!(val.access(&Val::from_str("name")), Some(Val::from_str("Alice")));
+        assert_eq!(val.access(&Val::from_str("age")), Some(Val::Int(30)));
+        assert_eq!(val.access(&Val::from_str("active")), Some(Val::Bool(true)));
+        assert_eq!(val.access(&Val::from_str("nonexistent")), None);
     }
 
     #[test]
     fn test_nested_literal_access() {
         // Create nested structure: {"users": [{"name": "Alice", "age": 30}]}
         let mut inner_map = HashMap::new();
-        inner_map.insert("name".to_string(), Val::Str("Alice".into()));
+        inner_map.insert("name".to_string(), Val::from_str("Alice"));
         inner_map.insert("age".to_string(), Val::Int(30));
 
         let users_list = vec![Val::from(inner_map)];
@@ -201,11 +200,11 @@ mod tests {
         let val = Val::from(outer_map);
 
         // Test nested access
-        let users = val.access(&Val::Str("users".into())).unwrap();
+        let users = val.access(&Val::from_str("users")).unwrap();
         let first_user = users.access(&Val::Int(0)).unwrap();
-        let name = first_user.access(&Val::Str("name".into())).unwrap();
+        let name = first_user.access(&Val::from_str("name")).unwrap();
 
-        assert_eq!(name, Val::Str("Alice".into()));
+        assert_eq!(name, Val::from_str("Alice"));
     }
 
     // Comparison tests
@@ -235,8 +234,8 @@ mod tests {
 
     #[test]
     fn test_partial_ord_strings() {
-        let a = Val::Str("abc".into());
-        let b = Val::Str("def".into());
+        let a = Val::from_str("abc");
+        let b = Val::from_str("def");
 
         assert!(a < b);
     }
@@ -244,7 +243,7 @@ mod tests {
     #[test]
     fn test_incomparable_types() {
         let a = Val::Int(10);
-        let b = Val::Str("abc".into());
+        let b = Val::from_str("abc");
 
         assert_eq!(a.partial_cmp(&b), None);
     }
@@ -283,13 +282,13 @@ mod tests {
     #[test]
     fn test_display_formatting() {
         // Test list display
-        let list = Val::List(vec![Val::Int(1), Val::Str("hello".into()), Val::Bool(true)].into());
+        let list = Val::List(vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)].into());
         let display = format!("{}", list);
         assert!(display.contains("1") && display.contains("hello") && display.contains("true"));
 
         // Test map display
         let mut map = HashMap::new();
-        map.insert("name".to_string(), Val::Str("Alice".into()));
+        map.insert("name".to_string(), Val::from_str("Alice"));
         map.insert("age".to_string(), Val::Int(30));
         let val = Val::from(map);
         let display = format!("{}", val);
@@ -303,7 +302,7 @@ mod tests {
         // Test basic YAML value conversions
         let yaml_str = serde_yaml::Value::String("hello".to_string());
         let val: Val = yaml_str.into();
-        assert_eq!(val, Val::Str("hello".into()));
+        assert_eq!(val, Val::from_str("hello"));
 
         let yaml_int = serde_yaml::Value::Number(serde_yaml::Number::from(42));
         let val: Val = yaml_int.into();
@@ -331,7 +330,7 @@ mod tests {
         ]);
         let val: Val = yaml_seq.into();
 
-        let expected = Val::List(vec![Val::Int(1), Val::Str("hello".into()), Val::Bool(true)].into());
+        let expected = Val::List(vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)].into());
 
         assert_eq!(val, expected);
     }
@@ -352,7 +351,7 @@ mod tests {
         let val: Val = yaml_mapping.into();
 
         let mut expected_map = HashMap::new();
-        expected_map.insert("name".to_string(), Val::Str("Alice".into()));
+        expected_map.insert("name".to_string(), Val::from_str("Alice"));
         expected_map.insert("age".to_string(), Val::Int(30));
         let expected = Val::from(expected_map);
 
@@ -368,7 +367,7 @@ mod tests {
             value: serde_yaml::Value::String("tagged_value".to_string()),
         }));
         let val: Val = tagged.into();
-        assert_eq!(val, Val::Str("tagged_value".into()));
+        assert_eq!(val, Val::from_str("tagged_value"));
     }
 
     #[test]
@@ -441,16 +440,13 @@ mod tests {
         // Auto-detect JSON
         let json_input = r#"{"name": "Alice", "age": 30}"#;
         let result = parse_with_format(json_input, None).unwrap();
-        assert_eq!(result.access(&Val::Str("name".into())), Some(Val::Str("Alice".into())));
-        assert_eq!(result.access(&Val::Str("age".into())), Some(Val::Int(30)));
+        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Alice")));
+        assert_eq!(result.access(&Val::from_str("age")), Some(Val::Int(30)));
 
         // Force JSON format
         let json_input2 = r#"{"name": "Charlie", "age": 35}"#;
         let result = parse_with_format(json_input2, Some(Format::Json)).unwrap();
-        assert_eq!(
-            result.access(&Val::Str("name".into())),
-            Some(Val::Str("Charlie".into()))
-        );
+        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Charlie")));
     }
 
     #[test]
@@ -460,13 +456,13 @@ mod tests {
         // Auto-detect YAML
         let yaml_input = "name: Bob\nage: 25";
         let result = parse_with_format(yaml_input, None).unwrap();
-        assert_eq!(result.access(&Val::Str("name".into())), Some(Val::Str("Bob".into())));
-        assert_eq!(result.access(&Val::Str("age".into())), Some(Val::Int(25)));
+        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Bob")));
+        assert_eq!(result.access(&Val::from_str("age")), Some(Val::Int(25)));
 
         // Force YAML format
         let yaml_input2 = "name: Dave\nage: 40";
         let result = parse_with_format(yaml_input2, Some(Format::Yaml)).unwrap();
-        assert_eq!(result.access(&Val::Str("name".into())), Some(Val::Str("Dave".into())));
+        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Dave")));
     }
 
     #[test]
@@ -476,26 +472,23 @@ mod tests {
         // Auto-detect JSON
         let json_input = r#"{"name": "Alice", "age": 30}"#;
         let result = parse_with_format(json_input, None).unwrap();
-        assert_eq!(result.access(&Val::Str("name".into())), Some(Val::Str("Alice".into())));
-        assert_eq!(result.access(&Val::Str("age".into())), Some(Val::Int(30)));
+        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Alice")));
+        assert_eq!(result.access(&Val::from_str("age")), Some(Val::Int(30)));
 
         // Auto-detect YAML
         let yaml_input = "name: Bob\nage: 25";
         let result = parse_with_format(yaml_input, None).unwrap();
-        assert_eq!(result.access(&Val::Str("name".into())), Some(Val::Str("Bob".into())));
-        assert_eq!(result.access(&Val::Str("age".into())), Some(Val::Int(25)));
+        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Bob")));
+        assert_eq!(result.access(&Val::from_str("age")), Some(Val::Int(25)));
 
         // Force JSON format
         let yaml_as_json = r#"{"name": "Charlie", "age": 35}"#;
         let result = parse_with_format(yaml_as_json, Some(Format::Json)).unwrap();
-        assert_eq!(
-            result.access(&Val::Str("name".into())),
-            Some(Val::Str("Charlie".into()))
-        );
+        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Charlie")));
 
         // Force YAML format
         let json_as_yaml = "name: Dave\nage: 40";
         let result = parse_with_format(json_as_yaml, Some(Format::Yaml)).unwrap();
-        assert_eq!(result.access(&Val::Str("name".into())), Some(Val::Str("Dave".into())));
+        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Dave")));
     }
 }

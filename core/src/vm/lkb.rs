@@ -7,6 +7,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{Context, Result, bail, ensure};
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -656,9 +657,13 @@ fn encode_val(out: &mut Vec<u8>, val: &Val) -> Result<()> {
             write_u8(out, 3);
             write_f64(out, *f);
         }
+        Val::ShortStr(s) => {
+            write_u8(out, 4);
+            write_str(out, s.as_str());
+        }
         Val::Str(s) => {
             write_u8(out, 4);
-            write_string(out, s);
+            write_str(out, s.as_str());
         }
         Val::List(items) => {
             write_u8(out, 5);
@@ -671,7 +676,7 @@ fn encode_val(out: &mut Vec<u8>, val: &Val) -> Result<()> {
         Val::Map(map) => {
             write_u8(out, 6);
             ensure!(map.len() <= u32::MAX as usize, "map too large");
-            let mut entries: Vec<(String, &Val)> = map.iter().map(|(k, v)| (k.as_ref().to_string(), v)).collect();
+            let mut entries: Vec<(String, &Val)> = map.iter().map(|(k, v)| (k.as_str().to_string(), v)).collect();
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             write_u32(out, entries.len() as u32);
             for (key, value) in entries {
@@ -698,7 +703,7 @@ fn decode_val(bytes: &[u8], cursor: &mut usize) -> Result<Val> {
         3 => Val::Float(read_f64(bytes, cursor)?),
         4 => {
             let s = read_string(bytes, cursor)?;
-            Val::Str(Arc::<str>::from(s.as_str()))
+            Val::from_str(s.as_str())
         }
         5 => {
             let len = read_u32(bytes, cursor)? as usize;
@@ -710,11 +715,11 @@ fn decode_val(bytes: &[u8], cursor: &mut usize) -> Result<Val> {
         }
         6 => {
             let len = read_u32(bytes, cursor)? as usize;
-            let mut map: FastHashMap<Arc<str>, Val> = fast_hash_map_with_capacity(len);
+            let mut map: FastHashMap<ArcStr, Val> = fast_hash_map_with_capacity(len);
             for _ in 0..len {
                 let key = read_string(bytes, cursor)?;
                 let value = decode_val(bytes, cursor)?;
-                map.insert(Arc::<str>::from(key.as_str()), value);
+                map.insert(Val::intern_str(key.as_str()), value);
             }
             Val::Map(Arc::new(map))
         }
@@ -1332,11 +1337,6 @@ fn write_f64(out: &mut Vec<u8>, value: f64) {
 }
 
 fn write_str(out: &mut Vec<u8>, value: &str) {
-    write_u32(out, value.len() as u32);
-    out.extend_from_slice(value.as_bytes());
-}
-
-fn write_string(out: &mut Vec<u8>, value: &Arc<str>) {
     write_u32(out, value.len() as u32);
     out.extend_from_slice(value.as_bytes());
 }

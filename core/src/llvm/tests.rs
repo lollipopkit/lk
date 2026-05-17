@@ -322,18 +322,18 @@ fn lowers_float_ops() {
     let artifact = compile_function_to_llvm(&func, "float_add", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("fadd double"),
-        "expected float addition lowering in IR:\n{}",
+        ir.contains("call i64 @lk_rt_add"),
+        "expected float addition to preserve Val semantics through runtime helper:\n{}",
         ir
     );
     assert!(
-        ir.contains("bitcast double 0x3FF8000000000000 to i64"),
-        "expected first float constant lowering via bitcast in IR:\n{}",
+        ir.contains("call i64 @lk_rt_float(double 0x3FF8000000000000)"),
+        "expected first float constant lowering through runtime helper:\n{}",
         ir
     );
     assert!(
-        ir.contains("bitcast double 0x4002000000000000 to i64"),
-        "expected second float constant lowering via bitcast in IR:\n{}",
+        ir.contains("call i64 @lk_rt_float(double 0x4002000000000000)"),
+        "expected second float constant lowering through runtime helper:\n{}",
         ir
     );
 }
@@ -554,6 +554,63 @@ fn lowers_call_instruction() {
 }
 
 #[test]
+fn lowers_zero_arg_method_call_without_nil_trampoline() {
+    let func = Function {
+        consts: vec![
+            Val::Str("__lk_call_method".into()),
+            Val::Str("clock".into()),
+            Val::Str("os".into()),
+        ],
+        code: vec![
+            Op::LoadGlobal(0, 0),
+            Op::BuildList {
+                dst: 1,
+                base: 2,
+                len: 0,
+            },
+            Op::LoadK(2, 1),
+            Op::LoadGlobal(3, 2),
+            Op::Move(4, 3),
+            Op::Move(5, 2),
+            Op::Move(6, 1),
+            Op::Call {
+                f: 0,
+                base: 4,
+                argc: 3,
+                retc: 1,
+            },
+            Op::Ret { base: 4, retc: 1 },
+        ],
+        n_regs: 7,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "zero_arg_method", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_call_method"),
+        "expected zero-argument method call lowering in IR:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_call("),
+        "zero-argument method call should not fall back to calling the nil trampoline:\n{}",
+        ir
+    );
+}
+
+#[test]
 fn lowers_build_map_and_access() {
     let func = Function {
         consts: vec![Val::Str("key".into()), Val::Int(1)],
@@ -592,6 +649,168 @@ fn lowers_build_map_and_access() {
     assert!(
         ir.contains("call i64 @lk_rt_access"),
         "expected runtime access helper call in IR:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_list_push_and_map_set() {
+    let func = Function {
+        consts: vec![],
+        code: vec![
+            Op::ListPush { list: 0, val: 1 },
+            Op::MapSet { map: 2, key: 3, val: 4 },
+            Op::Ret { base: 0, retc: 1 },
+        ],
+        n_regs: 5,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "mutate_collections", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_list_push"),
+        "expected runtime list_push helper call in IR:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("call i64 @lk_rt_map_set"),
+        "expected runtime map_set helper call in IR:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_fused_integer_jump_ops() {
+    let func = Function {
+        consts: vec![Val::Int(0)],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::CmpLtImmJmp { r: 0, imm: 5, ofs: 2 },
+            Op::AddIntImmJmp { r: 0, imm: 1, ofs: -1 },
+            Op::Ret { base: 0, retc: 1 },
+        ],
+        n_regs: 1,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "fused_jumps", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("br i1") && ir.contains("br label"),
+        "expected fused jump ops to lower to LLVM branches:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("add i64"),
+        "expected AddIntImmJmp to lower to integer add:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn fused_add_jump_to_for_range_guard_advances_index() {
+    let func = Function {
+        consts: vec![Val::Int(1), Val::Int(3), Val::Int(0)],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::LoadK(1, 1),
+            Op::ForRangePrep {
+                idx: 0,
+                limit: 1,
+                step: 2,
+                inclusive: true,
+                explicit: false,
+            },
+            Op::ForRangeLoop {
+                idx: 0,
+                limit: 1,
+                step: 2,
+                inclusive: true,
+                write_idx: true,
+                ofs: 2,
+            },
+            Op::AddIntImmJmp { r: 3, imm: 1, ofs: -1 },
+            Op::Ret { base: 3, retc: 1 },
+        ],
+        n_regs: 4,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "fused_for_jump", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("forjmp_next"),
+        "expected AddIntImmJmp targeting ForRangeLoop to advance the loop index:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_zero_capture_function_closure_to_aot_function() {
+    let program = Program::new(vec![Box::new(Stmt::Function {
+        name: "inc".to_string(),
+        params: vec!["x".to_string()],
+        param_types: vec![None],
+        named_params: Vec::new(),
+        return_type: None,
+        body: Box::new(Stmt::Return {
+            value: Some(Box::new(Expr::Bin(
+                Box::new(Expr::Var("x".to_string())),
+                crate::op::BinOp::Add,
+                Box::new(Expr::Val(Val::Int(1))),
+            ))),
+        }),
+    })])
+    .expect("program");
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_program_to_llvm(&program, options).expect("LLVM backend should lower closure");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_make_aot_function"),
+        "expected MakeClosure to lower to AOT function helper:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("define i64 @lk_entry_proto_0"),
+        "expected nested closure proto to be emitted as native function:\n{}",
         ir
     );
 }

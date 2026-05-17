@@ -79,14 +79,15 @@ impl BinOp {
             BinOp::Eq => Ok(l == r),
             BinOp::Ne => Ok(l != r),
             BinOp::In => match (l, r) {
-                (Val::Str(l), Val::Str(r)) => Ok(r.as_ref().contains(l.as_ref())),
+                (l, r) if l.as_str().is_some() && r.as_str().is_some() => {
+                    Ok(r.as_str().unwrap().contains(l.as_str().unwrap()))
+                }
 
                 // All elements in l must be in r
                 (Val::List(l), Val::List(r)) => Ok(Val::list_contains_all(r, l)),
                 (_, Val::List(r)) => Ok(Val::list_contains(r, l)),
 
-                // Map key lookup optimization
-                (Val::Str(s), Val::Map(m)) => Ok(m.contains_key(s.as_ref())),
+                (l, Val::Map(m)) if l.as_str().is_some() => Ok(m.contains_key(l.as_str().unwrap())),
                 // For non-string keys, convert to string key with fast path when enabled
                 (Val::Int(i), Val::Map(m)) => {
                     let mut buf = itoa::Buffer::new();

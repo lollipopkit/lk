@@ -1,3 +1,4 @@
+use arcstr::ArcStr;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -57,7 +58,7 @@ pub trait MutableMap {
     fn contains_key(&self, key: &str) -> bool;
 
     /// Inserts or replaces a key with the provided value, returning the previous value.
-    fn insert(&mut self, key: Arc<str>, value: Val) -> Option<Val>;
+    fn insert(&mut self, key: ArcStr, value: Val) -> Option<Val>;
 
     /// Removes a key from the map, returning the removed value when it existed.
     fn remove(&mut self, key: &str) -> Option<Val>;
@@ -65,7 +66,7 @@ pub trait MutableMap {
     /// Retains only the entries that satisfy the predicate.
     fn retain<F>(&mut self, f: F)
     where
-        F: FnMut(&Arc<str>, &mut Val) -> bool;
+        F: FnMut(&ArcStr, &mut Val) -> bool;
 
     /// Finalises the mutation and returns the resulting `Val`.
     fn finish(self) -> Val;
@@ -176,10 +177,10 @@ impl MutableSequence for ListMutation {
 ///
 /// Uses Arc::make_mut for fast path when the map has a single reference.
 pub struct MapMutation {
-    source: Arc<FastHashMap<Arc<str>, Val>>,
+    source: Arc<FastHashMap<ArcStr, Val>>,
     /// When source is uniquely owned, we use Arc::make_mut eagerly.
     /// When source is shared, we fall back to a scratch copy.
-    owned: Option<FastHashMap<Arc<str>, Val>>,
+    owned: Option<FastHashMap<ArcStr, Val>>,
     /// True when we've already called Arc::make_mut and mutated the original
     /// arc in-place. In this case `owned` is None and `source` has the changes.
     mutated_in_place: bool,
@@ -193,7 +194,7 @@ impl MapMutation {
         }
     }
 
-    pub fn new(map: Arc<FastHashMap<Arc<str>, Val>>) -> Self {
+    pub fn new(map: Arc<FastHashMap<ArcStr, Val>>) -> Self {
         Self {
             source: map,
             owned: None,
@@ -203,7 +204,7 @@ impl MapMutation {
 
     /// Try to get mutable access via Arc::make_mut (fast path for unique refs).
     /// Falls back to cloning into `owned` when the arc is shared.
-    fn ensure_owned(&mut self) -> &mut FastHashMap<Arc<str>, Val> {
+    fn ensure_owned(&mut self) -> &mut FastHashMap<ArcStr, Val> {
         if self.mutated_in_place {
             // Already using Arc::make_mut, just return a fresh mutable ref
             return Arc::make_mut(&mut self.source);
@@ -217,7 +218,7 @@ impl MapMutation {
         if self.owned.is_none() {
             let mut owned = fast_hash_map_with_capacity(self.source.len());
             for (k, v) in self.source.iter() {
-                owned.insert(k.clone(), v.clone());
+                owned.insert(Val::intern_str(k.as_str()), v.clone());
             }
             self.owned = Some(owned);
         }
@@ -244,7 +245,7 @@ impl MutableMap for MapMutation {
         }
     }
 
-    fn insert(&mut self, key: Arc<str>, value: Val) -> Option<Val> {
+    fn insert(&mut self, key: ArcStr, value: Val) -> Option<Val> {
         self.ensure_owned().insert(key, value)
     }
 
@@ -254,7 +255,7 @@ impl MutableMap for MapMutation {
 
     fn retain<F>(&mut self, mut f: F)
     where
-        F: FnMut(&Arc<str>, &mut Val) -> bool,
+        F: FnMut(&ArcStr, &mut Val) -> bool,
     {
         let map = self.ensure_owned();
         map.retain(|k, v| f(k, v));
@@ -301,7 +302,7 @@ mod tests {
     #[test]
     fn map_mutation_reuses_original_when_pristine() {
         let mut map = fast_hash_map_with_capacity(1);
-        map.insert(Arc::<str>::from("k"), Val::Int(1));
+        map.insert(ArcStr::from("k"), Val::Int(1));
         let original = Arc::new(map);
         let guard = MapMutation::new(original.clone());
         let result = guard.finish();
@@ -314,11 +315,11 @@ mod tests {
     #[test]
     fn map_mutation_make_mut_on_unique_ref() {
         let mut map = fast_hash_map_with_capacity(1);
-        map.insert(Arc::<str>::from("k"), Val::Int(1));
+        map.insert(ArcStr::from("k"), Val::Int(1));
         let original = Arc::new(map);
         // Only one reference — should use Arc::make_mut path
         let mut guard = MapMutation::new(original);
-        guard.insert(Arc::<str>::from("k2"), Val::Int(2));
+        guard.insert(ArcStr::from("k2"), Val::Int(2));
         let result = guard.finish();
         let Val::Map(map_arc) = result else {
             panic!("expected map");
@@ -329,12 +330,12 @@ mod tests {
     #[test]
     fn map_mutation_clone_on_write() {
         let mut map = fast_hash_map_with_capacity(1);
-        map.insert(Arc::<str>::from("k"), Val::Int(1));
+        map.insert(ArcStr::from("k"), Val::Int(1));
         let original = Arc::new(map);
         // clone to create a second reference — should force copy path
         let shared = original.clone();
         let mut guard = MapMutation::new(shared);
-        guard.insert(Arc::<str>::from("k2"), Val::Int(2));
+        guard.insert(ArcStr::from("k2"), Val::Int(2));
         let result = guard.finish();
         let Val::Map(map_arc) = result else {
             panic!("expected map");

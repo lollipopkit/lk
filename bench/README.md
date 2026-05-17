@@ -32,7 +32,7 @@ RUNS=10 EXTRA_RUNS=20 bench/run_workload_bench.sh
 ## Workloads
 
 `run_workload_bench.sh` runs one LK script and one equivalent Lua script, each
-containing 10 common business/interview-style algorithm workloads.
+containing 15 common business/interview-style algorithm workloads.
 
 | Workload | What it stresses |
 |----------|------------------|
@@ -46,6 +46,11 @@ containing 10 common business/interview-style algorithm workloads.
 | `histogram_group_count` | map mutation, map lookup, string-key construction |
 | `string_key_hash` | template strings, string iteration, hashing loop |
 | `order_score_pipeline` | small business function pipeline |
+| `log_parse_filter` | log line construction, split, field extraction, grouped counters |
+| `cart_pricing_rules` | cart pricing, map lookups, discounts, tax rules |
+| `route_permission_check` | permission checks, path prefix matching, branch-heavy routing |
+| `inventory_reorder` | inventory aggregation, list building, map update, join |
+| `fraud_rule_scoring` | rule scoring, map membership, string prefix checks |
 
 ## Adaptive Rerun Policy
 
@@ -68,7 +73,10 @@ fine-grained claims.
 
 ## Current Baseline
 
-The result below used `RUNS=10 EXTRA_RUNS=20`.
+The documented baseline below used `RUNS=10 EXTRA_RUNS=20` and covers the
+original 10 workloads. The newer mixed real-world workloads are included in the
+runner and correctness gate, but their regression baselines should be recorded
+after a dedicated quiet-machine refresh.
 
 | Workload | LK (ms) | Lua (ms) | Ratio (LK/Lua) | Conf. | Status |
 |----------|---------|----------|----------------|-------|--------|

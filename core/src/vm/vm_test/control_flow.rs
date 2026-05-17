@@ -653,10 +653,11 @@ fn test_vm_map_iteration_order_stable() {
             other => return Err(anyhow!("hash must be Int, got {:?}", other)),
         };
         let k = match &args[1] {
-            Val::Str(s) => s.as_ref(),
+            Val::Str(s) => s.to_string(),
+            Val::ShortStr(s) => s.as_str().to_string(),
             other => return Err(anyhow!("key must be String, got {:?}", other)),
         };
-        let digit = match k {
+        let digit = match k.as_str() {
             "a" => 1,
             "b" => 2,
             "c" => 3,

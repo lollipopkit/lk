@@ -6,6 +6,7 @@ use crate::val::Val;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::ForRangeState;
 use crate::vm::vm::frame::{CallFrameMeta, FrameState, RegisterWindowRef};
+use arcstr::ArcStr;
 
 /// Mark the end of the current frame and return to caller.
 /// Records the PC position and updates the frame pointer.
@@ -55,14 +56,13 @@ pub(super) fn handle_return_common(
 }
 
 #[inline(always)]
-#[allow(clippy::ptr_arg)]
-pub(super) fn assign_reg(_frame_raw: *mut FrameState<'_>, regs: &mut Vec<Val>, idx: usize, value: Val) {
+pub(super) fn assign_reg(_frame_raw: *mut FrameState<'_>, regs: &mut [Val], idx: usize, value: Val) {
     regs[idx] = value;
 }
 
 #[inline(always)]
-pub(super) fn assign_reg_slice(_frame_raw: *mut FrameState<'_>, regs: &mut [Val], idx: usize, value: Val) {
-    regs[idx] = value;
+pub(super) fn assign_reg_slice(frame_raw: *mut FrameState<'_>, regs: &mut [Val], idx: usize, value: Val) {
+    assign_reg(frame_raw, regs, idx, value);
 }
 
 #[inline(always)]
@@ -81,7 +81,7 @@ pub(super) fn push_list_entry(arc: &mut Arc<Vec<Val>>, value: Val) {
 }
 
 #[inline]
-pub(super) fn insert_map_entry(arc: &mut Arc<FastHashMap<Arc<str>, Val>>, key: Arc<str>, value: Val) {
+pub(super) fn insert_map_entry(arc: &mut Arc<FastHashMap<ArcStr, Val>>, key: ArcStr, value: Val) {
     let map = Arc::make_mut(arc);
     if map.is_empty() && map.capacity() < DYNAMIC_MAP_FIRST_MUTATION_RESERVE {
         map.reserve(DYNAMIC_MAP_FIRST_MUTATION_RESERVE);
@@ -129,23 +129,18 @@ fn move_return_values(
                 }
             }
         }
-        RegisterWindowRef::StackIndex(idx) => {
-            let dest_base = meta.ret_base as usize;
-            let parent_regs = if let Some(slot) = vm.reg_stack.get_mut(idx) {
-                slot
-            } else {
-                vm.reg_stack.last_mut().expect("missing caller register window")
-            };
+        RegisterWindowRef::Base(base) => {
+            let dest_base = base + meta.ret_base as usize;
             let limit = expected.min(retc);
             for i in 0..limit {
                 let src_idx = base_idx + i;
                 mark_reg_written(frame_raw, src_idx);
                 let value = std::mem::replace(&mut callee_regs[src_idx], Val::Nil);
-                parent_regs[dest_base + i] = value;
+                vm.stack[dest_base + i] = value;
             }
             if expected > retc {
                 for i in retc..expected {
-                    parent_regs[dest_base + i] = Val::Nil;
+                    vm.stack[dest_base + i] = Val::Nil;
                 }
             }
         }
