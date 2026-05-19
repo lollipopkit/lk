@@ -3,14 +3,13 @@ use std::{
     sync::Arc,
 };
 
+use super::builder_support::collect_pattern_names;
 use super::driver::Compiler;
 use super::free_vars::FreeVarCollector;
 use crate::resolve::slots::FunctionLayout;
 use crate::{
     expr::Expr,
-    op::BinOp,
     stmt::{NamedParamDecl, Stmt},
-    typ::{NumericClass, NumericHierarchy},
     val::{ClosureCapture, ClosureInit, ClosureValue, Type, Val},
     vm::{
         Bc32Function, CaptureSpec, ClosureProto, Function, FunctionAnalysis, NamedParamLayoutEntry, Op, PatternBinding,
@@ -41,7 +40,7 @@ pub(crate) struct FunctionBuilder {
     pub loop_depth: usize,
     pub analysis: Option<FunctionAnalysis>,
     pub const_names: HashSet<String>,
-    expr_type_hints: Option<HashMap<usize, Type>>,
+    pub(crate) expr_type_hints: Option<HashMap<usize, Type>>,
     /// Registers known to hold Map values (set when initialized from {} or map exprs).
     /// Used to safely emit MapSet opcode in compile_method_call.
     pub(crate) map_locals: HashSet<u16>,
@@ -55,55 +54,22 @@ pub(crate) struct FunctionBuilder {
     /// Registers whose List values are known to have a homogeneous element type.
     /// Kept conservative around mutation and aliases.
     pub(crate) list_value_types: HashMap<u16, Type>,
+    /// Registers whose List length is known at compile time.
+    pub(crate) list_lengths: HashMap<u16, usize>,
     /// Empty List registers can adopt the first known element type written through ListPush.
     pub(crate) list_value_adoptable: HashSet<u16>,
     /// Registers known to currently hold Int values.
     /// This is a best-effort local fact used to select typed arithmetic opcodes
     /// in hot loops even when full type inference did not provide hints.
     pub(crate) int_regs: HashSet<u16>,
+    /// Registers known to currently hold Float values.
+    /// Kept separate from int facts so generic numeric lowering can choose
+    /// float typed opcodes without relying on full type inference.
+    pub(crate) float_regs: HashSet<u16>,
     /// Loop-invariant pure expressions already materialized for the current loop body.
     pub(crate) loop_invariant_expr_regs: Vec<(Expr, u16)>,
     pub(crate) inferred_function_param_types: HashMap<String, Vec<Option<Type>>>,
     pub(crate) inferred_function_return_types: HashMap<String, Option<Type>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ArithFlavor {
-    Int,
-    Float,
-    Any,
-}
-
-fn collect_pattern_names(pattern: &crate::expr::Pattern, out: &mut Vec<String>) {
-    use crate::expr::Pattern;
-    match pattern {
-        Pattern::Variable(name) => out.push(name.clone()),
-        Pattern::List { patterns, rest } => {
-            for sub in patterns {
-                collect_pattern_names(sub, out);
-            }
-            if let Some(rest_name) = rest {
-                out.push(rest_name.clone());
-            }
-        }
-        Pattern::Map { patterns, rest } => {
-            for (_, sub) in patterns {
-                collect_pattern_names(sub, out);
-            }
-            if let Some(rest_name) = rest {
-                out.push(rest_name.clone());
-            }
-        }
-        Pattern::Or(alternatives) => {
-            for alt in alternatives {
-                collect_pattern_names(alt, out);
-            }
-        }
-        Pattern::Guard { pattern, .. } => {
-            collect_pattern_names(pattern, out);
-        }
-        Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
-    }
 }
 
 impl FunctionBuilder {
@@ -144,8 +110,10 @@ impl FunctionBuilder {
             map_value_adoptable: HashSet::new(),
             list_locals: HashSet::new(),
             list_value_types: HashMap::new(),
+            list_lengths: HashMap::new(),
             list_value_adoptable: HashSet::new(),
             int_regs: HashSet::new(),
+            float_regs: HashSet::new(),
             loop_invariant_expr_regs: Vec::new(),
             inferred_function_param_types: HashMap::new(),
             inferred_function_return_types: HashMap::new(),
@@ -171,91 +139,6 @@ impl FunctionBuilder {
 
     pub fn set_inferred_function_return_types(&mut self, inferred: HashMap<String, Option<Type>>) {
         self.inferred_function_return_types = inferred;
-    }
-
-    pub(crate) fn mark_direct_call_return_type(&mut self, name: &str, dst: u16) {
-        let Some(Some(ty)) = self.inferred_function_return_types.get(name).cloned() else {
-            return;
-        };
-        self.apply_type_fact(dst, &ty);
-    }
-
-    pub(crate) fn apply_type_fact(&mut self, dst: u16, ty: &Type) {
-        match ty {
-            Type::Int => {
-                self.int_regs.insert(dst);
-                self.list_locals.remove(&dst);
-                self.list_value_types.remove(&dst);
-                self.list_value_adoptable.remove(&dst);
-                self.map_locals.remove(&dst);
-                self.map_value_types.remove(&dst);
-                self.map_value_adoptable.remove(&dst);
-            }
-            Type::List(value_ty) => {
-                self.int_regs.remove(&dst);
-                self.list_locals.insert(dst);
-                self.record_list_value_type(dst, Self::normalized_value_fact(value_ty));
-                self.map_locals.remove(&dst);
-                self.map_value_types.remove(&dst);
-                self.map_value_adoptable.remove(&dst);
-            }
-            Type::Map(_, value_ty) => {
-                self.int_regs.remove(&dst);
-                self.list_locals.remove(&dst);
-                self.list_value_types.remove(&dst);
-                self.list_value_adoptable.remove(&dst);
-                self.map_locals.insert(dst);
-                self.record_map_value_type(dst, Self::normalized_value_fact(value_ty));
-            }
-            _ => {}
-        }
-    }
-
-    pub(crate) fn expr_type_hint(&self, expr: &Expr) -> Option<&Type> {
-        let key = expr as *const Expr as usize;
-        self.expr_type_hints.as_ref().and_then(|map| map.get(&key))
-    }
-
-    fn numeric_class_hint(&self, expr: &Expr) -> Option<NumericClass> {
-        self.expr_type_hint(expr).and_then(NumericHierarchy::classify)
-    }
-
-    pub(crate) fn select_arith_flavor(&self, op: &BinOp, left: &Expr, right: &Expr, whole: &Expr) -> ArithFlavor {
-        if matches!(op, BinOp::Div) {
-            return ArithFlavor::Float;
-        }
-
-        if self.expr_known_int(left) && self.expr_known_int(right) {
-            return ArithFlavor::Int;
-        }
-
-        let result_class = self.numeric_class_hint(whole);
-        let left_class = self.numeric_class_hint(left);
-        let right_class = self.numeric_class_hint(right);
-
-        match result_class {
-            Some(NumericClass::Float) => ArithFlavor::Float,
-            Some(NumericClass::Int) => {
-                if left_class == Some(NumericClass::Int) && right_class == Some(NumericClass::Int) {
-                    ArithFlavor::Int
-                } else {
-                    ArithFlavor::Any
-                }
-            }
-            Some(NumericClass::Boxed) | None => {
-                if left_class == Some(NumericClass::Float) || right_class == Some(NumericClass::Float) {
-                    ArithFlavor::Float
-                } else if left_class == Some(NumericClass::Int) && right_class == Some(NumericClass::Int) {
-                    ArithFlavor::Int
-                } else {
-                    ArithFlavor::Any
-                }
-            }
-        }
-    }
-
-    fn expr_known_int(&self, expr: &Expr) -> bool {
-        self.expr_value_fact(expr) == Some(Type::Int)
     }
 
     pub fn set_analysis(&mut self, analysis: Option<FunctionAnalysis>) {
@@ -348,294 +231,6 @@ impl FunctionBuilder {
             self.emit(Op::LoadGlobal(dst, kidx));
         }
         dst
-    }
-
-    fn update_int_reg_facts(&mut self, op: &Op) {
-        match *op {
-            Op::LoadK(dst, kidx) => match self.consts.get(kidx as usize) {
-                Some(Val::Int(_)) => {
-                    self.int_regs.insert(dst);
-                    self.list_locals.remove(&dst);
-                    self.list_value_types.remove(&dst);
-                    self.list_value_adoptable.remove(&dst);
-                    self.map_locals.remove(&dst);
-                    self.map_value_types.remove(&dst);
-                    self.map_value_adoptable.remove(&dst);
-                }
-                Some(Val::List(list)) => {
-                    self.int_regs.remove(&dst);
-                    self.list_locals.insert(dst);
-                    if list.is_empty() {
-                        self.record_empty_list_value_type(dst);
-                    } else {
-                        self.record_list_value_type(dst, Self::homogeneous_list_value_fact(list.iter()));
-                    }
-                    self.map_locals.remove(&dst);
-                    self.map_value_types.remove(&dst);
-                    self.map_value_adoptable.remove(&dst);
-                }
-                Some(Val::Map(map)) => {
-                    self.int_regs.remove(&dst);
-                    self.list_locals.remove(&dst);
-                    self.list_value_types.remove(&dst);
-                    self.list_value_adoptable.remove(&dst);
-                    self.map_locals.insert(dst);
-                    if map.is_empty() {
-                        self.record_empty_map_value_type(dst);
-                    } else {
-                        self.record_map_value_type(dst, Self::homogeneous_map_value_fact(map.values()));
-                    }
-                }
-                _ => {
-                    self.int_regs.remove(&dst);
-                    self.list_locals.remove(&dst);
-                    self.list_value_types.remove(&dst);
-                    self.list_value_adoptable.remove(&dst);
-                    self.map_locals.remove(&dst);
-                    self.map_value_types.remove(&dst);
-                    self.map_value_adoptable.remove(&dst);
-                }
-            },
-            Op::Move(dst, src) | Op::StoreLocal(dst, src) | Op::LoadLocal(dst, src) => {
-                if self.int_regs.contains(&src) {
-                    self.int_regs.insert(dst);
-                } else {
-                    self.int_regs.remove(&dst);
-                }
-                if self.list_locals.contains(&src) {
-                    self.list_locals.insert(dst);
-                } else {
-                    self.list_locals.remove(&dst);
-                }
-                self.list_value_types.remove(&dst);
-                self.list_value_adoptable.remove(&dst);
-                if self.map_locals.contains(&src) {
-                    self.map_locals.insert(dst);
-                } else {
-                    self.map_locals.remove(&dst);
-                }
-                self.map_value_types.remove(&dst);
-                self.map_value_adoptable.remove(&dst);
-            }
-            Op::AddInt(dst, _, _)
-            | Op::SubInt(dst, _, _)
-            | Op::MulInt(dst, _, _)
-            | Op::ModInt(dst, _, _)
-            | Op::AddIntImm(dst, _, _)
-            | Op::AddIntImmJmp { r: dst, .. }
-            | Op::AddRangeCountImm { target: dst, .. }
-            | Op::Len { dst, .. }
-            | Op::ListLen { dst, .. }
-            | Op::MapLen { dst, .. }
-            | Op::StrLen { dst, .. }
-            | Op::Floor { dst, .. } => {
-                self.int_regs.insert(dst);
-                self.list_locals.remove(&dst);
-                self.list_value_types.remove(&dst);
-                self.list_value_adoptable.remove(&dst);
-                self.map_locals.remove(&dst);
-                self.map_value_types.remove(&dst);
-                self.map_value_adoptable.remove(&dst);
-            }
-            Op::ForRangePrep { step, .. } => {
-                self.int_regs.insert(step);
-            }
-            Op::ForRangeLoop {
-                idx, write_idx: true, ..
-            }
-            | Op::RangeLoopI {
-                idx, write_idx: true, ..
-            } => {
-                self.int_regs.insert(idx);
-            }
-            Op::Add(dst, _, _)
-            | Op::StrConcatKnownCap(dst, _, _)
-            | Op::StrConcatToStr(dst, _, _)
-            | Op::Sub(dst, _, _)
-            | Op::Mul(dst, _, _)
-            | Op::Div(dst, _, _)
-            | Op::Mod(dst, _, _)
-            | Op::AddFloat(dst, _, _)
-            | Op::SubFloat(dst, _, _)
-            | Op::MulFloat(dst, _, _)
-            | Op::DivFloat(dst, _, _)
-            | Op::ModFloat(dst, _, _)
-            | Op::LoadGlobal(dst, _)
-            | Op::LoadCapture { dst, .. }
-            | Op::Access(dst, _, _)
-            | Op::AccessK(dst, _, _)
-            | Op::IndexK(dst, _, _)
-            | Op::ListIndexI(dst, _, _)
-            | Op::ListSetI { dst, .. }
-            | Op::StrIndexI(dst, _, _)
-            | Op::ContainsK(dst, _, _)
-            | Op::MapHas(dst, _, _)
-            | Op::MapGetInterned(dst, _, _)
-            | Op::MapGetDynamic(dst, _, _)
-            | Op::MapHasK(dst, _, _)
-            | Op::MakeClosure { dst, .. }
-            | Op::Call { base: dst, retc: 1, .. }
-            | Op::CallExact { base: dst, retc: 1, .. }
-            | Op::CallClosureExact { base: dst, retc: 1, .. }
-            | Op::CallNativeFast { base: dst, retc: 1, .. }
-            | Op::CallMethod0 { dst, .. }
-            | Op::CallNamed {
-                base_pos: dst, retc: 1, ..
-            }
-            | Op::CallNamedFallback {
-                base_pos: dst, retc: 1, ..
-            }
-            | Op::ToStr(dst, _)
-            | Op::ToBool(dst, _)
-            | Op::Not(dst, _)
-            | Op::CmpEq(dst, _, _)
-            | Op::CmpNe(dst, _, _)
-            | Op::CmpLt(dst, _, _)
-            | Op::CmpLe(dst, _, _)
-            | Op::CmpGt(dst, _, _)
-            | Op::CmpGe(dst, _, _)
-            | Op::CmpI { dst, .. }
-            | Op::CmpEqImm(dst, _, _)
-            | Op::CmpNeImm(dst, _, _)
-            | Op::CmpLtImm(dst, _, _)
-            | Op::CmpLeImm(dst, _, _)
-            | Op::CmpGtImm(dst, _, _)
-            | Op::CmpGeImm(dst, _, _)
-            | Op::In(dst, _, _)
-            | Op::NullishPick { dst, .. }
-            | Op::JmpFalseSet { dst, .. }
-            | Op::JmpTrueSet { dst, .. }
-            | Op::ToIter { dst, .. }
-            | Op::ListSlice { dst, .. }
-            | Op::PatternMatch { dst, .. } => {
-                self.int_regs.remove(&dst);
-                self.list_locals.remove(&dst);
-                self.list_value_types.remove(&dst);
-                self.list_value_adoptable.remove(&dst);
-                self.map_locals.remove(&dst);
-                self.map_value_types.remove(&dst);
-                self.map_value_adoptable.remove(&dst);
-            }
-            Op::CallGlobalMethod0 { dst, receiver, method } => {
-                if !self.apply_global_method_return_fact(dst, receiver, method) {
-                    self.int_regs.remove(&dst);
-                    self.list_locals.remove(&dst);
-                    self.list_value_types.remove(&dst);
-                    self.list_value_adoptable.remove(&dst);
-                    self.map_locals.remove(&dst);
-                    self.map_value_types.remove(&dst);
-                    self.map_value_adoptable.remove(&dst);
-                }
-            }
-            Op::BuildList { dst, .. } => {
-                self.int_regs.remove(&dst);
-                self.list_locals.insert(dst);
-                self.list_value_types.remove(&dst);
-                self.list_value_adoptable.remove(&dst);
-                self.map_locals.remove(&dst);
-                self.map_value_types.remove(&dst);
-                self.map_value_adoptable.remove(&dst);
-            }
-            Op::BuildMap { dst, .. } => {
-                self.int_regs.remove(&dst);
-                self.list_locals.remove(&dst);
-                self.list_value_types.remove(&dst);
-                self.list_value_adoptable.remove(&dst);
-                self.map_locals.insert(dst);
-                self.map_value_types.remove(&dst);
-                self.map_value_adoptable.remove(&dst);
-            }
-            Op::ListFoldAdd { acc, .. } | Op::MapValuesFoldAdd { acc, .. } => {
-                self.int_regs.remove(&acc);
-                self.list_value_types.remove(&acc);
-                self.list_value_adoptable.remove(&acc);
-                self.map_value_types.remove(&acc);
-                self.map_value_adoptable.remove(&acc);
-            }
-            Op::ListPush { list, val } => {
-                self.update_list_value_type_after_write(list, val);
-                self.list_value_types.remove(&val);
-                self.list_value_adoptable.remove(&val);
-            }
-            Op::MapSetInterned(map, _, val) => {
-                self.update_map_value_type_after_write(map, val);
-                self.map_value_types.remove(&val);
-                self.map_value_adoptable.remove(&val);
-            }
-            Op::MapSet { map, key, val } => {
-                self.update_map_value_type_after_write(map, val);
-                self.map_value_types.remove(&key);
-                self.map_value_types.remove(&val);
-                self.map_value_adoptable.remove(&key);
-                self.map_value_adoptable.remove(&val);
-            }
-            Op::MapSetMove { map, key, val } => {
-                self.update_map_value_type_after_write(map, val);
-                self.int_regs.remove(&key);
-                self.int_regs.remove(&val);
-                self.list_locals.remove(&key);
-                self.list_locals.remove(&val);
-                self.list_value_types.remove(&key);
-                self.list_value_types.remove(&val);
-                self.list_value_adoptable.remove(&key);
-                self.list_value_adoptable.remove(&val);
-                self.map_locals.remove(&key);
-                self.map_locals.remove(&val);
-                self.map_value_types.remove(&key);
-                self.map_value_types.remove(&val);
-                self.map_value_adoptable.remove(&key);
-                self.map_value_adoptable.remove(&val);
-            }
-            Op::Call { base, retc, .. }
-            | Op::CallExact { base, retc, .. }
-            | Op::CallClosureExact { base, retc, .. }
-            | Op::CallNativeFast { base, retc, .. }
-                if retc > 1 =>
-            {
-                for reg in base..base.saturating_add(retc as u16) {
-                    self.int_regs.remove(&reg);
-                    self.list_value_types.remove(&reg);
-                    self.list_value_adoptable.remove(&reg);
-                    self.map_value_types.remove(&reg);
-                    self.map_value_adoptable.remove(&reg);
-                }
-            }
-            Op::CallNamed { base_pos, retc, .. } if retc > 1 => {
-                for reg in base_pos..base_pos.saturating_add(retc as u16) {
-                    self.int_regs.remove(&reg);
-                    self.list_value_types.remove(&reg);
-                    self.list_value_adoptable.remove(&reg);
-                    self.map_value_types.remove(&reg);
-                    self.map_value_adoptable.remove(&reg);
-                }
-            }
-            Op::CallNamedFallback { base_pos, retc, .. } if retc > 1 => {
-                for reg in base_pos..base_pos.saturating_add(retc as u16) {
-                    self.int_regs.remove(&reg);
-                    self.list_value_types.remove(&reg);
-                    self.list_value_adoptable.remove(&reg);
-                    self.map_value_types.remove(&reg);
-                    self.map_value_adoptable.remove(&reg);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn apply_global_method_return_fact(&mut self, dst: u16, receiver: u16, method: u16) -> bool {
-        let Some(receiver) = self.consts.get(receiver as usize).and_then(Val::as_str) else {
-            return false;
-        };
-        let Some(method) = self.consts.get(method as usize).and_then(Val::as_str) else {
-            return false;
-        };
-        match (receiver, method) {
-            ("os", "epoch" | "time") => {
-                self.apply_type_fact(dst, &Type::Int);
-                true
-            }
-            _ => false,
-        }
     }
 
     pub fn alloc(&mut self) -> u16 {
@@ -902,7 +497,7 @@ impl FunctionBuilder {
             self.emit(Op::Raise { err_kidx: msg_idx });
         } else {
             self.emit(Op::StoreLocal(idx, src));
-            if self.global_defs.contains(name) {
+            if self.should_export_global_write(name) {
                 let kname = self.k(Val::from_str(name));
                 self.emit(Op::DefineGlobal(kname, idx));
             }
@@ -945,7 +540,12 @@ impl FunctionBuilder {
     }
 
     pub(crate) fn register_closure_const_env(&mut self, name: &str, params: &[String], body: &Expr) -> bool {
-        let body_stmt = Stmt::Expr(Box::new(body.clone()));
+        let body_stmt = match body {
+            Expr::Block(statements) => Stmt::Block {
+                statements: statements.clone(),
+            },
+            _ => Stmt::Expr(Box::new(body.clone())),
+        };
         let captures = self.collect_captures(None, params, &[], &body_stmt);
         if !captures.is_empty() {
             return false;

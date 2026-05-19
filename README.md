@@ -18,7 +18,7 @@ fn draw_rect(x: Int, y: Int, {width: Int, height: Int? = 100}) -> Int {
 print(draw_rect(0, 0, width: 20, height: 10));
 ```
 
-Outputs `200`. More language details: [LANG.md](LANG.md).
+Outputs `200`. More language details: [lang.lollipopkit.com](https://lang.lollipopkit.com).
 
 ### Examples
 
@@ -46,6 +46,7 @@ Run any example: `lk examples/syntax/closure.lk`
 - Rust-inspired syntax with first-class named parameters
 - Deterministic bytecode VM with optional concurrency runtime
 - Batteries-included standard library and LSP-backed tooling
+- Project website source lives in `website/` and powers [lang.lollipopkit.com](https://lang.lollipopkit.com).
 
 ## Features
 

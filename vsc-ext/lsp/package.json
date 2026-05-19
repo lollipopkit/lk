@@ -2,7 +2,7 @@
   "name": "lk-lsp",
   "displayName": "LK Language Support",
   "description": "LK language support for Visual Studio Code, including syntax highlighting, snippets, and LSP features",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "lollipopkit",
   "license": "Apache-2.0",
   "author": {

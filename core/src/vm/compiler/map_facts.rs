@@ -10,6 +10,7 @@ impl FunctionBuilder {
     pub(crate) fn normalized_value_fact(ty: &Type) -> Option<Type> {
         match ty {
             Type::Int => Some(Type::Int),
+            Type::Float => Some(Type::Float),
             Type::List(_) => Some(Type::List(Box::new(Type::Any))),
             Type::Map(_, _) => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
             Type::Optional(inner) => Self::normalized_value_fact(inner),
@@ -69,6 +70,10 @@ impl FunctionBuilder {
         self.list_value_adoptable.remove(&list_reg);
     }
 
+    pub(crate) fn record_list_length(&mut self, list_reg: u16, len: usize) {
+        self.list_lengths.insert(list_reg, len);
+    }
+
     pub(crate) fn mark_map_lookup_result(&mut self, dst: u16, map_reg: u16) {
         let Some(value_fact) = self.map_value_types.get(&map_reg).cloned() else {
             return;
@@ -81,6 +86,18 @@ impl FunctionBuilder {
             return;
         };
         self.apply_type_fact(dst, &value_fact);
+    }
+
+    pub(crate) fn mark_list_lookup_result_if_in_bounds(&mut self, dst: u16, list_reg: u16, index: i64) {
+        let Some(len) = self.list_lengths.get(&list_reg).copied() else {
+            return;
+        };
+        let Some(index) = normalize_list_index(index, len) else {
+            return;
+        };
+        if index < len {
+            self.mark_list_lookup_result(dst, list_reg);
+        }
     }
 
     pub(crate) fn update_list_value_type_after_write(&mut self, list_reg: u16, value_reg: u16) {
@@ -131,6 +148,7 @@ impl FunctionBuilder {
     fn val_value_fact(value: &Val) -> Option<Type> {
         match value {
             Val::Int(_) => Some(Type::Int),
+            Val::Float(_) => Some(Type::Float),
             Val::List(_) => Some(Type::List(Box::new(Type::Any))),
             Val::Map(_) => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
             _ => None,
@@ -140,6 +158,9 @@ impl FunctionBuilder {
     fn reg_value_fact(&self, reg: u16) -> Option<Type> {
         if self.int_regs.contains(&reg) {
             return Some(Type::Int);
+        }
+        if self.float_regs.contains(&reg) {
+            return Some(Type::Float);
         }
         if self.list_locals.contains(&reg) {
             return Some(Type::List(Box::new(Type::Any)));
@@ -161,6 +182,9 @@ impl FunctionBuilder {
                     if self.int_regs.contains(&reg) {
                         return Some(Type::Int);
                     }
+                    if self.float_regs.contains(&reg) {
+                        return Some(Type::Float);
+                    }
                     if self.list_locals.contains(&reg) {
                         return Some(Type::List(Box::new(Type::Any)));
                     }
@@ -172,8 +196,13 @@ impl FunctionBuilder {
             }
             Expr::Paren(inner) => self.expr_value_fact(inner),
             Expr::Bin(left, op, right) if !matches!(op, BinOp::Div) && op.is_arith() => {
-                (self.expr_value_fact(left) == Some(Type::Int) && self.expr_value_fact(right) == Some(Type::Int))
-                    .then_some(Type::Int)
+                let left = self.expr_value_fact(left);
+                let right = self.expr_value_fact(right);
+                match (left, right) {
+                    (Some(Type::Int), Some(Type::Int)) => Some(Type::Int),
+                    (Some(Type::Int | Type::Float), Some(Type::Int | Type::Float)) => Some(Type::Float),
+                    _ => None,
+                }
             }
             Expr::Access(base, field) => self
                 .list_value_fact_for_base(base.as_ref(), field.as_ref())
@@ -213,12 +242,12 @@ impl FunctionBuilder {
         }
 
         if args.len() == 1 {
-            return self.list_value_fact_for_base(receiver.as_ref(), args[0].as_ref());
+            return self.list_get_value_fact_for_base(receiver.as_ref(), args[0].as_ref());
         }
         if args.len() == 2
             && matches!(receiver.as_ref(), Expr::Var(name) if name == "list" && self.lookup(name).is_none())
         {
-            return self.list_value_fact_for_base(args[0].as_ref(), args[1].as_ref());
+            return self.list_get_value_fact_for_base(args[0].as_ref(), args[1].as_ref());
         }
         None
     }
@@ -254,14 +283,29 @@ impl FunctionBuilder {
     }
 
     fn list_value_fact_for_base(&self, base: &Expr, index: &Expr) -> Option<Type> {
-        if !matches!(self.expr_value_fact(index), Some(Type::Int)) {
-            return None;
-        }
         let Expr::Var(name) = base else {
             return None;
         };
         let reg = self.lookup(name)?;
+        let Expr::Val(Val::Int(index)) = index else {
+            return None;
+        };
+        let len = self.list_lengths.get(&reg).copied()?;
+        let index = normalize_list_index(*index, len)?;
+        if index >= len {
+            return None;
+        }
         self.list_value_types.get(&reg).cloned()
+    }
+
+    fn list_get_value_fact_for_base(&self, base: &Expr, index: &Expr) -> Option<Type> {
+        let Expr::Val(Val::Int(value)) = index else {
+            return None;
+        };
+        if *value < 0 {
+            return None;
+        }
+        self.list_value_fact_for_base(base, index)
     }
 
     fn direct_call_return_value_fact(&self, name: &str) -> Option<Type> {
@@ -276,4 +320,12 @@ impl FunctionBuilder {
 enum ContainerFactKind {
     List,
     Map,
+}
+
+fn normalize_list_index(index: i64, len: usize) -> Option<usize> {
+    if index >= 0 {
+        return usize::try_from(index).ok();
+    }
+    let len = i64::try_from(len).ok()?;
+    usize::try_from(len.checked_add(index)?).ok()
 }

@@ -283,6 +283,26 @@ fn opcode_compare_branch_fusion_skips_temp_bool_register_write() {
 }
 
 #[test]
+fn opcode_compare_imm_branch_fusion_skips_temp_bool_register_write() {
+    let _guard = METRICS_LOCK.lock().expect("metrics lock");
+    vm_runtime_metrics_reset();
+    let function = cmp_branch_function(Op::CmpGtImm(2, 0, 900));
+    let mut vm = Vm::new();
+    let mut ctx = VmContext::new();
+
+    let out = vm
+        .exec_with(&function, &mut ctx, Some(&[Val::Int(901), Val::Nil]))
+        .expect("execute fused immediate compare branch");
+    assert_eq!(out, Val::Int(1));
+
+    let metrics = vm_runtime_metrics_snapshot();
+    assert_eq!(
+        metrics.register_writes, 3,
+        "fused immediate compare+branch should write arguments and selected return constant, not the temporary bool"
+    );
+}
+
+#[test]
 fn opcode_for_range_loop_fuses_adjacent_step() {
     let function = empty_range_loop_function();
     let mut vm = Vm::new();

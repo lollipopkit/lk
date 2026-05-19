@@ -7,7 +7,7 @@ impl FunctionBuilder {
         let is_const_target = self.const_names.contains(name);
         if !is_const_target && self.try_emit_simple_self_assign(name, value) {
             self.forget_known_value(name);
-            if self.global_defs.contains(name)
+            if self.should_export_global_write(name)
                 && let Some(idx) = self.lookup(name)
             {
                 let kname = self.k(Val::from_str(name));
@@ -32,7 +32,7 @@ impl FunctionBuilder {
                 if let Some(val) = const_value {
                     let k = self.k(val);
                     self.emit(Op::LoadK(idx, k));
-                    if self.global_defs.contains(name) {
+                    if self.should_export_global_write(name) {
                         let kname = self.k(Val::from_str(name));
                         self.emit(Op::DefineGlobal(kname, idx));
                     }
@@ -40,7 +40,7 @@ impl FunctionBuilder {
                 }
                 if !FunctionBuilder::expr_contains_call(value) {
                     self.emit_expr_into(idx, value);
-                    if self.global_defs.contains(name) {
+                    if self.should_export_global_write(name) {
                         let kname = self.k(Val::from_str(name));
                         self.emit(Op::DefineGlobal(kname, idx));
                     }

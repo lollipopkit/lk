@@ -19,7 +19,8 @@ use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{
     AccessIc, CallIc, CallReturnLayout, ClosureFastCache, ForRangeState, GlobalEntry, IndexIc, PackedArithOp,
-    PackedCmpImmOp, PackedCmpOp, PackedHotEntry, PackedHotKind, PackedHotSlot, PackedRangeTail, TinyCallPlan, VmCaches,
+    PackedCmpImmOp, PackedCmpOp, PackedHotCallKind, PackedHotEntry, PackedHotKind, PackedHotSlot, PackedRangeTail,
+    TinyCallPlan, VmCaches,
 };
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan, RegisterWindowRef};
 use crate::vm::{
@@ -60,13 +61,6 @@ use hot_values::*;
 use named_args::load_named_pairs;
 use stats::*;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PackedHotCallKind {
-    Generic,
-    ClosureExact,
-    Exact,
-}
-
 fn hot_call_operands(kind: &PackedHotKind) -> Option<(u16, u16, u8, u8, PackedHotCallKind)> {
     match kind {
         PackedHotKind::Call { f, base, argc, retc } => Some((*f, *base, *argc, *retc, PackedHotCallKind::Generic)),
@@ -74,6 +68,14 @@ fn hot_call_operands(kind: &PackedHotKind) -> Option<(u16, u16, u8, u8, PackedHo
             Some((*f, *base, *argc, *retc, PackedHotCallKind::ClosureExact))
         }
         PackedHotKind::CallExact { f, base, argc, retc } => Some((*f, *base, *argc, *retc, PackedHotCallKind::Exact)),
+        PackedHotKind::MoveCall {
+            f,
+            base,
+            argc,
+            retc,
+            call_kind,
+            ..
+        } => Some((*f, *base, *argc, *retc, *call_kind)),
         _ => None,
     }
 }
@@ -209,6 +211,11 @@ pub(super) fn run_packed_code(
                         }
                         if let Some((f, base, argc, retc, call_kind)) = hot_call_operands(&slot.kind) {
                             validate_hot_exact_call(regs, f, argc, call_kind)?;
+                            if let PackedHotKind::MoveCall { moves, .. } = &slot.kind {
+                                for (dst, src) in moves {
+                                    assign_reg(frame_raw, regs, *dst as usize, regs[*src as usize].clone());
+                                }
+                            }
                             if let Some(value) = call::run_call_packed(
                                 frame_raw,
                                 regs,
@@ -273,7 +280,7 @@ pub(super) fn run_packed_code(
             }
             record_build_attempt();
             record_quickening_build_attempt();
-            if let Some(entry) = build_hot_slot(code32, pc, word, raw_tag) {
+            if let Some(entry) = build_hot_slot(code32, decoded, pc, word, raw_tag) {
                 record_quickening_build_success();
                 record_build_success();
                 let next_pc = entry.next_pc;
@@ -294,6 +301,11 @@ pub(super) fn run_packed_code(
                 if let Some((f_reg, base_reg, argc_count, retc_count, call_kind)) = hot_call_operands(&entry.kind) {
                     let next_pc = entry.next_pc;
                     validate_hot_exact_call(regs, f_reg, argc_count, call_kind)?;
+                    if let PackedHotKind::MoveCall { moves, .. } = &entry.kind {
+                        for (dst, src) in moves {
+                            assign_reg(frame_raw, regs, *dst as usize, regs[*src as usize].clone());
+                        }
+                    }
                     if packed_hot.len() <= pc {
                         packed_hot.resize(pc + 1, None);
                     }

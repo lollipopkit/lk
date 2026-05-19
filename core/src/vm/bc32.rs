@@ -6,6 +6,7 @@ use crate::val::Val;
 use std::sync::Arc;
 use tracing::info;
 
+mod compare;
 mod decoded;
 mod encode_support;
 mod format;
@@ -47,6 +48,9 @@ fn pack_typed_arith_or_rk(tag: Tag, ext_op: u8, d: u16, a: u16, b: u16) -> Resul
 }
 
 fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
+    if let Some(encoded) = compare::encode_compare_op(op) {
+        return encoded;
+    }
     match *op {
         Op::AddRangeCountImm { .. } => Err(Bc32Reject::UnsupportedOpcode {
             opcode: "AddRangeCountImm",
@@ -118,79 +122,7 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
             Ok(EncodedOp::new(word, reg_ext))
         }
-        Op::CmpEq(d, a, b) => {
-            let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
-            let word = pack(Tag::Eq, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
-            let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpNe(d, a, b) => {
-            let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
-            let word = pack(Tag::Ne, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
-            let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpLt(d, a, b) => {
-            let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
-            let word = pack(Tag::Lt, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
-            let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpLe(d, a, b) => {
-            let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
-            let word = pack(Tag::Le, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
-            let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpGt(d, a, b) => {
-            let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
-            let word = pack(Tag::Gt, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
-            let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpGe(d, a, b) => {
-            let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
-            let word = pack(Tag::Ge, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
-            let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
-            Ok(EncodedOp::new(word, reg_ext))
-        }
         Op::CmpI { dst, a, b, kind } => Ok(pack_cmp_i(dst, a, b, kind)),
-        Op::CmpEqImm(d, a, imm) => {
-            ensure_i8_range("CmpEqImm", "imm", imm as i32)?;
-            let word = pack(Tag::CmpEqImm, 0, d as u8, a as u8, (imm as i8) as u8);
-            let reg_ext = pack_reg_ext_bits(d, a, 0);
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpNeImm(d, a, imm) => {
-            ensure_i8_range("CmpNeImm", "imm", imm as i32)?;
-            let word = pack(Tag::CmpNeImm, 0, d as u8, a as u8, (imm as i8) as u8);
-            let reg_ext = pack_reg_ext_bits(d, a, 0);
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpLtImm(d, a, imm) => {
-            ensure_i8_range("CmpLtImm", "imm", imm as i32)?;
-            let word = pack(Tag::CmpLtImm, 0, d as u8, a as u8, (imm as i8) as u8);
-            let reg_ext = pack_reg_ext_bits(d, a, 0);
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpLeImm(d, a, imm) => {
-            ensure_i8_range("CmpLeImm", "imm", imm as i32)?;
-            let word = pack(Tag::CmpLeImm, 0, d as u8, a as u8, (imm as i8) as u8);
-            let reg_ext = pack_reg_ext_bits(d, a, 0);
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpGtImm(d, a, imm) => {
-            ensure_i8_range("CmpGtImm", "imm", imm as i32)?;
-            let word = pack(Tag::CmpGtImm, 0, d as u8, a as u8, (imm as i8) as u8);
-            let reg_ext = pack_reg_ext_bits(d, a, 0);
-            Ok(EncodedOp::new(word, reg_ext))
-        }
-        Op::CmpGeImm(d, a, imm) => {
-            ensure_i8_range("CmpGeImm", "imm", imm as i32)?;
-            let word = pack(Tag::CmpGeImm, 0, d as u8, a as u8, (imm as i8) as u8);
-            let reg_ext = pack_reg_ext_bits(d, a, 0);
-            Ok(EncodedOp::new(word, reg_ext))
-        }
         Op::Jmp(ofs) => Ok(EncodedOp::new(
             ((encode_tag_with_flags(Tag::Jmp, 0) as u32) << 24) | (ofs as i32 as u32 & 0x00FF_FFFF),
             None,

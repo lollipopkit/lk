@@ -801,6 +801,7 @@ pub(super) fn exec_hot_slot(
         PackedHotKind::Call { .. } | PackedHotKind::CallClosureExact { .. } | PackedHotKind::CallExact { .. } => {
             unreachable!("call hot slots are handled by run_packed_code")
         }
+        PackedHotKind::MoveCall { .. } => unreachable!("move+call hot slots are handled by run_packed_code"),
         PackedHotKind::AddIntImm { dst, src, imm } => {
             let dst_idx = *dst as usize;
             let src_idx = *src as usize;
@@ -881,6 +882,34 @@ pub(super) fn exec_hot_slot(
                 },
             }
             None
+        }
+        PackedHotKind::CmpImmJmp { op, src, imm, ofs } => {
+            let src_idx = *src as usize;
+            let imm_i64 = *imm as i64;
+            let cmp = match (regs.get(src_idx), op) {
+                (Some(Val::Int(x)), PackedCmpImmOp::Eq) => *x == imm_i64,
+                (Some(Val::Int(x)), PackedCmpImmOp::Ne) => *x != imm_i64,
+                (Some(Val::Int(x)), PackedCmpImmOp::Lt) => *x < imm_i64,
+                (Some(Val::Int(x)), PackedCmpImmOp::Le) => *x <= imm_i64,
+                (Some(Val::Int(x)), PackedCmpImmOp::Gt) => *x > imm_i64,
+                (Some(Val::Int(x)), PackedCmpImmOp::Ge) => *x >= imm_i64,
+                _ => {
+                    let imm_val = Val::Int(imm_i64);
+                    match op {
+                        PackedCmpImmOp::Eq => rk_read(regs, &func.consts, *src) == &imm_val,
+                        PackedCmpImmOp::Ne => rk_read(regs, &func.consts, *src) != &imm_val,
+                        PackedCmpImmOp::Lt => BinOp::Lt.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
+                        PackedCmpImmOp::Le => BinOp::Le.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
+                        PackedCmpImmOp::Gt => BinOp::Gt.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
+                        PackedCmpImmOp::Ge => BinOp::Ge.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
+                    }
+                }
+            };
+            if !cmp {
+                Some(((pc as isize) + (*ofs as isize)) as usize)
+            } else {
+                None
+            }
         }
         PackedHotKind::CmpLtImmJmp { r, imm, ofs } => {
             // Fused: if r < imm, fall through; else jump.

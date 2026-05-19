@@ -40,6 +40,12 @@ pub(crate) const EXT_OP_CALL_NAMED_FALLBACK: u8 = 29;
 pub(crate) const EXT_OP_CALL_METHOD0: u8 = 30;
 pub(crate) const EXT_OP_CALL_GLOBAL_METHOD0: u8 = 31;
 pub(crate) const EXT_OP_STR_CONCAT_TO_STR: u8 = 32;
+pub(crate) const EXT_OP_CMP_EQ_IMM16: u8 = 33;
+pub(crate) const EXT_OP_CMP_NE_IMM16: u8 = 34;
+pub(crate) const EXT_OP_CMP_LT_IMM16: u8 = 35;
+pub(crate) const EXT_OP_CMP_LE_IMM16: u8 = 36;
+pub(crate) const EXT_OP_CMP_GT_IMM16: u8 = 37;
+pub(crate) const EXT_OP_CMP_GE_IMM16: u8 = 38;
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -400,6 +406,18 @@ pub(crate) fn decode_ext_op_at(code32: &[u32], pc: usize) -> Option<(Op, usize)>
         return None;
     }
     let op = ((word >> 16) & 0xFF) as u8;
+    if super::compare::is_cmp_imm16_op(op) {
+        let reg_ext = code32
+            .get(pc + 2)
+            .copied()
+            .filter(|word| ((word >> 24) & 0xFF) as u8 == RAW_TAG_REG_EXT);
+        let (hi_dst, hi_src, _) = unpack_reg_ext(reg_ext);
+        let dst = combine_reg(hi_dst, ((word >> 8) & 0xFF) as u16);
+        let src = combine_reg(hi_src, (word & 0xFF) as u16);
+        let imm = (((((ext >> 16) & 0xFF) as u16) << 8) | (((ext >> 8) & 0xFF) as u16)) as i16;
+        let next_pc = if reg_ext.is_some() { pc + 3 } else { pc + 2 };
+        return super::compare::decode_cmp_imm16_op(op, dst, src, imm).map(|op| (op, next_pc));
+    }
     if op != EXT_OP_LIST_SET_I && op != EXT_OP_CMP_I && op != EXT_OP_CALL_NAMED_FALLBACK {
         let reg_ext = code32
             .get(pc + 2)

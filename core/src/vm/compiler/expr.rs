@@ -20,17 +20,15 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use super::builder::ArithFlavor;
+use super::ArithFlavor;
 use crate::{
     expr::{Expr, TemplateStringPart},
     op::{BinOp, UnaryOp},
     stmt::Stmt,
     val::Val,
     vm::{
-        ClosureProto, IntCmpKind, Op,
-        bytecode::{rk_as_const, rk_index, rk_is_const, rk_make_const},
-        capture_names_from_specs, closure_code_cell, closure_empty_captures, closure_empty_closure_cell,
-        closure_empty_env, closure_empty_upvalues,
+        ClosureProto, IntCmpKind, Op, bytecode::rk_is_const, capture_names_from_specs, closure_code_cell,
+        closure_empty_captures, closure_empty_closure_cell, closure_empty_env, closure_empty_upvalues,
     },
 };
 
@@ -87,10 +85,10 @@ impl FunctionBuilder {
             return None;
         }
         let (prefix, returned) = Self::collect_inline_straight_line_body(closure.body.as_ref())?;
-        if prefix.is_empty() {
+        if Self::expr_contains_call(returned) {
             return None;
         }
-        if Self::expr_contains_call(returned) {
+        if !prefix.is_empty() {
             return None;
         }
         let mut allowed_names = closure.params.iter().cloned().collect::<HashSet<_>>();
@@ -253,10 +251,7 @@ impl FunctionBuilder {
                 self.emit(Op::LoadK(dst, kidx));
             }
             Expr::Var(name) => {
-                if self.export_toplevel_globals && self.global_defs.contains(name) {
-                    let kname = self.k(Val::from_str(name.as_str()));
-                    self.emit(Op::LoadGlobal(dst, kname));
-                } else if let Some(src) = self.lookup(name) {
+                if let Some(src) = self.lookup(name) {
                     if src != dst {
                         self.emit(Op::Move(dst, src));
                     }
@@ -309,153 +304,6 @@ impl FunctionBuilder {
                 | BinOp::Gt
                 | BinOp::Ge
         )
-    }
-
-    fn try_const_operand(&mut self, expr: &Expr) -> Option<u16> {
-        match expr {
-            Expr::Val(v) => Some(self.k(v.clone())),
-            Expr::Var(name) => {
-                if self.const_names.contains(name)
-                    && let Some(val) = self.lookup_const(name)
-                {
-                    let val = val.clone();
-                    Some(self.k(val))
-                } else {
-                    None
-                }
-            }
-            Expr::Paren(inner) => self.try_const_operand(inner),
-            _ => {
-                let val = self.try_eval_const_expr(expr)?;
-                Some(self.k(val))
-            }
-        }
-    }
-
-    pub(super) fn try_small_int_const(&mut self, expr: &Expr) -> Option<i16> {
-        fn fits_i8(value: i64) -> Option<i16> {
-            if (-128..=127).contains(&value) {
-                Some(value as i16)
-            } else {
-                None
-            }
-        }
-
-        match expr {
-            Expr::Val(Val::Int(v)) => fits_i8(*v),
-            Expr::Var(name) if self.const_names.contains(name) => self.lookup_const(name).and_then(|val| match val {
-                Val::Int(v) => fits_i8(*v),
-                _ => None,
-            }),
-            Expr::Var(_) => None,
-            Expr::Paren(inner) => self.try_small_int_const(inner),
-            _ => match self.try_eval_const_expr(expr)? {
-                Val::Int(v) => fits_i8(v),
-                _ => None,
-            },
-        }
-    }
-
-    fn expr_operand(&mut self, expr: &Expr) -> u16 {
-        if let Expr::Var(name) = expr {
-            // For simple local variable lookups, return the register directly
-            // without allocating a new register and emitting LoadLocal.
-            // This is safe because rk operands are read-only in binary ops.
-            if self.export_toplevel_globals && self.global_defs.contains(name) {
-                self.expr(expr)
-            } else if let Some(idx) = self.lookup(name) {
-                idx // return variable register directly, no LoadLocal
-            } else if let Some(kidx) = self.try_const_operand(expr) {
-                rk_make_const(kidx)
-            } else {
-                self.expr(expr) // global lookup needs LoadGlobal
-            }
-        } else if let Some(kidx) = self.try_const_operand(expr) {
-            rk_make_const(kidx)
-        } else {
-            self.expr(expr)
-        }
-    }
-
-    fn operand_to_reg(&mut self, operand: u16) -> u16 {
-        if rk_is_const(operand) {
-            let dst = self.alloc();
-            let kidx = rk_as_const(operand);
-            self.emit(Op::LoadK(dst, kidx));
-            dst
-        } else {
-            operand
-        }
-    }
-
-    fn try_emit_binop_imm(&mut self, dst: u16, left_operand: u16, imm: i16, op: &BinOp, flavor: ArithFlavor) -> bool {
-        if rk_is_const(left_operand) {
-            return false;
-        }
-        let left_reg = rk_index(left_operand);
-
-        let mut emit_add_int_imm = |value: i16| {
-            self.emit(Op::AddIntImm(dst, left_reg, value));
-            true
-        };
-
-        match op {
-            BinOp::Add => {
-                if flavor != ArithFlavor::Float {
-                    return emit_add_int_imm(imm);
-                }
-            }
-            BinOp::Sub => {
-                if flavor != ArithFlavor::Float
-                    && let Some(neg) = imm.checked_neg()
-                    && (-128..=127).contains(&neg)
-                {
-                    return emit_add_int_imm(neg);
-                }
-            }
-            BinOp::Eq => {
-                self.emit(Op::CmpEqImm(dst, left_reg, imm));
-                return true;
-            }
-            BinOp::Ne => {
-                self.emit(Op::CmpNeImm(dst, left_reg, imm));
-                return true;
-            }
-            BinOp::Lt => {
-                if (-128..=127).contains(&imm) {
-                    self.emit(Op::CmpLtImm(dst, left_reg, imm));
-                } else {
-                    // Large immediate: emit LoadK+CmpLt (both bc32-packable)
-                    let k = self.k(Val::Int(imm as i64));
-                    let tmp = self.alloc();
-                    self.emit(Op::LoadK(tmp, k));
-                    self.emit(Op::CmpLt(dst, left_reg, tmp));
-                }
-                return true;
-            }
-            BinOp::Le => {
-                if (-128..=127).contains(&imm) {
-                    self.emit(Op::CmpLeImm(dst, left_reg, imm));
-                } else {
-                    let k = self.k(Val::Int(imm as i64));
-                    let tmp = self.alloc();
-                    self.emit(Op::LoadK(tmp, k));
-                    self.emit(Op::CmpLe(dst, left_reg, tmp));
-                }
-                return true;
-            }
-            BinOp::Gt => {
-                self.emit(Op::CmpGtImm(dst, left_reg, imm));
-                return true;
-            }
-            BinOp::Ge => {
-                self.emit(Op::CmpGeImm(dst, left_reg, imm));
-                return true;
-            }
-            _ => {}
-        }
-
-        false
     }
 
     fn compile_bin_expr(&mut self, root: &Expr) -> u16 {

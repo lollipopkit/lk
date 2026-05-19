@@ -310,6 +310,8 @@ impl TestLanguageServer {
             T::Mul => "Operator: *".to_string(),
             T::Div => "Operator: /".to_string(),
             T::Mod => "Operator: %".to_string(),
+            T::BitAnd => "Operator: &".to_string(),
+            T::BitNot => "Operator: ~".to_string(),
             T::Dot => "Accessor: .".to_string(),
             T::Colon => "Symbol: :".to_string(),
             T::Comma => "Symbol: ,".to_string(),

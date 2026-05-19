@@ -27,6 +27,13 @@ pub(in crate::vm::vm) enum PackedCmpOp {
     Ge,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::vm::vm) enum PackedHotCallKind {
+    Generic,
+    ClosureExact,
+    Exact,
+}
+
 #[derive(Clone)]
 pub(in crate::vm::vm) enum PackedHotKind {
     Move {
@@ -192,6 +199,12 @@ pub(in crate::vm::vm) enum PackedHotKind {
         src: u16,
         imm: i16,
     },
+    CmpImmJmp {
+        op: PackedCmpImmOp,
+        src: u16,
+        imm: i16,
+        ofs: i16,
+    },
     Cmp {
         op: PackedCmpOp,
         dst: u16,
@@ -274,6 +287,14 @@ pub(in crate::vm::vm) enum PackedHotKind {
         base: u16,
         argc: u8,
         retc: u8,
+    },
+    MoveCall {
+        moves: Vec<(u16, u16)>,
+        f: u16,
+        base: u16,
+        argc: u8,
+        retc: u8,
+        call_kind: PackedHotCallKind,
     },
     CmpLtImmJmp {
         r: u16,

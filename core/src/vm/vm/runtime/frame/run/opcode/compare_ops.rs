@@ -2,12 +2,12 @@ use anyhow::Result;
 
 use crate::op::BinOp;
 use crate::val::Val;
-use crate::vm::bytecode::IntCmpKind;
+use crate::vm::bytecode::{IntCmpKind, Op};
 use crate::vm::vm::frame::FrameState;
 use crate::vm::vm::quickening::{self, QuickeningSite};
 
 use super::super::helpers::assign_reg;
-use super::super::math::rk_read;
+use super::super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, rk_read};
 
 #[inline]
 #[allow(clippy::too_many_arguments)]
@@ -148,6 +148,153 @@ fn branch_after_cmp(pc: usize, ofs: i16, result: bool) -> usize {
     } else {
         ((pc as isize) + 1 + (ofs as isize)) as usize
     }
+}
+
+#[inline]
+pub(super) fn run_cmp_eq_imm_jmp_false(
+    regs: &[Val],
+    consts: &[Val],
+    pc: usize,
+    ofs: i16,
+    a: u16,
+    imm: i16,
+) -> Result<usize> {
+    let imm_i64 = imm as i64;
+    let result = match rk_read(regs, consts, a) {
+        Val::Int(x) => *x == imm_i64,
+        Val::Float(x) => *x == imm_i64 as f64,
+        other => BinOp::Eq.cmp(other, &Val::Int(imm_i64))?,
+    };
+    Ok(branch_after_cmp(pc, ofs, result))
+}
+
+#[inline]
+pub(super) fn run_cmp_ne_imm_jmp_false(
+    regs: &[Val],
+    consts: &[Val],
+    pc: usize,
+    ofs: i16,
+    a: u16,
+    imm: i16,
+) -> Result<usize> {
+    let imm_i64 = imm as i64;
+    let result = match rk_read(regs, consts, a) {
+        Val::Int(x) => *x != imm_i64,
+        Val::Float(x) => *x != imm_i64 as f64,
+        other => BinOp::Ne.cmp(other, &Val::Int(imm_i64))?,
+    };
+    Ok(branch_after_cmp(pc, ofs, result))
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_cmp_ord_imm_jmp_false(
+    regs: &[Val],
+    consts: &[Val],
+    pc: usize,
+    ofs: i16,
+    a: u16,
+    imm: i16,
+    int_cmp: impl FnOnce(i64, i64) -> bool,
+    float_cmp: impl FnOnce(f64, f64) -> bool,
+    fallback: BinOp,
+) -> Result<usize> {
+    let imm_i64 = imm as i64;
+    let result = match rk_read(regs, consts, a) {
+        Val::Int(x) => int_cmp(*x, imm_i64),
+        Val::Float(x) => float_cmp(*x, imm_i64 as f64),
+        other => fallback.cmp(other, &Val::Int(imm_i64))?,
+    };
+    Ok(branch_after_cmp(pc, ofs, result))
+}
+
+pub(super) fn run_cmp_imm_or_branch(
+    frame_raw: *mut FrameState<'_>,
+    regs: &mut [Val],
+    consts: &[Val],
+    code: &[Op],
+    pc: usize,
+    op: &Op,
+) -> Result<usize> {
+    let (dst, a, imm, kind) = match *op {
+        Op::CmpEqImm(dst, a, imm) => (dst, a, imm, IntCmpKind::Eq),
+        Op::CmpNeImm(dst, a, imm) => (dst, a, imm, IntCmpKind::Ne),
+        Op::CmpLtImm(dst, a, imm) => (dst, a, imm, IntCmpKind::Lt),
+        Op::CmpLeImm(dst, a, imm) => (dst, a, imm, IntCmpKind::Le),
+        Op::CmpGtImm(dst, a, imm) => (dst, a, imm, IntCmpKind::Gt),
+        Op::CmpGeImm(dst, a, imm) => (dst, a, imm, IntCmpKind::Ge),
+        _ => return Ok(pc + 1),
+    };
+    if let Some(Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs)) = code.get(pc + 1)
+        && *r == dst
+    {
+        return match kind {
+            IntCmpKind::Eq => run_cmp_eq_imm_jmp_false(regs, consts, pc, *ofs, a, imm),
+            IntCmpKind::Ne => run_cmp_ne_imm_jmp_false(regs, consts, pc, *ofs, a, imm),
+            IntCmpKind::Lt => {
+                run_cmp_ord_imm_jmp_false(regs, consts, pc, *ofs, a, imm, |x, y| x < y, |x, y| x < y, BinOp::Lt)
+            }
+            IntCmpKind::Le => {
+                run_cmp_ord_imm_jmp_false(regs, consts, pc, *ofs, a, imm, |x, y| x <= y, |x, y| x <= y, BinOp::Le)
+            }
+            IntCmpKind::Gt => {
+                run_cmp_ord_imm_jmp_false(regs, consts, pc, *ofs, a, imm, |x, y| x > y, |x, y| x > y, BinOp::Gt)
+            }
+            IntCmpKind::Ge => {
+                run_cmp_ord_imm_jmp_false(regs, consts, pc, *ofs, a, imm, |x, y| x >= y, |x, y| x >= y, BinOp::Ge)
+            }
+        };
+    }
+
+    match kind {
+        IntCmpKind::Eq => cmp_eq_imm(frame_raw, regs, consts, dst, a, imm, BinOp::Eq)?,
+        IntCmpKind::Ne => cmp_ne_imm(frame_raw, regs, consts, dst, a, imm, BinOp::Ne)?,
+        IntCmpKind::Lt => cmp_ord_imm(
+            frame_raw,
+            regs,
+            consts,
+            dst,
+            a,
+            imm,
+            |x, y| x < y,
+            |x, y| x < y,
+            BinOp::Lt,
+        )?,
+        IntCmpKind::Le => cmp_ord_imm(
+            frame_raw,
+            regs,
+            consts,
+            dst,
+            a,
+            imm,
+            |x, y| x <= y,
+            |x, y| x <= y,
+            BinOp::Le,
+        )?,
+        IntCmpKind::Gt => cmp_ord_imm(
+            frame_raw,
+            regs,
+            consts,
+            dst,
+            a,
+            imm,
+            |x, y| x > y,
+            |x, y| x > y,
+            BinOp::Gt,
+        )?,
+        IntCmpKind::Ge => cmp_ord_imm(
+            frame_raw,
+            regs,
+            consts,
+            dst,
+            a,
+            imm,
+            |x, y| x >= y,
+            |x, y| x >= y,
+            BinOp::Ge,
+        )?,
+    }
+    Ok(pc + 1)
 }
 
 #[inline]

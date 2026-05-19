@@ -461,8 +461,12 @@
           "match": "\\b(if|else|while|for|in|match|case|default|select|return|break|continue)\\b"
         },
         {
+          "name": "storage.type.lk",
+          "match": "\\b(let|const)\\b"
+        },
+        {
           "name": "keyword.declaration.lk",
-          "match": "\\b(let|const|fn|struct|type|trait|impl|import|from|as)\\b"
+          "match": "\\b(fn|struct|type|trait|impl|import|from|as)\\b"
         },
         {
           "name": "keyword.other.lk",
@@ -479,6 +483,14 @@
         {
           "name": "keyword.operator.logical.lk",
           "match": "(\\|\\||&&)"
+        },
+        {
+          "name": "keyword.operator.bitwise.shift.lk",
+          "match": "(<<|>>)"
+        },
+        {
+          "name": "keyword.operator.bitwise.lk",
+          "match": "[&|^~]"
         },
         {
           "name": "keyword.operator.nullish-coalescing.lk",

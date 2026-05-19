@@ -114,3 +114,70 @@ fn zero_arg_call_let_binds_reserved_return_slot_without_storelocal() {
         "zero-arg call results should have a stable reserved return slot"
     );
 }
+
+#[test]
+fn compound_assign_known_leaf_call_reads_target_slot_directly() {
+    let (function, _ctx, result) = compile_and_run(vec![
+        make_add1_function(),
+        make_let("total", Expr::Val(Val::Int(0)), false),
+        Stmt::CompoundAssign {
+            name: "total".to_string(),
+            op: BinOp::Add,
+            value: Box::new(Expr::Call("add1".to_string(), vec![Box::new(Expr::Val(Val::Int(4)))])),
+            span: None,
+        },
+        Stmt::Return {
+            value: Some(Box::new(Expr::Var("total".to_string()))),
+        },
+    ]);
+    let result = result.expect("vm exec");
+    assert_eq!(result, Val::Int(5));
+    assert!(
+        function.code.iter().all(|op| !matches!(op, Op::LoadLocal(_, _))),
+        "leaf closure RHS should not force a defensive LoadLocal in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn compound_assign_call_that_writes_target_preserves_old_lhs_value() {
+    let mutating_call = Stmt::Function {
+        name: "bump".to_string(),
+        params: Vec::new(),
+        param_types: Vec::new(),
+        return_type: None,
+        body: Box::new(Stmt::Block {
+            statements: vec![
+                Box::new(Stmt::Assign {
+                    name: "total".to_string(),
+                    value: Box::new(Expr::Val(Val::Int(10))),
+                    span: None,
+                }),
+                Box::new(Stmt::Return {
+                    value: Some(Box::new(Expr::Val(Val::Int(2)))),
+                }),
+            ],
+        }),
+        named_params: Vec::new(),
+    };
+    let (function, _ctx, result) = compile_and_run(vec![
+        make_let("total", Expr::Val(Val::Int(1)), false),
+        mutating_call,
+        Stmt::CompoundAssign {
+            name: "total".to_string(),
+            op: BinOp::Add,
+            value: Box::new(Expr::Call("bump".to_string(), Vec::new())),
+            span: None,
+        },
+        Stmt::Return {
+            value: Some(Box::new(Expr::Var("total".to_string()))),
+        },
+    ]);
+    let result = result.expect("vm exec");
+    assert_eq!(result, Val::Int(3));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::LoadLocal(_, _))),
+        "target-mutating RHS call must keep the defensive LoadLocal in {:?}",
+        function.code
+    );
+}

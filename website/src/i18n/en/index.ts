@@ -1,0 +1,94 @@
+import type { BaseTranslation } from '../i18n-types'
+
+const en: BaseTranslation = {
+  meta: {
+    lang: 'en',
+    title: 'LK Lang',
+    description:
+      'LK is a Rust-like scripting language with a bytecode VM, rich pattern matching, package imports, and a batteries-included standard library.',
+  },
+  nav: {
+    spec: 'Spec',
+    github: 'Github',
+    languageLabel: 'Language',
+  },
+  hero: {
+    eyebrow: 'Rust-like scripting language written in Rust',
+    title: 'Performant, lightweight, modern language.',
+    subtitle:
+      'LK gives you clear syntax, deterministic bytecode execution, structured pattern matching, and a practical standard library for embedding logic in applications, writing automation scripts, and moving complex decisions out of host code.',
+    primaryAction: 'Start',
+    secondaryAction: 'Read features',
+    previewLabel: 'LK syntax preview',
+  },
+  feature: {
+    kicker: 'Language Surface',
+    title: 'Dense syntax without hidden context.',
+    subtitle:
+      '`LANG.md` describes a language that keeps external input explicit, reserves keywords, supports Rust-style raw strings, and treats normal quoted strings as interpolation-ready.',
+    groups: {
+      expression: {
+        title: 'Modern expression core',
+        body:
+          'Template strings, nullish coalescing, right-associative ternaries, optional chaining, range literals, bitwise operators, and first-class closures live in the same compact expression grammar.',
+      },
+      collections: {
+        title: 'Lists and maps built in',
+        body:
+          'Heterogeneous collections support negative indexing, slicing, spread, dot access, compound assignment, list subtraction, map merges, and meta-method dispatch.',
+      },
+      patterns: {
+        title: 'Pattern matching everywhere',
+        body:
+          'Match arms, if let, while let, let destructuring, and for-loop destructuring cover literals, ranges, maps, lists, rest bindings, or-patterns, and guards.',
+      },
+      traits: {
+        title: 'Structs, traits, and methods',
+        body:
+          'Define records, implement traits, call methods through direct properties or runtime meta-method dispatch, and let display methods format values automatically.',
+      },
+    },
+  },
+  runtime: {
+    kicker: 'Runtime and Tooling',
+    title: 'From script to bytecode, diagnostics, LLVM IR, or executable.',
+    subtitle:
+      'LK can run a REPL, execute `.lk` files, type-check without executing, compile to `.lkb`, and route deeper compilation through LLVM-backed paths when those tools are available.',
+    rows: {
+      valueModel: 'Value model',
+      execution: 'Execution',
+      imports: 'Imports',
+      concurrency: 'Concurrency',
+    },
+  },
+  stdlib: {
+    kicker: 'Stdlib',
+    title: 'Useful modules are part of the language story.',
+  },
+  examples: {
+    title: 'Examples that mirror the current language reference.',
+    subtitle:
+      'These snippets focus on the behavior documented in `LANG.md`: named parameters, relative-safe imports, and collection-oriented higher-order helpers.',
+    namedParameters: 'Named parameters',
+    importForms: 'Import forms',
+    collectionPipelines: 'Collection pipelines',
+  },
+  start: {
+    kicker: 'CLI',
+    title: 'Use it from the terminal or embed the core runtime.',
+  },
+  spec: {
+    eyebrow: 'Language Reference',
+    title: 'LK language specification, rendered from LANG.md.',
+    subtitle:
+      'This page uses the repository `LANG.md` as its source and presents the parser, evaluator, statement, type, import, package, CLI, and runtime notes in a web-native layout.',
+    toc: 'On this page',
+  },
+  footer: {
+    brand: 'LK Lang',
+    home: 'Home',
+    spec: 'Spec',
+  },
+}
+
+export default en

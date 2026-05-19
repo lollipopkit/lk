@@ -360,7 +360,7 @@ impl<'a> Parser<'a> {
 
                     if !self.eof() && self.tokens[self.pos] == Token::Comma {
                         self.pos += 1;
-                    } else if self.tokens[self.pos] != Token::RParen {
+                    } else if self.eof() || self.tokens[self.pos] != Token::RParen {
                         return Err(anyhow!(self.err("Expected ',' or ')' in function call")));
                     }
                 }

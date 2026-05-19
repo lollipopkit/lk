@@ -12,6 +12,7 @@ impl FunctionBuilder {
             self.emit_expr_into(base + index as u16, expr);
         }
         self.emit(Op::BuildList { dst, base, len: count });
+        self.record_list_length(dst, items.len());
         if items.is_empty() {
             self.record_empty_list_value_type(dst);
         } else {
@@ -20,14 +21,26 @@ impl FunctionBuilder {
         }
     }
 
-    pub(crate) fn emit_list_access(&mut self, list_reg: u16, index_expr: &Expr) -> u16 {
+    pub(crate) fn emit_list_get_access(&mut self, list_reg: u16, index_expr: &Expr) -> u16 {
         let dst = self.alloc();
-        if let Expr::Val(Val::Int(index)) = index_expr
-            && let Ok(index) = i16::try_from(*index)
-        {
-            self.emit(Op::ListIndexI(dst, list_reg, index));
-            self.mark_list_lookup_result(dst, list_reg);
-            return dst;
+        if let Expr::Val(Val::Int(index)) = index_expr {
+            if *index < 0 {
+                let nil = self.k(Val::Nil);
+                self.emit(Op::LoadK(dst, nil));
+                return dst;
+            }
+            if let Some(len) = self.list_lengths.get(&list_reg).copied()
+                && usize::try_from(*index).ok().is_none_or(|index| index >= len)
+            {
+                let nil = self.k(Val::Nil);
+                self.emit(Op::LoadK(dst, nil));
+                return dst;
+            }
+            if let Ok(index_i16) = i16::try_from(*index) {
+                self.emit(Op::ListIndexI(dst, list_reg, index_i16));
+                self.mark_list_lookup_result_if_in_bounds(dst, list_reg, *index);
+                return dst;
+            }
         }
 
         let index_reg = if let Expr::Var(arg_name) = index_expr {
@@ -36,9 +49,6 @@ impl FunctionBuilder {
             self.expr(index_expr)
         };
         self.emit(Op::Access(dst, list_reg, index_reg));
-        if self.int_regs.contains(&index_reg) {
-            self.mark_list_lookup_result(dst, list_reg);
-        }
         dst
     }
 

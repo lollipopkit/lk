@@ -23,7 +23,6 @@ mod string_ops;
 
 use anyhow::{Result, anyhow};
 
-use crate::op::BinOp;
 use crate::val::{ClosureCapture, ClosureInit, ClosureValue, Type, Val};
 use crate::vm::RegionPlan;
 use crate::vm::alloc::RegionAllocator;
@@ -35,7 +34,6 @@ use crate::vm::vm::caches::{CallIc, CallReturnLayout, ClosureFastCache, ForRange
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan, RegisterWindowRef};
 
 use super::helpers::{advance_for_range_tail, assign_reg, frame_return_common, handle_return_common};
-use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm};
 use super::method_ops;
 use super::plan::build_named_call_plan;
 
@@ -141,69 +139,13 @@ pub(super) fn run_opcode_code(
                 arithmetic_ops::run_sub_float(frame_raw, regs, &f.consts, *dst, *a, *b)?;
                 pc += 1;
             }
-            Op::CmpEqImm(dst, a, imm) => {
-                cmp_eq_imm(frame_raw, regs, &f.consts, *dst, *a, *imm, BinOp::Eq)?;
-                pc += 1;
-            }
-            Op::CmpNeImm(dst, a, imm) => {
-                cmp_ne_imm(frame_raw, regs, &f.consts, *dst, *a, *imm, BinOp::Ne)?;
-                pc += 1;
-            }
-            Op::CmpLtImm(dst, a, imm) => {
-                cmp_ord_imm(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    *dst,
-                    *a,
-                    *imm,
-                    |x, y| x < y,
-                    |x, y| x < y,
-                    BinOp::Lt,
-                )?;
-                pc += 1;
-            }
-            Op::CmpLeImm(dst, a, imm) => {
-                cmp_ord_imm(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    *dst,
-                    *a,
-                    *imm,
-                    |x, y| x <= y,
-                    |x, y| x <= y,
-                    BinOp::Le,
-                )?;
-                pc += 1;
-            }
-            Op::CmpGtImm(dst, a, imm) => {
-                cmp_ord_imm(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    *dst,
-                    *a,
-                    *imm,
-                    |x, y| x > y,
-                    |x, y| x > y,
-                    BinOp::Gt,
-                )?;
-                pc += 1;
-            }
-            Op::CmpGeImm(dst, a, imm) => {
-                cmp_ord_imm(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    *dst,
-                    *a,
-                    *imm,
-                    |x, y| x >= y,
-                    |x, y| x >= y,
-                    BinOp::Ge,
-                )?;
-                pc += 1;
+            op @ (Op::CmpEqImm(..)
+            | Op::CmpNeImm(..)
+            | Op::CmpLtImm(..)
+            | Op::CmpLeImm(..)
+            | Op::CmpGtImm(..)
+            | Op::CmpGeImm(..)) => {
+                pc = compare_ops::run_cmp_imm_or_branch(frame_raw, regs, &f.consts, &f.code, pc, op)?;
             }
             Op::MulInt(dst, a, b) => {
                 arithmetic_ops::run_mul_int(frame_raw, regs, &f.consts, *dst, *a, *b)?;

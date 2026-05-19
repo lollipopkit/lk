@@ -171,11 +171,17 @@ impl LkAnalyzer {
 
                     let identifier: String = chars[ident_start..char_index].iter().collect();
 
+                    // Let TextMate scopes drive declaration keyword colors so themes
+                    // can render `let`/`const` consistently with Rust-style grammars.
+                    if matches!(identifier.as_str(), "let" | "const") {
+                        continue;
+                    }
+
                     // Check for keywords
                     let mut token_idx = match identifier.as_str() {
-                        "if" | "else" | "while" | "let" | "fn" | "return" | "break" | "continue" | "import"
-                        | "from" | "as" | "go" | "select" | "case" | "default" | "true" | "false" | "nil" | "spawn"
-                        | "chan" | "send" | "recv" => KEYWORD_IDX,
+                        "if" | "else" | "while" | "fn" | "return" | "break" | "continue" | "import" | "from" | "as"
+                        | "go" | "select" | "case" | "default" | "true" | "false" | "nil" | "spawn" | "chan"
+                        | "send" | "recv" => KEYWORD_IDX,
                         _ => VARIABLE_IDX,
                     };
 
@@ -455,10 +461,17 @@ impl LkAnalyzer {
                         j += 1;
                     }
                     let slice: &str = &line[ident_start..j];
+                    // Let TextMate scopes drive declaration keyword colors so themes
+                    // can render `let`/`const` consistently with Rust-style grammars.
+                    if matches!(slice, "let" | "const") {
+                        char_index = j;
+                        continue;
+                    }
+
                     let mut token_idx = match slice {
-                        "if" | "else" | "while" | "let" | "fn" | "return" | "break" | "continue" | "import"
-                        | "from" | "as" | "go" | "select" | "case" | "default" | "true" | "false" | "nil" | "spawn"
-                        | "chan" | "send" | "recv" => KEYWORD_IDX,
+                        "if" | "else" | "while" | "fn" | "return" | "break" | "continue" | "import" | "from" | "as"
+                        | "go" | "select" | "case" | "default" | "true" | "false" | "nil" | "spawn" | "chan"
+                        | "send" | "recv" => KEYWORD_IDX,
                         _ => VARIABLE_IDX,
                     };
                     // Detect function call by peeking next non-whitespace char

@@ -1,10 +1,13 @@
 mod builder;
+mod builder_facts;
+mod builder_support;
 mod const_eval;
 mod driver;
 mod expr;
 mod expr_call;
 mod expr_list;
 mod expr_map;
+mod expr_operands;
 mod expr_select;
 mod free_vars;
 mod map_facts;
@@ -14,6 +17,7 @@ mod ssa;
 mod stmt;
 
 pub(crate) use builder::FunctionBuilder;
+pub(crate) use builder_support::ArithFlavor;
 pub use driver::{Compiler, compile_program};
 pub use ssa::{
     BlockId, ParamId, SsaBlock, SsaFunction, SsaLoweringError, SsaRvalue, SsaStatement, SsaTerminator, ValueId,

@@ -38,7 +38,7 @@ impl FunctionBuilder {
             && let Some(list_reg) = self.lookup(list_name)
             && self.list_locals.contains(&list_reg)
         {
-            return self.emit_list_access(list_reg, &args[1]);
+            return self.emit_list_get_access(list_reg, &args[1]);
         }
         if args.len() == 2
             && let Expr::Var(module_name) = obj_expr
@@ -137,7 +137,7 @@ impl FunctionBuilder {
             && let Some(list_reg) = self.lookup(var_name)
             && self.list_locals.contains(&list_reg)
         {
-            return self.emit_list_access(list_reg, &args[0]);
+            return self.emit_list_get_access(list_reg, &args[0]);
         }
         if args.len() == 2
             && let Expr::Var(var_name) = obj_expr

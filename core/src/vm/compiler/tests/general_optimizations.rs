@@ -48,6 +48,29 @@ fn return_local_reads_slot_without_loadlocal_copy() {
 }
 
 #[test]
+fn direct_call_float_param_fact_feeds_typed_arithmetic() {
+    let source = r#"
+        fn scale(price, qty) {
+            return price * qty;
+        }
+        return scale(1.5, 2.0);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Float(3.0));
+    let proto = function
+        .protos
+        .iter()
+        .find_map(|proto| proto.func.as_ref())
+        .expect("compiled function proto");
+    assert!(
+        proto.code.iter().any(|op| matches!(op, Op::MulFloat(_, _, _))),
+        "direct-call Float param facts should feed typed multiply in {:?}",
+        proto.code
+    );
+}
+
+#[test]
 fn local_condition_branches_without_loadlocal_copy() {
     let function = Compiler::new().compile_function(
         &["flag".to_string()],
@@ -468,6 +491,34 @@ fn known_int_register_compare_lowers_to_cmp_i() {
 }
 
 #[test]
+fn wide_int_immediate_comparison_lowers_to_cmp_imm() {
+    let source = r#"
+        fn high(amount: Int) {
+            return amount > 900;
+        }
+        return high(901);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Bool(true));
+    let proto = function
+        .protos
+        .iter()
+        .find_map(|proto| proto.func.as_ref())
+        .expect("compiled high proto");
+    assert!(
+        proto.code.iter().any(|op| matches!(op, Op::CmpGtImm(_, _, 900))),
+        "wide i16 int threshold should lower to CmpGtImm in {:?}",
+        proto.code
+    );
+    assert!(
+        proto.code.iter().all(|op| !matches!(op, Op::CmpGt(_, _, _))),
+        "wide i16 int threshold should not fall back to generic CmpGt in {:?}",
+        proto.code
+    );
+}
+
+#[test]
 fn annotated_int_function_params_feed_typed_lowering() {
     let source = r#"
         fn score(price: Int, qty: Int, discount: Int) -> Int {
@@ -625,7 +676,10 @@ fn inferred_int_return_feeds_compound_assignment_with_call_rhs() {
 fn direct_local_function_call_uses_closure_exact_opcode() {
     let source = r#"
         fn add_one(n) {
-            return n + 1;
+            if (n > 40) {
+                return n + 1;
+            }
+            return n;
         }
         return add_one(41);
     "#;
@@ -640,6 +694,155 @@ fn direct_local_function_call_uses_closure_exact_opcode() {
         "direct local function call should use CallClosureExact in {:?}",
         function.code
     );
+}
+
+#[test]
+fn known_closure_without_global_captures_does_not_reload_all_globals() {
+    let source = r#"
+        let a = 1;
+        let b = 2;
+        fn noop() {
+            return 1;
+        }
+        noop();
+        return 0;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(0));
+    assert!(
+        function.code.iter().all(|op| !matches!(op, Op::LoadGlobal(_, _))),
+        "known closure call without global captures should not reload globals in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn unresolved_external_call_does_not_reload_toplevel_globals() {
+    let function = Compiler::new().compile_stmt(&Stmt::Block {
+        statements: vec![
+            Box::new(Stmt::Let {
+                pattern: crate::expr::Pattern::Variable("a".to_string()),
+                type_annotation: None,
+                value: Box::new(Expr::Val(Val::Int(1))),
+                span: None,
+                is_const: false,
+            }),
+            Box::new(Stmt::Let {
+                pattern: crate::expr::Pattern::Variable("b".to_string()),
+                type_annotation: None,
+                value: Box::new(Expr::Val(Val::Int(2))),
+                span: None,
+                is_const: false,
+            }),
+            Box::new(Stmt::Expr(Box::new(Expr::Call("external".to_string(), Vec::new())))),
+            Box::new(Stmt::Return {
+                value: Some(Box::new(Expr::Bin(
+                    Box::new(Expr::Var("a".to_string())),
+                    BinOp::Add,
+                    Box::new(Expr::Var("b".to_string())),
+                ))),
+            }),
+        ],
+    });
+
+    let load_global_count = function
+        .code
+        .iter()
+        .filter(|op| matches!(op, Op::LoadGlobal(_, _)))
+        .count();
+    assert_eq!(
+        load_global_count, 1,
+        "unresolved external calls should only load the callee, not reload all globals in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn toplevel_global_arguments_read_from_local_slots() {
+    let source = r#"
+        fn add(a, b) {
+            return a + b;
+        }
+        let left = 20;
+        let right = 22;
+        return add(left, right);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function.code.iter().all(|op| !matches!(op, Op::LoadGlobal(_, _))),
+        "top-level globals with local slots should not reload through context for call args in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn toplevel_loop_global_write_flushes_once_after_range_loop() {
+    let source = r#"
+        let total = 0;
+        for i in 1..=5 {
+            total += i;
+        }
+        fn read_total() {
+            return total;
+        }
+        return read_total();
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(15));
+    let loop_pos = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::ForRangeLoop { .. } | Op::RangeLoopI { .. }))
+        .expect("expected range loop guard");
+    let step_pos = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::ForRangeStep { .. }))
+        .expect("expected range loop step");
+    assert!(
+        function.code[loop_pos..step_pos]
+            .iter()
+            .all(|op| !matches!(op, Op::DefineGlobal(_, _))),
+        "top-level range loop should not sync global writes on every iteration in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn toplevel_loop_global_writes_visible_after_all_loop_forms() {
+    let source = r#"
+        let range_total = 0;
+        for i in 1..=5 {
+            range_total += i;
+        }
+
+        let list_total = 0;
+        for item in [2, 3, 5] {
+            list_total += item;
+        }
+
+        let while_total = 0;
+        let i = 0;
+        while (i < 4) {
+            i += 1;
+            while_total += i;
+            if (i == 3) {
+                break;
+            }
+        }
+
+        fn read_totals() {
+            return range_total + list_total + while_total;
+        }
+        return read_totals();
+    "#;
+    let (_function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(31));
 }
 
 #[test]
@@ -660,60 +863,6 @@ fn shadowed_function_name_does_not_use_closure_exact_opcode() {
             .iter()
             .all(|op| !matches!(op, Op::CallClosureExact { .. })),
         "shadowed function variable should not use CallClosureExact in {:?}",
-        function.code
-    );
-}
-
-#[test]
-fn known_global_method_return_feeds_typed_arithmetic() {
-    let function = Compiler::new().compile_stmt(&Stmt::Block {
-        statements: vec![
-            Box::new(Stmt::Let {
-                pattern: crate::expr::Pattern::Variable("seed".to_string()),
-                type_annotation: None,
-                value: Box::new(Expr::CallExpr(
-                    Box::new(Expr::Access(
-                        Box::new(Expr::Var("os".to_string())),
-                        Box::new(Expr::Val(Val::from_str("epoch"))),
-                    )),
-                    Vec::new(),
-                )),
-                span: None,
-                is_const: false,
-            }),
-            Box::new(Stmt::Return {
-                value: Some(Box::new(Expr::Bin(
-                    Box::new(Expr::Val(Val::Int(100))),
-                    BinOp::Add,
-                    Box::new(Expr::Bin(
-                        Box::new(Expr::Var("seed".to_string())),
-                        BinOp::Sub,
-                        Box::new(Expr::Var("seed".to_string())),
-                    )),
-                ))),
-            }),
-        ],
-    });
-
-    assert!(
-        function
-            .code
-            .iter()
-            .any(|op| matches!(op, Op::CallGlobalMethod0 { .. })),
-        "zero-arg global method call should lower directly to CallGlobalMethod0 in {:?}",
-        function.code
-    );
-    assert!(
-        function.code.iter().any(|op| matches!(op, Op::SubInt(_, _, _))),
-        "known os.epoch Int return should feed typed subtraction in {:?}",
-        function.code
-    );
-    assert!(
-        function
-            .code
-            .iter()
-            .any(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
-        "known os.epoch Int return should feed typed addition in {:?}",
         function.code
     );
 }
@@ -769,5 +918,47 @@ fn range_loop_hoists_invariant_arithmetic_subexpr() {
         mod_pos < inner_loop_pos,
         "expected invariant modulo before inner loop guard in {:?}",
         function.code
+    );
+}
+
+#[test]
+fn range_loop_hoists_immutable_string_literal() {
+    let source = r#"
+        fn run(n) {
+            let total = 0;
+            for i in 1..=n {
+                let label = "prefix";
+                if (label == label) {
+                    total += i;
+                }
+            }
+            return total;
+        }
+        return run(5);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(15));
+    let run_proto = function
+        .protos
+        .iter()
+        .find_map(|proto| proto.func.as_ref())
+        .expect("compiled run function");
+    let loop_pos = run_proto
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::RangeLoopI { .. } | Op::ForRangeLoop { .. }))
+        .expect("expected range loop");
+    let step_pos = run_proto
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::ForRangeStep { .. }))
+        .expect("expected range loop step");
+    assert!(
+        run_proto.code[loop_pos..step_pos]
+            .iter()
+            .all(|op| !matches!(op, Op::LoadK(_, _))),
+        "expected immutable string literal to be loaded before the loop body in {:?}",
+        run_proto.code
     );
 }

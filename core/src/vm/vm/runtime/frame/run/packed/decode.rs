@@ -39,8 +39,68 @@ fn decode_ab_imm(word: u32, reg_ext: Option<u32>) -> (u16, u16, i16) {
     (dst, src, imm)
 }
 
+type MoveCallDecode = (Vec<(u16, u16)>, u16, u16, u8, u8, PackedHotCallKind, usize);
+
+fn decode_move_call(decoded: Option<&Bc32Decoded>, pc: usize) -> Option<MoveCallDecode> {
+    let decoded = decoded?;
+    let mut instr_idx = decoded.word_to_instr.get(pc).copied()? as usize;
+    if instr_idx >= decoded.instrs.len() {
+        return None;
+    }
+    let mut moves = Vec::new();
+    while let Some(instr) = decoded.instrs.get(instr_idx) {
+        match instr.op {
+            Op::Move(dst, src) => {
+                moves.push((dst, src));
+                instr_idx += 1;
+            }
+            Op::Call { f, base, argc, retc } => {
+                if moves_target_call_window(&moves, base, argc) {
+                    return Some((moves, f, base, argc, retc, PackedHotCallKind::Generic, instr.next_pc));
+                }
+                return None;
+            }
+            Op::CallClosureExact { f, base, argc, retc } => {
+                if moves_target_call_window(&moves, base, argc) {
+                    return Some((
+                        moves,
+                        f,
+                        base,
+                        argc,
+                        retc,
+                        PackedHotCallKind::ClosureExact,
+                        instr.next_pc,
+                    ));
+                }
+                return None;
+            }
+            Op::CallExact { f, base, argc, retc } => {
+                if moves_target_call_window(&moves, base, argc) {
+                    return Some((moves, f, base, argc, retc, PackedHotCallKind::Exact, instr.next_pc));
+                }
+                return None;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn moves_target_call_window(moves: &[(u16, u16)], base: u16, argc: u8) -> bool {
+    let Some(end) = base.checked_add(argc as u16) else {
+        return false;
+    };
+    !moves.is_empty() && moves.iter().all(|(dst, _)| *dst >= base && *dst < end)
+}
+
 #[inline(always)]
-pub(super) fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) -> Option<PackedHotSlot> {
+pub(super) fn build_hot_slot(
+    code32: &[u32],
+    decoded: Option<&Bc32Decoded>,
+    pc: usize,
+    word: u32,
+    raw_tag: u8,
+) -> Option<PackedHotSlot> {
     if raw_tag == bc32::TAG_EXT {
         let ext_op = ((word >> 16) & 0xFF) as u8;
         let ext = *code32.get(pc + 1)?;
@@ -51,6 +111,25 @@ pub(super) fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) 
             .get(pc + 2)
             .copied()
             .filter(|word| bc32::tag_of(*word) == bc32::TAG_REG_EXT);
+        if let Some(op) = cmp_imm16_hot_op(ext_op) {
+            let (hi_dst, hi_src, _) = bc32::unpack_reg_ext(reg_ext);
+            let dst = bc32::combine_reg(hi_dst, ((word >> 8) & 0xFF) as u16);
+            let src = bc32::combine_reg(hi_src, (word & 0xFF) as u16);
+            let imm = (((((ext >> 16) & 0xFF) as u16) << 8) | (((ext >> 8) & 0xFF) as u16)) as i16;
+            let next_pc = if reg_ext.is_some() { pc + 3 } else { pc + 2 };
+            if let Some((ofs, fused_next_pc)) = decode_cmp_jmp(code32, pc, next_pc, dst) {
+                return Some(PackedHotSlot {
+                    word,
+                    next_pc: fused_next_pc,
+                    kind: PackedHotKind::CmpImmJmp { op, src, imm, ofs },
+                });
+            }
+            return Some(PackedHotSlot {
+                word,
+                next_pc,
+                kind: PackedHotKind::CmpImm { op, dst, src, imm },
+            });
+        }
         let f = bc32::combine_reg(((ext >> 8) & 0xFF) as u16, ((word >> 8) & 0xFF) as u16);
         let b = bc32::combine_reg((ext & 0xFF) as u16, (word & 0xFF) as u16);
         let c = bc32::combine_reg(
@@ -195,6 +274,20 @@ pub(super) fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) 
         let kind = match tag {
             Tag::Move => {
                 let (dst, src, _) = decode_abc(word, reg_ext);
+                if let Some((moves, f, base, argc, retc, call_kind, next_pc)) = decode_move_call(decoded, pc) {
+                    return Some(PackedHotSlot {
+                        word,
+                        next_pc,
+                        kind: PackedHotKind::MoveCall {
+                            moves,
+                            f,
+                            base,
+                            argc,
+                            retc,
+                            call_kind,
+                        },
+                    });
+                }
                 PackedHotKind::Move { dst, src }
             }
             Tag::LoadK => {
@@ -371,57 +464,27 @@ pub(super) fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) 
             }
             Tag::CmpEqImm => {
                 let (dst, src, imm) = decode_ab_imm(word, reg_ext);
-                PackedHotKind::CmpImm {
-                    op: PackedCmpImmOp::Eq,
-                    dst,
-                    src,
-                    imm,
-                }
+                decode_cmp_imm_hot(code32, pc, next_pc, PackedCmpImmOp::Eq, dst, src, imm, &mut next_pc)
             }
             Tag::CmpNeImm => {
                 let (dst, src, imm) = decode_ab_imm(word, reg_ext);
-                PackedHotKind::CmpImm {
-                    op: PackedCmpImmOp::Ne,
-                    dst,
-                    src,
-                    imm,
-                }
+                decode_cmp_imm_hot(code32, pc, next_pc, PackedCmpImmOp::Ne, dst, src, imm, &mut next_pc)
             }
             Tag::CmpLtImm => {
                 let (dst, src, imm) = decode_ab_imm(word, reg_ext);
-                PackedHotKind::CmpImm {
-                    op: PackedCmpImmOp::Lt,
-                    dst,
-                    src,
-                    imm,
-                }
+                decode_cmp_imm_hot(code32, pc, next_pc, PackedCmpImmOp::Lt, dst, src, imm, &mut next_pc)
             }
             Tag::CmpLeImm => {
                 let (dst, src, imm) = decode_ab_imm(word, reg_ext);
-                PackedHotKind::CmpImm {
-                    op: PackedCmpImmOp::Le,
-                    dst,
-                    src,
-                    imm,
-                }
+                decode_cmp_imm_hot(code32, pc, next_pc, PackedCmpImmOp::Le, dst, src, imm, &mut next_pc)
             }
             Tag::CmpGtImm => {
                 let (dst, src, imm) = decode_ab_imm(word, reg_ext);
-                PackedHotKind::CmpImm {
-                    op: PackedCmpImmOp::Gt,
-                    dst,
-                    src,
-                    imm,
-                }
+                decode_cmp_imm_hot(code32, pc, next_pc, PackedCmpImmOp::Gt, dst, src, imm, &mut next_pc)
             }
             Tag::CmpGeImm => {
                 let (dst, src, imm) = decode_ab_imm(word, reg_ext);
-                PackedHotKind::CmpImm {
-                    op: PackedCmpImmOp::Ge,
-                    dst,
-                    src,
-                    imm,
-                }
+                decode_cmp_imm_hot(code32, pc, next_pc, PackedCmpImmOp::Ge, dst, src, imm, &mut next_pc)
             }
             Tag::Jmp => {
                 let ofs = (((word & 0x00FF_FFFF) as i32) << 8 >> 8) as i16;
@@ -607,6 +670,38 @@ pub(super) fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) 
 }
 
 #[inline(always)]
+fn decode_cmp_imm_hot(
+    code32: &[u32],
+    cmp_pc: usize,
+    next_pc: usize,
+    op: PackedCmpImmOp,
+    dst: u16,
+    src: u16,
+    imm: i16,
+    slot_next_pc: &mut usize,
+) -> PackedHotKind {
+    if let Some((ofs, fused_next_pc)) = decode_cmp_jmp(code32, cmp_pc, next_pc, dst) {
+        *slot_next_pc = fused_next_pc;
+        PackedHotKind::CmpImmJmp { op, src, imm, ofs }
+    } else {
+        PackedHotKind::CmpImm { op, dst, src, imm }
+    }
+}
+
+#[inline(always)]
+fn cmp_imm16_hot_op(ext_op: u8) -> Option<PackedCmpImmOp> {
+    match ext_op {
+        bc32::EXT_OP_CMP_EQ_IMM16 => Some(PackedCmpImmOp::Eq),
+        bc32::EXT_OP_CMP_NE_IMM16 => Some(PackedCmpImmOp::Ne),
+        bc32::EXT_OP_CMP_LT_IMM16 => Some(PackedCmpImmOp::Lt),
+        bc32::EXT_OP_CMP_LE_IMM16 => Some(PackedCmpImmOp::Le),
+        bc32::EXT_OP_CMP_GT_IMM16 => Some(PackedCmpImmOp::Gt),
+        bc32::EXT_OP_CMP_GE_IMM16 => Some(PackedCmpImmOp::Ge),
+        _ => None,
+    }
+}
+
+#[inline(always)]
 fn decode_cmp_jmp(code32: &[u32], cmp_pc: usize, jmp_pc: usize, dst: u16) -> Option<(i16, usize)> {
     let (op, next_pc) = fetch_packed_op(None, code32, jmp_pc).ok()?;
     let (r, ofs) = match op {
@@ -676,7 +771,7 @@ mod tests {
         Function {
             consts: vec![Val::Int(1)],
             code,
-            n_regs: 4,
+            n_regs: 8,
             protos: Vec::new(),
             param_regs: Vec::new(),
             named_param_regs: Vec::new(),
@@ -698,7 +793,8 @@ mod tests {
         ]);
         let bc = Bc32Function::try_from_function(&function).expect("cmp+jmp must be BC32 encodable");
         let word = bc.code32[0];
-        let slot = build_hot_slot(&bc.code32, 0, word, bc32::tag_of(word)).expect("cmp hot slot");
+        let slot =
+            build_hot_slot(&bc.code32, bc.decoded.as_deref(), 0, word, bc32::tag_of(word)).expect("cmp hot slot");
 
         match slot.kind {
             PackedHotKind::CmpJmp {
@@ -710,6 +806,41 @@ mod tests {
             _ => panic!("expected CmpJmp hot slot"),
         }
         assert_eq!(slot.next_pc, 2, "fused slot must skip the following JmpFalse word");
+    }
+
+    #[test]
+    fn packed_hot_slot_fuses_moves_into_closure_exact_call_window() {
+        let function = function_with(vec![
+            Op::Move(2, 0),
+            Op::Move(3, 1),
+            Op::CallClosureExact {
+                f: 4,
+                base: 2,
+                argc: 2,
+                retc: 1,
+            },
+            Op::Ret { base: 2, retc: 1 },
+        ]);
+        let bc = Bc32Function::try_from_function(&function).expect("move+call must be BC32 encodable");
+        let word = bc.code32[0];
+        let slot =
+            build_hot_slot(&bc.code32, bc.decoded.as_deref(), 0, word, bc32::tag_of(word)).expect("move+call hot slot");
+
+        match slot.kind {
+            PackedHotKind::MoveCall {
+                moves,
+                f: 4,
+                base: 2,
+                argc: 2,
+                retc: 1,
+                call_kind,
+            } => {
+                assert_eq!(moves, vec![(2, 0), (3, 1)]);
+                assert!(matches!(call_kind, PackedHotCallKind::ClosureExact));
+            }
+            _ => panic!("expected MoveCall hot slot"),
+        }
+        assert_eq!(slot.next_pc, 4, "fused slot must skip argument moves and call words");
     }
 
     #[test]
@@ -741,7 +872,8 @@ mod tests {
         let bc = Bc32Function::try_from_function(&function).expect("range loop must be BC32 encodable");
         let step_pc = 5;
         let word = bc.code32[step_pc];
-        let slot = build_hot_slot(&bc.code32, step_pc, word, bc32::tag_of(word)).expect("range step hot slot");
+        let slot = build_hot_slot(&bc.code32, bc.decoded.as_deref(), step_pc, word, bc32::tag_of(word))
+            .expect("range step hot slot");
 
         match slot.kind {
             PackedHotKind::ForRangeStep { tail: Some(tail), .. } => {

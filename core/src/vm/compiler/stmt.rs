@@ -24,29 +24,23 @@ use crate::{
     expr::{Expr, Pattern},
     op::BinOp,
     stmt::{ForPattern, Stmt},
-    val::{FunctionNamedParamType, Type, Val},
-    vm::{CaptureSpec, Op},
+    val::Val,
+    vm::Op,
 };
 
 use super::FunctionBuilder;
 
-fn detect_mutating_receiver(expr: &Expr) -> Option<&str> {
-    if let Expr::CallExpr(callee, _args) = expr
-        && let Expr::Access(obj, field) = callee.as_ref()
-        && let Expr::Var(var_name) = obj.as_ref()
-        && let Expr::Val(method_val) = field.as_ref()
-        && method_val.as_str() == Some("push")
-    {
-        return Some(var_name);
-    }
-    None
-}
-
 mod assign;
+mod globals;
 /// Strip the trailing increment statement from a while-loop body.
 /// Used by the while→for-range lowering pass.
+mod loop_invariants;
+mod loop_lowering;
 mod optimizations;
 mod ranges;
+mod traits;
+
+use globals::detect_mutating_receiver;
 
 impl FunctionBuilder {
     pub fn stmt(&mut self, s: &Stmt) {
@@ -256,17 +250,18 @@ impl FunctionBuilder {
                             *ofs = (step_pos as isize - loc as isize) as i16;
                         }
                     }
-                    let end_pos = self.code.len();
+                    let flush_pos = self.code.len();
+                    self.pop_var_scope();
+                    self.flush_loop_global_writes(body);
                     if let Op::ForRangeLoop { ofs, .. } = &mut self.code[guard_pos] {
-                        *ofs = (end_pos as isize - guard_pos as isize) as i16;
+                        *ofs = (flush_pos as isize - guard_pos as isize) as i16;
                     }
                     let pending_breaks = std::mem::take(&mut self.break_locations);
                     for loc in pending_breaks {
                         if let Some(Op::Break(ofs)) = self.code.get_mut(loc) {
-                            *ofs = (end_pos as isize - loc as isize) as i16;
+                            *ofs = (flush_pos as isize - loc as isize) as i16;
                         }
                     }
-                    self.pop_var_scope();
                     self.loop_depth = self.loop_depth.saturating_sub(1);
                     self.break_locations = saved_breaks;
                     self.continue_locations = saved_conts;
@@ -340,9 +335,11 @@ impl FunctionBuilder {
                     self.emit(Op::AddIntImm(r_i, r_i, 1));
                     let back = (guard_pos as isize - self.code.len() as isize) as i16;
                     self.emit(Op::Jmp(back));
-                    let end_pos = self.code.len();
+                    let flush_pos = self.code.len();
+                    self.pop_var_scope();
+                    self.flush_loop_global_writes(body);
                     if let Op::JmpFalse(_, ref mut ofs) = self.code[jf_pos] {
-                        *ofs = (end_pos as isize - jf_pos as isize) as i16;
+                        *ofs = (flush_pos as isize - jf_pos as isize) as i16;
                     }
                     for loc in pending_continues {
                         if let Some(Op::Continue(ofs)) = self.code.get_mut(loc) {
@@ -352,12 +349,11 @@ impl FunctionBuilder {
                     let pending_breaks = std::mem::take(&mut self.break_locations);
                     for loc in pending_breaks {
                         if let Some(Op::Break(ofs)) = self.code.get_mut(loc) {
-                            *ofs = (end_pos as isize - loc as isize) as i16;
+                            *ofs = (flush_pos as isize - loc as isize) as i16;
                         }
                     }
 
                     self.loop_depth = self.loop_depth.saturating_sub(1);
-                    self.pop_var_scope();
                     self.break_locations = saved_breaks;
                     self.continue_locations = saved_conts;
                 }
@@ -552,11 +548,12 @@ impl FunctionBuilder {
                 let back = start as isize - self.code.len() as isize;
                 self.emit(Op::Jmp(back as i16));
 
-                let end = self.code.len();
+                let flush_pos = self.code.len();
+                self.flush_loop_global_writes(body);
                 let current_breaks = std::mem::take(&mut self.break_locations);
                 for loc in current_breaks {
                     if let Some(Op::Break(ofs)) = self.code.get_mut(loc) {
-                        *ofs = (end as isize - loc as isize) as i16;
+                        *ofs = (flush_pos as isize - loc as isize) as i16;
                     }
                 }
 
@@ -565,7 +562,7 @@ impl FunctionBuilder {
                 self.continue_locations = saved_conts;
 
                 if let Op::JmpFalse(_, ref mut ofs) = self.code[jf] {
-                    *ofs = (end as isize - jf as isize) as i16;
+                    *ofs = (flush_pos as isize - jf as isize) as i16;
                 }
             }
             Stmt::Return { value } => {
@@ -787,17 +784,18 @@ impl FunctionBuilder {
                     break_jump = Some(break_pos);
                 }
 
-                let end = self.code.len();
+                let flush_pos = self.code.len();
+                self.flush_loop_global_writes(body);
                 if let Some(pos) = break_jump
                     && let Op::Jmp(ref mut ofs) = self.code[pos]
                 {
-                    *ofs = (end as isize - pos as isize) as i16;
+                    *ofs = (flush_pos as isize - pos as isize) as i16;
                 }
 
                 let current_breaks = std::mem::take(&mut self.break_locations);
                 for loc in current_breaks {
                     if let Some(Op::Break(ofs)) = self.code.get_mut(loc) {
-                        *ofs = (end as isize - loc as isize) as i16;
+                        *ofs = (flush_pos as isize - loc as isize) as i16;
                     }
                 }
 
@@ -811,7 +809,7 @@ impl FunctionBuilder {
                 if let Some(pos) = nil_break
                     && let Op::JmpIfNil(_, ref mut ofs) = self.code[pos]
                 {
-                    *ofs = (end as isize - pos as isize) as i16;
+                    *ofs = (flush_pos as isize - pos as isize) as i16;
                 }
             }
             Stmt::CompoundAssign { name, op, value, .. } => {
@@ -826,7 +824,7 @@ impl FunctionBuilder {
                         && let Some(imm) = self.try_small_int_const(value)
                     {
                         self.emit(Op::AddIntImm(idx, idx, imm));
-                        if self.global_defs.contains(name) {
+                        if self.should_export_global_write(name) {
                             let kname = self.k(Val::from_str(name.as_str()));
                             self.emit(Op::DefineGlobal(kname, idx));
                         }
@@ -838,7 +836,7 @@ impl FunctionBuilder {
                         && (-128..=127).contains(&neg)
                     {
                         self.emit(Op::AddIntImm(idx, idx, neg));
-                        if self.global_defs.contains(name) {
+                        if self.should_export_global_write(name) {
                             let kname = self.k(Val::from_str(name.as_str()));
                             self.emit(Op::DefineGlobal(kname, idx));
                         }
@@ -864,14 +862,15 @@ impl FunctionBuilder {
                             BinOp::Div => self.emit(Op::Div(idx, idx, r_value)),
                             _ => return,
                         }
-                        if self.global_defs.contains(name) {
+                        if self.should_export_global_write(name) {
                             let kname = self.k(Val::from_str(name.as_str()));
                             self.emit(Op::DefineGlobal(kname, idx));
                         }
                         return;
                     }
 
-                    let r_current = if Self::expr_contains_call(value) {
+                    let r_current = if Self::expr_contains_call(value) && !self.expr_calls_preserve_binding(value, name)
+                    {
                         let r = self.alloc();
                         self.emit(Op::LoadLocal(r, idx));
                         r
@@ -894,7 +893,7 @@ impl FunctionBuilder {
                             return;
                         }
                     }
-                    if self.global_defs.contains(name) {
+                    if self.should_export_global_write(name) {
                         let kname = self.k(Val::from_str(name.as_str()));
                         self.emit(Op::DefineGlobal(kname, idx));
                     }
@@ -916,164 +915,13 @@ impl FunctionBuilder {
                 }
             }
             Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {}
-            Stmt::Trait { name, methods } => {
-                let known_builtin = self.const_env.get("__lk_register_trait").cloned();
-                let reg_fn = self.emit_known_or_global_callable("__lk_register_trait", known_builtin.as_ref());
-
-                let arg_base = self.alloc();
-                let name_idx = self.k(Val::from_str(name.as_str()));
-                self.emit(Op::LoadK(arg_base, name_idx));
-
-                let method_entries: Vec<Val> = methods
-                    .iter()
-                    .map(|(method_name, ty)| {
-                        let type_str = ty.display();
-                        Val::List(vec![Val::from_str(method_name.as_str()), Val::from_str(type_str.as_str())].into())
-                    })
-                    .collect();
-                let methods_list = Val::List(method_entries.into());
-                let methods_idx = self.k(methods_list);
-                let arg_methods = self.alloc();
-                self.emit(Op::LoadK(arg_methods, methods_idx));
-
-                self.emit_positional_call(reg_fn, arg_base, 2, 1, known_builtin.as_ref());
-            }
+            Stmt::Trait { name, methods } => self.compile_trait_registration(name, methods),
             Stmt::Impl {
                 trait_name,
                 target_type,
                 methods,
-            } => {
-                let known_builtin = self.const_env.get("__lk_register_trait_impl").cloned();
-                let reg_fn = self.emit_known_or_global_callable("__lk_register_trait_impl", known_builtin.as_ref());
-
-                let arg_base = self.alloc();
-                let arg_target = self.alloc();
-                let arg_methods = self.alloc();
-
-                let trait_name_idx = self.k(Val::from_str(trait_name.as_str()));
-                self.emit(Op::LoadK(arg_base, trait_name_idx));
-
-                let target_type_str = target_type.display();
-                let target_type_idx = self.k(Val::from_str(target_type_str.as_str()));
-                self.emit(Op::LoadK(arg_target, target_type_idx));
-
-                let mut entry_regs: Vec<u16> = Vec::with_capacity(methods.len());
-                for method in methods {
-                    if let Stmt::Function {
-                        name,
-                        params,
-                        param_types,
-                        return_type,
-                        body,
-                        named_params,
-                    } = method
-                    {
-                        let closure_reg = self.emit_function_closure(
-                            Some(name.as_str()),
-                            params,
-                            param_types,
-                            named_params,
-                            body.as_ref(),
-                            false,
-                        );
-
-                        let entry_base = self.alloc();
-                        let name_idx = self.k(Val::from_str(name.as_str()));
-                        self.emit(Op::LoadK(entry_base, name_idx));
-
-                        let closure_slot = self.alloc();
-                        self.emit(Op::Move(closure_slot, closure_reg));
-
-                        let positional_types: Vec<Type> = params
-                            .iter()
-                            .enumerate()
-                            .map(|(i, _)| param_types.get(i).cloned().flatten().unwrap_or(Type::Any))
-                            .collect();
-                        let named_type_sigs: Vec<FunctionNamedParamType> = named_params
-                            .iter()
-                            .map(|np| FunctionNamedParamType {
-                                name: np.name.clone(),
-                                ty: np.type_annotation.clone().unwrap_or(Type::Any),
-                                has_default: np.default.is_some(),
-                            })
-                            .collect();
-                        let return_ty = return_type.clone().unwrap_or(Type::Any);
-                        let signature = Type::Function {
-                            params: positional_types,
-                            named_params: named_type_sigs,
-                            return_type: Box::new(return_ty),
-                        };
-                        let signature_str = signature.display();
-                        let signature_idx = self.k(Val::from_str(signature_str.as_str()));
-                        let signature_slot = self.alloc();
-                        self.emit(Op::LoadK(signature_slot, signature_idx));
-
-                        let entry_list = self.alloc();
-                        self.emit(Op::BuildList {
-                            dst: entry_list,
-                            base: entry_base,
-                            len: 3,
-                        });
-                        entry_regs.push(entry_list);
-                    }
-                }
-
-                if entry_regs.is_empty() {
-                    let empty_list = Val::List(Vec::<Val>::new().into());
-                    let empty_idx = self.k(empty_list);
-                    self.emit(Op::LoadK(arg_methods, empty_idx));
-                } else {
-                    let first_slot = self.alloc();
-                    self.emit(Op::Move(first_slot, entry_regs[0]));
-                    for entry_reg in entry_regs.iter().skip(1) {
-                        let slot = self.alloc();
-                        self.emit(Op::Move(slot, *entry_reg));
-                    }
-                    self.emit(Op::BuildList {
-                        dst: arg_methods,
-                        base: first_slot,
-                        len: entry_regs.len() as u16,
-                    });
-                }
-
-                self.emit_positional_call(reg_fn, arg_base, 3, 1, known_builtin.as_ref());
-            }
+            } => self.compile_trait_impl_registration(trait_name, target_type, methods),
             Stmt::Empty => {}
-        }
-    }
-}
-
-impl FunctionBuilder {
-    fn called_closure_global_captures(&self, expr: &Expr) -> Vec<String> {
-        let name = match expr {
-            Expr::Call(name, _) => name.as_str(),
-            Expr::CallExpr(callee, _) => {
-                let Expr::Var(name) = callee.as_ref() else {
-                    return Vec::new();
-                };
-                name.as_str()
-            }
-            _ => return Vec::new(),
-        };
-        let Some(Val::Closure(closure)) = self.const_env.get(name) else {
-            return self.global_defs.iter().cloned().collect();
-        };
-        let captured: Vec<_> = closure
-            .capture_specs
-            .iter()
-            .filter_map(|spec| match spec {
-                CaptureSpec::Global { name } | CaptureSpec::Register { name, .. }
-                    if self.global_defs.contains(name) =>
-                {
-                    Some(name.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        if captured.is_empty() {
-            self.global_defs.iter().cloned().collect()
-        } else {
-            captured
         }
     }
 }

@@ -1,10 +1,31 @@
 use crate::val::NativeArgs;
 use crate::vm::compiler::builder::FunctionBuilder;
 
-use super::{Op, Val};
+use super::{Op, Val, parse_compile_and_run};
 
 fn native_identity(args: NativeArgs<'_>, _ctx: &mut crate::vm::VmContext) -> anyhow::Result<Val> {
     Ok(args.get(0).cloned().unwrap_or(Val::Nil))
+}
+
+#[test]
+fn expression_only_known_call_inlines_without_call_window_moves() {
+    let source = r#"
+        fn add_one(n) {
+            return n + 1;
+        }
+        return add_one(41);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .all(|op| !matches!(op, Op::CallClosureExact { .. } | Op::Call { .. } | Op::Move(_, _))),
+        "expression-only known call should inline without call-window moves in {:?}",
+        function.code
+    );
 }
 
 #[test]

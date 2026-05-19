@@ -89,6 +89,27 @@ fn homogeneous_int_list_get_feeds_typed_arithmetic() {
 }
 
 #[test]
+fn homogeneous_float_list_index_feeds_typed_arithmetic() {
+    let source = r#"
+        let data = [1.5, 2.5, 3.5];
+        return data[1] * 2.0;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Float(5.0));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListIndexI(_, _, _))),
+        "expected constant list index to lower to ListIndexI in {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::MulFloat(_, _, _))),
+        "expected homogeneous Float list element fact to feed typed multiply in {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn list_push_invalidates_homogeneous_value_fact() {
     let source = r#"
         let data = [1, 2];

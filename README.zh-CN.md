@@ -9,7 +9,7 @@
 
 ### 示例（语句）
 
-更多语言细节： [LANG_zh.md](LANG_zh.md)
+更多语言细节： [lang.lollipopkit.com](https://lang.lollipopkit.com)
 
 ### 示例文件
 

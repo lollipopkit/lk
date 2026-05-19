@@ -12,6 +12,7 @@ mod control_fast_paths;
 mod general_optimizations;
 mod list_fast_paths;
 mod map_fast_paths;
+mod stdlib_return_facts;
 mod string_fast_paths;
 
 fn make_add1_function() -> Stmt {

@@ -700,10 +700,11 @@ fn merge_fact(slot: &mut ParamFact, next: Option<Type>) {
 
 fn useful_type(expr: &Expr, hints: &HashMap<usize, Type>, env: &HashMap<String, Type>) -> Option<Type> {
     let key = expr as *const Expr as usize;
+    let fallback = || useful_type_without_hints(expr, env, &mut HashSet::new());
     if let Some(ty) = hints.get(&key).and_then(normalize_type) {
-        return Some(ty);
+        return Some(prefer_precise_container_type(ty, fallback()));
     }
-    useful_type_without_hints(expr, env, &mut HashSet::new())
+    fallback()
 }
 
 fn useful_type_without_hints(expr: &Expr, env: &HashMap<String, Type>, seen: &mut HashSet<usize>) -> Option<Type> {
@@ -713,15 +714,69 @@ fn useful_type_without_hints(expr: &Expr, env: &HashMap<String, Type>, seen: &mu
     }
     match expr {
         Expr::Val(Val::Int(_)) => Some(Type::Int),
-        Expr::List(_) => Some(Type::List(Box::new(Type::Any))),
-        Expr::Map(_) => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
+        Expr::Val(Val::Float(_)) => Some(Type::Float),
+        Expr::Val(Val::List(values)) => Some(Type::List(Box::new(homogeneous_container_value_type(
+            values.iter().map(useful_val_type),
+        )))),
+        Expr::Val(Val::Map(values)) => Some(Type::Map(
+            Box::new(Type::Any),
+            Box::new(homogeneous_container_value_type(values.values().map(useful_val_type))),
+        )),
+        Expr::List(items) => Some(Type::List(Box::new(homogeneous_container_value_type(
+            items.iter().map(|item| useful_type_without_hints(item, env, seen)),
+        )))),
+        Expr::Map(entries) => Some(Type::Map(
+            Box::new(Type::Any),
+            Box::new(homogeneous_container_value_type(
+                entries
+                    .iter()
+                    .map(|(_, value)| useful_type_without_hints(value, env, seen)),
+            )),
+        )),
         Expr::Var(name) => env.get(name).cloned(),
         Expr::Paren(inner) => useful_type_without_hints(inner, env, seen),
+        Expr::CallExpr(callee, args) if args.is_empty() => global_method_return_type(callee),
         Expr::Bin(left, op, right) if op.is_arith() && !matches!(op, BinOp::Div) => {
             let left = useful_type_without_hints(left, env, seen);
             let right = useful_type_without_hints(right, env, seen);
-            (left == Some(Type::Int) && right == Some(Type::Int)).then_some(Type::Int)
+            match (left, right) {
+                (Some(Type::Int), Some(Type::Int)) => Some(Type::Int),
+                (Some(Type::Int | Type::Float), Some(Type::Int | Type::Float)) => Some(Type::Float),
+                _ => None,
+            }
         }
+        _ => None,
+    }
+}
+
+fn global_method_return_type(callee: &Expr) -> Option<Type> {
+    let Expr::Access(receiver, method) = callee else {
+        return None;
+    };
+    let Expr::Var(receiver) = receiver.as_ref() else {
+        return None;
+    };
+    let Expr::Val(method) = method.as_ref() else {
+        return None;
+    };
+    match (receiver.as_str(), method.as_str()?) {
+        ("os", "clock") => Some(Type::Float),
+        ("os", "epoch" | "time") => Some(Type::Int),
+        _ => None,
+    }
+}
+
+fn useful_val_type(value: &Val) -> Option<Type> {
+    match value {
+        Val::Int(_) => Some(Type::Int),
+        Val::Float(_) => Some(Type::Float),
+        Val::List(values) => Some(Type::List(Box::new(homogeneous_container_value_type(
+            values.iter().map(useful_val_type),
+        )))),
+        Val::Map(values) => Some(Type::Map(
+            Box::new(Type::Any),
+            Box::new(homogeneous_container_value_type(values.values().map(useful_val_type))),
+        )),
         _ => None,
     }
 }
@@ -741,8 +796,47 @@ fn bind_pattern_type(pattern: &Pattern, ty: Type, env: &mut HashMap<String, Type
 fn normalize_type(ty: &Type) -> Option<Type> {
     match ty {
         Type::Int => Some(Type::Int),
-        Type::List(_) => Some(Type::List(Box::new(Type::Any))),
-        Type::Map(_, _) => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
+        Type::Float => Some(Type::Float),
+        Type::List(value_ty) => Some(Type::List(Box::new(normalize_container_value_type(value_ty)))),
+        Type::Map(_, value_ty) => Some(Type::Map(
+            Box::new(Type::Any),
+            Box::new(normalize_container_value_type(value_ty)),
+        )),
         _ => None,
+    }
+}
+
+fn normalize_container_value_type(ty: &Type) -> Type {
+    normalize_type(ty).unwrap_or(Type::Any)
+}
+
+fn homogeneous_container_value_type(facts: impl IntoIterator<Item = Option<Type>>) -> Type {
+    let mut iter = facts.into_iter();
+    let Some(Some(first)) = iter.next() else {
+        return Type::Any;
+    };
+    if iter.all(|fact| fact.as_ref() == Some(&first)) {
+        first
+    } else {
+        Type::Any
+    }
+}
+
+fn prefer_precise_container_type(primary: Type, secondary: Option<Type>) -> Type {
+    let Some(secondary) = secondary else {
+        return primary;
+    };
+    match (&primary, &secondary) {
+        (Type::List(primary_value), Type::List(secondary_value))
+            if matches!(primary_value.as_ref(), Type::Any) && !matches!(secondary_value.as_ref(), Type::Any) =>
+        {
+            secondary
+        }
+        (Type::Map(_, primary_value), Type::Map(_, secondary_value))
+            if matches!(primary_value.as_ref(), Type::Any) && !matches!(secondary_value.as_ref(), Type::Any) =>
+        {
+            secondary
+        }
+        _ => primary,
     }
 }

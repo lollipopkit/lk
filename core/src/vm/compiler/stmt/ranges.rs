@@ -52,7 +52,7 @@ impl FunctionBuilder {
                 if let Some(idx) = self.lookup(&name) {
                     let k = self.k(val);
                     self.emit(Op::LoadK(idx, k));
-                    if self.global_defs.contains(&name) {
+                    if self.should_export_global_write(&name) {
                         let kname = self.k(Val::from_str(name.as_str()));
                         self.emit(Op::DefineGlobal(kname, idx));
                     }
