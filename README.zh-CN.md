@@ -11,6 +11,31 @@
 
 更多语言细节： [LANG_zh.md](LANG_zh.md)
 
+### 示例文件
+
+```
+examples/
+├── syntax/          # 语言特性演示
+│   ├── closure.lk        # 闭包与高阶函数
+│   ├── match.lk          # match 表达式与模式
+│   ├── pattern_matching.lk # if-let、while-let、解构
+│   ├── operators.lk       # 算术、比较、逻辑、??
+│   ├── ...               # 更多
+├── stdlib/           # 标准库演示
+│   ├── list_ops.lk        # 列表方法 (map, filter, reduce)
+│   ├── json_demo.lk       # JSON 解析与处理
+│   ├── stream_demo.lk     # 惰性流管道
+│   ├── ...               # 更多
+├── general/          # 综合示例
+│   ├── sort_search.lk    # 插入排序、搜索算法
+│   ├── word_count.lk     # 文本处理与词频统计
+│   ├── config_parser.lk  # JSON/YAML/TOML 配置加载
+│   ├── ...
+└── _references/      # 跨语言参考（Dart、Lua、C）
+```
+
+运行示例：`lk examples/syntax/closure.lk`
+
 ## 特性
 
 ### 用法

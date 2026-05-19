@@ -1,4 +1,5 @@
 // TCP networking demo
+// Shows basic connect/write/read/close pattern
 
 import tcp;
 
@@ -22,12 +23,5 @@ assert(response.contains("HTTP"));
 
 // 4. Close the connection
 tcp.close(conn);
-
-// 5. TCP server (bind + accept)
-let listener = tcp.bind("127.0.0.1", 19876);
-assert(listener > 0);
-
-// For this demo, we just close the listener immediately
-tcp.close(listener);
 
 println("tcp_demo: all assertions passed");

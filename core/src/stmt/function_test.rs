@@ -260,6 +260,7 @@ mod tests {
     fn test_function_display_formatting() {
         let func_val = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
             params: Arc::new(vec!["x".to_string(), "y".to_string()]),
+            param_types: Arc::new(Vec::new()),
             named_params: Arc::new(Vec::new()),
             body: Arc::new(Stmt::Empty),
             env: Arc::new(VmContext::new()),

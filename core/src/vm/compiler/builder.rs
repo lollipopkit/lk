@@ -45,14 +45,26 @@ pub(crate) struct FunctionBuilder {
     /// Registers known to hold Map values (set when initialized from {} or map exprs).
     /// Used to safely emit MapSet opcode in compile_method_call.
     pub(crate) map_locals: HashSet<u16>,
+    /// Registers whose Map values are known to have a homogeneous value type.
+    /// This feeds typed arithmetic after MapGet without assuming a concrete key exists.
+    pub(crate) map_value_types: HashMap<u16, Type>,
+    /// Empty Map registers can adopt the first known value type written through MapSet.
+    pub(crate) map_value_adoptable: HashSet<u16>,
     /// Registers known to hold List values (set when initialized from [] or list exprs).
     pub(crate) list_locals: HashSet<u16>,
+    /// Registers whose List values are known to have a homogeneous element type.
+    /// Kept conservative around mutation and aliases.
+    pub(crate) list_value_types: HashMap<u16, Type>,
+    /// Empty List registers can adopt the first known element type written through ListPush.
+    pub(crate) list_value_adoptable: HashSet<u16>,
     /// Registers known to currently hold Int values.
     /// This is a best-effort local fact used to select typed arithmetic opcodes
     /// in hot loops even when full type inference did not provide hints.
     pub(crate) int_regs: HashSet<u16>,
     /// Loop-invariant pure expressions already materialized for the current loop body.
     pub(crate) loop_invariant_expr_regs: Vec<(Expr, u16)>,
+    pub(crate) inferred_function_param_types: HashMap<String, Vec<Option<Type>>>,
+    pub(crate) inferred_function_return_types: HashMap<String, Option<Type>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,9 +140,15 @@ impl FunctionBuilder {
             const_names: HashSet::new(),
             expr_type_hints: None,
             map_locals: HashSet::new(),
+            map_value_types: HashMap::new(),
+            map_value_adoptable: HashSet::new(),
             list_locals: HashSet::new(),
+            list_value_types: HashMap::new(),
+            list_value_adoptable: HashSet::new(),
             int_regs: HashSet::new(),
             loop_invariant_expr_regs: Vec::new(),
+            inferred_function_param_types: HashMap::new(),
+            inferred_function_return_types: HashMap::new(),
         };
         for (idx, cap) in captures.iter().enumerate() {
             let name = match cap {
@@ -147,7 +165,53 @@ impl FunctionBuilder {
         self.expr_type_hints = Some(hints);
     }
 
-    fn expr_type_hint(&self, expr: &Expr) -> Option<&Type> {
+    pub fn set_inferred_function_param_types(&mut self, inferred: HashMap<String, Vec<Option<Type>>>) {
+        self.inferred_function_param_types = inferred;
+    }
+
+    pub fn set_inferred_function_return_types(&mut self, inferred: HashMap<String, Option<Type>>) {
+        self.inferred_function_return_types = inferred;
+    }
+
+    pub(crate) fn mark_direct_call_return_type(&mut self, name: &str, dst: u16) {
+        let Some(Some(ty)) = self.inferred_function_return_types.get(name).cloned() else {
+            return;
+        };
+        self.apply_type_fact(dst, &ty);
+    }
+
+    pub(crate) fn apply_type_fact(&mut self, dst: u16, ty: &Type) {
+        match ty {
+            Type::Int => {
+                self.int_regs.insert(dst);
+                self.list_locals.remove(&dst);
+                self.list_value_types.remove(&dst);
+                self.list_value_adoptable.remove(&dst);
+                self.map_locals.remove(&dst);
+                self.map_value_types.remove(&dst);
+                self.map_value_adoptable.remove(&dst);
+            }
+            Type::List(value_ty) => {
+                self.int_regs.remove(&dst);
+                self.list_locals.insert(dst);
+                self.record_list_value_type(dst, Self::normalized_value_fact(value_ty));
+                self.map_locals.remove(&dst);
+                self.map_value_types.remove(&dst);
+                self.map_value_adoptable.remove(&dst);
+            }
+            Type::Map(_, value_ty) => {
+                self.int_regs.remove(&dst);
+                self.list_locals.remove(&dst);
+                self.list_value_types.remove(&dst);
+                self.list_value_adoptable.remove(&dst);
+                self.map_locals.insert(dst);
+                self.record_map_value_type(dst, Self::normalized_value_fact(value_ty));
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn expr_type_hint(&self, expr: &Expr) -> Option<&Type> {
         let key = expr as *const Expr as usize;
         self.expr_type_hints.as_ref().and_then(|map| map.get(&key))
     }
@@ -191,20 +255,7 @@ impl FunctionBuilder {
     }
 
     fn expr_known_int(&self, expr: &Expr) -> bool {
-        match expr {
-            Expr::Val(Val::Int(_)) => true,
-            Expr::Var(name) => {
-                self.lookup(name).is_some_and(|reg| self.int_regs.contains(&reg))
-                    || self
-                        .lookup_const(name)
-                        .is_some_and(|value| matches!(value, Val::Int(_)))
-            }
-            Expr::Paren(inner) => self.expr_known_int(inner),
-            Expr::Bin(left, op, right) if !matches!(op, BinOp::Div) && op.is_arith() => {
-                self.expr_known_int(left) && self.expr_known_int(right)
-            }
-            _ => false,
-        }
+        self.expr_value_fact(expr) == Some(Type::Int)
     }
 
     pub fn set_analysis(&mut self, analysis: Option<FunctionAnalysis>) {
@@ -305,25 +356,47 @@ impl FunctionBuilder {
                 Some(Val::Int(_)) => {
                     self.int_regs.insert(dst);
                     self.list_locals.remove(&dst);
+                    self.list_value_types.remove(&dst);
+                    self.list_value_adoptable.remove(&dst);
                     self.map_locals.remove(&dst);
+                    self.map_value_types.remove(&dst);
+                    self.map_value_adoptable.remove(&dst);
                 }
-                Some(Val::List(_)) => {
+                Some(Val::List(list)) => {
                     self.int_regs.remove(&dst);
                     self.list_locals.insert(dst);
+                    if list.is_empty() {
+                        self.record_empty_list_value_type(dst);
+                    } else {
+                        self.record_list_value_type(dst, Self::homogeneous_list_value_fact(list.iter()));
+                    }
                     self.map_locals.remove(&dst);
+                    self.map_value_types.remove(&dst);
+                    self.map_value_adoptable.remove(&dst);
                 }
-                Some(Val::Map(_)) => {
+                Some(Val::Map(map)) => {
                     self.int_regs.remove(&dst);
                     self.list_locals.remove(&dst);
+                    self.list_value_types.remove(&dst);
+                    self.list_value_adoptable.remove(&dst);
                     self.map_locals.insert(dst);
+                    if map.is_empty() {
+                        self.record_empty_map_value_type(dst);
+                    } else {
+                        self.record_map_value_type(dst, Self::homogeneous_map_value_fact(map.values()));
+                    }
                 }
                 _ => {
                     self.int_regs.remove(&dst);
                     self.list_locals.remove(&dst);
+                    self.list_value_types.remove(&dst);
+                    self.list_value_adoptable.remove(&dst);
                     self.map_locals.remove(&dst);
+                    self.map_value_types.remove(&dst);
+                    self.map_value_adoptable.remove(&dst);
                 }
             },
-            Op::Move(dst, src) | Op::StoreLocal(dst, src) => {
+            Op::Move(dst, src) | Op::StoreLocal(dst, src) | Op::LoadLocal(dst, src) => {
                 if self.int_regs.contains(&src) {
                     self.int_regs.insert(dst);
                 } else {
@@ -334,11 +407,15 @@ impl FunctionBuilder {
                 } else {
                     self.list_locals.remove(&dst);
                 }
+                self.list_value_types.remove(&dst);
+                self.list_value_adoptable.remove(&dst);
                 if self.map_locals.contains(&src) {
                     self.map_locals.insert(dst);
                 } else {
                     self.map_locals.remove(&dst);
                 }
+                self.map_value_types.remove(&dst);
+                self.map_value_adoptable.remove(&dst);
             }
             Op::AddInt(dst, _, _)
             | Op::SubInt(dst, _, _)
@@ -350,8 +427,15 @@ impl FunctionBuilder {
             | Op::Len { dst, .. }
             | Op::ListLen { dst, .. }
             | Op::MapLen { dst, .. }
-            | Op::StrLen { dst, .. } => {
+            | Op::StrLen { dst, .. }
+            | Op::Floor { dst, .. } => {
                 self.int_regs.insert(dst);
+                self.list_locals.remove(&dst);
+                self.list_value_types.remove(&dst);
+                self.list_value_adoptable.remove(&dst);
+                self.map_locals.remove(&dst);
+                self.map_value_types.remove(&dst);
+                self.map_value_adoptable.remove(&dst);
             }
             Op::ForRangePrep { step, .. } => {
                 self.int_regs.insert(step);
@@ -366,6 +450,7 @@ impl FunctionBuilder {
             }
             Op::Add(dst, _, _)
             | Op::StrConcatKnownCap(dst, _, _)
+            | Op::StrConcatToStr(dst, _, _)
             | Op::Sub(dst, _, _)
             | Op::Mul(dst, _, _)
             | Op::Div(dst, _, _)
@@ -394,7 +479,6 @@ impl FunctionBuilder {
             | Op::CallClosureExact { base: dst, retc: 1, .. }
             | Op::CallNativeFast { base: dst, retc: 1, .. }
             | Op::CallMethod0 { dst, .. }
-            | Op::CallGlobalMethod0 { dst, .. }
             | Op::CallNamed {
                 base_pos: dst, retc: 1, ..
             }
@@ -426,28 +510,81 @@ impl FunctionBuilder {
             | Op::PatternMatch { dst, .. } => {
                 self.int_regs.remove(&dst);
                 self.list_locals.remove(&dst);
+                self.list_value_types.remove(&dst);
+                self.list_value_adoptable.remove(&dst);
                 self.map_locals.remove(&dst);
+                self.map_value_types.remove(&dst);
+                self.map_value_adoptable.remove(&dst);
+            }
+            Op::CallGlobalMethod0 { dst, receiver, method } => {
+                if !self.apply_global_method_return_fact(dst, receiver, method) {
+                    self.int_regs.remove(&dst);
+                    self.list_locals.remove(&dst);
+                    self.list_value_types.remove(&dst);
+                    self.list_value_adoptable.remove(&dst);
+                    self.map_locals.remove(&dst);
+                    self.map_value_types.remove(&dst);
+                    self.map_value_adoptable.remove(&dst);
+                }
             }
             Op::BuildList { dst, .. } => {
                 self.int_regs.remove(&dst);
                 self.list_locals.insert(dst);
+                self.list_value_types.remove(&dst);
+                self.list_value_adoptable.remove(&dst);
                 self.map_locals.remove(&dst);
+                self.map_value_types.remove(&dst);
+                self.map_value_adoptable.remove(&dst);
             }
             Op::BuildMap { dst, .. } => {
                 self.int_regs.remove(&dst);
                 self.list_locals.remove(&dst);
+                self.list_value_types.remove(&dst);
+                self.list_value_adoptable.remove(&dst);
                 self.map_locals.insert(dst);
+                self.map_value_types.remove(&dst);
+                self.map_value_adoptable.remove(&dst);
             }
             Op::ListFoldAdd { acc, .. } | Op::MapValuesFoldAdd { acc, .. } => {
                 self.int_regs.remove(&acc);
+                self.list_value_types.remove(&acc);
+                self.list_value_adoptable.remove(&acc);
+                self.map_value_types.remove(&acc);
+                self.map_value_adoptable.remove(&acc);
             }
-            Op::MapSetMove { key, val, .. } => {
+            Op::ListPush { list, val } => {
+                self.update_list_value_type_after_write(list, val);
+                self.list_value_types.remove(&val);
+                self.list_value_adoptable.remove(&val);
+            }
+            Op::MapSetInterned(map, _, val) => {
+                self.update_map_value_type_after_write(map, val);
+                self.map_value_types.remove(&val);
+                self.map_value_adoptable.remove(&val);
+            }
+            Op::MapSet { map, key, val } => {
+                self.update_map_value_type_after_write(map, val);
+                self.map_value_types.remove(&key);
+                self.map_value_types.remove(&val);
+                self.map_value_adoptable.remove(&key);
+                self.map_value_adoptable.remove(&val);
+            }
+            Op::MapSetMove { map, key, val } => {
+                self.update_map_value_type_after_write(map, val);
                 self.int_regs.remove(&key);
                 self.int_regs.remove(&val);
                 self.list_locals.remove(&key);
                 self.list_locals.remove(&val);
+                self.list_value_types.remove(&key);
+                self.list_value_types.remove(&val);
+                self.list_value_adoptable.remove(&key);
+                self.list_value_adoptable.remove(&val);
                 self.map_locals.remove(&key);
                 self.map_locals.remove(&val);
+                self.map_value_types.remove(&key);
+                self.map_value_types.remove(&val);
+                self.map_value_adoptable.remove(&key);
+                self.map_value_adoptable.remove(&val);
             }
             Op::Call { base, retc, .. }
             | Op::CallExact { base, retc, .. }
@@ -457,19 +594,47 @@ impl FunctionBuilder {
             {
                 for reg in base..base.saturating_add(retc as u16) {
                     self.int_regs.remove(&reg);
+                    self.list_value_types.remove(&reg);
+                    self.list_value_adoptable.remove(&reg);
+                    self.map_value_types.remove(&reg);
+                    self.map_value_adoptable.remove(&reg);
                 }
             }
             Op::CallNamed { base_pos, retc, .. } if retc > 1 => {
                 for reg in base_pos..base_pos.saturating_add(retc as u16) {
                     self.int_regs.remove(&reg);
+                    self.list_value_types.remove(&reg);
+                    self.list_value_adoptable.remove(&reg);
+                    self.map_value_types.remove(&reg);
+                    self.map_value_adoptable.remove(&reg);
                 }
             }
             Op::CallNamedFallback { base_pos, retc, .. } if retc > 1 => {
                 for reg in base_pos..base_pos.saturating_add(retc as u16) {
                     self.int_regs.remove(&reg);
+                    self.list_value_types.remove(&reg);
+                    self.list_value_adoptable.remove(&reg);
+                    self.map_value_types.remove(&reg);
+                    self.map_value_adoptable.remove(&reg);
                 }
             }
             _ => {}
+        }
+    }
+
+    fn apply_global_method_return_fact(&mut self, dst: u16, receiver: u16, method: u16) -> bool {
+        let Some(receiver) = self.consts.get(receiver as usize).and_then(Val::as_str) else {
+            return false;
+        };
+        let Some(method) = self.consts.get(method as usize).and_then(Val::as_str) else {
+            return false;
+        };
+        match (receiver, method) {
+            ("os", "epoch" | "time") => {
+                self.apply_type_fact(dst, &Type::Int);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -571,12 +736,13 @@ impl FunctionBuilder {
         &mut self,
         name: Option<&str>,
         params: &[String],
+        param_types: &[Option<Type>],
         named_params: &[NamedParamDecl],
         body: &Stmt,
         register_const: bool,
     ) -> u16 {
         let dst = self.alloc();
-        self.emit_function_closure_into(dst, name, params, named_params, body, register_const);
+        self.emit_function_closure_into(dst, name, params, param_types, named_params, body, register_const);
         dst
     }
 
@@ -585,22 +751,35 @@ impl FunctionBuilder {
         dst: u16,
         name: Option<&str>,
         params: &[String],
+        param_types: &[Option<Type>],
         named_params: &[NamedParamDecl],
         body: &Stmt,
         register_const: bool,
     ) {
         if register_const && let Some(func_name) = name {
-            self.register_function_const_env(func_name, params, named_params, body);
+            self.register_function_const_env(func_name, params, param_types, named_params, body);
         }
 
         let proto_idx = self.protos.len() as u16;
         let captures = self.collect_captures(name, params, named_params, body);
-        let compiled = Compiler::new().compile_function_with_captures(params, named_params, body, &captures);
+        let compiled = Compiler::new().compile_function_with_param_types_and_captures(
+            params,
+            param_types,
+            named_params,
+            body,
+            &captures,
+        );
         let default_funcs: Vec<Option<Function>> = named_params
             .iter()
             .map(|decl| {
                 decl.default.as_ref().map(|expr| {
-                    Compiler::new().compile_default_expr_with_captures(params, named_params, expr, &captures)
+                    Compiler::new().compile_default_expr_with_param_types_and_captures(
+                        params,
+                        param_types,
+                        named_params,
+                        expr,
+                        &captures,
+                    )
                 })
             })
             .collect();
@@ -609,6 +788,7 @@ impl FunctionBuilder {
         self.protos.push(ClosureProto {
             self_name: name.map(|n| n.to_string()),
             params: Arc::new(params.to_vec()),
+            param_types: Arc::new(param_types.to_vec()),
             named_params: Arc::new(named_params.to_vec()),
             default_funcs: Arc::new(default_funcs),
             func: Some(Arc::clone(&func)),
@@ -623,6 +803,28 @@ impl FunctionBuilder {
         });
 
         self.emit(Op::MakeClosure { dst, proto: proto_idx });
+    }
+
+    pub(crate) fn effective_function_param_types(
+        &self,
+        name: &str,
+        params: &[String],
+        declared: &[Option<Type>],
+    ) -> Vec<Option<Type>> {
+        let mut effective = declared.to_vec();
+        if effective.len() < params.len() {
+            effective.resize(params.len(), None);
+        }
+        if let Some(inferred) = self.inferred_function_param_types.get(name) {
+            for (idx, inferred_ty) in inferred.iter().enumerate().take(params.len()) {
+                if effective[idx].is_none()
+                    && let Some(ty) = inferred_ty
+                {
+                    effective[idx] = Some(ty.clone());
+                }
+            }
+        }
+        effective
     }
 
     pub fn collect_captures(
@@ -688,11 +890,13 @@ impl FunctionBuilder {
         &mut self,
         name: &str,
         params: &[String],
+        param_types: &[Option<Type>],
         named_params: &[NamedParamDecl],
         body: &Stmt,
     ) {
         let mut func_val = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
             params: Arc::new(params.to_vec()),
+            param_types: Arc::new(param_types.to_vec()),
             named_params: Arc::new(named_params.to_vec()),
             body: Arc::new(body.clone()),
             env: Arc::new(self.const_env.clone()),
@@ -726,6 +930,7 @@ impl FunctionBuilder {
 
         let func_val = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
             params: Arc::new(params.to_vec()),
+            param_types: Arc::new(Vec::new()),
             named_params: Arc::new(Vec::new()),
             body: Arc::new(body_stmt),
             env: Arc::new(self.const_env.clone()),

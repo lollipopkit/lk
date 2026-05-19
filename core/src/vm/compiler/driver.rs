@@ -4,7 +4,7 @@ use crate::{
     expr::Expr,
     stmt::{NamedParamDecl, Program, Stmt},
     typ::TypeChecker,
-    val::Val,
+    val::{Type, Val},
     vm::{CaptureSpec, Function, Op},
 };
 
@@ -45,8 +45,16 @@ impl Compiler {
         let _ = stmt.type_check(&mut checker);
         let mut b = FunctionBuilder::new();
         let hints = checker.take_expr_types();
+        let inferred = super::param_infer::infer_direct_function_param_types(stmt, &hints);
+        let inferred_returns = super::param_infer::infer_direct_function_return_types(stmt, &hints, &inferred);
         if !hints.is_empty() {
             b.set_expr_type_hints(hints);
+        }
+        if !inferred.is_empty() {
+            b.set_inferred_function_param_types(inferred);
+        }
+        if !inferred_returns.is_empty() {
+            b.set_inferred_function_return_types(inferred_returns);
         }
         b.stmt(stmt);
         let k = b.k(Val::Nil);
@@ -70,12 +78,31 @@ impl Compiler {
         body: &Stmt,
         captures: &[CaptureSpec],
     ) -> Function {
+        self.compile_function_with_param_types_and_captures(params, &[], named_params, body, captures)
+    }
+
+    pub fn compile_function_with_param_types_and_captures(
+        &self,
+        params: &[String],
+        param_types: &[Option<Type>],
+        named_params: &[NamedParamDecl],
+        body: &Stmt,
+        captures: &[CaptureSpec],
+    ) -> Function {
         let mut checker = TypeChecker::new();
         let _ = body.type_check(&mut checker);
         let mut b = FunctionBuilder::new_function_with_captures(captures);
         let hints = checker.take_expr_types();
+        let inferred = super::param_infer::infer_direct_function_param_types(body, &hints);
+        let inferred_returns = super::param_infer::infer_direct_function_return_types(body, &hints, &inferred);
         if !hints.is_empty() {
             b.set_expr_type_hints(hints);
+        }
+        if !inferred.is_empty() {
+            b.set_inferred_function_param_types(inferred);
+        }
+        if !inferred_returns.is_empty() {
+            b.set_inferred_function_return_types(inferred_returns);
         }
         let slot_layout = {
             let mut resolver = SlotResolver::new();
@@ -88,10 +115,39 @@ impl Compiler {
             let idx = b.get_or_define(p);
             b.param_regs.push(idx);
         }
+        for (idx, param_type) in param_types.iter().enumerate() {
+            let Some(reg) = b.param_regs.get(idx).copied() else {
+                continue;
+            };
+            match param_type {
+                Some(Type::Int) => {
+                    b.int_regs.insert(reg);
+                }
+                Some(Type::List(_)) => {
+                    b.list_locals.insert(reg);
+                }
+                Some(Type::Map(_, _)) => {
+                    b.map_locals.insert(reg);
+                }
+                _ => {}
+            }
+        }
         b.named_param_regs.reserve(named_params.len());
         for decl in named_params {
             let idx = b.get_or_define(&decl.name);
             b.named_param_regs.push(idx);
+            match &decl.type_annotation {
+                Some(Type::Int) => {
+                    b.int_regs.insert(idx);
+                }
+                Some(Type::List(_)) => {
+                    b.list_locals.insert(idx);
+                }
+                Some(Type::Map(_, _)) => {
+                    b.map_locals.insert(idx);
+                }
+                _ => {}
+            }
         }
         b.build_named_param_layout(named_params);
         {
@@ -154,6 +210,17 @@ impl Compiler {
         expr: &Expr,
         captures: &[CaptureSpec],
     ) -> Function {
+        self.compile_default_expr_with_param_types_and_captures(params, &[], named_params, expr, captures)
+    }
+
+    pub fn compile_default_expr_with_param_types_and_captures(
+        &self,
+        params: &[String],
+        param_types: &[Option<Type>],
+        named_params: &[NamedParamDecl],
+        expr: &Expr,
+        captures: &[CaptureSpec],
+    ) -> Function {
         let mut checker = TypeChecker::new();
         let _ = checker.infer_resolved_type(expr);
         let mut b = FunctionBuilder::new_function_with_captures(captures);
@@ -171,10 +238,39 @@ impl Compiler {
             let idx = b.get_or_define(p);
             b.param_regs.push(idx);
         }
+        for (idx, param_type) in param_types.iter().enumerate() {
+            let Some(reg) = b.param_regs.get(idx).copied() else {
+                continue;
+            };
+            match param_type {
+                Some(Type::Int) => {
+                    b.int_regs.insert(reg);
+                }
+                Some(Type::List(_)) => {
+                    b.list_locals.insert(reg);
+                }
+                Some(Type::Map(_, _)) => {
+                    b.map_locals.insert(reg);
+                }
+                _ => {}
+            }
+        }
         for decl in named_params {
             let idx = b.get_or_define(&decl.name);
             b.param_regs.push(idx);
             b.named_param_regs.push(idx);
+            match &decl.type_annotation {
+                Some(Type::Int) => {
+                    b.int_regs.insert(idx);
+                }
+                Some(Type::List(_)) => {
+                    b.list_locals.insert(idx);
+                }
+                Some(Type::Map(_, _)) => {
+                    b.map_locals.insert(idx);
+                }
+                _ => {}
+            }
         }
         b.build_named_param_layout(named_params);
         let reg = b.expr(expr);

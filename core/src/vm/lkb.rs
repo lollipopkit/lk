@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     util::fast_map::{FastHashMap, fast_hash_map_with_capacity},
-    val::Val,
+    val::{Type, Val},
 };
 
 use super::alloc::{AllocationRegion, RegionPlan};
@@ -23,7 +23,7 @@ use op_codec::{decode_op, encode_op};
 mod op_codec;
 
 const MAGIC: [u8; 3] = *b"LKB";
-pub const CURRENT_VERSION: u16 = 8;
+pub const CURRENT_VERSION: u16 = 9;
 
 /// Flags describing optimisation passes that were applied when emitting the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -318,6 +318,15 @@ fn encode_function(func: &Function, version: u16) -> Result<Vec<u8>> {
             for p in proto.params.iter() {
                 write_str(&mut out, p);
             }
+            if version >= 9 {
+                let payload = serde_json::to_vec(proto.param_types.as_ref())?;
+                ensure!(
+                    payload.len() <= u32::MAX as usize,
+                    "nested closure param type payload too large"
+                );
+                write_u32(&mut out, payload.len() as u32);
+                out.extend_from_slice(&payload);
+            }
             if version >= 3 {
                 if let Some(name) = &proto.self_name {
                     write_u8(&mut out, 1);
@@ -356,8 +365,13 @@ fn encode_function(func: &Function, version: u16) -> Result<Vec<u8>> {
                 f.as_ref()
             } else {
                 // Fallback: compile from body if needed
-                let compiled =
-                    crate::vm::Compiler::new().compile_function(&proto.params, &proto.named_params, &proto.body);
+                let compiled = crate::vm::Compiler::new().compile_function_with_param_types_and_captures(
+                    proto.params.as_ref(),
+                    proto.param_types.as_ref(),
+                    proto.named_params.as_ref(),
+                    proto.body.as_ref(),
+                    proto.captures.as_ref(),
+                );
                 // allocate to keep alive
                 // We’ll encode directly from compiled temporary
                 // by shadowing the reference below
@@ -465,6 +479,18 @@ fn decode_function(bytes: &[u8], version: u16) -> Result<Function> {
                 let s = read_string(bytes, &mut cursor)?;
                 params.push(s);
             }
+            let param_types: Vec<Option<Type>> = if version >= 9 {
+                let payload_len = read_u32(bytes, &mut cursor)? as usize;
+                ensure!(
+                    cursor + payload_len <= bytes.len(),
+                    "nested closure param type payload overruns function"
+                );
+                let parsed = serde_json::from_slice(&bytes[cursor..cursor + payload_len])?;
+                cursor += payload_len;
+                parsed
+            } else {
+                Vec::new()
+            };
             let self_name = if version >= 3 {
                 let has_name = read_u8(bytes, &mut cursor)? != 0;
                 if has_name {
@@ -511,6 +537,7 @@ fn decode_function(bytes: &[u8], version: u16) -> Result<Function> {
             protos.push(ClosureProto {
                 self_name,
                 params: Arc::new(params),
+                param_types: Arc::new(param_types),
                 named_params: Arc::new(Vec::new()),
                 default_funcs: Arc::new(Vec::new()),
                 func: Some(Arc::clone(&func)),

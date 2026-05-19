@@ -32,6 +32,7 @@ fn zero_capture_proto(func: Arc<Function>) -> ClosureProto {
     ClosureProto {
         self_name: None,
         params: Arc::new(Vec::new()),
+        param_types: Arc::new(Vec::new()),
         named_params: Arc::new(Vec::new()),
         default_funcs: Arc::new(Vec::new()),
         func: Some(Arc::clone(&func)),

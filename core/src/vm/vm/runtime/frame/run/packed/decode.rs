@@ -123,6 +123,18 @@ pub(super) fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) 
                 argc: c as u8,
                 retc: 1,
             },
+            bc32::EXT_OP_CALL_CLOSURE_EXACT => PackedHotKind::CallClosureExact {
+                f,
+                base: b,
+                argc: c as u8,
+                retc: 1,
+            },
+            bc32::EXT_OP_CALL_EXACT => PackedHotKind::CallExact {
+                f,
+                base: b,
+                argc: c as u8,
+                retc: 1,
+            },
             bc32::EXT_OP_CALL_METHOD0 => PackedHotKind::CallMethod0 {
                 dst: f,
                 receiver: b,
@@ -139,6 +151,7 @@ pub(super) fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) 
             bc32::EXT_OP_MAP_GET_INTERNED => PackedHotKind::MapGetInterned { dst: f, map: b, key: c },
             bc32::EXT_OP_MAP_GET_DYNAMIC => PackedHotKind::MapGetDynamic { dst: f, map: b, key: c },
             bc32::EXT_OP_STR_CONCAT_KNOWN_CAP => PackedHotKind::StrConcatKnownCap { dst: f, a: b, b: c },
+            bc32::EXT_OP_STR_CONCAT_TO_STR => PackedHotKind::StrConcatToStr { dst: f, lhs: b, src: c },
             bc32::EXT_OP_CMP_I => {
                 let ext2 = *code32.get(pc + 2)?;
                 if bc32::tag_of(ext2) != bc32::TAG_EXT {

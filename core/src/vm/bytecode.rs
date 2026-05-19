@@ -104,6 +104,8 @@ pub struct ClosureProto {
     pub self_name: Option<String>,
     // Parameter names for arity check and binding
     pub params: Arc<Vec<String>>,
+    // Positional parameter type annotations aligned with `params`.
+    pub param_types: Arc<Vec<Option<crate::val::Type>>>,
     // Named parameter declarations for named-arg binding
     pub named_params: Arc<Vec<crate::stmt::NamedParamDecl>>,
     // Optional default value thunks for each named parameter (aligned with `named_params`)
@@ -248,6 +250,7 @@ pub enum Op {
     // Arithmetic
     Add(u16 /*dst*/, u16 /*a*/, u16 /*b*/),
     StrConcatKnownCap(u16 /*dst*/, u16 /*a*/, u16 /*b*/),
+    StrConcatToStr(u16 /*dst*/, u16 /*lhs*/, u16 /*src*/),
     Sub(u16, u16, u16),
     Mul(u16, u16, u16),
     Div(u16, u16, u16),
@@ -568,6 +571,7 @@ impl Op {
         match self {
             Op::AddInt(..) => Some("AddInt"),
             Op::StrConcatKnownCap(..) => Some("StrConcatKnownCap"),
+            Op::StrConcatToStr(..) => Some("StrConcatToStr"),
             Op::AddFloat(..) => Some("AddFloat"),
             Op::AddIntImm(..) => Some("AddIntImm"),
             Op::SubInt(..) => Some("SubInt"),
@@ -686,6 +690,7 @@ impl fmt::Debug for Op {
             Op::JmpTrueSet { r, dst, ofs } => write!(f, "JmpTrueSet r{}, dst=r{}, {}", r, dst, ofs),
             Op::Add(d, a, b) => write!(f, "Add r{}, r{}, r{}", d, a, b),
             Op::StrConcatKnownCap(d, a, b) => write!(f, "StrConcatKnownCap r{}, r{}, r{}", d, a, b),
+            Op::StrConcatToStr(d, lhs, src) => write!(f, "StrConcatToStr r{}, r{}, r{}", d, lhs, src),
             Op::Sub(d, a, b) => write!(f, "Sub r{}, r{}, r{}", d, a, b),
             Op::Mul(d, a, b) => write!(f, "Mul r{}, r{}, r{}", d, a, b),
             Op::Div(d, a, b) => write!(f, "Div r{}, r{}, r{}", d, a, b),

@@ -43,3 +43,96 @@ fn list_method_set_constant_index_lowers_to_list_set_i() {
         function.code
     );
 }
+
+#[test]
+fn homogeneous_int_list_index_feeds_typed_arithmetic() {
+    let source = r#"
+        let data = [10, 20, 30];
+        return data[1] + 22;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListIndexI(_, _, _))),
+        "expected constant list index to lower to ListIndexI in {:?}",
+        function.code
+    );
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
+        "expected homogeneous Int list element fact to feed typed add in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn homogeneous_int_list_get_feeds_typed_arithmetic() {
+    let source = r#"
+        import list;
+        let data = [10, 20, 30];
+        return list.get(data, 1) + 22;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
+        "expected list.get on homogeneous Int list to feed typed add in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn list_push_invalidates_homogeneous_value_fact() {
+    let source = r#"
+        let data = [1, 2];
+        data.push("x");
+        let inc = 1;
+        return data[0] + inc;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(2));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListPush { .. })),
+        "expected list.push to lower to ListPush in {:?}",
+        function.code
+    );
+    assert!(
+        !function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
+        "list.push should invalidate homogeneous element facts before later add in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn empty_list_push_adopts_homogeneous_int_fact() {
+    let source = r#"
+        let data = [];
+        data.push(40);
+        data.push(1);
+        return data[0] + data[1] + 1;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .filter(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _)))
+            .count()
+            >= 2,
+        "empty list followed by homogeneous Int pushes should feed typed adds in {:?}",
+        function.code
+    );
+}

@@ -74,6 +74,7 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
         Op::AddInt(d, a, b) => pack_typed_arith_or_rk(Tag::Add, EXT_OP_ADD_INT, d, a, b),
         Op::AddFloat(d, a, b) => pack_typed_arith_or_rk(Tag::Add, EXT_OP_ADD_FLOAT, d, a, b),
         Op::StrConcatKnownCap(d, a, b) => pack_ext_op(EXT_OP_STR_CONCAT_KNOWN_CAP, d, a, b),
+        Op::StrConcatToStr(d, lhs, src) => pack_ext_op(EXT_OP_STR_CONCAT_TO_STR, d, lhs, src),
         Op::Add(d, a, b) => {
             let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
             let word = pack(Tag::Add, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);

@@ -164,6 +164,25 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
+    pub(super) fn emit_str_concat_to_str(&mut self, dst: u16, lhs: u16, src: u16) -> Result<()> {
+        let lhs_value = self.load_rk(lhs)?;
+        let src_value = self.load_reg(src)?;
+        self.require_helper(RuntimeHelper::ToString);
+        self.require_helper(RuntimeHelper::AddValue);
+        let rhs = self.fresh("tostr");
+        self.writer.line(format!(
+            "{rhs} = call i64 @{}(i64 {src_value})",
+            RuntimeHelper::ToString.symbol()
+        ));
+        let out = self.fresh(RuntimeHelper::AddValue.temp_prefix());
+        self.writer.line(format!(
+            "{out} = call i64 @{}(i64 {lhs_value}, i64 {rhs})",
+            RuntimeHelper::AddValue.symbol()
+        ));
+        self.store_reg(dst, &out)?;
+        Ok(())
+    }
+
     fn try_emit_access_binary(&mut self, dst: u16, a: u16, b: u16, helper: RuntimeHelper) -> Result<bool> {
         let (lhs, base, key, access_helper) = match helper {
             RuntimeHelper::AddValue => {

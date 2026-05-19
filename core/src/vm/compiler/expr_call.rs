@@ -30,6 +30,18 @@ impl FunctionBuilder {
         }
         if args.len() == 2
             && let Expr::Var(module_name) = obj_expr
+            && module_name == "list"
+            && self.lookup(module_name).is_none()
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("get")
+            && let Expr::Var(list_name) = args[0].as_ref()
+            && let Some(list_reg) = self.lookup(list_name)
+            && self.list_locals.contains(&list_reg)
+        {
+            return self.emit_list_access(list_reg, &args[1]);
+        }
+        if args.len() == 2
+            && let Expr::Var(module_name) = obj_expr
             && module_name == "map"
             && self.lookup(module_name).is_none()
             && let Expr::Val(method_val) = field_expr
@@ -118,6 +130,15 @@ impl FunctionBuilder {
         {
             return out;
         }
+        if args.len() == 1
+            && let Expr::Var(var_name) = obj_expr
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("get")
+            && let Some(list_reg) = self.lookup(var_name)
+            && self.list_locals.contains(&list_reg)
+        {
+            return self.emit_list_access(list_reg, &args[0]);
+        }
         if args.len() == 2
             && let Expr::Var(var_name) = obj_expr
             && let Expr::Val(method_val) = field_expr
@@ -179,6 +200,18 @@ impl FunctionBuilder {
             let kidx = self.k(arg_val.clone());
             let dst = self.alloc();
             self.emit(Op::ContainsK(dst, obj_reg, kidx));
+            return dst;
+        }
+        if args.is_empty()
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str().is_some()
+            && let Expr::Var(receiver_name) = obj_expr
+            && self.lookup(receiver_name).is_none()
+        {
+            let dst = self.alloc();
+            let receiver = self.k(crate::val::Val::from_str(receiver_name.as_str()));
+            let method = self.k(method_val.clone());
+            self.emit(Op::CallGlobalMethod0 { dst, receiver, method });
             return dst;
         }
         if args.is_empty()

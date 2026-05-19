@@ -61,6 +61,28 @@ pub(super) fn run_str_concat_known_cap(
 }
 
 #[inline]
+pub(super) fn run_str_concat_to_str(
+    frame_raw: *mut FrameState<'_>,
+    regs: &mut [Val],
+    consts: &[Val],
+    dst: u16,
+    lhs: u16,
+    src: u16,
+) -> Result<()> {
+    let lhs_val = rk_read(regs, consts, lhs);
+    let out = if let Some(lhs_str) = lhs_val.as_str()
+        && let Some(value) = Val::concat_str_tostr_rhs(lhs_str, &regs[src as usize])
+    {
+        value
+    } else {
+        let rhs = Val::to_str_value(&regs[src as usize]);
+        BinOp::Add.eval_vals(lhs_val, &rhs)?
+    };
+    assign_reg(frame_raw, regs, dst as usize, out);
+    Ok(())
+}
+
+#[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_sub(
     frame_raw: *mut FrameState<'_>,

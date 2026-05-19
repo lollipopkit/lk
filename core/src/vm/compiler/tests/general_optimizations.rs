@@ -419,9 +419,13 @@ fn template_string_starts_from_first_literal() {
         function.consts
     );
     assert_eq!(
-        function.code.iter().filter(|op| matches!(op, Op::Add(_, _, _))).count(),
+        function
+            .code
+            .iter()
+            .filter(|op| matches!(op, Op::StrConcatToStr(_, _, _)))
+            .count(),
         1,
-        "template lowering should append only once in {:?}",
+        "template lowering should append through one typed to-string concat in {:?}",
         function.code
     );
 }
@@ -435,10 +439,9 @@ fn template_string_numeric_expr_uses_direct_concat() {
     let (function, _ctx, result) = parse_compile_and_run(source);
 
     assert_eq!(result.expect("vm exec"), Val::from_str("key-0-42"));
-    assert_eq!(
-        function.code.iter().filter(|op| matches!(op, Op::ToStr(_, _))).count(),
-        0,
-        "known-int interpolations should concatenate without ToStr in {:?}",
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::StrConcatToStr(_, _, _))),
+        "template interpolation should lower through typed to-string concat in {:?}",
         function.code
     );
 }
@@ -460,6 +463,274 @@ fn known_int_register_compare_lowers_to_cmp_i() {
     assert!(
         function.code.iter().any(|op| matches!(op, Op::CmpI { .. })),
         "known int register comparison should lower to CmpI in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn annotated_int_function_params_feed_typed_lowering() {
+    let source = r#"
+        fn score(price: Int, qty: Int, discount: Int) -> Int {
+            return price * qty - discount;
+        }
+        return score(7, 6, 5);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(37));
+    let proto = function
+        .protos
+        .iter()
+        .find_map(|proto| proto.func.as_ref())
+        .expect("compiled function proto");
+    assert!(
+        proto.code.iter().any(|op| matches!(op, Op::MulInt(_, _, _))),
+        "annotated Int params should lower multiplication to MulInt in {:?}",
+        proto.code
+    );
+    assert!(
+        proto.code.iter().any(|op| matches!(op, Op::SubInt(_, _, _))),
+        "annotated Int params should lower subtraction to SubInt in {:?}",
+        proto.code
+    );
+}
+
+#[test]
+fn direct_call_argument_types_feed_unannotated_function_lowering() {
+    let source = r#"
+        fn score(price, qty, discount) {
+            return price * qty - discount;
+        }
+        return score(7, 6, 5);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(37));
+    let proto = function
+        .protos
+        .iter()
+        .find_map(|proto| proto.func.as_ref())
+        .expect("compiled function proto");
+    assert!(
+        proto.code.iter().any(|op| matches!(op, Op::MulInt(_, _, _))),
+        "direct Int call args should lower multiplication to MulInt in {:?}",
+        proto.code
+    );
+    assert!(
+        proto.code.iter().any(|op| matches!(op, Op::SubInt(_, _, _))),
+        "direct Int call args should lower subtraction to SubInt in {:?}",
+        proto.code
+    );
+}
+
+#[test]
+fn load_local_from_int_param_preserves_typed_lowering() {
+    let source = r#"
+        fn reduce_pair(a0: Int, b0: Int) -> Int {
+            let a = a0;
+            let b = b0;
+            return a % b;
+        }
+        return reduce_pair(10, 3);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(1));
+    let proto = function
+        .protos
+        .iter()
+        .find_map(|proto| proto.func.as_ref())
+        .expect("compiled function proto");
+    assert!(
+        proto.code.iter().any(|op| matches!(op, Op::ModInt(_, _, _))),
+        "LoadLocal from known Int params should keep modulo typed in {:?}",
+        proto.code
+    );
+}
+
+#[test]
+fn inferred_int_return_marks_direct_call_result() {
+    let source = r#"
+        fn score(price, qty) {
+            return price * qty;
+        }
+        let total = 0;
+        return total + score(6, 7);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
+        "direct call returning inferred Int should feed typed addition in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn inferred_int_return_feeds_arithmetic_selection_before_call_emission() {
+    let source = r#"
+        fn first_positive(n) {
+            if (n > 0) {
+                return n;
+            }
+            return 0;
+        }
+        let total = 1;
+        return total + first_positive(41);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
+        "inferred direct-call return should be visible before selecting arithmetic opcode in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn inferred_int_return_feeds_compound_assignment_with_call_rhs() {
+    let source = r#"
+        fn first_positive(n) -> Int {
+            if (n > 0) {
+                return n;
+            }
+            return 0;
+        }
+        let total = 1;
+        total += first_positive(41);
+        return total;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
+        "compound assignment with inferred Int call RHS should use typed add in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn direct_local_function_call_uses_closure_exact_opcode() {
+    let source = r#"
+        fn add_one(n) {
+            return n + 1;
+        }
+        return add_one(41);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::CallClosureExact { argc: 1, retc: 1, .. })),
+        "direct local function call should use CallClosureExact in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn shadowed_function_name_does_not_use_closure_exact_opcode() {
+    let source = r#"
+        fn add_one(n) {
+            return n + 1;
+        }
+        let add_one = 7;
+        return add_one(41);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert!(result.is_err(), "shadowed non-callable should still fail at runtime");
+    assert!(
+        function
+            .code
+            .iter()
+            .all(|op| !matches!(op, Op::CallClosureExact { .. })),
+        "shadowed function variable should not use CallClosureExact in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn known_global_method_return_feeds_typed_arithmetic() {
+    let function = Compiler::new().compile_stmt(&Stmt::Block {
+        statements: vec![
+            Box::new(Stmt::Let {
+                pattern: crate::expr::Pattern::Variable("seed".to_string()),
+                type_annotation: None,
+                value: Box::new(Expr::CallExpr(
+                    Box::new(Expr::Access(
+                        Box::new(Expr::Var("os".to_string())),
+                        Box::new(Expr::Val(Val::from_str("epoch"))),
+                    )),
+                    Vec::new(),
+                )),
+                span: None,
+                is_const: false,
+            }),
+            Box::new(Stmt::Return {
+                value: Some(Box::new(Expr::Bin(
+                    Box::new(Expr::Val(Val::Int(100))),
+                    BinOp::Add,
+                    Box::new(Expr::Bin(
+                        Box::new(Expr::Var("seed".to_string())),
+                        BinOp::Sub,
+                        Box::new(Expr::Var("seed".to_string())),
+                    )),
+                ))),
+            }),
+        ],
+    });
+
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::CallGlobalMethod0 { .. })),
+        "zero-arg global method call should lower directly to CallGlobalMethod0 in {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::SubInt(_, _, _))),
+        "known os.epoch Int return should feed typed subtraction in {:?}",
+        function.code
+    );
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
+        "known os.epoch Int return should feed typed addition in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn floor_result_feeds_typed_integer_lowering() {
+    let source = r#"
+        import math;
+        let mid = math.floor(21 / 2);
+        return mid * 2;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(20));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::MulInt(_, _, _))),
+        "Floor result should be tracked as Int for following arithmetic in {:?}",
         function.code
     );
 }

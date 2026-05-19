@@ -205,6 +205,7 @@ fn test_bc32_make_closure_out_of_range_dst_uses_reg_ext() {
     let proto_template = ClosureProto {
         self_name: None,
         params: Arc::new(Vec::new()),
+        param_types: Arc::new(Vec::new()),
         named_params: Arc::new(Vec::new()),
         default_funcs: Arc::new(Vec::new()),
         func: None,
@@ -336,6 +337,7 @@ fn test_bc32_current_typed_ops_roundtrip_gate() {
             Op::ModInt(8, 9, 10),
             Op::ModFloat(9, 10, 11),
             Op::StrConcatKnownCap(9, 1, 2),
+            Op::StrConcatToStr(9, 1, 2),
             Op::CmpEqImm(10, 11, 1),
             Op::CmpNeImm(11, 12, 2),
             Op::CmpLtImm(12, 13, 3),
@@ -671,6 +673,7 @@ fn test_bc32_typed_access_string_container_packed_execution() {
             Op::LoadK(4, 4),
             Op::LoadK(12, 5),
             Op::StrConcatKnownCap(13, 4, 12),
+            Op::StrConcatToStr(13, 13, 1),
             Op::StartsWithK(5, 4, 5),
             Op::ContainsK(6, 4, 6),
             Op::StrIndexI(8, 4, 2),
@@ -687,7 +690,7 @@ fn test_bc32_typed_access_string_container_packed_execution() {
         bc32_decoded: None,
         analysis: None,
     });
-    assert_eq!(access_out, Val::from_str("abcdefabc"));
+    assert_eq!(access_out, Val::from_str("abcdefabc41"));
 
     let collection_out = exec_packed_function(Function {
         consts: vec![
@@ -1022,6 +1025,7 @@ fn test_bc32_build_list_map_out_of_range_falls_back() {
             let proto_template = ClosureProto {
                 self_name: None,
                 params: Arc::new(Vec::new()),
+                param_types: Arc::new(Vec::new()),
                 named_params: Arc::new(Vec::new()),
                 default_funcs: Arc::new(Vec::new()),
                 func: None,

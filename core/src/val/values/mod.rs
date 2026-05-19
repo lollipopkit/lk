@@ -13,8 +13,6 @@ use crate::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
 
 use anyhow::{Result, anyhow};
 use once_cell::sync::OnceCell;
-use serde::ser::SerializeMap;
-use serde::{Serialize, Serializer};
 
 use crate::stmt::{NamedParamDecl, Program, Stmt};
 
@@ -30,6 +28,7 @@ mod intern;
 mod map_key_cache;
 mod native;
 mod ops;
+mod serde_impl;
 mod strings;
 mod types;
 
@@ -195,6 +194,7 @@ impl ClosureCapture {
 
 pub struct ClosureValue {
     pub params: Arc<Vec<String>>,
+    pub param_types: Arc<Vec<Option<Type>>>,
     pub named_params: Arc<Vec<NamedParamDecl>>,
     pub body: Arc<Stmt>,
     pub env: Arc<VmContext>,
@@ -217,6 +217,7 @@ pub struct ClosureValue {
 
 pub struct ClosureInit {
     pub params: Arc<Vec<String>>,
+    pub param_types: Arc<Vec<Option<Type>>>,
     pub named_params: Arc<Vec<NamedParamDecl>>,
     pub body: Arc<Stmt>,
     pub env: Arc<VmContext>,
@@ -265,6 +266,7 @@ impl ClosureValue {
     pub fn new(init: ClosureInit) -> Self {
         let ClosureInit {
             params,
+            param_types,
             named_params,
             body,
             env,
@@ -278,6 +280,7 @@ impl ClosureValue {
         } = init;
         Self {
             params,
+            param_types,
             named_params,
             body,
             env,
@@ -343,7 +346,7 @@ impl ClosureValue {
             let func_stmt = Stmt::Function {
                 name: "__anon".to_string(),
                 params: (*self.params).to_vec(),
-                param_types: Vec::new(),
+                param_types: (*self.param_types).to_vec(),
                 named_params: (*self.named_params).to_vec(),
                 return_type: None,
                 body: Box::new((*self.body).clone()),
@@ -604,140 +607,6 @@ pub enum Val {
     Nil,
 }
 
-impl Type {
-    pub fn validate(&self, val: &Val) -> Result<()> {
-        match (self, val) {
-            // Primitive types
-            (Type::Int, Val::Int(_)) => Ok(()),
-            (Type::Float, Val::Float(_)) => Ok(()),
-            (Type::Float, Val::Int(_)) => Ok(()),
-            (Type::String, Val::ShortStr(_)) | (Type::String, Val::Str(_)) => Ok(()),
-            (Type::Bool, Val::Bool(_)) => Ok(()),
-            (Type::Nil, Val::Nil) => Ok(()),
-            (Type::Boxed(inner), value) => {
-                if matches!(**inner, Type::Any) {
-                    Ok(())
-                } else {
-                    inner.validate(value)
-                }
-            }
-
-            // Any type accepts everything
-            (Type::Any, _) => Ok(()),
-
-            // Generic container types
-            (Type::List(elem_type), Val::List(list)) => {
-                // Validate all elements match the expected type
-                for item in list.iter() {
-                    elem_type.validate(item)?;
-                }
-                Ok(())
-            }
-            (Type::Map(key_type, val_type), Val::Map(map)) => {
-                // Validate all keys and values match expected types
-                for (k, v) in map.iter() {
-                    let key_val = Val::from_str(k.as_str());
-                    key_type.validate(&key_val)?;
-                    val_type.validate(v)?;
-                }
-                Ok(())
-            }
-            // Tuple types validate against lists of identical arity
-            (Type::Tuple(elems), Val::List(list)) => {
-                if list.len() != elems.len() {
-                    return Err(anyhow!(
-                        "Tuple length mismatch: expected {}, got {}",
-                        elems.len(),
-                        list.len()
-                    ));
-                }
-                for (i, (et, v)) in elems.iter().zip(list.iter()).enumerate() {
-                    et.validate(v).map_err(|e| anyhow!("Tuple element {}: {}", i, e))?;
-                }
-                Ok(())
-            }
-
-            // Function types
-            (Type::Function { .. }, Val::Closure(_)) => Ok(()),
-            (Type::Function { .. }, Val::RustFunction(_)) => Ok(()),
-            (Type::Function { .. }, Val::RustFastFunction(_)) => Ok(()),
-            (Type::Function { .. }, Val::RustFastFunctionNamed(_)) => Ok(()),
-            (Type::Function { .. }, Val::RustFunctionNamed(_)) => Ok(()),
-            (Type::Function { .. }, Val::AotFunction(_)) => Ok(()),
-
-            // Concurrency types
-            (Type::Task(inner_type), Val::Task(task)) => {
-                if let Some(v) = &task.value {
-                    inner_type.validate(v)?;
-                }
-                Ok(())
-            }
-            // Stream<T> represented as Generic { name: "Stream", params: [T] }
-            (Type::Generic { name, params }, Val::Stream(stream)) if name == "Stream" && params.len() == 1 => {
-                let expected_inner = &params[0];
-                if expected_inner == &stream.inner_type || expected_inner.is_assignable_to(&stream.inner_type) {
-                    Ok(())
-                } else {
-                    Err(anyhow!(
-                        "Stream type mismatch: expected Stream<{:?}>, got Stream<{:?}>",
-                        expected_inner,
-                        stream.inner_type
-                    ))
-                }
-            }
-            (Type::Channel(inner_type), Val::Channel(channel)) => {
-                if inner_type.as_ref() == &channel.inner_type {
-                    Ok(())
-                } else {
-                    Err(anyhow!(
-                        "Channel type mismatch: expected {:?}, got {:?}",
-                        inner_type,
-                        channel.inner_type
-                    ))
-                }
-            }
-
-            // Union types - value must match at least one type in the union
-            (Type::Union(types), val) => {
-                for typ in types {
-                    if typ.validate(val).is_ok() {
-                        return Ok(());
-                    }
-                }
-                Err(anyhow!(
-                    "Union type mismatch: value {:?} doesn't match any of {:?}",
-                    val.type_name(),
-                    types
-                ))
-            }
-
-            // Optional types - value must be Nil or match the inner type
-            (Type::Optional(_inner_type), Val::Nil) => Ok(()),
-            (Type::Optional(inner_type), val) => inner_type.validate(val),
-
-            // Type variables and named types are handled by the type checker
-            (Type::Variable(_), _) => Ok(()), // Always valid during inference
-            (Type::Named(_), _) => Ok(()),    // Validated by type registry
-
-            // Generic types are validated by the type system
-            (Type::Generic { .. }, _) => Ok(()),
-
-            // Iterator / mutation guard currently surface as opaque runtime types.
-            (expected, actual @ Val::Iterator(_)) | (expected, actual @ Val::MutationGuard(_)) => Err(anyhow!(
-                "Type mismatch: expected {:?}, got {:?}",
-                expected,
-                actual.type_name()
-            )),
-            // Type mismatch
-            (expected, actual) => Err(anyhow!(
-                "Type mismatch: expected {:?}, got {:?}",
-                expected,
-                actual.type_name()
-            )),
-        }
-    }
-}
-
 impl Val {
     #[inline]
     pub fn type_name(&self) -> &'static str {
@@ -959,68 +828,6 @@ impl PartialOrd for Val {
                 (Some(a), Some(b)) => a.partial_cmp(b),
                 _ => None,
             },
-        }
-    }
-}
-
-impl Serialize for Val {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Val::ShortStr(s) => serializer.serialize_str(s.as_str()),
-            Val::Str(s) => serializer.serialize_str(s.as_ref()),
-            Val::Int(i) => serializer.serialize_i64(*i),
-            Val::Float(f) => serializer.serialize_f64(*f),
-            Val::Bool(b) => serializer.serialize_bool(*b),
-            Val::Map(m) => (**m).serialize(serializer),
-            Val::List(l) => (**l).serialize(serializer),
-            Val::Closure(_)
-            | Val::RustFunction(_)
-            | Val::RustFastFunction(_)
-            | Val::RustFastFunctionNamed(_)
-            | Val::RustFunctionNamed(_)
-            | Val::AotFunction(_) => {
-                // Functions can't be serialized, use placeholder
-                serializer.serialize_str("<function>")
-            }
-            Val::Iterator(_) => serializer.serialize_str("<iterator>"),
-            Val::MutationGuard(_) => serializer.serialize_str("<mutation-guard>"),
-            Val::Task(task) => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("type", "task")?;
-                map.serialize_entry("value", &task.value)?;
-                map.end()
-            }
-            Val::Channel(channel) => {
-                let mut map = serializer.serialize_map(Some(3))?;
-                map.serialize_entry("type", "channel")?;
-                map.serialize_entry("capacity", &channel.capacity)?;
-                map.serialize_entry("inner_type", &format!("{:?}", channel.inner_type))?;
-                map.end()
-            }
-            Val::Stream(stream) => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("type", "stream")?;
-                map.serialize_entry("inner_type", &format!("{:?}", stream.inner_type))?;
-                map.end()
-            }
-            Val::StreamCursor(cur) => {
-                let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("type", "stream_cursor")?;
-                map.serialize_entry("stream_id", &cur.stream_id)?;
-                map.end()
-            }
-            Val::Object(object) => {
-                let mut map = serializer.serialize_map(Some(object.fields.len() + 1))?;
-                map.serialize_entry("__type", object.type_name.as_str())?;
-                for (k, v) in object.fields.iter() {
-                    map.serialize_entry(k, v)?;
-                }
-                map.end()
-            }
-            Val::Nil => serializer.serialize_unit(),
         }
     }
 }

@@ -29,6 +29,12 @@ impl FunctionBuilder {
             self.emit_expr_into(key_reg + 1, expr);
         }
         self.emit(Op::BuildMap { dst, base, len: count });
+        if named_args.is_empty() {
+            self.record_empty_map_value_type(dst);
+        } else {
+            let value_fact = self.homogeneous_expr_value_fact(named_args.iter().map(|(_, expr)| expr.as_ref()));
+            self.record_map_value_type(dst, value_fact);
+        }
     }
 
     pub(crate) fn emit_map_access(&mut self, map_reg: u16, key_expr: &Expr) -> u16 {
@@ -42,6 +48,7 @@ impl FunctionBuilder {
             let key_reg = self.expr(key_expr);
             self.emit(Op::Access(dst, map_reg, key_reg));
         }
+        self.mark_map_lookup_result(dst, map_reg);
         dst
     }
 

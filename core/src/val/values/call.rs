@@ -113,8 +113,9 @@ impl Val {
         let named_kinds = closure.named_param_kinds();
         let fun = closure.code.get_or_init(|| {
             let c = Compiler::new();
-            Arc::new(c.compile_function_with_captures(
+            Arc::new(c.compile_function_with_param_types_and_captures(
                 params,
+                closure.param_types.as_ref(),
                 named_params,
                 closure.body.as_ref(),
                 closure.capture_specs.as_ref(),

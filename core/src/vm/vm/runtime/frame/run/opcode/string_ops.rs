@@ -22,7 +22,7 @@ pub(super) fn run_to_str(
             let lhs_val = rk_read(regs, consts, *lhs);
             lhs_val
                 .as_str()
-                .and_then(|lhs_str| Val::concat_str_add_rhs(lhs_str, &regs[src as usize]))
+                .and_then(|lhs_str| Val::concat_str_tostr_rhs(lhs_str, &regs[src as usize]))
         };
         if let Some(value) = fused {
             assign_reg(frame_raw, regs, *out as usize, value);

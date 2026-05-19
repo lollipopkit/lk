@@ -20,6 +20,28 @@ print(draw_rect(0, 0, width: 20, height: 10));
 
 Outputs `200`. More language details: [LANG.md](LANG.md).
 
+### Examples
+
+```
+examples/
+├── syntax/          # Language feature demos
+│   ├── closure.lk        # Closures & higher-order functions
+│   ├── struct.lk          # Struct definition & instantiation
+│   ├── trait_impl.lk      # Trait definition & impl
+│   ├── ...               # and many more
+├── stdlib/           # Standard library demos
+│   ├── string_methods.lk # String operations & methods
+│   ├── math_demo.lk      # Math module (sqrt, sin, pow, ...)
+│   ├── ...               # and more
+├── general/          # Practical examples
+│   ├── word_count.lk     # Text processing & word frequency
+│   ├── config_parser.lk  # JSON/YAML/TOML config loading
+│   ├── ...
+└── _references/      # Cross-language references (Dart, Lua, C)
+```
+
+Run any example: `lk examples/syntax/closure.lk`
+
 ### Highlights
 - Rust-inspired syntax with first-class named parameters
 - Deterministic bytecode VM with optional concurrency runtime

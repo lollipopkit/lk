@@ -101,6 +101,10 @@ pub(super) fn run_opcode_code(
                 arithmetic_ops::run_str_concat_known_cap(frame_raw, regs, &f.consts, *dst, *a, *b)?;
                 pc += 1;
             }
+            Op::StrConcatToStr(dst, lhs, src) => {
+                arithmetic_ops::run_str_concat_to_str(frame_raw, regs, &f.consts, *dst, *lhs, *src)?;
+                pc += 1;
+            }
             Op::Sub(dst, a, b) => {
                 arithmetic_ops::run_sub(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
                 pc += 1;

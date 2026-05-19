@@ -561,12 +561,22 @@ impl FunctionBuilder {
             Stmt::Function {
                 name,
                 params,
+                param_types,
                 body,
                 named_params,
                 ..
             } => {
                 let idx = self.get_or_define(name);
-                self.emit_function_closure_into(idx, Some(name.as_str()), params, named_params, body.as_ref(), true);
+                let effective_param_types = self.effective_function_param_types(name, params, param_types);
+                self.emit_function_closure_into(
+                    idx,
+                    Some(name.as_str()),
+                    params,
+                    &effective_param_types,
+                    named_params,
+                    body.as_ref(),
+                    true,
+                );
                 if self.export_toplevel_globals && self.loop_depth == 0 && self.var_scope_depth() == 0 {
                     let kname = self.k(Val::from_str(name.as_str()));
                     self.emit(Op::DefineGlobal(kname, idx));
@@ -836,11 +846,16 @@ impl FunctionBuilder {
                         idx
                     };
                     let r_value = self.expr(value);
+                    let int_operands = self.int_regs.contains(&r_current) && self.int_regs.contains(&r_value);
                     match op {
+                        BinOp::Add if int_operands => self.emit(Op::AddInt(idx, r_current, r_value)),
                         BinOp::Add => self.emit(Op::Add(idx, r_current, r_value)),
+                        BinOp::Sub if int_operands => self.emit(Op::SubInt(idx, r_current, r_value)),
                         BinOp::Sub => self.emit(Op::Sub(idx, r_current, r_value)),
+                        BinOp::Mul if int_operands => self.emit(Op::MulInt(idx, r_current, r_value)),
                         BinOp::Mul => self.emit(Op::Mul(idx, r_current, r_value)),
                         BinOp::Div => self.emit(Op::Div(idx, r_current, r_value)),
+                        BinOp::Mod if int_operands => self.emit(Op::ModInt(idx, r_current, r_value)),
                         BinOp::Mod => self.emit(Op::Mod(idx, r_current, r_value)),
                         _ => {
                             return;
@@ -901,8 +916,14 @@ impl FunctionBuilder {
                         named_params,
                     } = method
                     {
-                        let closure_reg =
-                            self.emit_function_closure(Some(name.as_str()), params, named_params, body.as_ref(), false);
+                        let closure_reg = self.emit_function_closure(
+                            Some(name.as_str()),
+                            params,
+                            param_types,
+                            named_params,
+                            body.as_ref(),
+                            false,
+                        );
 
                         let entry_base = self.alloc();
                         let name_idx = self.k(Val::from_str(name.as_str()));

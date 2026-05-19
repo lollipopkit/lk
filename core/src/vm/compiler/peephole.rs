@@ -230,6 +230,7 @@ fn remap_single_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
         | Op::Floor { src, .. } => remap(src),
         Op::Add(_, a, b)
         | Op::StrConcatKnownCap(_, a, b)
+        | Op::StrConcatToStr(_, a, b)
         | Op::Sub(_, a, b)
         | Op::Mul(_, a, b)
         | Op::Div(_, a, b)
@@ -339,6 +340,7 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::ToIter { src, .. } => is(src),
         Op::Add(_, a, b)
         | Op::StrConcatKnownCap(_, a, b)
+        | Op::StrConcatToStr(_, a, b)
         | Op::Sub(_, a, b)
         | Op::Mul(_, a, b)
         | Op::Div(_, a, b)
@@ -408,7 +410,7 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
     }
 }
 
-fn op_writes_reg(op: &Op, reg: u16) -> bool {
+pub(super) fn op_writes_reg(op: &Op, reg: u16) -> bool {
     let is = |value: &u16| *value == reg;
     match op {
         Op::LoadK(dst, _)
@@ -418,6 +420,7 @@ fn op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::ToBool(dst, _)
         | Op::Add(dst, _, _)
         | Op::StrConcatKnownCap(dst, _, _)
+        | Op::StrConcatToStr(dst, _, _)
         | Op::Sub(dst, _, _)
         | Op::Mul(dst, _, _)
         | Op::Div(dst, _, _)

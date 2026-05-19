@@ -152,6 +152,7 @@ pub(super) fn opcode_name(op: &Op) -> &'static str {
         Op::AddInt(..) => "AddInt",
         Op::AddFloat(..) => "AddFloat",
         Op::StrConcatKnownCap(..) => "StrConcatKnownCap",
+        Op::StrConcatToStr(..) => "StrConcatToStr",
         Op::AddIntImm(..) => "AddIntImm",
         Op::Sub(..) => "Sub",
         Op::SubInt(..) => "SubInt",

@@ -39,6 +39,7 @@ pub(crate) const EXT_OP_CALL_EXACT: u8 = 28;
 pub(crate) const EXT_OP_CALL_NAMED_FALLBACK: u8 = 29;
 pub(crate) const EXT_OP_CALL_METHOD0: u8 = 30;
 pub(crate) const EXT_OP_CALL_GLOBAL_METHOD0: u8 = 31;
+pub(crate) const EXT_OP_STR_CONCAT_TO_STR: u8 = 32;
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -358,6 +359,7 @@ pub(crate) fn decode_ext_op(word: u32, ext: u32, c_hi: u16) -> Option<Op> {
         EXT_OP_MAP_SET_INTERNED => Some(Op::MapSetInterned(a, b, c)),
         EXT_OP_MAP_GET_DYNAMIC => Some(Op::MapGetDynamic(a, b, c)),
         EXT_OP_STR_CONCAT_KNOWN_CAP => Some(Op::StrConcatKnownCap(a, b, c)),
+        EXT_OP_STR_CONCAT_TO_STR => Some(Op::StrConcatToStr(a, b, c)),
         EXT_OP_CALL_NATIVE_FAST => Some(Op::CallNativeFast {
             f: a,
             base: b,

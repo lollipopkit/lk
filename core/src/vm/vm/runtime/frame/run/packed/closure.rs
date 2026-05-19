@@ -27,6 +27,7 @@ pub(super) fn make_closure_value(
             .get_or_init(|| {
                 let closure = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
                     params: Arc::clone(&proto.params),
+                    param_types: Arc::clone(&proto.param_types),
                     named_params: Arc::clone(&proto.named_params),
                     body: Arc::clone(&proto.body),
                     env: Arc::clone(&proto.empty_env),
@@ -43,8 +44,9 @@ pub(super) fn make_closure_value(
                     && let Val::Closure(closure_arc) = &closure
                 {
                     let compiler = Compiler::new();
-                    let compiled = compiler.compile_function_with_captures(
+                    let compiled = compiler.compile_function_with_param_types_and_captures(
                         proto.params.as_ref(),
+                        proto.param_types.as_ref(),
                         proto.named_params.as_ref(),
                         proto.body.as_ref(),
                         proto.captures.as_ref(),
@@ -95,6 +97,7 @@ pub(super) fn make_closure_value(
     };
     let mut closure = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
         params: Arc::clone(&proto.params),
+        param_types: Arc::clone(&proto.param_types),
         named_params: Arc::clone(&proto.named_params),
         body: Arc::clone(&proto.body),
         env: captured_env,
@@ -118,8 +121,9 @@ pub(super) fn make_closure_value(
         && let Val::Closure(closure_arc) = &closure
     {
         let compiler = Compiler::new();
-        let compiled = compiler.compile_function_with_captures(
+        let compiled = compiler.compile_function_with_param_types_and_captures(
             proto.params.as_ref(),
+            proto.param_types.as_ref(),
             proto.named_params.as_ref(),
             proto.body.as_ref(),
             proto.captures.as_ref(),

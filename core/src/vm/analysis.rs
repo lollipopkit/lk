@@ -612,6 +612,7 @@ pub fn opcode_name(op: &Op) -> &'static str {
         Op::JmpTrueSet { .. } => "JmpTrueSet",
         Op::Add(..) => "Add",
         Op::StrConcatKnownCap(..) => "StrConcatKnownCap",
+        Op::StrConcatToStr(..) => "StrConcatToStr",
         Op::Sub(..) => "Sub",
         Op::Mul(..) => "Mul",
         Op::Div(..) => "Div",
@@ -709,6 +710,7 @@ pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
         Op::LoadK(..) | Op::Move(..) | Op::Not(..) | Op::ToStr(..) | Op::ToBool(..) => VmOpcodeCategory::Data,
         Op::Add(..)
         | Op::StrConcatKnownCap(..)
+        | Op::StrConcatToStr(..)
         | Op::Sub(..)
         | Op::Mul(..)
         | Op::Div(..)

@@ -58,18 +58,28 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u16(out, dst);
             write_i16(out, ofs);
         }
-        Op::Add(dst, a, b) | Op::AddInt(dst, a, b) | Op::AddFloat(dst, a, b) => encode_op3(out, 9, dst, a, b),
+        Op::Add(dst, a, b) => encode_op3(out, 9, dst, a, b),
+        Op::AddInt(dst, a, b) => encode_op3(out, 90, dst, a, b),
+        Op::AddFloat(dst, a, b) => encode_op3(out, 91, dst, a, b),
         Op::StrConcatKnownCap(dst, a, b) => encode_op3(out, 81, dst, a, b),
+        Op::StrConcatToStr(dst, lhs, src) => encode_op3(out, 111, dst, lhs, src),
         Op::AddIntImm(dst, src, imm) => {
             write_u8(out, 50);
             write_u16(out, dst);
             write_u16(out, src);
             write_i16(out, imm);
         }
-        Op::Sub(dst, a, b) | Op::SubInt(dst, a, b) | Op::SubFloat(dst, a, b) => encode_op3(out, 10, dst, a, b),
-        Op::Mul(dst, a, b) | Op::MulInt(dst, a, b) | Op::MulFloat(dst, a, b) => encode_op3(out, 11, dst, a, b),
-        Op::Div(dst, a, b) | Op::DivFloat(dst, a, b) => encode_op3(out, 12, dst, a, b),
-        Op::Mod(dst, a, b) | Op::ModInt(dst, a, b) | Op::ModFloat(dst, a, b) => encode_op3(out, 13, dst, a, b),
+        Op::Sub(dst, a, b) => encode_op3(out, 10, dst, a, b),
+        Op::SubInt(dst, a, b) => encode_op3(out, 92, dst, a, b),
+        Op::SubFloat(dst, a, b) => encode_op3(out, 93, dst, a, b),
+        Op::Mul(dst, a, b) => encode_op3(out, 11, dst, a, b),
+        Op::MulInt(dst, a, b) => encode_op3(out, 94, dst, a, b),
+        Op::MulFloat(dst, a, b) => encode_op3(out, 95, dst, a, b),
+        Op::Div(dst, a, b) => encode_op3(out, 12, dst, a, b),
+        Op::DivFloat(dst, a, b) => encode_op3(out, 96, dst, a, b),
+        Op::Mod(dst, a, b) => encode_op3(out, 13, dst, a, b),
+        Op::ModInt(dst, a, b) => encode_op3(out, 97, dst, a, b),
+        Op::ModFloat(dst, a, b) => encode_op3(out, 98, dst, a, b),
         Op::CmpEq(dst, a, b) => encode_op3(out, 14, dst, a, b),
         Op::CmpNe(dst, a, b) => encode_op3(out, 15, dst, a, b),
         Op::CmpLt(dst, a, b) => encode_op3(out, 16, dst, a, b),
@@ -494,11 +504,21 @@ pub(super) fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             ofs: read_i16(bytes, cursor)?,
         },
         9 => decode_op3(Op::Add, bytes, cursor)?,
+        90 => decode_op3(Op::AddInt, bytes, cursor)?,
+        91 => decode_op3(Op::AddFloat, bytes, cursor)?,
         81 => decode_op3(Op::StrConcatKnownCap, bytes, cursor)?,
+        111 => decode_op3(Op::StrConcatToStr, bytes, cursor)?,
         10 => decode_op3(Op::Sub, bytes, cursor)?,
+        92 => decode_op3(Op::SubInt, bytes, cursor)?,
+        93 => decode_op3(Op::SubFloat, bytes, cursor)?,
         11 => decode_op3(Op::Mul, bytes, cursor)?,
+        94 => decode_op3(Op::MulInt, bytes, cursor)?,
+        95 => decode_op3(Op::MulFloat, bytes, cursor)?,
         12 => decode_op3(Op::Div, bytes, cursor)?,
+        96 => decode_op3(Op::DivFloat, bytes, cursor)?,
         13 => decode_op3(Op::Mod, bytes, cursor)?,
+        97 => decode_op3(Op::ModInt, bytes, cursor)?,
+        98 => decode_op3(Op::ModFloat, bytes, cursor)?,
         14 => decode_op3(Op::CmpEq, bytes, cursor)?,
         15 => decode_op3(Op::CmpNe, bytes, cursor)?,
         16 => decode_op3(Op::CmpLt, bytes, cursor)?,

@@ -1,73 +1,150 @@
 // Known unsupported / buggy syntax in current LK runtime
 // This file documents language features that are parsed but misbehave at runtime.
-// Run: lk examples/unsupported.lk
+// Run: lk examples/syntax/unsupported.lk
 
-// ── 1. Ternary operator `? :` returns nil ──
-let flag = true;
-let val = flag ? "yes" : "no";
-// Expected: "yes", Actual: nil
-println("1. ternary = {} (expected: yes, got: {})", val, val);
-
-// ── 2. Match variable binding returns nil ──
+// ── 1. Match variable binding returns nil ──
+// Variable patterns in match arms bind the value for guard expressions
+// but return nil in the arm body. Literal patterns, or-patterns, and
+// wildcard (_) all work correctly.
 let r = match 99 { n => n, _ => 0 };
-// Expected: 99, Actual: nil (pattern matches but variable not bound)
-println("2. match var = {} (expected: 99)", r);
+// Expected: 99, Actual: nil
+println("1. match var = {} (expected: 99)", r);
 
-// ── 3. Match nil literal treated as variable pattern ──
-let r3 = match nil { nil => "is-nil", _ => "other" };
-// nil in pattern is treated as a variable, always matches but value is nil
-println("3. match nil-literal = {} (expected: is-nil)", r3);
+// ── 2. Match destructuring returns nil ──
+// List and map destructuring patterns in match always evaluate to nil.
+let pt = [10, 20];
+let r2 = match pt { [x, y] => x + y, _ => 0 };
+// Expected: 30, Actual: nil
+println("2. match list destruct = {} (expected: 30)", r2);
 
-// ── 4. if-block variable reassignment breaks equality ──
-// Re-assigning a variable inside an if block works for reading
-// but subsequent if blocks referencing the same variable "taint" it
-let grade = "F";
-if (75 >= 70) { grade = "C"; }
-if (75 >= 80) { grade = "B"; } // not executed, but breaks grade == "C"
-println("4. grade = {} (prints C)", grade);
-println("4. grade == \"C\" = {} (expected: true)", grade == "C");
-// Workaround: use function return values instead of variable reassignment
+let user = {"name": "Alice", "age": 30};
+let r3 = match user { {"name": n} => n, _ => "unknown" };
+// Expected: "Alice", Actual: nil
+println("2b. match map destruct = {} (expected: Alice)", r3);
 
-// ── 5. else-if chain has same scoping issue ──
+// ── 3. else-if + else: variable comparison silently broken ──
+// When a variable is assigned in an else-if branch that is followed by
+// an else branch, subsequent == comparisons silently return false.
+// This affects both string and int values. The else branch need not execute;
+// its mere presence after the else-if corrupts the comparison.
+// Single else-if without a trailing else works fine.
 let score = 75;
 let g = "";
 if (score >= 90) {
   g = "A";
-} else if (score >= 80) {
-  g = "B";
 } else if (score >= 70) {
   g = "C";
 } else {
   g = "F";
 }
-println("5. else-if grade = {} (prints C)", g);
-println("5. g == \"C\" = {} (expected: true)", g == "C");
+println("3. g = {} (prints C)", g);
+println("3. g == \"C\" = {} (expected: true)", g == "C");
+// Workaround: avoid else-if when you need to compare the result afterwards.
+// Use function return values or nested if-instead-of-else-if:
+//   if (score >= 90) { g = "A"; }
+//   if (score >= 70) { g = "C"; }  (if mutually exclusive by logic)
 
-// ── 6. Indexed compound assignment not supported ──
+// ── 4. Closures cannot mutate captured variables ──
+// Compound assignment (+=, -=, etc.) inside a closure silently creates a
+// local shadow — the outer variable is unchanged, with no error.
+// Plain assignment (=) to a captured variable causes a runtime error:
+// "Undefined variable: x".
+let counter = 0;
+fn inc() { counter += 1; }
+inc();
+inc();
+println("4. counter = {} (expected: 2, got: 0 — += shadows locally)", counter);
+// Workaround: use return values, mutable collections, or mutation guards
+
+// ── 5. String slicing with range returns nil ──
+let s = "hello";
+let sl = s[1..3];
+// Expected: "el", Actual: nil
+println("5. s[1..3] = {} (expected: \"el\")", sl);
+
+// ── 6. Negative list indexing returns nil ──
+let xs = [10, 20, 30];
+println("6. xs[-1] = {} (expected: 30 or error, got: nil)", xs[-1]);
+
+// ── 7. List slicing with range returns nil ──
+let slice = xs[0..2];
+println("7. xs[0..2] = {} (expected: [10, 20], got: nil)", slice);
+
+// ── 8. Indexed compound assignment not supported ──
 // let xs = [1, 2, 3];
 // xs[1] += 10;  // SyntaxError: Unexpected tokens 'AddAssign'
 // xs[1] = 99;   // SyntaxError: Unexpected tokens 'Assign'
 // Workaround: use list.set() which returns [updated_list, old_value]
 
-// ── 7. Multi-statement closures: `{ let ... }` parsed as map ──
+// ── 9. Multi-statement closures parsed as map ──
 // let f = |x| { let y = x + 1; y };  // ParseError: Invalid map key start: Let
-// Workaround: use named helper functions instead
+// Workaround: use named helper functions or single-expression closures
 
-// ── 8. Division always returns Float ──
+// ── 10. Division always returns Float ──
 let d = 15 / 4;
-println("8. 15/4 = {} (always Float, never truncated Int)", d);
-println("8. 15/4 == 3 = {} (false: 3.75 != 3)", d == 3);
+println("10. 15/4 = {} (always Float, never truncated Int)", d);
+println("10. 15/4 == 3 = {} (false: 3.75 != 3)", d == 3);
 
-// ── 9. Some math functions return Float even for perfect inputs ──
+// ── 10b. math.pow() returns Float; comparison with Int fails ──
+// math.pow(2, 10) returns 1024.0 (Float), not 1024 (Int).
+// pow(2,10) == 1024 is false; pow(2,10) == 1024.0 is true.
+// math.sqrt() auto-promotes: sqrt(144) == 12 is true.
+// (See also: numeric_auto_promotion.lk for Int/Float interop)
 import math;
-println("9. sqrt(144) = {} (Float, not Int 12)", math.sqrt(144));
-println("9. pow(2,10) = {} (== 1024.0 not 1024)", math.pow(2, 10) == 1024.0);
+let p = math.pow(2, 10);
+println("10b. pow(2,10) == 1024 = {} (Float ≠ Int)", p == 1024);
+println("10b. pow(2,10) == 1024.0 = {} (Float == Float)", p == 1024.0);
 
-// ── 10. Map literal bare keys evaluated as variables (nil if undefined) ──
-// { name: "Alice" } — `name` is a variable reference (nil), NOT the string "name"
+// ── 11. for (i, item) in list not supported ──
+// for i, item in [1, 2, 3] { }  // SyntaxError: Expected In, found Comma
+// Workaround: use list.enumerate() to get [index, item] pairs
+
+// ── 12. Spread operator in list literals not supported ──
+// let a = [1, 2];
+// let b = [0, ..a, 3];  // SyntaxError: Invalid list element after comma: Range
+// Workaround: use list + list concatenation or list.extend()
+
+// ── 13. String * count not supported ──
+// "ha" * 3  ->  VM error: Invalid op: ha * 3
+// Workaround: use a loop or string multiplication from a stdlib function
+
+// ── 14. Map literal bare keys treated as variable references ──
+// { name: "Alice" } — `name` is a variable reference (nil if undefined, causing
+// "Map key must be a primitive type, got: Nil" error), NOT the string "name".
 // Use quoted keys: { "name": "Alice" } or struct literals: User { name: "Alice" }
 
-// ── 11. list.set() returns [updated_list, old_value], not void ──
-// map.delete() returns [updated_map, removed_value], not void
+// ── 15. map.set() returns updated map, not void ──
+// map.set(m, "key", val) returns the updated map
+// map.delete(m, "key") returns [updated_map, removed_value]
+
+// ── 16. Struct field assignment not supported ──
+// p.x = 10;  // SyntaxError: Unexpected tokens at end ('Assign')
+// m.field = val;  // Same error for map dot-assignment
+// m.field += 1;  // SyntaxError for compound dot-assignment
+// Workaround: use map.set() for maps, or reconstruct structs
+
+// ── 17. Default positional parameters not supported ──
+// fn greet(name, greeting = "hello") { }  // SyntaxError: Expected ',' or ')'
+// Use named parameters instead:
+// fn greet(name, { greeting: String? = "hello" }) { }
+
+// ── 18. Bitwise operators not supported ──
+// 0b1100 & 0b1010  // SyntaxError: Expect '&&'
+// 0b1100 | 0b1010  // SyntaxError
+// ~0  // Not available
+
+// ── 19. Struct update syntax not supported ──
+// Point { ..p, x: 10 }  // SyntaxError: Expected identifier as struct field name
+// Workaround: reconstruct manually: Point { x: 10, y: p.y }
+
+// ── 20. !nil causes runtime error ──
+// Negating nil with ! triggers "Invalid operand: !Nil".
+// In LK, only true/false are valid operands for !, and nil is falsy but
+// not a boolean. Use ?? for nil-defaulting: x ?? false.
+// let y = !nil;  // Invalid operand: !Nil
+
+// ── 21. type() keyword reserved but not usable as runtime function ──
+// type(42)  // SyntaxError: Unexpected token: Type
+// Use typeof() if available, or work around with pattern matching
 
 println("unsupported: documented all known issues");

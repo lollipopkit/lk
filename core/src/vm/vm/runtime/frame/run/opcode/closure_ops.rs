@@ -21,6 +21,7 @@ pub(super) fn run_make_closure_opcode(
             .get_or_init(|| {
                 let clo = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
                     params: Arc::clone(&p.params),
+                    param_types: Arc::clone(&p.param_types),
                     named_params: Arc::clone(&p.named_params),
                     body: Arc::clone(&p.body),
                     env: Arc::clone(&p.empty_env),
@@ -37,8 +38,9 @@ pub(super) fn run_make_closure_opcode(
                     && let Val::Closure(closure_arc) = &clo
                 {
                     let c = Compiler::new();
-                    let compiled = c.compile_function_with_captures(
+                    let compiled = c.compile_function_with_param_types_and_captures(
                         p.params.as_ref(),
+                        p.param_types.as_ref(),
                         p.named_params.as_ref(),
                         p.body.as_ref(),
                         p.captures.as_ref(),
@@ -95,6 +97,7 @@ pub(super) fn run_make_closure_opcode(
 
     let mut clo = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
         params: Arc::clone(&p.params),
+        param_types: Arc::clone(&p.param_types),
         named_params: Arc::clone(&p.named_params),
         body: Arc::clone(&p.body),
         env: captured_env,
@@ -119,8 +122,9 @@ pub(super) fn run_make_closure_opcode(
     {
         // Eagerly pre-compile closures to eliminate OnceCell overhead from hot calls
         let c = Compiler::new();
-        let compiled = c.compile_function_with_captures(
+        let compiled = c.compile_function_with_param_types_and_captures(
             p.params.as_ref(),
+            p.param_types.as_ref(),
             p.named_params.as_ref(),
             p.body.as_ref(),
             p.captures.as_ref(),

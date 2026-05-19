@@ -1,5 +1,14 @@
 use super::*;
-use crate::{expr::Expr, vm, vm::Compiler};
+use std::sync::Arc;
+
+use crate::{
+    expr::Expr,
+    stmt::StmtParser,
+    token::Tokenizer,
+    val::{Type, Val},
+    vm,
+    vm::{Compiler, Op, compile_program},
+};
 
 #[test]
 fn round_trip_simple_expr() {
@@ -72,4 +81,47 @@ fn function_analysis_survives_round_trip() {
         decoded_analysis.region_plan.values.len(),
         original_analysis.region_plan.values.len()
     );
+}
+
+#[test]
+fn closure_param_types_survive_round_trip() {
+    let source = r#"
+        fn score(price: Int, qty: Int, discount: Int) -> Int {
+            return price * qty - discount;
+        }
+        return score(7, 6, 5);
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokenize");
+    let mut parser = StmtParser::new(&tokens);
+    let program = parser.parse_program().expect("parse program");
+    let function = compile_program(&program);
+
+    let original_proto = function.protos.first().expect("closure proto");
+    let original_param_types = Arc::clone(&original_proto.param_types);
+    assert_eq!(
+        original_param_types.as_ref(),
+        &vec![Some(Type::Int), Some(Type::Int), Some(Type::Int)]
+    );
+
+    let module = BytecodeModule::new(function);
+    let bytes = encode_module(&module).expect("encode");
+    let decoded = decode_module(&bytes).expect("decode");
+    let decoded_proto = decoded.entry.protos.first().expect("decoded closure proto");
+    assert_eq!(decoded_proto.param_types, original_param_types);
+    let nested = decoded_proto.func.as_ref().expect("decoded nested function");
+    assert!(
+        nested.code.iter().any(|op| matches!(op, Op::MulInt(_, _, _))),
+        "decoded typed param function should retain MulInt lowering in {:?}",
+        nested.code
+    );
+    assert!(
+        nested.code.iter().any(|op| matches!(op, Op::SubInt(_, _, _))),
+        "decoded typed param function should retain SubInt lowering in {:?}",
+        nested.code
+    );
+
+    let mut vm = vm::Vm::new();
+    let mut ctx = vm::VmContext::new();
+    let result = vm.exec(&decoded.entry, &mut ctx).expect("vm exec decoded");
+    assert_eq!(result, Val::Int(37));
 }

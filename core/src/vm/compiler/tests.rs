@@ -111,6 +111,10 @@ fn parse_compile_and_run(source: &str) -> (Function, VmContext, anyhow::Result<V
     (function, ctx, result)
 }
 
+fn is_runtime_positional_call(op: &Op) -> bool {
+    matches!(op, Op::Call { .. } | Op::CallClosureExact { .. } | Op::CallExact { .. })
+}
+
 #[test]
 fn const_function_call_is_evaluated() {
     let stmt_result = Stmt::Let {
@@ -789,7 +793,7 @@ fn recursive_known_call_falls_back_when_fuel_exhausts() {
     let function = compile_program(&program);
 
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::Call { .. })),
+        function.code.iter().any(is_runtime_positional_call),
         "non-terminating recursive const eval should fall back to runtime call"
     );
 }
@@ -818,7 +822,7 @@ fn loop_invariant_safe_call_is_cached_inside_range_loop() {
     let result = vm.exec_with(&function, &mut ctx, None);
 
     assert_eq!(result.expect("vm exec"), Val::Int(21));
-    let top_level_calls = function.code.iter().filter(|op| matches!(op, Op::Call { .. })).count();
+    let top_level_calls = function.code.iter().filter(|op| is_runtime_positional_call(op)).count();
     assert_eq!(
         top_level_calls, 1,
         "loop-invariant safe call should be emitted once and cached across iterations"

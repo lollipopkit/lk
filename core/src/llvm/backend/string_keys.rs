@@ -108,6 +108,7 @@ fn string_key_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::JmpIfNotNil(src, _) => src == reg,
         Op::Add(_, a, b)
         | Op::StrConcatKnownCap(_, a, b)
+        | Op::StrConcatToStr(_, a, b)
         | Op::Sub(_, a, b)
         | Op::Mul(_, a, b)
         | Op::Div(_, a, b)
@@ -162,6 +163,7 @@ fn string_key_op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::ToBool(dst, _)
         | Op::Add(dst, _, _)
         | Op::StrConcatKnownCap(dst, _, _)
+        | Op::StrConcatToStr(dst, _, _)
         | Op::Sub(dst, _, _)
         | Op::Mul(dst, _, _)
         | Op::Div(dst, _, _)

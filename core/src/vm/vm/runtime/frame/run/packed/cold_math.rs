@@ -37,6 +37,19 @@ pub(super) fn try_exec_math_op(
             assign_reg(frame_raw, regs, dst as usize, out);
             pc = next_pc_default;
         }
+        Op::StrConcatToStr(dst, lhs, src) => {
+            let lhs_val = rk_read(regs, &f.consts, lhs);
+            let out = if let Some(lhs_str) = lhs_val.as_str()
+                && let Some(value) = Val::concat_str_tostr_rhs(lhs_str, &regs[src as usize])
+            {
+                value
+            } else {
+                let rhs = Val::to_str_value(&regs[src as usize]);
+                BinOp::Add.eval_vals(lhs_val, &rhs)?
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
         Op::Sub(dst, a, b) => {
             if !Vm::arith2_try_numeric(frame_raw, regs, &f.consts, dst, a, b, "sub", |x, y| x - y, |x, y| x - y) {
                 let out = BinOp::Sub.eval_vals(rk_read(regs, &f.consts, a), rk_read(regs, &f.consts, b))?;

@@ -307,7 +307,9 @@ impl<'a> FunctionTranslator<'a> {
         let scan_end = block_end.min(instr_idx + 8);
         for op in &self.function.code[instr_idx + 1..scan_end] {
             match *op {
-                Op::Add(_, a, b) | Op::StrConcatKnownCap(_, a, b) | Op::Sub(_, a, b) if a == alias || b == alias => {
+                Op::Add(_, a, b) | Op::StrConcatKnownCap(_, a, b) | Op::StrConcatToStr(_, a, b) | Op::Sub(_, a, b)
+                    if a == alias || b == alias =>
+                {
                     consumed = true;
                 }
                 Op::Move(new_alias, src) | Op::LoadLocal(new_alias, src) | Op::StoreLocal(new_alias, src)
@@ -523,6 +525,7 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::JmpIfNotNil(src, _) => src == reg,
         Op::Add(_, a, b)
         | Op::StrConcatKnownCap(_, a, b)
+        | Op::StrConcatToStr(_, a, b)
         | Op::Sub(_, a, b)
         | Op::Mul(_, a, b)
         | Op::Div(_, a, b)
@@ -575,6 +578,7 @@ fn op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::ToBool(dst, _)
         | Op::Add(dst, _, _)
         | Op::StrConcatKnownCap(dst, _, _)
+        | Op::StrConcatToStr(dst, _, _)
         | Op::Sub(dst, _, _)
         | Op::Mul(dst, _, _)
         | Op::Div(dst, _, _)
@@ -621,6 +625,7 @@ fn is_len_feed_neutral_op(op: &Op) -> bool {
             | Op::LoadLocal(..)
             | Op::Add(..)
             | Op::StrConcatKnownCap(..)
+            | Op::StrConcatToStr(..)
             | Op::Sub(..)
             | Op::Mul(..)
             | Op::Div(..)

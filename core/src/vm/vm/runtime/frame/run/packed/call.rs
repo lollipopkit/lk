@@ -145,8 +145,9 @@ pub(super) fn run_call_packed(
                         .code
                         .get_or_init(|| {
                             let c = Compiler::new();
-                            Arc::new(c.compile_function_with_captures(
+                            Arc::new(c.compile_function_with_param_types_and_captures(
                                 closure.params.as_ref(),
+                                closure.param_types.as_ref(),
                                 closure.named_params.as_ref(),
                                 closure.body.as_ref(),
                                 closure.capture_specs.as_ref(),
@@ -248,8 +249,9 @@ pub(super) fn run_call_packed(
                 let closure = closure_arc.as_ref();
                 let fun = closure.code.get_or_init(|| {
                     let c = Compiler::new();
-                    Arc::new(c.compile_function_with_captures(
+                    Arc::new(c.compile_function_with_param_types_and_captures(
                         closure.params.as_ref(),
+                        closure.param_types.as_ref(),
                         closure.named_params.as_ref(),
                         closure.body.as_ref(),
                         closure.capture_specs.as_ref(),
@@ -338,52 +340,6 @@ pub(super) fn run_call_packed(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_call_native_fast_packed(
-    frame_raw: *mut FrameState<'_>,
-    regs: &mut [Val],
-    ctx: &mut VmContext,
-    call_ic: &mut [Option<CallIc>],
-    pc_ref: &mut usize,
-    next_pc_default: usize,
-    frame_base: usize,
-    region_allocator_ptr: *const RegionAllocator,
-    self_ptr: *mut Vm,
-    rf: u16,
-    base: u16,
-    argc: u8,
-    retc: u8,
-) -> Result<Option<Val>> {
-    let pc = *pc_ref;
-    if let Some(callable @ (NativeCallable::Rust(_) | NativeCallable::RustFast(_))) =
-        NativeCallable::from_val(&regs[rf as usize])
-    {
-        let ret_layout = CallReturnLayout::new(base, retc);
-        match invoke_native_callable_with_ic(ctx, regs, &mut call_ic[pc], callable, argc, ret_layout) {
-            Ok(handled) => debug_assert!(handled),
-            Err(err) => return frame_return_common(frame_raw, pc, Err(err)).map(Some),
-        }
-        *pc_ref = next_pc_default;
-        return Ok(None);
-    }
-
-    run_call_packed(
-        frame_raw,
-        regs,
-        ctx,
-        call_ic,
-        pc_ref,
-        next_pc_default,
-        frame_base,
-        region_allocator_ptr,
-        self_ptr,
-        rf,
-        base,
-        argc,
-        retc,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn run_call_closure_exact_packed(
     frame_raw: *mut FrameState<'_>,
     regs: &mut [Val],
@@ -392,7 +348,7 @@ pub(super) fn run_call_closure_exact_packed(
     pc_ref: &mut usize,
     next_pc_default: usize,
     frame_base: usize,
-    region_allocator_ptr: *const RegionAllocator,
+    _region_allocator_ptr: *const RegionAllocator,
     self_ptr: *mut Vm,
     rf: u16,
     base: u16,
@@ -430,6 +386,52 @@ pub(super) fn run_call_closure_exact_packed(
             )
             .map(Some);
         }
+    }
+
+    run_call_packed(
+        frame_raw,
+        regs,
+        ctx,
+        call_ic,
+        pc_ref,
+        next_pc_default,
+        frame_base,
+        _region_allocator_ptr,
+        self_ptr,
+        rf,
+        base,
+        argc,
+        retc,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_call_native_fast_packed(
+    frame_raw: *mut FrameState<'_>,
+    regs: &mut [Val],
+    ctx: &mut VmContext,
+    call_ic: &mut [Option<CallIc>],
+    pc_ref: &mut usize,
+    next_pc_default: usize,
+    frame_base: usize,
+    region_allocator_ptr: *const RegionAllocator,
+    self_ptr: *mut Vm,
+    rf: u16,
+    base: u16,
+    argc: u8,
+    retc: u8,
+) -> Result<Option<Val>> {
+    let pc = *pc_ref;
+    if let Some(callable @ (NativeCallable::Rust(_) | NativeCallable::RustFast(_))) =
+        NativeCallable::from_val(&regs[rf as usize])
+    {
+        let ret_layout = CallReturnLayout::new(base, retc);
+        match invoke_native_callable_with_ic(ctx, regs, &mut call_ic[pc], callable, argc, ret_layout) {
+            Ok(handled) => debug_assert!(handled),
+            Err(err) => return frame_return_common(frame_raw, pc, Err(err)).map(Some),
+        }
+        *pc_ref = next_pc_default;
+        return Ok(None);
     }
 
     run_call_packed(
@@ -564,8 +566,9 @@ pub(super) fn run_call_named_packed(
             let closure = closure_arc.as_ref();
             let fun = closure.code.get_or_init(|| {
                 let c = Compiler::new();
-                Arc::new(c.compile_function_with_captures(
+                Arc::new(c.compile_function_with_param_types_and_captures(
                     closure.params.as_ref(),
+                    closure.param_types.as_ref(),
                     closure.named_params.as_ref(),
                     closure.body.as_ref(),
                     closure.capture_specs.as_ref(),

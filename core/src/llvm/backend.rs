@@ -424,6 +424,7 @@ impl<'a> FunctionTranslator<'a> {
                 Op::LoadLocal(dst, idx) => self.emit_load_local(*dst, *idx)?,
                 Op::Add(dst, a, b) => self.emit_add_value(instr_idx, block_end, *dst, *a, *b)?,
                 Op::StrConcatKnownCap(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::AddValue)?,
+                Op::StrConcatToStr(dst, lhs, src) => self.emit_str_concat_to_str(*dst, *lhs, *src)?,
                 Op::Sub(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::SubValue)?,
                 Op::Mul(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::MulValue)?,
                 Op::Div(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::DivValue)?,

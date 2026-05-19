@@ -157,8 +157,9 @@ pub(super) fn run_call_opcode(
                         .code
                         .get_or_init(|| {
                             let c = Compiler::new();
-                            Arc::new(c.compile_function_with_captures(
+                            Arc::new(c.compile_function_with_param_types_and_captures(
                                 closure.params.as_ref(),
+                                closure.param_types.as_ref(),
                                 closure.named_params.as_ref(),
                                 closure.body.as_ref(),
                                 closure.capture_specs.as_ref(),
@@ -266,8 +267,9 @@ pub(super) fn run_call_opcode(
                 let closure = closure_arc.as_ref();
                 let fun = closure.code.get_or_init(|| {
                     let c = Compiler::new();
-                    Arc::new(c.compile_function_with_captures(
+                    Arc::new(c.compile_function_with_param_types_and_captures(
                         closure.params.as_ref(),
+                        closure.param_types.as_ref(),
                         closure.named_params.as_ref(),
                         closure.body.as_ref(),
                         closure.capture_specs.as_ref(),
@@ -571,8 +573,9 @@ pub(super) fn run_call_named_opcode(
             let named_params = closure.named_params.as_ref();
             let fun = closure.code.get_or_init(|| {
                 let c = Compiler::new();
-                Arc::new(c.compile_function_with_captures(
+                Arc::new(c.compile_function_with_param_types_and_captures(
                     closure.params.as_ref(),
+                    closure.param_types.as_ref(),
                     named_params,
                     closure.body.as_ref(),
                     closure.capture_specs.as_ref(),

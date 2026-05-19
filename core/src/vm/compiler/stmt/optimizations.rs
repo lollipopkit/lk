@@ -120,6 +120,7 @@ impl FunctionBuilder {
         let body_stmt = Stmt::Expr(body.clone());
         Some(Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
             params: Arc::new(params.clone()),
+            param_types: Arc::new(Vec::new()),
             named_params: Arc::new(Vec::new()),
             body: Arc::new(body_stmt),
             env: Arc::new(self.const_env.clone()),

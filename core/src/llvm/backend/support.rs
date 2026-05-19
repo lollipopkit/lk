@@ -264,6 +264,7 @@ fn op_assigned_regs(op: &Op) -> Vec<u16> {
         | Op::ToBool(dst, _)
         | Op::Add(dst, _, _)
         | Op::StrConcatKnownCap(dst, _, _)
+        | Op::StrConcatToStr(dst, _, _)
         | Op::Sub(dst, _, _)
         | Op::Mul(dst, _, _)
         | Op::Div(dst, _, _)

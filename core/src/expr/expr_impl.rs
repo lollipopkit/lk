@@ -1341,6 +1341,7 @@ impl Expr {
                 let stmt = Stmt::Expr(body.clone());
                 Ok(Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
                     params: Arc::new(params.clone()),
+                    param_types: Arc::new(Vec::new()),
                     named_params: Arc::new(Vec::new()),
                     body: Arc::new(stmt),
                     env: Arc::new(VmContext::new()),

@@ -142,6 +142,26 @@ impl Val {
     }
 
     #[inline]
+    pub(crate) fn concat_str_tostr_rhs(prefix: &str, rhs: &Val) -> Option<Val> {
+        match rhs {
+            Val::ShortStr(s) => Some(Self::concat_strings(prefix, s.as_str())),
+            Val::Str(s) => Some(Self::concat_strings(prefix, s.as_str())),
+            Val::Int(i) => {
+                let mut buf = itoa::Buffer::new();
+                Some(Self::concat_strings(prefix, buf.format(*i)))
+            }
+            Val::Float(f) => {
+                let mut buf = ryu::Buffer::new();
+                Some(Self::concat_strings(prefix, buf.format(*f)))
+            }
+            Val::Bool(true) => Some(Self::concat_strings(prefix, "true")),
+            Val::Bool(false) => Some(Self::concat_strings(prefix, "false")),
+            Val::Nil => Some(Self::concat_strings(prefix, "nil")),
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub(crate) fn concat_add_lhs_str(lhs: &Val, suffix: &str) -> Option<Val> {
         match lhs {
             Val::ShortStr(s) => Some(Self::concat_strings(s.as_str(), suffix)),

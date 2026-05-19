@@ -22,7 +22,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use super::builder::ArithFlavor;
 use crate::{
-    expr::{Expr, SelectPattern, TemplateStringPart},
+    expr::{Expr, TemplateStringPart},
     op::{BinOp, UnaryOp},
     stmt::Stmt,
     val::Val,
@@ -77,19 +77,6 @@ impl FunctionBuilder {
 
     fn inline_expr_uses_only(expr: &Expr, allowed: &HashSet<String>) -> bool {
         expr.requested_ctx().iter().all(|name| allowed.contains(name))
-    }
-
-    fn template_expr_can_concat_direct(&self, expr: &Expr) -> bool {
-        match expr {
-            Expr::Val(Val::Int(_) | Val::Float(_) | Val::Str(_) | Val::ShortStr(_)) => true,
-            Expr::Var(name) => self
-                .lookup(name)
-                .map(|reg| self.int_regs.contains(&reg))
-                .unwrap_or(false),
-            Expr::Paren(inner) => self.template_expr_can_concat_direct(inner),
-            Expr::Bin(_, op, _) => matches!(op, BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod),
-            _ => false,
-        }
     }
 
     fn try_inline_simple_known_call(&mut self, name: &str, args: &[Box<Expr>]) -> Option<u16> {
@@ -149,6 +136,26 @@ impl FunctionBuilder {
         let result = self.expr(returned);
         self.pop_var_scope();
         Some(result)
+    }
+
+    fn local_known_positional_callee(&self, name: &str, argc: usize) -> Option<Val> {
+        let local = self.lookup(name)?;
+        if !self.local_reg_last_written_by_closure(local) {
+            return None;
+        }
+        let value = self.const_env.get(name)?.clone();
+        match &value {
+            Val::Closure(closure) if closure.named_params.is_empty() && closure.params.len() == argc => Some(value),
+            _ => None,
+        }
+    }
+
+    fn local_reg_last_written_by_closure(&self, reg: u16) -> bool {
+        self.code
+            .iter()
+            .rev()
+            .find(|op| super::peephole::op_writes_reg(op, reg))
+            .is_some_and(|op| matches!(op, Op::MakeClosure { dst, .. } if *dst == reg))
     }
 
     fn try_fold_unary(&mut self, uop: &UnaryOp, inner: &Expr) -> Option<Val> {
@@ -481,217 +488,10 @@ impl FunctionBuilder {
         }
 
         match e {
-            // Concurrency: select { case pat <= recv(ch) => expr; case _ <= send(ch, v) => expr; default => expr }
-            // Blocking semantics via stdlib builtin `select$block` and runtime SelectOperation.
-            Expr::Select { cases, default_case } => {
-                let n = cases.len() as u16;
-                // Handle degenerate case: no arms
-                if n == 0 {
-                    if let Some(def) = default_case {
-                        return self.expr(def);
-                    } else {
-                        let dst = self.alloc();
-                        let k = self.k(Val::Nil);
-                        self.emit(Op::LoadK(dst, k));
-                        return dst;
-                    }
-                }
-
-                // Build arrays: types[0=recv,1=send], channels, values (Nil for recv), guards (Bool)
-                // types
-                let base_types = self.n_regs;
-                for case in cases {
-                    let r = self.alloc();
-                    let t = match &case.pattern {
-                        SelectPattern::Recv { .. } => 0i64,
-                        SelectPattern::Send { .. } => 1i64,
-                    };
-                    let k = self.k(Val::Int(t));
-                    self.emit(Op::LoadK(r, k));
-                }
-                let r_types = self.alloc();
-                self.emit(Op::BuildList {
-                    dst: r_types,
-                    base: base_types,
-                    len: n,
-                });
-
-                // channels
-                let base_ch = self.n_regs;
-                for case in cases {
-                    let r = self.alloc();
-                    match &case.pattern {
-                        SelectPattern::Recv { channel, .. } => {
-                            let rv = self.expr(channel);
-                            if rv != r {
-                                self.emit(Op::Move(r, rv));
-                            }
-                        }
-                        SelectPattern::Send { channel, .. } => {
-                            let rv = self.expr(channel);
-                            if rv != r {
-                                self.emit(Op::Move(r, rv));
-                            }
-                        }
-                    }
-                }
-                let r_chans = self.alloc();
-                self.emit(Op::BuildList {
-                    dst: r_chans,
-                    base: base_ch,
-                    len: n,
-                });
-
-                // values
-                let base_vals = self.n_regs;
-                for case in cases {
-                    let r = self.alloc();
-                    match &case.pattern {
-                        SelectPattern::Recv { .. } => {
-                            let k = self.k(Val::Nil);
-                            self.emit(Op::LoadK(r, k));
-                        }
-                        SelectPattern::Send { value, .. } => {
-                            let rv = self.expr(value);
-                            if rv != r {
-                                self.emit(Op::Move(r, rv));
-                            }
-                        }
-                    }
-                }
-                let r_vals = self.alloc();
-                self.emit(Op::BuildList {
-                    dst: r_vals,
-                    base: base_vals,
-                    len: n,
-                });
-
-                // guards
-                let base_guards = self.n_regs;
-                for case in cases {
-                    let r = self.alloc();
-                    if let Some(g) = &case.guard {
-                        let gv = self.expr(g);
-                        self.emit(Op::ToBool(r, gv));
-                    } else {
-                        let k = self.k(Val::Bool(true));
-                        self.emit(Op::LoadK(r, k));
-                    }
-                }
-                let r_guards = self.alloc();
-                self.emit(Op::BuildList {
-                    dst: r_guards,
-                    base: base_guards,
-                    len: n,
-                });
-
-                // has_default flag
-                let r_has_def = self.alloc();
-                let k_hd = self.k(Val::Bool(default_case.is_some()));
-                self.emit(Op::LoadK(r_has_def, k_hd));
-
-                // Call builtin select$block(types, channels, values, guards, has_default)
-                let known_builtin = self.const_env.get("select$block").cloned();
-                let r_f = self.emit_known_or_global_callable("select$block", known_builtin.as_ref());
-                let base = self.n_regs;
-                let _ = self.alloc(); // arg0
-                let _ = self.alloc(); // arg1
-                let _ = self.alloc(); // arg2
-                let _ = self.alloc(); // arg3
-                let _ = self.alloc(); // arg4
-                if r_types != base {
-                    self.emit(Op::Move(base, r_types));
-                }
-                if r_chans != base + 1 {
-                    self.emit(Op::Move(base + 1, r_chans));
-                }
-                if r_vals != base + 2 {
-                    self.emit(Op::Move(base + 2, r_vals));
-                }
-                if r_guards != base + 3 {
-                    self.emit(Op::Move(base + 3, r_guards));
-                }
-                if r_has_def != base + 4 {
-                    self.emit(Op::Move(base + 4, r_has_def));
-                }
-                self.emit_positional_call(r_f, base, 5, 1, known_builtin.as_ref());
-
-                let out = self.alloc();
-                let k_nil = self.k(Val::Nil);
-                self.emit(Op::LoadK(out, k_nil));
-
-                // Decode result: [is_default, case_index, payload]
-                let r_is_def = self.alloc();
-                let k0 = self.k(Val::Int(0));
-                self.emit(Op::IndexK(r_is_def, base, k0));
-                let j_non_default = self.code.len();
-                self.emit(Op::JmpFalse(r_is_def, 0));
-                // Default path
-                if let Some(def) = default_case {
-                    let rdef = self.expr(def);
-                    if rdef != out {
-                        self.emit(Op::Move(out, rdef));
-                    }
-                } else {
-                    // out already nil
-                }
-                let j_end_default = self.code.len();
-                self.emit(Op::Jmp(0));
-                // Non-default path
-                let non_default_label = self.code.len();
-                if let Op::JmpFalse(_, ref mut ofs) = self.code[j_non_default] {
-                    *ofs = (non_default_label as isize - j_non_default as isize) as i16;
-                }
-                // Extract case_index and payload
-                let r_idx = self.alloc();
-                let k1 = self.k(Val::Int(1));
-                self.emit(Op::IndexK(r_idx, base, k1));
-                let r_payload = self.alloc();
-                let k2 = self.k(Val::Int(2));
-                self.emit(Op::IndexK(r_payload, base, k2));
-
-                let mut end_jumps: Vec<usize> = Vec::new();
-                // Dispatch by original case index
-                for (i, case) in cases.iter().enumerate() {
-                    let r_ki = self.alloc();
-                    let k_i = self.k(Val::Int(i as i64));
-                    self.emit(Op::LoadK(r_ki, k_i));
-                    let r_cmp = self.alloc();
-                    self.emit(Op::CmpEq(r_cmp, r_idx, r_ki));
-                    let jf = self.code.len();
-                    self.emit(Op::JmpFalse(r_cmp, 0));
-                    // Matched arm: optional binding for recv, then evaluate body
-                    if let SelectPattern::Recv {
-                        binding: Some(name), ..
-                    } = &case.pattern
-                    {
-                        let idx = self.get_or_define(name);
-                        self.emit(Op::StoreLocal(idx, r_payload));
-                    }
-                    let r_body = self.expr(&case.body);
-                    if r_body != out {
-                        self.emit(Op::Move(out, r_body));
-                    }
-                    let jend = self.code.len();
-                    self.emit(Op::Jmp(0));
-                    end_jumps.push(jend);
-                    let after = self.code.len();
-                    if let Op::JmpFalse(_, ref mut ofs) = self.code[jf] {
-                        *ofs = (after as isize - jf as isize) as i16;
-                    }
-                }
-                let end = self.code.len();
-                if let Op::Jmp(ref mut ofs) = self.code[j_end_default] {
-                    *ofs = (end as isize - j_end_default as isize) as i16;
-                }
-                for j in end_jumps {
-                    if let Op::Jmp(ref mut ofs) = self.code[j] {
-                        *ofs = (end as isize - j as isize) as i16;
-                    }
-                }
-                out
-            }
-            // Template string lowering: accumulate into a string using ToStr + Add
+            Expr::Select { cases, default_case } => self.compile_select_expr(cases, default_case.as_deref()),
+            // Template string lowering: accumulate into a string using ToStr + Add.
+            // The VM fuses ToStr+Add when the lhs is already a string, avoiding
+            // the temporary string for primitive interpolations on hot paths.
             Expr::TemplateString(parts) => {
                 let out = self.alloc();
                 let mut initialized = false;
@@ -719,13 +519,7 @@ impl FunctionBuilder {
                                 initialized = true;
                                 continue;
                             }
-                            if self.template_expr_can_concat_direct(expr) {
-                                self.emit(Op::Add(out, out, rv));
-                                continue;
-                            }
-                            let rs = self.alloc();
-                            self.emit(Op::ToStr(rs, rv));
-                            self.emit(Op::StrConcatKnownCap(out, out, rs));
+                            self.emit(Op::StrConcatToStr(out, out, rv));
                         }
                     }
                 }
@@ -744,6 +538,7 @@ impl FunctionBuilder {
                 self.protos.push(ClosureProto {
                     self_name: None,
                     params: Arc::new(params.clone()),
+                    param_types: Arc::new(Vec::new()),
                     named_params: Arc::new(Vec::new()),
                     default_funcs: Arc::new(Vec::new()),
                     func: Some(Arc::clone(&func)),
@@ -861,6 +656,7 @@ impl FunctionBuilder {
                     let k = self.k(Val::from_str(s));
                     if self.map_locals.contains(&b) {
                         self.emit(Op::MapGetInterned(out, b, k));
+                        self.mark_map_lookup_result(out, b);
                     } else {
                         self.emit(Op::AccessK(out, b, k));
                     }
@@ -869,16 +665,24 @@ impl FunctionBuilder {
                         && let Ok(index) = i16::try_from(*i)
                     {
                         self.emit(Op::ListIndexI(out, b, index));
+                        self.mark_list_lookup_result(out, b);
                     } else {
                         let k = self.k(Val::Int(*i));
                         self.emit(Op::IndexK(out, b, k));
+                        if self.list_locals.contains(&b) {
+                            self.mark_list_lookup_result(out, b);
+                        }
                     }
                 } else {
                     let f = self.expr(field);
                     if self.map_locals.contains(&b) {
                         self.emit(Op::MapGetDynamic(out, b, f));
+                        self.mark_map_lookup_result(out, b);
                     } else {
                         self.emit(Op::Access(out, b, f));
+                        if self.list_locals.contains(&b) && self.int_regs.contains(&f) {
+                            self.mark_list_lookup_result(out, b);
+                        }
                     }
                 }
                 out
@@ -965,6 +769,12 @@ impl FunctionBuilder {
                     }
                 }
                 self.emit(Op::BuildList { dst, base, len: count });
+                if items.is_empty() {
+                    self.record_empty_list_value_type(dst);
+                } else {
+                    let value_fact = self.homogeneous_expr_value_fact(items.iter().map(|expr| expr.as_ref()));
+                    self.record_list_value_type(dst, value_fact);
+                }
                 dst
             }
             Expr::Map(pairs) => {
@@ -988,6 +798,12 @@ impl FunctionBuilder {
                     }
                 }
                 self.emit(Op::BuildMap { dst, base, len: n });
+                if pairs.is_empty() {
+                    self.record_empty_map_value_type(dst);
+                } else {
+                    let value_fact = self.homogeneous_expr_value_fact(pairs.iter().map(|(_, value)| value.as_ref()));
+                    self.record_map_value_type(dst, value_fact);
+                }
                 dst
             }
             Expr::StructLiteral { name, fields } => {
@@ -1041,6 +857,7 @@ impl FunctionBuilder {
                     self.emit_expr_into(base + i as u16, arg);
                 }
                 self.emit_positional_call(f, base, argc, 1, known_callee.as_ref());
+                self.mark_direct_call_return_type(name, base);
                 base
             }
             Expr::CallExpr(callee, args) => {
@@ -1053,9 +870,11 @@ impl FunctionBuilder {
                     return inlined;
                 }
                 let known_callee = if let Expr::Var(name) = callee.as_ref() {
-                    (self.lookup(name).is_none())
-                        .then(|| self.lookup_const(name).cloned())
-                        .flatten()
+                    self.local_known_positional_callee(name, args.len()).or_else(|| {
+                        (self.lookup(name).is_none())
+                            .then(|| self.lookup_const(name).cloned())
+                            .flatten()
+                    })
                 } else {
                     None
                 };
@@ -1070,6 +889,9 @@ impl FunctionBuilder {
                     self.emit_expr_into(base + i as u16, arg);
                 }
                 self.emit_positional_call(f, base, argc, 1, known_callee.as_ref());
+                if let Expr::Var(name) = callee.as_ref() {
+                    self.mark_direct_call_return_type(name, base);
+                }
                 base
             }
             Expr::CallNamed(callee, pos_args, named_args) => {

@@ -139,6 +139,7 @@ fn ext_op_name(ext_op: u8) -> &'static str {
         bc32::EXT_OP_MAP_SET_INTERNED => "MapSetInterned",
         bc32::EXT_OP_MAP_GET_DYNAMIC => "MapGetDynamic",
         bc32::EXT_OP_STR_CONCAT_KNOWN_CAP => "StrConcatKnownCap",
+        bc32::EXT_OP_STR_CONCAT_TO_STR => "StrConcatToStr",
         bc32::EXT_OP_LIST_SET_I => "ListSetI",
         bc32::EXT_OP_CALL_NATIVE_FAST => "CallNativeFast",
         bc32::EXT_OP_CMP_I => "CmpI",

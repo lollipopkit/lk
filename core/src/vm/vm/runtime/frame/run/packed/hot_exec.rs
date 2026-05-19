@@ -242,6 +242,19 @@ pub(super) fn exec_hot_slot(
             assign_reg(frame_raw, regs, *dst as usize, out);
             None
         }
+        PackedHotKind::StrConcatToStr { dst, lhs, src } => {
+            let lhs_val = &regs[*lhs as usize];
+            let out = if let Some(lhs_str) = lhs_val.as_str()
+                && let Some(value) = Val::concat_str_tostr_rhs(lhs_str, &regs[*src as usize])
+            {
+                value
+            } else {
+                let rhs = Val::to_str_value(&regs[*src as usize]);
+                BinOp::Add.eval_vals(lhs_val, &rhs)?
+            };
+            assign_reg(frame_raw, regs, *dst as usize, out);
+            None
+        }
         PackedHotKind::IntArith { op, dst, a, b } => {
             exec_int_arith(frame_raw, regs, func, *op, *dst, *a, *b)?;
             None
@@ -445,7 +458,7 @@ pub(super) fn exec_hot_slot(
         } => {
             let lhs_val = rk_read(regs, &func.consts, *lhs);
             if let Some(lhs_str) = lhs_val.as_str()
-                && let Some(value) = Val::concat_str_add_rhs(lhs_str, &regs[*src as usize])
+                && let Some(value) = Val::concat_str_tostr_rhs(lhs_str, &regs[*src as usize])
             {
                 assign_reg(frame_raw, regs, *out as usize, value);
                 None
@@ -785,7 +798,9 @@ pub(super) fn exec_hot_slot(
             method_ops::run_call_global_method0(frame_raw, regs, ctx, func, global_ic, pc, *dst, *receiver, *method)?;
             None
         }
-        PackedHotKind::Call { .. } => unreachable!("generic Call hot slots are handled by run_packed_code"),
+        PackedHotKind::Call { .. } | PackedHotKind::CallClosureExact { .. } | PackedHotKind::CallExact { .. } => {
+            unreachable!("call hot slots are handled by run_packed_code")
+        }
         PackedHotKind::AddIntImm { dst, src, imm } => {
             let dst_idx = *dst as usize;
             let src_idx = *src as usize;

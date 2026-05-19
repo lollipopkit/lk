@@ -60,6 +60,55 @@ use hot_values::*;
 use named_args::load_named_pairs;
 use stats::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PackedHotCallKind {
+    Generic,
+    ClosureExact,
+    Exact,
+}
+
+fn hot_call_operands(kind: &PackedHotKind) -> Option<(u16, u16, u8, u8, PackedHotCallKind)> {
+    match kind {
+        PackedHotKind::Call { f, base, argc, retc } => Some((*f, *base, *argc, *retc, PackedHotCallKind::Generic)),
+        PackedHotKind::CallClosureExact { f, base, argc, retc } => {
+            Some((*f, *base, *argc, *retc, PackedHotCallKind::ClosureExact))
+        }
+        PackedHotKind::CallExact { f, base, argc, retc } => Some((*f, *base, *argc, *retc, PackedHotCallKind::Exact)),
+        _ => None,
+    }
+}
+
+fn validate_hot_exact_call(regs: &[Val], f: u16, argc: u8, kind: PackedHotCallKind) -> Result<()> {
+    match kind {
+        PackedHotCallKind::Generic => Ok(()),
+        PackedHotCallKind::ClosureExact => match &regs[f as usize] {
+            Val::Closure(closure) if closure.named_params.is_empty() && closure.params.len() == argc as usize => Ok(()),
+            Val::Closure(closure) if !closure.named_params.is_empty() => {
+                Err(anyhow!("exact closure call does not accept named fallback"))
+            }
+            Val::Closure(closure) => Err(anyhow!(
+                "Function expects {} positional arguments, got {}",
+                closure.params.len(),
+                argc
+            )),
+            other => Err(anyhow!("{} is not an exact closure", other.type_name())),
+        },
+        PackedHotCallKind::Exact => match &regs[f as usize] {
+            Val::Closure(closure) if closure.named_params.is_empty() && closure.params.len() == argc as usize => Ok(()),
+            Val::RustFunction(_) | Val::RustFastFunction(_) => Ok(()),
+            Val::Closure(closure) if !closure.named_params.is_empty() => {
+                Err(anyhow!("exact call does not accept named fallback"))
+            }
+            Val::Closure(closure) => Err(anyhow!(
+                "Function expects {} positional arguments, got {}",
+                closure.params.len(),
+                argc
+            )),
+            other => Err(anyhow!("{} is not an exact positional callable", other.type_name())),
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_packed_code(
     frame_raw: *mut FrameState<'_>,
@@ -158,7 +207,8 @@ pub(super) fn run_packed_code(
                             return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr)
                                 .map(Some);
                         }
-                        if let PackedHotKind::Call { f, base, argc, retc } = &slot.kind {
+                        if let Some((f, base, argc, retc, call_kind)) = hot_call_operands(&slot.kind) {
+                            validate_hot_exact_call(regs, f, argc, call_kind)?;
                             if let Some(value) = call::run_call_packed(
                                 frame_raw,
                                 regs,
@@ -169,10 +219,10 @@ pub(super) fn run_packed_code(
                                 frame_base,
                                 region_allocator_ptr,
                                 self_ptr,
-                                *f,
-                                *base,
-                                *argc,
-                                *retc,
+                                f,
+                                base,
+                                argc,
+                                retc,
                             )? {
                                 return Ok(Some(value));
                             }
@@ -241,12 +291,9 @@ pub(super) fn run_packed_code(
                     packed_hot[pc] = Some(PackedHotEntry::Slot(entry));
                     return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
                 }
-                if let PackedHotKind::Call { f, base, argc, retc } = &entry.kind {
-                    let f_reg = *f;
-                    let base_reg = *base;
-                    let argc_count = *argc;
-                    let retc_count = *retc;
+                if let Some((f_reg, base_reg, argc_count, retc_count, call_kind)) = hot_call_operands(&entry.kind) {
                     let next_pc = entry.next_pc;
+                    validate_hot_exact_call(regs, f_reg, argc_count, call_kind)?;
                     if packed_hot.len() <= pc {
                         packed_hot.resize(pc + 1, None);
                     }

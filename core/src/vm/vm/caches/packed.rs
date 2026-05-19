@@ -99,6 +99,11 @@ pub(in crate::vm::vm) enum PackedHotKind {
         a: u16,
         b: u16,
     },
+    StrConcatToStr {
+        dst: u16,
+        lhs: u16,
+        src: u16,
+    },
     IntArith {
         op: PackedArithOp,
         dst: u16,
@@ -237,6 +242,18 @@ pub(in crate::vm::vm) enum PackedHotKind {
         val: u16,
     },
     CallNativeFast {
+        f: u16,
+        base: u16,
+        argc: u8,
+        retc: u8,
+    },
+    CallClosureExact {
+        f: u16,
+        base: u16,
+        argc: u8,
+        retc: u8,
+    },
+    CallExact {
         f: u16,
         base: u16,
         argc: u8,
