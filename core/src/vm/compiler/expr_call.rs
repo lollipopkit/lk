@@ -181,6 +181,19 @@ impl FunctionBuilder {
             self.emit(Op::ContainsK(dst, obj_reg, kidx));
             return dst;
         }
+        if args.is_empty()
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str().is_some()
+        {
+            let receiver = self.expr(obj_expr);
+            let method = self.k(method_val.clone());
+            self.emit(Op::CallMethod0 {
+                dst: receiver,
+                receiver,
+                method,
+            });
+            return receiver;
+        }
 
         let known_builtin = self.const_env.get("__lk_call_method").cloned();
         let builtin_reg = self.emit_known_or_global_callable("__lk_call_method", known_builtin.as_ref());

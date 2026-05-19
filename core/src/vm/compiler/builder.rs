@@ -33,6 +33,7 @@ pub(crate) struct FunctionBuilder {
     pub const_scope_stack: Vec<Vec<String>>,
     pub const_env: VmContext,
     pub global_defs: HashSet<String>,
+    pub export_toplevel_globals: bool,
     var_scope_stack: Vec<Vec<(String, Option<u16>)>>,
     pub capture_indices: HashMap<String, u16>,
     pub break_locations: Vec<usize>,
@@ -95,10 +96,14 @@ fn collect_pattern_names(pattern: &crate::expr::Pattern, out: &mut Vec<String>) 
 
 impl FunctionBuilder {
     pub fn new() -> Self {
-        Self::new_with_captures(&[])
+        Self::new_with_captures_and_global_exports(&[], true)
     }
 
-    pub fn new_with_captures(captures: &[CaptureSpec]) -> Self {
+    pub fn new_function_with_captures(captures: &[CaptureSpec]) -> Self {
+        Self::new_with_captures_and_global_exports(captures, false)
+    }
+
+    fn new_with_captures_and_global_exports(captures: &[CaptureSpec], export_toplevel_globals: bool) -> Self {
         let mut builder = Self {
             consts: Vec::new(),
             code: Vec::new(),
@@ -113,6 +118,7 @@ impl FunctionBuilder {
             const_scope_stack: vec![Vec::new()],
             const_env: VmContext::new(),
             global_defs: HashSet::new(),
+            export_toplevel_globals,
             var_scope_stack: Vec::new(),
             capture_indices: HashMap::new(),
             break_locations: Vec::new(),
@@ -387,6 +393,8 @@ impl FunctionBuilder {
             | Op::CallExact { base: dst, retc: 1, .. }
             | Op::CallClosureExact { base: dst, retc: 1, .. }
             | Op::CallNativeFast { base: dst, retc: 1, .. }
+            | Op::CallMethod0 { dst, .. }
+            | Op::CallGlobalMethod0 { dst, .. }
             | Op::CallNamed {
                 base_pos: dst, retc: 1, ..
             }

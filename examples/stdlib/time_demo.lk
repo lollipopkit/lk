@@ -1,0 +1,30 @@
+// Time module demo (concurrency feature)
+
+import time;
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Get current time (milliseconds since epoch)
+let t1 = time.now();
+assert(t1 > 0);
+
+// 2. Sleep for a while
+time.sleep(50); // 50ms
+
+// 3. Measure elapsed time
+let t2 = time.now();
+let elapsed = time.since(t1, t2);
+assert(elapsed >= 40);
+assert(elapsed < 500);
+
+// 4. Measure an operation
+let start = time.now();
+let waste = 0;
+for i in 0..10000 { waste += i; }
+let end_time = time.now();
+let duration = time.since(start, end_time);
+assert(duration >= 0);
+
+println("time_demo: all assertions passed");

@@ -1,0 +1,77 @@
+// Word frequency counter — a practical text processing example
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// Input text
+let text = "the quick brown fox jumps over the lazy dog the fox was quick";
+
+// 1. Tokenize: split into words
+let words = text.split(" ");
+assert(words.len() == 13);
+
+// 2. Lowercase all words
+let lower_words = words.map(|w| w.lower());
+
+// 3. Count word frequencies using a map
+import map;
+let freq = {};
+for word in lower_words {
+  let current = freq.get(word);
+  if (current == nil) {
+    freq = map.set(freq, word, 1);
+  } else {
+    freq = map.set(freq, word, current + 1);
+  }
+}
+
+// 4. Verify counts
+assert(freq.get("the") == 3);
+assert(freq.get("fox") == 2);
+assert(freq.get("quick") == 2);
+assert(freq.get("brown") == 1);
+
+// 5. Find most frequent word
+let max_word = "";
+let max_count = 0;
+for pair in freq {
+  let word = pair[0];
+  let count = pair[1];
+  if (count > max_count) {
+    max_count = count;
+    max_word = word;
+  }
+}
+assert(max_word == "the");
+assert(max_count == 3);
+
+// 6. Get unique words (vocabulary)
+let unique_words = lower_words.unique();
+assert(unique_words.len() == 9);
+
+// 7. Sort words alphabetically (simple selection sort for small lists)
+fn sort_words(xs) {
+  let result = [];
+  let remaining = xs;
+  while (remaining.len() > 0) {
+    // find min
+    let min_idx = 0;
+    let i = 1;
+    while (i < remaining.len()) {
+      if (remaining[i] < remaining[min_idx]) {
+        min_idx = i;
+      }
+      i += 1;
+    }
+    result.push(remaining[min_idx]);
+    // remove element at min_idx
+    remaining = remaining.take(min_idx).concat(remaining.skip(min_idx + 1));
+  }
+  return result;
+}
+let sorted = sort_words(unique_words);
+assert(sorted[0] == "brown");
+assert(sorted.len() == 9);
+
+println("word_count: all assertions passed");

@@ -1,0 +1,47 @@
+// Config file parsing demo — combine JSON, YAML, TOML
+
+import json;
+import yaml;
+import toml;
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// Simulate reading different config file formats
+
+// 1. JSON config
+let json_cfg = "{ \"host\": \"db.example.com\", \"port\": 5432, \"pool_size\": 10 }";
+let j = json.parse(json_cfg);
+assert(j.host == "db.example.com");
+assert(j.port == 5432);
+
+// 2. YAML config
+let yaml_cfg = "logging:\n  level: debug\n  file: /var/log/app.log\n";
+let y = yaml.parse(yaml_cfg);
+assert(y.logging.level == "debug");
+assert(y.logging.file == "/var/log/app.log");
+
+// 3. TOML config
+let toml_cfg = "[server]\nhost = \"0.0.0.0\"\nport = 8080\n\n[ssl]\nenabled = true\ncert = \"/etc/ssl/cert.pem\"\n";
+let t = toml.parse(toml_cfg);
+assert(t.server.host == "0.0.0.0");
+assert(t.server.port == 8080);
+assert(t.ssl.enabled == true);
+assert(t.ssl.cert == "/etc/ssl/cert.pem");
+
+// 4. Merge configs into a unified structure
+fn build_dsn(db_cfg) {
+  return "${db_cfg.host}:${db_cfg.port}";
+}
+let dsn = build_dsn(j);
+assert(dsn == "db.example.com:5432");
+
+// 5. Feature flag check from TOML
+fn is_feature_enabled(cfg, feature) {
+  if (!cfg.ssl.has(feature)) { return false; }
+  return cfg.ssl[feature] == true;
+}
+assert(is_feature_enabled(t, "enabled"));
+
+println("config_parser: all assertions passed");

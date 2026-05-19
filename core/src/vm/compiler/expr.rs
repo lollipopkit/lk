@@ -27,7 +27,7 @@ use crate::{
     stmt::Stmt,
     val::Val,
     vm::{
-        ClosureProto, Op,
+        ClosureProto, IntCmpKind, Op,
         bytecode::{rk_as_const, rk_index, rk_is_const, rk_make_const},
         capture_names_from_specs, closure_code_cell, closure_empty_captures, closure_empty_closure_cell,
         closure_empty_env, closure_empty_upvalues,
@@ -181,6 +181,29 @@ impl FunctionBuilder {
     }
 
     fn emit_bin_op(&mut self, dst: u16, left: u16, right: u16, op: &BinOp, flavor: ArithFlavor) {
+        let int_cmp = match op {
+            BinOp::Eq => Some(IntCmpKind::Eq),
+            BinOp::Ne => Some(IntCmpKind::Ne),
+            BinOp::Lt => Some(IntCmpKind::Lt),
+            BinOp::Le => Some(IntCmpKind::Le),
+            BinOp::Gt => Some(IntCmpKind::Gt),
+            BinOp::Ge => Some(IntCmpKind::Ge),
+            _ => None,
+        };
+        if flavor == ArithFlavor::Int
+            && let Some(kind) = int_cmp
+            && !rk_is_const(left)
+            && !rk_is_const(right)
+        {
+            self.emit(Op::CmpI {
+                dst,
+                a: left,
+                b: right,
+                kind,
+            });
+            return;
+        }
+
         match op {
             BinOp::Add => match flavor {
                 ArithFlavor::Int => self.emit(Op::AddInt(dst, left, right)),

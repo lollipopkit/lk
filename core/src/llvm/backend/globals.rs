@@ -16,13 +16,7 @@ impl<'a> FunctionTranslator<'a> {
             self.set_known(dst, Some(KnownReg::Global(name_str.to_string())));
             return Ok(());
         }
-        let handle = self.intern_string_constant(kidx, name_str)?;
-        self.require_helper(RuntimeHelper::LoadGlobal);
-        let global = self.fresh("loadglobal");
-        self.writer.line(format!(
-            "{global} = call i64 @{}(i64 {handle})",
-            RuntimeHelper::LoadGlobal.symbol()
-        ));
+        let global = self.emit_load_global_value(kidx, name_str)?;
         self.store_reg(dst, &global)?;
         let known = self
             .known_globals
@@ -31,6 +25,17 @@ impl<'a> FunctionTranslator<'a> {
             .unwrap_or_else(|| KnownReg::Global(name_str.to_string()));
         self.set_known(dst, Some(known));
         Ok(())
+    }
+
+    pub(super) fn emit_load_global_value(&mut self, kidx: u16, name_str: &str) -> Result<String> {
+        let handle = self.intern_string_constant(kidx, name_str)?;
+        self.require_helper(RuntimeHelper::LoadGlobal);
+        let global = self.fresh("loadglobal");
+        self.writer.line(format!(
+            "{global} = call i64 @{}(i64 {handle})",
+            RuntimeHelper::LoadGlobal.symbol()
+        ));
+        Ok(global)
     }
 
     pub(super) fn emit_load_capture(&mut self, dst: u16, idx: u16) -> Result<()> {

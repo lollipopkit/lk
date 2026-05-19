@@ -1,0 +1,66 @@
+// Stream (lazy pipeline) demo
+// Streams are lazy — they only compute values when consumed
+
+import stream;
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Create a stream from a list
+let s1 = stream.from_list([10, 20, 30, 40, 50]);
+let collected1 = s1.collect();
+assert(collected1 == [10, 20, 30, 40, 50]);
+
+// 2. Stream from range (0..n)
+let s2 = stream.range(0, 10);
+let evens = s2.filter(|x| x % 2 == 0).take(4).collect();
+assert(evens == [0, 2, 4, 6]);
+
+// 3. Map and collect
+let s3 = stream.from_list([1, 2, 3]);
+let doubled = s3.map(|x| x * 10).collect();
+assert(doubled == [10, 20, 30]);
+
+// 4. Filter + map pipeline
+let s4 = stream.from_list([1, 2, 3, 4, 5, 6]);
+let result = s4.filter(|x| x > 3).map(|x| x * x).collect();
+assert(result == [16, 25, 36]);
+
+// 5. Take and skip
+let s5 = stream.range(0, 100);
+let first5 = s5.take(5).collect();
+assert(first5 == [0, 1, 2, 3, 4]);
+
+let s6 = stream.range(0, 10);
+let skipped = s6.skip(7).collect();
+assert(skipped == [7, 8, 9]);
+
+// 6. Chain two streams
+let s7 = stream.from_list([1, 2]);
+let s8 = stream.from_list([3, 4]);
+let chained = s7.chain(s8).collect();
+assert(chained == [1, 2, 3, 4]);
+
+// 7. Lazy evaluation — stream only computes what is consumed
+// This stream represents infinite range but we only take 3
+let infinite = stream.range(0, 1000000);
+let first3 = infinite.take(3).collect();
+assert(first3 == [0, 1, 2]);
+
+// 8. Iterate — generate stream from a seed function
+let s9 = stream.iterate(1, |x| x * 2); // 1, 2, 4, 8, 16, ...
+let powers = s9.take(6).collect();
+assert(powers == [1, 2, 4, 8, 16, 32]);
+
+// 9. Repeat — infinite stream of the same value
+let s10 = stream.repeat(42);
+let repeated = s10.take(4).collect();
+assert(repeated == [42, 42, 42, 42]);
+
+// 10. List to stream and back
+let original = [1, 2, 3, 4, 5];
+let via_stream = original.to_stream().map(|x| x + 100).collect();
+assert(via_stream == [101, 102, 103, 104, 105]);
+
+println("stream_demo: all assertions passed");

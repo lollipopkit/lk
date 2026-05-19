@@ -5,13 +5,12 @@ use anyhow::anyhow;
 use crate::stmt::{ImportContext, ModuleResolver};
 use crate::typ::TypeChecker;
 use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_new, fast_hash_set_new};
-use crate::val::{Type, Val};
+use crate::val::{Type, Val, methods::find_method_for_val};
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use crate::typ::{TraitDef, TraitImpl};
 #[cfg(not(feature = "aot-minimal-runtime"))]
-use crate::val::{NativeArgs, ObjectValue, methods::find_method_for_val};
-#[cfg(not(feature = "aot-minimal-runtime"))]
+use crate::val::{NativeArgs, ObjectValue};
 use arcstr::ArcStr;
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use std::collections::HashMap;
@@ -334,6 +333,11 @@ impl VmContext {
     /// 获取导入上下文的可变引用
     pub fn import_context_mut(&mut self) -> &mut ImportContext {
         &mut self.import_ctx
+    }
+
+    pub(crate) fn call_method_zero(&mut self, receiver: Val, method: &Val) -> anyhow::Result<Val> {
+        let method_arc = method_name_arc("__lk_call_method", method)?;
+        call_method_positional(receiver, method_arc, &[], self)
     }
 
     /// 获取模块解析器的引用
@@ -685,27 +689,26 @@ fn core_call_method_builtin_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> a
     core_call_method_builtin(args.as_slice(), ctx)
 }
 
-#[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
-    if args.len() != 3 {
-        return Err(anyhow!(
-            "__lk_call_method expects 3 arguments: receiver, method name, positional args list"
-        ));
+fn method_name_arc(helper: &str, method: &Val) -> anyhow::Result<ArcStr> {
+    match method {
+        Val::Str(s) => Ok(s.clone()),
+        Val::ShortStr(s) => Ok(Val::intern_str(s.as_str())),
+        other => Err(anyhow!(
+            "{} expects method name as string, got {}",
+            helper,
+            other.type_name()
+        )),
     }
+}
 
-    let receiver = args[0].clone();
-    let method_arc: ArcStr = match &args[1] {
-        Val::Str(s) => s.clone(),
-        Val::ShortStr(s) => Val::intern_str(s.as_str()),
-        other => {
-            return Err(anyhow!(
-                "__lk_call_method expects method name as string, got {}",
-                other.type_name()
-            ));
-        }
-    };
+fn call_method_positional(
+    receiver: Val,
+    method_arc: ArcStr,
+    positional_args: &[Val],
+    ctx: &mut VmContext,
+) -> anyhow::Result<Val> {
     let method_key = Val::Str(method_arc.clone());
-    if (matches!(&args[2], Val::Nil) || matches!(&args[2], Val::List(list) if list.is_empty()))
+    if positional_args.is_empty()
         && let Some(prop_val) = receiver.access(&method_key)
     {
         match prop_val {
@@ -720,16 +723,6 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
         }
     }
 
-    let positional_args: Vec<Val> = match &args[2] {
-        Val::List(list) => list.iter().cloned().collect(),
-        Val::Nil => Vec::new(),
-        other => {
-            return Err(anyhow!(
-                "__lk_call_method expects positional arguments as list, got {}",
-                other.type_name()
-            ));
-        }
-    };
     if let Some(prop_val) = receiver.access(&method_key) {
         match prop_val {
             Val::Closure(_)
@@ -737,7 +730,7 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
             | Val::RustFastFunction(_)
             | Val::RustFastFunctionNamed(_)
             | Val::RustFunctionNamed(_) => {
-                return prop_val.call(&positional_args, ctx);
+                return prop_val.call(positional_args, ctx);
             }
             other => {
                 if positional_args.is_empty() {
@@ -760,11 +753,35 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
     if let Some(func) = find_method_for_val(&receiver, method_arc.as_str()) {
         let mut full_args = Vec::with_capacity(positional_args.len() + 1);
         full_args.push(receiver.clone());
-        full_args.extend(positional_args);
+        full_args.extend(positional_args.iter().cloned());
         return func.call(&full_args, ctx);
     }
 
     Err(anyhow!("{} has no method '{}'", receiver.type_name(), method_arc))
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
+    if args.len() != 3 {
+        return Err(anyhow!(
+            "__lk_call_method expects 3 arguments: receiver, method name, positional args list"
+        ));
+    }
+
+    let receiver = args[0].clone();
+    let method_arc = method_name_arc("__lk_call_method", &args[1])?;
+
+    let positional_args: Vec<Val> = match &args[2] {
+        Val::List(list) => list.iter().cloned().collect(),
+        Val::Nil => Vec::new(),
+        other => {
+            return Err(anyhow!(
+                "__lk_call_method expects positional arguments as list, got {}",
+                other.type_name()
+            ));
+        }
+    };
+    call_method_positional(receiver, method_arc, &positional_args, ctx)
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]

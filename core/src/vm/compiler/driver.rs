@@ -72,7 +72,7 @@ impl Compiler {
     ) -> Function {
         let mut checker = TypeChecker::new();
         let _ = body.type_check(&mut checker);
-        let mut b = FunctionBuilder::new_with_captures(captures);
+        let mut b = FunctionBuilder::new_function_with_captures(captures);
         let hints = checker.take_expr_types();
         if !hints.is_empty() {
             b.set_expr_type_hints(hints);
@@ -156,7 +156,7 @@ impl Compiler {
     ) -> Function {
         let mut checker = TypeChecker::new();
         let _ = checker.infer_resolved_type(expr);
-        let mut b = FunctionBuilder::new_with_captures(captures);
+        let mut b = FunctionBuilder::new_function_with_captures(captures);
         let hints = checker.take_expr_types();
         if !hints.is_empty() {
             b.set_expr_type_hints(hints);

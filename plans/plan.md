@@ -101,6 +101,7 @@
       - [x] opcode 解释器已融合相邻 `ForRangeLoop + ForRangeStep`，与 packed hot range-step fusion 对齐，跳过空/尾部 range loop 的 step dispatch。
       - [x] 将 range tail fusion 下沉到通用 `ForRangeStep` guard 推进：非空 body 也可在尾部直接进入下一轮 body/exit，并删除 packed 中 `AddModulo` / `Tiny*` 局部 body 特例。
       - [x] `CmpI` / `BoolBranch` / `RangeLoopI` 已作为独立 opcode 落地，并同步 BC32/LKB/packed/LLVM/compiler peephole。
+      - [x] 编译器已在已知双方为 int register 的比较上直接发射 `CmpI`，并为 opcode/packed hot path 补齐 `CmpI + BoolBranch` 融合，避免 typed compare 重新引入临时 Bool register 写入。
   5. call/frame protocol
       - [x] 引入 `ArgWindow` 与 `ReturnSlot` 内部协议；opcode 与 packed 的 native RustFunction/RustFunctionNamed 调用路径已通过 adapter 使用参数窗口和返回槽。
       - [x] 旧 `RustFunction(args: &[Val])` / `RustFunctionNamed(positional, named)` 只作为 fallback adapter；core trait builtins、stdlib method registry、`math.clamp` 与 `string.replace` named native 导出已迁到 fast wrapper / `RustFastFunctionNamed`。
@@ -126,7 +127,7 @@
       - [x] `ReturnSlot` 已移除 `*mut FrameState`，native fastcall 返回写槽只保留 base/retc，减少返回协议暴露的裸 frame 边界。
       - [x] 继续收窄 closure exact call 的 frame/return-slot 协议：`CallFrameMeta::inline_return` 统一返回槽 metadata，`invoke_vm_closure_fast` 集中 `self_ptr` 解引用与 fast-span 调用，opcode/packed 不再直接调用 VM raw fast span。
       - [x] 将 call-site return layout 明确纳入 IC/元数据验证；`CallIc` 的 Rust/RustFast/RustFastNamed/RustNamed/closure entries 都携带 return layout 并在 hit 时校验。
-      - [x] 完整独立 typed call 家族已落地：`CallExact`、`CallClosureExact`、`CallNativeFast`、`CallNamedFallback` 均同步 bytecode、BC32 ext、LKB、opcode/packed execution、typed gate packed execution test；位置参数 typed call 在 LLVM fallback 中继续发射通用 call helper，named fallback 仍显式保留为 VM fallback opcode。
+      - [x] 完整独立 typed call 家族已落地：`CallExact`、`CallClosureExact`、`CallNativeFast`、`CallNamedFallback`、`CallMethod0`、`CallGlobalMethod0` 均同步 bytecode、BC32 ext、LKB、opcode/packed execution、typed gate packed execution test；位置参数 typed call 在 LLVM fallback 中继续发射通用 call helper，named fallback 仍显式保留为 VM fallback opcode，零参数方法调用保留通用 method dispatch 语义但跳过 helper global lookup 与空参数 List 构造，全局/module 零参数方法调用继续融合 receiver global load。
       - [x] compiler 对已知位置参数 native callable 发射 `CallNativeFast`；native callable 调度先解析为 Copy descriptor，再进入 IC，避免 `CallNativeFast` / generic native branch 为函数指针 callee clone `Val`。
       - [x] packed hot slot 已覆盖 `CallNativeFast` ExtOp，热 native call 不再每次走 ExtOp miss + decode。
       - [x] packed hot slot 已覆盖 generic `Call` / `CallX`，只缓存解码结果与 next PC，执行仍委托统一 `run_call_packed`，避免复制 closure/native/named/default 语义。
@@ -139,6 +140,8 @@
       - [x] 非调用 RHS 的赋值已直接写入目标局部寄存器，避免“临时寄存器 + StoreLocal clone”路径；compound assignment fallback 也改为把结果直接写回目标槽，仅在 RHS 可能调用时保守复制旧值；`bench/workloads_business_algorithms.lk` packed entry `StoreLocal` 从 99 降到 62，entry ops 从 1022 降到 987。
       - [x] 函数声明与普通 `let` call RHS 已改为直接绑定最终寄存器/返回槽，避免 `MakeClosure/Call result -> StoreLocal` 二次拷贝；位置参数 call window 现在按 `max(argc, retc)` 预留，`argc=0, retc=1` 也有稳定返回槽并通过 global IC 回归测试；`bench/workloads_business_algorithms.lk` packed entry `StoreLocal` 从 62 降到 31，entry ops 从 987 降到 954，runtime `register_writes` 从 45210596 降到 41742177，`heap_clones` 从 1107579 降到 944172。
       - [x] peephole 已消除 `LoadLocal -> Ret/JmpFalse/BoolBranch` 的单消费者临时寄存器链，返回和分支可直接读局部槽；`bench/workloads_business_algorithms.lk` total ops 从 1103 降到 1100，`LoadLocal` 从 69 降到 66，runtime `register_writes` 从 41742177 降到 41457177，`val_clones` 从 14241983 降到 13956983。
+      - [x] peephole 继续扩展到 `LoadLocal -> read-only op` 的相邻单消费者链，算术/比较/访问/长度/string/map read op 可直接读源局部槽；`Move` / `StoreLocal` / `DefineGlobal` 赋值 staging 保守保留，避免改变绑定写入时序；`bench/workloads_business_algorithms.lk` total ops 从 1100 降到 1072，`LoadLocal` 从 66 降到 38，runtime `register_writes` 从 41457177 降到 38291401，`val_clones` 从 13956983 降到 10791207，checksum 全匹配。
+      - [x] function/closure/default-thunk 编译器默认不再导出普通局部 `let` / 局部函数到 global context，只有程序入口 builder 继续导出顶层 global；这移除了函数帧内无意义的 `DefineGlobal` 和全局 clone，同步保留显式 entry 行为；`bench/workloads_business_algorithms.lk` total ops 从 1072 降到 1060，`DefineGlobal` 从 49 降到 37，runtime `val_clones` 从 10791207 降到 9674185，checksum 全匹配。
       - [x] opcode 解释器已融合通用 `ToStr + Add` 右侧拼接模式，和 packed hot `ToStrAddRhs` 对齐，跳过临时字符串寄存器写入。
       - [x] string concat 已使用 known-cap `String` 并直接进入 `from_string` / `intern_owned`，保留 ShortStr immediate，减少长字符串拼接后的重复构造。
       - [x] 为长字符串拼接/Map key 补齐避免重复 hash 的缓存策略；Map lookup/contains/insert/remove 与 VM/stdlib/LLVM mutation/build path 已切到 `hashbrown` raw lookup，长 `ArcStr` lookup/remove 使用 TLS hash cache，insert 使用 fresh hash 并回填缓存；长字符串 concat 会为生成的 `ArcStr` 预热同一 TLS hash cache，`intern_owned` 对 >64 字节字符串仍不全局 intern，Map 存储仍是 ArcStr key。
@@ -161,6 +164,16 @@
       - [x] 直接赋值 + compound fallback lowering 后，`coverage --runtime bench/workloads_business_algorithms.lk` 显示 `register_writes=45210596`、`val_clones=17710426`、`heap_clones=1107579`，checksum 全匹配。
       - [x] let-call/函数声明直接目标槽 lowering 后，`coverage --runtime bench/workloads_business_algorithms.lk` 显示 entry ops=954、entry `StoreLocal`=31、`register_writes=41742177`、`val_clones=14241983`、`heap_clones=944172`，checksum 全匹配；`RUNS=3 EXTRA_RUNS=3 bench/run_workload_bench.sh` checksum 全匹配，VM geomean 3.175x vs Lua，AOT geomean 0.585x vs Lua，仍有多项 low-confidence 噪声。
       - [x] local-copy peephole 后，`coverage --runtime bench/workloads_business_algorithms.lk` 显示 total ops=1100、entry ops=954、total `LoadLocal`=66、`register_writes=41457177`、`val_clones=13956983`、checksum 全匹配。
+      - [x] read-only consumer peephole 后，`coverage --runtime bench/workloads_business_algorithms.lk` 显示 total ops=1072、entry ops=933、total `LoadLocal`=38、`register_writes=38291401`、`val_clones=10791207`、`heap_clones=781284`、checksum 全匹配。
+      - [x] 函数局部 global 导出关闭后，`coverage --runtime bench/workloads_business_algorithms.lk` 显示 total ops=1060、closure `DefineGlobal` 清零、total `DefineGlobal`=37、`val_clones=9674185`、`heap_clones=781284`、checksum 全匹配。
+      - [x] `CallMethod0` 零参数方法调用 opcode 后，`coverage --runtime bench/workloads_business_algorithms.lk` 显示 total ops=967、entry ops=840、`CallMethod0=31`、`LoadGlobal=32`、`quickening_sentinel_skips=0`、`register_writes=38291308`、`val_clones=9676799`、AOT entry 仍为 native-lowerable，checksum 全匹配。
+      - [x] `CallGlobalMethod0` 融合全局 receiver load 后，`coverage --runtime bench/workloads_business_algorithms.lk` 显示 total ops=936、entry ops=809、`CallGlobalMethod0=31`、global category=39、`register_writes=38291277`、`val_clones=9676737`、AOT entry 仍为 native-lowerable，checksum 全匹配；随后补回该 fused op 的 global generation IC，避免融合后绕过原 `LoadGlobal` cache。
+      - [x] read-only consumer peephole 后短验 `RUNS=3 EXTRA_RUNS=3 bench/run_workload_bench.sh`：checksum 全匹配，VM geomean 3.179x vs Lua，AOT geomean 0.588x vs Lua；仍有 `matrix_3x3_multiply` / `stock_max_profit` / `order_score_pipeline` / `route_permission_check` / `fraud_rule_scoring` low-confidence 噪声。
+      - [x] 函数局部 global 导出关闭后短验 `RUNS=3 EXTRA_RUNS=3 bench/run_workload_bench.sh`：checksum 全匹配，VM geomean 3.170x vs Lua，AOT geomean 0.583x vs Lua；`prime_trial_division` / `binary_search` / `order_score_pipeline` 仍为 low-confidence 噪声。
+      - [x] `CallMethod0` 后短验 `RUNS=3 EXTRA_RUNS=3 bench/run_workload_bench.sh`：checksum 全匹配，VM geomean 2.727x vs Lua，AOT geomean 0.682x vs Lua；`prime_trial_division` / `matrix_3x3_multiply` / `cart_pricing_rules` 为 low-confidence 噪声，`two_sum_map` / `string_key_hash` 触发 adaptive rerun。
+      - [x] `CallGlobalMethod0` 后短验 `RUNS=3 EXTRA_RUNS=3 bench/run_workload_bench.sh`：checksum 全匹配，VM geomean 2.752x vs Lua，AOT geomean 0.691x vs Lua；所有 workload 至少 medium confidence，`two_sum_map` / `string_key_hash` 仍触发 adaptive rerun，短样本显示与 `CallMethod0` 记录基本同量级。
+      - [x] `CallGlobalMethod0` global IC 补回后短验 `RUNS=3 EXTRA_RUNS=3 bench/run_workload_bench.sh`：checksum 全匹配，VM geomean 2.745x vs Lua，AOT geomean 0.691x vs Lua；`prime_trial_division` / `binary_search` / `sliding_window_sum` / `matrix_3x3_multiply` / `stock_max_profit` 为 low-confidence 噪声。
+      - [x] `CmpI` compiler lowering + `CmpI/BoolBranch` fusion 后，`coverage --runtime bench/workloads_business_algorithms.lk` 显示 `CmpI=4`、AOT entry 仍为 native-lowerable、checksum 全匹配，runtime metrics 保持 `register_writes=38291277`、`val_clones=9676768`、`quickening_sentinel_skips=0`；该步骤补齐 typed compare 覆盖但未形成宏观收益。
       - [x] 后续两次短验均出现全 workload low-confidence 高噪声（VM-only 样本 geomean 3.436x，full AOT 样本 geomean 4.597x），不作为性能回归/收益结论；继续以低噪声样本与 coverage 指标作为当前记录。
       - [ ] VM geomean 尚未达到“通用 VM 大幅提升”验收；下一步应优先继续压缩剩余 generic dispatch / clone / register-write 热点，而不是增加 benchmark-specific lowering。
 

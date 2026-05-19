@@ -1,0 +1,55 @@
+// Math module demo
+
+import math;
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Constants
+assert(math.pi > 3.14);
+assert(math.e > 2.71);
+
+// 2. Rounding — note: sqrt returns Float even for perfect squares
+assert(math.abs(-42) == 42);
+assert(math.sqrt(144.0) > 11.99);
+assert(math.sqrt(144.0) < 12.01);
+assert(math.floor(3.7) == 3);
+assert(math.ceil(3.2) == 4);
+assert(math.round(2.5) == 3);
+
+// 3. Min / Max
+assert(math.min(3, 7) == 3);
+assert(math.max(3, 7) == 7);
+
+// 4. Power and logarithms
+assert(math.pow(2, 10) == 1024.0);
+assert(math.exp(0) == 1);
+assert(math.sin(0) == 0);
+assert(math.cos(0) == 1);
+
+// 5. Using math for real calculations
+
+// Distance between two 2D points
+fn distance(x1, y1, x2, y2) {
+  let dx = x2 - x1;
+  let dy = y2 - y1;
+  return math.sqrt(dx * dx * 1.0 + dy * dy * 1.0);
+}
+let d = distance(0, 0, 3, 4);
+assert(d > 4.99);
+assert(d < 5.01);
+
+// Celsius → Fahrenheit
+fn to_fahrenheit(c) { return c * 9.0 / 5.0 + 32.0; }
+let f = to_fahrenheit(37);
+assert(f > 98.0);
+assert(f < 99.0);
+
+// Area of a circle
+fn circle_area(r) { return math.pi * r * r; }
+let area = circle_area(5);
+assert(area > 78.0);
+assert(area < 79.0);
+
+println("math_demo: all assertions passed");

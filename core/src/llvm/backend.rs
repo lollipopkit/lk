@@ -464,6 +464,10 @@ impl<'a> FunctionTranslator<'a> {
                 | Op::CallExact { f, base, argc, retc }
                 | Op::CallClosureExact { f, base, argc, retc }
                 | Op::CallNativeFast { f, base, argc, retc } => self.emit_call(*f, *base, *argc, *retc)?,
+                Op::CallMethod0 { dst, receiver, method } => self.emit_call_method0(*dst, *receiver, *method)?,
+                Op::CallGlobalMethod0 { dst, receiver, method } => {
+                    self.emit_call_global_method0(*dst, *receiver, *method)?
+                }
                 Op::Access(dst, base, field) => {
                     self.emit_access_or_defer_value(instr_idx, block_end, *dst, *base, *field)?
                 }

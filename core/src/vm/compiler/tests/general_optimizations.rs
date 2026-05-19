@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use crate::resolve::slots::SlotResolver;
+use crate::util::fast_map::fast_hash_map_with_capacity;
 use crate::vm::{AllocationRegion, EscapeClass};
 
 use super::{
-    BinOp, Compiler, Expr, ForPattern, Op, Stmt, Val, compile_and_run, make_assign, make_const_let,
-    parse_compile_and_run,
+    BinOp, Compiler, Expr, ForPattern, Op, Stmt, Val, compile_and_run, compile_and_run_with_ctx, make_assign,
+    make_const_let, parse_compile_and_run,
 };
 
 #[test]
@@ -69,6 +72,34 @@ fn local_condition_branches_without_loadlocal_copy() {
             .iter()
             .any(|op| matches!(op, Op::BoolBranch(reg, _) if *reg == function.param_regs[0])),
         "BoolBranch should read directly from the parameter slot"
+    );
+}
+
+#[test]
+fn function_local_let_does_not_export_global() {
+    let function = Compiler::new().compile_function(
+        &["input".to_string()],
+        &[],
+        &Stmt::Block {
+            statements: vec![
+                Box::new(Stmt::Let {
+                    pattern: crate::expr::Pattern::Variable("local".to_string()),
+                    type_annotation: None,
+                    value: Box::new(Expr::Var("input".to_string())),
+                    span: None,
+                    is_const: false,
+                }),
+                Box::new(Stmt::Return {
+                    value: Some(Box::new(Expr::Var("local".to_string()))),
+                }),
+            ],
+        },
+    );
+
+    assert!(
+        function.code.iter().all(|op| !matches!(op, Op::DefineGlobal(_, _))),
+        "function-local let should stay in frame slots, not sync through globals: {:?}",
+        function.code
     );
 }
 
@@ -314,6 +345,63 @@ fn dynamic_list_access_stays_current_after_mutation() {
 }
 
 #[test]
+fn zero_arg_method_call_uses_call_method0_opcode() {
+    let source = r#"
+        let data = { "answer": 42 };
+        return data.answer();
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::CallMethod0 { .. } | Op::CallGlobalMethod0 { .. })),
+        "expected zero-arg method call to use a method fast opcode in {:?}",
+        function.code
+    );
+    assert!(
+        function
+            .code
+            .iter()
+            .all(|op| !matches!(op, Op::BuildList { len: 0, .. })),
+        "CallMethod0 should not build an empty positional arg list in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn zero_arg_global_method_call_fuses_receiver_load() {
+    let (function, _ctx, result) = compile_and_run_with_ctx(
+        vec![Stmt::Return {
+            value: Some(Box::new(Expr::CallExpr(
+                Box::new(Expr::Access(
+                    Box::new(Expr::Var("module".to_string())),
+                    Box::new(Expr::Val(Val::from_str("answer"))),
+                )),
+                Vec::new(),
+            ))),
+        }],
+        |ctx| {
+            let mut module = fast_hash_map_with_capacity(1);
+            module.insert("answer".into(), Val::Int(42));
+            ctx.set("module".to_string(), Val::Map(Arc::new(module)));
+        },
+    );
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::CallGlobalMethod0 { .. })),
+        "expected global zero-arg method call to fuse LoadGlobal in {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn template_string_starts_from_first_literal() {
     let source = r#"
         let i = 42;
@@ -351,6 +439,27 @@ fn template_string_numeric_expr_uses_direct_concat() {
         function.code.iter().filter(|op| matches!(op, Op::ToStr(_, _))).count(),
         0,
         "known-int interpolations should concatenate without ToStr in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn known_int_register_compare_lowers_to_cmp_i() {
+    let source = r#"
+        let i = 0;
+        let limit = 3;
+        limit = limit + 0;
+        while (i < limit) {
+            i = i + 1;
+        }
+        return i;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(3));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::CmpI { .. })),
+        "known int register comparison should lower to CmpI in {:?}",
         function.code
     );
 }

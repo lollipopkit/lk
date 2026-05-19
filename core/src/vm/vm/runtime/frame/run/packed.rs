@@ -36,6 +36,7 @@ use super::invoke::{
     invoke_rust_fast_function_named, invoke_rust_function_named_fast, invoke_vm_closure_fast, take_pending_resume_pc,
 };
 use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, int_binop, int_binop_imm, rk_read};
+use super::method_ops;
 use super::plan::build_named_call_plan;
 use super::raw_boundary::region_allocator;
 
@@ -392,6 +393,14 @@ pub(super) fn run_packed_code(
                 )? {
                     return Ok(Some(value));
                 }
+            }
+            Op::CallMethod0 { dst, receiver, method } => {
+                method_ops::run_call_method0(frame_raw, regs, ctx, f, dst, receiver, method)?;
+                pc = next_pc_default;
+            }
+            Op::CallGlobalMethod0 { dst, receiver, method } => {
+                method_ops::run_call_global_method0(frame_raw, regs, ctx, f, global_ic, pc, dst, receiver, method)?;
+                pc = next_pc_default;
             }
             Op::CallExact {
                 f: rf,

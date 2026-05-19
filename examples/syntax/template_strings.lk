@@ -1,0 +1,55 @@
+// Template strings and string formatting demo
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Basic interpolation
+let name = "LK";
+let s1 = "Hello, ${name}!";
+assert(s1 == "Hello, LK!");
+
+// 2. Expression interpolation
+let x = 10;
+let y = 20;
+let s2 = "${x} + ${y} = ${x + y}";
+assert(s2 == "10 + 20 = 30");
+
+// 3. Nested property access
+let user = { "name": "Alice", "address": { "city": "NYC" } };
+let s3 = "User ${user.name} from ${user.address.city}";
+assert(s3 == "User Alice from NYC");
+
+// 4. Method calls in interpolation
+let items = [1, 2, 3];
+let s4 = "Count: ${items.len()}";
+assert(s4 == "Count: 3");
+
+// 5. Function calls in interpolation
+fn double(n) { return n * 2; }
+let s5 = "Double of 5 is ${double(5)}";
+assert(s5 == "Double of 5 is 10");
+
+// 6. Single-quoted strings also support interpolation
+let s6 = 'Value: ${x}';
+assert(s6 == "Value: 10");
+
+// 7. Raw strings do NOT interpolate
+// Comparison must also use raw string, or ${x} in the normal string gets interpolated
+let raw = r"No ${x} interpolation";
+assert(raw == r"No ${x} interpolation");
+
+// 8. println with format placeholders
+let pi = 3.14159;
+println("pi = {}", pi);
+
+// 9. Multiple format args
+let a = 1;
+let b = 2;
+println("{} + {} = {}", a, b, a + b);
+
+// 10. Escaping $ in template strings
+let s10 = "Price: \$100";
+assert(s10 == "Price: $100");
+
+println("template_strings: all assertions passed");

@@ -489,6 +489,19 @@ pub enum Op {
         argc: u8,
         retc: u8,
     },
+    // Zero-argument method dispatch fast path. Preserves the generic method
+    // helper semantics but skips helper global lookup and empty argument list construction.
+    CallMethod0 {
+        dst: u16,
+        receiver: u16,
+        method: u16,
+    },
+    // Zero-argument method dispatch with receiver loaded from a global/module binding.
+    CallGlobalMethod0 {
+        dst: u16,
+        receiver: u16,
+        method: u16,
+    },
     // Call with named arguments. Result is written to base_pos.
     CallNamed {
         f: u16,
@@ -596,6 +609,8 @@ impl Op {
             Op::CallExact { .. } => Some("CallExact"),
             Op::CallClosureExact { .. } => Some("CallClosureExact"),
             Op::CallNativeFast { .. } => Some("CallNativeFast"),
+            Op::CallMethod0 { .. } => Some("CallMethod0"),
+            Op::CallGlobalMethod0 { .. } => Some("CallGlobalMethod0"),
             Op::CallNamedFallback { .. } => Some("CallNamedFallback"),
             Op::ForRangePrep { .. } => Some("ForRangePrep"),
             Op::RangeLoopI { .. } => Some("RangeLoopI"),
@@ -802,6 +817,14 @@ impl fmt::Debug for Op {
                 argc,
                 retc,
             } => write!(f, "CallNativeFast r{}, base={}, argc={}, retc={}", rf, base, argc, retc),
+            Op::CallMethod0 { dst, receiver, method } => {
+                write!(f, "CallMethod0 r{}, receiver={}, method=k{}", dst, receiver, method)
+            }
+            Op::CallGlobalMethod0 { dst, receiver, method } => write!(
+                f,
+                "CallGlobalMethod0 r{}, receiver=k{}, method=k{}",
+                dst, receiver, method
+            ),
             Op::CallNamed {
                 f: rf,
                 base_pos,

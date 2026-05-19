@@ -1,11 +1,10 @@
 //! 32-bit packed bytecode encoding scaffold.
 //!
+use super::bytecode::rk_index;
 use super::bytecode::{ClosureProto, Function, NamedParamLayoutEntry, Op, PatternPlan, rk_is_const};
 use crate::val::Val;
 use std::sync::Arc;
 use tracing::info;
-
-use super::bytecode::rk_index;
 
 mod decoded;
 mod encode_support;
@@ -16,7 +15,6 @@ pub use decoded::*;
 use encode_support::*;
 pub(crate) use format::*;
 pub use metrics::*;
-
 #[derive(Debug, Clone)]
 pub struct Bc32Function {
     pub consts: Vec<Val>,
@@ -320,6 +318,10 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
         Op::CallExact { f, base, argc, retc } => pack_call_ext(EXT_OP_CALL_EXACT, "CallExact", f, base, argc, retc),
         Op::CallNativeFast { f, base, argc, retc } => {
             pack_call_ext(EXT_OP_CALL_NATIVE_FAST, "CallNativeFast", f, base, argc, retc)
+        }
+        Op::CallMethod0 { dst, receiver, method } => pack_ext_op(EXT_OP_CALL_METHOD0, dst, receiver, method),
+        Op::CallGlobalMethod0 { dst, receiver, method } => {
+            pack_ext_op(EXT_OP_CALL_GLOBAL_METHOD0, dst, receiver, method)
         }
         Op::CallNamedFallback {
             f,

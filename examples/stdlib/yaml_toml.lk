@@ -1,0 +1,37 @@
+// YAML and TOML parsing demo
+// Note: these modules parse strings into LK maps
+
+import yaml;
+import toml;
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Parse a simple YAML document
+let yml = "name: LK\nversion: 2\nstable: true\n";
+let yml_data = yaml.parse(yml);
+assert(yml_data.name == "LK");
+assert(yml_data.version == 2);
+assert(yml_data.stable == true);
+
+// 2. Nested YAML
+let nested_yml = "server:\n  host: localhost\n  port: 8080\nfeatures:\n  - auth\n  - cache\n";
+let ny = yaml.parse(nested_yml);
+assert(ny.server.host == "localhost");
+assert(ny.server.port == 8080);
+assert(ny.features.len() == 2);
+
+// 3. Parse a TOML document
+let tml = "[database]\nhost = \"localhost\"\nport = 5432\n\n[cache]\nttl = 300\n";
+let tml_data = toml.parse(tml);
+assert(tml_data.database.host == "localhost");
+assert(tml_data.database.port == 5432);
+assert(tml_data.cache.ttl == 300);
+
+// 4. Process parsed config
+let cfg = toml.parse(tml);
+let db_url = "${cfg.database.host}:${cfg.database.port}";
+assert(db_url == "localhost:5432");
+
+println("yaml_toml: all assertions passed");

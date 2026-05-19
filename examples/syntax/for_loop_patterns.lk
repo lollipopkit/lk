@@ -1,0 +1,68 @@
+// For-loop with patterns demo
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Simple variable binding
+let sum = 0;
+for x in [10, 20, 30] { sum += x; }
+assert(sum == 60);
+
+// 2. Wildcard (ignore value)
+let count = 0;
+for _ in [1, 2, 3] { count += 1; }
+assert(count == 3);
+
+// 3. Tuple destructuring in for loop
+let pairs = [[1, "a"], [2, "b"], [3, "c"]];
+let nums = [];
+let labels = [];
+for (n, l) in pairs {
+  nums.push(n);
+  labels.push(l);
+}
+assert(nums == [1, 2, 3]);
+assert(labels == ["a", "b", "c"]);
+
+// 4. Array destructuring with rest
+let matrix = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+let firsts = [];
+for [head, ..tail] in matrix {
+  firsts.push(head);
+}
+assert(firsts == [1, 4, 7]);
+
+// 5. String iteration (chars)
+let chars = [];
+for ch in "abc" {
+  chars.push(ch);
+}
+assert(chars == ["a", "b", "c"]);
+
+// 6. Iterating map entries (yields [key, value])
+let scores = { "alice": 95, "bob": 87, "carol": 92 };
+let total = 0;
+for pair in scores {
+  total += pair[1];
+}
+assert(total == 274);
+
+// 7. Nested destructuring
+let data = [[1, 2], [3, 4], [5, 6]];
+let flattened = [];
+for [a, b] in data {
+  flattened.push(a);
+  flattened.push(b);
+}
+assert(flattened == [1, 2, 3, 4, 5, 6]);
+
+// 8. For with index via enumerate
+let items = ["x", "y", "z"];
+let indices = [];
+for pair in items.enumerate() {
+  indices.push(pair[0]);
+}
+assert(indices == [0, 1, 2]);
+
+println("for_loop_patterns: all assertions passed");

@@ -385,6 +385,16 @@ fn test_bc32_current_typed_ops_roundtrip_gate() {
                 argc: 1,
                 retc: 1,
             },
+            Op::CallMethod0 {
+                dst: 30,
+                receiver: 31,
+                method: 1,
+            },
+            Op::CallGlobalMethod0 {
+                dst: 30,
+                receiver: 0,
+                method: 1,
+            },
             Op::CallExact {
                 f: 30,
                 base: 31,
@@ -468,6 +478,69 @@ fn test_bc32_current_typed_ops_roundtrip_gate() {
         decoded.code.iter().any(|op| matches!(op, Op::RangeLoopI { .. })),
         "typed range loop must remain represented in BC32"
     );
+}
+
+#[test]
+fn test_bc32_call_method0_packed_execution() {
+    let mut map = fast_hash_map_with_capacity(1);
+    map.insert("answer".into(), Val::Int(42));
+    let out = exec_packed_function(Function {
+        consts: vec![Val::Map(Arc::new(map)), Val::from_str("answer")],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::CallMethod0 {
+                dst: 1,
+                receiver: 0,
+                method: 1,
+            },
+            Op::Ret { base: 1, retc: 1 },
+        ],
+        n_regs: 2,
+        protos: vec![],
+        param_regs: vec![],
+        named_param_regs: vec![],
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    });
+    assert_eq!(out, Val::Int(42));
+}
+
+#[test]
+fn test_bc32_call_global_method0_packed_execution() {
+    let mut map = fast_hash_map_with_capacity(1);
+    map.insert("answer".into(), Val::Int(42));
+    let mut ctx = crate::vm::VmContext::new_without_core_vm_builtins();
+    ctx.set("module".to_string(), Val::Map(Arc::new(map)));
+    let mut f = Function {
+        consts: vec![Val::from_str("module"), Val::from_str("answer")],
+        code: vec![
+            Op::CallGlobalMethod0 {
+                dst: 0,
+                receiver: 0,
+                method: 1,
+            },
+            Op::Ret { base: 0, retc: 1 },
+        ],
+        n_regs: 1,
+        protos: vec![],
+        param_regs: vec![],
+        named_param_regs: vec![],
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+    let bc = Bc32Function::try_from_function(&f).expect("CallGlobalMethod0 packed encoding");
+    f.code32 = Some(bc.code32);
+    f.bc32_decoded = bc.decoded;
+
+    let mut vm = crate::vm::Vm::new();
+    let out = vm.exec(&f, &mut ctx).expect("packed CallGlobalMethod0 execution");
+    assert_eq!(out, Val::Int(42));
 }
 
 #[test]

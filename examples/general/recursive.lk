@@ -1,0 +1,71 @@
+// Recursive function demo
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Classic recursive factorial
+fn factorial(n) {
+  if (n <= 1) { return 1; }
+  return n * factorial(n - 1);
+}
+assert(factorial(0) == 1);
+assert(factorial(1) == 1);
+assert(factorial(5) == 120);
+assert(factorial(10) == 3628800);
+
+// 2. Recursive Fibonacci (slow but illustrative)
+fn fib(n) {
+  if (n <= 0) { return 0; }
+  if (n == 1) { return 1; }
+  return fib(n - 1) + fib(n - 2);
+}
+assert(fib(0) == 0);
+assert(fib(1) == 1);
+assert(fib(8) == 21);
+assert(fib(10) == 55);
+
+// 3. Recursive list sum
+fn list_sum(xs) {
+  if (xs.len() == 0) { return 0; }
+  return xs[0] + list_sum(xs.skip(1));
+}
+assert(list_sum([]) == 0);
+assert(list_sum([1, 2, 3, 4]) == 10);
+
+// 4. Recursive GCD (Euclidean algorithm)
+fn gcd(a, b) {
+  if (b == 0) { return a; }
+  return gcd(b, a % b);
+}
+assert(gcd(12, 8) == 4);
+assert(gcd(100, 75) == 25);
+assert(gcd(17, 13) == 1);
+
+// 5. Recursive power (simple linear recursion)
+fn power(base, exp) {
+  if (exp == 0) { return 1; }
+  return base * power(base, exp - 1);
+}
+assert(power(2, 0) == 1);
+assert(power(2, 10) == 1024);
+assert(power(3, 4) == 81);
+
+// 6. Recursive list contains
+fn contains(xs, target) {
+  if (xs.len() == 0) { return false; }
+  if (xs[0] == target) { return true; }
+  return contains(xs.skip(1), target);
+}
+assert(contains([1, 3, 5, 7], 5));
+assert(!contains([1, 3, 5, 7], 4));
+
+// 7. Recursive length
+fn length(xs) {
+  if (xs.len() == 0) { return 0; }
+  return 1 + length(xs.skip(1));
+}
+assert(length([]) == 0);
+assert(length([1, 2, 3]) == 3);
+
+println("recursive: all assertions passed");

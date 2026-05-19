@@ -371,8 +371,10 @@ impl FunctionBuilder {
                     let rv = self.expr(value);
                     self.emit(Op::StoreLocal(idx, rv));
                 }
-                let kname = self.k(Val::from_str(name.as_str()));
-                self.emit(Op::DefineGlobal(kname, idx));
+                if self.export_toplevel_globals {
+                    let kname = self.k(Val::from_str(name.as_str()));
+                    self.emit(Op::DefineGlobal(kname, idx));
+                }
             }
             Stmt::Let {
                 pattern,
@@ -411,7 +413,7 @@ impl FunctionBuilder {
                         // reserves at least retc slots, so return slots remain stable for
                         // the rest of this frame and do not need a StoreLocal copy.
                         self.define_var_as(name, rv);
-                        if self.loop_depth == 0 && self.var_scope_depth() == 0 {
+                        if self.export_toplevel_globals && self.loop_depth == 0 && self.var_scope_depth() == 0 {
                             let kname = self.k(Val::from_str(name.as_str()));
                             self.emit(Op::DefineGlobal(kname, rv));
                         }
@@ -454,7 +456,7 @@ impl FunctionBuilder {
 
                 if let Pattern::Variable(name) = pattern {
                     let idx = self.get_or_define(name);
-                    if self.loop_depth == 0 && self.var_scope_depth() == 0 {
+                    if self.export_toplevel_globals && self.loop_depth == 0 && self.var_scope_depth() == 0 {
                         let kname = self.k(Val::from_str(name.as_str()));
                         self.emit(Op::DefineGlobal(kname, idx));
                     }
@@ -565,8 +567,10 @@ impl FunctionBuilder {
             } => {
                 let idx = self.get_or_define(name);
                 self.emit_function_closure_into(idx, Some(name.as_str()), params, named_params, body.as_ref(), true);
-                let kname = self.k(Val::from_str(name.as_str()));
-                self.emit(Op::DefineGlobal(kname, idx));
+                if self.export_toplevel_globals && self.loop_depth == 0 && self.var_scope_depth() == 0 {
+                    let kname = self.k(Val::from_str(name.as_str()));
+                    self.emit(Op::DefineGlobal(kname, idx));
+                }
             }
             Stmt::Break => {
                 if self.loop_depth == 0 {

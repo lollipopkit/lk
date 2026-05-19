@@ -1,0 +1,59 @@
+// Match expression demo
+// Shows literal, wildcard, or-pattern, and bool matching
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Literal patterns
+let grade = match "A" {
+  "A" => "Excellent",
+  "B" => "Good",
+  "C" => "Average",
+  _   => "Below average",
+};
+assert(grade == "Excellent");
+
+// 2. Integer literal + wildcard
+let label = match 404 {
+  200 => "OK",
+  301 => "Moved",
+  404 => "Not Found",
+  500 => "Server Error",
+  _   => "Unknown",
+};
+assert(label == "Not Found");
+
+// 3. Or-pattern — combine multiple values in one arm
+let day_type = match 6 {
+  1 | 2 | 3 | 4 | 5 => "weekday",
+  6 | 7 => "weekend",
+  _ => "invalid",
+};
+assert(day_type == "weekend");
+
+// 4. Bool literal match
+let bool_result = match true {
+  true => "yes",
+  false => "no",
+};
+assert(bool_result == "yes");
+
+// 5. String literal match
+let lang = match "lk" {
+  "rs" => "Rust",
+  "lk" => "LK",
+  "py" => "Python",
+  _ => "Unknown",
+};
+assert(lang == "LK");
+
+// 6. Match returns a value — use it inline
+let size_label = match 42 {
+  1 => "one",
+  _ => "many",
+};
+assert(size_label == "many");
+
+
+println("match: all assertions passed");

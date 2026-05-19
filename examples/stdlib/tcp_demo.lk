@@ -1,0 +1,33 @@
+// TCP networking demo
+
+import tcp;
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Connect to a remote server
+let conn = tcp.connect("example.com", 80);
+assert(conn > 0);
+
+// 2. Send an HTTP request
+let request = "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n";
+let sent = tcp.write(conn, request);
+assert(sent > 0);
+
+// 3. Read the response
+let response = tcp.read(conn, 4096);
+assert(response.len() > 0);
+assert(response.contains("HTTP"));
+
+// 4. Close the connection
+tcp.close(conn);
+
+// 5. TCP server (bind + accept)
+let listener = tcp.bind("127.0.0.1", 19876);
+assert(listener > 0);
+
+// For this demo, we just close the listener immediately
+tcp.close(listener);
+
+println("tcp_demo: all assertions passed");

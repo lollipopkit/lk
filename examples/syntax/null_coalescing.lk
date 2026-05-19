@@ -1,0 +1,67 @@
+// Nullish coalescing and null-safety patterns demo
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. ?? (nullish coalescing) — returns left if non-nil, else right
+let a = nil;
+let b = a ?? "default";
+assert(b == "default");
+
+let c = 42;
+let d = c ?? 0;
+assert(d == 42);
+
+// 2. Chained ??
+let x = nil;
+let y = nil;
+let z = x ?? y ?? "found";
+assert(z == "found");
+
+// 3. ?? with expressions
+let config_timeout = nil;
+let timeout = config_timeout ?? (10 * 100);
+assert(timeout == 1000);
+
+// 4. Safe access pattern — guard before property access
+let user = { "name": "Alice", "address": nil };
+let city = nil;
+if (user.address != nil) {
+  city = user.address.city;
+} else {
+  city = nil;
+}
+assert(city == nil);
+
+// 5. Deep nesting with nil checks
+let data = { "a": { "b": nil } };
+let deep_result = nil;
+if (data.a != nil) {
+  if (data.a.b != nil) {
+    deep_result = data.a.b.c;
+  }
+}
+assert(deep_result == nil);
+
+// 6. ?? in function defaults
+fn get_config({host: String? = nil, port: Int? = nil}) {
+  let h = host ?? "localhost";
+  let p = port ?? 8080;
+  return "${h}:${p}";
+}
+assert(get_config(host: "prod.io") == "prod.io:8080");
+assert(get_config() == "localhost:8080");
+
+// 7. ?? with list operations
+let maybe_list = nil;
+let items = maybe_list ?? [];
+assert(items.len() == 0);
+
+// 8. Truthiness in if/while — nil is falsy, only false and nil are falsy
+let maybe_empty = 0;
+if (maybe_empty) {
+  assert(true);
+}
+
+println("null_coalescing: all assertions passed");

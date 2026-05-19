@@ -12,6 +12,7 @@ mod helpers;
 mod ic;
 mod invoke;
 mod math;
+mod method_ops;
 mod opcode;
 mod packed;
 mod plan;

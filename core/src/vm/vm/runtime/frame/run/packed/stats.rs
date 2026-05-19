@@ -145,6 +145,8 @@ fn ext_op_name(ext_op: u8) -> &'static str {
         bc32::EXT_OP_CALL_CLOSURE_EXACT => "CallClosureExact",
         bc32::EXT_OP_CALL_EXACT => "CallExact",
         bc32::EXT_OP_CALL_NAMED_FALLBACK => "CallNamedFallback",
+        bc32::EXT_OP_CALL_METHOD0 => "CallMethod0",
+        bc32::EXT_OP_CALL_GLOBAL_METHOD0 => "CallGlobalMethod0",
         _ => "Unknown",
     }
 }

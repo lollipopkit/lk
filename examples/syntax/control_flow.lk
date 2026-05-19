@@ -1,0 +1,105 @@
+// Control flow demo: if, while, for, break, continue
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. If / else
+let x = 10;
+if (x > 5) {
+  assert(true);
+} else {
+  panic("wrong branch");
+}
+
+// 2. If without parentheses
+let y = 3;
+if y < 5 {
+  assert(true);
+} else {
+  panic("wrong branch");
+}
+
+// 3. While loop
+let n = 0;
+let total = 0;
+while (n < 5) {
+  total += n;
+  n += 1;
+}
+assert(total == 10);
+
+// 4. For loop over range
+let sum = 0;
+for i in 1..=10 {
+  sum += i;
+}
+assert(sum == 55);
+
+// 5. For loop over list
+let fruits = ["apple", "banana", "cherry"];
+let count = 0;
+for fruit in fruits {
+  count += 1;
+}
+assert(count == 3);
+
+// 6. For loop over string (chars)
+let chars = "";
+for ch in "abc" {
+  chars += ch;
+}
+assert(chars == "abc");
+
+// 7. Break
+let found = 0;
+for i in 1..=100 {
+  if (i * i > 50) {
+    found = i;
+    break;
+  }
+}
+// 7*7=49 ≤50, 8*8=64 >50
+assert(found == 8);
+
+// 8. Continue
+let odd_sum = 0;
+for i in 1..=10 {
+  if (i % 2 == 0) { continue; }
+  odd_sum += i;
+}
+// 1+3+5+7+9 = 25
+assert(odd_sum == 25);
+
+// 9. Nested loops
+let matrix = [[1, 2], [3, 4]];
+let flat = [];
+for row in matrix {
+  for cell in row {
+    flat.push(cell);
+  }
+}
+assert(flat == [1, 2, 3, 4]);
+
+// 10. Block scoping
+let outer = 1;
+{
+  let inner = 2;
+  outer += inner;
+}
+assert(outer == 3);
+
+// 11. Conditional logic with function return values
+// Functions that return values avoid the if-block scoping issues
+fn classify(score) {
+  if (score >= 90) { return "A"; }
+  if (score >= 80) { return "B"; }
+  if (score >= 70) { return "C"; }
+  return "F";
+}
+assert(classify(95) == "A");
+assert(classify(85) == "B");
+assert(classify(75) == "C");
+assert(classify(50) == "F");
+
+println("control_flow: all assertions passed");

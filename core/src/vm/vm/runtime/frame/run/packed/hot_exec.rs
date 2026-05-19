@@ -644,6 +644,39 @@ pub(super) fn exec_hot_slot(
             }
             None
         }
+        PackedHotKind::CmpInt { op, dst, a, b } => {
+            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*a as usize], &regs[*b as usize]) else {
+                return Err(anyhow!("CmpI expects integer registers"));
+            };
+            let cmp = match op {
+                PackedCmpOp::Eq => lhs == rhs,
+                PackedCmpOp::Ne => lhs != rhs,
+                PackedCmpOp::Lt => lhs < rhs,
+                PackedCmpOp::Le => lhs <= rhs,
+                PackedCmpOp::Gt => lhs > rhs,
+                PackedCmpOp::Ge => lhs >= rhs,
+            };
+            assign_reg(frame_raw, regs, *dst as usize, Val::Bool(cmp));
+            None
+        }
+        PackedHotKind::CmpIntJmp { op, a, b, ofs } => {
+            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*a as usize], &regs[*b as usize]) else {
+                return Err(anyhow!("CmpI expects integer registers"));
+            };
+            let cmp = match op {
+                PackedCmpOp::Eq => lhs == rhs,
+                PackedCmpOp::Ne => lhs != rhs,
+                PackedCmpOp::Lt => lhs < rhs,
+                PackedCmpOp::Le => lhs <= rhs,
+                PackedCmpOp::Gt => lhs > rhs,
+                PackedCmpOp::Ge => lhs >= rhs,
+            };
+            if !cmp {
+                Some(((pc as isize) + (*ofs as isize)) as usize)
+            } else {
+                None
+            }
+        }
         PackedHotKind::CmpJmp { op, a, b, ofs } => {
             let lhs = rk_read(regs, &func.consts, *a);
             let rhs = rk_read(regs, &func.consts, *b);
@@ -742,6 +775,14 @@ pub(super) fn exec_hot_slot(
                 .ok_or_else(|| anyhow!("CallNativeFast target is not a native function"))?;
             let ret_layout = CallReturnLayout::new(*base, *retc);
             invoke_native_callable_with_ic(ctx, regs, pc_slot, callable, *argc, ret_layout)?;
+            None
+        }
+        PackedHotKind::CallMethod0 { dst, receiver, method } => {
+            method_ops::run_call_method0(frame_raw, regs, ctx, func, *dst, *receiver, *method)?;
+            None
+        }
+        PackedHotKind::CallGlobalMethod0 { dst, receiver, method } => {
+            method_ops::run_call_global_method0(frame_raw, regs, ctx, func, global_ic, pc, *dst, *receiver, *method)?;
             None
         }
         PackedHotKind::Call { .. } => unreachable!("generic Call hot slots are handled by run_packed_code"),

@@ -144,6 +144,8 @@ fn string_key_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::IndexK(_, src, _) => src == reg,
         Op::ListPush { list, val } => list == reg || val == reg,
         Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => map == reg || key == reg || val == reg,
+        Op::CallMethod0 { receiver, .. } => receiver == reg,
+        Op::CallGlobalMethod0 { .. } => false,
         Op::Ret { base, retc } => retc > 0 && base == reg,
         _ => false,
     }
@@ -192,6 +194,8 @@ fn string_key_op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::BuildMap { dst, .. }
         | Op::BuildList { dst, .. }
         | Op::MakeClosure { dst, .. } => dst == reg,
+        Op::CallMethod0 { dst, .. } => dst == reg,
+        Op::CallGlobalMethod0 { dst, .. } => dst == reg,
         Op::NullishPick { dst, .. } | Op::JmpFalseSet { dst, .. } | Op::JmpTrueSet { dst, .. } => dst == reg,
         _ => false,
     }

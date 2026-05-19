@@ -1,0 +1,27 @@
+// I/O module demo — stdin, stdout, stderr
+
+import io;
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. Write to stdout
+io.stdout.write("Hello via io.stdout.write\n");
+io.stdout.writeln("Writeln adds a trailing newline");
+
+// 2. Format printing with builtin print/println
+print("Value: {}\n", 42);
+println("Formatted: {} + {} = {}", 1, 2, 3);
+
+// 3. Write to stderr (useful for logging/warnings)
+io.stderr.write("[warn] this is a warning\n");
+
+// 4. Flush stdout
+io.stdout.flush();
+
+// 5. io.read() — reads all of stdin (returns "" if no input)
+let all_input = io.read();
+assert(all_input != nil);
+
+println("io_demo: completed");

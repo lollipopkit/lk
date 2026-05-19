@@ -52,6 +52,21 @@ pub(super) fn run_cmp_i(
 }
 
 #[inline]
+pub(super) fn run_cmp_i_jmp_false(
+    regs: &[Val],
+    pc: usize,
+    ofs: i16,
+    a: u16,
+    b: u16,
+    kind: IntCmpKind,
+) -> Result<usize> {
+    let (Val::Int(lhs), Val::Int(rhs)) = (&regs[a as usize], &regs[b as usize]) else {
+        anyhow::bail!("CmpI expects integer registers");
+    };
+    Ok(branch_after_cmp(pc, ofs, kind.eval(*lhs, *rhs)))
+}
+
+#[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_cmp_ne(
     frame_raw: *mut FrameState<'_>,

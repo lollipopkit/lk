@@ -36,6 +36,7 @@ use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameSt
 
 use super::helpers::{advance_for_range_tail, assign_reg, frame_return_common, handle_return_common};
 use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm};
+use super::method_ops;
 use super::plan::build_named_call_plan;
 
 #[allow(clippy::too_many_arguments)]
@@ -281,6 +282,12 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::CmpI { dst, a, b, kind } => {
+                if let Some(Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs)) = f.code.get(pc + 1)
+                    && *r == *dst
+                {
+                    pc = compare_ops::run_cmp_i_jmp_false(regs, pc, *ofs, *a, *b, *kind)?;
+                    continue;
+                }
                 compare_ops::run_cmp_i(frame_raw, regs, *dst, *a, *b, *kind)?;
                 pc += 1;
             }
@@ -839,6 +846,14 @@ pub(super) fn run_opcode_code(
                 )? {
                     return Ok(Some(value));
                 }
+            }
+            Op::CallMethod0 { dst, receiver, method } => {
+                method_ops::run_call_method0(frame_raw, regs, ctx, f, *dst, *receiver, *method)?;
+                pc += 1;
+            }
+            Op::CallGlobalMethod0 { dst, receiver, method } => {
+                method_ops::run_call_global_method0(frame_raw, regs, ctx, f, global_ic, pc, *dst, *receiver, *method)?;
+                pc += 1;
             }
             Op::CallExact {
                 f: rf,

@@ -260,6 +260,18 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u8(out, argc);
             write_u8(out, retc);
         }
+        Op::CallMethod0 { dst, receiver, method } => {
+            write_u8(out, 88);
+            write_u16(out, dst);
+            write_u16(out, receiver);
+            write_u16(out, method);
+        }
+        Op::CallGlobalMethod0 { dst, receiver, method } => {
+            write_u8(out, 89);
+            write_u16(out, dst);
+            write_u16(out, receiver);
+            write_u16(out, method);
+        }
         Op::Ret { base, retc } => {
             write_u8(out, 39);
             write_u16(out, base);
@@ -698,6 +710,16 @@ pub(super) fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             base: read_u16(bytes, cursor)?,
             argc: read_u8(bytes, cursor)?,
             retc: read_u8(bytes, cursor)?,
+        },
+        88 => Op::CallMethod0 {
+            dst: read_u16(bytes, cursor)?,
+            receiver: read_u16(bytes, cursor)?,
+            method: read_u16(bytes, cursor)?,
+        },
+        89 => Op::CallGlobalMethod0 {
+            dst: read_u16(bytes, cursor)?,
+            receiver: read_u16(bytes, cursor)?,
+            method: read_u16(bytes, cursor)?,
         },
         39 => Op::Ret {
             base: read_u16(bytes, cursor)?,

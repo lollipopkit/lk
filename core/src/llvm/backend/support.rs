@@ -312,7 +312,9 @@ fn op_assigned_regs(op: &Op) -> Vec<u16> {
         | Op::MapGetDynamic(dst, _, _)
         | Op::BuildMap { dst, .. }
         | Op::BuildList { dst, .. }
-        | Op::MakeClosure { dst, .. } => vec![dst],
+        | Op::MakeClosure { dst, .. }
+        | Op::CallMethod0 { dst, .. }
+        | Op::CallGlobalMethod0 { dst, .. } => vec![dst],
         Op::NullishPick { dst, .. } | Op::JmpFalseSet { dst, .. } | Op::JmpTrueSet { dst, .. } => vec![dst],
         _ => Vec::new(),
     }

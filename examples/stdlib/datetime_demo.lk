@@ -1,0 +1,46 @@
+// Datetime module demo
+
+import datetime;
+import math;
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// datetime.now() returns microseconds; most functions need integer seconds
+let now_us = datetime.now();
+let now_secs = math.floor(now_us / 1000000);
+
+// 1. Current time
+assert(now_us > 0);
+
+// 2. Formatting
+let formatted = datetime.format(now_secs, "%Y-%m-%d");
+assert(formatted.len() == 10);
+assert(formatted.contains("202"));
+
+// 3. Full format
+let full = datetime.format(now_secs, "%Y-%m-%d %H:%M:%S");
+assert(full.len() == 19);
+
+// 4. Add / subtract seconds
+let later = datetime.add(now_secs, 3600);   // +1 hour
+let earlier = datetime.sub(now_secs, 3600); // -1 hour
+assert(later > now_secs);
+assert(earlier < now_secs);
+
+// 5. Day-of-week (0=Monday..6=Sunday or similar)
+let dow = datetime.day_of_week(now_secs);
+assert(dow >= 0);
+assert(dow <= 7);
+
+// 6. Day-of-year (1..366)
+let doy = datetime.day_of_year(now_secs);
+assert(doy >= 1);
+assert(doy <= 366);
+
+// 7. is_weekend
+let weekend = datetime.is_weekend(now_secs);
+assert(weekend == true || weekend == false);
+
+println("datetime_demo: all assertions passed");

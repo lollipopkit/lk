@@ -476,9 +476,12 @@ fn collect_function_coverage(name: String, function: &Function, depth: usize, re
         }
         *category_counts.entry(category).or_default() += 1;
         match op {
-            Op::Call { .. } | Op::CallExact { .. } | Op::CallClosureExact { .. } | Op::CallNativeFast { .. } => {
-                call_sites += 1
-            }
+            Op::Call { .. }
+            | Op::CallExact { .. }
+            | Op::CallClosureExact { .. }
+            | Op::CallNativeFast { .. }
+            | Op::CallMethod0 { .. }
+            | Op::CallGlobalMethod0 { .. } => call_sites += 1,
             Op::CallNamed { .. } | Op::CallNamedFallback { .. } => named_call_sites += 1,
             Op::MakeClosure { .. } => closure_sites += 1,
             _ => {}
@@ -687,6 +690,8 @@ pub fn opcode_name(op: &Op) -> &'static str {
         Op::CallExact { .. } => "CallExact",
         Op::CallClosureExact { .. } => "CallClosureExact",
         Op::CallNativeFast { .. } => "CallNativeFast",
+        Op::CallMethod0 { .. } => "CallMethod0",
+        Op::CallGlobalMethod0 { .. } => "CallGlobalMethod0",
         Op::CallNamed { .. } => "CallNamed",
         Op::CallNamedFallback { .. } => "CallNamedFallback",
         Op::Ret { .. } => "Ret",
@@ -787,6 +792,8 @@ pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
         | Op::CallExact { .. }
         | Op::CallClosureExact { .. }
         | Op::CallNativeFast { .. }
+        | Op::CallMethod0 { .. }
+        | Op::CallGlobalMethod0 { .. }
         | Op::CallNamed { .. }
         | Op::CallNamedFallback { .. } => VmOpcodeCategory::Call,
         Op::MakeClosure { .. } => VmOpcodeCategory::Closure,

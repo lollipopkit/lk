@@ -193,6 +193,18 @@ pub(in crate::vm::vm) enum PackedHotKind {
         a: u16,
         b: u16,
     },
+    CmpInt {
+        op: PackedCmpOp,
+        dst: u16,
+        a: u16,
+        b: u16,
+    },
+    CmpIntJmp {
+        op: PackedCmpOp,
+        a: u16,
+        b: u16,
+        ofs: i16,
+    },
     CmpJmp {
         op: PackedCmpOp,
         a: u16,
@@ -229,6 +241,16 @@ pub(in crate::vm::vm) enum PackedHotKind {
         base: u16,
         argc: u8,
         retc: u8,
+    },
+    CallMethod0 {
+        dst: u16,
+        receiver: u16,
+        method: u16,
+    },
+    CallGlobalMethod0 {
+        dst: u16,
+        receiver: u16,
+        method: u16,
     },
     Call {
         f: u16,

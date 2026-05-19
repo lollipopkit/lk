@@ -1,0 +1,66 @@
+// Pattern matching with if let / while let / let destructuring
+
+fn assert(cond) {
+  if (!cond) { panic("assertion failed"); }
+}
+
+// 1. let with simple list destructuring
+let [a, b] = [10, 20];
+assert(a == 10);
+assert(b == 20);
+
+// 2. let with list rest
+let [first, second, ..rest] = [1, 2, 3, 4, 5];
+assert(first == 1);
+assert(second == 2);
+assert(rest == [3, 4, 5]);
+
+// 3. let with map destructuring (string keys in pattern)
+let user = { "name": "Bob", "age": 25, "city": "NYC" };
+let { "name": n, "age": a } = user;
+assert(n == "Bob");
+assert(a == 25);
+
+// 4. let with map rest
+let { "name": who, ..remaining } = user;
+assert(who == "Bob");
+assert(remaining.has("age"));
+assert(remaining.has("city"));
+
+// 5. if let — conditional destructuring
+let maybe_num = [1, 2, 3];
+if let [head, ..tail] = maybe_num {
+  assert(head == 1);
+  assert(tail == [2, 3]);
+} else {
+  panic("if let should match");
+}
+
+// 6. if let with literal — only matches that literal
+let val = 42;
+if let 42 = val {
+  assert(true);
+} else {
+  panic("if let 42 should match");
+}
+
+// 7. while let — loop until pattern fails
+let stack = [1, 2, 3];
+let collected = [];
+while let [top, ..rest] = stack {
+  collected.push(top);
+  stack = rest;
+}
+assert(collected == [1, 2, 3]);
+
+// 8. Nested destructuring
+let data = { "point": [10, 20] };
+let { "point": [px, py] } = data;
+assert(px == 10);
+assert(py == 20);
+
+// 9. Wildcard in destructuring
+let [_, second_item, .._] = [100, 200, 300, 400];
+assert(second_item == 200);
+
+println("pattern_matching: all assertions passed");

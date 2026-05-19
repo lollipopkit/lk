@@ -219,6 +219,8 @@ pub(super) fn opcode_name(op: &Op) -> &'static str {
         Op::CallExact { .. } => "CallExact",
         Op::CallClosureExact { .. } => "CallClosureExact",
         Op::CallNativeFast { .. } => "CallNativeFast",
+        Op::CallMethod0 { .. } => "CallMethod0",
+        Op::CallGlobalMethod0 { .. } => "CallGlobalMethod0",
         Op::CallNamed { .. } => "CallNamed",
         Op::CallNamedFallback { .. } => "CallNamedFallback",
         Op::Ret { .. } => "Ret",

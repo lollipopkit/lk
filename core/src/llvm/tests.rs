@@ -597,32 +597,16 @@ fn lowers_call_instruction() {
 #[test]
 fn lowers_zero_arg_method_call_without_nil_trampoline() {
     let func = Function {
-        consts: vec![
-            Val::Str("__lk_call_method".into()),
-            Val::Str("clock".into()),
-            Val::Str("os".into()),
-        ],
+        consts: vec![Val::Str("clock".into()), Val::Str("os".into())],
         code: vec![
-            Op::LoadGlobal(0, 0),
-            Op::BuildList {
-                dst: 1,
-                base: 2,
-                len: 0,
+            Op::CallGlobalMethod0 {
+                dst: 0,
+                receiver: 1,
+                method: 0,
             },
-            Op::LoadK(2, 1),
-            Op::LoadGlobal(3, 2),
-            Op::Move(4, 3),
-            Op::Move(5, 2),
-            Op::Move(6, 1),
-            Op::Call {
-                f: 0,
-                base: 4,
-                argc: 3,
-                retc: 1,
-            },
-            Op::Ret { base: 4, retc: 1 },
+            Op::Ret { base: 0, retc: 1 },
         ],
-        n_regs: 7,
+        n_regs: 1,
         protos: Vec::new(),
         param_regs: Vec::new(),
         named_param_regs: Vec::new(),

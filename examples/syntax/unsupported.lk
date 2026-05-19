@@ -1,0 +1,73 @@
+// Known unsupported / buggy syntax in current LK runtime
+// This file documents language features that are parsed but misbehave at runtime.
+// Run: lk examples/unsupported.lk
+
+// ── 1. Ternary operator `? :` returns nil ──
+let flag = true;
+let val = flag ? "yes" : "no";
+// Expected: "yes", Actual: nil
+println("1. ternary = {} (expected: yes, got: {})", val, val);
+
+// ── 2. Match variable binding returns nil ──
+let r = match 99 { n => n, _ => 0 };
+// Expected: 99, Actual: nil (pattern matches but variable not bound)
+println("2. match var = {} (expected: 99)", r);
+
+// ── 3. Match nil literal treated as variable pattern ──
+let r3 = match nil { nil => "is-nil", _ => "other" };
+// nil in pattern is treated as a variable, always matches but value is nil
+println("3. match nil-literal = {} (expected: is-nil)", r3);
+
+// ── 4. if-block variable reassignment breaks equality ──
+// Re-assigning a variable inside an if block works for reading
+// but subsequent if blocks referencing the same variable "taint" it
+let grade = "F";
+if (75 >= 70) { grade = "C"; }
+if (75 >= 80) { grade = "B"; } // not executed, but breaks grade == "C"
+println("4. grade = {} (prints C)", grade);
+println("4. grade == \"C\" = {} (expected: true)", grade == "C");
+// Workaround: use function return values instead of variable reassignment
+
+// ── 5. else-if chain has same scoping issue ──
+let score = 75;
+let g = "";
+if (score >= 90) {
+  g = "A";
+} else if (score >= 80) {
+  g = "B";
+} else if (score >= 70) {
+  g = "C";
+} else {
+  g = "F";
+}
+println("5. else-if grade = {} (prints C)", g);
+println("5. g == \"C\" = {} (expected: true)", g == "C");
+
+// ── 6. Indexed compound assignment not supported ──
+// let xs = [1, 2, 3];
+// xs[1] += 10;  // SyntaxError: Unexpected tokens 'AddAssign'
+// xs[1] = 99;   // SyntaxError: Unexpected tokens 'Assign'
+// Workaround: use list.set() which returns [updated_list, old_value]
+
+// ── 7. Multi-statement closures: `{ let ... }` parsed as map ──
+// let f = |x| { let y = x + 1; y };  // ParseError: Invalid map key start: Let
+// Workaround: use named helper functions instead
+
+// ── 8. Division always returns Float ──
+let d = 15 / 4;
+println("8. 15/4 = {} (always Float, never truncated Int)", d);
+println("8. 15/4 == 3 = {} (false: 3.75 != 3)", d == 3);
+
+// ── 9. Some math functions return Float even for perfect inputs ──
+import math;
+println("9. sqrt(144) = {} (Float, not Int 12)", math.sqrt(144));
+println("9. pow(2,10) = {} (== 1024.0 not 1024)", math.pow(2, 10) == 1024.0);
+
+// ── 10. Map literal bare keys evaluated as variables (nil if undefined) ──
+// { name: "Alice" } — `name` is a variable reference (nil), NOT the string "name"
+// Use quoted keys: { "name": "Alice" } or struct literals: User { name: "Alice" }
+
+// ── 11. list.set() returns [updated_list, old_value], not void ──
+// map.delete() returns [updated_map, removed_value], not void
+
+println("unsupported: documented all known issues");

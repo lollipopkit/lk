@@ -37,6 +37,8 @@ pub(crate) const EXT_OP_CMP_I: u8 = 26;
 pub(crate) const EXT_OP_CALL_CLOSURE_EXACT: u8 = 27;
 pub(crate) const EXT_OP_CALL_EXACT: u8 = 28;
 pub(crate) const EXT_OP_CALL_NAMED_FALLBACK: u8 = 29;
+pub(crate) const EXT_OP_CALL_METHOD0: u8 = 30;
+pub(crate) const EXT_OP_CALL_GLOBAL_METHOD0: u8 = 31;
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -373,6 +375,16 @@ pub(crate) fn decode_ext_op(word: u32, ext: u32, c_hi: u16) -> Option<Op> {
             base: b,
             argc: c as u8,
             retc: 1,
+        }),
+        EXT_OP_CALL_METHOD0 => Some(Op::CallMethod0 {
+            dst: a,
+            receiver: b,
+            method: c,
+        }),
+        EXT_OP_CALL_GLOBAL_METHOD0 => Some(Op::CallGlobalMethod0 {
+            dst: a,
+            receiver: b,
+            method: c,
         }),
         _ => None,
     }

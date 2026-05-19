@@ -123,12 +123,51 @@ pub(super) fn build_hot_slot(code32: &[u32], pc: usize, word: u32, raw_tag: u8) 
                 argc: c as u8,
                 retc: 1,
             },
+            bc32::EXT_OP_CALL_METHOD0 => PackedHotKind::CallMethod0 {
+                dst: f,
+                receiver: b,
+                method: c,
+            },
+            bc32::EXT_OP_CALL_GLOBAL_METHOD0 => PackedHotKind::CallGlobalMethod0 {
+                dst: f,
+                receiver: b,
+                method: c,
+            },
             bc32::EXT_OP_LIST_LEN => PackedHotKind::ListLen { dst: f, src: b },
             bc32::EXT_OP_MAP_LEN => PackedHotKind::MapLen { dst: f, src: b },
             bc32::EXT_OP_STR_LEN => PackedHotKind::StrLen { dst: f, src: b },
             bc32::EXT_OP_MAP_GET_INTERNED => PackedHotKind::MapGetInterned { dst: f, map: b, key: c },
             bc32::EXT_OP_MAP_GET_DYNAMIC => PackedHotKind::MapGetDynamic { dst: f, map: b, key: c },
             bc32::EXT_OP_STR_CONCAT_KNOWN_CAP => PackedHotKind::StrConcatKnownCap { dst: f, a: b, b: c },
+            bc32::EXT_OP_CMP_I => {
+                let ext2 = *code32.get(pc + 2)?;
+                if bc32::tag_of(ext2) != bc32::TAG_EXT {
+                    return None;
+                }
+                let dst = bc32::combine_reg(((ext2 >> 16) & 0xFF) as u16, ((word >> 8) & 0xFF) as u16);
+                let a = bc32::combine_reg(((ext2 >> 8) & 0xFF) as u16, (word & 0xFF) as u16);
+                let b = bc32::combine_reg((ext2 & 0xFF) as u16, (ext & 0xFF) as u16);
+                let op = match crate::vm::IntCmpKind::from_u8(((ext >> 16) & 0xFF) as u8)? {
+                    crate::vm::IntCmpKind::Eq => PackedCmpOp::Eq,
+                    crate::vm::IntCmpKind::Ne => PackedCmpOp::Ne,
+                    crate::vm::IntCmpKind::Lt => PackedCmpOp::Lt,
+                    crate::vm::IntCmpKind::Le => PackedCmpOp::Le,
+                    crate::vm::IntCmpKind::Gt => PackedCmpOp::Gt,
+                    crate::vm::IntCmpKind::Ge => PackedCmpOp::Ge,
+                };
+                if let Some((ofs, fused_next_pc)) = decode_cmp_jmp(code32, pc, pc + 3, dst) {
+                    return Some(PackedHotSlot {
+                        word,
+                        next_pc: fused_next_pc,
+                        kind: PackedHotKind::CmpIntJmp { op, a, b, ofs },
+                    });
+                }
+                return Some(PackedHotSlot {
+                    word,
+                    next_pc: pc + 3,
+                    kind: PackedHotKind::CmpInt { op, dst, a, b },
+                });
+            }
             _ => return None,
         };
         return Some(PackedHotSlot { word, next_pc, kind });

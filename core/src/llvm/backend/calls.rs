@@ -75,6 +75,47 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
+    pub(super) fn emit_call_method0(&mut self, dst: u16, receiver: u16, method: u16) -> Result<()> {
+        let Some(method_name) = self.function.consts.get(method as usize).and_then(Val::as_str) else {
+            return Err(anyhow!("CallMethod0 expects string method constant"));
+        };
+        let receiver_val = self.load_reg(receiver)?;
+        let method_val = self.intern_string_constant(method, method_name)?;
+        self.require_helper(RuntimeHelper::CallMethod);
+        let result = self.fresh("methodres");
+        self.writer.line(format!(
+            "{result} = call i64 @{}(i64 {receiver}, i64 {method}, i64* null, i64 0, i64 1)",
+            RuntimeHelper::CallMethod.symbol(),
+            receiver = receiver_val,
+            method = method_val
+        ));
+        self.store_reg(dst, &result)?;
+        self.set_known(dst, self.known_builtin_method_result(receiver, method_name, 0));
+        Ok(())
+    }
+
+    pub(super) fn emit_call_global_method0(&mut self, dst: u16, receiver: u16, method: u16) -> Result<()> {
+        let Some(receiver_name) = self.function.consts.get(receiver as usize).and_then(Val::as_str) else {
+            return Err(anyhow!("CallGlobalMethod0 expects string receiver constant"));
+        };
+        let Some(method_name) = self.function.consts.get(method as usize).and_then(Val::as_str) else {
+            return Err(anyhow!("CallGlobalMethod0 expects string method constant"));
+        };
+        let receiver_val = self.emit_load_global_value(receiver, receiver_name)?;
+        let method_val = self.intern_string_constant(method, method_name)?;
+        self.require_helper(RuntimeHelper::CallMethod);
+        let result = self.fresh("methodres");
+        self.writer.line(format!(
+            "{result} = call i64 @{}(i64 {receiver}, i64 {method}, i64* null, i64 0, i64 1)",
+            RuntimeHelper::CallMethod.symbol(),
+            receiver = receiver_val,
+            method = method_val
+        ));
+        self.store_reg(dst, &result)?;
+        self.set_known(dst, self.known_builtin_method_result(dst, method_name, 0));
+        Ok(())
+    }
+
     fn try_emit_method_call(&mut self, rf: u16, base: u16, argc: u8, retc: u8) -> Result<bool> {
         if argc != 3 {
             return Ok(false);
