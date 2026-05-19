@@ -72,7 +72,7 @@ pub extern "C" fn lk_rt_build_map(ptr: *const i64, len: i64) -> i64 {
             let val = state.decode_value(raw[2 * i + 1]);
             match encode_map_key(&key) {
                 Ok(k) => {
-                    map.insert(k, val);
+                    Val::map_insert_arcstr(&mut map, k, val);
                 }
                 Err(err) => {
                     eprintln!("lk_rt_build_map: {err}");
@@ -97,12 +97,12 @@ pub extern "C" fn lk_rt_map_set(map: i64, key: i64, value: i64) -> i64 {
             }
         };
         if let Some(Val::Map(items)) = state.handles.get_mut(map) {
-            Arc::make_mut(items).insert(encoded_key, item);
+            Val::map_insert_arcstr(Arc::make_mut(items), encoded_key, item);
             return map;
         }
         match state.decode_value(map) {
             Val::Map(mut items) => {
-                Arc::make_mut(&mut items).insert(encoded_key, item);
+                Val::map_insert_arcstr(Arc::make_mut(&mut items), encoded_key, item);
                 state.encode_value(Val::Map(items))
             }
             other => {
@@ -119,12 +119,12 @@ pub extern "C" fn lk_rt_map_set_str_int(map: i64, prefix: *const i8, prefix_len:
         let key = cached_str_int_key(state, prefix, prefix_len, suffix);
         let item = state.decode_value(value);
         if let Some(Val::Map(items)) = state.handles.get_mut(map) {
-            Arc::make_mut(items).insert(key, item);
+            Val::map_insert_arcstr(Arc::make_mut(items), key, item);
             return map;
         }
         match state.decode_value(map) {
             Val::Map(mut items) => {
-                Arc::make_mut(&mut items).insert(key, item);
+                Val::map_insert_arcstr(Arc::make_mut(&mut items), key, item);
                 state.encode_value(Val::Map(items))
             }
             other => {
@@ -214,7 +214,7 @@ pub extern "C" fn lk_rt_access_str_int(base: i64, prefix: *const i8, prefix_len:
     with_state(|state| {
         let key = cached_str_int_key(state, prefix, prefix_len, suffix);
         if let Some(result) = state.handles.get_ref(base).and_then(|value| match value {
-            Val::Map(map) => Some(map.get(key.as_str()).cloned().unwrap_or(Val::Nil)),
+            Val::Map(map) => Some(Val::map_get_str(map, key.as_str()).cloned().unwrap_or(Val::Nil)),
             _ => None,
         }) {
             return state.encode_value(result);
@@ -226,11 +226,26 @@ pub extern "C" fn lk_rt_access_str_int(base: i64, prefix: *const i8, prefix_len:
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_has(base: i64, key: i64) -> i64 {
+    with_state(|state| {
+        let out = state.handles.get_ref(base).is_some_and(|value| match value {
+            Val::Map(map) => state
+                .handles
+                .get_ref(key)
+                .and_then(Val::as_str)
+                .is_some_and(|key| Val::map_contains_str(map, key)),
+            _ => false,
+        });
+        state.encode_value(Val::Bool(out))
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_map_has_str_int(base: i64, prefix: *const i8, prefix_len: i64, suffix: i64) -> i64 {
     with_state(|state| {
         let key = cached_str_int_key(state, prefix, prefix_len, suffix);
         let out = state.handles.get_ref(base).is_some_and(|value| match value {
-            Val::Map(map) => map.contains_key(key.as_str()),
+            Val::Map(map) => Val::map_contains_str(map, key.as_str()),
             _ => false,
         });
         state.encode_value(Val::Bool(out))
@@ -391,7 +406,7 @@ fn access_map_by_string_handle(handles: &HandleTable, base: i64, key: i64) -> Op
         return None;
     };
     let key = handles.get_ref(key).and_then(Val::as_str)?;
-    Some(map.get(key).cloned().unwrap_or(Val::Nil))
+    Some(Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil))
 }
 
 fn format_str_int_key(state: &RuntimeState, prefix: *const i8, prefix_len: i64, suffix: i64) -> String {

@@ -8,11 +8,15 @@ pub(super) fn exec_hot_slot(
     regs: &mut [Val],
     func: &Function,
     ctx: &mut VmContext,
+    access_ic: &mut [Option<AccessIc>],
+    index_ic: &mut [Option<IndexIc>],
     global_ic: &mut [Option<GlobalEntry>],
-    call_ic: &[Option<CallIc>],
+    call_ic: &mut [Option<CallIc>],
     for_range_ic: &mut [Option<ForRangeState>],
     pc: usize,
     frame_base: usize,
+    region_plan: Option<&RegionPlan>,
+    region_allocator_ptr: *const RegionAllocator,
 ) -> Result<Option<usize>> {
     let result = match &entry.kind {
         PackedHotKind::Move { dst, src } => {
@@ -81,6 +85,246 @@ pub(super) fn exec_hot_slot(
             }
             None
         }
+        PackedHotKind::Access { dst, base, field } => {
+            let hit_val = match (&regs[*base as usize], &regs[*field as usize]) {
+                (Val::List(list), Val::Int(index)) => {
+                    if *index < 0 {
+                        Some(Val::Nil)
+                    } else {
+                        Some(list.get(*index as usize).cloned().unwrap_or(Val::Nil))
+                    }
+                }
+                (base_val, Val::Int(index)) if base_val.as_str().is_some() => {
+                    let text = base_val.as_str().unwrap();
+                    if *index < 0 {
+                        Some(Val::Nil)
+                    } else if text.is_ascii() {
+                        let idx = *index as usize;
+                        text.as_bytes()
+                            .get(idx)
+                            .copied()
+                            .map_or(Some(Val::Nil), |byte| Some(Val::ascii_char_value(byte)))
+                    } else {
+                        Some(
+                            text.chars()
+                                .nth(*index as usize)
+                                .map(|ch| Val::from_str(&ch.to_string()))
+                                .unwrap_or(Val::Nil),
+                        )
+                    }
+                }
+                (Val::Map(map), key) if key.as_str().is_some() => Val::map_get_str(map, key.as_str().unwrap()).cloned(),
+                (Val::Object(object), key) if key.as_str().is_some() => {
+                    let fields = &object.fields;
+                    let object_ptr = Arc::as_ptr(fields) as usize;
+                    let key = key.as_str().unwrap();
+                    match access_ic[pc].as_mut() {
+                        Some(AccessIc::ObjectStr(slots)) => {
+                            Vm::lookup_promote(slots, |entry| entry.obj_ptr == object_ptr && entry.key.as_str() == key)
+                                .map(|entry| entry.value.clone())
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            let result = if let Some(value) = hit_val {
+                value
+            } else {
+                let value = regs[*base as usize].access(&regs[*field as usize]).unwrap_or(Val::Nil);
+                if let (Val::Object(object), field_val) = (&regs[*base as usize], &regs[*field as usize])
+                    && let Some(key) = field_val.as_str()
+                {
+                    let fields = &object.fields;
+                    let object_ptr = Arc::as_ptr(fields) as usize;
+                    Vm::update_object_ic(access_ic, pc, object_ptr, key, &value);
+                }
+                value
+            };
+            assign_reg(frame_raw, regs, *dst as usize, result);
+            None
+        }
+        PackedHotKind::AccessK { dst, base, key } => {
+            let key_val = &func.consts[*key as usize];
+            let result = if let Some(key_str) = key_val.as_str() {
+                let (hit_value, object_ptr) = match &regs[*base as usize] {
+                    Val::Map(map) => (Some(Val::map_get_str(map, key_str).cloned().unwrap_or(Val::Nil)), None),
+                    Val::Object(object) => {
+                        let fields = &object.fields;
+                        let object_ptr = Arc::as_ptr(fields) as usize;
+                        let hit = match access_ic[pc].as_mut() {
+                            Some(AccessIc::ObjectStr(slots)) => Vm::lookup_promote(slots, |entry| {
+                                entry.obj_ptr == object_ptr && entry.key.as_str() == key_str
+                            })
+                            .map(|entry| entry.value.clone()),
+                            _ => None,
+                        };
+                        (hit, Some(object_ptr))
+                    }
+                    _ => (None, None),
+                };
+                if let Some(value) = hit_value {
+                    value
+                } else {
+                    let value = regs[*base as usize].access(key_val).unwrap_or(Val::Nil);
+                    if let Some(object_ptr) = object_ptr {
+                        Vm::update_object_ic(access_ic, pc, object_ptr, key_str, &value);
+                    }
+                    value
+                }
+            } else {
+                Val::Nil
+            };
+            assign_reg(frame_raw, regs, *dst as usize, result);
+            None
+        }
+        PackedHotKind::ListLen { dst, src } => {
+            let out = match &regs[*src as usize] {
+                Val::List(list) => Val::Int(list.len() as i64),
+                _ => Val::Int(0),
+            };
+            assign_reg(frame_raw, regs, *dst as usize, out);
+            None
+        }
+        PackedHotKind::MapLen { dst, src } => {
+            let out = match &regs[*src as usize] {
+                Val::Map(map) => Val::Int(map.len() as i64),
+                _ => Val::Int(0),
+            };
+            assign_reg(frame_raw, regs, *dst as usize, out);
+            None
+        }
+        PackedHotKind::StrLen { dst, src } => {
+            let out = match &regs[*src as usize] {
+                Val::ShortStr(value) => Val::Int(value.as_str().len() as i64),
+                Val::Str(value) => Val::Int(value.len() as i64),
+                _ => Val::Int(0),
+            };
+            assign_reg(frame_raw, regs, *dst as usize, out);
+            None
+        }
+        PackedHotKind::Len { dst, src } => {
+            exec_len(frame_raw, regs, *dst, *src);
+            None
+        }
+        PackedHotKind::Index { dst, base, idx } => {
+            exec_index(frame_raw, regs, index_ic, pc, *dst, *base, *idx);
+            None
+        }
+        PackedHotKind::MapGetInterned { dst, map, key } => {
+            let key = func.consts[*key as usize].as_str().unwrap_or("");
+            let out = match &regs[*map as usize] {
+                Val::Map(map) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+                _ => Val::Nil,
+            };
+            assign_reg(frame_raw, regs, *dst as usize, out);
+            None
+        }
+        PackedHotKind::MapGetDynamic { dst, map, key } => {
+            let out = match (&regs[*map as usize], regs[*key as usize].as_str()) {
+                (Val::Map(map), Some(key)) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+                _ => Val::Nil,
+            };
+            assign_reg(frame_raw, regs, *dst as usize, out);
+            None
+        }
+        PackedHotKind::MapSetInterned { map, key, val } => {
+            exec_map_set_interned(func, regs, *map, *key, *val)?;
+            None
+        }
+        PackedHotKind::StrConcatKnownCap { dst, a, b } => {
+            let a_val = &regs[*a as usize];
+            let b_val = &regs[*b as usize];
+            let out = match (a_val.as_str(), b_val.as_str()) {
+                (Some(a_str), Some(b_str)) => Val::concat_strings(a_str, b_str),
+                _ => BinOp::Add.eval_vals(a_val, b_val)?,
+            };
+            assign_reg(frame_raw, regs, *dst as usize, out);
+            None
+        }
+        PackedHotKind::IntArith { op, dst, a, b } => {
+            exec_int_arith(frame_raw, regs, func, *op, *dst, *a, *b)?;
+            None
+        }
+        PackedHotKind::FloatArith { op, dst, a, b } => {
+            exec_float_arith(frame_raw, regs, func, *op, *dst, *a, *b)?;
+            None
+        }
+        PackedHotKind::Floor { dst, src } => {
+            exec_floor(frame_raw, regs, *dst, *src);
+            None
+        }
+        PackedHotKind::StartsWithK { dst, src, key } => {
+            exec_starts_with_k(frame_raw, regs, func, *dst, *src, *key);
+            None
+        }
+        PackedHotKind::ToIter { dst, src } => {
+            exec_to_iter(frame_raw, regs, *dst, *src, region_plan, region_allocator_ptr);
+            None
+        }
+        PackedHotKind::BuildList { dst, base, len } => {
+            let start = *base as usize;
+            let len = *len as usize;
+            let use_thread_local = region_plan
+                .as_ref()
+                .map(|plan| plan.region_for(*dst as usize) == AllocationRegion::ThreadLocal)
+                .unwrap_or(false);
+            if use_thread_local {
+                let allocator = region_allocator(region_allocator_ptr);
+                let list_val = allocator.with_val_buffer(len, |scratch| {
+                    scratch.extend((0..len).map(|i| regs[start + i].clone()));
+                    let data = scratch.split_off(0);
+                    Val::List(data.into())
+                });
+                assign_reg(frame_raw, regs, *dst as usize, list_val);
+            } else {
+                let mut values = Vec::with_capacity(len);
+                for i in 0..len {
+                    values.push(regs[start + i].clone());
+                }
+                assign_reg(frame_raw, regs, *dst as usize, Val::List(values.into()));
+            }
+            None
+        }
+        PackedHotKind::BuildMap { dst, base, len } => {
+            let start = *base as usize;
+            let len = *len as usize;
+            let use_thread_local = region_plan
+                .as_ref()
+                .map(|plan| plan.region_for(*dst as usize) == AllocationRegion::ThreadLocal)
+                .unwrap_or(false);
+            if use_thread_local {
+                let allocator = region_allocator(region_allocator_ptr);
+                let map_val = allocator.with_map_entries(len, |entries| {
+                    for i in 0..len {
+                        let key_val = &regs[start + 2 * i];
+                        let value = regs[start + 2 * i + 1].clone();
+                        let key_arc = key_val
+                            .primitive_key_arcstr()
+                            .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", key_val))?;
+                        entries.push((key_arc, value));
+                    }
+                    let mut map = fast_hash_map_with_capacity(entries.len());
+                    for (key, value) in entries.drain(..) {
+                        Val::map_insert_arcstr(&mut map, key, value);
+                    }
+                    Ok::<Val, anyhow::Error>(Val::Map(Arc::new(map)))
+                })?;
+                assign_reg(frame_raw, regs, *dst as usize, map_val);
+            } else {
+                let mut map: FastHashMap<ArcStr, Val> = fast_hash_map_with_capacity(len);
+                for i in 0..len {
+                    let key_val = &regs[start + 2 * i];
+                    let value = regs[start + 2 * i + 1].clone();
+                    let key_arc = key_val
+                        .primitive_key_arcstr()
+                        .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", key_val))?;
+                    Val::map_insert_arcstr(&mut map, key_arc, value);
+                }
+                assign_reg(frame_raw, regs, *dst as usize, Val::Map(Arc::new(map)));
+            }
+            None
+        }
         PackedHotKind::ForRangePrep {
             idx,
             limit,
@@ -120,12 +364,7 @@ pub(super) fn exec_hot_slot(
             }
             None
         }
-        PackedHotKind::ForRangeLoop {
-            idx,
-            write_idx,
-            ofs,
-            fusion,
-        } => {
+        PackedHotKind::ForRangeLoop { idx, write_idx, ofs } => {
             let state_entry = match for_range_ic.get_mut(pc).and_then(Option::as_mut) {
                 Some(state) => state,
                 None => return Err(anyhow!("For-range state missing at pc {}", pc)),
@@ -143,136 +382,6 @@ pub(super) fn exec_hot_slot(
             };
             if keep_going {
                 let current = state_entry.current;
-                let fused_next_pc = match fusion {
-                    Some(PackedRangeFusion::AddModulo {
-                        acc,
-                        modulo,
-                        step_pc,
-                        back_ofs,
-                    }) => {
-                        let acc_value = match &regs[*acc as usize] {
-                            Val::Int(value) => Some(*value),
-                            _ => None,
-                        };
-                        let modulo = match func.consts.get(rk_index(*modulo) as usize) {
-                            Some(Val::Int(value)) if *value != 0 => Some(*value),
-                            _ => None,
-                        };
-                        match (acc_value, modulo) {
-                            (Some(acc_value), Some(modulo)) => {
-                                regs[*acc as usize] = Val::Int(acc_value.wrapping_add(current % modulo));
-                                Some(((*step_pc as isize) + (*back_ofs as isize)) as usize)
-                            }
-                            _ => None,
-                        }
-                    }
-                    Some(PackedRangeFusion::TinyAddModCall {
-                        func: call_func,
-                        acc,
-                        modulo,
-                        call_pc,
-                        step_pc,
-                        back_ofs,
-                    }) => {
-                        let acc_value = match &regs[*acc as usize] {
-                            Val::Int(value) => Some(*value),
-                            _ => None,
-                        };
-                        let modulo = match func.consts.get(rk_index(*modulo) as usize) {
-                            Some(Val::Int(value)) if *value != 0 => Some(*value),
-                            _ => None,
-                        };
-                        match (acc_value, modulo, call_ic.get(*call_pc).and_then(Option::as_ref)) {
-                            (
-                                Some(acc_value),
-                                Some(modulo),
-                                Some(CallIc::ClosurePositional {
-                                    closure_ptr,
-                                    fun_ptr,
-                                    argc: 2,
-                                    tiny: Some(tiny),
-                                    ..
-                                }),
-                            ) => {
-                                if let Val::Closure(arc) = &regs[*call_func as usize] {
-                                    let closure_matches = Arc::as_ptr(arc) as usize == *closure_ptr
-                                        || arc
-                                            .code
-                                            .get()
-                                            .map(|fun| std::ptr::eq(Arc::as_ptr(fun), *fun_ptr))
-                                            .unwrap_or(false);
-                                    if closure_matches
-                                        && let Some(out) = tiny.try_eval_add_mod_int_params(acc_value, current % modulo)
-                                    {
-                                        regs[*acc as usize] = Val::Int(out);
-                                        Some(((*step_pc as isize) + (*back_ofs as isize)) as usize)
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        }
-                    }
-                    Some(PackedRangeFusion::TinyIntCall3 {
-                        func: call_func,
-                        acc,
-                        modulo,
-                        call_pc,
-                        step_pc,
-                        back_ofs,
-                    }) => {
-                        let acc_value = match &regs[*acc as usize] {
-                            Val::Int(value) => Some(*value),
-                            _ => None,
-                        };
-                        let modulo = match func.consts.get(rk_index(*modulo) as usize) {
-                            Some(Val::Int(value)) if *value != 0 => Some(*value),
-                            _ => None,
-                        };
-                        match (acc_value, modulo, call_ic.get(*call_pc).and_then(Option::as_ref)) {
-                            (
-                                Some(acc_value),
-                                Some(modulo),
-                                Some(CallIc::ClosurePositional {
-                                    closure_ptr,
-                                    fun_ptr,
-                                    argc: 3,
-                                    tiny: Some(tiny),
-                                    ..
-                                }),
-                            ) => {
-                                if let Val::Closure(arc) = &regs[*call_func as usize] {
-                                    let closure_matches = Arc::as_ptr(arc) as usize == *closure_ptr
-                                        || arc
-                                            .code
-                                            .get()
-                                            .map(|fun| std::ptr::eq(Arc::as_ptr(fun), *fun_ptr))
-                                            .unwrap_or(false);
-                                    if closure_matches
-                                        && let Some(out) =
-                                            tiny.try_eval_int3_params(acc_value, current, current % modulo)
-                                    {
-                                        regs[*acc as usize] = Val::Int(out);
-                                        Some(((*step_pc as isize) + (*back_ofs as isize)) as usize)
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        }
-                    }
-                    None => None,
-                };
-                if let Some(next_pc) = fused_next_pc {
-                    state_entry.current += state_entry.step;
-                    return Ok(Some(next_pc));
-                }
                 if *write_idx {
                     assign_reg(frame_raw, regs, *idx as usize, Val::Int(current));
                 }
@@ -306,9 +415,21 @@ pub(super) fn exec_hot_slot(
                 Some(((pc as isize) + (*ofs as isize)) as usize)
             }
         }
-        PackedHotKind::ForRangeStep { back_ofs } => {
+        PackedHotKind::ForRangeStep { back_ofs, tail } => {
             let guard_pc = ((pc as isize) + (*back_ofs as isize)) as usize;
-            Some(guard_pc)
+            match tail {
+                Some(tail) => Some(advance_for_range_tail(
+                    frame_raw,
+                    regs,
+                    for_range_ic,
+                    tail.guard_pc,
+                    tail.body_pc,
+                    tail.exit_pc,
+                    tail.idx,
+                    tail.write_idx,
+                )?),
+                None => Some(guard_pc),
+            }
         }
         PackedHotKind::ToStr { dst, src } => {
             let s = Val::to_str_value(&regs[*src as usize]);
@@ -523,6 +644,27 @@ pub(super) fn exec_hot_slot(
             }
             None
         }
+        PackedHotKind::CmpJmp { op, a, b, ofs } => {
+            let lhs = rk_read(regs, &func.consts, *a);
+            let rhs = rk_read(regs, &func.consts, *b);
+            let cmp = match (op, lhs, rhs) {
+                (PackedCmpOp::Eq, left, right) => left == right,
+                (PackedCmpOp::Ne, left, right) => left != right,
+                (PackedCmpOp::Lt, Val::Int(left), Val::Int(right)) => left < right,
+                (PackedCmpOp::Le, Val::Int(left), Val::Int(right)) => left <= right,
+                (PackedCmpOp::Gt, Val::Int(left), Val::Int(right)) => left > right,
+                (PackedCmpOp::Ge, Val::Int(left), Val::Int(right)) => left >= right,
+                (PackedCmpOp::Lt, _, _) => BinOp::Lt.cmp(lhs, rhs)?,
+                (PackedCmpOp::Le, _, _) => BinOp::Le.cmp(lhs, rhs)?,
+                (PackedCmpOp::Gt, _, _) => BinOp::Gt.cmp(lhs, rhs)?,
+                (PackedCmpOp::Ge, _, _) => BinOp::Ge.cmp(lhs, rhs)?,
+            };
+            if !cmp {
+                Some(((pc as isize) + (*ofs as isize)) as usize)
+            } else {
+                None
+            }
+        }
         PackedHotKind::Jmp { ofs } => Some(((pc as isize) + (*ofs as isize)) as usize),
         PackedHotKind::JmpFalse { r, ofs } => {
             if matches!(regs[*r as usize], Val::Nil | Val::Bool(false)) {
@@ -543,11 +685,9 @@ pub(super) fn exec_hot_slot(
             None
         }
         PackedHotKind::MapSet { map, key, val } => {
-            let key_arc = match &regs[*key as usize] {
-                Val::Str(s) => s.clone(),
-                Val::ShortStr(s) => Val::intern_str(s.as_str()),
-                _ => return Err(anyhow!("MapSet key must be a String")),
-            };
+            let key_arc = regs[*key as usize]
+                .string_key_arcstr()
+                .ok_or_else(|| anyhow!("MapSet key must be a String"))?;
             let pushed_val = regs[*val as usize].clone();
             match &mut regs[*map as usize] {
                 Val::Map(arc) => {
@@ -562,11 +702,9 @@ pub(super) fn exec_hot_slot(
             let key_idx = *key as usize;
             let val_idx = *val as usize;
             if map_idx == key_idx || map_idx == val_idx || key_idx == val_idx {
-                let key_arc = match &regs[key_idx] {
-                    Val::Str(s) => s.clone(),
-                    Val::ShortStr(s) => Val::intern_str(s.as_str()),
-                    _ => return Err(anyhow!("MapSet key must be a String")),
-                };
+                let key_arc = regs[key_idx]
+                    .string_key_arcstr()
+                    .ok_or_else(|| anyhow!("MapSet key must be a String"))?;
                 let pushed_val = regs[val_idx].clone();
                 match &mut regs[map_idx] {
                     Val::Map(arc) => {
@@ -580,11 +718,10 @@ pub(super) fn exec_hot_slot(
                 return Err(anyhow!("MapSet target is not a Map"));
             }
             let key_val = std::mem::replace(&mut regs[key_idx], Val::Nil);
-            let key_arc = match key_val {
-                Val::Str(s) => s,
-                Val::ShortStr(s) => Val::intern_str(s.as_str()),
-                other => {
-                    regs[key_idx] = other;
+            let key_arc = match key_val.string_key_arcstr() {
+                Some(key_arc) => key_arc,
+                None => {
+                    regs[key_idx] = key_val;
                     return Err(anyhow!("MapSet key must be a String"));
                 }
             };
@@ -597,6 +734,17 @@ pub(super) fn exec_hot_slot(
             }
             None
         }
+        PackedHotKind::CallNativeFast { f, base, argc, retc } => {
+            let pc_slot = call_ic
+                .get_mut(pc)
+                .ok_or_else(|| anyhow!("call IC slot out of range for pc {}", pc))?;
+            let callable = NativeCallable::from_val(&regs[*f as usize])
+                .ok_or_else(|| anyhow!("CallNativeFast target is not a native function"))?;
+            let ret_layout = CallReturnLayout::new(*base, *retc);
+            invoke_native_callable_with_ic(ctx, regs, pc_slot, callable, *argc, ret_layout)?;
+            None
+        }
+        PackedHotKind::Call { .. } => unreachable!("generic Call hot slots are handled by run_packed_code"),
         PackedHotKind::AddIntImm { dst, src, imm } => {
             let dst_idx = *dst as usize;
             let src_idx = *src as usize;

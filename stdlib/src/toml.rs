@@ -1,7 +1,7 @@
 use anyhow::Result;
 use lk_core::{
     module::{self, Module},
-    val::{Val, de},
+    val::{NativeArgs, Val, de},
     vm::VmContext,
 };
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ impl Default for TomlModule {
 impl TomlModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
-        functions.insert("parse".to_string(), Val::RustFunction(parse));
+        functions.insert("parse".to_string(), Val::RustFastFunction(parse));
         TomlModule { functions }
     }
 }
@@ -39,10 +39,11 @@ impl Module for TomlModule {
     }
 }
 
-fn parse(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn parse(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow::anyhow!("toml.parse(data) requires 1 argument"));
     }
+    let args = args.as_slice();
     let s = args[0]
         .as_str()
         .map(str::to_owned)

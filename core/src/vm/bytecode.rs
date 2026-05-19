@@ -176,6 +176,43 @@ pub fn closure_empty_closure_cell() -> Arc<OnceCell<Val>> {
     Arc::new(OnceCell::new())
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum IntCmpKind {
+    Eq = 0,
+    Ne = 1,
+    Lt = 2,
+    Le = 3,
+    Gt = 4,
+    Ge = 5,
+}
+
+impl IntCmpKind {
+    #[inline]
+    pub fn from_u8(value: u8) -> Option<Self> {
+        Some(match value {
+            0 => Self::Eq,
+            1 => Self::Ne,
+            2 => Self::Lt,
+            3 => Self::Le,
+            4 => Self::Gt,
+            5 => Self::Ge,
+            _ => return None,
+        })
+    }
+
+    #[inline]
+    pub fn eval(self, lhs: i64, rhs: i64) -> bool {
+        match self {
+            Self::Eq => lhs == rhs,
+            Self::Ne => lhs != rhs,
+            Self::Lt => lhs < rhs,
+            Self::Le => lhs <= rhs,
+            Self::Gt => lhs > rhs,
+            Self::Ge => lhs >= rhs,
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub enum Op {
     LoadK(u16 /*dst*/, u16 /*kidx*/),
@@ -210,6 +247,7 @@ pub enum Op {
     },
     // Arithmetic
     Add(u16 /*dst*/, u16 /*a*/, u16 /*b*/),
+    StrConcatKnownCap(u16 /*dst*/, u16 /*a*/, u16 /*b*/),
     Sub(u16, u16, u16),
     Mul(u16, u16, u16),
     Div(u16, u16, u16),
@@ -231,6 +269,12 @@ pub enum Op {
     CmpLe(u16, u16, u16),
     CmpGt(u16, u16, u16),
     CmpGe(u16, u16, u16),
+    CmpI {
+        dst: u16,
+        a: u16,
+        b: u16,
+        kind: IntCmpKind,
+    },
     CmpEqImm(u16, u16, i16),
     CmpNeImm(u16, u16, i16),
     CmpLtImm(u16, u16, i16),
@@ -255,8 +299,28 @@ pub enum Op {
     AccessK(u16 /*dst*/, u16 /*base*/, u16 /*kidx*/),
     // Index with constant integer (avoids temp registers)
     IndexK(u16 /*dst*/, u16 /*base*/, u16 /*kidx*/),
+    ListIndexI(u16 /*dst*/, u16 /*base*/, i16 /*index*/),
+    ListSetI {
+        dst: u16,
+        list: u16,
+        index: i16,
+        val: u16,
+    },
+    StrIndexI(u16 /*dst*/, u16 /*base*/, i16 /*index*/),
     // Length and index helpers
     Len {
+        dst: u16,
+        src: u16,
+    },
+    ListLen {
+        dst: u16,
+        src: u16,
+    },
+    MapLen {
+        dst: u16,
+        src: u16,
+    },
+    StrLen {
         dst: u16,
         src: u16,
     },
@@ -271,6 +335,12 @@ pub enum Op {
     ContainsK(u16 /*dst*/, u16 /*src*/, u16 /*kidx*/),
     // Map key membership test
     MapHas(u16 /*dst*/, u16 /*map*/, u16 /*key*/),
+    // Map get with constant interned/string key
+    MapGetInterned(u16 /*dst*/, u16 /*map*/, u16 /*kidx*/),
+    // Map get with a dynamic string key, bypassing generic access dispatch
+    MapGetDynamic(u16 /*dst*/, u16 /*map*/, u16 /*key*/),
+    // Map set with constant interned/string key
+    MapSetInterned(u16 /*map*/, u16 /*kidx*/, u16 /*val*/),
     // Map key membership test with constant string key
     MapHasK(u16 /*dst*/, u16 /*map*/, u16 /*kidx*/),
     // Fold list values into an accumulator with Add semantics.
@@ -350,6 +420,7 @@ pub enum Op {
     },
     Jmp(i16 /*ofs*/),
     JmpFalse(u16 /*r*/, i16 /*ofs*/),
+    BoolBranch(u16 /*r*/, i16 /*ofs*/),
     // Fused: compare r < imm, if false jump by ofs. Saves one dispatch for while loops.
     CmpLtImmJmp {
         r: u16,
@@ -397,12 +468,42 @@ pub enum Op {
         argc: u8,
         retc: u8,
     },
+    // Exact positional call fast path. Rejects named/default fallback semantics.
+    CallExact {
+        f: u16,
+        base: u16,
+        argc: u8,
+        retc: u8,
+    },
+    // Exact positional closure call fast path. Non-closure callees are not accepted by this typed op.
+    CallClosureExact {
+        f: u16,
+        base: u16,
+        argc: u8,
+        retc: u8,
+    },
+    // Positional native call fast path. Non-native callees fall back to generic Call semantics.
+    CallNativeFast {
+        f: u16,
+        base: u16,
+        argc: u8,
+        retc: u8,
+    },
     // Call with named arguments. Result is written to base_pos.
     CallNamed {
         f: u16,
         base_pos: u16,
         posc: u8,
         base_named: u16, // pairs at [base_named + 2*i] = name(Str), [base_named + 2*i + 1] = value
+        namedc: u8,
+        retc: u8,
+    },
+    // Explicit named-argument fallback call. Result is written to base_pos.
+    CallNamedFallback {
+        f: u16,
+        base_pos: u16,
+        posc: u8,
+        base_named: u16,
         namedc: u8,
         retc: u8,
     },
@@ -431,6 +532,14 @@ pub enum Op {
         write_idx: bool,
         ofs: i16, // jump to end when guard fails
     },
+    RangeLoopI {
+        idx: u16,
+        limit: u16,
+        step: u16,
+        inclusive: bool,
+        write_idx: bool,
+        ofs: i16,
+    },
     ForRangeStep {
         idx: u16,
         step: u16,
@@ -439,6 +548,112 @@ pub enum Op {
     // Control flow for loops
     Break(i16 /*ofs*/),    // break to loop end by jumping ofs
     Continue(i16 /*ofs*/), // continue to loop head by jumping ofs
+}
+
+impl Op {
+    pub fn bc32_typed_gate_name(&self) -> Option<&'static str> {
+        match self {
+            Op::AddInt(..) => Some("AddInt"),
+            Op::StrConcatKnownCap(..) => Some("StrConcatKnownCap"),
+            Op::AddFloat(..) => Some("AddFloat"),
+            Op::AddIntImm(..) => Some("AddIntImm"),
+            Op::SubInt(..) => Some("SubInt"),
+            Op::SubFloat(..) => Some("SubFloat"),
+            Op::MulInt(..) => Some("MulInt"),
+            Op::MulFloat(..) => Some("MulFloat"),
+            Op::DivFloat(..) => Some("DivFloat"),
+            Op::ModInt(..) => Some("ModInt"),
+            Op::ModFloat(..) => Some("ModFloat"),
+            Op::CmpEqImm(..) => Some("CmpEqImm"),
+            Op::CmpNeImm(..) => Some("CmpNeImm"),
+            Op::CmpLtImm(..) => Some("CmpLtImm"),
+            Op::CmpLeImm(..) => Some("CmpLeImm"),
+            Op::CmpGtImm(..) => Some("CmpGtImm"),
+            Op::CmpGeImm(..) => Some("CmpGeImm"),
+            Op::CmpI { .. } => Some("CmpI"),
+            Op::BoolBranch(..) => Some("BoolBranch"),
+            Op::AccessK(..) => Some("AccessK"),
+            Op::IndexK(..) => Some("IndexK"),
+            Op::ListIndexI(..) => Some("ListIndexI"),
+            Op::ListSetI { .. } => Some("ListSetI"),
+            Op::StrIndexI(..) => Some("StrIndexI"),
+            Op::ListLen { .. } => Some("ListLen"),
+            Op::MapLen { .. } => Some("MapLen"),
+            Op::StrLen { .. } => Some("StrLen"),
+            Op::MapGetInterned(..) => Some("MapGetInterned"),
+            Op::MapGetDynamic(..) => Some("MapGetDynamic"),
+            Op::MapSetInterned(..) => Some("MapSetInterned"),
+            Op::Floor { .. } => Some("Floor"),
+            Op::StartsWithK(..) => Some("StartsWithK"),
+            Op::ContainsK(..) => Some("ContainsK"),
+            Op::MapHasK(..) => Some("MapHasK"),
+            Op::ListPush { .. } => Some("ListPush"),
+            Op::MapSet { .. } => Some("MapSet"),
+            Op::MapSetMove { .. } => Some("MapSetMove"),
+            Op::CmpLtImmJmp { .. } => Some("CmpLtImmJmp"),
+            Op::CmpLeImmJmp { .. } => Some("CmpLeImmJmp"),
+            Op::AddIntImmJmp { .. } => Some("AddIntImmJmp"),
+            Op::CallExact { .. } => Some("CallExact"),
+            Op::CallClosureExact { .. } => Some("CallClosureExact"),
+            Op::CallNativeFast { .. } => Some("CallNativeFast"),
+            Op::CallNamedFallback { .. } => Some("CallNamedFallback"),
+            Op::ForRangePrep { .. } => Some("ForRangePrep"),
+            Op::RangeLoopI { .. } => Some("RangeLoopI"),
+            Op::ForRangeStep { .. } => Some("ForRangeStep"),
+            Op::LoadK(..)
+            | Op::Move(..)
+            | Op::Not(..)
+            | Op::ToStr(..)
+            | Op::ToBool(..)
+            | Op::JmpIfNil(..)
+            | Op::JmpIfNotNil(..)
+            | Op::NullishPick { .. }
+            | Op::JmpFalseSet { .. }
+            | Op::JmpTrueSet { .. }
+            | Op::Add(..)
+            | Op::Sub(..)
+            | Op::Mul(..)
+            | Op::Div(..)
+            | Op::Mod(..)
+            | Op::CmpEq(..)
+            | Op::CmpNe(..)
+            | Op::CmpLt(..)
+            | Op::CmpLe(..)
+            | Op::CmpGt(..)
+            | Op::CmpGe(..)
+            | Op::In(..)
+            | Op::LoadLocal(..)
+            | Op::StoreLocal(..)
+            | Op::LoadGlobal(..)
+            | Op::DefineGlobal(..)
+            | Op::LoadCapture { .. }
+            | Op::Access(..)
+            | Op::Len { .. }
+            | Op::MapHas(..)
+            | Op::ListFoldAdd { .. }
+            | Op::MapValuesFoldAdd { .. }
+            | Op::Index { .. }
+            | Op::PatternMatch { .. }
+            | Op::PatternMatchOrFail { .. }
+            | Op::Raise { .. }
+            | Op::ToIter { .. }
+            | Op::BuildList { .. }
+            | Op::BuildMap { .. }
+            | Op::ListSlice { .. }
+            | Op::MakeClosure { .. }
+            | Op::Jmp(..)
+            | Op::JmpFalse(..)
+            | Op::JmpNilOrFalseJmp { .. }
+            | Op::AddRangeCountImm { .. }
+            | Op::CmpNeImmJmp { .. }
+            | Op::Call { .. }
+            | Op::ForRangeLoop { .. }
+            | Op::CallNamed { .. }
+            | Op::Ret { .. }
+            | Op::Break(..)
+            | Op::Continue(..) => None,
+        }
+    }
 }
 
 impl fmt::Debug for Op {
@@ -455,6 +670,7 @@ impl fmt::Debug for Op {
             Op::JmpFalseSet { r, dst, ofs } => write!(f, "JmpFalseSet r{}, dst=r{}, {}", r, dst, ofs),
             Op::JmpTrueSet { r, dst, ofs } => write!(f, "JmpTrueSet r{}, dst=r{}, {}", r, dst, ofs),
             Op::Add(d, a, b) => write!(f, "Add r{}, r{}, r{}", d, a, b),
+            Op::StrConcatKnownCap(d, a, b) => write!(f, "StrConcatKnownCap r{}, r{}, r{}", d, a, b),
             Op::Sub(d, a, b) => write!(f, "Sub r{}, r{}, r{}", d, a, b),
             Op::Mul(d, a, b) => write!(f, "Mul r{}, r{}, r{}", d, a, b),
             Op::Div(d, a, b) => write!(f, "Div r{}, r{}, r{}", d, a, b),
@@ -475,6 +691,7 @@ impl fmt::Debug for Op {
             Op::CmpLe(d, a, b) => write!(f, "CmpLe r{}, r{}, r{}", d, a, b),
             Op::CmpGt(d, a, b) => write!(f, "CmpGt r{}, r{}, r{}", d, a, b),
             Op::CmpGe(d, a, b) => write!(f, "CmpGe r{}, r{}, r{}", d, a, b),
+            Op::CmpI { dst, a, b, kind } => write!(f, "CmpI.{:?} r{}, r{}, r{}", kind, dst, a, b),
             Op::CmpEqImm(d, a, imm) => write!(f, "CmpEqImm r{}, r{}, {}", d, a, imm),
             Op::CmpNeImm(d, a, imm) => write!(f, "CmpNeImm r{}, r{}, {}", d, a, imm),
             Op::CmpLtImm(d, a, imm) => write!(f, "CmpLtImm r{}, r{}, {}", d, a, imm),
@@ -490,11 +707,22 @@ impl fmt::Debug for Op {
             Op::Access(d, b, fld) => write!(f, "Access r{}, r{}, r{}", d, b, fld),
             Op::AccessK(d, b, k) => write!(f, "AccessK r{}, r{}, k{}", d, b, k),
             Op::IndexK(d, b, k) => write!(f, "IndexK r{}, r{}, k{}", d, b, k),
+            Op::ListIndexI(d, b, i) => write!(f, "ListIndexI r{}, r{}, {}", d, b, i),
+            Op::ListSetI { dst, list, index, val } => {
+                write!(f, "ListSetI r{}, r{}, {}, r{}", dst, list, index, val)
+            }
+            Op::StrIndexI(d, b, i) => write!(f, "StrIndexI r{}, r{}, {}", d, b, i),
             Op::Len { dst, src } => write!(f, "Len r{}, r{}", dst, src),
+            Op::ListLen { dst, src } => write!(f, "ListLen r{}, r{}", dst, src),
+            Op::MapLen { dst, src } => write!(f, "MapLen r{}, r{}", dst, src),
+            Op::StrLen { dst, src } => write!(f, "StrLen r{}, r{}", dst, src),
             Op::Floor { dst, src } => write!(f, "Floor r{}, r{}", dst, src),
             Op::StartsWithK(dst, src, kidx) => write!(f, "StartsWithK r{}, r{}, k{}", dst, src, kidx),
             Op::ContainsK(dst, src, kidx) => write!(f, "ContainsK r{}, r{}, k{}", dst, src, kidx),
             Op::MapHas(dst, map, key) => write!(f, "MapHas r{}, r{}, r{}", dst, map, key),
+            Op::MapGetInterned(dst, map, kidx) => write!(f, "MapGetInterned r{}, r{}, k{}", dst, map, kidx),
+            Op::MapGetDynamic(dst, map, key) => write!(f, "MapGetDynamic r{}, r{}, r{}", dst, map, key),
+            Op::MapSetInterned(map, kidx, val) => write!(f, "MapSetInterned r{}, k{}, r{}", map, kidx, val),
             Op::MapHasK(dst, map, kidx) => write!(f, "MapHasK r{}, r{}, k{}", dst, map, kidx),
             Op::ListFoldAdd { acc, list } => write!(f, "ListFoldAdd r{}, r{}", acc, list),
             Op::MapValuesFoldAdd { acc, map } => write!(f, "MapValuesFoldAdd r{}, r{}", acc, map),
@@ -527,6 +755,7 @@ impl fmt::Debug for Op {
             Op::MakeClosure { dst, proto } => write!(f, "MakeClosure r{}, p{}", dst, proto),
             Op::Jmp(ofs) => write!(f, "Jmp {}", ofs),
             Op::JmpFalse(r, ofs) => write!(f, "JmpFalse r{}, {}", r, ofs),
+            Op::BoolBranch(r, ofs) => write!(f, "BoolBranch r{}, {}", r, ofs),
             Op::CmpLtImmJmp { r, imm, ofs } => write!(f, "CmpLtImmJmp r{}, {}, {}", r, imm, ofs),
             Op::JmpNilOrFalseJmp { r, ofs } => write!(f, "JmpNilOrFalseJmp r{}, {}", r, ofs),
             Op::AddIntImmJmp { r, imm, ofs } => write!(f, "AddIntImmJmp r{}, {}, {}", r, imm, ofs),
@@ -551,6 +780,28 @@ impl fmt::Debug for Op {
                 argc,
                 retc,
             } => write!(f, "Call r{}, base={}, argc={}, retc={}", rf, base, argc, retc),
+            Op::CallExact {
+                f: rf,
+                base,
+                argc,
+                retc,
+            } => write!(f, "CallExact r{}, base={}, argc={}, retc={}", rf, base, argc, retc),
+            Op::CallClosureExact {
+                f: rf,
+                base,
+                argc,
+                retc,
+            } => write!(
+                f,
+                "CallClosureExact r{}, base={}, argc={}, retc={}",
+                rf, base, argc, retc
+            ),
+            Op::CallNativeFast {
+                f: rf,
+                base,
+                argc,
+                retc,
+            } => write!(f, "CallNativeFast r{}, base={}, argc={}, retc={}", rf, base, argc, retc),
             Op::CallNamed {
                 f: rf,
                 base_pos,
@@ -561,6 +812,18 @@ impl fmt::Debug for Op {
             } => write!(
                 f,
                 "CallNamed r{}, base_pos={}, posc={}, base_named={}, namedc={}, retc={}",
+                rf, base_pos, posc, base_named, namedc, retc
+            ),
+            Op::CallNamedFallback {
+                f: rf,
+                base_pos,
+                posc,
+                base_named,
+                namedc,
+                retc,
+            } => write!(
+                f,
+                "CallNamedFallback r{}, base_pos={}, posc={}, base_named={}, namedc={}, retc={}",
                 rf, base_pos, posc, base_named, namedc, retc
             ),
             Op::Ret { base, retc } => write!(f, "Ret base={}, retc={}", base, retc),
@@ -587,6 +850,18 @@ impl fmt::Debug for Op {
             } => write!(
                 f,
                 "ForRangeLoop idx=r{}, limit=r{}, step=r{}, inclusive={}, write_idx={}, ofs={}",
+                idx, limit, step, inclusive, write_idx, ofs
+            ),
+            Op::RangeLoopI {
+                idx,
+                limit,
+                step,
+                inclusive,
+                write_idx,
+                ofs,
+            } => write!(
+                f,
+                "RangeLoopI idx=r{}, limit=r{}, step=r{}, inclusive={}, write_idx={}, ofs={}",
                 idx, limit, step, inclusive, write_idx, ofs
             ),
             Op::ForRangeStep { idx, step, back_ofs } => {

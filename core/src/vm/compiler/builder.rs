@@ -261,6 +261,38 @@ impl FunctionBuilder {
         self.code.push(op);
     }
 
+    pub(crate) fn emit_positional_call(&mut self, f: u16, base: u16, argc: u8, retc: u8, known_callee: Option<&Val>) {
+        let op = match known_callee {
+            Some(Val::Closure(closure)) if closure.named_params.is_empty() && closure.params.len() == argc as usize => {
+                Op::CallClosureExact { f, base, argc, retc }
+            }
+            Some(Val::RustFunction(_) | Val::RustFastFunction(_)) => Op::CallNativeFast { f, base, argc, retc },
+            _ => Op::Call { f, base, argc, retc },
+        };
+        self.emit(op);
+    }
+
+    pub(crate) fn reserve_call_window(&mut self, argc: usize, retc: u8) -> u16 {
+        let base = self.n_regs;
+        let slots = argc.max(retc as usize);
+        for _ in 0..slots {
+            let _ = self.alloc();
+        }
+        base
+    }
+
+    pub(crate) fn emit_known_or_global_callable(&mut self, name: &str, known_callee: Option<&Val>) -> u16 {
+        let dst = self.alloc();
+        if let Some(value @ Val::Closure(_)) = known_callee {
+            let kidx = self.k(value.clone());
+            self.emit(Op::LoadK(dst, kidx));
+        } else {
+            let kidx = self.k(Val::from_str(name));
+            self.emit(Op::LoadGlobal(dst, kidx));
+        }
+        dst
+    }
+
     fn update_int_reg_facts(&mut self, op: &Op) {
         match *op {
             Op::LoadK(dst, kidx) => match self.consts.get(kidx as usize) {
@@ -309,7 +341,10 @@ impl FunctionBuilder {
             | Op::AddIntImm(dst, _, _)
             | Op::AddIntImmJmp { r: dst, .. }
             | Op::AddRangeCountImm { target: dst, .. }
-            | Op::Len { dst, .. } => {
+            | Op::Len { dst, .. }
+            | Op::ListLen { dst, .. }
+            | Op::MapLen { dst, .. }
+            | Op::StrLen { dst, .. } => {
                 self.int_regs.insert(dst);
             }
             Op::ForRangePrep { step, .. } => {
@@ -317,10 +352,14 @@ impl FunctionBuilder {
             }
             Op::ForRangeLoop {
                 idx, write_idx: true, ..
+            }
+            | Op::RangeLoopI {
+                idx, write_idx: true, ..
             } => {
                 self.int_regs.insert(idx);
             }
             Op::Add(dst, _, _)
+            | Op::StrConcatKnownCap(dst, _, _)
             | Op::Sub(dst, _, _)
             | Op::Mul(dst, _, _)
             | Op::Div(dst, _, _)
@@ -335,12 +374,23 @@ impl FunctionBuilder {
             | Op::Access(dst, _, _)
             | Op::AccessK(dst, _, _)
             | Op::IndexK(dst, _, _)
+            | Op::ListIndexI(dst, _, _)
+            | Op::ListSetI { dst, .. }
+            | Op::StrIndexI(dst, _, _)
             | Op::ContainsK(dst, _, _)
             | Op::MapHas(dst, _, _)
+            | Op::MapGetInterned(dst, _, _)
+            | Op::MapGetDynamic(dst, _, _)
             | Op::MapHasK(dst, _, _)
             | Op::MakeClosure { dst, .. }
             | Op::Call { base: dst, retc: 1, .. }
+            | Op::CallExact { base: dst, retc: 1, .. }
+            | Op::CallClosureExact { base: dst, retc: 1, .. }
+            | Op::CallNativeFast { base: dst, retc: 1, .. }
             | Op::CallNamed {
+                base_pos: dst, retc: 1, ..
+            }
+            | Op::CallNamedFallback {
                 base_pos: dst, retc: 1, ..
             }
             | Op::ToStr(dst, _)
@@ -352,6 +402,7 @@ impl FunctionBuilder {
             | Op::CmpLe(dst, _, _)
             | Op::CmpGt(dst, _, _)
             | Op::CmpGe(dst, _, _)
+            | Op::CmpI { dst, .. }
             | Op::CmpEqImm(dst, _, _)
             | Op::CmpNeImm(dst, _, _)
             | Op::CmpLtImm(dst, _, _)
@@ -390,12 +441,22 @@ impl FunctionBuilder {
                 self.map_locals.remove(&key);
                 self.map_locals.remove(&val);
             }
-            Op::Call { base, retc, .. } if retc > 1 => {
+            Op::Call { base, retc, .. }
+            | Op::CallExact { base, retc, .. }
+            | Op::CallClosureExact { base, retc, .. }
+            | Op::CallNativeFast { base, retc, .. }
+                if retc > 1 =>
+            {
                 for reg in base..base.saturating_add(retc as u16) {
                     self.int_regs.remove(&reg);
                 }
             }
             Op::CallNamed { base_pos, retc, .. } if retc > 1 => {
+                for reg in base_pos..base_pos.saturating_add(retc as u16) {
+                    self.int_regs.remove(&reg);
+                }
+            }
+            Op::CallNamedFallback { base_pos, retc, .. } if retc > 1 => {
                 for reg in base_pos..base_pos.saturating_add(retc as u16) {
                     self.int_regs.remove(&reg);
                 }
@@ -506,6 +567,20 @@ impl FunctionBuilder {
         body: &Stmt,
         register_const: bool,
     ) -> u16 {
+        let dst = self.alloc();
+        self.emit_function_closure_into(dst, name, params, named_params, body, register_const);
+        dst
+    }
+
+    pub fn emit_function_closure_into(
+        &mut self,
+        dst: u16,
+        name: Option<&str>,
+        params: &[String],
+        named_params: &[NamedParamDecl],
+        body: &Stmt,
+        register_const: bool,
+    ) {
         if register_const && let Some(func_name) = name {
             self.register_function_const_env(func_name, params, named_params, body);
         }
@@ -539,9 +614,7 @@ impl FunctionBuilder {
             empty_closure: closure_empty_closure_cell(),
         });
 
-        let dst = self.alloc();
         self.emit(Op::MakeClosure { dst, proto: proto_idx });
-        dst
     }
 
     pub fn collect_captures(

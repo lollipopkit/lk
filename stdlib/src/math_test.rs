@@ -8,7 +8,7 @@ mod tests {
         module::{Module, ModuleRegistry},
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::Val,
+        val::{NativeArgs, Val},
         vm::{Vm, VmContext},
     };
 
@@ -133,50 +133,72 @@ mod tests {
     #[test]
     fn test_math_clamp_duplicate_named_argument_error() {
         let module = MathModule::new();
-        let Val::RustFunctionNamed(clamp_fn) = module.exports().get("clamp").expect("clamp export present").clone()
+        let Val::RustFastFunctionNamed(clamp_fn) = module.exports().get("clamp").expect("clamp export present").clone()
         else {
-            panic!("expected clamp to be a named Rust function");
+            panic!("expected clamp to be a fast named Rust function");
         };
         let mut env = VmContext::new();
         let named_args = vec![("min".to_string(), Val::Int(0)), ("min".to_string(), Val::Int(1))];
-        let err = clamp_fn(&[Val::Int(5)], &named_args, &mut env).expect_err("duplicate named arguments should error");
+        let args = [Val::Int(5)];
+        let err = clamp_fn(NativeArgs::new(&args), &named_args, &mut env)
+            .expect_err("duplicate named arguments should error");
         assert!(err.to_string().contains("duplicate named argument"));
     }
 
     #[test]
     fn test_math_sqrt_negative_error() {
         let module = MathModule::new();
-        let Val::RustFunction(sqrt_fn) = module.exports().get("sqrt").expect("sqrt export present").clone() else {
-            panic!("expected sqrt to be a Rust function");
+        let Val::RustFastFunction(sqrt_fn) = module.exports().get("sqrt").expect("sqrt export present").clone() else {
+            panic!("expected sqrt to be a fast Rust function");
         };
         let mut env = VmContext::new();
-        let err = sqrt_fn(&[Val::Int(-1)], &mut env).expect_err("negative input should fail");
+        let args = [Val::Int(-1)];
+        let err = sqrt_fn(NativeArgs::new(&args), &mut env).expect_err("negative input should fail");
         assert!(err.to_string().contains("must be non-negative"));
     }
 
     #[test]
     fn test_math_log_non_positive_error() {
         let module = MathModule::new();
-        let Val::RustFunction(log_fn) = module.exports().get("log").expect("log export present").clone() else {
-            panic!("expected log to be a Rust function");
+        let Val::RustFastFunction(log_fn) = module.exports().get("log").expect("log export present").clone() else {
+            panic!("expected log to be a fast Rust function");
         };
         let mut env = VmContext::new();
-        let err = log_fn(&[Val::Int(0)], &mut env).expect_err("non-positive input should fail");
+        let args = [Val::Int(0)];
+        let err = log_fn(NativeArgs::new(&args), &mut env).expect_err("non-positive input should fail");
         assert!(err.to_string().contains("must be positive"));
     }
 
     #[test]
     fn test_math_atan2_mixed_numeric_types() -> Result<()> {
         let module = MathModule::new();
-        let Val::RustFunction(atan2_fn) = module.exports().get("atan2").expect("atan2 export present").clone() else {
-            panic!("expected atan2 to be a Rust function");
+        let Val::RustFastFunction(atan2_fn) = module.exports().get("atan2").expect("atan2 export present").clone()
+        else {
+            panic!("expected atan2 to be a fast Rust function");
         };
         let mut env = VmContext::new();
-        let result = atan2_fn(&[Val::Int(1), Val::Float(0.0)], &mut env)?;
+        let args = [Val::Int(1), Val::Float(0.0)];
+        let result = atan2_fn(NativeArgs::new(&args), &mut env)?;
         let Val::Float(angle) = result else {
             panic!("atan2 should return float");
         };
         assert!((angle - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
         Ok(())
+    }
+
+    #[test]
+    fn test_math_selected_functions_use_fast_native_abi() {
+        let module = MathModule::new();
+        let exports = module.exports();
+        for name in [
+            "abs", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "log", "log10", "log2", "exp", "pow",
+            "floor", "ceil", "round", "min", "max", "random",
+        ] {
+            let value = exports.get(name).unwrap_or_else(|| panic!("{name} export present"));
+            assert!(
+                matches!(value, Val::RustFastFunction(_)),
+                "{name} should use RustFastFunction"
+            );
+        }
     }
 }

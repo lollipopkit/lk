@@ -178,6 +178,61 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
+    pub(super) fn emit_map_set_const(&mut self, map: u16, kidx: u16, val: u16) -> Result<()> {
+        let key = self
+            .function
+            .consts
+            .get(kidx as usize)
+            .and_then(Val::as_str)
+            .ok_or_else(|| anyhow!("MapSetInterned expects string constant k{}", kidx))?
+            .to_string();
+        let map_value = self.load_reg(map)?;
+        let key_value = self.intern_string_constant(kidx, &key)?;
+        let val_value = self.load_reg(val)?;
+        self.require_helper(RuntimeHelper::MapSet);
+        let updated = self.fresh("mapsetk");
+        self.writer.line(format!(
+            "{updated} = call i64 @{}(i64 {map_value}, i64 {key_value}, i64 {val_value})",
+            RuntimeHelper::MapSet.symbol()
+        ));
+        self.store_reg(map, &updated)?;
+        self.set_known(map, None);
+        Ok(())
+    }
+
+    pub(super) fn emit_map_has(&mut self, dst: u16, map: u16, key: u16) -> Result<()> {
+        let map_value = self.load_reg(map)?;
+        let key_value = match self.materialize_string_int_key(key)? {
+            Some(value) => value,
+            None => self.load_reg(key)?,
+        };
+        self.emit_map_has_with_key(dst, &map_value, &key_value)
+    }
+
+    pub(super) fn emit_map_has_const(&mut self, dst: u16, map: u16, kidx: u16) -> Result<()> {
+        let key = self
+            .function
+            .consts
+            .get(kidx as usize)
+            .and_then(Val::as_str)
+            .ok_or_else(|| anyhow!("MapHasK expects string constant k{}", kidx))?
+            .to_string();
+        let map_value = self.load_reg(map)?;
+        let key_value = self.intern_string_constant(kidx, &key)?;
+        self.emit_map_has_with_key(dst, &map_value, &key_value)
+    }
+
+    fn emit_map_has_with_key(&mut self, dst: u16, map_value: &str, key_value: &str) -> Result<()> {
+        self.require_helper(RuntimeHelper::MapHas);
+        let out = self.fresh("maphas");
+        self.writer.line(format!(
+            "{out} = call i64 @{}(i64 {map_value}, i64 {key_value})",
+            RuntimeHelper::MapHas.symbol()
+        ));
+        self.store_reg(dst, &out)?;
+        Ok(())
+    }
+
     pub(super) fn emit_list_slice(&mut self, dst: u16, src: u16, start: u16) -> Result<()> {
         let list = self.load_reg(src)?;
         let start_idx = self.load_reg(start)?;
@@ -204,12 +259,6 @@ impl<'a> FunctionTranslator<'a> {
         if let Some(KnownReg::StringHandle { text, .. }) = self.known(field).cloned()
             && self.try_emit_const_map_access(dst, base, &text)?
         {
-            return Ok(());
-        }
-        if self.try_defer_const_map_membership(instr_idx, dst, base, field)? {
-            return Ok(());
-        }
-        if self.try_defer_str_int_map_membership(instr_idx, dst, base, field)? {
             return Ok(());
         }
         if self.try_emit_access_str_int(dst, base, field)? {
@@ -258,7 +307,7 @@ impl<'a> FunctionTranslator<'a> {
         let scan_end = block_end.min(instr_idx + 8);
         for op in &self.function.code[instr_idx + 1..scan_end] {
             match *op {
-                Op::Add(_, a, b) | Op::Sub(_, a, b) if a == alias || b == alias => {
+                Op::Add(_, a, b) | Op::StrConcatKnownCap(_, a, b) | Op::Sub(_, a, b) if a == alias || b == alias => {
                     consumed = true;
                 }
                 Op::Move(new_alias, src) | Op::LoadLocal(new_alias, src) | Op::StoreLocal(new_alias, src)
@@ -305,75 +354,6 @@ impl<'a> FunctionTranslator<'a> {
         self.store_reg(dst, &raw)?;
         self.set_known_const_value(dst, &value, &raw);
         Ok(true)
-    }
-
-    fn try_defer_const_map_membership(&mut self, instr_idx: usize, dst: u16, base: u16, field: u16) -> Result<bool> {
-        let Some(KnownReg::ConstMap { entries }) = self.known(base).cloned() else {
-            return Ok(false);
-        };
-        if entries.is_empty()
-            || entries.len() > 3
-            || entries.values().any(|value| matches!(value, Val::Nil))
-            || !self.const_map_membership_compare_follows(instr_idx, dst)
-        {
-            return Ok(false);
-        }
-        let key = self.load_reg(field)?;
-        self.set_known(
-            dst,
-            Some(KnownReg::ConstMapMembership {
-                key,
-                keys: entries.keys().cloned().collect(),
-            }),
-        );
-        Ok(true)
-    }
-
-    fn const_map_membership_compare_follows(&self, instr_idx: usize, dst: u16) -> bool {
-        let Some(op) = self.function.code.get(instr_idx + 1) else {
-            return false;
-        };
-        match *op {
-            Op::CmpEq(_, a, b) | Op::CmpNe(_, a, b) => {
-                (a == dst && self.operand_is_nil(b)) || (b == dst && self.operand_is_nil(a))
-            }
-            _ => false,
-        }
-    }
-
-    fn operand_is_nil(&self, operand: u16) -> bool {
-        rk_is_const(operand)
-            && self
-                .function
-                .consts
-                .get(rk_index(operand) as usize)
-                .is_some_and(|value| matches!(value, Val::Nil))
-    }
-
-    fn try_defer_str_int_map_membership(&mut self, instr_idx: usize, dst: u16, base: u16, field: u16) -> Result<bool> {
-        let Some(KnownReg::StringIntKey { prefix, suffix }) = self.known(field).cloned() else {
-            return Ok(false);
-        };
-        if !self.const_map_membership_compare_follows(instr_idx, dst)
-            || self.access_result_is_used_after_compare(instr_idx, dst)
-        {
-            return Ok(false);
-        }
-        let base = self.load_reg(base)?;
-        self.set_known(dst, Some(KnownReg::StrIntMapMembership { base, prefix, suffix }));
-        Ok(true)
-    }
-
-    fn access_result_is_used_after_compare(&self, instr_idx: usize, dst: u16) -> bool {
-        for op in &self.function.code[instr_idx + 2..] {
-            if op_reads_reg(op, dst) {
-                return true;
-            }
-            if op_writes_reg(op, dst) {
-                return false;
-            }
-        }
-        false
     }
 
     fn try_emit_access_str_int(&mut self, dst: u16, base: u16, field: u16) -> Result<bool> {
@@ -538,9 +518,11 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::StartsWithK(_, src, _)
         | Op::ContainsK(_, src, _)
         | Op::JmpFalse(src, _)
+        | Op::BoolBranch(src, _)
         | Op::JmpIfNil(src, _)
         | Op::JmpIfNotNil(src, _) => src == reg,
         Op::Add(_, a, b)
+        | Op::StrConcatKnownCap(_, a, b)
         | Op::Sub(_, a, b)
         | Op::Mul(_, a, b)
         | Op::Div(_, a, b)
@@ -560,6 +542,7 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpLe(_, a, b)
         | Op::CmpGt(_, a, b)
         | Op::CmpGe(_, a, b)
+        | Op::CmpI { a, b, .. }
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
         | Op::Index { base: a, idx: b, .. } => a == reg || b == reg,
@@ -591,6 +574,7 @@ fn op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::ToStr(dst, _)
         | Op::ToBool(dst, _)
         | Op::Add(dst, _, _)
+        | Op::StrConcatKnownCap(dst, _, _)
         | Op::Sub(dst, _, _)
         | Op::Mul(dst, _, _)
         | Op::Div(dst, _, _)
@@ -610,6 +594,7 @@ fn op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpLe(dst, _, _)
         | Op::CmpGt(dst, _, _)
         | Op::CmpGe(dst, _, _)
+        | Op::CmpI { dst, .. }
         | Op::In(dst, _, _)
         | Op::Access(dst, _, _)
         | Op::AccessK(dst, _, _)
@@ -635,6 +620,7 @@ fn is_len_feed_neutral_op(op: &Op) -> bool {
             | Op::StoreLocal(..)
             | Op::LoadLocal(..)
             | Op::Add(..)
+            | Op::StrConcatKnownCap(..)
             | Op::Sub(..)
             | Op::Mul(..)
             | Op::Div(..)

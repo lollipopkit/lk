@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Datelike;
 use lk_core::module::Module;
-use lk_core::val::Val;
+use lk_core::val::{NativeArgs, Val};
 use lk_core::vm::VmContext;
 use std::collections::HashMap;
 
@@ -20,22 +20,22 @@ impl DateTimeModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
 
-        // Register datetime functions as Rust functions
-        functions.insert("now".to_string(), Val::RustFunction(Self::now));
-        functions.insert("format".to_string(), Val::RustFunction(Self::format));
-        functions.insert("parse".to_string(), Val::RustFunction(Self::parse));
-        functions.insert("add".to_string(), Val::RustFunction(Self::add_seconds));
-        functions.insert("sub".to_string(), Val::RustFunction(Self::sub_seconds));
-        functions.insert("day_of_week".to_string(), Val::RustFunction(Self::day_of_week));
-        functions.insert("day_of_year".to_string(), Val::RustFunction(Self::day_of_year));
-        functions.insert("is_weekend".to_string(), Val::RustFunction(Self::is_weekend));
+        // Register positional datetime functions on the fast native ABI.
+        functions.insert("now".to_string(), Val::RustFastFunction(Self::now));
+        functions.insert("format".to_string(), Val::RustFastFunction(Self::format));
+        functions.insert("parse".to_string(), Val::RustFastFunction(Self::parse));
+        functions.insert("add".to_string(), Val::RustFastFunction(Self::add_seconds));
+        functions.insert("sub".to_string(), Val::RustFastFunction(Self::sub_seconds));
+        functions.insert("day_of_week".to_string(), Val::RustFastFunction(Self::day_of_week));
+        functions.insert("day_of_year".to_string(), Val::RustFastFunction(Self::day_of_year));
+        functions.insert("is_weekend".to_string(), Val::RustFastFunction(Self::is_weekend));
 
         Self { functions }
     }
 
     /// Get current timestamp as Unix epoch
-    fn now(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if !args.is_empty() {
+    fn now(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 0 {
             return Err(anyhow::anyhow!("now() takes no arguments"));
         }
 
@@ -46,12 +46,13 @@ impl DateTimeModule {
     }
 
     /// Format timestamp to string
-    fn format(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn format(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow::anyhow!(
                 "format() takes exactly 2 arguments: timestamp and format_string"
             ));
         }
+        let args = args.as_slice();
 
         let timestamp = match &args[0] {
             Val::Int(ts) => *ts,
@@ -72,12 +73,13 @@ impl DateTimeModule {
     }
 
     /// Parse string to timestamp
-    fn parse(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn parse(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow::anyhow!(
                 "parse() takes exactly 2 arguments: datetime_string and format_string"
             ));
         }
+        let args = args.as_slice();
 
         let datetime_str = args[0]
             .as_str()
@@ -96,12 +98,13 @@ impl DateTimeModule {
     }
 
     /// Add seconds to timestamp
-    fn add_seconds(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn add_seconds(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow::anyhow!(
                 "add_seconds() takes exactly 2 arguments: timestamp and seconds"
             ));
         }
+        let args = args.as_slice();
 
         let timestamp = match &args[0] {
             Val::Int(ts) => *ts,
@@ -119,12 +122,13 @@ impl DateTimeModule {
     }
 
     /// Subtract seconds from timestamp
-    fn sub_seconds(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn sub_seconds(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow::anyhow!(
                 "sub_seconds() takes exactly 2 arguments: timestamp and seconds"
             ));
         }
+        let args = args.as_slice();
         let timestamp = match &args[0] {
             Val::Int(ts) => *ts,
             _ => {
@@ -139,10 +143,11 @@ impl DateTimeModule {
     }
 
     /// Get day of week (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
-    fn day_of_week(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn day_of_week(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("day_of_week() takes exactly 1 argument: timestamp"));
         }
+        let args = args.as_slice();
 
         let timestamp = match &args[0] {
             Val::Int(ts) => *ts,
@@ -166,10 +171,11 @@ impl DateTimeModule {
     }
 
     /// Get day of year (1-366)
-    fn day_of_year(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn day_of_year(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("day_of_year() takes exactly 1 argument: timestamp"));
         }
+        let args = args.as_slice();
 
         let timestamp = match &args[0] {
             Val::Int(ts) => *ts,
@@ -183,10 +189,11 @@ impl DateTimeModule {
     }
 
     /// Check if date is weekend (Saturday or Sunday)
-    fn is_weekend(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn is_weekend(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("is_weekend() takes exactly 1 argument: timestamp"));
         }
+        let args = args.as_slice();
 
         let timestamp = match &args[0] {
             Val::Int(ts) => *ts,

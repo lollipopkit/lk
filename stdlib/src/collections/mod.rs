@@ -74,8 +74,9 @@ pub trait MutableMap {
 
 /// Copy-on-write mutation guard for list values.
 pub struct ListMutation {
-    original: Arc<Vec<Val>>,
-    scratch: Option<Vec<Val>>,
+    source: Arc<Vec<Val>>,
+    owned: Option<Vec<Val>>,
+    mutated_in_place: bool,
 }
 
 impl ListMutation {
@@ -90,49 +91,54 @@ impl ListMutation {
     /// Wraps the provided list arc.
     pub fn new(list: Arc<Vec<Val>>) -> Self {
         Self {
-            original: list,
-            scratch: None,
+            source: list,
+            owned: None,
+            mutated_in_place: false,
         }
     }
 
     /// Returns true if no mutations have been performed.
     fn pristine(&self) -> bool {
-        self.scratch.is_none()
+        self.owned.is_none() && !self.mutated_in_place
     }
 
     fn ensure_owned(&mut self) -> &mut Vec<Val> {
-        if self.scratch.is_none() {
-            let mut owned = Vec::with_capacity(self.original.len());
-            owned.extend(self.original.iter().cloned());
-            self.scratch = Some(owned);
+        if self.mutated_in_place {
+            return Arc::make_mut(&mut self.source);
         }
-        self.scratch.as_mut().expect("scratch initialised above")
+        if Arc::strong_count(&self.source) == 1 && Arc::weak_count(&self.source) == 0 {
+            self.mutated_in_place = true;
+            return Arc::make_mut(&mut self.source);
+        }
+        if self.owned.is_none() {
+            let mut owned = Vec::with_capacity(self.source.len());
+            owned.extend(self.source.iter().cloned());
+            self.owned = Some(owned);
+        }
+        self.owned.as_mut().expect("scratch initialised above")
     }
 }
 
 impl MutableSequence for ListMutation {
     fn len(&self) -> usize {
-        self.scratch
+        self.owned
             .as_ref()
             .map(|v| v.len())
-            .unwrap_or_else(|| self.original.len())
+            .unwrap_or_else(|| self.source.len())
     }
 
     fn as_slice(&self) -> &[Val] {
-        match &self.scratch {
+        match &self.owned {
             Some(vec) => vec.as_slice(),
-            None => self.original.as_ref(),
+            None => self.source.as_ref(),
         }
     }
 
     fn reserve(&mut self, additional: usize) {
-        let new_cap = self.len().saturating_add(additional);
-        if let Some(vec) = self.scratch.as_mut() {
+        if let Some(vec) = self.owned.as_mut() {
             vec.reserve(additional);
         } else if additional > 0 {
-            let mut owned = Vec::with_capacity(new_cap);
-            owned.extend(self.original.iter().cloned());
-            self.scratch = Some(owned);
+            self.ensure_owned().reserve(additional);
         }
     }
 
@@ -164,10 +170,10 @@ impl MutableSequence for ListMutation {
     }
 
     fn finish(self) -> Val {
-        if self.pristine() {
-            Val::List(self.original)
+        if self.mutated_in_place || self.pristine() {
+            Val::List(self.source)
         } else {
-            let vec = self.scratch.expect("scratch must exist when mutated");
+            let vec = self.owned.expect("scratch must exist when mutated");
             Val::List(Arc::new(vec))
         }
     }
@@ -218,7 +224,7 @@ impl MapMutation {
         if self.owned.is_none() {
             let mut owned = fast_hash_map_with_capacity(self.source.len());
             for (k, v) in self.source.iter() {
-                owned.insert(Val::intern_str(k.as_str()), v.clone());
+                Val::map_insert_arcstr(&mut owned, Val::intern_str(k.as_str()), v.clone());
             }
             self.owned = Some(owned);
         }
@@ -240,17 +246,17 @@ impl MutableMap for MapMutation {
 
     fn contains_key(&self, key: &str) -> bool {
         match &self.owned {
-            Some(map) => map.contains_key(key),
-            None => self.source.contains_key(key),
+            Some(map) => Val::map_contains_str(map, key),
+            None => Val::map_contains_str(&self.source, key),
         }
     }
 
     fn insert(&mut self, key: ArcStr, value: Val) -> Option<Val> {
-        self.ensure_owned().insert(key, value)
+        Val::map_insert_arcstr(self.ensure_owned(), key, value)
     }
 
     fn remove(&mut self, key: &str) -> Option<Val> {
-        self.ensure_owned().remove(key)
+        Val::map_remove_str(self.ensure_owned(), key)
     }
 
     fn retain<F>(&mut self, mut f: F)
@@ -287,7 +293,21 @@ mod tests {
     }
 
     #[test]
-    fn list_mutation_clones_on_write() {
+    fn list_mutation_make_mut_on_unique_ref() {
+        let original: Arc<Vec<Val>> = vec![Val::Int(1), Val::Int(2)].into();
+        let original_ptr = Arc::as_ptr(&original);
+        let mut guard = ListMutation::new(original);
+        guard.push(Val::Int(3));
+        let result = guard.finish();
+        let Val::List(list_arc) = result else {
+            panic!("expected list");
+        };
+        assert_eq!(list_arc.len(), 3);
+        assert_eq!(Arc::as_ptr(&list_arc), original_ptr);
+    }
+
+    #[test]
+    fn list_mutation_clones_on_shared_write() {
         let original: Arc<Vec<Val>> = vec![Val::Int(1), Val::Int(2)].into();
         let mut guard = ListMutation::new(original.clone());
         guard.push(Val::Int(3));

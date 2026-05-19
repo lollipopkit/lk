@@ -83,10 +83,15 @@ impl Vm {
             let call_ic = &mut self.call_ic;
             let for_range_ic = &mut self.for_range_ic;
             let packed_hot_ic = &mut self.packed_hot_ic;
+            let quickening_ic = &mut self.quickening_ic;
             let func_key = f as *const Function as usize;
             if self.packed_hot_ic_key != func_key {
                 packed_hot_ic.clear();
                 self.packed_hot_ic_key = func_key;
+            }
+            if self.quickening_ic_key != func_key {
+                quickening_ic.clear();
+                self.quickening_ic_key = func_key;
             }
             let mut call_frame = CallFrame::new(f, reg_base, reg_count, captures, capture_specs, region_plan);
             let reg_count = call_frame.reg_count;
@@ -127,6 +132,7 @@ impl Vm {
                     call_ic,
                     for_range: for_range_ic,
                     packed_hot: packed_hot_ic,
+                    quickening: quickening_ic,
                 },
                 self_ptr,
             );
@@ -175,8 +181,8 @@ impl Vm {
         frame_info: Option<&FrameInfo>,
         captures: Option<Arc<ClosureCapture>>,
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
-        cache: Option<&mut ClosureFastCache>,
-        return_meta: Option<CallFrameMeta>,
+        cache: &mut ClosureFastCache,
+        return_meta: CallFrameMeta,
     ) -> Result<Val> {
         if fun.param_regs.len() != args.len {
             return Err(anyhow!(
@@ -185,31 +191,16 @@ impl Vm {
                 args.len
             ));
         }
-        match cache {
-            Some(cache_ref) => self.exec_function_positional_fast_span_impl(
-                fun,
-                args,
-                ctx,
-                frame_info,
-                captures,
-                capture_specs,
-                cache_ref,
-                return_meta,
-            ),
-            None => {
-                let mut temp_cache = ClosureFastCache::new();
-                self.exec_function_positional_fast_span_impl(
-                    fun,
-                    args,
-                    ctx,
-                    frame_info,
-                    captures,
-                    capture_specs,
-                    &mut temp_cache,
-                    return_meta,
-                )
-            }
-        }
+        self.exec_function_positional_fast_span_impl(
+            fun,
+            args,
+            ctx,
+            frame_info,
+            captures,
+            capture_specs,
+            cache,
+            return_meta,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -222,7 +213,7 @@ impl Vm {
         captures: Option<Arc<ClosureCapture>>,
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
         cache: &mut ClosureFastCache,
-        return_meta: Option<CallFrameMeta>,
+        return_meta: CallFrameMeta,
     ) -> Result<Val> {
         let reg_count = fun.n_regs as usize;
         let self_ptr: *mut Vm = self;
@@ -245,9 +236,7 @@ impl Vm {
         let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
         let regs = &mut self.stack[stack_base..stack_base + reg_count];
         let mut callee_state = FrameState::new_ephemeral(&mut call_frame, regs, region_alloc_ptr);
-        if let Some(meta) = return_meta {
-            callee_state.set_inline_return_meta(meta);
-        }
+        callee_state.set_inline_return_meta(return_meta);
 
         let func_key = fun as *const Function as usize;
         if cache.packed_hot_key != func_key {
@@ -285,6 +274,7 @@ impl Vm {
                 call_ic: &mut cache.call_ic,
                 for_range: &mut cache.for_range,
                 packed_hot: &mut cache.packed_hot,
+                quickening: &mut cache.quickening,
             },
             self_ptr,
         );
@@ -405,6 +395,7 @@ impl Vm {
             nested_cache.for_range.clear();
             nested_cache.packed_hot.clear();
             nested_cache.packed_hot_key = 0;
+            nested_cache.quickening.clear();
             nested_cache.prepared_func_key = func_key;
             nested_cache.prepared_code_len = 0;
         }
@@ -424,6 +415,7 @@ impl Vm {
                 call_ic: &mut nested_cache.call_ic,
                 for_range: &mut nested_cache.for_range,
                 packed_hot: &mut nested_cache.packed_hot,
+                quickening: &mut nested_cache.quickening,
             },
             self_ptr,
         );

@@ -6,18 +6,19 @@ mod tests {
     use anyhow::Result;
     use chrono::{TimeZone, Utc};
     use lk_core::{
-        module, module::Module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val, val::Val, vm, vm::VmContext,
+        module, module::Module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val::NativeArgs, val::Val, vm,
+        vm::VmContext,
     };
 
-    fn get_fn(module: &DateTimeModule, name: &str) -> val::RustFunction {
+    fn call_fast(module: &DateTimeModule, name: &str, args: &[Val], env: &mut VmContext) -> Result<Val> {
         let exports = module.exports();
         let val = exports
             .get(name)
             .unwrap_or_else(|| panic!("{name} export missing"))
             .clone();
         match val {
-            Val::RustFunction(func) => func,
-            other => panic!("expected RustFunction, got {:?}", other),
+            Val::RustFastFunction(func) => func(NativeArgs::new(args), env),
+            other => panic!("expected RustFastFunction, got {:?}", other),
         }
     }
 
@@ -27,12 +28,17 @@ mod tests {
         let mut env = VmContext::new();
         let ts = Utc.with_ymd_and_hms(2024, 1, 6, 12, 30, 0).unwrap().timestamp();
 
-        let format_fn = get_fn(&module, "format");
-        let formatted = format_fn(&[Val::Int(ts), Val::Str("%Y-%m-%d %H:%M".into())], &mut env)?;
+        let formatted = call_fast(
+            &module,
+            "format",
+            &[Val::Int(ts), Val::Str("%Y-%m-%d %H:%M".into())],
+            &mut env,
+        )?;
         assert_eq!(formatted, Val::Str("2024-01-06 12:30".into()));
 
-        let parse_fn = get_fn(&module, "parse");
-        let parsed = parse_fn(
+        let parsed = call_fast(
+            &module,
+            "parse",
             &[Val::Str("2024-01-06 12:30".into()), Val::Str("%Y-%m-%d %H:%M".into())],
             &mut env,
         )?;
@@ -47,13 +53,23 @@ mod tests {
         let saturday = Utc.with_ymd_and_hms(2024, 1, 6, 0, 0, 0).unwrap().timestamp();
         let monday = Utc.with_ymd_and_hms(2024, 1, 8, 0, 0, 0).unwrap().timestamp();
 
-        let day_of_week = get_fn(&module, "day_of_week");
-        assert_eq!(day_of_week(&[Val::Int(saturday)], &mut env)?, Val::Int(6));
-        assert_eq!(day_of_week(&[Val::Int(monday)], &mut env)?, Val::Int(1));
+        assert_eq!(
+            call_fast(&module, "day_of_week", &[Val::Int(saturday)], &mut env)?,
+            Val::Int(6)
+        );
+        assert_eq!(
+            call_fast(&module, "day_of_week", &[Val::Int(monday)], &mut env)?,
+            Val::Int(1)
+        );
 
-        let is_weekend = get_fn(&module, "is_weekend");
-        assert_eq!(is_weekend(&[Val::Int(saturday)], &mut env)?, Val::Bool(true));
-        assert_eq!(is_weekend(&[Val::Int(monday)], &mut env)?, Val::Bool(false));
+        assert_eq!(
+            call_fast(&module, "is_weekend", &[Val::Int(saturday)], &mut env)?,
+            Val::Bool(true)
+        );
+        assert_eq!(
+            call_fast(&module, "is_weekend", &[Val::Int(monday)], &mut env)?,
+            Val::Bool(false)
+        );
         Ok(())
     }
 
@@ -63,11 +79,15 @@ mod tests {
         let mut env = VmContext::new();
         let base = 1_700_000_000i64;
 
-        let add_fn = get_fn(&module, "add");
-        assert_eq!(add_fn(&[Val::Int(base), Val::Int(30)], &mut env)?, Val::Int(base + 30));
+        assert_eq!(
+            call_fast(&module, "add", &[Val::Int(base), Val::Int(30)], &mut env)?,
+            Val::Int(base + 30)
+        );
 
-        let sub_fn = get_fn(&module, "sub");
-        assert_eq!(sub_fn(&[Val::Int(base), Val::Int(45)], &mut env)?, Val::Int(base - 45));
+        assert_eq!(
+            call_fast(&module, "sub", &[Val::Int(base), Val::Int(45)], &mut env)?,
+            Val::Int(base - 45)
+        );
         Ok(())
     }
 
@@ -75,9 +95,13 @@ mod tests {
     fn test_format_invalid_timestamp_errors() {
         let module = DateTimeModule::new();
         let mut env = VmContext::new();
-        let format_fn = get_fn(&module, "format");
-        let err = format_fn(&[Val::Int(i64::MAX), Val::Str("%Y".into())], &mut env)
-            .expect_err("invalid timestamp should error");
+        let err = call_fast(
+            &module,
+            "format",
+            &[Val::Int(i64::MAX), Val::Str("%Y".into())],
+            &mut env,
+        )
+        .expect_err("invalid timestamp should error");
         assert!(err.to_string().contains("invalid timestamp"));
     }
 
@@ -85,10 +109,36 @@ mod tests {
     fn test_parse_invalid_string_errors() {
         let module = DateTimeModule::new();
         let mut env = VmContext::new();
-        let parse_fn = get_fn(&module, "parse");
-        let err = parse_fn(&[Val::Str("not-a-date".into()), Val::Str("%Y-%m-%d".into())], &mut env)
-            .expect_err("invalid datetime string should error");
+        let err = call_fast(
+            &module,
+            "parse",
+            &[Val::Str("not-a-date".into()), Val::Str("%Y-%m-%d".into())],
+            &mut env,
+        )
+        .expect_err("invalid datetime string should error");
         assert!(err.to_string().contains("failed to parse datetime"));
+    }
+
+    #[test]
+    fn test_datetime_functions_use_fast_native_abi() {
+        let module = DateTimeModule::new();
+        let exports = module.exports();
+        for name in [
+            "now",
+            "format",
+            "parse",
+            "add",
+            "sub",
+            "day_of_week",
+            "day_of_year",
+            "is_weekend",
+        ] {
+            let value = exports.get(name).expect("datetime function export present");
+            assert!(
+                matches!(value, Val::RustFastFunction(_)),
+                "{name} should use RustFastFunction"
+            );
+        }
     }
 
     #[test]

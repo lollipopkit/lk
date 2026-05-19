@@ -8,7 +8,7 @@ mod tests {
         module::{Module, ModuleRegistry},
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::Val,
+        val::{NativeArgs, Val},
         vm::{Vm, VmContext},
     };
 
@@ -77,6 +77,38 @@ mod tests {
     }
 
     #[test]
+    fn test_string_positional_functions_use_fast_native_abi() {
+        let module = StringModule::new();
+        let exports = module.exports();
+        for name in [
+            "len",
+            "lower",
+            "upper",
+            "trim",
+            "starts_with",
+            "ends_with",
+            "contains",
+            "substring",
+            "split",
+            "join",
+            "reverse",
+            "repeat",
+            "char",
+            "byte",
+            "chars",
+            "find",
+            "is_empty",
+            "format",
+        ] {
+            let value = exports.get(name).expect("string function export present");
+            assert!(
+                matches!(value, Val::RustFastFunction(_)),
+                "{name} should use RustFastFunction"
+            );
+        }
+    }
+
+    #[test]
     fn test_string_replace_named_arguments() -> Result<()> {
         let source = r#"
             import string;
@@ -111,10 +143,10 @@ mod tests {
     #[test]
     fn test_string_replace_duplicate_named_argument_error() {
         let module = StringModule::new();
-        let Val::RustFunctionNamed(replace_fn) =
+        let Val::RustFastFunctionNamed(replace_fn) =
             module.exports().get("replace").expect("replace export present").clone()
         else {
-            panic!("replace should be a named Rust function");
+            panic!("replace should be a fast named Rust function");
         };
 
         let mut env = VmContext::new();
@@ -124,7 +156,8 @@ mod tests {
             ("with".to_string(), Val::Str("a".into())),
         ];
 
-        let err = replace_fn(&[Val::Str("lol".into())], &named_args, &mut env)
+        let args = [Val::Str("lol".into())];
+        let err = replace_fn(NativeArgs::new(&args), &named_args, &mut env)
             .expect_err("duplicate named arguments should error");
         assert!(err.to_string().contains("duplicate named argument"));
     }

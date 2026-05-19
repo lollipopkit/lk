@@ -1,6 +1,7 @@
 mod caches;
 mod frame;
 mod guards;
+mod quickening;
 mod runtime;
 
 use crate::val::Val;
@@ -12,6 +13,7 @@ pub(crate) use frame::FrameInfo;
 pub(crate) use guards::with_current_vm;
 #[cfg(test)]
 pub(crate) use guards::with_current_vm_ctx;
+use quickening::QuickeningSite;
 
 /// LK's register-based bytecode virtual machine.
 ///
@@ -51,6 +53,8 @@ pub struct Vm {
     for_range_ic: Vec<Option<ForRangeState>>,
     packed_hot_ic: Vec<Option<PackedHotEntry>>,
     packed_hot_ic_key: usize,
+    quickening_ic: Vec<QuickeningSite>,
+    quickening_ic_key: usize,
     frames: Vec<CallFrameMeta>,
     pending_resume_pc: Option<usize>,
     region_alloc: RegionAllocator,
@@ -69,6 +73,8 @@ impl Vm {
             for_range_ic: Vec::new(),
             packed_hot_ic: Vec::new(),
             packed_hot_ic_key: 0,
+            quickening_ic: Vec::new(),
+            quickening_ic_key: 0,
             frames: Vec::new(),
             pending_resume_pc: None,
             region_alloc: RegionAllocator::new(),

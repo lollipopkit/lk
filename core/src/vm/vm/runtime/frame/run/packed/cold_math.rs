@@ -27,6 +27,16 @@ pub(super) fn try_exec_math_op(
             }
             pc = next_pc_default;
         }
+        Op::StrConcatKnownCap(dst, a, b) => {
+            let a_val = rk_read(regs, &f.consts, a);
+            let b_val = rk_read(regs, &f.consts, b);
+            let out = match (a_val.as_str(), b_val.as_str()) {
+                (Some(a_str), Some(b_str)) => Val::concat_strings(a_str, b_str),
+                _ => BinOp::Add.eval_vals(a_val, b_val)?,
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
         Op::Sub(dst, a, b) => {
             if !Vm::arith2_try_numeric(frame_raw, regs, &f.consts, dst, a, b, "sub", |x, y| x - y, |x, y| x - y) {
                 let out = BinOp::Sub.eval_vals(rk_read(regs, &f.consts, a), rk_read(regs, &f.consts, b))?;
@@ -242,6 +252,13 @@ pub(super) fn try_exec_math_op(
             }
             pc = next_pc_default;
         }
+        Op::CmpI { dst, a, b, kind } => {
+            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[a as usize], &regs[b as usize]) else {
+                anyhow::bail!("CmpI expects integer registers");
+            };
+            assign_reg(frame_raw, regs, dst as usize, Val::Bool(kind.eval(*lhs, *rhs)));
+            pc = next_pc_default;
+        }
         Op::Len { dst, src } => {
             let v = &regs[src as usize];
             let out = match v {
@@ -249,6 +266,31 @@ pub(super) fn try_exec_math_op(
                 Val::ShortStr(s) => Val::Int(s.as_str().len() as i64),
                 Val::Str(s) => Val::Int(s.len() as i64),
                 Val::Map(m) => Val::Int(m.len() as i64),
+                _ => Val::Int(0),
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
+        Op::ListLen { dst, src } => {
+            let out = match &regs[src as usize] {
+                Val::List(list) => Val::Int(list.len() as i64),
+                _ => Val::Int(0),
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
+        Op::MapLen { dst, src } => {
+            let out = match &regs[src as usize] {
+                Val::Map(map) => Val::Int(map.len() as i64),
+                _ => Val::Int(0),
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
+        Op::StrLen { dst, src } => {
+            let out = match &regs[src as usize] {
+                Val::ShortStr(value) => Val::Int(value.as_str().len() as i64),
+                Val::Str(value) => Val::Int(value.len() as i64),
                 _ => Val::Int(0),
             };
             assign_reg(frame_raw, regs, dst as usize, out);

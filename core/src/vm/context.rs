@@ -10,7 +10,7 @@ use crate::val::{Type, Val};
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use crate::typ::{TraitDef, TraitImpl};
 #[cfg(not(feature = "aot-minimal-runtime"))]
-use crate::val::{ObjectValue, methods::find_method_for_val};
+use crate::val::{NativeArgs, ObjectValue, methods::find_method_for_val};
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use arcstr::ArcStr;
 #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -453,31 +453,31 @@ impl VmContext {
         if !self.globals.contains_key("__lk_register_trait") {
             self.globals.insert(
                 "__lk_register_trait".to_string(),
-                Val::RustFunction(core_register_trait_builtin),
+                Val::RustFastFunction(core_register_trait_builtin_fast),
             );
         }
         if !self.globals.contains_key("__lk_register_trait_impl") {
             self.globals.insert(
                 "__lk_register_trait_impl".to_string(),
-                Val::RustFunction(core_register_trait_impl_builtin),
+                Val::RustFastFunction(core_register_trait_impl_builtin_fast),
             );
         }
         if !self.globals.contains_key("__lk_call_method") {
             self.globals.insert(
                 "__lk_call_method".to_string(),
-                Val::RustFunction(core_call_method_builtin),
+                Val::RustFastFunction(core_call_method_builtin_fast),
             );
         }
         if !self.globals.contains_key("__lk_call_method_named") {
             self.globals.insert(
                 "__lk_call_method_named".to_string(),
-                Val::RustFunction(core_call_method_named_builtin),
+                Val::RustFastFunction(core_call_method_named_builtin_fast),
             );
         }
         if !self.globals.contains_key("__lk_make_struct") {
             self.globals.insert(
                 "__lk_make_struct".to_string(),
-                Val::RustFunction(core_make_struct_builtin),
+                Val::RustFastFunction(core_make_struct_builtin_fast),
             );
         }
     }
@@ -495,6 +495,11 @@ impl VmContext {
             }
         }
     }
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_register_trait_builtin_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
+    core_register_trait_builtin(args.as_slice(), ctx)
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -570,6 +575,11 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
         .ok_or_else(|| anyhow!("type checker not available for trait registration"))?;
     type_checker.registry_mut().register_trait(TraitDef { name, methods });
     Ok(Val::Nil)
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_register_trait_impl_builtin_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
+    core_register_trait_impl_builtin(args.as_slice(), ctx)
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -671,6 +681,11 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_call_method_builtin_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
+    core_call_method_builtin(args.as_slice(), ctx)
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
 fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
     if args.len() != 3 {
         return Err(anyhow!(
@@ -694,7 +709,11 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
         && let Some(prop_val) = receiver.access(&method_key)
     {
         match prop_val {
-            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
+            Val::Closure(_)
+            | Val::RustFunction(_)
+            | Val::RustFastFunction(_)
+            | Val::RustFastFunctionNamed(_)
+            | Val::RustFunctionNamed(_) => {
                 return prop_val.call(&[], ctx);
             }
             other => return Ok(other),
@@ -713,7 +732,11 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
     };
     if let Some(prop_val) = receiver.access(&method_key) {
         match prop_val {
-            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
+            Val::Closure(_)
+            | Val::RustFunction(_)
+            | Val::RustFastFunction(_)
+            | Val::RustFastFunctionNamed(_)
+            | Val::RustFunctionNamed(_) => {
                 return prop_val.call(&positional_args, ctx);
             }
             other => {
@@ -738,10 +761,15 @@ fn core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Result
         let mut full_args = Vec::with_capacity(positional_args.len() + 1);
         full_args.push(receiver.clone());
         full_args.extend(positional_args);
-        return func(&full_args, ctx);
+        return func.call(&full_args, ctx);
     }
 
     Err(anyhow!("{} has no method '{}'", receiver.type_name(), method_arc))
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_call_method_named_builtin_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
+    core_call_method_named_builtin(args.as_slice(), ctx)
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -787,10 +815,10 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
 
     if let Some(prop_val) = receiver.access(&method_key) {
         match prop_val {
-            Val::Closure(_) | Val::RustFunctionNamed(_) => {
+            Val::Closure(_) | Val::RustFastFunctionNamed(_) | Val::RustFunctionNamed(_) => {
                 return prop_val.call_named(&positional_args, &named_pairs, ctx);
             }
-            Val::RustFunction(_) => {
+            Val::RustFunction(_) | Val::RustFastFunction(_) => {
                 if named_pairs.is_empty() {
                     return prop_val.call(&positional_args, ctx);
                 }
@@ -831,10 +859,15 @@ fn core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::
         let mut full_args = Vec::with_capacity(positional_args.len() + 1);
         full_args.push(receiver.clone());
         full_args.extend(positional_args);
-        return func(&full_args, ctx);
+        return func.call(&full_args, ctx);
     }
 
     Err(anyhow!("{} has no method '{}'", receiver.type_name(), method_arc))
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_make_struct_builtin_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
+    core_make_struct_builtin(args.as_slice(), ctx)
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]

@@ -258,7 +258,7 @@ fn lowers_for_range_loop() {
                 inclusive: false,
                 explicit: false,
             },
-            Op::ForRangeLoop {
+            Op::RangeLoopI {
                 idx: 0,
                 limit: 1,
                 step: 2,
@@ -785,7 +785,7 @@ fn fused_add_jump_to_for_range_guard_advances_index() {
                 inclusive: true,
                 explicit: false,
             },
-            Op::ForRangeLoop {
+            Op::RangeLoopI {
                 idx: 0,
                 limit: 1,
                 step: 2,
@@ -815,7 +815,7 @@ fn fused_add_jump_to_for_range_guard_advances_index() {
     let ir = artifact.module.ir;
     assert!(
         ir.contains("forjmp_next"),
-        "expected AddIntImmJmp targeting ForRangeLoop to advance the loop index:\n{}",
+        "expected AddIntImmJmp targeting RangeLoopI to advance the loop index:\n{}",
         ir
     );
 }
@@ -883,6 +883,35 @@ fn lowers_in_membership() {
     assert!(
         ir.contains("call i64 @lk_rt_in"),
         "expected runtime membership helper call in IR:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_map_has_typed_op() {
+    let func = Function {
+        consts: vec![Val::from_str("needle")],
+        code: vec![Op::MapHasK(0, 1, 0), Op::Ret { base: 0, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "map_has", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_map_has"),
+        "expected runtime map.has helper call in IR:\n{}",
         ir
     );
 }

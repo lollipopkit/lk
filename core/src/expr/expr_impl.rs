@@ -99,217 +99,6 @@ pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Box<Expr>,
 }
-impl std::fmt::Display for Pattern {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Pattern::Literal(val) => write!(f, "{}", val),
-            Pattern::Variable(name) => write!(f, "{}", name),
-            Pattern::Wildcard => write!(f, "_"),
-            Pattern::List { patterns, rest } => {
-                write!(f, "[")?;
-                for (i, pattern) in patterns.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", pattern)?;
-                }
-                if let Some(rest_name) = rest {
-                    if !patterns.is_empty() {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "..{}", rest_name)?;
-                }
-                write!(f, "]")
-            }
-            Pattern::Map { patterns, rest } => {
-                write!(f, "{{")?;
-                for (i, (key, pattern)) in patterns.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "\"{}\": {}", key, pattern)?;
-                }
-                if let Some(rest_name) = rest {
-                    if !patterns.is_empty() {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "..{}", rest_name)?;
-                }
-                write!(f, "}}")
-            }
-            Pattern::Or(patterns) => {
-                for (i, pattern) in patterns.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " | ")?;
-                    }
-                    write!(f, "{}", pattern)?;
-                }
-                Ok(())
-            }
-            Pattern::Guard { pattern, guard } => {
-                write!(f, "{} if {}", pattern, guard)
-            }
-            Pattern::Range { start, end, inclusive } => {
-                let op = if *inclusive { "..=" } else { ".." };
-                write!(f, "{}{}{}", start, op, end)
-            }
-        }
-    }
-}
-impl Pattern {
-    /// Check if this pattern matches a value, returning bindings if it matches
-    /// Returns Ok(Some(bindings)) on match, Ok(None) on no match, Err on error
-    pub fn matches(&self, value: &Val, ctx: Option<&VmContext>) -> Result<Option<Vec<(String, Val)>>> {
-        let mut bindings = Vec::new();
-        if self.matches_impl(value, &mut bindings, ctx)? {
-            Ok(Some(bindings))
-        } else {
-            Ok(None)
-        }
-    }
-    fn matches_impl(&self, value: &Val, bindings: &mut Vec<(String, Val)>, ctx: Option<&VmContext>) -> Result<bool> {
-        match self {
-            Pattern::Literal(pattern_val) => Ok(value == pattern_val),
-            Pattern::Variable(name) => {
-                bindings.push((name.clone(), value.clone()));
-                Ok(true)
-            }
-            Pattern::Wildcard => Ok(true),
-            Pattern::List { patterns, rest } => {
-                let list_items: Vec<Val> = match value {
-                    Val::List(list) => (*list).to_vec(),
-                    _ if value.as_str().is_some() => {
-                        // Convert string to list of character strings for destructuring
-                        let s = value.as_str().unwrap();
-                        s.chars().map(|c| Val::from_str(&c.to_string())).collect::<Vec<_>>()
-                    }
-                    _ => return Ok(false),
-                };
-                // Check if we have enough elements for non-rest patterns
-                if patterns.len() > list_items.len() && rest.is_none() {
-                    return Ok(false);
-                }
-                // Match each pattern against corresponding list element
-                for (i, pattern) in patterns.iter().enumerate() {
-                    if i >= list_items.len() {
-                        return Ok(false);
-                    }
-                    if !pattern.matches_impl(&list_items[i], bindings, ctx)? {
-                        return Ok(false);
-                    }
-                }
-                // Bind rest elements if specified
-                if let Some(rest_name) = rest {
-                    let rest_items: Vec<Val> = list_items.iter().skip(patterns.len()).cloned().collect();
-                    bindings.push((rest_name.clone(), Val::List(Arc::from(rest_items))));
-                } else if patterns.len() != list_items.len() {
-                    // No rest pattern but lengths don't match
-                    return Ok(false);
-                }
-                Ok(true)
-            }
-            Pattern::Map { patterns, rest } => {
-                if let Val::Map(map) = value {
-                    let map_ref = map.as_ref();
-                    // Match each pattern against corresponding map field
-                    for (key, pattern) in patterns {
-                        if let Some(field_val) = map_ref.get(key.as_str()) {
-                            if !pattern.matches_impl(field_val, bindings, ctx)? {
-                                return Ok(false);
-                            }
-                        } else {
-                            return Ok(false); // Required key not found
-                        }
-                    }
-                    // Bind remaining fields if specified
-                    if let Some(rest_name) = rest {
-                        let matched_keys: HashSet<&str> = patterns.iter().map(|(k, _)| k.as_str()).collect();
-                        let rest_map: HashMap<String, Val> = map_ref
-                            .iter()
-                            .filter(|(k, _)| !matched_keys.contains(k.as_str()))
-                            .map(|(k, v)| (k.to_string(), v.clone()))
-                            .collect();
-                        bindings.push((rest_name.clone(), rest_map.into()));
-                    }
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-            Pattern::Or(patterns) => {
-                for pattern in patterns {
-                    let mut temp_bindings = Vec::new();
-                    if pattern.matches_impl(value, &mut temp_bindings, ctx)? {
-                        bindings.extend(temp_bindings);
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            }
-            Pattern::Guard { pattern, guard } => {
-                let mut temp_bindings = Vec::new();
-                if pattern.matches_impl(value, &mut temp_bindings, ctx)? {
-                    // Evaluate guard in provided VmContext with temporary bindings
-                    if let Some(_ctx_ref) = ctx {
-                        let mut temp_ctx = _ctx_ref.clone();
-                        temp_ctx.push_scope();
-                        for (n, v) in &temp_bindings {
-                            temp_ctx.set(n.clone(), v.clone());
-                        }
-                        let guard_result = guard.eval_with_ctx(&mut temp_ctx)?;
-                        temp_ctx.pop_scope();
-                        if let Val::Bool(true) = guard_result {
-                            bindings.extend(temp_bindings);
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    } else if !temp_bindings.is_empty() {
-                        Err(anyhow!("Guard conditions with bindings require evaluation context"))
-                    } else {
-                        let guard_result = if let Some(mut ctx_ref) = ctx.cloned() {
-                            guard.eval_with_ctx(&mut ctx_ref)?
-                        } else {
-                            return Err(anyhow!("Guard evaluation requires context"));
-                        }; // degenerate case, no bindings
-                        if let Val::Bool(true) = guard_result {
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    }
-                } else {
-                    Ok(false)
-                }
-            }
-            Pattern::Range { start, end, inclusive } => {
-                if let Some(mut ctx_ref) = ctx.cloned() {
-                    let start_val = start.eval_with_ctx(&mut ctx_ref)?;
-                    let end_val = end.eval_with_ctx(&mut ctx_ref)?;
-                    match (value, &start_val, &end_val) {
-                        (Val::Int(v), Val::Int(s), Val::Int(e)) => {
-                            if *inclusive {
-                                Ok(*v >= *s && *v <= *e)
-                            } else {
-                                Ok(*v >= *s && *v < *e)
-                            }
-                        }
-                        (Val::Float(v), Val::Float(s), Val::Float(e)) => {
-                            if *inclusive {
-                                Ok(*v >= *s && *v <= *e)
-                            } else {
-                                Ok(*v >= *s && *v < *e)
-                            }
-                        }
-                        _ => Ok(false),
-                    }
-                } else {
-                    Err(anyhow!("Range pattern evaluation requires context"))
-                }
-            }
-        }
-    }
-}
 /// Details:
 /// - No implicit context
 ///   + Identifiers must be defined in the lexical environment (e.g., via `let` in statements).
@@ -848,9 +637,11 @@ impl Expr {
                                     Val::Iterator(_) => "[Iterator]".to_string(),
                                     Val::MutationGuard(_) => "[MutationGuard]".to_string(),
                                     Val::Closure(_) => "[Closure]".to_string(),
-                                    Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
-                                        "[Function]".to_string()
-                                    }
+                                    Val::RustFunction(_)
+                                    | Val::RustFastFunction(_)
+                                    | Val::RustFastFunctionNamed(_)
+                                    | Val::RustFunctionNamed(_)
+                                    | Val::AotFunction(_) => "[Function]".to_string(),
                                 };
                                 TemplateStringPart::Literal(str_val)
                             } else {
@@ -1238,7 +1029,11 @@ impl Expr {
                         // 1) 直接属性可调用；若属性是非函数且无实参调用，则返回该属性值（如 list.len() -> list.len）
                         if let Some(prop_val) = obj_val.access(&method_key) {
                             match prop_val {
-                                Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
+                                Val::Closure(_)
+                                | Val::RustFunction(_)
+                                | Val::RustFastFunction(_)
+                                | Val::RustFastFunctionNamed(_)
+                                | Val::RustFunctionNamed(_) => {
                                     let mut argv = Vec::with_capacity(args.len());
                                     for a in args {
                                         argv.push(a.eval_with_ctx(ctx)?);
@@ -1270,8 +1065,7 @@ impl Expr {
 
                         // 回退到内置方法注册
                         if let Some(func) = find_method_for_val(&obj_val, method_name) {
-                            let func_val = Val::RustFunction(func);
-                            return func_val.call(&full_args, ctx);
+                            return func.call(&full_args, ctx);
                         }
 
                         return Err(anyhow!("{} has no method '{}'", obj_val.type_name(), method_name));
@@ -1280,7 +1074,11 @@ impl Expr {
                 // 普通 callee
                 let callee_val = callee.eval_with_ctx(ctx)?;
                 match callee_val {
-                    Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
+                    Val::Closure(_)
+                    | Val::RustFunction(_)
+                    | Val::RustFastFunction(_)
+                    | Val::RustFastFunctionNamed(_)
+                    | Val::RustFunctionNamed(_) => {
                         let mut argv = Vec::with_capacity(args.len());
                         for a in args {
                             argv.push(a.eval_with_ctx(ctx)?);
@@ -1301,7 +1099,7 @@ impl Expr {
                         // 1) 直接属性可调用
                         if let Some(prop_val) = obj_val.access(&method_key) {
                             match prop_val {
-                                Val::Closure(_) | Val::RustFunctionNamed(_) => {
+                                Val::Closure(_) | Val::RustFastFunctionNamed(_) | Val::RustFunctionNamed(_) => {
                                     let mut pos = Vec::with_capacity(pos_args.len());
                                     for a in pos_args {
                                         pos.push(a.eval_with_ctx(ctx)?);
@@ -1312,7 +1110,7 @@ impl Expr {
                                     }
                                     return prop_val.call_named(&pos, &named, ctx);
                                 }
-                                Val::RustFunction(_) => {
+                                Val::RustFunction(_) | Val::RustFastFunction(_) => {
                                     if !named_args.is_empty() {
                                         return Err(anyhow!("Named arguments are not supported for native functions"));
                                     }
@@ -1358,8 +1156,7 @@ impl Expr {
 
                         // 回退到内置方法
                         if let Some(func) = find_method_for_val(&obj_val, method_name) {
-                            let func_val = Val::RustFunction(func);
-                            return func_val.call(&full_args, ctx);
+                            return func.call(&full_args, ctx);
                         }
 
                         return Err(anyhow!("{} has no method '{}'", obj_val.type_name(), method_name));

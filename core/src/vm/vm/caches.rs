@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use crate::val::{ClosureCapture, RustFunction, RustFunctionNamed, Val};
+use crate::val::{ClosureCapture, RustFastFunction, RustFastFunctionNamed, RustFunction, RustFunctionNamed, Val};
 use crate::vm::RegionPlan;
 use crate::vm::bytecode::{Function, Op, rk_index, rk_is_const};
 use crate::vm::vm::frame::FrameInfo;
+use crate::vm::vm::quickening::QuickeningSite;
+
+mod packed;
+pub(super) use packed::*;
 
 // ────────────── Inline Cache Architecture ──────────────
 //
@@ -13,7 +17,7 @@ use crate::vm::vm::frame::FrameInfo;
 //  AccessIc (ObjectStr): 4-entry LRU cache keyed by (base_ptr, key).
 //  IndexIc (List/Str): 4-entry LRU cache keyed by (base_ptr, index).
 //  GlobalEntry: Single-entry per site, with generation tracking for invalidation.
-//  CallIc: ClosurePositional (closure_ptr+argc), Rust, RustNamed.
+//  CallIc: ClosurePositional (closure_ptr+argc), Rust, RustFastNamed, RustNamed.
 //  ForRangeState: Holds (current, limit, step, inclusive) — bare i64s.
 //  PackedHotEntry: Caches decoded packed instruction for hot BC32 paths.
 
@@ -59,14 +63,35 @@ pub(super) struct GlobalEntry(
     pub(super) u64, /*generation*/
 );
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct CallReturnLayout {
+    pub(super) base: u16,
+    pub(super) retc: u8,
+}
+
+impl CallReturnLayout {
+    #[inline]
+    pub(super) const fn new(base: u16, retc: u8) -> Self {
+        Self { base, retc }
+    }
+
+    #[inline]
+    pub(super) fn matches(self, base: u16, retc: u8) -> bool {
+        self.base == base && self.retc == retc
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 pub(super) enum CallIc {
-    Rust(RustFunction, u8 /*argc*/),
-    RustNamed(RustFunctionNamed, u8 /*argc*/),
+    Rust(RustFunction, u8 /*argc*/, CallReturnLayout),
+    RustFast(RustFastFunction, u8 /*argc*/, CallReturnLayout),
+    RustFastNamed(RustFastFunctionNamed, u8 /*argc*/, CallReturnLayout),
+    RustNamed(RustFunctionNamed, u8 /*argc*/, CallReturnLayout),
     ClosurePositional {
         closure_ptr: usize,
         fun_ptr: *const Function,
         argc: u8,
+        ret: CallReturnLayout,
         tiny: Option<TinyCallPlan>,
         cache: ClosureFastCache,
         frame_info: FrameInfo,
@@ -74,6 +99,7 @@ pub(super) enum CallIc {
     ClosureNamed {
         closure_ptr: usize,
         named_len: u8,
+        ret: CallReturnLayout,
         plan: Arc<NamedCallPlan>,
     },
 }
@@ -81,12 +107,15 @@ pub(super) enum CallIc {
 impl Clone for CallIc {
     fn clone(&self) -> Self {
         match self {
-            CallIc::Rust(f, argc) => CallIc::Rust(*f, *argc),
-            CallIc::RustNamed(f, argc) => CallIc::RustNamed(*f, *argc),
+            CallIc::Rust(f, argc, ret) => CallIc::Rust(*f, *argc, *ret),
+            CallIc::RustFast(f, argc, ret) => CallIc::RustFast(*f, *argc, *ret),
+            CallIc::RustFastNamed(f, argc, ret) => CallIc::RustFastNamed(*f, *argc, *ret),
+            CallIc::RustNamed(f, argc, ret) => CallIc::RustNamed(*f, *argc, *ret),
             CallIc::ClosurePositional {
                 closure_ptr,
                 fun_ptr,
                 argc,
+                ret,
                 tiny,
                 cache,
                 frame_info,
@@ -94,6 +123,7 @@ impl Clone for CallIc {
                 closure_ptr: *closure_ptr,
                 fun_ptr: *fun_ptr,
                 argc: *argc,
+                ret: *ret,
                 tiny: tiny.clone(),
                 cache: cache.clone(),
                 frame_info: frame_info.clone(),
@@ -101,10 +131,12 @@ impl Clone for CallIc {
             CallIc::ClosureNamed {
                 closure_ptr,
                 named_len,
+                ret,
                 plan,
             } => CallIc::ClosureNamed {
                 closure_ptr: *closure_ptr,
                 named_len: *named_len,
+                ret: *ret,
                 plan: Arc::clone(plan),
             },
         }
@@ -260,29 +292,6 @@ impl TinyCallPlan {
                 .map(Val::Int)
                 .or_else(|| expr.eval(args, captures)),
         }
-    }
-
-    #[inline]
-    pub(super) fn try_eval_add_mod_int_params(&self, a: i64, b: i64) -> Option<i64> {
-        let Self::AddMod { lhs, rhs, modulo } = self else {
-            return None;
-        };
-        let (TinyOperand::Param(0), TinyOperand::Param(1), TinyOperand::Const(Val::Int(modulo))) = (lhs, rhs, modulo)
-        else {
-            return None;
-        };
-        if *modulo == 0 {
-            return None;
-        }
-        Some(a.wrapping_add(b) % *modulo)
-    }
-
-    #[inline]
-    pub(super) fn try_eval_int3_params(&self, a: i64, b: i64, c: i64) -> Option<i64> {
-        let Self::IntExpr(program) = self else {
-            return None;
-        };
-        program.eval_params3(a, b, c)
     }
 
     fn add_mod_plan_for_rk(
@@ -623,55 +632,6 @@ impl TinyIntProgram {
         }
         (sp == 1).then_some(stack[0])
     }
-
-    #[inline]
-    fn eval_params3(&self, a: i64, b: i64, c: i64) -> Option<i64> {
-        let mut stack = [0i64; Self::MAX_STACK];
-        let mut sp = 0usize;
-        debug_assert!(self.max_stack <= Self::MAX_STACK);
-        for op in &self.ops {
-            match op {
-                TinyIntOp::Param(0) => {
-                    stack[sp] = a;
-                    sp += 1;
-                }
-                TinyIntOp::Param(1) => {
-                    stack[sp] = b;
-                    sp += 1;
-                }
-                TinyIntOp::Param(2) => {
-                    stack[sp] = c;
-                    sp += 1;
-                }
-                TinyIntOp::Param(_) | TinyIntOp::Capture(_) => return None,
-                TinyIntOp::Const(value) => {
-                    stack[sp] = *value;
-                    sp += 1;
-                }
-                TinyIntOp::Add => {
-                    sp -= 1;
-                    stack[sp - 1] = stack[sp - 1].wrapping_add(stack[sp]);
-                }
-                TinyIntOp::Sub => {
-                    sp -= 1;
-                    stack[sp - 1] = stack[sp - 1].wrapping_sub(stack[sp]);
-                }
-                TinyIntOp::Mul => {
-                    sp -= 1;
-                    stack[sp - 1] = stack[sp - 1].wrapping_mul(stack[sp]);
-                }
-                TinyIntOp::Mod => {
-                    sp -= 1;
-                    let rhs = stack[sp];
-                    if rhs == 0 {
-                        return None;
-                    }
-                    stack[sp - 1] %= rhs;
-                }
-            }
-        }
-        (sp == 1).then_some(stack[0])
-    }
 }
 
 impl TinyExpr {
@@ -796,6 +756,40 @@ mod tests {
 
         assert_eq!(result, Val::Int(((7 * 3) + (23 % 11)) + (5 * 5)));
     }
+
+    fn native_noop(_: &[Val], _: &mut crate::vm::VmContext) -> anyhow::Result<Val> {
+        Ok(Val::Nil)
+    }
+
+    fn native_named_noop(
+        _: crate::val::NativeArgs<'_>,
+        _: &[(String, Val)],
+        _: &mut crate::vm::VmContext,
+    ) -> anyhow::Result<Val> {
+        Ok(Val::Nil)
+    }
+
+    #[test]
+    fn call_ic_native_entry_carries_return_layout() {
+        let layout = CallReturnLayout::new(3, 2);
+        let entry = CallIc::Rust(native_noop, 1, layout);
+        let cloned = entry.clone();
+
+        let CallIc::Rust(_, argc, ret) = cloned else {
+            panic!("expected rust call ic");
+        };
+        assert_eq!(argc, 1);
+        assert!(ret.matches(3, 2));
+        assert!(!ret.matches(3, 1));
+        assert!(!ret.matches(4, 2));
+
+        let fast_named = CallIc::RustFastNamed(native_named_noop, 2, layout).clone();
+        let CallIc::RustFastNamed(_, argc, ret) = fast_named else {
+            panic!("expected fast named call ic");
+        };
+        assert_eq!(argc, 2);
+        assert!(ret.matches(3, 2));
+    }
 }
 
 #[derive(Clone)]
@@ -807,6 +801,7 @@ pub(super) struct ClosureFastCache {
     pub(super) for_range: Vec<Option<ForRangeState>>,
     pub(super) packed_hot: Vec<Option<PackedHotEntry>>,
     pub(super) packed_hot_key: usize,
+    pub(super) quickening: Vec<QuickeningSite>,
     pub(super) prepared_func_key: usize,
     pub(super) prepared_code_len: usize,
     /// Cached region plan — avoids Arc clone per call for closure calls.
@@ -824,6 +819,7 @@ impl ClosureFastCache {
             for_range: Vec::new(),
             packed_hot: Vec::new(),
             packed_hot_key: 0,
+            quickening: Vec::new(),
             prepared_func_key: 0,
             prepared_code_len: 0,
             region_plan: None,
@@ -875,196 +871,6 @@ impl ForRangeState {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum PackedArithOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum PackedCmpImmOp {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum PackedCmpOp {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-}
-
-#[derive(Clone)]
-pub(super) enum PackedHotKind {
-    Move {
-        dst: u16,
-        src: u16,
-    },
-    LoadK {
-        dst: u16,
-        kidx: u16,
-    },
-    LoadLocal {
-        dst: u16,
-        idx: u16,
-    },
-    StoreLocal {
-        idx: u16,
-        src: u16,
-    },
-    LoadGlobal {
-        dst: u16,
-        name_k: u16,
-    },
-    DefineGlobal {
-        name_k: u16,
-        src: u16,
-    },
-    ForRangePrep {
-        idx: u16,
-        limit: u16,
-        step: u16,
-        inclusive: bool,
-        explicit: bool,
-    },
-    ForRangeLoop {
-        idx: u16,
-        write_idx: bool,
-        ofs: i16,
-        fusion: Option<PackedRangeFusion>,
-    },
-    ForRangeStep {
-        back_ofs: i16,
-    },
-    ToStr {
-        dst: u16,
-        src: u16,
-    },
-    ToStrAddRhs {
-        tmp: u16,
-        src: u16,
-        out: u16,
-        lhs: u16,
-        add_pc: usize,
-    },
-    MakeClosure {
-        dst: u16,
-        proto: u16,
-    },
-    Arith {
-        op: PackedArithOp,
-        dst: u16,
-        a: u16,
-        b: u16,
-    },
-    AddIntImm {
-        dst: u16,
-        src: u16,
-        imm: i16,
-    },
-    CmpImm {
-        op: PackedCmpImmOp,
-        dst: u16,
-        src: u16,
-        imm: i16,
-    },
-    Cmp {
-        op: PackedCmpOp,
-        dst: u16,
-        a: u16,
-        b: u16,
-    },
-    Jmp {
-        ofs: i16,
-    },
-    JmpFalse {
-        r: u16,
-        ofs: i16,
-    },
-    Ret {
-        base: u16,
-        retc: u8,
-    },
-    ListPush {
-        list: u16,
-        val: u16,
-    },
-    MapSet {
-        map: u16,
-        key: u16,
-        val: u16,
-    },
-    MapSetMove {
-        map: u16,
-        key: u16,
-        val: u16,
-    },
-    CmpLtImmJmp {
-        r: u16,
-        imm: i16,
-        ofs: i16,
-    },
-    CmpLeImmJmp {
-        r: u16,
-        imm: i16,
-        ofs: i16,
-    },
-    AddIntImmJmp {
-        r: u16,
-        imm: i16,
-        ofs: i16,
-    },
-}
-
-#[derive(Clone)]
-pub(super) enum PackedRangeFusion {
-    AddModulo {
-        acc: u16,
-        modulo: u16,
-        step_pc: usize,
-        back_ofs: i16,
-    },
-    TinyAddModCall {
-        func: u16,
-        acc: u16,
-        modulo: u16,
-        call_pc: usize,
-        step_pc: usize,
-        back_ofs: i16,
-    },
-    TinyIntCall3 {
-        func: u16,
-        acc: u16,
-        modulo: u16,
-        call_pc: usize,
-        step_pc: usize,
-        back_ofs: i16,
-    },
-}
-
-#[derive(Clone)]
-pub(super) struct PackedHotSlot {
-    pub(super) word: u32,
-    pub(super) next_pc: usize,
-    pub(super) kind: PackedHotKind,
-}
-
-#[derive(Clone)]
-pub(super) enum PackedHotEntry {
-    Slot(PackedHotSlot),
-    Miss(u32),
-}
-
 pub(super) struct VmCaches<'a> {
     pub(super) access_ic: &'a mut Vec<Option<AccessIc>>,
     pub(super) index_ic: &'a mut Vec<Option<IndexIc>>,
@@ -1072,4 +878,5 @@ pub(super) struct VmCaches<'a> {
     pub(super) call_ic: &'a mut Vec<Option<CallIc>>,
     pub(super) for_range: &'a mut Vec<Option<ForRangeState>>,
     pub(super) packed_hot: &'a mut Vec<Option<PackedHotEntry>>,
+    pub(super) quickening: &'a mut Vec<QuickeningSite>,
 }

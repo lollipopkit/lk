@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow};
 use lk_core::{
     module::{self, Module},
     rt,
-    val::{TaskValue, Val},
+    val::{NativeArgs, TaskValue, Val},
     vm::VmContext,
 };
 use std::{collections::HashMap, sync::Arc};
@@ -45,11 +45,11 @@ impl Module for TaskModule {
     fn exports(&self) -> HashMap<String, Val> {
         let mut functions = HashMap::new();
 
-        functions.insert("await".to_string(), Val::RustFunction(task_await));
-        functions.insert("try_await".to_string(), Val::RustFunction(task_try_await));
-        functions.insert("join_all".to_string(), Val::RustFunction(task_join_all));
-        functions.insert("sleep".to_string(), Val::RustFunction(task_sleep));
-        functions.insert("spawn_blocking".to_string(), Val::RustFunction(task_spawn_blocking));
+        functions.insert("await".to_string(), Val::RustFastFunction(task_await));
+        functions.insert("try_await".to_string(), Val::RustFastFunction(task_try_await));
+        functions.insert("join_all".to_string(), Val::RustFastFunction(task_join_all));
+        functions.insert("sleep".to_string(), Val::RustFastFunction(task_sleep));
+        functions.insert("spawn_blocking".to_string(), Val::RustFastFunction(task_spawn_blocking));
 
         functions
     }
@@ -62,10 +62,11 @@ impl TaskModule {
 }
 
 /// Await a task to complete and return its result
-fn task_await(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn task_await(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("task::await() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     match &args[0] {
         Val::Task(task) => match rt::with_runtime(|runtime| runtime.block_on(runtime.join_task(task.id))) {
@@ -77,10 +78,11 @@ fn task_await(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Try to await a task, returning None if not ready
-fn task_try_await(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn task_try_await(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("task::try_await() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     match &args[0] {
         Val::Task(task) => {
@@ -96,10 +98,11 @@ fn task_try_await(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Join multiple tasks and return their results as a list
-fn task_join_all(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.is_empty() {
+fn task_join_all(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+    if args.len() == 0 {
         return Ok(Val::List(vec![].into()));
     }
+    let args = args.as_slice();
 
     let mut results = Vec::new();
 
@@ -117,10 +120,11 @@ fn task_join_all(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Sleep for the specified duration in milliseconds
-fn task_sleep(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn task_sleep(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("task::sleep() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     let duration_ms = match &args[0] {
         Val::Int(ms) => *ms,
@@ -141,14 +145,16 @@ fn task_sleep(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Spawn a blocking task (CPU-intensive work)
-fn task_spawn_blocking(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn task_spawn_blocking(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("task::spawn_blocking() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
-    // Extract the function from the argument
-    let _func = match &args[0] {
-        Val::RustFunction(f) => *f,
+    // Validate the function argument. Execution is still blocked on context
+    // lifetime management below.
+    match &args[0] {
+        Val::RustFunction(_) | Val::RustFastFunction(_) | Val::RustFastFunctionNamed(_) => {}
         Val::Closure(_) => {
             return Err(anyhow!("task::spawn_blocking() does not support closures yet"));
         }

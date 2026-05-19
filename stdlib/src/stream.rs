@@ -4,7 +4,7 @@ use lk_core::{
     module,
     module::Module,
     rt,
-    val::{StreamCursorValue, StreamValue, Type, Val, methods::register_method},
+    val::{NativeArgs, StreamCursorValue, StreamValue, Type, Val, methods::register_fast_method},
     vm::VmContext,
 };
 use once_cell::sync::Lazy;
@@ -332,47 +332,53 @@ impl StreamModule {
         let mut functions = HashMap::new();
 
         // Constructors
-        functions.insert("from_list".to_string(), Val::RustFunction(Self::from_list));
-        functions.insert("range".to_string(), Val::RustFunction(Self::range));
-        functions.insert("iterate".to_string(), Val::RustFunction(Self::iterate));
-        functions.insert("repeat".to_string(), Val::RustFunction(Self::repeat));
+        functions.insert("from_list".to_string(), Val::RustFastFunction(Self::from_list_fast));
+        functions.insert("range".to_string(), Val::RustFastFunction(Self::range_fast));
+        functions.insert("iterate".to_string(), Val::RustFastFunction(Self::iterate_fast));
+        functions.insert("repeat".to_string(), Val::RustFastFunction(Self::repeat_fast));
 
-        functions.insert("from_channel".to_string(), Val::RustFunction(Self::from_channel));
+        functions.insert(
+            "from_channel".to_string(),
+            Val::RustFastFunction(Self::from_channel_fast),
+        );
 
         // Transformers
-        functions.insert("map".to_string(), Val::RustFunction(Self::map));
-        functions.insert("filter".to_string(), Val::RustFunction(Self::filter));
-        functions.insert("take".to_string(), Val::RustFunction(Self::take));
-        functions.insert("skip".to_string(), Val::RustFunction(Self::skip));
-        functions.insert("chain".to_string(), Val::RustFunction(Self::chain));
+        functions.insert("map".to_string(), Val::RustFastFunction(Self::map_fast));
+        functions.insert("filter".to_string(), Val::RustFastFunction(Self::filter_fast));
+        functions.insert("take".to_string(), Val::RustFastFunction(Self::take_fast));
+        functions.insert("skip".to_string(), Val::RustFastFunction(Self::skip_fast));
+        functions.insert("chain".to_string(), Val::RustFastFunction(Self::chain_fast));
 
         // Cursors
-        functions.insert("subscribe".to_string(), Val::RustFunction(Self::subscribe));
-        functions.insert("next".to_string(), Val::RustFunction(Self::next));
-        functions.insert("collect".to_string(), Val::RustFunction(Self::collect));
+        functions.insert("subscribe".to_string(), Val::RustFastFunction(Self::subscribe_fast));
+        functions.insert("next".to_string(), Val::RustFastFunction(Self::next_fast));
+        functions.insert("collect".to_string(), Val::RustFastFunction(Self::collect_fast));
 
-        functions.insert("next_block".to_string(), Val::RustFunction(Self::next_block));
-        functions.insert("collect_block".to_string(), Val::RustFunction(Self::collect_block));
+        functions.insert("next_block".to_string(), Val::RustFastFunction(Self::next_block_fast));
+        functions.insert(
+            "collect_block".to_string(),
+            Val::RustFastFunction(Self::collect_block_fast),
+        );
 
         // Register meta-methods
-        register_method("List", "to_stream", Self::to_stream);
+        register_fast_method("List", "to_stream", Self::to_stream_fast);
 
-        register_method("Channel", "to_stream", Self::from_channel);
+        register_fast_method("Channel", "to_stream", Self::from_channel_fast);
 
-        register_method("Stream", "map", Self::map);
-        register_method("Stream", "filter", Self::filter);
-        register_method("Stream", "take", Self::take);
-        register_method("Stream", "skip", Self::skip);
-        register_method("Stream", "chain", Self::chain);
-        register_method("Stream", "subscribe", Self::subscribe);
-        register_method("Stream", "collect", Self::collect_stream);
+        register_fast_method("Stream", "map", Self::map_fast);
+        register_fast_method("Stream", "filter", Self::filter_fast);
+        register_fast_method("Stream", "take", Self::take_fast);
+        register_fast_method("Stream", "skip", Self::skip_fast);
+        register_fast_method("Stream", "chain", Self::chain_fast);
+        register_fast_method("Stream", "subscribe", Self::subscribe_fast);
+        register_fast_method("Stream", "collect", Self::collect_fast);
 
-        register_method("StreamCursor", "next", Self::next);
-        register_method("StreamCursor", "collect", Self::collect_cursor);
+        register_fast_method("StreamCursor", "next", Self::next_fast);
+        register_fast_method("StreamCursor", "collect", Self::collect_fast);
 
-        register_method("StreamCursor", "next_block", Self::next_block);
-        register_method("Stream", "collect_block", Self::collect_block);
-        register_method("StreamCursor", "collect_block", Self::collect_block);
+        register_fast_method("StreamCursor", "next_block", Self::next_block_fast);
+        register_fast_method("Stream", "collect_block", Self::collect_block_fast);
+        register_fast_method("StreamCursor", "collect_block", Self::collect_block_fast);
 
         Self { functions }
     }
@@ -402,6 +408,10 @@ impl StreamModule {
     }
 
     // Module API implementations
+    fn from_list_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::from_list(args.as_slice(), ctx)
+    }
+
     fn from_list(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         let list = match args {
             [Val::List(l)] => l.clone(),
@@ -409,6 +419,10 @@ impl StreamModule {
         };
         let spec = Arc::new(StreamSpec::FromList(list));
         Ok(Self::create_stream(spec, Type::Any))
+    }
+
+    fn range_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::range(args.as_slice(), ctx)
     }
 
     fn range(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
@@ -426,17 +440,27 @@ impl StreamModule {
         Ok(Self::create_stream(spec, Type::Int))
     }
 
+    fn iterate_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::iterate(args.as_slice(), ctx)
+    }
+
     fn iterate(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("iterate expects 2 arguments: seed, func"));
         }
         let seed = args[0].clone();
         let func = match &args[1] {
-            Val::Closure(_) | Val::RustFunction(_) => args[1].clone(),
+            Val::Closure(_) | Val::RustFunction(_) | Val::RustFastFunction(_) | Val::RustFastFunctionNamed(_) => {
+                args[1].clone()
+            }
             other => return Err(anyhow!("iterate func must be a function, got {}", other.type_name())),
         };
         let spec = Arc::new(StreamSpec::Iterate { seed, func });
         Ok(Self::create_stream(spec, Type::Any))
+    }
+
+    fn repeat_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::repeat(args.as_slice(), ctx)
     }
 
     fn repeat(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
@@ -447,6 +471,10 @@ impl StreamModule {
         Ok(Self::create_stream(spec, Type::Any))
     }
 
+    fn from_channel_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::from_channel(args.as_slice(), ctx)
+    }
+
     fn from_channel(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         let (channel_id, inner) = match args {
             [Val::Channel(channel)] => (channel.id, channel.inner_type.clone()),
@@ -454,6 +482,10 @@ impl StreamModule {
         };
         let spec = Arc::new(StreamSpec::FromChannel { channel_id });
         Ok(Self::create_stream(spec, inner))
+    }
+
+    fn map_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::map(args.as_slice(), ctx)
     }
 
     fn map(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
@@ -466,6 +498,10 @@ impl StreamModule {
         Ok(Self::create_stream(spec, Type::Any))
     }
 
+    fn filter_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::filter(args.as_slice(), ctx)
+    }
+
     fn filter(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         let (stream, func) = match args {
             [Val::Stream(stream), f] => (stream.id, f.clone()),
@@ -474,6 +510,10 @@ impl StreamModule {
         let upstream = get_stream_spec(stream)?;
         let spec = Arc::new(StreamSpec::Filter { upstream, func });
         Ok(Self::create_stream(spec, Type::Any))
+    }
+
+    fn take_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::take(args.as_slice(), ctx)
     }
 
     fn take(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
@@ -486,6 +526,10 @@ impl StreamModule {
         Ok(Self::create_stream(spec, Type::Any))
     }
 
+    fn skip_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::skip(args.as_slice(), ctx)
+    }
+
     fn skip(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         let (sid, n) = match args {
             [Val::Stream(stream), n] => (stream.id, extract_int(n)?),
@@ -494,6 +538,10 @@ impl StreamModule {
         let upstream = get_stream_spec(sid)?;
         let spec = Arc::new(StreamSpec::Skip { upstream, n });
         Ok(Self::create_stream(spec, Type::Any))
+    }
+
+    fn chain_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::chain(args.as_slice(), ctx)
     }
 
     fn chain(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
@@ -507,12 +555,20 @@ impl StreamModule {
         Ok(Self::create_stream(spec, Type::Any))
     }
 
+    fn subscribe_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::subscribe(args.as_slice(), ctx)
+    }
+
     fn subscribe(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
         let sid = match args {
             [Val::Stream(stream)] => stream.id,
             _ => return Err(anyhow!("subscribe expects (stream)")),
         };
         Self::create_cursor(sid)
+    }
+
+    fn next_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::next(args.as_slice(), ctx)
     }
 
     fn next(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
@@ -529,6 +585,10 @@ impl StreamModule {
             Some(v) => Ok(Val::List(vec![Val::Bool(true), v].into())),
             None => Ok(Val::List(vec![Val::Bool(false), Val::Nil].into())),
         }
+    }
+
+    fn collect_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::collect(args.as_slice(), ctx)
     }
 
     fn collect(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
@@ -588,6 +648,10 @@ impl StreamModule {
         Ok(Val::List(Arc::new(out)))
     }
 
+    fn next_block_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::next_block(args.as_slice(), ctx)
+    }
+
     fn next_block(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         use std::time::Duration;
         let (cid, timeout_ms) = match args {
@@ -625,6 +689,10 @@ impl StreamModule {
             // Fallback for non-channel cursors
             Self::next(args, ctx)
         }
+    }
+
+    fn collect_block_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::collect_block(args.as_slice(), ctx)
     }
 
     fn collect_block(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
@@ -744,6 +812,10 @@ impl StreamModule {
             [Val::List(_)] => Self::from_list(args, ctx),
             _ => Err(anyhow!("to_stream expects list as receiver")),
         }
+    }
+
+    fn to_stream_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::to_stream(args.as_slice(), ctx)
     }
 }
 

@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
+    use crate::os::OsModule;
     use anyhow::Result;
-    use lk_core::{module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val::Val, vm};
+    use lk_core::{module, module::Module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val::Val, vm};
 
     fn run(source: &str) -> Result<Val> {
         let tokens = Tokenizer::tokenize(source)?;
@@ -29,6 +30,19 @@ mod tests {
         let out = run("import os; return os.os();")?;
         assert_eq!(out.as_str(), Some(std::env::consts::OS));
         Ok(())
+    }
+
+    #[test]
+    fn test_os_exports_use_fast_native_abi() {
+        let module = OsModule::new();
+        let exports = module.exports();
+        for name in ["hostname", "arch", "os", "exit", "exec", "clock", "time", "epoch"] {
+            let value = exports.get(name).expect("os function export present");
+            assert!(
+                matches!(value, Val::RustFastFunction(_)),
+                "{name} should use RustFastFunction"
+            );
+        }
     }
 
     #[test]

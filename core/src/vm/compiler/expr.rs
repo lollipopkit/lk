@@ -45,112 +45,6 @@ impl FunctionBuilder {
             .find_map(|(candidate, reg)| (candidate == expr).then_some(*reg))
     }
 
-    fn expr_result_is_temporary(expr: &Expr) -> bool {
-        match expr {
-            Expr::Var(_) => false,
-            Expr::Paren(inner) => Self::expr_result_is_temporary(inner),
-            _ => true,
-        }
-    }
-
-    fn emit_map_access(&mut self, map_reg: u16, key_expr: &Expr) -> u16 {
-        let dst = self.alloc();
-        if let Expr::Val(key) = key_expr
-            && key.as_str().is_some()
-        {
-            let key_idx = self.k(key.clone());
-            self.emit(Op::AccessK(dst, map_reg, key_idx));
-        } else {
-            let key_reg = self.expr(key_expr);
-            self.emit(Op::Access(dst, map_reg, key_reg));
-        }
-        dst
-    }
-
-    fn emit_map_has(&mut self, map_reg: u16, key_expr: &Expr) -> u16 {
-        let dst = self.alloc();
-        if let Expr::Val(key) = key_expr
-            && key.as_str().is_some()
-        {
-            let key_idx = self.k(key.clone());
-            self.emit(Op::MapHasK(dst, map_reg, key_idx));
-        } else {
-            let key_reg = self.expr(key_expr);
-            self.emit(Op::MapHas(dst, map_reg, key_reg));
-        }
-        dst
-    }
-
-    fn emit_map_set(&mut self, map_reg: u16, key_expr: &Expr, value_expr: &Expr) {
-        let key_reg = if let Expr::Var(arg_name) = key_expr {
-            self.lookup(arg_name).unwrap_or_else(|| self.expr(key_expr))
-        } else {
-            self.expr(key_expr)
-        };
-        let val_reg = if let Expr::Var(arg_name) = value_expr {
-            self.lookup(arg_name).unwrap_or_else(|| self.expr(value_expr))
-        } else {
-            self.expr(value_expr)
-        };
-        if key_reg != map_reg
-            && val_reg != map_reg
-            && key_reg != val_reg
-            && Self::expr_result_is_temporary(key_expr)
-            && Self::expr_result_is_temporary(value_expr)
-        {
-            self.emit(Op::MapSetMove {
-                map: map_reg,
-                key: key_reg,
-                val: val_reg,
-            });
-        } else {
-            self.emit(Op::MapSet {
-                map: map_reg,
-                key: key_reg,
-                val: val_reg,
-            });
-        }
-    }
-
-    fn emit_list_from_exprs(&mut self, items: &[Box<Expr>]) -> u16 {
-        let dst = self.alloc();
-        let count = items.len() as u16;
-        let base = self.n_regs;
-        for _ in 0..items.len() {
-            let _ = self.alloc();
-        }
-        for (i, expr) in items.iter().enumerate() {
-            let ri = self.expr(expr);
-            let d = base + i as u16;
-            if ri != d {
-                self.emit(Op::Move(d, ri));
-            }
-        }
-        self.emit(Op::BuildList { dst, base, len: count });
-        dst
-    }
-
-    fn emit_map_from_named_args(&mut self, named_args: &[(String, Box<Expr>)]) -> u16 {
-        let dst = self.alloc();
-        let count = named_args.len() as u16;
-        let base = self.n_regs;
-        for _ in 0..(named_args.len() * 2) {
-            let _ = self.alloc();
-        }
-        for (i, (name, expr)) in named_args.iter().enumerate() {
-            let key_reg = base + (2 * i) as u16;
-            let key_idx = self.k(Val::from_str(name.as_str()));
-            self.emit(Op::LoadK(key_reg, key_idx));
-            let val_reg = self.expr(expr);
-            let dst_reg = key_reg + 1;
-            if val_reg != dst_reg {
-                self.emit(Op::Move(dst_reg, val_reg));
-            }
-        }
-        self.emit(Op::BuildMap { dst, base, len: count });
-        dst
-    }
-
     fn collect_inline_straight_line_body(stmt: &Stmt) -> Option<(Vec<&Stmt>, &Expr)> {
         match stmt {
             Stmt::Return { value: Some(value) } | Stmt::Expr(value) => Some((Vec::new(), value.as_ref())),
@@ -257,244 +151,6 @@ impl FunctionBuilder {
         Some(result)
     }
 
-    fn compile_method_call(&mut self, obj_expr: &Expr, field_expr: &Expr, args: &[Box<Expr>]) -> u16 {
-        // Fast path: s.split(sep).join(sep) is the original string.
-        if args.len() == 1
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("join")
-            && let Expr::CallExpr(split_callee, split_args) = obj_expr
-            && split_args.len() == 1
-            && split_args[0].as_ref() == args[0].as_ref()
-            && let Expr::Access(split_receiver, split_field) = split_callee.as_ref()
-            && let Expr::Val(split_method) = split_field.as_ref()
-            && split_method.as_str() == Some("split")
-        {
-            return self.expr(split_receiver);
-        }
-        // Fast path: stdlib map.get(m, k) — emit direct map access instead of a stdlib call.
-        if args.len() == 2
-            && let Expr::Var(module_name) = obj_expr
-            && module_name == "map"
-            && self.lookup(module_name).is_none()
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("get")
-        {
-            let map_reg = if let Expr::Var(map_name) = args[0].as_ref() {
-                self.lookup(map_name).unwrap_or_else(|| self.expr(&args[0]))
-            } else {
-                self.expr(&args[0])
-            };
-            return self.emit_map_access(map_reg, &args[1]);
-        }
-        // Fast path: stdlib map.has(m, k) when m is a local Map variable.
-        if args.len() == 2
-            && let Expr::Var(module_name) = obj_expr
-            && module_name == "map"
-            && self.lookup(module_name).is_none()
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("has")
-            && let Expr::Var(map_name) = args[0].as_ref()
-            && let Some(map_reg) = self.lookup(map_name)
-            && self.map_locals.contains(&map_reg)
-        {
-            return self.emit_map_has(map_reg, &args[1]);
-        }
-        // Fast path: stdlib map.set(m, k, v) when m is a local Map variable.
-        if args.len() == 3
-            && let Expr::Var(module_name) = obj_expr
-            && module_name == "map"
-            && self.lookup(module_name).is_none()
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("set")
-            && let Expr::Var(map_name) = args[0].as_ref()
-        {
-            if let Some(map_reg) = self.lookup(map_name)
-                && self.map_locals.contains(&map_reg)
-            {
-                self.emit_map_set(map_reg, &args[1], &args[2]);
-                return map_reg;
-            }
-            // map.set on non-tracked variable — still emit MapSet for any Map var
-            // (runtime will error if it's not a Map)
-            if let Some(map_reg) = self.lookup(map_name) {
-                self.emit_map_set(map_reg, &args[1], &args[2]);
-                return map_reg;
-            }
-        }
-        // Fast path: t.push(val) — emit ListPush opcode
-        if args.len() == 1
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("push")
-            && let Some(list_reg) = self.lookup(var_name)
-        {
-            let val_reg = if let Expr::Var(arg_name) = args[0].as_ref() {
-                self.lookup(arg_name).unwrap_or_else(|| self.expr(&args[0]))
-            } else {
-                self.expr(&args[0])
-            };
-            self.emit(Op::ListPush {
-                list: list_reg,
-                val: val_reg,
-            });
-            return list_reg;
-        }
-        // Fast path: value.len() — emit Len opcode directly (avoids method dispatch)
-        if args.is_empty()
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("len")
-        {
-            let obj_reg = self.expr(obj_expr);
-            let dst = self.alloc();
-            self.emit(Op::Len { dst, src: obj_reg });
-            return dst;
-        }
-        // Fast path: math.floor(x) — emit Floor opcode directly (avoids method dispatch)
-        if args.len() == 1
-            && let Expr::Var(obj_name) = obj_expr
-            && obj_name == "math"
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("floor")
-        {
-            let src_reg = self.expr(&args[0]);
-            let dst = self.alloc();
-            self.emit(Op::Floor { dst, src: src_reg });
-            return dst;
-        }
-        // Fast path: str.starts_with("literal") — emit StartsWithK directly
-        if args.len() == 1
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("starts_with")
-            && let Expr::Val(arg_val) = args[0].as_ref()
-            && arg_val.as_str().is_some()
-        {
-            let obj_reg = self.expr(obj_expr);
-            let kidx = self.k(arg_val.clone());
-            let dst = self.alloc();
-            self.emit(Op::StartsWithK(dst, obj_reg, kidx));
-            return dst;
-        }
-        // Fast path: str.contains("literal") — emit ContainsK directly
-        if args.len() == 1
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("contains")
-            && let Expr::Val(arg_val) = args[0].as_ref()
-            && arg_val.as_str().is_some()
-        {
-            let obj_reg = self.expr(obj_expr);
-            let kidx = self.k(arg_val.clone());
-            let dst = self.alloc();
-            self.emit(Op::ContainsK(dst, obj_reg, kidx));
-            return dst;
-        }
-        // Fast path: m.set(k, v) — emit MapSet for locals tracked as Maps
-        if args.len() == 2
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("set")
-            && let Some(map_reg) = self.lookup(var_name)
-            && self.map_locals.contains(&map_reg)
-        {
-            self.emit_map_set(map_reg, &args[0], &args[1]);
-            return map_reg;
-        }
-        // Fast path: m.get(k) — emit Access for map locals to avoid method dispatch
-        if args.len() == 1
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val2) = field_expr
-            && method_val2.as_str() == Some("get")
-            && let Some(map_reg) = self.lookup(var_name)
-            && self.map_locals.contains(&map_reg)
-        {
-            return self.emit_map_access(map_reg, &args[0]);
-        }
-        // Fast path: m.has(k) — emit MapHas for map locals to avoid method dispatch
-        if args.len() == 1
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val2) = field_expr
-            && method_val2.as_str() == Some("has")
-            && let Some(map_reg) = self.lookup(var_name)
-            && self.map_locals.contains(&map_reg)
-        {
-            return self.emit_map_has(map_reg, &args[0]);
-        }
-
-        let obj_reg = self.expr(obj_expr);
-        let pos_list = self.emit_list_from_exprs(args);
-        let method_reg = self.expr(field_expr);
-
-        let builtin_reg = self.alloc();
-        let builtin_idx = self.k(Val::from_str("__lk_call_method"));
-        self.emit(Op::LoadGlobal(builtin_reg, builtin_idx));
-
-        let base = self.alloc();
-        let arg_obj = base;
-        let arg_method = self.alloc();
-        let arg_list = self.alloc();
-
-        if obj_reg != arg_obj {
-            self.emit(Op::Move(arg_obj, obj_reg));
-        }
-        if method_reg != arg_method {
-            self.emit(Op::Move(arg_method, method_reg));
-        }
-        if pos_list != arg_list {
-            self.emit(Op::Move(arg_list, pos_list));
-        }
-
-        self.emit(Op::Call {
-            f: builtin_reg,
-            base,
-            argc: 3,
-            retc: 1,
-        });
-        base
-    }
-
-    fn compile_method_call_named(
-        &mut self,
-        obj_expr: &Expr,
-        field_expr: &Expr,
-        pos_args: &[Box<Expr>],
-        named_args: &[(String, Box<Expr>)],
-    ) -> u16 {
-        let obj_reg = self.expr(obj_expr);
-        let pos_list = self.emit_list_from_exprs(pos_args);
-        let named_map = self.emit_map_from_named_args(named_args);
-        let method_reg = self.expr(field_expr);
-
-        let builtin_reg = self.alloc();
-        let builtin_idx = self.k(Val::from_str("__lk_call_method_named"));
-        self.emit(Op::LoadGlobal(builtin_reg, builtin_idx));
-
-        let base = self.alloc();
-        let arg_obj = base;
-        let arg_method = self.alloc();
-        let arg_pos = self.alloc();
-        let arg_named = self.alloc();
-
-        if obj_reg != arg_obj {
-            self.emit(Op::Move(arg_obj, obj_reg));
-        }
-        if method_reg != arg_method {
-            self.emit(Op::Move(arg_method, method_reg));
-        }
-        if pos_list != arg_pos {
-            self.emit(Op::Move(arg_pos, pos_list));
-        }
-        if named_map != arg_named {
-            self.emit(Op::Move(arg_named, named_map));
-        }
-
-        self.emit(Op::Call {
-            f: builtin_reg,
-            base,
-            argc: 4,
-            retc: 1,
-        });
-        base
-    }
-
     fn try_fold_unary(&mut self, uop: &UnaryOp, inner: &Expr) -> Option<Val> {
         if let Expr::Val(v) = inner {
             match uop {
@@ -560,7 +216,7 @@ impl FunctionBuilder {
         }
     }
 
-    fn emit_expr_into(&mut self, dst: u16, expr: &Expr) {
+    pub(crate) fn emit_expr_into(&mut self, dst: u16, expr: &Expr) {
         match expr {
             Expr::Val(value) => {
                 let kidx = self.k(value.clone());
@@ -912,9 +568,8 @@ impl FunctionBuilder {
                 self.emit(Op::LoadK(r_has_def, k_hd));
 
                 // Call builtin select$block(types, channels, values, guards, has_default)
-                let r_f = self.alloc();
-                let kf = self.k(Val::from_str("select$block"));
-                self.emit(Op::LoadGlobal(r_f, kf));
+                let known_builtin = self.const_env.get("select$block").cloned();
+                let r_f = self.emit_known_or_global_callable("select$block", known_builtin.as_ref());
                 let base = self.n_regs;
                 let _ = self.alloc(); // arg0
                 let _ = self.alloc(); // arg1
@@ -936,12 +591,7 @@ impl FunctionBuilder {
                 if r_has_def != base + 4 {
                     self.emit(Op::Move(base + 4, r_has_def));
                 }
-                self.emit(Op::Call {
-                    f: r_f,
-                    base,
-                    argc: 5,
-                    retc: 1,
-                });
+                self.emit_positional_call(r_f, base, 5, 1, known_builtin.as_ref());
 
                 let out = self.alloc();
                 let k_nil = self.k(Val::Nil);
@@ -1037,7 +687,7 @@ impl FunctionBuilder {
                             let r = self.alloc();
                             let k = self.k(Val::from_str(s.as_str()));
                             self.emit(Op::LoadK(r, k));
-                            self.emit(Op::Add(out, out, r));
+                            self.emit(Op::StrConcatKnownCap(out, out, r));
                         }
                         TemplateStringPart::Expr(expr) => {
                             let rv = self.expr(expr);
@@ -1052,7 +702,7 @@ impl FunctionBuilder {
                             }
                             let rs = self.alloc();
                             self.emit(Op::ToStr(rs, rv));
-                            self.emit(Op::Add(out, out, rs));
+                            self.emit(Op::StrConcatKnownCap(out, out, rs));
                         }
                     }
                 }
@@ -1176,19 +826,37 @@ impl FunctionBuilder {
                     self.emit(Op::LoadK(dst, k));
                     return dst;
                 }
-                let b = self.expr(base);
+                let b = if let Expr::Var(name) = base.as_ref() {
+                    self.lookup(name).unwrap_or_else(|| self.expr(base))
+                } else {
+                    self.expr(base)
+                };
                 let out = self.alloc();
                 if let Expr::Val(field_val) = field.as_ref()
                     && let Some(s) = field_val.as_str()
                 {
                     let k = self.k(Val::from_str(s));
-                    self.emit(Op::AccessK(out, b, k));
+                    if self.map_locals.contains(&b) {
+                        self.emit(Op::MapGetInterned(out, b, k));
+                    } else {
+                        self.emit(Op::AccessK(out, b, k));
+                    }
                 } else if let Expr::Val(Val::Int(i)) = field.as_ref() {
-                    let k = self.k(Val::Int(*i));
-                    self.emit(Op::IndexK(out, b, k));
+                    if self.list_locals.contains(&b)
+                        && let Ok(index) = i16::try_from(*i)
+                    {
+                        self.emit(Op::ListIndexI(out, b, index));
+                    } else {
+                        let k = self.k(Val::Int(*i));
+                        self.emit(Op::IndexK(out, b, k));
+                    }
                 } else {
                     let f = self.expr(field);
-                    self.emit(Op::Access(out, b, f));
+                    if self.map_locals.contains(&b) {
+                        self.emit(Op::MapGetDynamic(out, b, f));
+                    } else {
+                        self.emit(Op::Access(out, b, f));
+                    }
                 }
                 out
             }
@@ -1305,9 +973,8 @@ impl FunctionBuilder {
                 let type_idx = self.k(Val::from_str(name.as_str()));
                 self.emit(Op::LoadK(type_reg, type_idx));
 
-                let builtin_reg = self.alloc();
-                let builtin_idx = self.k(Val::from_str("__lk_make_struct"));
-                self.emit(Op::LoadGlobal(builtin_reg, builtin_idx));
+                let known_builtin = self.const_env.get("__lk_make_struct").cloned();
+                let builtin_reg = self.emit_known_or_global_callable("__lk_make_struct", known_builtin.as_ref());
 
                 let base = self.alloc();
                 let arg_type = base;
@@ -1320,12 +987,7 @@ impl FunctionBuilder {
                     self.emit(Op::Move(arg_fields, fields_map));
                 }
 
-                self.emit(Op::Call {
-                    f: builtin_reg,
-                    base,
-                    argc: 2,
-                    retc: 1,
-                });
+                self.emit_positional_call(builtin_reg, base, 2, 1, known_builtin.as_ref());
                 base
             }
             Expr::Call(name, args) => {
@@ -1334,10 +996,11 @@ impl FunctionBuilder {
                 }
                 // If the callee is a locally-defined function registered in const_env,
                 // load it from the constant pool instead of via LoadGlobal (avoids hashtable lookup).
-                let use_direct_call = self.const_env.get(name).is_some() && self.call_safe_to_fold(name);
+                let known_callee = self.const_env.get(name).cloned();
+                let use_direct_call = known_callee.is_some() && self.call_safe_to_fold(name);
                 let f = if use_direct_call {
-                    let func_val = self.const_env.get(name).unwrap().clone();
-                    let kidx = self.k(func_val);
+                    let func_val = known_callee.as_ref().expect("known callee checked above");
+                    let kidx = self.k(func_val.clone());
                     let f = self.alloc();
                     self.emit(Op::LoadK(f, kidx));
                     f
@@ -1350,14 +1013,11 @@ impl FunctionBuilder {
                     f
                 };
                 let argc = args.len() as u8;
-                let base = self.n_regs;
-                for _ in 0..args.len() {
-                    let _ = self.alloc();
-                }
+                let base = self.reserve_call_window(args.len(), 1);
                 for (i, arg) in args.iter().enumerate() {
                     self.emit_expr_into(base + i as u16, arg);
                 }
-                self.emit(Op::Call { f, base, argc, retc: 1 });
+                self.emit_positional_call(f, base, argc, 1, known_callee.as_ref());
                 base
             }
             Expr::CallExpr(callee, args) => {
@@ -1369,20 +1029,24 @@ impl FunctionBuilder {
                 {
                     return inlined;
                 }
+                let known_callee = if let Expr::Var(name) = callee.as_ref() {
+                    (self.lookup(name).is_none())
+                        .then(|| self.lookup_const(name).cloned())
+                        .flatten()
+                } else {
+                    None
+                };
                 let f = if let Expr::Var(name) = callee.as_ref() {
                     self.lookup(name).unwrap_or_else(|| self.expr(callee))
                 } else {
                     self.expr(callee)
                 };
                 let argc = args.len() as u8;
-                let base = self.n_regs;
-                for _ in 0..args.len() {
-                    let _ = self.alloc();
-                }
+                let base = self.reserve_call_window(args.len(), 1);
                 for (i, arg) in args.iter().enumerate() {
                     self.emit_expr_into(base + i as u16, arg);
                 }
-                self.emit(Op::Call { f, base, argc, retc: 1 });
+                self.emit_positional_call(f, base, argc, 1, known_callee.as_ref());
                 base
             }
             Expr::CallNamed(callee, pos_args, named_args) => {
@@ -1395,10 +1059,7 @@ impl FunctionBuilder {
                     );
                 }
                 let f = self.expr(callee);
-                let base_pos = self.n_regs;
-                for _ in 0..pos_args.len() {
-                    let _ = self.alloc();
-                }
+                let base_pos = self.reserve_call_window(pos_args.len(), 1);
                 for (i, arg) in pos_args.iter().enumerate() {
                     let ri = self.expr(arg);
                     let dst = base_pos + i as u16;

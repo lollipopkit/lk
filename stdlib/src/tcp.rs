@@ -1,5 +1,9 @@
 use anyhow::{Result, anyhow};
-use lk_core::{module::Module, val::Val, vm::VmContext};
+use lk_core::{
+    module::Module,
+    val::{NativeArgs, Val},
+    vm::VmContext,
+};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener as StdTcpListener, TcpStream};
@@ -48,21 +52,22 @@ impl TcpModule {
         let mut functions = HashMap::new();
 
         // Connection management
-        functions.insert("connect".to_string(), Val::RustFunction(Self::connect));
-        functions.insert("bind".to_string(), Val::RustFunction(Self::bind));
-        functions.insert("close".to_string(), Val::RustFunction(Self::close));
-        functions.insert("read".to_string(), Val::RustFunction(Self::read));
-        functions.insert("write".to_string(), Val::RustFunction(Self::write));
-        functions.insert("accept".to_string(), Val::RustFunction(Self::accept));
+        functions.insert("connect".to_string(), Val::RustFastFunction(Self::connect));
+        functions.insert("bind".to_string(), Val::RustFastFunction(Self::bind));
+        functions.insert("close".to_string(), Val::RustFastFunction(Self::close));
+        functions.insert("read".to_string(), Val::RustFastFunction(Self::read));
+        functions.insert("write".to_string(), Val::RustFastFunction(Self::write));
+        functions.insert("accept".to_string(), Val::RustFastFunction(Self::accept));
 
         TcpModule { functions }
     }
 
     /// Connect to a TCP server: tcp.connect(host, port) -> connection_id
-    fn connect(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn connect(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("connect requires 2 arguments: host, port"));
         }
+        let args = args.as_slice();
 
         let host = args[0].as_str().ok_or_else(|| anyhow!("Host must be a string"))?;
 
@@ -84,10 +89,11 @@ impl TcpModule {
     }
 
     /// Bind a TCP listener: tcp.bind(host, port) -> listener_id
-    fn bind(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn bind(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("bind requires 2 arguments: host, port"));
         }
+        let args = args.as_slice();
 
         let host = args[0].as_str().ok_or_else(|| anyhow!("Host must be a string"))?;
 
@@ -109,10 +115,11 @@ impl TcpModule {
     }
 
     /// Accept a connection from a listener: tcp.accept(listener_id) -> connection_id
-    fn accept(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn accept(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("accept requires 1 argument: listener_id"));
         }
+        let args = args.as_slice();
 
         let listener_id = match &args[0] {
             Val::Int(i) if *i > 0 => *i as u64,
@@ -140,10 +147,11 @@ impl TcpModule {
     }
 
     /// Read data from a connection: tcp.read(connection_id, [max_bytes]) -> string
-    fn read(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.is_empty() || args.len() > 2 {
+    fn read(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() == 0 || args.len() > 2 {
             return Err(anyhow!("read requires 1-2 arguments: connection_id, [max_bytes]"));
         }
+        let args = args.as_slice();
 
         let conn_id = match &args[0] {
             Val::Int(i) if *i > 0 => *i as u64,
@@ -179,10 +187,11 @@ impl TcpModule {
     }
 
     /// Write data to a connection: tcp.write(connection_id, data) -> bytes_written
-    fn write(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn write(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("write requires 2 arguments: connection_id, data"));
         }
+        let args = args.as_slice();
 
         let conn_id = match &args[0] {
             Val::Int(i) if *i > 0 => *i as u64,
@@ -213,10 +222,11 @@ impl TcpModule {
     }
 
     /// Close a connection or listener: tcp.close(id) -> bool
-    fn close(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn close(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("close requires 1 argument: id"));
         }
+        let args = args.as_slice();
 
         let id = match &args[0] {
             Val::Int(i) if *i > 0 => *i as u64,
@@ -261,5 +271,12 @@ mod tests {
         assert!(exports.contains_key("read"));
         assert!(exports.contains_key("write"));
         assert!(exports.contains_key("accept"));
+        for name in ["connect", "bind", "close", "read", "write", "accept"] {
+            let value = exports.get(name).expect("tcp function export present");
+            assert!(
+                matches!(value, Val::RustFastFunction(_)),
+                "{name} should use RustFastFunction"
+            );
+        }
     }
 }

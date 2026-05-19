@@ -1,13 +1,21 @@
 use std::path::Path;
+use std::sync::Arc;
 
 #[cfg(feature = "llvm")]
 use lk_core::llvm::{LlvmBackendOptions, OptLevel, compile_function_to_llvm};
-use lk_core::vm::{self, Function, compile_program};
+use lk_core::{
+    module::ModuleRegistry,
+    stmt::{ModuleResolver, execute_imports},
+    typ::TypeChecker,
+    vm::{
+        VmCoverageReport, compile_program, vm_coverage_report, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+    },
+};
 
-use crate::llvm_symbol_fragment;
 use crate::paths::parse_program_file;
+use crate::{bundler, configure_package_resolver, llvm_symbol_fragment, rt};
 
-pub(crate) fn run_coverage_report(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn run_coverage_report(path: &Path, runtime: bool) -> anyhow::Result<()> {
     let program = parse_program_file(path)?;
     let func = compile_program(&program);
     println!("Coverage report: {}", path.display());
@@ -36,43 +44,170 @@ pub(crate) fn run_coverage_report(path: &Path) -> anyhow::Result<()> {
     }
     #[cfg(not(feature = "llvm"))]
     println!("AOT entry: disabled (cli built without llvm feature)");
-    print_function_coverage("entry", &func, 0);
+    let report = vm_coverage_report(&func);
+    print_vm_coverage(&report);
+    if runtime {
+        match collect_runtime_metrics(path, &program, &func) {
+            Ok(()) => print_runtime_metrics(),
+            Err(err) => println!("Runtime metrics: skipped after execution error ({err})"),
+        }
+    } else {
+        println!("Runtime metrics: pass --runtime to execute and collect clone/move counters");
+    }
     Ok(())
 }
 
-fn print_function_coverage(name: &str, function: &Function, depth: usize) {
-    let indent = "  ".repeat(depth);
-    let status = vm::bc32_pack_status(function);
-    if status.packed {
+fn collect_runtime_metrics(
+    path: &Path,
+    program: &lk_core::stmt::Program,
+    func: &lk_core::vm::Function,
+) -> anyhow::Result<()> {
+    rt::init_runtime().ok();
+    let mut registry = ModuleRegistry::new();
+    lk_stdlib::register_stdlib_globals(&mut registry);
+    lk_stdlib::register_stdlib_modules(&mut registry)?;
+    let mut resolver = ModuleResolver::with_registry(registry);
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        resolver.set_base_dir(parent.to_path_buf());
+    }
+    configure_package_resolver(&mut resolver, path)?;
+    let resolver = Arc::new(resolver);
+    let mut ctx = lk_core::vm::VmContext::new()
+        .with_resolver(Arc::clone(&resolver))
+        .with_type_checker(Some(TypeChecker::new_strict()));
+    let imports = bundler::extract_import_statements(program);
+    if !imports.is_empty() {
+        execute_imports(&imports, resolver.as_ref(), &mut ctx)?;
+    }
+
+    vm_runtime_metrics_reset();
+    let mut vm = lk_core::vm::Vm::new();
+    let result = vm.exec_with(func, &mut ctx, None);
+    rt::shutdown_runtime();
+    result.map(|_| ())
+}
+
+fn print_vm_coverage(report: &VmCoverageReport) {
+    let totals = &report.totals;
+    println!(
+        "VM totals: functions={} packed={}/{} ops={} code32_words={} calls={} named_calls={} closures={} unmaterialized_closures={}",
+        totals.functions,
+        totals.packed_functions,
+        totals.functions,
+        totals.instructions,
+        totals.code32_words,
+        totals.call_sites,
+        totals.named_call_sites,
+        totals.closure_sites,
+        totals.unmaterialized_closures,
+    );
+    print_category_summary("  categories", &totals.category_counts);
+    print_opcode_summary("  top opcodes", &totals.opcode_counts, 12);
+    print_opcode_summary("  bc32 typed gate opcodes", &totals.bc32_typed_gate_counts, 16);
+    if !totals.bc32_fallback_reasons.is_empty() {
         println!(
-            "{indent}- {name}: packed ops={} words={}",
-            status.ops,
-            status.words.unwrap_or(0)
+            "  bc32 fallback reasons: {}",
+            format_pairs(&totals.bc32_fallback_reasons)
         );
-    } else {
+    }
+    if !totals.bc32_fallback_opcodes.is_empty() {
         println!(
-            "{indent}- {name}: unpacked ops={} reason={} opcode={} op_index={} detail={}",
-            status.ops,
-            status.reason.as_deref().unwrap_or("unknown"),
-            status.opcode.as_deref().unwrap_or("unknown"),
-            status
-                .op_index
-                .map(|idx| idx.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            status.detail.as_deref().unwrap_or("")
+            "  bc32 fallback opcodes: {}",
+            format_pairs(&totals.bc32_fallback_opcodes)
         );
     }
 
-    for (idx, proto) in function.protos.iter().enumerate() {
-        let proto_name = proto
-            .self_name
-            .as_deref()
-            .map(|self_name| format!("closure[{idx}] {self_name}"))
-            .unwrap_or_else(|| format!("closure[{idx}]"));
-        if let Some(nested) = proto.func.as_ref() {
-            print_function_coverage(&proto_name, nested.as_ref(), depth + 1);
-        } else {
-            println!("{indent}  - {proto_name}: not materialized");
-        }
+    for function in &report.functions {
+        print_function_coverage(function);
     }
+}
+
+fn print_function_coverage(function: &lk_core::vm::VmFunctionCoverage) {
+    let indent = "  ".repeat(function.depth);
+    if function.bc32_status.packed {
+        println!(
+            "{indent}- {}: packed ops={} words={} regs={} consts={} protos={} decoded={}",
+            function.name,
+            function.bc32_status.ops,
+            function.bc32_status.words.unwrap_or(0),
+            function.register_count,
+            function.const_count,
+            function.proto_count,
+            function.has_decoded_bc32,
+        );
+    } else {
+        println!(
+            "{indent}- {}: unpacked ops={} reason={} opcode={} op_index={} detail={} regs={} consts={} protos={} decoded={}",
+            function.name,
+            function.bc32_status.ops,
+            function.bc32_status.reason.as_deref().unwrap_or("unknown"),
+            function.bc32_status.opcode.as_deref().unwrap_or("unknown"),
+            function
+                .bc32_status
+                .op_index
+                .map(|idx| idx.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            function.bc32_status.detail.as_deref().unwrap_or(""),
+            function.register_count,
+            function.const_count,
+            function.proto_count,
+            function.has_decoded_bc32,
+        );
+    }
+    println!(
+        "{indent}  sites: calls={} named_calls={} closures={} unmaterialized_closures={}",
+        function.call_sites, function.named_call_sites, function.closure_sites, function.unmaterialized_closures
+    );
+    print_category_summary(&format!("{indent}  categories"), &function.category_counts);
+    print_opcode_summary(&format!("{indent}  top opcodes"), &function.opcode_counts, 8);
+}
+
+fn print_category_summary(label: &str, categories: &[(lk_core::vm::VmOpcodeCategory, usize)]) {
+    if !categories.is_empty() {
+        let pairs = categories
+            .iter()
+            .map(|(category, count)| (category.label().to_string(), *count))
+            .collect::<Vec<_>>();
+        println!("{label}: {}", format_pairs(&pairs));
+    }
+}
+
+fn print_opcode_summary(label: &str, opcodes: &[lk_core::vm::VmOpcodeCount], limit: usize) {
+    if opcodes.is_empty() {
+        return;
+    }
+    let mut sorted = opcodes.to_vec();
+    sorted.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.opcode.cmp(b.opcode)));
+    let pairs = sorted
+        .into_iter()
+        .take(limit)
+        .map(|entry| (entry.opcode.to_string(), entry.count))
+        .collect::<Vec<_>>();
+    println!("{label}: {}", format_pairs(&pairs));
+}
+
+fn format_pairs(pairs: &[(String, usize)]) -> String {
+    pairs
+        .iter()
+        .map(|(key, count)| format!("{key}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn print_runtime_metrics() {
+    let metrics = vm_runtime_metrics_snapshot();
+    println!(
+        "Runtime metrics: val_clones={} immediate_clones={} heap_clones={} register_writes={} return_value_moves={} quickening_hits={} quickening_build_attempts={} quickening_build_successes={} quickening_misses={} quickening_deopts={} quickening_sentinel_skips={}",
+        metrics.val_clones,
+        metrics.immediate_val_clones,
+        metrics.heap_val_clones,
+        metrics.register_writes,
+        metrics.return_value_moves,
+        metrics.quickening_hits,
+        metrics.quickening_build_attempts,
+        metrics.quickening_build_successes,
+        metrics.quickening_misses,
+        metrics.quickening_deopts,
+        metrics.quickening_sentinel_skips,
+    );
 }

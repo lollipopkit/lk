@@ -1,7 +1,7 @@
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     collections::HashMap,
-    fmt::{self, Debug},
+    fmt::Debug,
     sync::{Arc, Mutex},
 };
 
@@ -18,26 +18,31 @@ use serde::{Serialize, Serializer};
 
 use crate::stmt::{NamedParamDecl, Program, Stmt};
 
-use crate::vm::{CaptureSpec, Compiler, FrameInfo, Function, Vm, VmContext, with_current_vm};
+use crate::vm::{CaptureSpec, FrameInfo, Function, VmContext};
 
 use crate::resolve::slots::{FunctionLayout, SlotResolver};
 
 mod cache;
+mod call;
+mod clone;
 mod convert;
 mod intern;
+mod map_key_cache;
+mod native;
 mod ops;
+mod strings;
 mod types;
 
 mod iter;
 
 use cache::cached_list_contains;
-use intern::intern;
 
-pub use types::{FunctionNamedParamType, Type};
+pub use types::{FunctionNamedParamType, ShortStr, Type};
 
 type DefaultSeedRegLayout = Vec<Option<Arc<[u16]>>>;
 
 pub use iter::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue};
+pub use native::{NativeArgs, RustFastFunction, RustFastFunctionNamed};
 
 /// New VM-optimized function type that directly uses VmContext
 pub type RustFunction = fn(args: &[Val], ctx: &mut VmContext) -> Result<Val>;
@@ -49,88 +54,6 @@ pub type RustFunctionNamed = fn(positional: &[Val], named: &[(String, Val)], ctx
 pub struct AotFunction {
     pub ptr: usize,
     pub arity: u8,
-}
-
-/// 内联短字符串：0–7 字节 UTF-8，完全存储在 Val 内（零堆分配）。
-/// 实现了 Copy，克隆无需原子操作。
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ShortStr {
-    len: u8,
-    data: [u8; 7],
-}
-
-impl ShortStr {
-    /// 从 str 创建。若 s.len() > 7 返回 None。
-    #[inline]
-    pub fn new(s: &str) -> Option<Self> {
-        let bytes = s.as_bytes();
-        if bytes.len() > 7 {
-            return None;
-        }
-        let mut data = [0u8; 7];
-        data[..bytes.len()].copy_from_slice(bytes);
-        Some(Self {
-            len: bytes.len() as u8,
-            data,
-        })
-    }
-
-    #[inline]
-    pub fn from_char(ch: char) -> Self {
-        let mut data = [0u8; 7];
-        let encoded = ch.encode_utf8(&mut data);
-        Self {
-            len: encoded.len() as u8,
-            data,
-        }
-    }
-
-    #[inline]
-    pub fn as_str(&self) -> &str {
-        // SAFETY: data 在构造时已验证为合法 UTF-8
-        std::str::from_utf8(&self.data[..self.len as usize]).expect("ShortStr contains valid UTF-8")
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.len as usize
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
-impl fmt::Debug for ShortStr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.as_str())
-    }
-}
-
-impl fmt::Display for ShortStr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl From<ShortStr> for ArcStr {
-    fn from(s: ShortStr) -> ArcStr {
-        ArcStr::from(s.as_str())
-    }
-}
-
-impl serde::Serialize for ShortStr {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ShortStr {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        ShortStr::new(&s).ok_or_else(|| serde::de::Error::custom("string too long for ShortStr"))
-    }
 }
 
 thread_local! {
@@ -638,7 +561,7 @@ pub struct ObjectValue {
     pub fields: Arc<HashMap<String, Val>>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub enum Val {
     /// 内联短字符串（≤7 字节），零堆分配，实现 Copy
     ShortStr(ShortStr),
@@ -655,6 +578,10 @@ pub enum Val {
     Closure(Arc<ClosureValue>),
     /// Rust 函数指针
     RustFunction(RustFunction),
+    /// Native fastcall function pointer
+    RustFastFunction(RustFastFunction),
+    /// Native fastcall function pointer with named argument support
+    RustFastFunctionNamed(RustFastFunctionNamed),
     /// Rust 具名参数函数
     RustFunctionNamed(RustFunctionNamed),
     /// LLVM AOT 编译函数，Box 包装消除 padding（8B thin 指针）
@@ -675,38 +602,6 @@ pub enum Val {
     Object(Arc<ObjectValue>),
     #[default]
     Nil,
-}
-
-impl Val {
-    /// 从 &str 构造 Val，≤7 字节走 ShortStr（零分配），更长走 Str(ArcStr)。
-    #[inline]
-    pub fn from_str(s: &str) -> Val {
-        if let Some(short) = ShortStr::new(s) {
-            Val::ShortStr(short)
-        } else {
-            Val::Str(intern(s))
-        }
-    }
-
-    #[inline]
-    pub fn str_intern(s: &str) -> Val {
-        Val::Str(intern(s))
-    }
-
-    #[inline]
-    pub fn intern_str(s: &str) -> ArcStr {
-        intern(s)
-    }
-
-    /// 若 Val 是字符串变体，返回 &str；否则返回 None。
-    #[inline]
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Val::ShortStr(s) => Some(s.as_str()),
-            Val::Str(s) => Some(s.as_str()),
-            _ => None,
-        }
-    }
 }
 
 impl Type {
@@ -765,6 +660,8 @@ impl Type {
             // Function types
             (Type::Function { .. }, Val::Closure(_)) => Ok(()),
             (Type::Function { .. }, Val::RustFunction(_)) => Ok(()),
+            (Type::Function { .. }, Val::RustFastFunction(_)) => Ok(()),
+            (Type::Function { .. }, Val::RustFastFunctionNamed(_)) => Ok(()),
             (Type::Function { .. }, Val::RustFunctionNamed(_)) => Ok(()),
             (Type::Function { .. }, Val::AotFunction(_)) => Ok(()),
 
@@ -853,6 +750,8 @@ impl Val {
             Val::List(_) => "List",
             Val::Closure(_) => "Function",
             Val::RustFunction(_) => "Function",
+            Val::RustFastFunction(_) => "Function",
+            Val::RustFastFunctionNamed(_) => "Function",
             Val::RustFunctionNamed(_) => "Function",
             Val::AotFunction(_) => "Function",
             Val::Task(_) => "Task",
@@ -914,243 +813,11 @@ impl Val {
         }
     }
 
-    /// Call this value as a function with the given arguments
-    #[inline]
-    fn call_with_mode(&self, args: &[Val], ctx: &mut VmContext, force_vm: bool) -> Result<Val> {
-        let _ = force_vm;
-        let _ = vm_fast_path_forced();
-        match self {
-            #[cfg(feature = "aot-minimal-runtime")]
-            Val::Closure(_) => Err(anyhow!("AOT minimal runtime cannot call VM closures")),
-            #[cfg(not(feature = "aot-minimal-runtime"))]
-            Val::Closure(closure_arc) => {
-                let closure = closure_arc.as_ref();
-                let params = closure.params.as_ref();
-                if args.len() != params.len() {
-                    return Err(anyhow!(
-                        "Function expects {} arguments, got {}",
-                        params.len(),
-                        args.len()
-                    ));
-                }
-                let scope_capacity = params.len() + closure.named_params.len();
-                let mut named_slots: Vec<Option<Val>> = vec![None; closure.named_params.len()];
-                closure.with_call_env(ctx, scope_capacity, |call_env, layout_info| {
-                    let frame_info = closure.frame_info();
-                    call_env.push_call_frame(frame_info.name.clone(), frame_info.location.clone());
-                    let result = Self::call_named_vm_fast(closure, args, &mut named_slots, call_env, layout_info);
-                    call_env.pop_call_frame();
-                    result
-                })
-            }
-            Val::RustFunction(func) => func(args, ctx),
-            Val::RustFunctionNamed(func) => func(args, &[], ctx),
-            _ => Err(anyhow!("{} is not a function", self.type_name())),
-        }
-    }
-
-    #[inline]
-    pub fn call(&self, args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        self.call_with_mode(args, ctx, false)
-    }
-
-    #[inline]
-    pub fn call_vm(&self, args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        self.call_with_mode(args, ctx, true)
-    }
-
-    /// Call a function value with positional and named arguments.
-    /// Named arguments are supported for user-defined closures and opt-in native functions.
-    fn call_named_with_mode(
-        &self,
-        pos: &[Val],
-        named: &[(String, Val)],
-        ctx: &mut VmContext,
-        force_vm: bool,
-    ) -> Result<Val> {
-        let _ = force_vm;
-        let _ = vm_fast_path_forced();
-        match self {
-            #[cfg(feature = "aot-minimal-runtime")]
-            Val::Closure(_) => Err(anyhow!("AOT minimal runtime cannot call VM closures")),
-            #[cfg(not(feature = "aot-minimal-runtime"))]
-            Val::Closure(closure_arc) => {
-                let closure = closure_arc.as_ref();
-                let params = closure.params.as_ref();
-                if pos.len() != params.len() {
-                    return Err(anyhow!(
-                        "Function expects {} positional arguments, got {}",
-                        params.len(),
-                        pos.len()
-                    ));
-                }
-                let mut named_slots = closure.build_named_slots(named)?;
-                let scope_capacity = params.len() + closure.named_params.len();
-                closure.with_call_env(ctx, scope_capacity, |call_env, layout_info| {
-                    let frame_info = closure.frame_info();
-                    call_env.push_call_frame(frame_info.name.clone(), frame_info.location.clone());
-                    let result = Self::call_named_vm_fast(closure, pos, &mut named_slots, call_env, layout_info);
-                    call_env.pop_call_frame();
-                    result
-                })
-            }
-            Val::RustFunction(_func) => {
-                if named.is_empty() {
-                    self.call_with_mode(pos, ctx, force_vm)
-                } else {
-                    Err(anyhow!("Named arguments are not supported for native functions"))
-                }
-            }
-            Val::RustFunctionNamed(func) => func(pos, named, ctx),
-            _ => Err(anyhow!("{} is not a function", self.type_name())),
-        }
-    }
-
-    fn call_named_vm_fast(
-        closure: &ClosureValue,
-        pos: &[Val],
-        named_slots: &mut [Option<Val>],
-        call_env: &mut VmContext,
-        layout_info: &CallLayoutInfo,
-    ) -> Result<Val> {
-        let frame_info = closure.frame_info();
-        let params = closure.params.as_ref();
-        let named_params = closure.named_params.as_ref();
-        let named_kinds = closure.named_param_kinds();
-        let fun = closure.code.get_or_init(|| {
-            let c = Compiler::new();
-            Arc::new(c.compile_function_with_captures(
-                params,
-                named_params,
-                closure.body.as_ref(),
-                closure.capture_specs.as_ref(),
-            ))
-        });
-        Self::bind_positional_params(call_env, params, pos, layout_info);
-        let named_regs = &fun.named_param_regs;
-        debug_assert_eq!(
-            named_regs.len(),
-            named_params.len(),
-            "named param register layout mismatch ({} regs vs {} params)",
-            named_regs.len(),
-            named_params.len()
-        );
-        let mut named_seed_pairs: Vec<(usize, Val)> = Vec::with_capacity(named_params.len());
-        let mut named_seed: Vec<(u16, Val)> = Vec::with_capacity(named_params.len());
-        for (idx, decl) in named_params.iter().enumerate() {
-            let kind = named_kinds.get(idx).copied().unwrap_or(NamedParamKind::Required);
-            let value = if let Some(val) = named_slots.get_mut(idx).and_then(|slot| slot.take()) {
-                val
-            } else {
-                match kind {
-                    NamedParamKind::DefaultThunk => {
-                        let default_fun = closure
-                            .default_funcs
-                            .get(idx)
-                            .and_then(|opt| opt.as_ref())
-                            .expect("default function must exist for DefaultThunk kind");
-                        let default_frame = closure
-                            .default_frame_info(idx)
-                            .expect("default frame info should exist");
-                        let layout = closure
-                            .default_seed_regs(idx)
-                            .expect("default seed layout should exist for default thunk");
-                        let mut default_named_seed: Vec<(u16, Val)> = Vec::with_capacity(named_seed_pairs.len());
-                        for (seed_idx, seed_val) in named_seed_pairs.iter() {
-                            let reg = layout
-                                .get(*seed_idx)
-                                .copied()
-                                .expect("default seed layout must cover parent indices");
-                            default_named_seed.push((reg, seed_val.clone()));
-                        }
-                        Self::exec_function_with_bindings(
-                            default_fun,
-                            call_env,
-                            pos,
-                            default_named_seed.as_slice(),
-                            &closure.captures,
-                            &closure.capture_specs,
-                            Some(default_frame.clone()),
-                        )?
-                    }
-                    NamedParamKind::OptionalNil => Val::Nil,
-                    NamedParamKind::Required => {
-                        return Err(anyhow!("Missing required named argument: {}", decl.name));
-                    }
-                }
-            };
-            Self::bind_named_param_value(call_env, decl, value.clone(), layout_info);
-            named_seed_pairs.push((idx, value.clone()));
-            named_seed.push((named_regs[idx], value));
-        }
-        call_env.preload_slot_mappings_per_depth(&layout_info.locals);
-        Self::exec_function_with_bindings(
-            fun.as_ref(),
-            call_env,
-            pos,
-            named_seed.as_slice(),
-            &closure.captures,
-            &closure.capture_specs,
-            Some(frame_info.clone()),
-        )
-    }
-
-    fn exec_function_with_bindings(
-        fun: &Function,
-        env: &mut VmContext,
-        pos: &[Val],
-        named_seed: &[(u16, Val)],
-        captures: &Arc<ClosureCapture>,
-        capture_specs: &Arc<Vec<CaptureSpec>>,
-        frame_info: Option<FrameInfo>,
-    ) -> Result<Val> {
-        if let Some(res) = with_current_vm(|vm| {
-            vm.exec_with_bindings(
-                fun,
-                env,
-                Some(pos),
-                named_seed,
-                Some(Arc::clone(captures)),
-                Some(Arc::clone(capture_specs)),
-                frame_info.clone(),
-            )
-        }) {
-            res
-        } else {
-            thread_local! {
-                static VM_POOL_NAMED_CALL: RefCell<Option<Vm>> = const { RefCell::new(None) };
-            }
-            let mut vm = VM_POOL_NAMED_CALL
-                .with(|cell| cell.borrow_mut().take())
-                .unwrap_or_default();
-            let res = vm.exec_with_bindings(
-                fun,
-                env,
-                Some(pos),
-                named_seed,
-                Some(Arc::clone(captures)),
-                Some(Arc::clone(capture_specs)),
-                frame_info,
-            );
-            VM_POOL_NAMED_CALL.with(|cell| {
-                let _ = cell.borrow_mut().replace(vm);
-            });
-            res
-        }
-    }
-
-    pub fn call_named(&self, pos: &[Val], named: &[(String, Val)], ctx: &mut VmContext) -> Result<Val> {
-        self.call_named_with_mode(pos, named, ctx, false)
-    }
-
-    pub fn call_named_vm(&self, pos: &[Val], named: &[(String, Val)], ctx: &mut VmContext) -> Result<Val> {
-        self.call_named_with_mode(pos, named, ctx, true)
-    }
     #[inline]
     pub(crate) fn access(&self, field: &Val) -> Option<Val> {
         match (self, field) {
             // Map: field lookup by key only (do not shadow keys with synthetic fields)
-            (Val::Map(m), key) if key.as_str().is_some() => m.get(key.as_str().unwrap()).cloned(),
+            (Val::Map(m), key) if key.as_str().is_some() => Self::map_get_str(m, key.as_str().unwrap()).cloned(),
             // String indexing and metadata
             (lhs, Val::Int(i)) if lhs.as_str().is_some() => {
                 let s_str = lhs.as_str().unwrap();
@@ -1208,82 +875,6 @@ impl Val {
         }
     }
 
-    /// Fast string concatenation — hot path for `s = s + "x"` loops.
-    #[inline]
-    pub(crate) fn concat_strings(a: &str, b: &str) -> Val {
-        if a.is_empty() {
-            return Val::from_str(b);
-        }
-        if b.is_empty() {
-            return Val::from_str(a);
-        }
-        let total = a.len() + b.len();
-        let mut s = String::with_capacity(total);
-        s.push_str(a);
-        s.push_str(b);
-        Val::from_str(&s)
-    }
-
-    #[inline]
-    pub(crate) fn to_str_value(value: &Val) -> Val {
-        match value {
-            Val::ShortStr(s) => Val::ShortStr(*s),
-            Val::Str(s) => Val::Str(s.clone()),
-            Val::Int(i) => {
-                let mut buf = itoa::Buffer::new();
-                Val::from_str(buf.format(*i))
-            }
-            Val::Float(f) => {
-                let mut buf = ryu::Buffer::new();
-                Val::from_str(buf.format(*f))
-            }
-            Val::Bool(true) => Val::ShortStr(ShortStr::new("true").unwrap()),
-            Val::Bool(false) => Val::ShortStr(ShortStr::new("false").unwrap()),
-            Val::Nil => Val::ShortStr(ShortStr::new("nil").unwrap()),
-            other => Val::from_str(&other.to_string()),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn ascii_char_value(byte: u8) -> Val {
-        debug_assert!(byte.is_ascii());
-        Val::ShortStr(ShortStr::from_char(byte as char))
-    }
-
-    #[inline]
-    pub(crate) fn concat_str_add_rhs(prefix: &str, rhs: &Val) -> Option<Val> {
-        match rhs {
-            Val::ShortStr(s) => Some(Self::concat_strings(prefix, s.as_str())),
-            Val::Str(s) => Some(Self::concat_strings(prefix, s.as_str())),
-            Val::Int(i) => {
-                let mut buf = itoa::Buffer::new();
-                Some(Self::concat_strings(prefix, buf.format(*i)))
-            }
-            Val::Float(f) => {
-                let mut buf = ryu::Buffer::new();
-                Some(Self::concat_strings(prefix, buf.format(*f)))
-            }
-            _ => None,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn concat_add_lhs_str(lhs: &Val, suffix: &str) -> Option<Val> {
-        match lhs {
-            Val::ShortStr(s) => Some(Self::concat_strings(s.as_str(), suffix)),
-            Val::Str(s) => Some(Self::concat_strings(s.as_str(), suffix)),
-            Val::Int(i) => {
-                let mut buf = itoa::Buffer::new();
-                Some(Self::concat_strings(buf.format(*i), suffix))
-            }
-            Val::Float(f) => {
-                let mut buf = ryu::Buffer::new();
-                Some(Self::concat_strings(buf.format(*f), suffix))
-            }
-            _ => None,
-        }
-    }
-
     #[inline]
     pub(crate) fn clone_list_slice(slice: &[Val]) -> Arc<Vec<Val>> {
         if slice.is_empty() {
@@ -1331,6 +922,8 @@ impl PartialEq for Val {
                 a.params == b.params && Arc::ptr_eq(&a.body, &b.body) && Arc::ptr_eq(&a.env, &b.env)
             }
             (Val::RustFunction(a), Val::RustFunction(b)) => std::ptr::fn_addr_eq(*a, *b),
+            (Val::RustFastFunction(a), Val::RustFastFunction(b)) => std::ptr::fn_addr_eq(*a, *b),
+            (Val::RustFastFunctionNamed(a), Val::RustFastFunctionNamed(b)) => std::ptr::fn_addr_eq(*a, *b),
             (Val::RustFunctionNamed(a), Val::RustFunctionNamed(b)) => std::ptr::fn_addr_eq(*a, *b),
             (Val::AotFunction(a), Val::AotFunction(b)) => a == b,
             (Val::Task(a), Val::Task(b)) => {
@@ -1383,7 +976,12 @@ impl Serialize for Val {
             Val::Bool(b) => serializer.serialize_bool(*b),
             Val::Map(m) => (**m).serialize(serializer),
             Val::List(l) => (**l).serialize(serializer),
-            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
+            Val::Closure(_)
+            | Val::RustFunction(_)
+            | Val::RustFastFunction(_)
+            | Val::RustFastFunctionNamed(_)
+            | Val::RustFunctionNamed(_)
+            | Val::AotFunction(_) => {
                 // Functions can't be serialized, use placeholder
                 serializer.serialize_str("<function>")
             }
@@ -1449,7 +1047,11 @@ impl core::fmt::Display for Val {
             Val::Closure(closure) => {
                 write!(f, "fn({})", closure.params.join(", "))
             }
-            Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
+            Val::RustFunction(_)
+            | Val::RustFastFunction(_)
+            | Val::RustFastFunctionNamed(_)
+            | Val::RustFunctionNamed(_)
+            | Val::AotFunction(_) => {
                 write!(f, "<native function>")
             }
             Val::Task(task) => match &task.value {
@@ -1508,13 +1110,16 @@ impl Val {
             Val::Iterator(_) => Type::Named("Iterator".to_string()),
             Val::MutationGuard(guard) => Type::Named(guard.guard_type().to_string()),
             Val::StreamCursor(_) => Type::Named("StreamCursor".to_string()),
-            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
-                Type::Function {
-                    params: vec![],
-                    named_params: Vec::new(),
-                    return_type: Box::new(Type::Any),
-                }
-            }
+            Val::Closure(_)
+            | Val::RustFunction(_)
+            | Val::RustFastFunction(_)
+            | Val::RustFastFunctionNamed(_)
+            | Val::RustFunctionNamed(_)
+            | Val::AotFunction(_) => Type::Function {
+                params: vec![],
+                named_params: Vec::new(),
+                return_type: Box::new(Type::Any),
+            },
             Val::Nil => Type::Nil,
         }
     }

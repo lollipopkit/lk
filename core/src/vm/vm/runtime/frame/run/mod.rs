@@ -15,6 +15,7 @@ mod math;
 mod opcode;
 mod packed;
 mod plan;
+mod raw_boundary;
 
 use helpers::handle_return_common;
 use opcode::run_opcode_code;

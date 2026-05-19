@@ -1,3 +1,4 @@
+use super::super::raw_boundary::region_allocator;
 use super::*;
 
 pub(super) fn handles_basic_op(op: &Op) -> bool {
@@ -6,6 +7,7 @@ pub(super) fn handles_basic_op(op: &Op) -> bool {
         Op::Index { .. }
             | Op::Jmp(_)
             | Op::JmpFalse(_, _)
+            | Op::BoolBranch(_, _)
             | Op::JmpIfNil(_, _)
             | Op::JmpIfNotNil(_, _)
             | Op::CmpLtImmJmp { .. }
@@ -23,8 +25,16 @@ pub(super) fn handles_basic_op(op: &Op) -> bool {
             | Op::Access(_, _, _)
             | Op::AccessK(_, _, _)
             | Op::IndexK(_, _, _)
+            | Op::ListIndexI(_, _, _)
+            | Op::ListSetI { .. }
+            | Op::StrIndexI(_, _, _)
+            | Op::MapGetInterned(_, _, _)
+            | Op::MapGetDynamic(_, _, _)
+            | Op::MapSetInterned(_, _, _)
+            | Op::MapHasK(_, _, _)
             | Op::ForRangePrep { .. }
             | Op::ForRangeLoop { .. }
+            | Op::RangeLoopI { .. }
             | Op::ForRangeStep { .. }
             | Op::PatternMatch { .. }
             | Op::PatternMatchOrFail { .. }
@@ -124,7 +134,7 @@ pub(super) fn exec_basic_op(
         Op::Jmp(ofs) => {
             pc = ((pc as isize) + (ofs as isize)) as usize;
         }
-        Op::JmpFalse(r, ofs) => {
+        Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs) => {
             let cond_falsey = matches!(regs[r as usize], Val::Nil | Val::Bool(false));
             if cond_falsey {
                 pc = ((pc as isize) + (ofs as isize)) as usize;
@@ -194,7 +204,7 @@ pub(super) fn exec_basic_op(
                     let mut entries: Vec<_> = m.iter().collect();
                     entries.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
                     if use_thread_local && !entries.is_empty() {
-                        let allocator = unsafe { &*region_allocator_ptr };
+                        let allocator = region_allocator(region_allocator_ptr);
                         allocator.with_val_buffer(entries.len(), |scratch| {
                             for (key, value) in entries.iter() {
                                 let pair = Val::List(vec![Val::from_str(key.as_str()), (*value).clone()].into());
@@ -331,8 +341,8 @@ pub(super) fn exec_basic_op(
                         )
                     }
                 }
-                (Val::Map(m), Val::Str(s)) => m.get(s.as_str()).cloned(),
-                (Val::Map(m), Val::ShortStr(s)) => m.get(s.as_str()).cloned(),
+                (Val::Map(m), Val::Str(s)) => Val::map_get_str(m, s.as_str()).cloned(),
+                (Val::Map(m), Val::ShortStr(s)) => Val::map_get_str(m, s.as_str()).cloned(),
                 (Val::Object(object), Val::Str(s)) => {
                     let fields = &object.fields;
                     let optr = Arc::as_ptr(fields) as usize;
@@ -382,7 +392,7 @@ pub(super) fn exec_basic_op(
             let res = if let Some(s) = key.as_str() {
                 let (hit_val, obj_ptr) = match &regs[base as usize] {
                     Val::Map(m) => {
-                        let out = m.get(s).cloned().unwrap_or(Val::Nil);
+                        let out = Val::map_get_str(m, s).cloned().unwrap_or(Val::Nil);
                         (Some(out), None)
                     }
                     Val::Object(object) => {
@@ -473,6 +483,107 @@ pub(super) fn exec_basic_op(
             assign_reg(frame_raw, regs, dst as usize, res);
             pc = next_pc_default;
         }
+        Op::ListIndexI(dst, base, index) => {
+            let res = match &regs[base as usize] {
+                _ if index < 0 => Val::Nil,
+                Val::List(list) => list.get(index as usize).cloned().unwrap_or(Val::Nil),
+                _ => Val::Nil,
+            };
+            assign_reg(frame_raw, regs, dst as usize, res);
+            pc = next_pc_default;
+        }
+        Op::StrIndexI(dst, base, index) => {
+            let res = match &regs[base as usize] {
+                value if value.as_str().is_some() => {
+                    let text = value.as_str().unwrap();
+                    if index < 0 {
+                        Val::Nil
+                    } else if text.is_ascii() {
+                        let bi = index as usize;
+                        let bytes = text.as_bytes();
+                        if bi < bytes.len() {
+                            Val::ascii_char_value(bytes[bi])
+                        } else {
+                            Val::Nil
+                        }
+                    } else {
+                        text.chars()
+                            .nth(index as usize)
+                            .map(|character| Val::from_str(&character.to_string()))
+                            .unwrap_or(Val::Nil)
+                    }
+                }
+                _ => Val::Nil,
+            };
+            assign_reg(frame_raw, regs, dst as usize, res);
+            pc = next_pc_default;
+        }
+        Op::MapHasK(dst, map, kidx) => {
+            let key = f.consts[kidx as usize].as_str().unwrap_or("");
+            let out = match &regs[map as usize] {
+                Val::Map(map) => Val::Bool(Val::map_contains_str(map, key)),
+                _ => {
+                    return frame_return_common(frame_raw, pc, Err(anyhow!("has() first argument must be a map")))
+                        .map(Some);
+                }
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
+        Op::MapGetInterned(dst, map, kidx) => {
+            let key = f.consts[kidx as usize].as_str().unwrap_or("");
+            let out = match &regs[map as usize] {
+                Val::Map(map) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+                _ => Val::Nil,
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
+        Op::MapGetDynamic(dst, map, key) => {
+            let out = match (&regs[map as usize], regs[key as usize].as_str()) {
+                (Val::Map(map), Some(key)) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+                _ => Val::Nil,
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
+        Op::ListSetI { dst, list, index, val } => {
+            let out = if index < 0 {
+                return frame_return_common(frame_raw, pc, Err(anyhow!("set() index must be non-negative"))).map(Some);
+            } else if let Val::List(items) = &regs[list as usize] {
+                let index = index as usize;
+                let Some(old) = items.get(index).cloned() else {
+                    return frame_return_common(
+                        frame_raw,
+                        pc,
+                        Err(anyhow!("index {} out of bounds for len {}", index, items.len())),
+                    )
+                    .map(Some);
+                };
+                let mut updated = Vec::with_capacity(items.len());
+                updated.extend(items.iter().cloned());
+                updated[index] = regs[val as usize].clone();
+                Val::List(vec![Val::List(Arc::new(updated)), old].into())
+            } else {
+                return frame_return_common(frame_raw, pc, Err(anyhow!("set() first argument must be a list")))
+                    .map(Some);
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
+        Op::MapSetInterned(map, kidx, val) => {
+            let key = f.consts[kidx as usize]
+                .string_key_arcstr()
+                .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
+            let pushed_val = regs[val as usize].clone();
+            match &mut regs[map as usize] {
+                Val::Map(arc) => insert_map_entry(arc, key, pushed_val),
+                _ => {
+                    return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map"))).map(Some);
+                }
+            }
+            pc = next_pc_default;
+        }
         Op::ForRangePrep {
             idx,
             limit,
@@ -529,6 +640,9 @@ pub(super) fn exec_basic_op(
         }
         Op::ForRangeLoop {
             idx, write_idx, ofs, ..
+        }
+        | Op::RangeLoopI {
+            idx, write_idx, ofs, ..
         } => {
             let idx_reg = idx as usize;
             let state_entry = match fetch_for_range_state(for_range_ic, pc) {
@@ -541,6 +655,7 @@ pub(super) fn exec_basic_op(
                 if write_idx {
                     assign_reg(frame_raw, regs, idx_reg, Val::Int(state_entry.current));
                 }
+                state_entry.current += state_entry.step;
                 pc = next_pc_default;
             } else {
                 for_range_ic[pc] = None;
@@ -630,7 +745,7 @@ pub(super) fn exec_basic_op(
                 .map(|plan| plan.region_for(dst as usize) == AllocationRegion::ThreadLocal)
                 .unwrap_or(false);
             if use_thread_local {
-                let allocator = unsafe { &*region_allocator_ptr };
+                let allocator = region_allocator(region_allocator_ptr);
                 let list_val = allocator.with_val_buffer(n, |scratch| {
                     scratch.extend((0..n).map(|i| regs[start + i].clone()));
                     let data = scratch.split_off(0);
@@ -654,7 +769,7 @@ pub(super) fn exec_basic_op(
                 .map(|plan| plan.region_for(dst as usize) == AllocationRegion::ThreadLocal)
                 .unwrap_or(false);
             if use_thread_local {
-                let allocator = unsafe { &*region_allocator_ptr };
+                let allocator = region_allocator(region_allocator_ptr);
                 let map_val = allocator.with_map_entries(n, |entries| {
                     for i in 0..n {
                         let key_arc;
@@ -662,22 +777,15 @@ pub(super) fn exec_basic_op(
                         {
                             let key_val = &regs[start + 2 * i];
                             value = regs[start + 2 * i + 1].clone();
-                            key_arc = match key_val {
-                                Val::ShortStr(s) => Val::intern_str(s.as_str()),
-                                Val::Str(s) => s.clone(),
-                                Val::Int(i) => Val::intern_str(i.to_string().as_str()),
-                                Val::Float(f) => Val::intern_str(f.to_string().as_str()),
-                                Val::Bool(b) => Val::intern_str(b.to_string().as_str()),
-                                _ => {
-                                    return Err(anyhow!("Map key must be a primitive type, got: {:?}", key_val));
-                                }
-                            };
+                            key_arc = key_val
+                                .primitive_key_arcstr()
+                                .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", key_val))?;
                         }
                         entries.push((key_arc, value));
                     }
                     let mut map = fast_hash_map_with_capacity(entries.len());
                     for (k, v) in entries.drain(..) {
-                        map.insert(k, v);
+                        Val::map_insert_arcstr(&mut map, k, v);
                     }
                     Ok(Val::Map(Arc::new(map)))
                 });
@@ -695,13 +803,9 @@ pub(super) fn exec_basic_op(
                     {
                         let key_val = &regs[start + 2 * i];
                         value = regs[start + 2 * i + 1].clone();
-                        key_arc = match key_val {
-                            Val::ShortStr(s) => Val::intern_str(s.as_str()),
-                            Val::Str(s) => s.clone(),
-                            Val::Int(i) => Val::intern_str(i.to_string().as_str()),
-                            Val::Float(f) => Val::intern_str(f.to_string().as_str()),
-                            Val::Bool(b) => Val::intern_str(b.to_string().as_str()),
-                            _ => {
+                        key_arc = match key_val.primitive_key_arcstr() {
+                            Some(key_arc) => key_arc,
+                            None => {
                                 return frame_return_common(
                                     frame_raw,
                                     pc,
@@ -711,7 +815,7 @@ pub(super) fn exec_basic_op(
                             }
                         };
                     }
-                    map.insert(key_arc, value);
+                    Val::map_insert_arcstr(&mut map, key_arc, value);
                 }
                 assign_reg(frame_raw, regs, dst as usize, Val::Map(Arc::new(map)));
             }

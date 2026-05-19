@@ -57,6 +57,21 @@ where
     }
 }
 
+impl<V, S, H> From<hashbrown::HashMap<S, V, H>> for Val
+where
+    V: Into<Val>,
+    S: AsRef<str>,
+    H: core::hash::BuildHasher,
+{
+    fn from(m: hashbrown::HashMap<S, V, H>) -> Self {
+        let mut inner: FastHashMap<ArcStr, Val> = fast_hash_map_with_capacity(m.len());
+        for (k, v) in m.into_iter() {
+            inner.insert(Val::intern_str(k.as_ref()), v.into());
+        }
+        Val::Map(Arc::new(inner))
+    }
+}
+
 impl<T> From<Vec<T>> for Val
 where
     T: Into<Val>,

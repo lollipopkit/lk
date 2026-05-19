@@ -7,7 +7,7 @@ use lk_core::{
     module,
     module::Module,
     rt::with_runtime,
-    val::{self, ChannelValue, Val},
+    val::{self, ChannelValue, NativeArgs, Val},
     vm::VmContext,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -47,11 +47,11 @@ impl Module for TimeModule {
     fn exports(&self) -> HashMap<String, Val> {
         let mut functions = HashMap::new();
 
-        functions.insert("sleep".to_string(), Val::RustFunction(time_sleep));
-        functions.insert("timeout".to_string(), Val::RustFunction(time_timeout));
-        functions.insert("after".to_string(), Val::RustFunction(time_after));
-        functions.insert("now".to_string(), Val::RustFunction(time_now));
-        functions.insert("since".to_string(), Val::RustFunction(time_since));
+        functions.insert("sleep".to_string(), Val::RustFastFunction(time_sleep));
+        functions.insert("timeout".to_string(), Val::RustFastFunction(time_timeout));
+        functions.insert("after".to_string(), Val::RustFastFunction(time_after));
+        functions.insert("now".to_string(), Val::RustFastFunction(time_now));
+        functions.insert("since".to_string(), Val::RustFastFunction(time_since));
 
         functions
     }
@@ -64,10 +64,11 @@ impl TimeModule {
 }
 
 /// Sleep for the specified duration in milliseconds
-fn time_sleep(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn time_sleep(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("time::sleep() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     let duration_ms = match &args[0] {
         Val::Int(ms) => *ms,
@@ -88,10 +89,11 @@ fn time_sleep(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Create a timeout channel that fires after the specified duration
-fn time_timeout(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn time_timeout(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("time::timeout() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     let duration_ms = match &args[0] {
         Val::Int(ms) => *ms,
@@ -132,10 +134,11 @@ fn time_timeout(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Create a one-shot timer that fires after the specified duration
-fn time_after(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn time_after(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("time::after() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     let duration_ms = match &args[0] {
         Val::Int(ms) => *ms,
@@ -176,8 +179,8 @@ fn time_after(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Get the current time in milliseconds since Unix epoch
-fn time_now(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if !args.is_empty() {
+fn time_now(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+    if args.len() != 0 {
         return Err(anyhow!("time::now() expects no arguments"));
     }
 
@@ -187,10 +190,11 @@ fn time_now(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Calculate the duration between two timestamps in milliseconds
-fn time_since(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn time_since(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!("time::since() expects exactly 2 arguments"));
     }
+    let args = args.as_slice();
 
     let start_time = match &args[0] {
         Val::Int(ms) => *ms,

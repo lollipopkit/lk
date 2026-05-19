@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use lk_core::{
     module::{Module, ModuleRegistry},
-    val::{Val, methods::register_method},
+    val::{NativeArgs, Val, methods::register_fast_method},
     vm::VmContext,
 };
 
@@ -24,139 +24,142 @@ impl StringModule {
         let mut functions = HashMap::new();
 
         // Register string functions as Rust functions
-        functions.insert("len".to_string(), Val::RustFunction(Self::len));
-        functions.insert("lower".to_string(), Val::RustFunction(Self::lower));
-        functions.insert("upper".to_string(), Val::RustFunction(Self::upper));
-        functions.insert("trim".to_string(), Val::RustFunction(Self::trim));
-        functions.insert("starts_with".to_string(), Val::RustFunction(Self::starts_with));
-        functions.insert("ends_with".to_string(), Val::RustFunction(Self::ends_with));
-        functions.insert("contains".to_string(), Val::RustFunction(Self::contains));
-        functions.insert("replace".to_string(), Val::RustFunctionNamed(Self::replace));
-        functions.insert("substring".to_string(), Val::RustFunction(Self::substring));
-        functions.insert("split".to_string(), Val::RustFunction(Self::split));
-        functions.insert("join".to_string(), Val::RustFunction(Self::join));
-        functions.insert("reverse".to_string(), Val::RustFunction(Self::reverse));
-        functions.insert("repeat".to_string(), Val::RustFunction(Self::repeat));
-        functions.insert("char".to_string(), Val::RustFunction(Self::char_at));
-        functions.insert("byte".to_string(), Val::RustFunction(Self::byte_at));
-        functions.insert("chars".to_string(), Val::RustFunction(Self::chars));
-        functions.insert("find".to_string(), Val::RustFunction(Self::find));
-        functions.insert("is_empty".to_string(), Val::RustFunction(Self::is_empty));
-        functions.insert("format".to_string(), Val::RustFunction(Self::format));
+        functions.insert("len".to_string(), Val::RustFastFunction(Self::len_fast));
+        functions.insert("lower".to_string(), Val::RustFastFunction(Self::lower));
+        functions.insert("upper".to_string(), Val::RustFastFunction(Self::upper));
+        functions.insert("trim".to_string(), Val::RustFastFunction(Self::trim));
+        functions.insert("starts_with".to_string(), Val::RustFastFunction(Self::starts_with_fast));
+        functions.insert("ends_with".to_string(), Val::RustFastFunction(Self::ends_with_fast));
+        functions.insert("contains".to_string(), Val::RustFastFunction(Self::contains_fast));
+        functions.insert("replace".to_string(), Val::RustFastFunctionNamed(Self::replace_fast));
+        functions.insert("substring".to_string(), Val::RustFastFunction(Self::substring));
+        functions.insert("split".to_string(), Val::RustFastFunction(Self::split));
+        functions.insert("join".to_string(), Val::RustFastFunction(Self::join));
+        functions.insert("reverse".to_string(), Val::RustFastFunction(Self::reverse));
+        functions.insert("repeat".to_string(), Val::RustFastFunction(Self::repeat));
+        functions.insert("char".to_string(), Val::RustFastFunction(Self::char_at));
+        functions.insert("byte".to_string(), Val::RustFastFunction(Self::byte_at));
+        functions.insert("chars".to_string(), Val::RustFastFunction(Self::chars));
+        functions.insert("find".to_string(), Val::RustFastFunction(Self::find));
+        functions.insert("is_empty".to_string(), Val::RustFastFunction(Self::is_empty_fast));
+        functions.insert("format".to_string(), Val::RustFastFunction(Self::format));
 
         // Also register as meta-methods for String type
-        register_method("String", "len", Self::len);
-        register_method("String", "lower", Self::lower);
-        register_method("String", "upper", Self::upper);
-        register_method("String", "trim", Self::trim);
-        register_method("String", "starts_with", Self::starts_with);
-        register_method("String", "ends_with", Self::ends_with);
-        register_method("String", "contains", Self::contains);
-        register_method("String", "replace", Self::replace_method);
-        register_method("String", "substring", Self::substring);
-        register_method("String", "split", Self::split);
-        register_method("String", "join", Self::join);
+        register_fast_method("String", "len", Self::len_fast);
+        register_fast_method("String", "lower", Self::lower);
+        register_fast_method("String", "upper", Self::upper);
+        register_fast_method("String", "trim", Self::trim);
+        register_fast_method("String", "starts_with", Self::starts_with_fast);
+        register_fast_method("String", "ends_with", Self::ends_with_fast);
+        register_fast_method("String", "contains", Self::contains_fast);
+        register_fast_method("String", "replace", Self::replace_method_fast);
+        register_fast_method("String", "substring", Self::substring);
+        register_fast_method("String", "split", Self::split);
+        register_fast_method("String", "join", Self::join);
 
-        register_method("String", "reverse", Self::reverse);
-        register_method("String", "repeat", Self::repeat);
-        register_method("String", "char", Self::char_at);
-        register_method("String", "byte", Self::byte_at);
-        register_method("String", "chars", Self::chars);
-        register_method("String", "find", Self::find);
-        register_method("String", "is_empty", Self::is_empty);
+        register_fast_method("String", "reverse", Self::reverse);
+        register_fast_method("String", "repeat", Self::repeat);
+        register_fast_method("String", "char", Self::char_at);
+        register_fast_method("String", "byte", Self::byte_at);
+        register_fast_method("String", "chars", Self::chars);
+        register_fast_method("String", "find", Self::find);
+        register_fast_method("String", "is_empty", Self::is_empty_fast);
 
         Self { functions }
     }
 
-    /// Get string length
-    fn len(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn len_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("len() takes exactly 1 argument"));
         }
 
-        match args[0].as_str() {
+        match args.get(0).and_then(Val::as_str) {
             Some(s) => Ok(Val::Int(s.len() as i64)),
             None => Err(anyhow!("len() argument must be a string")),
         }
     }
 
     /// Convert to lowercase
-    fn lower(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn lower(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("lower() takes exactly 1 argument"));
         }
 
-        match args[0].as_str() {
+        match args.get(0).and_then(Val::as_str) {
             Some(s) => Ok(Val::from_str(&s.to_lowercase())),
             None => Err(anyhow!("lower() argument must be a string")),
         }
     }
 
     /// Convert to uppercase
-    fn upper(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn upper(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("upper() takes exactly 1 argument"));
         }
 
-        match args[0].as_str() {
+        match args.get(0).and_then(Val::as_str) {
             Some(s) => Ok(Val::from_str(&s.to_uppercase())),
             None => Err(anyhow!("upper() argument must be a string")),
         }
     }
 
     /// Trim whitespace from both ends
-    fn trim(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn trim(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("trim() takes exactly 1 argument"));
         }
 
-        match args[0].as_str() {
+        match args.get(0).and_then(Val::as_str) {
             Some(s) => Ok(Val::from_str(s.trim())),
             None => Err(anyhow!("trim() argument must be a string")),
         }
     }
 
-    /// Check if string starts with prefix
-    fn starts_with(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn starts_with_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("starts_with() takes exactly 2 arguments: string, prefix"));
         }
 
-        let string = args[0]
-            .as_str()
+        let string = args
+            .get(0)
+            .and_then(Val::as_str)
             .ok_or_else(|| anyhow!("starts_with() first argument must be a string"))?;
-        let prefix = args[1]
-            .as_str()
+        let prefix = args
+            .get(1)
+            .and_then(Val::as_str)
             .ok_or_else(|| anyhow!("starts_with() second argument must be a string"))?;
         Ok(Val::Bool(string.starts_with(prefix)))
     }
 
     /// Check if string ends with suffix
-    fn ends_with(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn ends_with_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("ends_with() takes exactly 2 arguments: string, suffix"));
         }
 
-        let string = args[0]
-            .as_str()
+        let string = args
+            .get(0)
+            .and_then(Val::as_str)
             .ok_or_else(|| anyhow!("ends_with() first argument must be a string"))?;
-        let suffix = args[1]
-            .as_str()
+        let suffix = args
+            .get(1)
+            .and_then(Val::as_str)
             .ok_or_else(|| anyhow!("ends_with() second argument must be a string"))?;
         Ok(Val::Bool(string.ends_with(suffix)))
     }
 
-    /// Check if string contains substring
-    fn contains(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn contains_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("contains() takes exactly 2 arguments: string, substring"));
         }
 
-        let string = args[0]
-            .as_str()
+        let string = args
+            .get(0)
+            .and_then(Val::as_str)
             .ok_or_else(|| anyhow!("contains() first argument must be a string"))?;
-        let substring = args[1]
-            .as_str()
+        let substring = args
+            .get(1)
+            .and_then(Val::as_str)
             .ok_or_else(|| anyhow!("contains() second argument must be a string"))?;
         Ok(Val::Bool(string.contains(substring)))
     }
@@ -254,15 +257,24 @@ impl StringModule {
         Ok(Val::from_str(&result))
     }
 
+    fn replace_fast(args: NativeArgs<'_>, named: &[(String, Val)], ctx: &mut VmContext) -> Result<Val> {
+        Self::replace(args.as_slice(), named, ctx)
+    }
+
     fn replace_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         Self::replace(args, &[], ctx)
     }
 
+    fn replace_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::replace_method(args.as_slice(), ctx)
+    }
+
     /// Extract substring
-    fn substring(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn substring(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 3 {
             return Err(anyhow!("substring() takes exactly 3 arguments: string, start, length"));
         }
+        let args = args.as_slice();
 
         let string = args[0]
             .as_str()
@@ -291,10 +303,11 @@ impl StringModule {
     }
 
     /// Split string by delimiter
-    fn split(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn split(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("split() takes exactly 2 arguments: string, delimiter"));
         }
+        let args = args.as_slice();
 
         let string = args[0]
             .as_str()
@@ -313,21 +326,22 @@ impl StringModule {
     }
 
     /// Reverse a string
-    fn reverse(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn reverse(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("reverse() takes exactly 1 argument"));
         }
-        match args[0].as_str() {
+        match args.get(0).and_then(Val::as_str) {
             Some(s) => Ok(Val::from_str(&s.chars().rev().collect::<String>())),
             None => Err(anyhow!("reverse() argument must be a string")),
         }
     }
 
     /// Repeat a string n times
-    fn repeat(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn repeat(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("repeat() takes exactly 2 arguments: string, count"));
         }
+        let args = args.as_slice();
         let s = args[0]
             .as_str()
             .ok_or_else(|| anyhow!("repeat() first argument must be a string"))?;
@@ -342,10 +356,11 @@ impl StringModule {
     }
 
     /// Get character at index (returns single-char string)
-    fn char_at(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn char_at(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("char() takes exactly 2 arguments: string, index"));
         }
+        let args = args.as_slice();
         let s = args[0]
             .as_str()
             .ok_or_else(|| anyhow!("char() first argument must be a string"))?;
@@ -360,10 +375,11 @@ impl StringModule {
     }
 
     /// Get byte value of character at index
-    fn byte_at(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn byte_at(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("byte() takes exactly 2 arguments: string, index"));
         }
+        let args = args.as_slice();
         let s = args[0]
             .as_str()
             .ok_or_else(|| anyhow!("byte() first argument must be a string"))?;
@@ -378,11 +394,11 @@ impl StringModule {
     }
 
     /// Convert string to list of characters
-    fn chars(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn chars(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("chars() takes exactly 1 argument"));
         }
-        match args[0].as_str() {
+        match args.get(0).and_then(Val::as_str) {
             Some(s) => {
                 let list: Vec<Val> = s.chars().map(|c| Val::from_str(&c.to_string())).collect();
                 Ok(Val::List(Arc::from(list)))
@@ -392,10 +408,11 @@ impl StringModule {
     }
 
     /// Find substring position (returns index or nil)
-    fn find(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn find(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 && args.len() != 3 {
             return Err(anyhow!("find() takes 2 or 3 arguments: string, pattern[, start]"));
         }
+        let args = args.as_slice();
         let s = args[0]
             .as_str()
             .ok_or_else(|| anyhow!("find() first argument must be a string"))?;
@@ -420,21 +437,22 @@ impl StringModule {
     }
 
     /// Check if string is empty
-    fn is_empty(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn is_empty_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("is_empty() takes exactly 1 argument"));
         }
-        match args[0].as_str() {
+        match args.get(0).and_then(Val::as_str) {
             Some(s) => Ok(Val::Bool(s.is_empty())),
             None => Err(anyhow!("is_empty() argument must be a string")),
         }
     }
 
     /// Format string (simple positional formatting)
-    fn format(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        if args.is_empty() {
+    fn format(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        if args.len() == 0 {
             return Err(anyhow!("format() requires at least 1 argument (format string)"));
         }
+        let args = args.as_slice();
         let fmt = args[0]
             .as_str()
             .ok_or_else(|| anyhow!("format() first argument must be a string"))?
@@ -474,10 +492,11 @@ impl StringModule {
     }
 
     /// Join list of strings with delimiter
-    fn join(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn join(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("join() takes exactly 2 arguments: list, delimiter"));
         }
+        let args = args.as_slice();
 
         let list = match &args[0] {
             Val::List(l) => &**l,

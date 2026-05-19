@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use lk_core::module::Module;
-use lk_core::val::methods::register_method;
-use lk_core::val::{IteratorState, IteratorValue, Val};
+use lk_core::val::methods::register_fast_method;
+use lk_core::val::{IteratorState, IteratorValue, NativeArgs, Val};
 use lk_core::vm::VmContext;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -29,7 +29,11 @@ fn expect_iterator(val: &Val, func: &str) -> Result<Arc<IteratorValue>> {
 
 fn expect_callable(val: &Val, func: &str) -> Result<Val> {
     match val {
-        f @ Val::Closure(_) | f @ Val::RustFunction(_) | f @ Val::RustFunctionNamed(_) => Ok(f.clone()),
+        f @ Val::Closure(_)
+        | f @ Val::RustFunction(_)
+        | f @ Val::RustFastFunction(_)
+        | f @ Val::RustFastFunctionNamed(_)
+        | f @ Val::RustFunctionNamed(_) => Ok(f.clone()),
         other => Err(anyhow!("{} expects function, got {}", func, other.type_name())),
     }
 }
@@ -134,29 +138,29 @@ impl IterModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
 
-        // Register iterator functions as Rust functions
+        // Register iterator functions on the fast native ABI.
         // Generic higher-order ops
-        functions.insert("map".to_string(), Val::RustFunction(map));
-        functions.insert("filter".to_string(), Val::RustFunction(filter));
-        functions.insert("reduce".to_string(), Val::RustFunction(reduce));
+        functions.insert("map".to_string(), Val::RustFastFunction(map_fast));
+        functions.insert("filter".to_string(), Val::RustFastFunction(filter_fast));
+        functions.insert("reduce".to_string(), Val::RustFastFunction(reduce_fast));
         // Sequence utilities
-        functions.insert("enumerate".to_string(), Val::RustFunction(enumerate));
-        functions.insert("range".to_string(), Val::RustFunction(range));
-        functions.insert("zip".to_string(), Val::RustFunction(zip));
-        functions.insert("take".to_string(), Val::RustFunction(take));
-        functions.insert("skip".to_string(), Val::RustFunction(skip));
-        functions.insert("chain".to_string(), Val::RustFunction(chain));
-        functions.insert("flatten".to_string(), Val::RustFunction(flatten));
-        functions.insert("unique".to_string(), Val::RustFunction(unique));
-        functions.insert("chunk".to_string(), Val::RustFunction(chunk));
-        functions.insert("next".to_string(), Val::RustFunction(next));
-        functions.insert("collect".to_string(), Val::RustFunction(collect));
+        functions.insert("enumerate".to_string(), Val::RustFastFunction(enumerate_fast));
+        functions.insert("range".to_string(), Val::RustFastFunction(range_fast));
+        functions.insert("zip".to_string(), Val::RustFastFunction(zip_fast));
+        functions.insert("take".to_string(), Val::RustFastFunction(take_fast));
+        functions.insert("skip".to_string(), Val::RustFastFunction(skip_fast));
+        functions.insert("chain".to_string(), Val::RustFastFunction(chain_fast));
+        functions.insert("flatten".to_string(), Val::RustFastFunction(flatten_fast));
+        functions.insert("unique".to_string(), Val::RustFastFunction(unique_fast));
+        functions.insert("chunk".to_string(), Val::RustFastFunction(chunk_fast));
+        functions.insert("next".to_string(), Val::RustFastFunction(next_fast));
+        functions.insert("collect".to_string(), Val::RustFastFunction(collect_fast));
 
-        register_method("Iterator", "map", iterator_map_method);
-        register_method("Iterator", "filter", iterator_filter_method);
-        register_method("Iterator", "reduce", iterator_reduce_method);
-        register_method("Iterator", "next", iterator_next_method);
-        register_method("Iterator", "collect", iterator_collect_method);
+        register_fast_method("Iterator", "map", iterator_map_method_fast);
+        register_fast_method("Iterator", "filter", iterator_filter_method_fast);
+        register_fast_method("Iterator", "reduce", iterator_reduce_method_fast);
+        register_fast_method("Iterator", "next", iterator_next_method_fast);
+        register_fast_method("Iterator", "collect", iterator_collect_method_fast);
 
         Self { functions }
     }
@@ -179,6 +183,10 @@ impl Module for IterModule {
     fn exports(&self) -> HashMap<String, Val> {
         self.functions.clone()
     }
+}
+
+fn map_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    map(args.as_slice(), ctx)
 }
 
 /// map - apply function to each element of list or iterator
@@ -209,7 +217,7 @@ fn legacy_map(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
     };
 
     let call = match func {
-        Val::Closure(_) | Val::RustFunction(_) => func,
+        Val::Closure(_) | Val::RustFunction(_) | Val::RustFastFunction(_) | Val::RustFastFunctionNamed(_) => func,
         other => {
             return Err(anyhow!(
                 "map() second argument must be a function, got {}",
@@ -224,6 +232,10 @@ fn legacy_map(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         out.push(res);
     }
     Ok(Val::List(out.into()))
+}
+
+fn filter_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    filter(args.as_slice(), ctx)
 }
 
 /// filter - keep elements where predicate is truthy
@@ -255,7 +267,7 @@ fn legacy_filter(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
     };
 
     let call = match func {
-        Val::Closure(_) | Val::RustFunction(_) => func,
+        Val::Closure(_) | Val::RustFunction(_) | Val::RustFastFunction(_) | Val::RustFastFunctionNamed(_) => func,
         other => {
             return Err(anyhow!(
                 "filter() second argument must be a function, got {}",
@@ -272,6 +284,10 @@ fn legacy_filter(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         }
     }
     Ok(Val::List(out.into()))
+}
+
+fn reduce_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    reduce(args.as_slice(), ctx)
 }
 
 /// reduce - fold list with accumulator
@@ -305,7 +321,10 @@ fn legacy_reduce(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
     };
     let mut acc = args[1].clone();
     let func = match &args[2] {
-        f @ Val::Closure(_) | f @ Val::RustFunction(_) => f.clone(),
+        f @ Val::Closure(_)
+        | f @ Val::RustFunction(_)
+        | f @ Val::RustFastFunction(_)
+        | f @ Val::RustFastFunctionNamed(_) => f.clone(),
         other => {
             return Err(anyhow!(
                 "reduce() third argument must be a function, got {}",
@@ -318,6 +337,10 @@ fn legacy_reduce(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         acc = func.call(&[acc, item.clone()], ctx)?;
     }
     Ok(acc)
+}
+
+fn enumerate_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    enumerate(args.as_slice(), ctx)
 }
 
 /// enumerate - 为序列添加索引
@@ -338,6 +361,10 @@ pub fn enumerate(args: &[Val], _: &mut VmContext) -> Result<Val> {
         }
         _ => Err(anyhow!("enumerate expects a list, got {:?}", args[0].type_name())),
     }
+}
+
+fn range_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    range(args.as_slice(), ctx)
 }
 
 /// range - 生成整数范围
@@ -382,6 +409,10 @@ fn extract_int(val: &Val) -> Result<i64> {
     }
 }
 
+fn zip_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    zip(args.as_slice(), ctx)
+}
+
 /// zip - pair elements from two lists by index
 /// zip([1,2], ["a","b","c"]) => [[1,"a"], [2,"b"]]
 pub fn zip(args: &[Val], _: &mut VmContext) -> Result<Val> {
@@ -404,6 +435,10 @@ pub fn zip(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(Val::List(out.into()))
 }
 
+fn take_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    take(args.as_slice(), ctx)
+}
+
 /// take - take first n elements from list
 pub fn take(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 2 {
@@ -421,6 +456,10 @@ pub fn take(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(Val::List(list[0..end].to_vec().into()))
 }
 
+fn skip_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    skip(args.as_slice(), ctx)
+}
+
 /// skip - skip first n elements from list
 pub fn skip(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 2 {
@@ -436,6 +475,10 @@ pub fn skip(args: &[Val], _: &mut VmContext) -> Result<Val> {
     }
     let start = std::cmp::min(list.len(), n as usize);
     Ok(Val::List(list[start..].to_vec().into()))
+}
+
+fn chain_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    chain(args.as_slice(), ctx)
 }
 
 /// chain - concatenate two lists
@@ -457,6 +500,10 @@ pub fn chain(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(Val::List(out.into()))
 }
 
+fn flatten_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    flatten(args.as_slice(), ctx)
+}
+
 /// flatten - flatten one level of nesting in a list
 pub fn flatten(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
@@ -474,6 +521,10 @@ pub fn flatten(args: &[Val], _: &mut VmContext) -> Result<Val> {
         }
     }
     Ok(Val::List(out.into()))
+}
+
+fn unique_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    unique(args.as_slice(), ctx)
 }
 
 /// unique - remove duplicates (O(n^2), stable)
@@ -495,6 +546,10 @@ pub fn unique(args: &[Val], _: &mut VmContext) -> Result<Val> {
         out.push(v.clone());
     }
     Ok(Val::List(out.into()))
+}
+
+fn chunk_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    chunk(args.as_slice(), ctx)
 }
 
 /// chunk - split list into chunks of given positive size
@@ -521,12 +576,20 @@ pub fn chunk(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(Val::List(out.into()))
 }
 
+fn next_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    next(args.as_slice(), ctx)
+}
+
 fn next(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("next() expects exactly 1 argument: iterator"));
     }
     let iter = expect_iterator(&args[0], "next()")?;
     Ok(iter.next(ctx)?.unwrap_or(Val::Nil))
+}
+
+fn collect_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    collect(args.as_slice(), ctx)
 }
 
 fn collect(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
@@ -548,6 +611,10 @@ fn iterator_map_method(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     Ok(Val::Iterator(handle))
 }
 
+fn iterator_map_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    iterator_map_method(args.as_slice(), ctx)
+}
+
 fn iterator_filter_method(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!("Iterator.filter expects (iterator, function)"));
@@ -556,6 +623,10 @@ fn iterator_filter_method(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     let predicate = expect_callable(&args[1], "Iterator.filter")?;
     let handle = filter_iterator_handle(iter, predicate)?;
     Ok(Val::Iterator(handle))
+}
+
+fn iterator_filter_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    iterator_filter_method(args.as_slice(), ctx)
 }
 
 fn iterator_reduce_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
@@ -572,12 +643,20 @@ fn iterator_reduce_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
     Ok(acc)
 }
 
+fn iterator_reduce_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    iterator_reduce_method(args.as_slice(), ctx)
+}
+
 fn iterator_next_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("Iterator.next expects exactly 1 argument"));
     }
     let iter = expect_iterator(&args[0], "Iterator.next")?;
     Ok(iter.next(ctx)?.unwrap_or(Val::Nil))
+}
+
+fn iterator_next_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    iterator_next_method(args.as_slice(), ctx)
 }
 
 fn iterator_collect_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
@@ -594,12 +673,17 @@ fn iterator_collect_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
     }
 }
 
+fn iterator_collect_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    iterator_collect_method(args.as_slice(), ctx)
+}
+
 #[cfg(test)]
 mod tests {
 
-    use crate::register_stdlib_modules;
+    use crate::{iter::IterModule, register_stdlib_modules};
     use anyhow::Result;
     use lk_core::{
+        module::Module,
         stmt::stmt_parser::StmtParser,
         token::Tokenizer,
         val::Val,
@@ -618,6 +702,34 @@ mod tests {
         let mut env = VmContext::new().with_resolver(resolver);
         let mut vm = Vm::new();
         program.execute_with_vm(&mut vm, &mut env)
+    }
+
+    #[test]
+    fn test_iter_module_exports_use_fast_native_abi() {
+        let module = IterModule::new();
+        let exports = module.exports();
+        for name in [
+            "map",
+            "filter",
+            "reduce",
+            "enumerate",
+            "range",
+            "zip",
+            "take",
+            "skip",
+            "chain",
+            "flatten",
+            "unique",
+            "chunk",
+            "next",
+            "collect",
+        ] {
+            let value = exports.get(name).expect("iter function export present");
+            assert!(
+                matches!(value, Val::RustFastFunction(_)),
+                "{name} should use RustFastFunction"
+            );
+        }
     }
 
     #[test]

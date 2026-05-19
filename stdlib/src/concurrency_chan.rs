@@ -3,7 +3,13 @@
 //! Provides channel operations for inter-task communication.
 
 use anyhow::{Result, anyhow};
-use lk_core::{module, module::Module, rt, val::Val, vm::VmContext};
+use lk_core::{
+    module,
+    module::Module,
+    rt,
+    val::{NativeArgs, Val},
+    vm::VmContext,
+};
 use std::collections::HashMap;
 
 /// Channel module - provides channel operations
@@ -40,12 +46,12 @@ impl Module for ChannelModule {
     fn exports(&self) -> HashMap<String, Val> {
         let mut functions = HashMap::new();
 
-        functions.insert("close".to_string(), Val::RustFunction(chan_close));
-        functions.insert("len".to_string(), Val::RustFunction(chan_len));
-        functions.insert("capacity".to_string(), Val::RustFunction(chan_capacity));
-        functions.insert("is_closed".to_string(), Val::RustFunction(chan_is_closed));
-        functions.insert("try_send".to_string(), Val::RustFunction(chan_try_send));
-        functions.insert("try_recv".to_string(), Val::RustFunction(chan_try_recv));
+        functions.insert("close".to_string(), Val::RustFastFunction(chan_close));
+        functions.insert("len".to_string(), Val::RustFastFunction(chan_len));
+        functions.insert("capacity".to_string(), Val::RustFastFunction(chan_capacity));
+        functions.insert("is_closed".to_string(), Val::RustFastFunction(chan_is_closed));
+        functions.insert("try_send".to_string(), Val::RustFastFunction(chan_try_send));
+        functions.insert("try_recv".to_string(), Val::RustFastFunction(chan_try_recv));
 
         functions
     }
@@ -58,10 +64,11 @@ impl ChannelModule {
 }
 
 /// Close a channel
-fn chan_close(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn chan_close(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("chan::close() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     match &args[0] {
         Val::Channel(channel) => match rt::with_runtime(|runtime| runtime.close_channel(channel.id)) {
@@ -73,10 +80,11 @@ fn chan_close(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Get the current length of a channel (number of buffered items)
-fn chan_len(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn chan_len(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("chan::len() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     match &args[0] {
         Val::Channel(_) => {
@@ -89,10 +97,11 @@ fn chan_len(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Get the capacity of a channel
-fn chan_capacity(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn chan_capacity(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("chan::capacity() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     match &args[0] {
         Val::Channel(channel) => {
@@ -106,10 +115,11 @@ fn chan_capacity(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Check if a channel is closed
-fn chan_is_closed(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn chan_is_closed(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("chan::is_closed() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     match &args[0] {
         Val::Channel(_) => {
@@ -122,10 +132,11 @@ fn chan_is_closed(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Try to send a value to a channel without blocking
-fn chan_try_send(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn chan_try_send(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!("chan::try_send() expects exactly 2 arguments"));
     }
+    let args = args.as_slice();
 
     let channel = &args[0];
     let value = &args[1];
@@ -140,10 +151,11 @@ fn chan_try_send(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
 }
 
 /// Try to receive a value from a channel without blocking
-fn chan_try_recv(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn chan_try_recv(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("chan::try_recv() expects exactly 1 argument"));
     }
+    let args = args.as_slice();
 
     match &args[0] {
         Val::Channel(channel) => match rt::with_runtime(|runtime| runtime.try_recv(channel.id)) {

@@ -64,7 +64,14 @@ impl<'a> FunctionTranslator<'a> {
                 Op::MapSet { key, .. } | Op::MapSetMove { key, .. } if key == alias => consumed = true,
                 Op::ListPush { val, .. } if val == alias => consumed = true,
                 Op::BuildList { base, len, .. } if reg_in_range(alias, base, len) => consumed = true,
-                Op::Call { base, argc, .. } if reg_in_range(alias, base, argc.into()) => consumed = true,
+                Op::Call { base, argc, .. }
+                | Op::CallExact { base, argc, .. }
+                | Op::CallClosureExact { base, argc, .. }
+                | Op::CallNativeFast { base, argc, .. }
+                    if reg_in_range(alias, base, argc.into()) =>
+                {
+                    consumed = true
+                }
                 Op::Move(new_alias, src) | Op::LoadLocal(new_alias, src) | Op::StoreLocal(new_alias, src)
                     if src == alias =>
                 {
@@ -96,9 +103,11 @@ fn string_key_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::StartsWithK(_, src, _)
         | Op::ContainsK(_, src, _)
         | Op::JmpFalse(src, _)
+        | Op::BoolBranch(src, _)
         | Op::JmpIfNil(src, _)
         | Op::JmpIfNotNil(src, _) => src == reg,
         Op::Add(_, a, b)
+        | Op::StrConcatKnownCap(_, a, b)
         | Op::Sub(_, a, b)
         | Op::Mul(_, a, b)
         | Op::Div(_, a, b)
@@ -118,6 +127,7 @@ fn string_key_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpLe(_, a, b)
         | Op::CmpGt(_, a, b)
         | Op::CmpGe(_, a, b)
+        | Op::CmpI { a, b, .. }
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
         | Op::Index { base: a, idx: b, .. } => a == reg || b == reg,
@@ -149,6 +159,7 @@ fn string_key_op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::ToStr(dst, _)
         | Op::ToBool(dst, _)
         | Op::Add(dst, _, _)
+        | Op::StrConcatKnownCap(dst, _, _)
         | Op::Sub(dst, _, _)
         | Op::Mul(dst, _, _)
         | Op::Div(dst, _, _)
@@ -168,6 +179,7 @@ fn string_key_op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpLe(dst, _, _)
         | Op::CmpGt(dst, _, _)
         | Op::CmpGe(dst, _, _)
+        | Op::CmpI { dst, .. }
         | Op::In(dst, _, _)
         | Op::Access(dst, _, _)
         | Op::AccessK(dst, _, _)

@@ -6,7 +6,7 @@ mod tests {
         module::{self, Module},
         stmt::{self, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::Val,
+        val::{NativeArgs, Val},
         vm::{self, VmContext},
     };
     use std::sync::Arc;
@@ -97,14 +97,50 @@ mod tests {
     #[test]
     fn test_list_get_rejects_non_integer_index() {
         let module = ListModule::new();
-        let Val::RustFunction(get_fn) = module.exports().get("get").expect("get function present").clone() else {
-            panic!("expected get to be a RustFunction");
+        let Val::RustFastFunction(get_fn) = module.exports().get("get").expect("get function present").clone() else {
+            panic!("expected get to be a RustFastFunction");
         };
 
         let list_val = Val::List(vec![Val::Int(1)].into());
         let mut env = VmContext::new();
-        let err = get_fn(&[list_val, Val::Str("x".into())], &mut env).expect_err("non-integer index should error");
+        let args = [list_val, Val::Str("x".into())];
+        let err = get_fn(NativeArgs::new(&args), &mut env).expect_err("non-integer index should error");
         assert!(err.to_string().contains("index must be an integer"));
+    }
+
+    #[test]
+    fn test_list_public_functions_use_fast_native_abi() {
+        let module = ListModule::new();
+        let exports = module.exports();
+        for name in [
+            "len",
+            "push",
+            "concat",
+            "join",
+            "get",
+            "first",
+            "last",
+            "set",
+            "map",
+            "filter",
+            "reduce",
+            "take",
+            "skip",
+            "chain",
+            "flatten",
+            "unique",
+            "chunk",
+            "enumerate",
+            "zip",
+            "into_iter",
+            "mutate",
+        ] {
+            let value = exports.get(name).expect("list function export present");
+            assert!(
+                matches!(value, Val::RustFastFunction(_)),
+                "{name} should use RustFastFunction"
+            );
+        }
     }
 
     #[test]

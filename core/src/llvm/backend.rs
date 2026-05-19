@@ -17,6 +17,7 @@ use super::{
 mod calls;
 mod comparisons;
 mod containers;
+mod globals;
 mod string_keys;
 mod string_lengths;
 mod support;
@@ -273,7 +274,7 @@ impl<'a> FunctionTranslator<'a> {
                     starts.insert(target);
                     starts.insert(idx + 1);
                 }
-                Op::JmpFalse(_, ofs) | Op::CmpLtImmJmp { ofs, .. } => {
+                Op::JmpFalse(_, ofs) | Op::BoolBranch(_, ofs) | Op::CmpLtImmJmp { ofs, .. } => {
                     let target = Self::compute_target(idx, *ofs, self.function.code.len())?;
                     starts.insert(target);
                     starts.insert(idx + 1);
@@ -286,7 +287,8 @@ impl<'a> FunctionTranslator<'a> {
                 Op::JmpFalseSet { ofs, .. }
                 | Op::JmpTrueSet { ofs, .. }
                 | Op::NullishPick { ofs, .. }
-                | Op::ForRangeLoop { ofs, .. } => {
+                | Op::ForRangeLoop { ofs, .. }
+                | Op::RangeLoopI { ofs, .. } => {
                     let target = Self::compute_target(idx, *ofs, self.function.code.len())?;
                     if *ofs != 0 {
                         starts.insert(idx);
@@ -421,6 +423,7 @@ impl<'a> FunctionTranslator<'a> {
                 Op::StoreLocal(idx, src) => self.emit_store_local(*idx, *src)?,
                 Op::LoadLocal(dst, idx) => self.emit_load_local(*dst, *idx)?,
                 Op::Add(dst, a, b) => self.emit_add_value(instr_idx, block_end, *dst, *a, *b)?,
+                Op::StrConcatKnownCap(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::AddValue)?,
                 Op::Sub(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::SubValue)?,
                 Op::Mul(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::MulValue)?,
                 Op::Div(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::DivValue)?,
@@ -441,6 +444,7 @@ impl<'a> FunctionTranslator<'a> {
                 Op::CmpLe(dst, a, b) => self.emit_compare(*dst, *a, *b, "sle")?,
                 Op::CmpGt(dst, a, b) => self.emit_compare(*dst, *a, *b, "sgt")?,
                 Op::CmpGe(dst, a, b) => self.emit_compare(*dst, *a, *b, "sge")?,
+                Op::CmpI { dst, a, b, kind } => self.emit_int_compare_kind(*dst, *a, *b, *kind)?,
                 Op::CmpEqImm(dst, a, imm) => self.emit_cmp_int_imm(*dst, *a, *imm, "eq")?,
                 Op::CmpNeImm(dst, a, imm) => self.emit_cmp_int_imm(*dst, *a, *imm, "ne")?,
                 Op::CmpLtImm(dst, a, imm) => self.emit_cmp_int_imm(*dst, *a, *imm, "slt")?,
@@ -456,7 +460,10 @@ impl<'a> FunctionTranslator<'a> {
                 Op::DefineGlobal(kidx, src) => self.emit_define_global(*kidx, *src)?,
                 Op::BuildList { dst, base, len } => self.emit_build_list(*dst, *base, *len)?,
                 Op::ListPush { list, val } => self.emit_list_push(*list, *val)?,
-                Op::Call { f, base, argc, retc } => self.emit_call(*f, *base, *argc, *retc)?,
+                Op::Call { f, base, argc, retc }
+                | Op::CallExact { f, base, argc, retc }
+                | Op::CallClosureExact { f, base, argc, retc }
+                | Op::CallNativeFast { f, base, argc, retc } => self.emit_call(*f, *base, *argc, *retc)?,
                 Op::Access(dst, base, field) => {
                     self.emit_access_or_defer_value(instr_idx, block_end, *dst, *base, *field)?
                 }
@@ -465,7 +472,9 @@ impl<'a> FunctionTranslator<'a> {
                     self.emit_index_or_defer_len(instr_idx, block_end, *dst, *base, *idx)?
                 }
                 Op::IndexK(dst, base, kidx) => self.emit_index_const(*dst, *base, *kidx)?,
-                Op::Len { dst, src } => self.emit_len(*dst, *src)?,
+                Op::Len { dst, src } | Op::ListLen { dst, src } | Op::MapLen { dst, src } | Op::StrLen { dst, src } => {
+                    self.emit_len(*dst, *src)?
+                }
                 Op::Floor { dst, src } => self.emit_floor(*dst, *src)?,
                 Op::StartsWithK(dst, src, kidx) => {
                     self.emit_string_predicate_k(*dst, *src, *kidx, RuntimeHelper::StartsWith)?
@@ -475,9 +484,16 @@ impl<'a> FunctionTranslator<'a> {
                 }
                 Op::ToIter { dst, src } => self.emit_to_iter(*dst, *src)?,
                 Op::BuildMap { dst, base, len } => self.emit_build_map(*dst, *base, *len)?,
+                Op::MapHas(dst, map, key) => self.emit_map_has(*dst, *map, *key)?,
+                Op::MapHasK(dst, map, kidx) => self.emit_map_has_const(*dst, *map, *kidx)?,
+                Op::MapGetInterned(dst, map, kidx) => self.emit_access_const(*dst, *map, *kidx)?,
+                Op::MapGetDynamic(dst, map, key) => {
+                    self.emit_access_or_defer_value(instr_idx, block_end, *dst, *map, *key)?
+                }
                 Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => {
                     self.emit_map_set(*map, *key, *val)?
                 }
+                Op::MapSetInterned(map, kidx, val) => self.emit_map_set_const(*map, *kidx, *val)?,
                 Op::MakeClosure { dst, proto } => self.emit_make_closure(*dst, *proto)?,
                 Op::ListSlice { dst, src, start } => self.emit_list_slice(*dst, *src, *start)?,
                 Op::Jmp(ofs) => {
@@ -494,7 +510,7 @@ impl<'a> FunctionTranslator<'a> {
                     terminated = true;
                     break;
                 }
-                Op::JmpFalse(reg, ofs) => {
+                Op::JmpFalse(reg, ofs) | Op::BoolBranch(reg, ofs) => {
                     let target = Self::compute_target(instr_idx, *ofs, self.function.code.len())?;
                     let label = self.block_label_for_index(target)?;
                     let fallthrough = self
@@ -687,6 +703,14 @@ impl<'a> FunctionTranslator<'a> {
                     inclusive,
                     write_idx: _,
                     ofs,
+                }
+                | Op::RangeLoopI {
+                    idx,
+                    limit,
+                    step,
+                    inclusive,
+                    write_idx: _,
+                    ofs,
                 } => {
                     let guard_params = ForRangeLoopParams {
                         block_idx,
@@ -739,7 +763,9 @@ impl<'a> FunctionTranslator<'a> {
         self.store_reg(r, &tmp)?;
         self.set_known(r, Some(KnownReg::Int));
         let target = Self::compute_target(instr_idx, ofs, self.function.code.len())?;
-        if let Some(Op::ForRangeLoop { idx, step, .. }) = self.function.code.get(target) {
+        if let Some(Op::ForRangeLoop { idx, step, .. } | Op::RangeLoopI { idx, step, .. }) =
+            self.function.code.get(target)
+        {
             let current = self.load_reg(*idx)?;
             let step_val = self.load_reg(*step)?;
             let next = self.fresh("forjmp_next");
@@ -780,123 +806,6 @@ impl<'a> FunctionTranslator<'a> {
             "br i1 {should_jump}, label %{}, label %{}",
             target_label, fallthrough
         ));
-        Ok(())
-    }
-
-    fn emit_load_global(&mut self, dst: u16, kidx: u16) -> Result<()> {
-        let name = self
-            .function
-            .consts
-            .get(kidx as usize)
-            .ok_or_else(|| anyhow!("constant index {} out of range", kidx))?;
-        let name_str = match name.as_str() {
-            Some(s) => s,
-            None => return Err(anyhow!("LoadGlobal expects string constant; found {:?}", name)),
-        };
-        if matches!(name_str, "__lk_call_method" | "__lk_call_method_named") {
-            self.store_reg(dst, encoding::NIL_LITERAL)?;
-            self.set_known(dst, Some(KnownReg::Global(name_str.to_string())));
-            return Ok(());
-        }
-        let handle = self.intern_string_constant(kidx, name_str)?;
-        self.require_helper(RuntimeHelper::LoadGlobal);
-        let global = self.fresh("loadglobal");
-        self.writer.line(format!(
-            "{global} = call i64 @{}(i64 {handle})",
-            RuntimeHelper::LoadGlobal.symbol()
-        ));
-        self.store_reg(dst, &global)?;
-        let known = self
-            .known_globals
-            .get(name_str)
-            .cloned()
-            .unwrap_or_else(|| KnownReg::Global(name_str.to_string()));
-        self.set_known(dst, Some(known));
-        Ok(())
-    }
-
-    fn emit_load_capture(&mut self, dst: u16, idx: u16) -> Result<()> {
-        let specs = self
-            .capture_specs
-            .ok_or_else(|| anyhow!("LoadCapture c{} has no capture metadata in LLVM backend", idx))?;
-        let spec = specs
-            .get(idx as usize)
-            .ok_or_else(|| anyhow!("capture index {} out of range in LLVM backend", idx))?;
-        match spec {
-            CaptureSpec::Global { name } => {
-                let handle = self.intern_anonymous_string(name.as_str())?;
-                self.require_helper(RuntimeHelper::LoadGlobal);
-                let global = self.fresh("loadcapture_global");
-                self.writer.line(format!(
-                    "{global} = call i64 @{}(i64 {handle})",
-                    RuntimeHelper::LoadGlobal.symbol()
-                ));
-                self.store_reg(dst, &global)?;
-                self.set_known(dst, Some(KnownReg::Global(name.clone())));
-                Ok(())
-            }
-            CaptureSpec::Const { kidx, .. } => {
-                let value = self.load_const_value(*kidx)?;
-                self.store_reg(dst, &value)?;
-                Ok(())
-            }
-            CaptureSpec::Register { name, .. } => Err(anyhow!(
-                "unsupported register capture `{}` in LLVM native closure p{}",
-                name,
-                idx
-            )),
-        }
-    }
-
-    fn emit_define_global(&mut self, kidx: u16, src: u16) -> Result<()> {
-        if self.capture_specs.is_some() {
-            return Ok(());
-        }
-        let name = self
-            .function
-            .consts
-            .get(kidx as usize)
-            .ok_or_else(|| anyhow!("constant index {} out of range", kidx))?;
-        let name_str = match name.as_str() {
-            Some(s) => s,
-            None => return Err(anyhow!("DefineGlobal expects string constant; found {:?}", name)),
-        };
-        let handle = self.intern_string_constant(kidx, name_str)?;
-        let value = self.load_reg(src)?;
-        self.require_helper(RuntimeHelper::DefineGlobal);
-        self.writer.line(format!(
-            "call void @{}(i64 {handle}, i64 {value})",
-            RuntimeHelper::DefineGlobal.symbol()
-        ));
-        if let Some(known) = self.known(src).cloned()
-            && !matches!(known, KnownReg::ConstMap { .. })
-        {
-            self.known_globals.insert(name_str.to_string(), known);
-        }
-        Ok(())
-    }
-
-    fn emit_to_iter(&mut self, dst: u16, src: u16) -> Result<()> {
-        let known = self.known(src).cloned();
-        if matches!(known, Some(KnownReg::StringLength { .. })) {
-            self.store_reg(dst, encoding::NIL_LITERAL)?;
-            self.set_known(dst, known);
-            return Ok(());
-        }
-        let value = self.load_reg(src)?;
-        self.require_helper(RuntimeHelper::ToIter);
-        let result = self.fresh("toiter");
-        self.writer.line(format!(
-            "{result} = call i64 @{}(i64 {value})",
-            RuntimeHelper::ToIter.symbol()
-        ));
-        self.store_reg(dst, &result)?;
-        if matches!(
-            known,
-            Some(KnownReg::StringHandle { .. } | KnownReg::StringLength { .. })
-        ) {
-            self.set_known(dst, known);
-        }
         Ok(())
     }
 

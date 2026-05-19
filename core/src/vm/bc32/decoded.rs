@@ -28,15 +28,11 @@ impl Bc32Decoded {
             }
 
             if tag == TAG_EXT {
-                let ext = *code32.get(pc + 1)?;
-                if tag_of(ext) != TAG_EXT {
-                    return None;
-                }
-                let op = decode_ext_op(word, ext)?;
+                let (op, next_pc) = decode_ext_op_at(code32, pc)?;
                 let instr_idx = instrs.len() as u32;
                 word_to_instr[pc] = instr_idx;
-                instrs.push(Bc32DecodedInstr { op, next_pc: pc + 2 });
-                pc += 2;
+                instrs.push(Bc32DecodedInstr { op, next_pc });
+                pc = next_pc;
                 continue;
             }
 
@@ -84,7 +80,7 @@ impl Bc32Decoded {
                     let ofs_raw = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
                     let inclusive = (flags & 1) != 0;
                     let write_idx = (flags & 2) == 0;
-                    Op::ForRangeLoop {
+                    Op::RangeLoopI {
                         idx,
                         limit,
                         step,

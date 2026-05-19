@@ -204,7 +204,10 @@ impl TypeRegistry {
                     named_params: Vec::new(),
                     return_type: Box::new(Type::Any),
                 },
-                Val::RustFunction(_) | Val::RustFunctionNamed(_) => {
+                Val::RustFunction(_)
+                | Val::RustFastFunction(_)
+                | Val::RustFastFunctionNamed(_)
+                | Val::RustFunctionNamed(_) => {
                     // Native function type info not carried; accept for now as Function Any
                     Type::Function {
                         params: vec![],

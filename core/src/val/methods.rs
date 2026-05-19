@@ -4,17 +4,25 @@ use dashmap::DashMap;
 
 use once_cell::sync::Lazy;
 
-use crate::val::{RustFunction, Val};
+use crate::val::{RustFastFunction, RustFunction, Val};
 
-// Global registry: type_name -> method_name -> RustFunction
-static METHOD_REGISTRY: Lazy<DashMap<String, HashMap<String, RustFunction>>> = Lazy::new(DashMap::new);
+// Global registry: type_name -> method_name -> callable method value.
+static METHOD_REGISTRY: Lazy<DashMap<String, HashMap<String, Val>>> = Lazy::new(DashMap::new);
 
 /// Register a method for a type name
 pub fn register_method(type_name: &str, method: &str, func: RustFunction) {
     METHOD_REGISTRY
         .entry(type_name.to_string())
         .or_default()
-        .insert(method.to_string(), func);
+        .insert(method.to_string(), Val::RustFunction(func));
+}
+
+/// Register a native fastcall method for a type name.
+pub fn register_fast_method(type_name: &str, method: &str, func: RustFastFunction) {
+    METHOD_REGISTRY
+        .entry(type_name.to_string())
+        .or_default()
+        .insert(method.to_string(), Val::RustFastFunction(func));
 }
 
 // Per-thread inline cache for method lookups.
@@ -22,14 +30,14 @@ pub fn register_method(type_name: &str, method: &str, func: RustFunction) {
 // Uses a simple single-entry cache per thread — this is highly effective because
 // in tight loops, the same type+method pattern repeats 100% of the time.
 thread_local! {
-    static METHOD_IC: std::cell::RefCell<(u8, usize, Option<RustFunction>)> =
+    static METHOD_IC: std::cell::RefCell<(u8, usize, Option<Val>)> =
         std::cell::RefCell::new((0, 0, None));
 }
 
 /// Find a method function for a given receiver value and method name.
 /// Uses a per-thread inline cache to avoid DashMap lookup on monomorphic sites.
 #[inline]
-pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction> {
+pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<Val> {
     let disc = match receiver {
         Val::ShortStr(_) | Val::Str(_) => 0u8,
         Val::Int(_) => 1,
@@ -37,7 +45,12 @@ pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction>
         Val::Bool(_) => 3,
         Val::List(_) => 4,
         Val::Map(_) => 5,
-        Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => 6,
+        Val::Closure(_)
+        | Val::RustFunction(_)
+        | Val::RustFastFunction(_)
+        | Val::RustFastFunctionNamed(_)
+        | Val::RustFunctionNamed(_)
+        | Val::AotFunction(_) => 6,
         Val::Task(_) => 7,
         Val::Channel(_) => 8,
         Val::Stream(_) => 9,
@@ -55,7 +68,7 @@ pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction>
         ic.0 == disc && ic.1 == method_ptr && ic.2.is_some()
     });
     if hit {
-        return METHOD_IC.with(|ic| ic.borrow().2);
+        return METHOD_IC.with(|ic| ic.borrow().2.clone());
     }
 
     // Slow path: full registry lookup + cache update
@@ -66,7 +79,12 @@ pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction>
         Val::Bool(_) => "Bool",
         Val::List(_) => "List",
         Val::Map(_) => "Map",
-        Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => "Function",
+        Val::Closure(_)
+        | Val::RustFunction(_)
+        | Val::RustFastFunction(_)
+        | Val::RustFastFunctionNamed(_)
+        | Val::RustFunctionNamed(_)
+        | Val::AotFunction(_) => "Function",
         Val::Task(_) => "Task",
         Val::Channel(_) => "Channel",
         Val::Stream(_) => "Stream",
@@ -78,9 +96,9 @@ pub fn find_method_for_val(receiver: &Val, method: &str) -> Option<RustFunction>
     };
     let result = METHOD_REGISTRY
         .get(tname)
-        .and_then(|methods| methods.get(method).copied());
+        .and_then(|methods| methods.get(method).cloned());
 
-    if let Some(func) = result {
+    if let Some(func) = result.clone() {
         METHOD_IC.with(|ic| {
             *ic.borrow_mut() = (disc, method_ptr, Some(func));
         });

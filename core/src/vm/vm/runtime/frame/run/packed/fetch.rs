@@ -49,7 +49,7 @@ fn decode_packed_op(code32: &[u32], pc: usize, w: u32, tag: u8) -> anyhow::Resul
                 let inclusive = (flags & 1) != 0;
                 let write_idx = (flags & 2) == 0;
                 let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
-                Op::ForRangeLoop {
+                Op::RangeLoopI {
                     idx,
                     limit,
                     step,

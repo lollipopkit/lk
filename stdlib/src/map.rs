@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use lk_core::module::{Module, ModuleRegistry};
-use lk_core::val::Val;
-use lk_core::val::methods::register_method;
+use lk_core::val::methods::register_fast_method;
+use lk_core::val::{NativeArgs, Val};
 use lk_core::vm::VmContext;
 
 use crate::collections::{MapMutation, MutableMap};
@@ -170,6 +170,10 @@ fn map_mut_guard_len(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(Val::Int(len as i64))
 }
 
+fn map_mut_guard_len_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    map_mut_guard_len(args.as_slice(), ctx)
+}
+
 fn map_mut_guard_contains(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!("has() expects (guard, key)"));
@@ -178,6 +182,10 @@ fn map_mut_guard_contains(args: &[Val], _: &mut VmContext) -> Result<Val> {
     let key = args[1].as_str().ok_or_else(|| anyhow!("has() key must be a string"))?;
     let result = with_map_guard(&guard, |state| Ok(state.contains(key)))?;
     Ok(Val::Bool(result))
+}
+
+fn map_mut_guard_contains_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    map_mut_guard_contains(args.as_slice(), ctx)
 }
 
 fn map_mut_guard_insert(args: &[Val], _: &mut VmContext) -> Result<Val> {
@@ -194,6 +202,10 @@ fn map_mut_guard_insert(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(previous)
 }
 
+fn map_mut_guard_insert_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    map_mut_guard_insert(args.as_slice(), ctx)
+}
+
 fn map_mut_guard_remove(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!("remove() expects (guard, key)"));
@@ -207,6 +219,10 @@ fn map_mut_guard_remove(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(removed)
 }
 
+fn map_mut_guard_remove_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    map_mut_guard_remove(args.as_slice(), ctx)
+}
+
 fn map_mut_guard_commit(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("commit() expects guard argument"));
@@ -215,12 +231,20 @@ fn map_mut_guard_commit(args: &[Val], _: &mut VmContext) -> Result<Val> {
     guard.commit()
 }
 
+fn map_mut_guard_commit_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    map_mut_guard_commit(args.as_slice(), ctx)
+}
+
 fn map_mut_guard_as_map(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("as_map() expects guard argument"));
     }
     let guard = expect_map_guard(&args[0])?;
     guard.snapshot()
+}
+
+fn map_mut_guard_as_map_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    map_mut_guard_as_map(args.as_slice(), ctx)
 }
 
 #[derive(Debug)]
@@ -239,61 +263,61 @@ impl MapModule {
         let mut functions = HashMap::new();
 
         // Core map utilities
-        functions.insert("len".to_string(), Val::RustFunction(Self::len));
-        functions.insert("keys".to_string(), Val::RustFunction(Self::keys));
-        functions.insert("values".to_string(), Val::RustFunction(Self::values));
-        functions.insert("has".to_string(), Val::RustFunction(Self::has));
-        functions.insert("get".to_string(), Val::RustFunction(Self::get));
-        functions.insert("set".to_string(), Val::RustFunction(Self::set));
-        functions.insert("delete".to_string(), Val::RustFunction(Self::delete));
+        functions.insert("len".to_string(), Val::RustFastFunction(Self::len_fast));
+        functions.insert("keys".to_string(), Val::RustFastFunction(Self::keys));
+        functions.insert("values".to_string(), Val::RustFastFunction(Self::values));
+        functions.insert("has".to_string(), Val::RustFastFunction(Self::has_fast));
+        functions.insert("get".to_string(), Val::RustFastFunction(Self::get_fast));
+        functions.insert("set".to_string(), Val::RustFastFunction(Self::set));
+        functions.insert("delete".to_string(), Val::RustFastFunction(Self::delete));
         {
-            functions.insert("into_iter".to_string(), Val::RustFunction(Self::into_iter));
-            functions.insert("mutate".to_string(), Val::RustFunction(Self::mutate));
+            functions.insert("into_iter".to_string(), Val::RustFastFunction(Self::into_iter));
+            functions.insert("mutate".to_string(), Val::RustFastFunction(Self::mutate));
         }
 
         // Register meta-methods for Map
-        register_method("Map", "len", Self::len);
-        register_method("Map", "keys", Self::keys);
-        register_method("Map", "values", Self::values);
-        register_method("Map", "has", Self::has);
-        register_method("Map", "get", Self::get);
-        register_method("Map", "set", Self::set);
-        register_method("Map", "delete", Self::delete);
+        register_fast_method("Map", "len", Self::len_fast);
+        register_fast_method("Map", "keys", Self::keys);
+        register_fast_method("Map", "values", Self::values);
+        register_fast_method("Map", "has", Self::has_fast);
+        register_fast_method("Map", "get", Self::get_fast);
+        register_fast_method("Map", "set", Self::set);
+        register_fast_method("Map", "delete", Self::delete);
         {
-            register_method("Map", "into_iter", Self::into_iter);
-            register_method("Map", "__iter__", Self::into_iter);
-            register_method("Map", "mutate", Self::mutate_method);
+            register_fast_method("Map", "into_iter", Self::into_iter);
+            register_fast_method("Map", "__iter__", Self::into_iter);
+            register_fast_method("Map", "mutate", Self::mutate_method_fast);
 
-            register_method(MAP_MUT_TYPE, "len", map_mut_guard_len);
-            register_method(MAP_MUT_TYPE, "has", map_mut_guard_contains);
-            register_method(MAP_MUT_TYPE, "contains", map_mut_guard_contains);
-            register_method(MAP_MUT_TYPE, "set", map_mut_guard_insert);
-            register_method(MAP_MUT_TYPE, "insert", map_mut_guard_insert);
-            register_method(MAP_MUT_TYPE, "delete", map_mut_guard_remove);
-            register_method(MAP_MUT_TYPE, "remove", map_mut_guard_remove);
-            register_method(MAP_MUT_TYPE, "commit", map_mut_guard_commit);
-            register_method(MAP_MUT_TYPE, "as_map", map_mut_guard_as_map);
+            register_fast_method(MAP_MUT_TYPE, "len", map_mut_guard_len_fast);
+            register_fast_method(MAP_MUT_TYPE, "has", map_mut_guard_contains_fast);
+            register_fast_method(MAP_MUT_TYPE, "contains", map_mut_guard_contains_fast);
+            register_fast_method(MAP_MUT_TYPE, "set", map_mut_guard_insert_fast);
+            register_fast_method(MAP_MUT_TYPE, "insert", map_mut_guard_insert_fast);
+            register_fast_method(MAP_MUT_TYPE, "delete", map_mut_guard_remove_fast);
+            register_fast_method(MAP_MUT_TYPE, "remove", map_mut_guard_remove_fast);
+            register_fast_method(MAP_MUT_TYPE, "commit", map_mut_guard_commit_fast);
+            register_fast_method(MAP_MUT_TYPE, "as_map", map_mut_guard_as_map_fast);
         }
 
         Self { functions }
     }
 
-    fn len(args: &[Val], _: &mut VmContext) -> Result<Val> {
+    fn len_fast(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("len() takes exactly 1 argument"));
         }
-        match &args[0] {
-            Val::Map(m) => Ok(Val::Int(m.len() as i64)),
+        match args.get(0) {
+            Some(Val::Map(map)) => Ok(Val::Int(map.len() as i64)),
             _ => Err(anyhow!("len() argument must be a map")),
         }
     }
 
-    fn keys(args: &[Val], _: &mut VmContext) -> Result<Val> {
+    fn keys(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("keys() takes exactly 1 argument"));
         }
-        match &args[0] {
-            Val::Map(m) => {
+        match args.get(0) {
+            Some(Val::Map(m)) => {
                 let mut out: Vec<Val> = Vec::with_capacity(m.len());
                 for k in m.keys() {
                     out.push(Val::from_str(k.as_str()));
@@ -304,12 +328,12 @@ impl MapModule {
         }
     }
 
-    fn values(args: &[Val], _: &mut VmContext) -> Result<Val> {
+    fn values(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("values() takes exactly 1 argument"));
         }
-        match &args[0] {
-            Val::Map(m) => {
+        match args.get(0) {
+            Some(Val::Map(m)) => {
                 let mut out: Vec<Val> = Vec::with_capacity(m.len());
                 for v in m.values() {
                     out.push(v.clone());
@@ -320,37 +344,43 @@ impl MapModule {
         }
     }
 
-    fn has(args: &[Val], _: &mut VmContext) -> Result<Val> {
+    fn has_fast(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("has() takes exactly 2 arguments: map, key"));
         }
-        let map = match &args[0] {
-            Val::Map(m) => &**m,
+        let map = match args.get(0) {
+            Some(Val::Map(map)) => &**map,
             _ => return Err(anyhow!("has() first argument must be a map")),
         };
-        let key = args[1].as_str().ok_or_else(|| anyhow!("has() key must be a string"))?;
-        Ok(Val::Bool(map.contains_key(key)))
+        let key = args
+            .get(1)
+            .and_then(Val::as_str)
+            .ok_or_else(|| anyhow!("has() key must be a string"))?;
+        Ok(Val::Bool(Val::map_contains_str(map, key)))
     }
 
-    fn get(args: &[Val], _: &mut VmContext) -> Result<Val> {
+    fn get_fast(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("get() takes exactly 2 arguments: map, key"));
         }
-        let map = match &args[0] {
-            Val::Map(m) => &**m,
+        let map = match args.get(0) {
+            Some(Val::Map(map)) => &**map,
             _ => return Err(anyhow!("get() first argument must be a map")),
         };
-        let key = args[1].as_str().ok_or_else(|| anyhow!("get() key must be a string"))?;
-        Ok(map.get(key).cloned().unwrap_or(Val::Nil))
+        let key = args
+            .get(1)
+            .and_then(Val::as_str)
+            .ok_or_else(|| anyhow!("get() key must be a string"))?;
+        Ok(Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil))
     }
 
-    fn set(args: &[Val], _: &mut VmContext) -> Result<Val> {
+    fn set(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
         if args.len() != 3 {
             return Err(anyhow!("set() takes exactly 3 arguments: map, key, value"));
         }
+        let args = args.as_slice();
         let key_arc: ArcStr = args[1]
-            .as_str()
-            .map(Val::intern_str)
+            .string_key_arcstr()
             .ok_or_else(|| anyhow!("set() key must be a string"))?;
         let mut map_arc = match &args[0] {
             Val::Map(m) => m.clone(),
@@ -358,22 +388,22 @@ impl MapModule {
         };
         // Arc::make_mut: if refcount is 1, reuses allocation in-place.
         // If refcount > 1 (shared), clones the data. This is the stdlib CoW.
-        Arc::make_mut(&mut map_arc).insert(key_arc, args[2].clone());
+        Val::map_insert_arcstr(Arc::make_mut(&mut map_arc), key_arc, args[2].clone());
         Ok(Val::Map(map_arc))
     }
 
-    fn delete(args: &[Val], _: &mut VmContext) -> Result<Val> {
+    fn delete(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("delete() takes exactly 2 arguments: map, key"));
         }
-        let key_arc: ArcStr = args[1]
+        let args = args.as_slice();
+        let key = args[1]
             .as_str()
-            .map(Val::intern_str)
             .ok_or_else(|| anyhow!("delete() key must be a string"))?;
         match &args[0] {
             Val::Map(_) => {
                 let mut map = MapMutation::from_val(&args[0])?;
-                let removed = map.remove(key_arc.as_ref()).unwrap_or(Val::Nil);
+                let removed = map.remove(key).unwrap_or(Val::Nil);
                 let updated = map.finish();
                 Ok(Val::List(vec![updated, removed].into()))
             }
@@ -381,13 +411,14 @@ impl MapModule {
         }
     }
 
-    fn into_iter(args: &[Val], _: &mut VmContext) -> Result<Val> {
+    fn into_iter(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("into_iter expects exactly 1 argument"));
         }
-        let map = match &args[0] {
-            Val::Map(map) => map.clone(),
-            other => return Err(anyhow!("into_iter expects a map, got {}", other.type_name())),
+        let map = match args.get(0) {
+            Some(Val::Map(map)) => map.clone(),
+            Some(other) => return Err(anyhow!("into_iter expects a map, got {}", other.type_name())),
+            None => return Err(anyhow!("into_iter expects exactly 1 argument")),
         };
         let mut entries: Vec<(ArcStr, Val)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         entries.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
@@ -396,8 +427,8 @@ impl MapModule {
         Ok(Val::Iterator(handle))
     }
 
-    fn mutate(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        let (updated, closure_result) = Self::mutate_impl(args, ctx)?;
+    fn mutate(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        let (updated, closure_result) = Self::mutate_impl(args.as_slice(), ctx)?;
         let out = Vec::from([updated, closure_result]);
         Ok(Val::List(Arc::from(out)))
     }
@@ -405,6 +436,10 @@ impl MapModule {
     fn mutate_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         let (updated, _) = Self::mutate_impl(args, ctx)?;
         Ok(updated)
+    }
+
+    fn mutate_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::mutate_method(args.as_slice(), ctx)
     }
 
     fn mutate_impl(args: &[Val], ctx: &mut VmContext) -> Result<(Val, Val)> {
@@ -421,7 +456,11 @@ impl MapModule {
             }
         };
         let mutator = match &args[1] {
-            f @ Val::Closure(_) | f @ Val::RustFunction(_) | f @ Val::RustFunctionNamed(_) => f.clone(),
+            f @ Val::Closure(_)
+            | f @ Val::RustFunction(_)
+            | f @ Val::RustFastFunction(_)
+            | f @ Val::RustFastFunctionNamed(_)
+            | f @ Val::RustFunctionNamed(_) => f.clone(),
             other => {
                 return Err(anyhow!(
                     "mutate() second argument must be a function, got {}",
@@ -519,5 +558,28 @@ mod tests {
         assert_eq!(values[0], Val::Int(7)); // removed: 7
         assert_eq!(values[1], Val::Bool(false));
         Ok(())
+    }
+
+    #[test]
+    fn test_map_public_functions_use_fast_native_abi() {
+        let module = MapModule::new();
+        let exports = module.exports();
+        for name in [
+            "len",
+            "keys",
+            "values",
+            "has",
+            "get",
+            "set",
+            "delete",
+            "into_iter",
+            "mutate",
+        ] {
+            let value = exports.get(name).expect("map function export present");
+            assert!(
+                matches!(value, Val::RustFastFunction(_)),
+                "{name} should use RustFastFunction"
+            );
+        }
     }
 }

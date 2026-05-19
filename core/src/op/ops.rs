@@ -92,12 +92,12 @@ impl BinOp {
                 (Val::Int(i), Val::Map(m)) => {
                     let mut buf = itoa::Buffer::new();
                     let s = buf.format(*i);
-                    Ok(m.contains_key(s))
+                    Ok(Val::map_contains_str(m, s))
                 }
                 (Val::Float(f), Val::Map(m)) => {
                     let mut buf = ryu::Buffer::new();
                     let s = buf.format(*f);
-                    Ok(m.contains_key(s))
+                    Ok(Val::map_contains_str(m, s))
                 }
                 (Val::Bool(b), Val::Map(m)) => {
                     // Avoid allocation for boolean conversion

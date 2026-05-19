@@ -125,7 +125,7 @@ mod tests {
         assert!(
             !function.code.iter().any(|op| matches!(
                 op,
-                Op::ForRangePrep { .. } | Op::ForRangeLoop { .. } | Op::ForRangeStep { .. } | Op::ToIter { .. }
+                Op::ForRangePrep { .. } | Op::RangeLoopI { .. } | Op::ForRangeStep { .. } | Op::ToIter { .. }
             )),
             "range loop should be precomputed"
         );

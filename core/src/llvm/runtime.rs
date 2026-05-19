@@ -22,7 +22,7 @@ use crate::{
     op::BinOp,
     stmt::{ImportSource, ImportStmt, ModuleResolver, deserialize_imports, execute_imports},
     util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_map_with_capacity},
-    val::{AotFunction, Val, methods::find_method_for_val},
+    val::{AotFunction, NativeArgs, Val, methods::find_method_for_val},
     vm::{BytecodeModule, Vm, VmContext, decode_module},
 };
 
@@ -685,7 +685,12 @@ fn aot_core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> Result<Val
 
     if let Some(prop_val) = receiver.access(&method_key) {
         match prop_val {
-            Val::Closure(_) | Val::RustFunction(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
+            Val::Closure(_)
+            | Val::RustFunction(_)
+            | Val::RustFastFunction(_)
+            | Val::RustFastFunctionNamed(_)
+            | Val::RustFunctionNamed(_)
+            | Val::AotFunction(_) => {
                 return prop_val.call(&positional_args, ctx);
             }
             other if positional_args.is_empty() => return Ok(other),
@@ -697,7 +702,7 @@ fn aot_core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> Result<Val
         let mut full_args = Vec::with_capacity(positional_args.len() + 1);
         full_args.push(receiver);
         full_args.extend(positional_args);
-        return func(&full_args, ctx);
+        return func.call(&full_args, ctx);
     }
 
     Err(anyhow!("{} has no method '{}'", args[0].type_name(), method_name))
@@ -744,10 +749,10 @@ fn aot_core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> Resu
 
     if let Some(prop_val) = receiver.access(&method_key) {
         match prop_val {
-            Val::Closure(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
+            Val::Closure(_) | Val::RustFastFunctionNamed(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
                 return prop_val.call_named(&positional_args, &named_pairs, ctx);
             }
-            Val::RustFunction(_) if named_pairs.is_empty() => {
+            Val::RustFunction(_) | Val::RustFastFunction(_) if named_pairs.is_empty() => {
                 return prop_val.call(&positional_args, ctx);
             }
             other if positional_args.is_empty() && named_pairs.is_empty() => return Ok(other),
@@ -761,7 +766,7 @@ fn aot_core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> Resu
         let mut full_args = Vec::with_capacity(positional_args.len() + 1);
         full_args.push(receiver);
         full_args.extend(positional_args);
-        return func(&full_args, ctx);
+        return func.call(&full_args, ctx);
     }
 
     Err(anyhow!("{} has no method '{}'", args[0].type_name(), method_name))
@@ -1091,7 +1096,7 @@ pub extern "C" fn lk_rt_call_method(receiver: i64, method: i64, args_ptr: *const
             let mut full_args = Vec::with_capacity(args.len() + 1);
             full_args.push(receiver_val);
             full_args.extend(args);
-            function(&full_args, &mut state.ctx).map(|val| {
+            function.call(&full_args, &mut state.ctx).map(|val| {
                 if retc <= 0 {
                     encoding::NIL_VALUE
                 } else {
@@ -1154,6 +1159,8 @@ pub extern "C" fn lk_rt_call_native(func: i64, args_ptr: *const i64, argc: i64, 
         let args = state.decode_values(args_ptr, argc_usize);
         let result = match callee {
             Val::RustFunction(function) => function(&args, &mut state.ctx),
+            Val::RustFastFunction(function) => function(NativeArgs::new(&args), &mut state.ctx),
+            Val::RustFastFunctionNamed(function) => function(NativeArgs::new(&args), &[], &mut state.ctx),
             Val::RustFunctionNamed(function) => function(&args, &[], &mut state.ctx),
             other => Err(anyhow!("{} is not a native function", other.type_name())),
         };

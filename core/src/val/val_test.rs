@@ -36,6 +36,13 @@ mod tests {
     test_op!(list_sub_val, -, vec![1, 2], 2, vec![1]);
     test_op!(list_sub_list, -, vec![1, 2], vec![2], vec![1]);
 
+    #[test]
+    fn string_concat_preserves_short_and_heap_string_shapes() {
+        assert!(matches!(Val::concat_strings("ab", "cd"), Val::ShortStr(_)));
+        assert!(matches!(Val::concat_strings("longer-", "than-short"), Val::Str(_)));
+        assert_eq!(Val::concat_strings("prefix-", "suffix").as_str(), Some("prefix-suffix"));
+    }
+
     // Modulo tests
     test_op!(mod_int, %, 7, 3, 1);
     test_op!(mod_float, %, 7.5, 2.0, 1.5);

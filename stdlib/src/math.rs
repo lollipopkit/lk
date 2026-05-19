@@ -1,6 +1,6 @@
 use anyhow::Result;
 use lk_core::module::Module;
-use lk_core::val::Val;
+use lk_core::val::{NativeArgs, Val};
 use lk_core::vm::VmContext;
 use std::collections::HashMap;
 
@@ -19,30 +19,30 @@ impl MathModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
 
-        // Register math functions as Rust functions
-        functions.insert("abs".to_string(), Val::RustFunction(Self::abs));
-        functions.insert("sqrt".to_string(), Val::RustFunction(Self::sqrt));
-        functions.insert("sin".to_string(), Val::RustFunction(Self::sin));
-        functions.insert("cos".to_string(), Val::RustFunction(Self::cos));
-        functions.insert("tan".to_string(), Val::RustFunction(Self::tan));
-        functions.insert("asin".to_string(), Val::RustFunction(Self::asin));
-        functions.insert("acos".to_string(), Val::RustFunction(Self::acos));
-        functions.insert("atan".to_string(), Val::RustFunction(Self::atan));
-        functions.insert("atan2".to_string(), Val::RustFunction(Self::atan2));
-        functions.insert("log".to_string(), Val::RustFunction(Self::log));
-        functions.insert("log10".to_string(), Val::RustFunction(Self::log10));
-        functions.insert("log2".to_string(), Val::RustFunction(Self::log2));
-        functions.insert("exp".to_string(), Val::RustFunction(Self::exp));
-        functions.insert("pow".to_string(), Val::RustFunction(Self::pow));
-        functions.insert("floor".to_string(), Val::RustFunction(Self::floor));
-        functions.insert("ceil".to_string(), Val::RustFunction(Self::ceil));
-        functions.insert("round".to_string(), Val::RustFunction(Self::round));
-        functions.insert("min".to_string(), Val::RustFunction(Self::min));
-        functions.insert("max".to_string(), Val::RustFunction(Self::max));
-        functions.insert("clamp".to_string(), Val::RustFunctionNamed(Self::clamp));
+        // Register positional math functions on the fast native ABI.
+        functions.insert("abs".to_string(), Val::RustFastFunction(Self::abs));
+        functions.insert("sqrt".to_string(), Val::RustFastFunction(Self::sqrt));
+        functions.insert("sin".to_string(), Val::RustFastFunction(Self::sin));
+        functions.insert("cos".to_string(), Val::RustFastFunction(Self::cos));
+        functions.insert("tan".to_string(), Val::RustFastFunction(Self::tan));
+        functions.insert("asin".to_string(), Val::RustFastFunction(Self::asin));
+        functions.insert("acos".to_string(), Val::RustFastFunction(Self::acos));
+        functions.insert("atan".to_string(), Val::RustFastFunction(Self::atan));
+        functions.insert("atan2".to_string(), Val::RustFastFunction(Self::atan2));
+        functions.insert("log".to_string(), Val::RustFastFunction(Self::log));
+        functions.insert("log10".to_string(), Val::RustFastFunction(Self::log10));
+        functions.insert("log2".to_string(), Val::RustFastFunction(Self::log2));
+        functions.insert("exp".to_string(), Val::RustFastFunction(Self::exp));
+        functions.insert("pow".to_string(), Val::RustFastFunction(Self::pow));
+        functions.insert("floor".to_string(), Val::RustFastFunction(Self::floor));
+        functions.insert("ceil".to_string(), Val::RustFastFunction(Self::ceil));
+        functions.insert("round".to_string(), Val::RustFastFunction(Self::round));
+        functions.insert("min".to_string(), Val::RustFastFunction(Self::min));
+        functions.insert("max".to_string(), Val::RustFastFunction(Self::max));
+        functions.insert("clamp".to_string(), Val::RustFastFunctionNamed(Self::clamp_fast));
 
         // Random number generation
-        functions.insert("random".to_string(), Val::RustFunction(Self::random));
+        functions.insert("random".to_string(), Val::RustFastFunction(Self::random));
 
         // Constants
         functions.insert("pi".to_string(), Val::Float(std::f64::consts::PI));
@@ -122,9 +122,13 @@ impl MathModule {
         Ok(Val::Int(clamped))
     }
 
+    fn clamp_fast(args: NativeArgs<'_>, named: &[(String, Val)], ctx: &mut VmContext) -> Result<Val> {
+        Self::clamp(args.as_slice(), named, ctx)
+    }
+
     /// Random number generation (0.0 to 1.0)
-    fn random(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if !args.is_empty() {
+    fn random(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 0 {
             return Err(anyhow::anyhow!(
                 "random() takes 0 arguments; call with no args for [0,1), 1 arg for [0,n), 2 args for [a,b)"
             ));
@@ -157,10 +161,11 @@ impl MathModule {
     }
 
     /// Absolute value
-    fn abs(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn abs(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("abs() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         match &args[0] {
             Val::Int(x) => Ok(Val::Int(x.abs())),
@@ -170,10 +175,11 @@ impl MathModule {
     }
 
     /// Square root
-    fn sqrt(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn sqrt(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("sqrt() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         match &args[0] {
             Val::Int(x) if *x >= 0 => Ok(Val::Float((*x as f64).sqrt())),
@@ -184,10 +190,11 @@ impl MathModule {
     }
 
     /// Sine function
-    fn sin(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn sin(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("sin() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) => *x as f64,
@@ -199,10 +206,11 @@ impl MathModule {
     }
 
     /// Cosine function
-    fn cos(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn cos(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("cos() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) => *x as f64,
@@ -214,10 +222,11 @@ impl MathModule {
     }
 
     /// Tangent function
-    fn tan(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn tan(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("tan() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) => *x as f64,
@@ -229,10 +238,11 @@ impl MathModule {
     }
 
     /// Arcsine function
-    fn asin(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn asin(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("asin() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) => *x as f64,
@@ -248,10 +258,11 @@ impl MathModule {
     }
 
     /// Arccosine function
-    fn acos(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn acos(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("acos() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) => *x as f64,
@@ -267,10 +278,11 @@ impl MathModule {
     }
 
     /// Arctangent function
-    fn atan(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn atan(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("atan() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) => *x as f64,
@@ -282,10 +294,11 @@ impl MathModule {
     }
 
     /// Arctangent2 function (atan2(y, x))
-    fn atan2(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn atan2(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow::anyhow!("atan2() takes exactly 2 arguments: y, x"));
         }
+        let args = args.as_slice();
 
         let y = match &args[0] {
             Val::Int(y) => *y as f64,
@@ -303,10 +316,11 @@ impl MathModule {
     }
 
     /// Natural logarithm
-    fn log(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn log(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("log() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) if *x > 0 => *x as f64,
@@ -321,10 +335,11 @@ impl MathModule {
     }
 
     /// Base-10 logarithm
-    fn log10(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn log10(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("log10() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) if *x > 0 => *x as f64,
@@ -339,10 +354,11 @@ impl MathModule {
     }
 
     /// Base-2 logarithm
-    fn log2(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn log2(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("log2() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) if *x > 0 => *x as f64,
@@ -357,10 +373,11 @@ impl MathModule {
     }
 
     /// Exponential function
-    fn exp(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn exp(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("exp() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let x = match &args[0] {
             Val::Int(x) => *x as f64,
@@ -372,10 +389,11 @@ impl MathModule {
     }
 
     /// Power function (x^y)
-    fn pow(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn pow(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow::anyhow!("pow() takes exactly 2 arguments: base, exponent"));
         }
+        let args = args.as_slice();
 
         let base = match &args[0] {
             Val::Int(x) => *x as f64,
@@ -393,10 +411,11 @@ impl MathModule {
     }
 
     /// Floor function
-    fn floor(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn floor(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("floor() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         match &args[0] {
             Val::Int(x) => Ok(Val::Int(*x)),
@@ -406,10 +425,11 @@ impl MathModule {
     }
 
     /// Ceiling function
-    fn ceil(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn ceil(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("ceil() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         match &args[0] {
             Val::Int(x) => Ok(Val::Int(*x)),
@@ -419,10 +439,11 @@ impl MathModule {
     }
 
     /// Round function
-    fn round(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn round(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("round() takes exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         match &args[0] {
             Val::Int(x) => Ok(Val::Int(*x)),
@@ -432,10 +453,11 @@ impl MathModule {
     }
 
     /// Minimum function
-    fn min(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn min(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow::anyhow!("min() takes exactly 2 arguments"));
         }
+        let args = args.as_slice();
 
         let a = match &args[0] {
             Val::Int(x) => *x as f64,
@@ -465,10 +487,11 @@ impl MathModule {
     }
 
     /// Maximum function
-    fn max(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn max(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow::anyhow!("max() takes exactly 2 arguments"));
         }
+        let args = args.as_slice();
 
         let a = match &args[0] {
             Val::Int(x) => *x as f64,

@@ -11,8 +11,8 @@ use crate::iter::{
 use anyhow::{Result, anyhow};
 use lk_core::module::{Module, ModuleRegistry};
 use lk_core::val::Val;
-use lk_core::val::methods::register_method;
-use lk_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue};
+use lk_core::val::methods::register_fast_method;
+use lk_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue, NativeArgs};
 use lk_core::vm::VmContext;
 
 const LIST_MUT_TYPE: &str = "ListMut";
@@ -188,6 +188,10 @@ fn list_mut_guard_len(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(Val::Int(len as i64))
 }
 
+fn list_mut_guard_len_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    list_mut_guard_len(args.as_slice(), ctx)
+}
+
 fn list_mut_guard_push(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!("push() expects (guard, value)"));
@@ -201,6 +205,10 @@ fn list_mut_guard_push(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(args[0].clone())
 }
 
+fn list_mut_guard_push_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    list_mut_guard_push(args.as_slice(), ctx)
+}
+
 fn list_mut_guard_pop(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("pop() expects guard argument"));
@@ -208,6 +216,10 @@ fn list_mut_guard_pop(args: &[Val], _: &mut VmContext) -> Result<Val> {
     let guard = expect_list_guard(&args[0])?;
     let result = with_list_guard_mut(&guard, |state| Ok(state.pop().unwrap_or(Val::Nil)))?;
     Ok(result)
+}
+
+fn list_mut_guard_pop_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    list_mut_guard_pop(args.as_slice(), ctx)
 }
 
 fn list_mut_guard_replace(args: &[Val], _: &mut VmContext) -> Result<Val> {
@@ -223,6 +235,10 @@ fn list_mut_guard_replace(args: &[Val], _: &mut VmContext) -> Result<Val> {
     with_list_guard_mut(&guard, |state| state.replace(index, value))
 }
 
+fn list_mut_guard_replace_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    list_mut_guard_replace(args.as_slice(), ctx)
+}
+
 fn list_mut_guard_remove(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 2 {
         return Err(anyhow!("remove() expects (guard, index)"));
@@ -234,6 +250,10 @@ fn list_mut_guard_remove(args: &[Val], _: &mut VmContext) -> Result<Val> {
     };
     let removed = with_list_guard_mut(&guard, |state| Ok(state.remove(index).unwrap_or(Val::Nil)))?;
     Ok(removed)
+}
+
+fn list_mut_guard_remove_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    list_mut_guard_remove(args.as_slice(), ctx)
 }
 
 fn list_mut_guard_reserve(args: &[Val], _: &mut VmContext) -> Result<Val> {
@@ -252,6 +272,10 @@ fn list_mut_guard_reserve(args: &[Val], _: &mut VmContext) -> Result<Val> {
     Ok(args[0].clone())
 }
 
+fn list_mut_guard_reserve_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    list_mut_guard_reserve(args.as_slice(), ctx)
+}
+
 fn list_mut_guard_commit(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("commit() expects guard argument"));
@@ -260,12 +284,20 @@ fn list_mut_guard_commit(args: &[Val], _: &mut VmContext) -> Result<Val> {
     guard.commit()
 }
 
+fn list_mut_guard_commit_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    list_mut_guard_commit(args.as_slice(), ctx)
+}
+
 fn list_mut_guard_as_list(args: &[Val], _: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow!("as_list() expects guard argument"));
     }
     let guard = expect_list_guard(&args[0])?;
     guard.snapshot()
+}
+
+fn list_mut_guard_as_list_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    list_mut_guard_as_list(args.as_slice(), ctx)
 }
 
 #[derive(Debug)]
@@ -284,86 +316,87 @@ impl ListModule {
         let mut functions = HashMap::new();
 
         // Core list utilities
-        functions.insert("len".to_string(), Val::RustFunction(Self::len));
-        functions.insert("push".to_string(), Val::RustFunction(Self::push));
-        functions.insert("concat".to_string(), Val::RustFunction(Self::concat));
-        functions.insert("join".to_string(), Val::RustFunction(Self::join));
-        functions.insert("get".to_string(), Val::RustFunction(Self::get));
-        functions.insert("first".to_string(), Val::RustFunction(Self::first));
-        functions.insert("last".to_string(), Val::RustFunction(Self::last));
-        functions.insert("set".to_string(), Val::RustFunction(Self::set));
+        functions.insert("len".to_string(), Val::RustFastFunction(Self::len_fast));
+        functions.insert("push".to_string(), Val::RustFastFunction(Self::push));
+        functions.insert("concat".to_string(), Val::RustFastFunction(Self::concat));
+        functions.insert("join".to_string(), Val::RustFastFunction(Self::join));
+        functions.insert("get".to_string(), Val::RustFastFunction(Self::get));
+        functions.insert("first".to_string(), Val::RustFastFunction(Self::first));
+        functions.insert("last".to_string(), Val::RustFastFunction(Self::last));
+        functions.insert("set".to_string(), Val::RustFastFunction(Self::set));
         // Functional helpers
-        functions.insert("map".to_string(), Val::RustFunction(Self::map));
-        functions.insert("filter".to_string(), Val::RustFunction(Self::filter));
-        functions.insert("reduce".to_string(), Val::RustFunction(Self::reduce));
+        functions.insert("map".to_string(), Val::RustFastFunction(Self::map));
+        functions.insert("filter".to_string(), Val::RustFastFunction(Self::filter));
+        functions.insert("reduce".to_string(), Val::RustFastFunction(Self::reduce));
         // Iterator-based helpers (method sugar delegating to iter)
-        functions.insert("take".to_string(), Val::RustFunction(Self::take));
-        functions.insert("skip".to_string(), Val::RustFunction(Self::skip));
-        functions.insert("chain".to_string(), Val::RustFunction(Self::chain));
-        functions.insert("flatten".to_string(), Val::RustFunction(Self::flatten));
-        functions.insert("unique".to_string(), Val::RustFunction(Self::unique));
-        functions.insert("chunk".to_string(), Val::RustFunction(Self::chunk));
-        functions.insert("enumerate".to_string(), Val::RustFunction(Self::enumerate));
-        functions.insert("zip".to_string(), Val::RustFunction(Self::zip));
+        functions.insert("take".to_string(), Val::RustFastFunction(Self::take));
+        functions.insert("skip".to_string(), Val::RustFastFunction(Self::skip));
+        functions.insert("chain".to_string(), Val::RustFastFunction(Self::chain));
+        functions.insert("flatten".to_string(), Val::RustFastFunction(Self::flatten));
+        functions.insert("unique".to_string(), Val::RustFastFunction(Self::unique));
+        functions.insert("chunk".to_string(), Val::RustFastFunction(Self::chunk));
+        functions.insert("enumerate".to_string(), Val::RustFastFunction(Self::enumerate));
+        functions.insert("zip".to_string(), Val::RustFastFunction(Self::zip));
         {
-            functions.insert("into_iter".to_string(), Val::RustFunction(Self::into_iter));
-            functions.insert("mutate".to_string(), Val::RustFunction(Self::mutate));
+            functions.insert("into_iter".to_string(), Val::RustFastFunction(Self::into_iter));
+            functions.insert("mutate".to_string(), Val::RustFastFunction(Self::mutate));
         }
 
         // Register as meta-methods for List
-        register_method("List", "len", Self::len);
-        register_method("List", "push", Self::push);
-        register_method("List", "concat", Self::concat);
-        register_method("List", "join", Self::join);
-        register_method("List", "get", Self::get);
-        register_method("List", "first", Self::first);
-        register_method("List", "last", Self::last);
-        register_method("List", "set", Self::set);
-        register_method("List", "map", Self::map);
-        register_method("List", "filter", Self::filter);
-        register_method("List", "reduce", Self::reduce);
+        register_fast_method("List", "len", Self::len_fast);
+        register_fast_method("List", "push", Self::push);
+        register_fast_method("List", "concat", Self::concat);
+        register_fast_method("List", "join", Self::join);
+        register_fast_method("List", "get", Self::get);
+        register_fast_method("List", "first", Self::first);
+        register_fast_method("List", "last", Self::last);
+        register_fast_method("List", "set", Self::set);
+        register_fast_method("List", "map", Self::map);
+        register_fast_method("List", "filter", Self::filter);
+        register_fast_method("List", "reduce", Self::reduce);
         // Iterator-based helpers as List methods
-        register_method("List", "take", Self::take);
-        register_method("List", "skip", Self::skip);
-        register_method("List", "chain", Self::chain);
-        register_method("List", "flatten", Self::flatten);
-        register_method("List", "unique", Self::unique);
-        register_method("List", "chunk", Self::chunk);
-        register_method("List", "enumerate", Self::enumerate);
-        register_method("List", "zip", Self::zip);
+        register_fast_method("List", "take", Self::take);
+        register_fast_method("List", "skip", Self::skip);
+        register_fast_method("List", "chain", Self::chain);
+        register_fast_method("List", "flatten", Self::flatten);
+        register_fast_method("List", "unique", Self::unique);
+        register_fast_method("List", "chunk", Self::chunk);
+        register_fast_method("List", "enumerate", Self::enumerate);
+        register_fast_method("List", "zip", Self::zip);
         {
-            register_method("List", "into_iter", Self::into_iter);
-            register_method("List", "__iter__", Self::into_iter);
-            register_method("List", "mutate", Self::mutate_method);
+            register_fast_method("List", "into_iter", Self::into_iter);
+            register_fast_method("List", "__iter__", Self::into_iter);
+            register_fast_method("List", "mutate", Self::mutate_method_fast);
 
-            register_method(LIST_MUT_TYPE, "len", list_mut_guard_len);
-            register_method(LIST_MUT_TYPE, "push", list_mut_guard_push);
-            register_method(LIST_MUT_TYPE, "pop", list_mut_guard_pop);
-            register_method(LIST_MUT_TYPE, "replace", list_mut_guard_replace);
-            register_method(LIST_MUT_TYPE, "remove", list_mut_guard_remove);
-            register_method(LIST_MUT_TYPE, "reserve", list_mut_guard_reserve);
-            register_method(LIST_MUT_TYPE, "commit", list_mut_guard_commit);
-            register_method(LIST_MUT_TYPE, "as_list", list_mut_guard_as_list);
+            register_fast_method(LIST_MUT_TYPE, "len", list_mut_guard_len_fast);
+            register_fast_method(LIST_MUT_TYPE, "push", list_mut_guard_push_fast);
+            register_fast_method(LIST_MUT_TYPE, "pop", list_mut_guard_pop_fast);
+            register_fast_method(LIST_MUT_TYPE, "replace", list_mut_guard_replace_fast);
+            register_fast_method(LIST_MUT_TYPE, "remove", list_mut_guard_remove_fast);
+            register_fast_method(LIST_MUT_TYPE, "reserve", list_mut_guard_reserve_fast);
+            register_fast_method(LIST_MUT_TYPE, "commit", list_mut_guard_commit_fast);
+            register_fast_method(LIST_MUT_TYPE, "as_list", list_mut_guard_as_list_fast);
         }
 
         Self { functions }
     }
 
-    fn len(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn len_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("len() takes exactly 1 argument"));
         }
-        match &args[0] {
-            Val::List(l) => Ok(Val::Int(l.len() as i64)),
+        match args.get(0) {
+            Some(Val::List(list)) => Ok(Val::Int(list.len() as i64)),
             _ => Err(anyhow!("len() argument must be a list")),
         }
     }
 
     // Return a new list with value appended (immutable)
-    fn push(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn push(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("push() takes exactly 2 arguments: list, value"));
         }
+        let args = args.as_slice();
         match &args[0] {
             Val::List(list) => Ok(Val::List(Val::append_to_list(list.as_ref(), &args[1]))),
             _ => Err(anyhow!("push() first argument must be a list")),
@@ -371,10 +404,11 @@ impl ListModule {
     }
 
     // Concatenate two lists
-    fn concat(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn concat(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("concat() takes exactly 2 arguments: list, other_list"));
         }
+        let args = args.as_slice();
         let other = match &args[1] {
             Val::List(list) => list.clone(),
             _ => {
@@ -393,10 +427,11 @@ impl ListModule {
     }
 
     // Join a list of strings with a delimiter
-    fn join(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn join(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("join() takes exactly 2 arguments: list<string>, delimiter"));
         }
+        let args = args.as_slice();
         let list = match &args[0] {
             Val::List(l) => &**l,
             _ => return Err(anyhow!("join() first argument must be a list")),
@@ -415,10 +450,11 @@ impl ListModule {
     }
 
     // Safe index access: get(index) -> value|nil
-    fn get(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn get(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("get() takes exactly 2 arguments: list, index"));
         }
+        let args = args.as_slice();
         let list = match &args[0] {
             Val::List(l) => &**l,
             _ => return Err(anyhow!("get() first argument must be a list")),
@@ -434,31 +470,32 @@ impl ListModule {
         Ok(list.get(uidx).cloned().unwrap_or(Val::Nil))
     }
 
-    fn first(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn first(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("first() takes exactly 1 argument"));
         }
-        match &args[0] {
-            Val::List(l) => Ok(l.first().cloned().unwrap_or(Val::Nil)),
+        match args.get(0) {
+            Some(Val::List(l)) => Ok(l.first().cloned().unwrap_or(Val::Nil)),
             _ => Err(anyhow!("first() argument must be a list")),
         }
     }
 
-    fn last(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn last(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("last() takes exactly 1 argument"));
         }
-        match &args[0] {
-            Val::List(l) => Ok(l.last().cloned().unwrap_or(Val::Nil)),
+        match args.get(0) {
+            Some(Val::List(l)) => Ok(l.last().cloned().unwrap_or(Val::Nil)),
             _ => Err(anyhow!("last() argument must be a list")),
         }
     }
 
     // Replace the element at index with a new value, returning [updated_list, old_value]
-    fn set(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn set(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 3 {
             return Err(anyhow!("set() takes exactly 3 arguments: list, index, value"));
         }
+        let args = args.as_slice();
         let index = match &args[1] {
             Val::Int(i) => *i,
             _ => return Err(anyhow!("set() index must be an integer")),
@@ -479,72 +516,73 @@ impl ListModule {
 
     // Map over list with a function: list.map(|x| ...)
     // Accepts either as module call: map(list, func) or meta-method: list.map(func)
-    fn map(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
+    fn map(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
         // Delegate to iter::map for core logic
-        iter_map(args, ctx)
+        iter_map(args.as_slice(), ctx)
     }
 
     // Filter list with predicate function: list.filter(|x| cond)
     // Truthiness: false and nil are false; everything else treated as true
-    fn filter(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
+    fn filter(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
         // Delegate to iter::filter for core logic
-        iter_filter(args, ctx)
+        iter_filter(args.as_slice(), ctx)
     }
 
     // Reduce list with accumulator: list.reduce(init, |acc, x| ...)
-    fn reduce(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
+    fn reduce(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
         // Delegate to iter::reduce for core logic
-        iter_reduce(args, ctx)
+        iter_reduce(args.as_slice(), ctx)
     }
 
     // Method sugar delegating to iter::* sequence helpers
-    fn take(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        iter_take(args, ctx)
+    fn take(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        iter_take(args.as_slice(), ctx)
     }
 
-    fn skip(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        iter_skip(args, ctx)
+    fn skip(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        iter_skip(args.as_slice(), ctx)
     }
 
-    fn chain(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        iter_chain(args, ctx)
+    fn chain(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        iter_chain(args.as_slice(), ctx)
     }
 
-    fn flatten(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        iter_flatten(args, ctx)
+    fn flatten(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        iter_flatten(args.as_slice(), ctx)
     }
 
-    fn unique(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        iter_unique(args, ctx)
+    fn unique(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        iter_unique(args.as_slice(), ctx)
     }
 
-    fn chunk(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        iter_chunk(args, ctx)
+    fn chunk(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        iter_chunk(args.as_slice(), ctx)
     }
 
-    fn enumerate(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        iter_enumerate(args, ctx)
+    fn enumerate(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        iter_enumerate(args.as_slice(), ctx)
     }
 
-    fn zip(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        iter_zip(args, ctx)
+    fn zip(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        iter_zip(args.as_slice(), ctx)
     }
 
-    fn into_iter(args: &[Val], _: &mut VmContext) -> Result<Val> {
+    fn into_iter(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("into_iter expects exactly 1 argument"));
         }
-        let list = match &args[0] {
-            Val::List(list) => list.clone(),
-            other => return Err(anyhow!("into_iter expects a list, got {}", other.type_name())),
+        let list = match args.get(0) {
+            Some(Val::List(list)) => list.clone(),
+            Some(other) => return Err(anyhow!("into_iter expects a list, got {}", other.type_name())),
+            None => return Err(anyhow!("into_iter expects exactly 1 argument")),
         };
         let iter_state = ListIteratorState::new(list);
         let handle = IteratorValue::with_origin(iter_state, ArcStr::from("list.into_iter"));
         Ok(Val::Iterator(handle))
     }
 
-    fn mutate(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        let (updated, closure_result) = Self::mutate_impl(args, ctx)?;
+    fn mutate(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        let (updated, closure_result) = Self::mutate_impl(args.as_slice(), ctx)?;
         let out = Vec::from([updated, closure_result]);
         Ok(Val::List(Arc::from(out)))
     }
@@ -552,6 +590,10 @@ impl ListModule {
     fn mutate_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
         let (updated, _) = Self::mutate_impl(args, ctx)?;
         Ok(updated)
+    }
+
+    fn mutate_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+        Self::mutate_method(args.as_slice(), ctx)
     }
 
     fn mutate_impl(args: &[Val], ctx: &mut VmContext) -> Result<(Val, Val)> {
@@ -568,7 +610,11 @@ impl ListModule {
             }
         };
         let mutator = match &args[1] {
-            f @ Val::Closure(_) | f @ Val::RustFunction(_) | f @ Val::RustFunctionNamed(_) => f.clone(),
+            f @ Val::Closure(_)
+            | f @ Val::RustFunction(_)
+            | f @ Val::RustFastFunction(_)
+            | f @ Val::RustFastFunctionNamed(_)
+            | f @ Val::RustFunctionNamed(_) => f.clone(),
             other => {
                 return Err(anyhow!(
                     "mutate() second argument must be a function, got {}",

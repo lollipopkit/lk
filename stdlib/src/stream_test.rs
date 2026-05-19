@@ -2,6 +2,7 @@
 mod tests {
     use anyhow::Result;
     use lk_core::{
+        module::Module,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
         val::Val,
@@ -69,5 +70,34 @@ mod tests {
             _ => panic!("expected tuple [ok, value]"),
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_stream_module_exports_use_fast_native_abi() {
+        let module = crate::stream::StreamModule::new();
+        let exports = module.exports();
+        for name in [
+            "from_list",
+            "range",
+            "iterate",
+            "repeat",
+            "from_channel",
+            "map",
+            "filter",
+            "take",
+            "skip",
+            "chain",
+            "subscribe",
+            "next",
+            "collect",
+            "next_block",
+            "collect_block",
+        ] {
+            let value = exports.get(name).expect("stream function export present");
+            assert!(
+                matches!(value, Val::RustFastFunction(_)),
+                "{name} should use RustFastFunction"
+            );
+        }
     }
 }

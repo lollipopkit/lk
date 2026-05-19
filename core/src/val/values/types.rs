@@ -1,4 +1,91 @@
+use std::fmt;
+
+use arcstr::ArcStr;
+use serde::Serializer;
+
 use crate::typ::{NumericClass, NumericHierarchy};
+
+/// 内联短字符串：0–7 字节 UTF-8，完全存储在 Val 内（零堆分配）。
+/// 实现了 Copy，克隆无需原子操作。
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ShortStr {
+    len: u8,
+    data: [u8; 7],
+}
+
+impl ShortStr {
+    /// 从 str 创建。若 s.len() > 7 返回 None。
+    #[inline]
+    pub fn new(s: &str) -> Option<Self> {
+        let bytes = s.as_bytes();
+        if bytes.len() > 7 {
+            return None;
+        }
+        let mut data = [0u8; 7];
+        data[..bytes.len()].copy_from_slice(bytes);
+        Some(Self {
+            len: bytes.len() as u8,
+            data,
+        })
+    }
+
+    #[inline]
+    pub fn from_char(ch: char) -> Self {
+        let mut data = [0u8; 7];
+        let encoded = ch.encode_utf8(&mut data);
+        Self {
+            len: encoded.len() as u8,
+            data,
+        }
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        // SAFETY: data 在构造时已验证为合法 UTF-8。
+        std::str::from_utf8(&self.data[..self.len as usize]).expect("ShortStr contains valid UTF-8")
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl fmt::Debug for ShortStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.as_str())
+    }
+}
+
+impl fmt::Display for ShortStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<ShortStr> for ArcStr {
+    fn from(s: ShortStr) -> ArcStr {
+        ArcStr::from(s.as_str())
+    }
+}
+
+impl serde::Serialize for ShortStr {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ShortStr {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        ShortStr::new(&s).ok_or_else(|| serde::de::Error::custom("string too long for ShortStr"))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionNamedParamType {

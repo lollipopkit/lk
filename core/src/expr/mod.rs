@@ -1,4 +1,5 @@
 mod expr_impl;
+mod pattern_impl;
 
 #[cfg(test)]
 mod expr_recover_test;

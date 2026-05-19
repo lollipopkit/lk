@@ -23,3 +23,21 @@ pub(super) fn intern(s: &str) -> ArcStr {
         }
     }
 }
+
+#[inline]
+pub(super) fn intern_owned(s: String) -> ArcStr {
+    if s.len() > INTERN_MAX_LEN {
+        return ArcStr::from(s);
+    }
+    if let Some(entry) = INTERN_TABLE.get(s.as_str()) {
+        return entry.clone();
+    }
+    let arc = ArcStr::from(s);
+    match INTERN_TABLE.entry(arc.clone()) {
+        dashmap::mapref::entry::Entry::Occupied(entry) => entry.get().clone(),
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            entry.insert(arc.clone());
+            arc
+        }
+    }
+}

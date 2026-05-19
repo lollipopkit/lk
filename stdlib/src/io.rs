@@ -1,40 +1,41 @@
 use anyhow::Result;
 use lk_core::module::Module;
-use lk_core::val::Val;
+use lk_core::val::{NativeArgs, Val};
 use lk_core::vm::VmContext;
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
 fn make_stdin_object() -> Val {
     let mut methods = HashMap::new();
-    methods.insert("read".to_string(), Val::RustFunction(stdin_read));
-    methods.insert("read_line".to_string(), Val::RustFunction(stdin_read_line));
-    methods.insert("read_all".to_string(), Val::RustFunction(stdin_read_all));
+    methods.insert("read".to_string(), Val::RustFastFunction(stdin_read));
+    methods.insert("read_line".to_string(), Val::RustFastFunction(stdin_read_line));
+    methods.insert("read_all".to_string(), Val::RustFastFunction(stdin_read_all));
     // stdin flush is a no-op for convenience; returns true
-    methods.insert("flush".to_string(), Val::RustFunction(stdin_flush));
+    methods.insert("flush".to_string(), Val::RustFastFunction(stdin_flush));
     methods.into()
 }
 
 fn make_stdout_object() -> Val {
     let mut methods = HashMap::new();
-    methods.insert("write".to_string(), Val::RustFunction(stdout_write));
-    methods.insert("writeln".to_string(), Val::RustFunction(stdout_writeln));
-    methods.insert("flush".to_string(), Val::RustFunction(stdout_flush));
+    methods.insert("write".to_string(), Val::RustFastFunction(stdout_write));
+    methods.insert("writeln".to_string(), Val::RustFastFunction(stdout_writeln));
+    methods.insert("flush".to_string(), Val::RustFastFunction(stdout_flush));
     methods.into()
 }
 
 fn make_stderr_object() -> Val {
     let mut methods = HashMap::new();
-    methods.insert("write".to_string(), Val::RustFunction(stderr_write));
-    methods.insert("writeln".to_string(), Val::RustFunction(stderr_writeln));
-    methods.insert("flush".to_string(), Val::RustFunction(stderr_flush));
+    methods.insert("write".to_string(), Val::RustFastFunction(stderr_write));
+    methods.insert("writeln".to_string(), Val::RustFastFunction(stderr_writeln));
+    methods.insert("flush".to_string(), Val::RustFastFunction(stderr_flush));
     methods.into()
 }
 
-fn stdin_read(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn stdin_read(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() > 1 {
         return Err(anyhow::anyhow!("stdin.read() takes at most 1 argument: [bytes]"));
     }
+    let args = args.as_slice();
 
     let mut handle = std::io::stdin().lock();
     if args.is_empty() {
@@ -76,20 +77,20 @@ fn stdin_read(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     }
 }
 
-fn stdin_read_line(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    if !args.is_empty() {
+fn stdin_read_line(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
+    if args.len() != 0 {
         return Err(anyhow::anyhow!("stdin.read_line() takes no arguments"));
     }
-    stdin_read(&[], ctx)
+    stdin_read(NativeArgs::new(&[]), ctx)
 }
 
-fn stdin_flush(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn stdin_flush(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     // No-op; included for API symmetry. Return true for convenience.
     Ok(Val::Bool(true))
 }
 
-fn stdin_read_all(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if !args.is_empty() {
+fn stdin_read_all(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+    if args.len() != 0 {
         return Err(anyhow::anyhow!("stdin.read_all() takes no arguments"));
     }
     let mut s = String::new();
@@ -100,10 +101,11 @@ fn stdin_read_all(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     }
 }
 
-fn stdout_write(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn stdout_write(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow::anyhow!("stdout.write() requires 1 argument: data"));
     }
+    let args = args.as_slice();
     let data = match &args[0] {
         v if v.as_str().is_some() => v.as_str().unwrap(),
         v => {
@@ -117,10 +119,11 @@ fn stdout_write(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     }
 }
 
-fn stdout_writeln(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn stdout_writeln(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow::anyhow!("stdout.writeln() requires 1 argument: data"));
     }
+    let args = args.as_slice();
     let data = match &args[0] {
         v if v.as_str().is_some() => v.as_str().unwrap(),
         v => {
@@ -134,17 +137,18 @@ fn stdout_writeln(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     }
 }
 
-fn stdout_flush(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn stdout_flush(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     match std::io::stdout().flush() {
         Ok(()) => Ok(Val::Bool(true)),
         Err(e) => Err(anyhow::anyhow!("stdout flush error: {}", e)),
     }
 }
 
-fn stderr_write(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn stderr_write(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow::anyhow!("stderr.write() requires 1 argument: data"));
     }
+    let args = args.as_slice();
     let data = match &args[0] {
         v if v.as_str().is_some() => v.as_str().unwrap(),
         v => {
@@ -158,10 +162,11 @@ fn stderr_write(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     }
 }
 
-fn stderr_writeln(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn stderr_writeln(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     if args.len() != 1 {
         return Err(anyhow::anyhow!("stderr.writeln() requires 1 argument: data"));
     }
+    let args = args.as_slice();
     let data = match &args[0] {
         v if v.as_str().is_some() => v.as_str().unwrap(),
         v => {
@@ -175,7 +180,7 @@ fn stderr_writeln(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
     }
 }
 
-fn stderr_flush(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+fn stderr_flush(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
     match std::io::stderr().flush() {
         Ok(()) => Ok(Val::Bool(true)),
         Err(e) => Err(anyhow::anyhow!("stderr flush error: {}", e)),
@@ -203,7 +208,7 @@ impl IoModule {
         functions.insert("stderr".to_string(), make_stderr_object());
 
         // Convenience top-level helpers
-        functions.insert("read".to_string(), Val::RustFunction(mod_read));
+        functions.insert("read".to_string(), Val::RustFastFunction(mod_read));
 
         IoModule { functions }
     }
@@ -232,8 +237,8 @@ fn read_all_to_string() -> anyhow::Result<String> {
     Ok(s)
 }
 
-fn mod_read(args: &[Val], _ctx: &mut VmContext) -> anyhow::Result<Val> {
-    if !args.is_empty() {
+fn mod_read(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+    if args.len() != 0 {
         return Err(anyhow::anyhow!("io.read() takes no arguments"));
     }
     Ok(Val::from_str(&read_all_to_string()?))
@@ -256,7 +261,7 @@ mod tests {
     #[test]
     fn test_stdin_flush_returns_true() -> Result<()> {
         let mut env = VmContext::new();
-        let result = stdin_flush(&[], &mut env)?;
+        let result = stdin_flush(NativeArgs::new(&[]), &mut env)?;
         assert_eq!(result, Val::Bool(true));
         Ok(())
     }
@@ -264,7 +269,7 @@ mod tests {
     #[test]
     fn test_stdout_flush_returns_true() -> Result<()> {
         let mut env = VmContext::new();
-        let result = stdout_flush(&[], &mut env)?;
+        let result = stdout_flush(NativeArgs::new(&[]), &mut env)?;
         assert_eq!(result, Val::Bool(true));
         Ok(())
     }
@@ -272,7 +277,7 @@ mod tests {
     #[test]
     fn test_stderr_flush_returns_true() -> Result<()> {
         let mut env = VmContext::new();
-        let result = stderr_flush(&[], &mut env)?;
+        let result = stderr_flush(NativeArgs::new(&[]), &mut env)?;
         assert_eq!(result, Val::Bool(true));
         Ok(())
     }

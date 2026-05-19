@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::val::{ClosureCapture, Val};
 use crate::vm::RegionPlan;
 use crate::vm::alloc::RegionAllocator;
+use crate::vm::record_register_write;
 
 use super::super::bytecode::{CaptureSpec, Function};
 use super::Vm;
@@ -13,6 +14,18 @@ pub(super) struct CallFrameMeta {
     pub(super) ret_base: u16,
     pub(super) retc: u8,
     pub(super) caller_window: RegisterWindowRef,
+}
+
+impl CallFrameMeta {
+    #[inline]
+    pub(super) const fn inline_return(resume_pc: usize, ret_base: u16, retc: u8, frame_base: usize) -> Self {
+        Self {
+            resume_pc,
+            ret_base,
+            retc,
+            caller_window: RegisterWindowRef::Base(frame_base),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -237,8 +250,38 @@ impl<'func> FrameState<'func> {
     #[inline]
     pub(super) fn write_reg(&mut self, idx: usize, value: Val) {
         self.record_reg_write(idx);
+        record_register_write();
         debug_assert!(idx < self.regs.len(), "register write out of frame window");
         self.regs[idx] = value;
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(super) fn borrow_reg(&self, idx: usize) -> Option<&Val> {
+        self.regs.get(idx)
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(super) fn take_or_clone_reg(&mut self, idx: usize, may_take: bool) -> Val {
+        debug_assert!(idx < self.regs.len(), "register read out of frame window");
+        if may_take {
+            std::mem::replace(&mut self.regs[idx], Val::Nil)
+        } else {
+            self.regs[idx].clone()
+        }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(super) fn move_reg(&mut self, src: usize, dst: usize) {
+        debug_assert!(src < self.regs.len(), "register move source out of frame window");
+        debug_assert!(dst < self.regs.len(), "register move destination out of frame window");
+        if src == dst {
+            return;
+        }
+        let value = std::mem::replace(&mut self.regs[src], Val::Nil);
+        self.write_reg(dst, value);
     }
 
     #[inline]
@@ -334,5 +377,39 @@ mod tests {
         assert_eq!(plan.region_for(1), AllocationRegion::ThreadLocal);
         let ptr = state.region_allocator;
         assert_eq!(ptr, alloc_ptr);
+    }
+
+    #[test]
+    fn frame_state_register_protocol_borrows_writes_and_takes() {
+        let function = Function {
+            consts: Vec::new(),
+            code: Vec::new(),
+            n_regs: 3,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: None,
+        };
+        let mut regs = vec![Val::Nil; 3];
+        let mut frame = CallFrame::new(&function, 0, 3, None, None, None);
+        let allocator = RegionAllocator::new();
+        let alloc_ptr: *const RegionAllocator = &allocator;
+        let mut state = FrameState::new(&mut frame, &mut regs, alloc_ptr);
+
+        state.write_reg(1, Val::Int(42));
+        assert_eq!(state.borrow_reg(1), Some(&Val::Int(42)));
+        assert_eq!(state.take_or_clone_reg(1, false), Val::Int(42));
+        assert_eq!(state.borrow_reg(1), Some(&Val::Int(42)));
+        assert_eq!(state.take_or_clone_reg(1, true), Val::Int(42));
+        assert_eq!(state.borrow_reg(1), Some(&Val::Nil));
+
+        state.write_reg(0, Val::Int(7));
+        state.move_reg(0, 2);
+        assert_eq!(state.borrow_reg(0), Some(&Val::Nil));
+        assert_eq!(state.borrow_reg(2), Some(&Val::Int(7)));
     }
 }

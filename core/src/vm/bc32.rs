@@ -1,24 +1,22 @@
 //! 32-bit packed bytecode encoding scaffold.
 //!
-//! This module provides a compact encoding for a common subset of ops with a
-//! simple encoder/decoder. It is intended as a building block for future i-cache
-//! density work, not as a full replacement yet.
-
 use super::bytecode::{ClosureProto, Function, NamedParamLayoutEntry, Op, PatternPlan, rk_is_const};
 use crate::val::Val;
-use serde::Serialize;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use tracing::info;
 
 use super::bytecode::rk_index;
 
 mod decoded;
+mod encode_support;
 mod format;
+mod function_decode;
+mod metrics;
 pub use decoded::*;
+use encode_support::*;
 pub(crate) use format::*;
+pub use metrics::*;
 
-/// Packed function using 32-bit instructions for a subset of ops.
 #[derive(Debug, Clone)]
 pub struct Bc32Function {
     pub consts: Vec<Val>,
@@ -34,566 +32,20 @@ pub struct Bc32Function {
 
 const TRACE_TARGET: &str = "lk::vm::bc32";
 
-#[derive(Default)]
-struct Bc32Metrics {
-    attempts: u64,
-    packed: u64,
-    total_ops: u64,
-    total_words: u64,
-    fallback_by_reason: HashMap<&'static str, u64>,
-    fallback_by_opcode: HashMap<&'static str, u64>,
+#[inline]
+fn pack_rk_binary(tag: Tag, d: u16, a: u16, b: u16) -> EncodedOp {
+    let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
+    let word = pack(tag, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
+    let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
+    EncodedOp::new(word, reg_ext)
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct Bc32ReasonEntry {
-    pub reason: String,
-    pub count: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Bc32OpcodeEntry {
-    pub opcode: String,
-    pub count: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Bc32MetricsSnapshot {
-    pub attempts: u64,
-    pub packed: u64,
-    pub total_ops: u64,
-    pub total_words: u64,
-    pub fallback_reasons: Vec<Bc32ReasonEntry>,
-    pub fallback_opcodes: Vec<Bc32OpcodeEntry>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Bc32PackStatus {
-    pub packed: bool,
-    pub ops: usize,
-    pub words: Option<usize>,
-    pub reason: Option<String>,
-    pub opcode: Option<String>,
-    pub detail: Option<String>,
-    pub op_index: Option<usize>,
-}
-
-impl Bc32PackStatus {
-    fn packed(ops: usize, words: usize) -> Self {
-        Self {
-            packed: true,
-            ops,
-            words: Some(words),
-            reason: None,
-            opcode: None,
-            detail: None,
-            op_index: None,
-        }
+#[inline]
+fn pack_typed_arith_or_rk(tag: Tag, ext_op: u8, d: u16, a: u16, b: u16) -> Result<EncodedOp, Bc32Reject> {
+    if rk_is_const(a) || rk_is_const(b) {
+        return Ok(pack_rk_binary(tag, d, a, b));
     }
-
-    fn fallback(ops: usize, issue: PackIssue) -> Self {
-        let PackIssue { reason, op_index } = issue;
-        Self {
-            packed: false,
-            ops,
-            words: None,
-            reason: Some(reason.reason_key().to_string()),
-            opcode: Some(reason.opcode().to_string()),
-            detail: Some(reason.detail().to_string()),
-            op_index,
-        }
-    }
-}
-
-static METRICS: OnceLock<Mutex<Bc32Metrics>> = OnceLock::new();
-
-fn metrics() -> &'static Mutex<Bc32Metrics> {
-    METRICS.get_or_init(|| Mutex::new(Bc32Metrics::default()))
-}
-
-fn record_attempt(ops: usize) {
-    let mut guard = metrics().lock().expect("bc32 metrics poisoned");
-    guard.attempts += 1;
-    guard.total_ops += ops as u64;
-}
-
-fn record_success(words: usize) {
-    let mut guard = metrics().lock().expect("bc32 metrics poisoned");
-    guard.packed += 1;
-    guard.total_words += words as u64;
-}
-
-fn record_failure(reason: &'static str, opcode: &'static str) {
-    let mut guard = metrics().lock().expect("bc32 metrics poisoned");
-    *guard.fallback_by_reason.entry(reason).or_default() += 1;
-    *guard.fallback_by_opcode.entry(opcode).or_default() += 1;
-}
-
-pub fn bc32_metrics_snapshot() -> Bc32MetricsSnapshot {
-    let guard = metrics().lock().expect("bc32 metrics poisoned");
-    let mut fallback_reasons: Vec<Bc32ReasonEntry> = guard
-        .fallback_by_reason
-        .iter()
-        .map(|(reason, count)| Bc32ReasonEntry {
-            reason: (*reason).to_string(),
-            count: *count,
-        })
-        .collect();
-    fallback_reasons.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
-
-    let mut fallback_opcodes: Vec<Bc32OpcodeEntry> = guard
-        .fallback_by_opcode
-        .iter()
-        .map(|(opcode, count)| Bc32OpcodeEntry {
-            opcode: (*opcode).to_string(),
-            count: *count,
-        })
-        .collect();
-    fallback_opcodes.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.opcode.cmp(&b.opcode)));
-
-    Bc32MetricsSnapshot {
-        attempts: guard.attempts,
-        packed: guard.packed,
-        total_ops: guard.total_ops,
-        total_words: guard.total_words,
-        fallback_reasons,
-        fallback_opcodes,
-    }
-}
-
-pub fn bc32_metrics_reset() {
-    let mut guard = metrics().lock().expect("bc32 metrics poisoned");
-    *guard = Bc32Metrics::default();
-}
-
-pub fn bc32_pack_status(f: &Function) -> Bc32PackStatus {
-    match Bc32Function::try_pack(f) {
-        Ok(packed) => Bc32PackStatus::packed(f.code.len(), packed.code32.len()),
-        Err(issue) => Bc32PackStatus::fallback(f.code.len(), issue),
-    }
-}
-
-#[derive(Debug)]
-enum Bc32Reject {
-    UnsupportedOpcode {
-        opcode: &'static str,
-        detail: &'static str,
-    },
-    OperandOutOfRange {
-        opcode: &'static str,
-        operand: &'static str,
-    },
-    BranchTargetOutOfBounds {
-        opcode: &'static str,
-    },
-    EncodingInvariant {
-        opcode: &'static str,
-        detail: &'static str,
-    },
-}
-
-impl Bc32Reject {
-    fn reason_key(&self) -> &'static str {
-        match self {
-            Bc32Reject::UnsupportedOpcode { .. } => "unsupported_opcode",
-            Bc32Reject::OperandOutOfRange { .. } => "operand_out_of_range",
-            Bc32Reject::BranchTargetOutOfBounds { .. } => "branch_target_out_of_bounds",
-            Bc32Reject::EncodingInvariant { .. } => "encoding_invariant_violation",
-        }
-    }
-
-    fn opcode(&self) -> &'static str {
-        match self {
-            Bc32Reject::UnsupportedOpcode { opcode, .. }
-            | Bc32Reject::OperandOutOfRange { opcode, .. }
-            | Bc32Reject::BranchTargetOutOfBounds { opcode }
-            | Bc32Reject::EncodingInvariant { opcode, .. } => opcode,
-        }
-    }
-
-    fn detail(&self) -> &'static str {
-        match self {
-            Bc32Reject::UnsupportedOpcode { detail, .. } | Bc32Reject::EncodingInvariant { detail, .. } => detail,
-            Bc32Reject::OperandOutOfRange { operand, .. } => operand,
-            Bc32Reject::BranchTargetOutOfBounds { .. } => "",
-        }
-    }
-}
-
-struct PackIssue {
-    reason: Bc32Reject,
-    op_index: Option<usize>,
-}
-
-impl PackIssue {
-    fn new(reason: Bc32Reject, op_index: usize) -> Self {
-        Self {
-            reason,
-            op_index: Some(op_index),
-        }
-    }
-}
-
-fn ensure_u8(opcode: &'static str, operand: &'static str, value: u16) -> Result<(), Bc32Reject> {
-    if value < 256 {
-        Ok(())
-    } else {
-        Err(Bc32Reject::OperandOutOfRange { opcode, operand })
-    }
-}
-
-fn ensure_regs_u8(opcode: &'static str, dst: u16, arg1: u16, arg2: u16) -> Result<(), Bc32Reject> {
-    ensure_u8(opcode, "dst", dst)?;
-    ensure_u8(opcode, "arg1", arg1)?;
-    ensure_u8(opcode, "arg2", arg2)?;
-    Ok(())
-}
-
-fn ensure_i8_range(opcode: &'static str, operand: &'static str, value: i32) -> Result<(), Bc32Reject> {
-    if (-128..=127).contains(&value) {
-        Ok(())
-    } else {
-        Err(Bc32Reject::EncodingInvariant {
-            opcode,
-            detail: operand,
-        })
-    }
-}
-
-impl Bc32Function {
-    /// Decode back to the standard Function format for execution.
-    pub fn decode(&self) -> Function {
-        // Multi-word aware decode to reconstruct enum Ops, including extended forms.
-        let mut code = Vec::with_capacity(self.code32.len());
-        let mut pc = 0usize;
-        while pc < self.code32.len() {
-            let w = self.code32[pc];
-            match decode_tag_byte(tag_of(w)) {
-                DecodedTag::RegExt => {
-                    pc += 1;
-                    continue;
-                }
-                DecodedTag::Ext => {
-                    let Some(ext) = self.code32.get(pc + 1).copied() else {
-                        break;
-                    };
-                    let Some(op) = decode_ext_op(w, ext) else {
-                        break;
-                    };
-                    code.push(op);
-                    pc += 2;
-                }
-                DecodedTag::Regular { tag, flags } => {
-                    let mut next = pc + 1;
-                    let reg_ext_word = if next < self.code32.len() && tag_of(self.code32[next]) == TAG_REG_EXT {
-                        let ext = Some(self.code32[next]);
-                        next += 1;
-                        ext
-                    } else {
-                        None
-                    };
-                    let (hi_a, hi_b, hi_c) = unpack_reg_ext(reg_ext_word);
-                    match tag {
-                        Tag::ForRangePrep => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let a = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let b = combine_reg(hi_b, ((w >> 8) & 0xFF) as u16);
-                            let c = combine_reg(hi_c, (w & 0xFF) as u16);
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let flag_word = ((w2 >> 16) & 0xFF) as u8;
-                            let inclusive = (flag_word & 1) != 0;
-                            let explicit = (flag_word & 2) != 0;
-                            code.push(Op::ForRangePrep {
-                                idx: a,
-                                limit: b,
-                                step: c,
-                                inclusive,
-                                explicit,
-                            });
-                            pc = next;
-                        }
-                        Tag::ForRangeLoop => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let a = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let b = combine_reg(hi_b, ((w >> 8) & 0xFF) as u16);
-                            let c = combine_reg(hi_c, (w & 0xFF) as u16);
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let flags = ((w2 >> 16) & 0xFF) as u8;
-                            let inclusive = (flags & 1) != 0;
-                            let write_idx = (flags & 2) == 0;
-                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
-                            code.push(Op::ForRangeLoop {
-                                idx: a,
-                                limit: b,
-                                step: c,
-                                inclusive,
-                                write_idx,
-                                ofs,
-                            });
-                            pc = next;
-                        }
-                        Tag::ForRangeStep => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let a = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let b = combine_reg(hi_b, ((w >> 8) & 0xFF) as u16);
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let back_ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
-                            code.push(Op::ForRangeStep {
-                                idx: a,
-                                step: b,
-                                back_ofs,
-                            });
-                            pc = next;
-                        }
-                        Tag::JmpFalseSetX => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let r = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let dst = combine_reg(hi_b, ((w >> 8) & 0xFF) as u16);
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
-                            code.push(Op::JmpFalseSet { r, dst, ofs });
-                            pc = next;
-                        }
-                        Tag::JmpTrueSetX => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let r = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let dst = combine_reg(hi_b, ((w >> 8) & 0xFF) as u16);
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
-                            code.push(Op::JmpTrueSet { r, dst, ofs });
-                            pc = next;
-                        }
-                        Tag::NullishPickX => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let l = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let dst = combine_reg(hi_b, ((w >> 8) & 0xFF) as u16);
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
-                            code.push(Op::NullishPick { l, dst, ofs });
-                            pc = next;
-                        }
-                        Tag::CallX => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let f_reg = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let base = combine_reg(hi_b, ((w >> 8) & 0xFF) as u16);
-                            let retc = (w & 0xFF) as u8;
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let argc = ((w2 >> 16) & 0xFF) as u8;
-                            code.push(Op::Call {
-                                f: f_reg,
-                                base,
-                                argc,
-                                retc,
-                            });
-                            pc = next;
-                        }
-                        Tag::CallNamedX => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let f_reg = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let base_pos = combine_reg(hi_b, ((w >> 8) & 0xFF) as u16);
-                            let base_named = combine_reg(hi_c, (w & 0xFF) as u16);
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let posc = ((w2 >> 16) & 0xFF) as u8;
-                            let namedc = ((w2 >> 8) & 0xFF) as u8;
-                            let retc = (w2 & 0xFF) as u8;
-                            code.push(Op::CallNamed {
-                                f: f_reg,
-                                base_pos,
-                                posc,
-                                base_named,
-                                namedc,
-                                retc,
-                            });
-                            pc = next;
-                        }
-                        Tag::CmpLtImmJmp => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let r = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let imm = (((w >> 8) & 0xFF) as i8) as i16;
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
-                            code.push(Op::CmpLtImmJmp { r, imm, ofs });
-                            pc = next;
-                        }
-                        Tag::CmpLeImmJmp => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let r = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let imm = (((w >> 8) & 0xFF) as i8) as i16;
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
-                            code.push(Op::CmpLeImmJmp { r, imm, ofs });
-                            pc = next;
-                        }
-                        Tag::AddIntImmJmp => {
-                            if next >= self.code32.len() {
-                                break;
-                            }
-                            let r = combine_reg(hi_a, ((w >> 16) & 0xFF) as u16);
-                            let imm = (((w >> 8) & 0xFF) as i8) as i16;
-                            let w2 = self.code32[next];
-                            next += 1;
-                            let ofs = (((((w2 >> 8) & 0xFF) as u16) << 8) | ((w2 & 0xFF) as u16)) as i16;
-                            code.push(Op::AddIntImmJmp { r, imm, ofs });
-                            pc = next;
-                        }
-                        _ => {
-                            let op = decode_word_with_hi(tag, flags, w, (hi_a, hi_b, hi_c));
-                            code.push(op);
-                            pc = next;
-                        }
-                    }
-                }
-            }
-        }
-        Function {
-            consts: self.consts.clone(),
-            code,
-            n_regs: self.n_regs,
-            protos: self.protos.clone(),
-            param_regs: self.param_regs.clone(),
-            named_param_regs: self.named_param_regs.clone(),
-            named_param_layout: self.named_param_layout.clone(),
-            pattern_plans: self.pattern_plans.clone(),
-            code32: None,
-            bc32_decoded: None,
-            analysis: None,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct EncodedOp {
-    word: u32,
-    reg_ext: Option<u32>,
-}
-
-impl EncodedOp {
-    fn new(word: u32, reg_ext: Option<u32>) -> Self {
-        Self { word, reg_ext }
-    }
-
-    fn len(&self) -> usize {
-        if self.reg_ext.is_some() { 2 } else { 1 }
-    }
-
-    fn emit(self, out: &mut Vec<u32>) {
-        out.push(self.word);
-        if let Some(ext) = self.reg_ext {
-            out.push(ext);
-        }
-    }
-}
-
-#[allow(unreachable_patterns)]
-fn opcode_name(op: &Op) -> &'static str {
-    match op {
-        Op::LoadK(..) => "LoadK",
-        Op::Move(..) => "Move",
-        Op::Not(..) => "Not",
-        Op::ToStr(..) => "ToStr",
-        Op::ToBool(..) => "ToBool",
-        Op::JmpIfNil(..) => "JmpIfNil",
-        Op::JmpIfNotNil(..) => "JmpIfNotNil",
-        Op::NullishPick { .. } => "NullishPick",
-        Op::JmpFalseSet { .. } => "JmpFalseSet",
-        Op::JmpTrueSet { .. } => "JmpTrueSet",
-        Op::Add(..) => "Add",
-        Op::AddInt(..) => "AddInt",
-        Op::AddFloat(..) => "AddFloat",
-        Op::AddIntImm(..) => "AddIntImm",
-        Op::Sub(..) => "Sub",
-        Op::SubInt(..) => "SubInt",
-        Op::SubFloat(..) => "SubFloat",
-        Op::Mul(..) => "Mul",
-        Op::MulInt(..) => "MulInt",
-        Op::MulFloat(..) => "MulFloat",
-        Op::Div(..) => "Div",
-        Op::DivFloat(..) => "DivFloat",
-        Op::Mod(..) => "Mod",
-        Op::ModInt(..) => "ModInt",
-        Op::ModFloat(..) => "ModFloat",
-        Op::CmpEq(..) => "CmpEq",
-        Op::CmpNe(..) => "CmpNe",
-        Op::CmpLt(..) => "CmpLt",
-        Op::CmpLe(..) => "CmpLe",
-        Op::CmpGt(..) => "CmpGt",
-        Op::CmpGe(..) => "CmpGe",
-        Op::CmpEqImm(..) => "CmpEqImm",
-        Op::CmpNeImm(..) => "CmpNeImm",
-        Op::CmpLtImm(..) => "CmpLtImm",
-        Op::CmpLeImm(..) => "CmpLeImm",
-        Op::CmpGtImm(..) => "CmpGtImm",
-        Op::CmpGeImm(..) => "CmpGeImm",
-        Op::In(..) => "In",
-        Op::LoadLocal(..) => "LoadLocal",
-        Op::StoreLocal(..) => "StoreLocal",
-        Op::LoadGlobal(..) => "LoadGlobal",
-        Op::DefineGlobal(..) => "DefineGlobal",
-        Op::LoadCapture { .. } => "LoadCapture",
-        Op::Access(..) => "Access",
-        Op::AccessK(..) => "AccessK",
-        Op::IndexK(..) => "IndexK",
-        Op::Len { .. } => "Len",
-        Op::Floor { .. } => "Floor",
-        Op::StartsWithK(..) => "StartsWithK",
-        Op::ContainsK(..) => "ContainsK",
-        Op::MapHas(..) => "MapHas",
-        Op::MapHasK(..) => "MapHasK",
-        Op::ListFoldAdd { .. } => "ListFoldAdd",
-        Op::MapValuesFoldAdd { .. } => "MapValuesFoldAdd",
-        Op::Index { .. } => "Index",
-        Op::ToIter { .. } => "ToIter",
-        Op::BuildList { .. } => "BuildList",
-        Op::BuildMap { .. } => "BuildMap",
-        Op::ListSlice { .. } => "ListSlice",
-        Op::ListPush { .. } => "ListPush",
-        Op::MapSet { .. } => "MapSet",
-        Op::MapSetMove { .. } => "MapSetMove",
-        Op::MakeClosure { .. } => "MakeClosure",
-        Op::Jmp(..) => "Jmp",
-        Op::JmpFalse(..) => "JmpFalse",
-        Op::Call { .. } => "Call",
-        Op::CallNamed { .. } => "CallNamed",
-        Op::Ret { .. } => "Ret",
-        Op::ForRangePrep { .. } => "ForRangePrep",
-        Op::ForRangeLoop { .. } => "ForRangeLoop",
-        Op::ForRangeStep { .. } => "ForRangeStep",
-        Op::Break(..) => "Break",
-        Op::Continue(..) => "Continue",
-        Op::CmpLtImmJmp { .. } => "CmpLtImmJmp",
-        Op::CmpLeImmJmp { .. } => "CmpLeImmJmp",
-        Op::AddIntImmJmp { .. } => "AddIntImmJmp",
-        _ => "Unknown",
-    }
+    pack_ext_op(ext_op, d, a, b)
 }
 
 fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
@@ -621,7 +73,10 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let reg_ext = pack_reg_ext_bits(d, k, 0);
             Ok(EncodedOp::new(word, reg_ext))
         }
-        Op::Add(d, a, b) | Op::AddInt(d, a, b) | Op::AddFloat(d, a, b) => {
+        Op::AddInt(d, a, b) => pack_typed_arith_or_rk(Tag::Add, EXT_OP_ADD_INT, d, a, b),
+        Op::AddFloat(d, a, b) => pack_typed_arith_or_rk(Tag::Add, EXT_OP_ADD_FLOAT, d, a, b),
+        Op::StrConcatKnownCap(d, a, b) => pack_ext_op(EXT_OP_STR_CONCAT_KNOWN_CAP, d, a, b),
+        Op::Add(d, a, b) => {
             let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
             let word = pack(Tag::Add, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
             let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
@@ -633,25 +88,32 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let reg_ext = pack_reg_ext_bits(d, a, 0);
             Ok(EncodedOp::new(word, reg_ext))
         }
-        Op::Sub(d, a, b) | Op::SubInt(d, a, b) | Op::SubFloat(d, a, b) => {
+        Op::SubInt(d, a, b) => pack_typed_arith_or_rk(Tag::Sub, EXT_OP_SUB_INT, d, a, b),
+        Op::SubFloat(d, a, b) => pack_typed_arith_or_rk(Tag::Sub, EXT_OP_SUB_FLOAT, d, a, b),
+        Op::Sub(d, a, b) => {
             let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
             let word = pack(Tag::Sub, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
             let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
             Ok(EncodedOp::new(word, reg_ext))
         }
-        Op::Mul(d, a, b) | Op::MulInt(d, a, b) | Op::MulFloat(d, a, b) => {
+        Op::MulInt(d, a, b) => pack_typed_arith_or_rk(Tag::Mul, EXT_OP_MUL_INT, d, a, b),
+        Op::MulFloat(d, a, b) => pack_typed_arith_or_rk(Tag::Mul, EXT_OP_MUL_FLOAT, d, a, b),
+        Op::Mul(d, a, b) => {
             let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
             let word = pack(Tag::Mul, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
             let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
             Ok(EncodedOp::new(word, reg_ext))
         }
-        Op::Div(d, a, b) | Op::DivFloat(d, a, b) => {
+        Op::DivFloat(d, a, b) => pack_typed_arith_or_rk(Tag::Div, EXT_OP_DIV_FLOAT, d, a, b),
+        Op::Div(d, a, b) => {
             let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
             let word = pack(Tag::Div, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
             let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
             Ok(EncodedOp::new(word, reg_ext))
         }
-        Op::Mod(d, a, b) | Op::ModInt(d, a, b) | Op::ModFloat(d, a, b) => {
+        Op::ModInt(d, a, b) => pack_typed_arith_or_rk(Tag::Mod, EXT_OP_MOD_INT, d, a, b),
+        Op::ModFloat(d, a, b) => pack_typed_arith_or_rk(Tag::Mod, EXT_OP_MOD_FLOAT, d, a, b),
+        Op::Mod(d, a, b) => {
             let flags = (if rk_is_const(a) { RK_FLAG_B } else { 0 }) | (if rk_is_const(b) { RK_FLAG_C } else { 0 });
             let word = pack(Tag::Mod, flags, d as u8, rk_index(a) as u8, rk_index(b) as u8);
             let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
@@ -693,6 +155,7 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let reg_ext = pack_reg_ext_bits(d, rk_index(a), rk_index(b));
             Ok(EncodedOp::new(word, reg_ext))
         }
+        Op::CmpI { dst, a, b, kind } => Ok(pack_cmp_i(dst, a, b, kind)),
         Op::CmpEqImm(d, a, imm) => {
             ensure_i8_range("CmpEqImm", "imm", imm as i32)?;
             let word = pack(Tag::CmpEqImm, 0, d as u8, a as u8, (imm as i8) as u8);
@@ -733,7 +196,7 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             ((encode_tag_with_flags(Tag::Jmp, 0) as u32) << 24) | (ofs as i32 as u32 & 0x00FF_FFFF),
             None,
         )),
-        Op::JmpFalse(r, ofs) => {
+        Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs) => {
             let (hi, lo) = encode_i16(ofs);
             let word = pack(Tag::JmpFalse, 0, r as u8, hi, lo);
             let reg_ext = pack_reg_ext_bits(r, 0, 0);
@@ -759,10 +222,18 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let reg_ext = pack_reg_ext_bits(dst, src, 0);
             Ok(EncodedOp::new(word, reg_ext))
         }
+        Op::ListLen { dst, src } => pack_ext_op(EXT_OP_LIST_LEN, dst, src, 0),
+        Op::MapLen { dst, src } => pack_ext_op(EXT_OP_MAP_LEN, dst, src, 0),
+        Op::StrLen { dst, src } => pack_ext_op(EXT_OP_STR_LEN, dst, src, 0),
         Op::Floor { dst, src } => pack_ext_op(EXT_OP_FLOOR, dst, src, 0),
         Op::StartsWithK(dst, src, kidx) => pack_ext_op(EXT_OP_STARTS_WITH_K, dst, src, kidx),
         Op::ContainsK(dst, src, kidx) => pack_ext_op(EXT_OP_CONTAINS_K, dst, src, kidx),
         Op::ToIter { dst, src } => pack_ext_op(EXT_OP_TO_ITER, dst, src, 0),
+        Op::MapGetInterned(dst, map, kidx) => pack_ext_op(EXT_OP_MAP_GET_INTERNED, dst, map, kidx),
+        Op::MapGetDynamic(dst, map, key) => pack_ext_op(EXT_OP_MAP_GET_DYNAMIC, dst, map, key),
+        Op::MapSetInterned(map, kidx, val) => pack_ext_op(EXT_OP_MAP_SET_INTERNED, map, kidx, val),
+        Op::MapHasK(dst, map, kidx) => pack_ext_op(EXT_OP_MAP_HAS_K, dst, map, kidx),
+        Op::ListSetI { dst, list, index, val } => pack_ext_op_i16_reg(EXT_OP_LIST_SET_I, dst, list, index, val),
         Op::Index { dst, base, idx } => {
             let word = pack(Tag::Index, 0, dst as u8, base as u8, idx as u8);
             let reg_ext = pack_reg_ext_bits(dst, base, idx);
@@ -820,6 +291,8 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let reg_ext = pack_reg_ext_bits(d, b, k);
             Ok(EncodedOp::new(word, reg_ext))
         }
+        Op::ListIndexI(dst, base, index) => pack_ext_op_i8(EXT_OP_LIST_INDEX_I, "ListIndexI", dst, base, index),
+        Op::StrIndexI(dst, base, index) => pack_ext_op_i8(EXT_OP_STR_INDEX_I, "StrIndexI", dst, base, index),
         Op::LoadLocal(d, i) => {
             let word = pack(Tag::LoadLocal, 0, d as u8, i as u8, 0);
             let reg_ext = pack_reg_ext_bits(d, i, 0);
@@ -841,6 +314,21 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let word = pack(Tag::Call, 0, f as u8, base as u8, argc);
             Ok(EncodedOp::new(word, None))
         }
+        Op::CallClosureExact { f, base, argc, retc } => {
+            pack_call_ext(EXT_OP_CALL_CLOSURE_EXACT, "CallClosureExact", f, base, argc, retc)
+        }
+        Op::CallExact { f, base, argc, retc } => pack_call_ext(EXT_OP_CALL_EXACT, "CallExact", f, base, argc, retc),
+        Op::CallNativeFast { f, base, argc, retc } => {
+            pack_call_ext(EXT_OP_CALL_NATIVE_FAST, "CallNativeFast", f, base, argc, retc)
+        }
+        Op::CallNamedFallback {
+            f,
+            base_pos,
+            posc,
+            base_named,
+            namedc,
+            retc,
+        } => Ok(pack_call_named_fallback(f, base_pos, posc, base_named, namedc, retc)),
         Op::LoadCapture { dst, idx } => {
             ensure_regs_u8("LoadCapture", dst, 0, 0)?;
             ensure_u8("LoadCapture", "idx", idx)?;
@@ -967,7 +455,7 @@ pub(crate) fn decode_word_with_hi(tag: Tag, flags: u8, w: u32, hi: (u16, u16, u1
         Tag::CmpGtImm => Op::CmpGtImm(a, b_reg, (lo_c as i8) as i16),
         Tag::CmpGeImm => Op::CmpGeImm(a, b_reg, (lo_c as i8) as i16),
         Tag::Jmp => Op::Jmp(sign_extend_24(w) as i16),
-        Tag::JmpFalse => Op::JmpFalse(a, ((b_reg << 8) | c_reg) as i16),
+        Tag::JmpFalse => Op::BoolBranch(a, ((b_reg << 8) | c_reg) as i16),
         Tag::ToBool => Op::ToBool(a, b_reg),
         Tag::ToStr => Op::ToStr(a, b_reg),
         Tag::Not => Op::Not(a, b_reg),
@@ -1071,7 +559,6 @@ pub(crate) fn decode_word(w: u32) -> Op {
 }
 
 impl Bc32Function {
-    /// Two-pass packing: computes word indices per Op to remap branch offsets and handle multi-word ops.
     fn try_pack(f: &Function) -> Result<Self, PackIssue> {
         let n = f.code.len();
         if n == 0 {
@@ -1087,7 +574,6 @@ impl Bc32Function {
                 pattern_plans: f.pattern_plans.clone(),
             });
         }
-        // Pass 1a: initial word size guess (ForRange* -> 2, others -> 1 if encodable)
         let mut words_per_op: Vec<usize> = vec![1; n];
         for (i, op) in f.code.iter().enumerate() {
             words_per_op[i] = match op {
@@ -1095,7 +581,7 @@ impl Bc32Function {
                     let extra = pack_reg_ext_bits(*idx, *limit, *step).is_some() as usize;
                     2 + extra
                 }
-                Op::ForRangeLoop { idx, limit, step, .. } => {
+                Op::ForRangeLoop { idx, limit, step, .. } | Op::RangeLoopI { idx, limit, step, .. } => {
                     let extra = pack_reg_ext_bits(*idx, *limit, *step).is_some() as usize;
                     2 + extra
                 }
@@ -1115,7 +601,6 @@ impl Bc32Function {
                     ensure_i8_range("AddIntImmJmp", "imm", *imm as i32).map_err(|err| PackIssue::new(err, i))?;
                     2 + pack_reg_ext_bits(*r, 0, 0).is_some() as usize
                 }
-                // Optimistically 1 for Jmp*Set/NullishPick; we refine offset below. Include reg-ext if needed.
                 Op::JmpFalseSet { .. } => 1,
                 Op::JmpTrueSet { .. } => 1,
                 Op::NullishPick { .. } => 1,
@@ -1133,10 +618,8 @@ impl Bc32Function {
                     .map_err(|err| PackIssue::new(err, i))?,
             };
         }
-        // Iteratively refine sizes for Jmp*Set to allow i16 extended forms when needed.
         loop {
             let mut changed = false;
-            // Prefix sum to map op index -> word index
             let mut pref: Vec<usize> = vec![0; n + 1];
             for i in 0..n {
                 pref[i + 1] = pref[i] + words_per_op[i];
@@ -1243,7 +726,6 @@ impl Bc32Function {
                 break;
             }
         }
-        // Build op->word index map after convergence
         let mut op_to_word: Vec<usize> = vec![0; n];
         let mut acc = 0usize;
         for (i, w) in words_per_op.iter().enumerate() {
@@ -1251,7 +733,6 @@ impl Bc32Function {
             acc += *w;
         }
         let total_words = acc;
-        // Pass 2: encode with remapped offsets using final mapping
         let mut out: Vec<u32> = Vec::with_capacity(total_words);
         for (i, op) in f.code.iter().enumerate() {
             match op {
@@ -1260,7 +741,7 @@ impl Bc32Function {
                     let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i32;
                     out.push(((encode_tag_with_flags(Tag::Jmp, 0) as u32) << 24) | ((wofs as u32) & 0x00FF_FFFF));
                 }
-                Op::JmpFalse(r, ofs) => {
+                Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs) => {
                     let tgt = ((i as isize) + *ofs as isize) as usize;
                     let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
                     let (hi, lo) = ((wofs >> 8) as u8, (wofs & 0xFF) as u8);
@@ -1338,6 +819,16 @@ impl Bc32Function {
                         out.push(pack_ext_word(0, (wofs16 >> 8) as u8, (wofs16 & 0xFF) as u8));
                     }
                 }
+                Op::Break(ofs) => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = op_to_word[tgt] as isize - op_to_word[i] as isize;
+                    out.push(((encode_tag_with_flags(Tag::Break, 0) as u32) << 24) | ((wofs as u32) & 0x00FF_FFFF));
+                }
+                Op::Continue(ofs) => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = op_to_word[tgt] as isize - op_to_word[i] as isize;
+                    out.push(((encode_tag_with_flags(Tag::Continue, 0) as u32) << 24) | ((wofs as u32) & 0x00FF_FFFF));
+                }
                 Op::ForRangePrep {
                     idx,
                     limit,
@@ -1353,6 +844,14 @@ impl Bc32Function {
                     out.push(pack_ext_word(flags as u8, 0, 0));
                 }
                 Op::ForRangeLoop {
+                    idx,
+                    limit,
+                    step,
+                    inclusive,
+                    write_idx,
+                    ofs,
+                }
+                | Op::RangeLoopI {
                     idx,
                     limit,
                     step,

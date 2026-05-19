@@ -108,7 +108,8 @@ pub(super) fn infer_integer_parameter_indices(function: &Function) -> BTreeSet<u
                 | Op::CmpLt(dst, a, b)
                 | Op::CmpLe(dst, a, b)
                 | Op::CmpGt(dst, a, b)
-                | Op::CmpGe(dst, a, b) => {
+                | Op::CmpGe(dst, a, b)
+                | Op::CmpI { dst, a, b, .. } => {
                     if operand_is_const_int(function, a) {
                         mark_required_sources(&sources, &mut required, b);
                     }
@@ -262,6 +263,7 @@ fn op_assigned_regs(op: &Op) -> Vec<u16> {
         | Op::ToStr(dst, _)
         | Op::ToBool(dst, _)
         | Op::Add(dst, _, _)
+        | Op::StrConcatKnownCap(dst, _, _)
         | Op::Sub(dst, _, _)
         | Op::Mul(dst, _, _)
         | Op::Div(dst, _, _)
@@ -282,6 +284,7 @@ fn op_assigned_regs(op: &Op) -> Vec<u16> {
         | Op::CmpLe(dst, _, _)
         | Op::CmpGt(dst, _, _)
         | Op::CmpGe(dst, _, _)
+        | Op::CmpI { dst, .. }
         | Op::CmpEqImm(dst, _, _)
         | Op::CmpNeImm(dst, _, _)
         | Op::CmpLtImm(dst, _, _)
@@ -297,11 +300,16 @@ fn op_assigned_regs(op: &Op) -> Vec<u16> {
         | Op::AccessK(dst, _, _)
         | Op::IndexK(dst, _, _)
         | Op::Len { dst, .. }
+        | Op::ListLen { dst, .. }
+        | Op::MapLen { dst, .. }
+        | Op::StrLen { dst, .. }
         | Op::Floor { dst, .. }
         | Op::StartsWithK(dst, _, _)
         | Op::ContainsK(dst, _, _)
         | Op::MapHas(dst, _, _)
         | Op::MapHasK(dst, _, _)
+        | Op::MapGetInterned(dst, _, _)
+        | Op::MapGetDynamic(dst, _, _)
         | Op::BuildMap { dst, .. }
         | Op::BuildList { dst, .. }
         | Op::MakeClosure { dst, .. } => vec![dst],
@@ -362,15 +370,6 @@ pub(super) enum KnownReg {
         base: String,
         key: String,
     },
-    StrIntMapMembership {
-        base: String,
-        prefix: String,
-        suffix: String,
-    },
-    ConstMapMembership {
-        key: String,
-        keys: Vec<String>,
-    },
     StringIntKey {
         prefix: String,
         suffix: String,
@@ -419,7 +418,7 @@ pub(super) enum RuntimeHelper {
     CallMethod,
     Access,
     AccessStrInt,
-    MapHasStrInt,
+    MapHas,
     Index,
     IndexLen,
     In,
@@ -430,7 +429,6 @@ pub(super) enum RuntimeHelper {
     Floor,
     StartsWith,
     StartsWithConst,
-    StringInConst3,
     Contains,
     Compare,
     AddAccess,
@@ -444,7 +442,7 @@ pub(super) enum RuntimeHelper {
 }
 
 impl RuntimeHelper {
-    pub(super) const ALL: [RuntimeHelper; 39] = [
+    pub(super) const ALL: [RuntimeHelper; 38] = [
         RuntimeHelper::InternString,
         RuntimeHelper::ToString,
         RuntimeHelper::LoadGlobal,
@@ -462,7 +460,7 @@ impl RuntimeHelper {
         RuntimeHelper::CallMethod,
         RuntimeHelper::Access,
         RuntimeHelper::AccessStrInt,
-        RuntimeHelper::MapHasStrInt,
+        RuntimeHelper::MapHas,
         RuntimeHelper::Index,
         RuntimeHelper::IndexLen,
         RuntimeHelper::In,
@@ -473,7 +471,6 @@ impl RuntimeHelper {
         RuntimeHelper::Floor,
         RuntimeHelper::StartsWith,
         RuntimeHelper::StartsWithConst,
-        RuntimeHelper::StringInConst3,
         RuntimeHelper::Contains,
         RuntimeHelper::Compare,
         RuntimeHelper::AddAccess,
@@ -505,7 +502,7 @@ impl RuntimeHelper {
             RuntimeHelper::CallMethod => "lk_rt_call_method",
             RuntimeHelper::Access => "lk_rt_access",
             RuntimeHelper::AccessStrInt => "lk_rt_access_str_int",
-            RuntimeHelper::MapHasStrInt => "lk_rt_map_has_str_int",
+            RuntimeHelper::MapHas => "lk_rt_map_has",
             RuntimeHelper::Index => "lk_rt_index",
             RuntimeHelper::IndexLen => "lk_rt_index_len",
             RuntimeHelper::In => "lk_rt_in",
@@ -516,7 +513,6 @@ impl RuntimeHelper {
             RuntimeHelper::Floor => "lk_rt_floor",
             RuntimeHelper::StartsWith => "lk_rt_starts_with",
             RuntimeHelper::StartsWithConst => "lk_rt_starts_with_const",
-            RuntimeHelper::StringInConst3 => "lk_rt_str_in_const3",
             RuntimeHelper::Contains => "lk_rt_contains",
             RuntimeHelper::Compare => "lk_rt_cmp",
             RuntimeHelper::AddAccess => "lk_rt_add_access",
@@ -560,7 +556,7 @@ impl RuntimeHelper {
             RuntimeHelper::BuildMap => "declare i64 @lk_rt_build_map(i64*, i64)",
             RuntimeHelper::Access => "declare i64 @lk_rt_access(i64, i64)",
             RuntimeHelper::AccessStrInt => "declare i64 @lk_rt_access_str_int(i64, i8*, i64, i64)",
-            RuntimeHelper::MapHasStrInt => "declare i64 @lk_rt_map_has_str_int(i64, i8*, i64, i64)",
+            RuntimeHelper::MapHas => "declare i64 @lk_rt_map_has(i64, i64)",
             RuntimeHelper::Index => "declare i64 @lk_rt_index(i64, i64)",
             RuntimeHelper::IndexLen => "declare i64 @lk_rt_index_len(i64, i64)",
             RuntimeHelper::In => "declare i64 @lk_rt_in(i64, i64)",
@@ -571,7 +567,6 @@ impl RuntimeHelper {
             RuntimeHelper::Floor => "declare i64 @lk_rt_floor(i64)",
             RuntimeHelper::StartsWith => "declare i64 @lk_rt_starts_with(i64, i64)",
             RuntimeHelper::StartsWithConst => "declare i64 @lk_rt_starts_with_const(i64, i8*, i64)",
-            RuntimeHelper::StringInConst3 => "declare i64 @lk_rt_str_in_const3(i64, i8*, i64, i8*, i64, i8*, i64, i64)",
             RuntimeHelper::Contains => "declare i64 @lk_rt_contains(i64, i64)",
             RuntimeHelper::Compare => "declare i64 @lk_rt_cmp(i64, i64, i64)",
             RuntimeHelper::AddAccess => "declare i64 @lk_rt_add_access(i64, i64, i64)",

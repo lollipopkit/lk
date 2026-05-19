@@ -37,7 +37,7 @@ use anyhow::{Result, anyhow};
 use lk_core::{
     module::ModuleRegistry,
     rt, val,
-    val::{ChannelValue, TaskValue, Val},
+    val::{ChannelValue, NativeArgs, TaskValue, Val},
     vm::VmContext,
 };
 use std::sync::Arc;
@@ -206,19 +206,20 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
         }
     }
 
-    fn print_fn(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
-        let out = format_variadic(args, ctx);
+    fn print_fn(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
+        let out = format_variadic(args.as_slice(), ctx);
         print!("{}", out);
         Ok(Val::Nil)
     }
 
-    fn println_fn(args: &[Val], ctx: &mut VmContext) -> anyhow::Result<Val> {
-        let out = format_variadic(args, ctx);
+    fn println_fn(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
+        let out = format_variadic(args.as_slice(), ctx);
         println!("{}", out);
         Ok(Val::Nil)
     }
 
-    fn panic_fn(args: &[Val], _ctx: &mut VmContext) -> anyhow::Result<Val> {
+    fn panic_fn(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+        let args = args.as_slice();
         // Compose message from all arguments for better diagnostics
         let mut msg = if args.is_empty() {
             "panic".to_string()
@@ -239,9 +240,9 @@ pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
         panic!("{}", msg);
     }
 
-    registry.register_builtin("print", Val::RustFunction(print_fn));
-    registry.register_builtin("println", Val::RustFunction(println_fn));
-    registry.register_builtin("panic", Val::RustFunction(panic_fn));
+    registry.register_builtin("print", Val::RustFastFunction(print_fn));
+    registry.register_builtin("println", Val::RustFastFunction(println_fn));
+    registry.register_builtin("panic", Val::RustFastFunction(panic_fn));
 }
 
 pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
@@ -251,10 +252,11 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
 
     use val::Type as LkType;
 
-    fn spawn_fn(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
+    fn spawn_fn(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("spawn() expects exactly 1 argument (closure/function)"));
         }
+        let args = args.as_slice();
         // Clone environment for use inside async task
         let env_cloned = ctx.clone();
 
@@ -274,6 +276,13 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
                     f(&[], &mut temp_ctx)
                 })
             }
+            Val::RustFastFunction(fptr) => {
+                let f = *fptr;
+                Box::pin(async move {
+                    let mut temp_ctx = env_cloned;
+                    f(NativeArgs::new(&[]), &mut temp_ctx)
+                })
+            }
             other => {
                 return Err(anyhow!(
                     "spawn() expects a function or closure, got {}",
@@ -291,10 +300,11 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
         }
     }
 
-    fn chan_fn(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.is_empty() || args.len() > 2 {
+    fn chan_fn(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() == 0 || args.len() > 2 {
             return Err(anyhow!("chan() expects 1 or 2 arguments: capacity[, type_str]"));
         }
+        let args = args.as_slice();
         let capacity = match &args[0] {
             Val::Int(n) => *n,
             Val::Float(f) => *f as i64,
@@ -326,10 +336,11 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
         }
     }
 
-    fn send_fn(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn send_fn(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("send() expects exactly 2 arguments"));
         }
+        let args = args.as_slice();
 
         let channel_id = match &args[0] {
             Val::Channel(channel) => channel.id,
@@ -347,10 +358,11 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
         }
     }
 
-    fn recv_fn(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn recv_fn(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("recv() expects exactly 1 argument"));
         }
+        let args = args.as_slice();
 
         let channel_id = match &args[0] {
             Val::Channel(channel) => channel.id,
@@ -368,15 +380,16 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
         }
     }
 
-    registry.register_builtin("spawn", Val::RustFunction(spawn_fn));
-    registry.register_builtin("chan", Val::RustFunction(chan_fn));
-    registry.register_builtin("send", Val::RustFunction(send_fn));
-    registry.register_builtin("recv", Val::RustFunction(recv_fn));
+    registry.register_builtin("spawn", Val::RustFastFunction(spawn_fn));
+    registry.register_builtin("chan", Val::RustFastFunction(chan_fn));
+    registry.register_builtin("send", Val::RustFastFunction(send_fn));
+    registry.register_builtin("recv", Val::RustFastFunction(recv_fn));
     // Expose non-blocking channel helpers as global builtins for VM-lowered select/send/recv
-    fn chan_try_send_fn(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn chan_try_send_fn(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow!("chan::try_send() expects exactly 2 arguments"));
         }
+        let args = args.as_slice();
         let ch_id = match &args[0] {
             Val::Channel(channel) => channel.id,
             other => {
@@ -392,10 +405,11 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
         }
     }
 
-    fn chan_try_recv_fn(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn chan_try_recv_fn(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow!("chan::try_recv() expects exactly 1 argument"));
         }
+        let args = args.as_slice();
         let ch_id = match &args[0] {
             Val::Channel(channel) => channel.id,
             other => {
@@ -411,17 +425,18 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
         }
     }
 
-    registry.register_builtin("chan::try_send", Val::RustFunction(chan_try_send_fn));
-    registry.register_builtin("chan::try_recv", Val::RustFunction(chan_try_recv_fn));
+    registry.register_builtin("chan::try_send", Val::RustFastFunction(chan_try_send_fn));
+    registry.register_builtin("chan::try_recv", Val::RustFastFunction(chan_try_recv_fn));
 
     // Blocking select helper for VM-lowered select semantics
-    fn select_block_fn(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn select_block_fn(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         use rt::SelectOperation;
         if args.len() != 5 {
             return Err(anyhow!(
                 "select$block expects 5 arguments: types, channels, values, guards, has_default"
             ));
         }
+        let args = args.as_slice();
         // Unpack lists
         let types = match &args[0] {
             Val::List(l) => l.clone(),
@@ -483,7 +498,7 @@ pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
         }
     }
 
-    registry.register_builtin("select$block", Val::RustFunction(select_block_fn));
+    registry.register_builtin("select$block", Val::RustFastFunction(select_block_fn));
 }
 
 pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {

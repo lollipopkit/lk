@@ -1,5 +1,9 @@
 use anyhow::Result;
-use lk_core::{module::Module, val::Val, vm::VmContext};
+use lk_core::{
+    module::Module,
+    val::{NativeArgs, Val},
+    vm::VmContext,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -9,18 +13,19 @@ struct EnvObject;
 impl EnvObject {
     fn create() -> Val {
         let mut methods = HashMap::new();
-        methods.insert("get".to_string(), Val::RustFunction(Self::get));
-        methods.insert("set".to_string(), Val::RustFunction(Self::set));
-        methods.insert("unset".to_string(), Val::RustFunction(Self::unset));
+        methods.insert("get".to_string(), Val::RustFastFunction(Self::get));
+        methods.insert("set".to_string(), Val::RustFastFunction(Self::set));
+        methods.insert("unset".to_string(), Val::RustFastFunction(Self::unset));
         methods.into()
     }
 
-    fn get(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn get(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 && args.len() != 2 {
             return Err(anyhow::anyhow!(
                 "env.get() takes 1 or 2 arguments: variable_name [, default_value]"
             ));
         }
+        let args = args.as_slice();
 
         let var_name = args[0]
             .as_str()
@@ -49,12 +54,13 @@ impl EnvObject {
         }
     }
 
-    fn set(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn set(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 2 {
             return Err(anyhow::anyhow!(
                 "env.set() takes exactly 2 arguments: variable_name, value"
             ));
         }
+        let args = args.as_slice();
 
         let var_name = args[0]
             .as_str()
@@ -70,10 +76,11 @@ impl EnvObject {
         Ok(Val::Bool(true))
     }
 
-    fn unset(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn unset(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("env.unset() takes exactly 1 argument: variable_name"));
         }
+        let args = args.as_slice();
 
         let var_name = args[0]
             .as_str()
@@ -91,16 +98,17 @@ struct DirObject;
 impl DirObject {
     fn create() -> Val {
         let mut methods = HashMap::new();
-        methods.insert("list".to_string(), Val::RustFunction(Self::list));
-        methods.insert("temp".to_string(), Val::RustFunction(Self::temp_dir));
-        methods.insert("current".to_string(), Val::RustFunction(Self::current_dir));
+        methods.insert("list".to_string(), Val::RustFastFunction(Self::list));
+        methods.insert("temp".to_string(), Val::RustFastFunction(Self::temp_dir));
+        methods.insert("current".to_string(), Val::RustFastFunction(Self::current_dir));
         methods.into()
     }
 
-    fn list(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn list(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() != 1 {
             return Err(anyhow::anyhow!("dir.list() takes exactly 1 argument: path"));
         }
+        let args = args.as_slice();
 
         let path = args[0]
             .as_str()
@@ -125,14 +133,14 @@ impl DirObject {
         }
     }
 
-    fn temp_dir(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn temp_dir(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         Ok(match std::env::temp_dir().into_os_string().into_string() {
             Ok(path) => Val::from_str(&path),
             Err(_) => Val::Nil,
         })
     }
 
-    fn current_dir(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn current_dir(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         Ok(match std::env::current_dir() {
             Ok(path) => match path.into_os_string().into_string() {
                 Ok(path_str) => Val::from_str(&path_str),
@@ -158,15 +166,15 @@ impl OsModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
 
-        // Register os functions as Rust functions
-        functions.insert("hostname".to_string(), Val::RustFunction(Self::hostname));
-        functions.insert("arch".to_string(), Val::RustFunction(Self::arch));
-        functions.insert("os".to_string(), Val::RustFunction(Self::os));
-        functions.insert("exit".to_string(), Val::RustFunction(Self::exit));
-        functions.insert("exec".to_string(), Val::RustFunction(Self::exec));
-        functions.insert("clock".to_string(), Val::RustFunction(Self::clock));
-        functions.insert("time".to_string(), Val::RustFunction(Self::time));
-        functions.insert("epoch".to_string(), Val::RustFunction(Self::epoch));
+        // Register os functions on the fast native ABI.
+        functions.insert("hostname".to_string(), Val::RustFastFunction(Self::hostname));
+        functions.insert("arch".to_string(), Val::RustFastFunction(Self::arch));
+        functions.insert("os".to_string(), Val::RustFastFunction(Self::os));
+        functions.insert("exit".to_string(), Val::RustFastFunction(Self::exit));
+        functions.insert("exec".to_string(), Val::RustFastFunction(Self::exec));
+        functions.insert("clock".to_string(), Val::RustFastFunction(Self::clock));
+        functions.insert("time".to_string(), Val::RustFastFunction(Self::time));
+        functions.insert("epoch".to_string(), Val::RustFastFunction(Self::epoch));
 
         // Add env object
         functions.insert("env".to_string(), EnvObject::create());
@@ -178,7 +186,7 @@ impl OsModule {
     }
 
     /// Get CPU time in seconds (like Lua's os.clock())
-    fn clock(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn clock(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         // Use a simple timing mechanism. For benchmark purposes,
         // we return wall-clock elapsed since first call.
         use std::sync::atomic::AtomicBool;
@@ -202,7 +210,7 @@ impl OsModule {
     }
 
     /// Get current time in seconds since epoch
-    fn time(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn time(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         let elapsed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
@@ -210,7 +218,7 @@ impl OsModule {
     }
 
     /// Get current time in milliseconds since epoch
-    fn epoch(_args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn epoch(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         let elapsed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
@@ -218,8 +226,8 @@ impl OsModule {
     }
 
     /// Get system hostname
-    fn hostname(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if !args.is_empty() {
+    fn hostname(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 0 {
             return Err(anyhow::anyhow!("hostname() takes no arguments"));
         }
 
@@ -239,8 +247,8 @@ impl OsModule {
     }
 
     /// Get system architecture
-    fn arch(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if !args.is_empty() {
+    fn arch(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 0 {
             return Err(anyhow::anyhow!("arch() takes no arguments"));
         }
 
@@ -248,8 +256,8 @@ impl OsModule {
     }
 
     /// Get operating system
-    fn os(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if !args.is_empty() {
+    fn os(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+        if args.len() != 0 {
             return Err(anyhow::anyhow!("os() takes no arguments"));
         }
 
@@ -257,10 +265,11 @@ impl OsModule {
     }
 
     /// Exit the program
-    fn exit(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
+    fn exit(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
         if args.len() > 1 {
             return Err(anyhow::anyhow!("exit() takes at most 1 argument: exit_code"));
         }
+        let args = args.as_slice();
 
         let exit_code = if args.is_empty() {
             0
@@ -280,13 +289,14 @@ impl OsModule {
     /// - os.exec(cmd: String, args: List<String>) -> String
     /// - os.exec(cmd: String, stream: Bool) -> Stream (when true)
     /// - os.exec(cmd: String, args: List<String>, stream: Bool) -> Stream
-    fn exec(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
+    fn exec(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
         use anyhow::anyhow;
         use std::process::{Command, Stdio};
 
-        if args.is_empty() || args.len() > 3 {
+        if args.len() == 0 || args.len() > 3 {
             return Err(anyhow!("exec() expects 1-3 arguments: cmd[, args_list][, stream_bool]"));
         }
+        let args = args.as_slice();
 
         // cmd
         let cmd = args[0]
@@ -341,7 +351,7 @@ impl OsModule {
             }
             let list_val = Val::List(items.into());
             if let Some(to_stream) = lk_core::val::methods::find_method_for_val(&list_val, "to_stream") {
-                let res = to_stream(&[list_val], ctx)?;
+                let res = to_stream.call(&[list_val], ctx)?;
                 return Ok(res);
             }
             return Ok(list_val);

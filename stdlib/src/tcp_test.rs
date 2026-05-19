@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::tcp::TcpModule;
-    use lk_core::{module::Module, stmt::ModuleResolver, val::Val, vm::VmContext};
+    use lk_core::{module::Module, stmt::ModuleResolver, val::NativeArgs, val::Val, vm::VmContext};
     use std::sync::Arc;
 
     fn create_test_env() -> VmContext {
@@ -31,8 +31,8 @@ mod tests {
 
         // Test with no arguments
         let result = match connect_fn {
-            Val::RustFunction(f) => f(&[], &mut env),
-            _ => panic!("Expected RustFunction"),
+            Val::RustFastFunction(f) => f(NativeArgs::new(&[]), &mut env),
+            _ => panic!("Expected RustFastFunction"),
         };
 
         assert!(result.is_err());
@@ -48,8 +48,8 @@ mod tests {
 
         // Test with no arguments
         let result = match bind_fn {
-            Val::RustFunction(f) => f(&[], &mut env),
-            _ => panic!("Expected RustFunction"),
+            Val::RustFastFunction(f) => f(NativeArgs::new(&[]), &mut env),
+            _ => panic!("Expected RustFastFunction"),
         };
 
         assert!(result.is_err());
@@ -65,8 +65,8 @@ mod tests {
 
         // Test with no arguments
         let result = match close_fn {
-            Val::RustFunction(f) => f(&[], &mut env),
-            _ => panic!("Expected RustFunction"),
+            Val::RustFastFunction(f) => f(NativeArgs::new(&[]), &mut env),
+            _ => panic!("Expected RustFastFunction"),
         };
 
         assert!(result.is_err());
