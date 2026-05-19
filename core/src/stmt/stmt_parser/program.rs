@@ -216,6 +216,10 @@ impl<'a> StmtParser<'a> {
                 // 优先解析短声明 `id := expr` 以避免与标签 `id:` 冲突
                 if self.peek_ahead(1) == Some(&Token::Colon) && self.peek_ahead(2) == Some(&Token::Assign) {
                     self.parse_define_stmt_with_id(id.clone())
+                } else if matches!(self.peek_ahead(1), Some(Token::LBracket | Token::Dot))
+                    && let Some(stmt) = self.try_parse_access_assign_stmt_with_id(id.clone())?
+                {
+                    Ok(stmt)
                 } else if self.peek_ahead(1) == Some(&Token::Assign) {
                     // 赋值 (id = expr;)
                     self.parse_assign_stmt_with_id(id.clone())

@@ -74,6 +74,10 @@ assert_eq!(result, Val::Bool(true));
 
 注意：命令行参数路径必须为经净化的相对路径。
 
+#### VS Code
+
+VS Code 支持已合并为 `vsc-ext/lsp` 下的单个扩展，包含 `.lk` 语言注册、TextMate 高亮、代码片段和 LK LSP 客户端。使用 `make debug-lsp-ext` 启动本地 Extension Development Host，或使用 `make vsix` 构建 VSIX。
+
 ## 许可证
 
 ```plaintext

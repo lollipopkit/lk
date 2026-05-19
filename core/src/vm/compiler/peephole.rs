@@ -39,6 +39,7 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
     while i + 1 < code.len() {
         if let Op::LoadK(dst, kidx) = code[i]
             && kidx <= RK_INDEX_MASK
+            && !has_branch_target_to(code, i + 1)
         {
             let mut next = code[i + 1].clone();
             if remap_rk_read_operand(&mut next, dst, rk_make_const(kidx))
@@ -53,7 +54,10 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
 
         if let Op::LoadLocal(dst, idx) = code[i] {
             let mut next = code[i + 1].clone();
-            if remap_single_read_operand(&mut next, dst, idx) && reg_dead_after_single_consumer(code, i + 2, dst) {
+            if !has_branch_target_to(code, i + 1)
+                && remap_single_read_operand(&mut next, dst, idx)
+                && reg_dead_after_single_consumer(code, i + 2, dst)
+            {
                 code[i + 1] = next;
                 removals.push(i);
                 i += 2;
@@ -166,6 +170,35 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
             _ => {}
         }
     }
+}
+
+fn has_branch_target_to(code: &[Op], target: usize) -> bool {
+    code.iter()
+        .enumerate()
+        .any(|(pc, op)| branch_target(pc, op) == Some(target))
+}
+
+fn branch_target(pc: usize, op: &Op) -> Option<usize> {
+    let ofs = match op {
+        Op::Jmp(ofs)
+        | Op::JmpFalse(_, ofs)
+        | Op::JmpIfNil(_, ofs)
+        | Op::JmpIfNotNil(_, ofs)
+        | Op::BoolBranch(_, ofs)
+        | Op::Break(ofs)
+        | Op::Continue(ofs)
+        | Op::AddIntImmJmp { ofs, .. }
+        | Op::CmpLtImmJmp { ofs, .. }
+        | Op::CmpLeImmJmp { ofs, .. }
+        | Op::CmpNeImmJmp { ofs, .. }
+        | Op::RangeLoopI { ofs, .. }
+        | Op::ForRangeLoop { ofs, .. } => *ofs,
+        Op::JmpFalseSet { ofs, .. } | Op::JmpTrueSet { ofs, .. } | Op::NullishPick { ofs, .. } => *ofs,
+        Op::ForRangeStep { back_ofs, .. } => *back_ofs,
+        _ => return None,
+    };
+    let target = pc as isize + ofs as isize;
+    (target >= 0).then_some(target as usize)
 }
 
 fn remap_rk_read_operand(op: &mut Op, from: u16, to: u16) -> bool {

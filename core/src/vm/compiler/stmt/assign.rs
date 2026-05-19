@@ -6,6 +6,13 @@ impl FunctionBuilder {
     pub(crate) fn stmt_assign(&mut self, name: &str, value: &Expr) {
         let is_const_target = self.const_names.contains(name);
         if !is_const_target && self.try_emit_simple_self_assign(name, value) {
+            self.forget_known_value(name);
+            if self.global_defs.contains(name)
+                && let Some(idx) = self.lookup(name)
+            {
+                let kname = self.k(Val::from_str(name));
+                self.emit(Op::DefineGlobal(kname, idx));
+            }
             return;
         }
 
@@ -15,9 +22,7 @@ impl FunctionBuilder {
             self.try_eval_const_expr(value)
         };
         if let Some(val) = const_value.as_ref() {
-            if self.const_env.assign(name, val.clone()).is_ok() {
-                self.const_bindings.insert(name.to_string(), val.clone());
-            }
+            let _ = self.const_env.assign(name, val.clone());
         } else if !is_const_target {
             self.forget_known_value(name);
         }
@@ -27,16 +32,31 @@ impl FunctionBuilder {
                 if let Some(val) = const_value {
                     let k = self.k(val);
                     self.emit(Op::LoadK(idx, k));
+                    if self.global_defs.contains(name) {
+                        let kname = self.k(Val::from_str(name));
+                        self.emit(Op::DefineGlobal(kname, idx));
+                    }
                     return;
                 }
                 if !FunctionBuilder::expr_contains_call(value) {
                     self.emit_expr_into(idx, value);
+                    if self.global_defs.contains(name) {
+                        let kname = self.k(Val::from_str(name));
+                        self.emit(Op::DefineGlobal(kname, idx));
+                    }
                     return;
                 }
             }
 
             let rv = self.expr(value);
             self.store_named(name, idx, rv);
+            return;
+        }
+
+        if self.capture_indices.contains_key(name) {
+            let rv = self.expr(value);
+            let kname = self.k(Val::from_str(name));
+            self.emit(Op::DefineGlobal(kname, rv));
             return;
         }
 

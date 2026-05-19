@@ -484,6 +484,40 @@ impl VmContext {
                 Val::RustFastFunction(core_make_struct_builtin_fast),
             );
         }
+        if !self.globals.contains_key("typeof") {
+            self.globals
+                .insert("typeof".to_string(), Val::RustFastFunction(core_typeof_builtin_fast));
+        }
+        if !self.globals.contains_key("__lk_set_field") {
+            self.globals.insert(
+                "__lk_set_field".to_string(),
+                Val::RustFastFunction(core_set_field_builtin_fast),
+            );
+        }
+        if !self.globals.contains_key("__lk_merge_fields") {
+            self.globals.insert(
+                "__lk_merge_fields".to_string(),
+                Val::RustFastFunction(core_merge_fields_builtin_fast),
+            );
+        }
+        if !self.globals.contains_key("__lk_bit_and") {
+            self.globals.insert(
+                "__lk_bit_and".to_string(),
+                Val::RustFastFunction(core_bit_and_builtin_fast),
+            );
+        }
+        if !self.globals.contains_key("__lk_bit_or") {
+            self.globals.insert(
+                "__lk_bit_or".to_string(),
+                Val::RustFastFunction(core_bit_or_builtin_fast),
+            );
+        }
+        if !self.globals.contains_key("__lk_bit_not") {
+            self.globals.insert(
+                "__lk_bit_not".to_string(),
+                Val::RustFastFunction(core_bit_not_builtin_fast),
+            );
+        }
     }
 
     // -------- Internal helpers --------
@@ -931,6 +965,141 @@ fn core_make_struct_builtin(args: &[Val], _ctx: &mut VmContext) -> anyhow::Resul
         type_name,
         fields: Arc::new(fields),
     })))
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_typeof_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+    let value = args
+        .get(0)
+        .ok_or_else(|| anyhow!("typeof(value) expects exactly one argument"))?;
+    let name = match value {
+        Val::Int(_) => "Int",
+        Val::Float(_) => "Float",
+        Val::Bool(_) => "Bool",
+        Val::ShortStr(_) | Val::Str(_) => "String",
+        Val::List(_) => "List",
+        Val::Map(_) => "Map",
+        Val::Object(object) => object.type_name.as_str(),
+        Val::Closure(_)
+        | Val::RustFunction(_)
+        | Val::RustFastFunction(_)
+        | Val::RustFastFunctionNamed(_)
+        | Val::RustFunctionNamed(_)
+        | Val::AotFunction(_) => "Function",
+        Val::Task(_) => "Task",
+        Val::Channel(_) => "Channel",
+        Val::Stream(_) => "Stream",
+        Val::Iterator(_) => "Iterator",
+        Val::MutationGuard(guard) => guard.guard_type(),
+        Val::StreamCursor(_) => "StreamCursor",
+        Val::Nil => "Nil",
+    };
+    Ok(Val::from_str(name))
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_set_field_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+    if args.len() != 3 {
+        return Err(anyhow!("__lk_set_field(base, key, value) expects exactly 3 arguments"));
+    }
+    let base = args.get(0).expect("arity checked");
+    let key = args
+        .get(1)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow!("__lk_set_field key must be a string"))?;
+    let value = args.get(2).expect("arity checked").clone();
+    match base {
+        Val::Map(map) => {
+            let mut updated = (**map).clone();
+            Val::map_insert_arcstr(&mut updated, Val::intern_str(key), value);
+            Ok(Val::Map(Arc::new(updated)))
+        }
+        Val::Object(object) => {
+            let mut fields = (*object.fields).clone();
+            fields.insert(key.to_string(), value);
+            Ok(Val::Object(Arc::new(ObjectValue {
+                type_name: object.type_name.clone(),
+                fields: Arc::new(fields),
+            })))
+        }
+        other => Err(anyhow!(
+            "__lk_set_field target must be Map or Object, got {}",
+            other.type_name()
+        )),
+    }
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_merge_fields_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_merge_fields(base, overlay) expects exactly 2 arguments"));
+    }
+    let mut fields = match args.get(0).expect("arity checked") {
+        Val::Object(object) => object
+            .fields
+            .iter()
+            .map(|(key, value)| (Val::intern_str(key), value.clone()))
+            .collect(),
+        Val::Map(map) => (**map).clone(),
+        Val::Nil => fast_hash_map_new(),
+        other => {
+            return Err(anyhow!(
+                "__lk_merge_fields base must be Object, Map, or Nil, got {}",
+                other.type_name()
+            ));
+        }
+    };
+
+    match args.get(1).expect("arity checked") {
+        Val::Map(overlay) => {
+            for (key, value) in overlay.iter() {
+                fields.insert(key.clone(), value.clone());
+            }
+            Ok(Val::Map(Arc::new(fields)))
+        }
+        other => Err(anyhow!(
+            "__lk_merge_fields overlay must be Map, got {}",
+            other.type_name()
+        )),
+    }
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn bit_arg(value: &Val, func: &str) -> anyhow::Result<i64> {
+    match value {
+        Val::Int(i) => Ok(*i),
+        other => Err(anyhow!("{func} expects Int arguments, got {}", other.type_name())),
+    }
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_bit_and_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_bit_and(left, right) expects exactly 2 arguments"));
+    }
+    Ok(Val::Int(
+        bit_arg(args.get(0).expect("arity checked"), "__lk_bit_and")?
+            & bit_arg(args.get(1).expect("arity checked"), "__lk_bit_and")?,
+    ))
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_bit_or_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+    if args.len() != 2 {
+        return Err(anyhow!("__lk_bit_or(left, right) expects exactly 2 arguments"));
+    }
+    Ok(Val::Int(
+        bit_arg(args.get(0).expect("arity checked"), "__lk_bit_or")?
+            | bit_arg(args.get(1).expect("arity checked"), "__lk_bit_or")?,
+    ))
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_bit_not_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+    if args.len() != 1 {
+        return Err(anyhow!("__lk_bit_not(value) expects exactly 1 argument"));
+    }
+    Ok(Val::Int(!bit_arg(args.get(0).expect("arity checked"), "__lk_bit_not")?))
 }
 
 #[cfg(test)]

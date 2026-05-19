@@ -185,6 +185,20 @@ impl Mul for &Val {
             (Val::Float(a), Val::Float(b)) => Ok((a * b).into()),
             (Val::Float(a), Val::Int(b)) => Ok((a * *b as f64).into()),
             (Val::Int(a), Val::Float(b)) => Ok((*a as f64 * b).into()),
+            (left, Val::Int(count)) if left.as_str().is_some() => {
+                if *count <= 0 {
+                    Ok(Val::from_str(""))
+                } else {
+                    Ok(Val::from_str(&left.as_str().unwrap().repeat(*count as usize)))
+                }
+            }
+            (Val::Int(count), right) if right.as_str().is_some() => {
+                if *count <= 0 {
+                    Ok(Val::from_str(""))
+                } else {
+                    Ok(Val::from_str(&right.as_str().unwrap().repeat(*count as usize)))
+                }
+            }
             _ => err_op(self, BinOp::Mul, other),
         }
     }

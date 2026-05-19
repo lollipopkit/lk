@@ -32,6 +32,8 @@ pub enum Token {
     In,                // in
     And,               // &&
     Or,                // ||
+    BitAnd,            // &
+    BitNot,            // ~
     Not,               // !
     Add,               // +
     Sub,               // -
@@ -870,7 +872,10 @@ impl<'a> Tokenizer<'a> {
                     self.push_with_span(Token::And, start, end);
                     Ok(())
                 } else {
-                    Err(anyhow!(self.err("Expect '&&'")))
+                    self.advance_char();
+                    let end = self.current_position();
+                    self.push_with_span(Token::BitAnd, start, end);
+                    Ok(())
                 }
             }
             '|' => {
@@ -1040,6 +1045,13 @@ impl<'a> Tokenizer<'a> {
                     Ok(())
                 }
             }
+            '~' => {
+                let start = self.current_position();
+                self.advance_char();
+                let end = self.current_position();
+                self.push_with_span(Token::BitNot, start, end);
+                Ok(())
+            }
             '>' => {
                 let start = self.current_position();
                 if self.expect(">=") {
@@ -1128,6 +1140,7 @@ impl<'a> Tokenizer<'a> {
                 | ';'
                 | '&'
                 | '|'
+                | '~'
                 | '+'
                 | '-'
                 | '*'

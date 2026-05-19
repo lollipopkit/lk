@@ -624,6 +624,7 @@ pub(super) fn run_opcode_code(
             Op::Not(dst, src) => {
                 match &regs[*src as usize] {
                     Val::Bool(b) => assign_reg(frame_raw, regs, *dst as usize, Val::Bool(!b)),
+                    Val::Nil => assign_reg(frame_raw, regs, *dst as usize, Val::Bool(true)),
                     other => {
                         return frame_return_common(frame_raw, pc, Err(anyhow!("Invalid operand: !{:?}", other)))
                             .map(Some);

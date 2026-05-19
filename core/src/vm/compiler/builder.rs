@@ -686,6 +686,25 @@ impl FunctionBuilder {
         idx as u16
     }
 
+    pub fn register_scoped_pattern_plan(&mut self, pattern: &crate::expr::Pattern) -> u16 {
+        let mut names = Vec::new();
+        collect_pattern_names(pattern, &mut names);
+        let mut seen = HashSet::new();
+        let mut bindings = Vec::new();
+        for name in names {
+            if seen.insert(name.clone()) {
+                let reg = self.define_scoped_var(&name);
+                bindings.push(PatternBinding { name, reg });
+            }
+        }
+        let idx = self.pattern_plans.len();
+        self.pattern_plans.push(PatternPlan {
+            pattern: pattern.clone(),
+            bindings,
+        });
+        idx as u16
+    }
+
     pub fn push_var_scope(&mut self) {
         self.var_scope_stack.push(Vec::new());
     }
@@ -883,6 +902,10 @@ impl FunctionBuilder {
             self.emit(Op::Raise { err_kidx: msg_idx });
         } else {
             self.emit(Op::StoreLocal(idx, src));
+            if self.global_defs.contains(name) {
+                let kname = self.k(Val::from_str(name));
+                self.emit(Op::DefineGlobal(kname, idx));
+            }
         }
     }
 

@@ -15,6 +15,11 @@ pub struct Parser<'a> {
     token_spans: Option<&'a [Span]>,
 }
 
+struct StructLiteralParts {
+    fields: Vec<(String, Box<Expr>)>,
+    update_base: Option<Box<Expr>>,
+}
+
 impl<'a> Parser<'a> {
     pub fn parse(&mut self) -> Result<Expr> {
         if self.eof() {
@@ -148,16 +153,38 @@ impl<'a> Parser<'a> {
 
     /// `expr && expr`
     fn parse_and(&mut self) -> Result<Expr> {
-        let mut expr = self.parse_cmp()?;
+        let mut expr = self.parse_bit_or()?;
         while !self.eof() {
             match self.tokens[self.pos] {
                 Token::And => {
                     self.pos += 1;
-                    let right = self.parse_cmp()?;
+                    let right = self.parse_bit_or()?;
                     expr = Expr::And(Box::new(expr), Box::new(right));
                 }
                 _ => break,
             }
+        }
+        Ok(expr)
+    }
+
+    /// `expr | expr`
+    fn parse_bit_or(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_bit_and()?;
+        while !self.eof() && self.tokens[self.pos] == Token::Pipe {
+            self.pos += 1;
+            let right = self.parse_bit_and()?;
+            expr = Self::builtin_call("__lk_bit_or", vec![expr, right]);
+        }
+        Ok(expr)
+    }
+
+    /// `expr & expr`
+    fn parse_bit_and(&mut self) -> Result<Expr> {
+        let mut expr = self.parse_cmp()?;
+        while !self.eof() && self.tokens[self.pos] == Token::BitAnd {
+            self.pos += 1;
+            let right = self.parse_cmp()?;
+            expr = Self::builtin_call("__lk_bit_and", vec![expr, right]);
         }
         Ok(expr)
     }
@@ -284,6 +311,11 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_unary()?;
                 Ok(Expr::Unary(UnaryOp::Not, Box::new(expr)))
             }
+            Token::BitNot => {
+                self.pos += 1;
+                let expr = self.parse_unary()?;
+                Ok(Self::builtin_call("__lk_bit_not", vec![expr]))
+            }
             _ => self.parse_postfix(),
         }
     }
@@ -346,11 +378,7 @@ impl<'a> Parser<'a> {
             } else if !self.eof() && self.tokens[self.pos] == Token::LBrace {
                 // Possible struct literal: only allowed immediately after a variable name
                 if let Expr::Var(name) = &expr {
-                    let fields = self.parse_struct_fields()?;
-                    expr = Expr::StructLiteral {
-                        name: name.clone(),
-                        fields,
-                    };
+                    expr = self.parse_struct_literal_after_name(name.clone())?;
                 } else {
                     // If not a simple Var before '{', treat as error to avoid ambiguity with blocks
                     return Err(anyhow!(self.err(
@@ -458,21 +486,77 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse struct fields: '{ id: expr, ... }'
-    fn parse_struct_fields(&mut self) -> Result<Vec<(String, Box<Expr>)>> {
+    fn parse_struct_literal_after_name(&mut self, name: String) -> Result<Expr> {
+        let parts = self.parse_struct_fields()?;
+        if let Some(base) = parts.update_base {
+            let overlay = Expr::Map(
+                parts
+                    .fields
+                    .into_iter()
+                    .map(|(key, value)| (Box::new(Expr::Val(Val::from_str(&key))), value))
+                    .collect(),
+            );
+            let fields = Self::builtin_call("__lk_merge_fields", vec![*base, overlay]);
+            Ok(Self::builtin_call(
+                "__lk_make_struct",
+                vec![Expr::Val(Val::from_str(&name)), fields],
+            ))
+        } else {
+            Ok(Expr::StructLiteral {
+                name,
+                fields: parts.fields,
+            })
+        }
+    }
+
+    fn parse_struct_fields(&mut self) -> Result<StructLiteralParts> {
         if self.eof() || self.tokens[self.pos] != Token::LBrace {
             return Err(anyhow!(self.err("Expecting '{' to start struct literal")));
         }
         self.pos += 1;
 
         let mut fields: Vec<(String, Box<Expr>)> = Vec::new();
+        let mut update_base: Option<Box<Expr>> = None;
 
         // Allow empty struct: Type {}
         if !self.eof() && self.tokens[self.pos] == Token::RBrace {
             self.pos += 1;
-            return Ok(fields);
+            return Ok(StructLiteralParts { fields, update_base });
         }
 
         loop {
+            if self.tokens[self.pos] == Token::Range {
+                if update_base.is_some() {
+                    return Err(anyhow!(self.err("Duplicate struct update base")));
+                }
+                self.pos += 1;
+                if self.eof() || !self.is_valid_expr_start() {
+                    return Err(anyhow!(self.err("Expected expression after '..' in struct update")));
+                }
+                update_base = Some(Box::new(self.parse_expr()?));
+
+                if self.eof() {
+                    return Err(anyhow!(self.err("Unexpected end in struct literal fields")));
+                }
+                match &self.tokens[self.pos] {
+                    Token::Comma => {
+                        self.pos += 1;
+                        if !self.eof() && self.tokens[self.pos] == Token::RBrace {
+                            self.pos += 1;
+                            break;
+                        }
+                        continue;
+                    }
+                    Token::RBrace => {
+                        self.pos += 1;
+                        break;
+                    }
+                    _ => {
+                        return Err(anyhow!(self.err("Expected ',' or '}' in struct literal")));
+                    }
+                }
+            }
+
             // Field name must be identifier
             let key = if let Token::Id(id) = &self.tokens[self.pos] {
                 let k = id.clone();
@@ -514,7 +598,11 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Ok(fields)
+        Ok(StructLiteralParts { fields, update_base })
+    }
+
+    fn builtin_call(name: &str, args: Vec<Expr>) -> Expr {
+        Expr::Call(name.to_string(), args.into_iter().map(Box::new).collect())
     }
 
     /// - `nil`
@@ -1164,6 +1252,8 @@ impl<'a> Parser<'a> {
         self.pos += 1;
 
         let mut elements = Vec::new();
+        let mut segments: Vec<Expr> = Vec::new();
+        let mut saw_spread = false;
 
         // Handle empty list
         if !self.eof() && self.tokens[self.pos] == Token::RBracket {
@@ -1171,52 +1261,42 @@ impl<'a> Parser<'a> {
             return Ok(Expr::List(elements));
         }
 
-        // Parse first element
-        if !self.eof() {
-            if !self.is_valid_expr_start() {
-                let msg = format!("Invalid list element start: {:?}", self.tokens[self.pos]);
-                return Err(anyhow!(self.err(&msg)));
+        while !self.eof() && self.tokens[self.pos] != Token::RBracket {
+            if self.tokens[self.pos] == Token::Range {
+                saw_spread = true;
+                if !elements.is_empty() {
+                    segments.push(Expr::List(std::mem::take(&mut elements)));
+                }
+                self.pos += 1;
+                if self.eof() || !self.is_valid_expr_start() {
+                    return Err(anyhow!(self.err("Expected expression after '..' in list spread")));
+                }
+                segments.push(self.parse_expr()?);
+            } else {
+                if !self.is_valid_expr_start() {
+                    let msg = format!("Invalid list element start: {:?}", self.tokens[self.pos]);
+                    return Err(anyhow!(self.err(&msg)));
+                }
+                elements.push(Box::new(self.parse_expr()?));
             }
 
-            elements.push(Box::new(self.parse_expr()?));
-
-            // Parse remaining elements
-            while !self.eof() {
-                match self.tokens[self.pos] {
-                    Token::Comma => {
-                        self.pos += 1;
-                        // Handle trailing comma
-                        if !self.eof() && self.tokens[self.pos] == Token::RBracket {
-                            break;
-                        }
-
-                        if self.eof() || !self.is_valid_expr_start() {
-                            let msg = format!(
-                                "Invalid list element after comma: {:?}",
-                                if self.eof() {
-                                    &Token::Nil
-                                } else {
-                                    &self.tokens[self.pos]
-                                }
-                            );
-                            return Err(anyhow!(self.err(&msg)));
-                        }
-
-                        elements.push(Box::new(self.parse_expr()?));
-                    }
-                    Token::RBracket => break,
-                    _ => {
-                        let msg = if self.is_invalid_separator() {
-                            format!(
-                                "Invalid separator in list: {:?}. Use ',' to separate elements",
-                                self.tokens[self.pos]
-                            )
-                        } else {
-                            format!("Expecting ',' or ']', found {:?}", self.tokens[self.pos])
-                        };
-                        return Err(anyhow!(self.err(&msg)));
+            match self.tokens.get(self.pos) {
+                Some(Token::Comma) => {
+                    self.pos += 1;
+                    if !self.eof() && self.tokens[self.pos] == Token::RBracket {
+                        break;
                     }
                 }
+                Some(Token::RBracket) => break,
+                Some(token) => {
+                    let msg = if self.is_invalid_separator() {
+                        format!("Invalid separator in list: {:?}. Use ',' to separate elements", token)
+                    } else {
+                        format!("Expecting ',' or ']', found {:?}", token)
+                    };
+                    return Err(anyhow!(self.err(&msg)));
+                }
+                None => break,
             }
         }
 
@@ -1233,7 +1313,19 @@ impl<'a> Parser<'a> {
         }
         self.pos += 1;
 
-        Ok(Expr::List(elements))
+        if !saw_spread {
+            return Ok(Expr::List(elements));
+        }
+        if !elements.is_empty() {
+            segments.push(Expr::List(elements));
+        }
+        let mut iter = segments.into_iter();
+        let Some(first) = iter.next() else {
+            return Ok(Expr::List(Vec::new()));
+        };
+        Ok(iter.fold(first, |left, right| {
+            Expr::Bin(Box::new(left), BinOp::Add, Box::new(right))
+        }))
     }
 
     /// Parse map literal: `{key: value, key: value, ...}`
@@ -1259,7 +1351,7 @@ impl<'a> Parser<'a> {
                 return Err(anyhow!(self.err(&msg)));
             }
 
-            let key = Box::new(self.parse_expr()?);
+            let key = Box::new(self.parse_map_key()?);
 
             if self.eof() || self.tokens[self.pos] != Token::Colon {
                 let msg = format!(
@@ -1311,7 +1403,7 @@ impl<'a> Parser<'a> {
                             return Err(anyhow!(self.err(&msg)));
                         }
 
-                        let key = Box::new(self.parse_expr()?);
+                        let key = Box::new(self.parse_map_key()?);
 
                         if self.eof() || self.tokens[self.pos] != Token::Colon {
                             let msg = format!(
@@ -1366,6 +1458,18 @@ impl<'a> Parser<'a> {
         Ok(Expr::Map(pairs))
     }
 
+    fn parse_map_key(&mut self) -> Result<Expr> {
+        if self.pos + 1 < self.len
+            && matches!(self.tokens[self.pos + 1], Token::Colon)
+            && let Token::Id(id) = &self.tokens[self.pos]
+        {
+            let key = Expr::Val(Val::from_str(id.as_str()));
+            self.pos += 1;
+            return Ok(key);
+        }
+        self.parse_expr()
+    }
+
     /// Parse field name for .field and ?.field access - treats IDs as string literals
     fn parse_field_name(&mut self) -> Result<Expr> {
         match &self.tokens[self.pos] {
@@ -1393,37 +1497,4 @@ impl<'a> Parser<'a> {
     }
 
     // legacy '@' syntax fully removed; no parse_at/at-specific field access remain
-
-    /// Check if the current token can start a valid expression
-    fn is_valid_expr_start(&self) -> bool {
-        if self.eof() {
-            return false;
-        }
-
-        matches!(
-            self.tokens[self.pos],
-            Token::Nil
-                | Token::Bool(_)
-                | Token::Int(_)
-                | Token::Float(_)
-                | Token::Str(_)
-                | Token::Id(_)
-                | Token::LBracket
-                | Token::LBrace
-                | Token::LParen
-                | Token::Not
-                | Token::Select
-                | Token::Pipe
-                | Token::Fn
-        )
-    }
-
-    /// Check if the current token is an invalid separator
-    fn is_invalid_separator(&self) -> bool {
-        if self.eof() {
-            return false;
-        }
-
-        matches!(self.tokens[self.pos], Token::Semicolon)
-    }
 }

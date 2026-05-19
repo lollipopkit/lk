@@ -11,6 +11,31 @@
       - Ruby/V8/WebKit：call-site feedback、shape/slot cache 分层思想可借鉴；JIT/GC/object-shape 体系不作为当前 VM 依赖。
       - Rune/Rhai：Rust 安全边界、native function ABI、stack reuse 可借鉴；避免 Rhai 那类通用 Dynamic 膨胀热路径。
 
+  ## Unsupported Syntax / Bug Fix Plan
+
+  Objective: `examples/syntax/unsupported.lk` should stop documenting broken core language behavior. Each numbered item must either become supported and move to an ordinary syntax example, or be removed because it is now intentionally documented elsewhere.
+
+  Checklist:
+
+  - [x] Match expression variable bindings and list/map destructuring work in bytecode VM arm bodies.
+  - [x] `else if ... else` assignments keep correct value identity/comparison behavior.
+  - [x] Closures can assign and compound-assign captured globals.
+  - [x] String/list range slicing works; list negative indexing is defined.
+  - [x] Indexed assignment and compound indexed assignment parse and execute for simple list variables.
+  - [x] Multi-statement closure bodies parse and return their final expression.
+  - [x] Division documentation matches current Int/Float behavior.
+  - [x] `for i, item in iterable` parses as comma-pattern destructuring over pair items.
+  - [x] List literal spread is supported.
+  - [x] String repetition via `String * Int` is supported.
+  - [x] Bare map keys are either supported as string keys or documented as intentional language semantics outside `unsupported.lk`.
+  - [x] Dot/field assignment works for maps and structs, including compound assignment.
+  - [x] Default positional parameters parse and execute.
+  - [x] Bitwise operators parse and execute for integers.
+  - [x] Struct update syntax parses and executes.
+  - [x] `!nil` has intentional bool/truthiness semantics instead of a runtime error.
+  - [x] Runtime type introspection is available through a non-keyword function.
+  - [x] `examples/syntax/unsupported.lk` is deleted or replaced with a passing compatibility regression example.
+
   ## Architecture
 
   - 分层执行模型

@@ -117,7 +117,15 @@ impl<'a> StmtParser<'a> {
         self.expect_token(Token::For)?; // 消费 'for'
 
         // 解析模式 (变量名或解构)
-        let pattern = self.parse_for_pattern()?;
+        let mut pattern = self.parse_for_pattern()?;
+        if !self.eof() && self.tokens[self.pos] == Token::Comma {
+            let mut patterns = vec![pattern];
+            while !self.eof() && self.tokens[self.pos] == Token::Comma {
+                self.pos += 1;
+                patterns.push(self.parse_for_pattern()?);
+            }
+            pattern = ForPattern::Tuple(patterns);
+        }
 
         self.expect_token(Token::In)?; // 消费 'in'
 

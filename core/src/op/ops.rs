@@ -21,6 +21,7 @@ impl UnaryOp {
         match self {
             UnaryOp::Not => match val {
                 Val::Bool(b) => Ok(Val::Bool(!b)),
+                Val::Nil => Ok(Val::Bool(true)),
                 _ => Err(anyhow!("Invalid operand: !{val}")),
             },
         }

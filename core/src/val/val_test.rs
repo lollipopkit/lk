@@ -170,7 +170,7 @@ mod tests {
         let val: Val = list.into();
         let index = Val::Int(-1);
 
-        assert_eq!(val.access(&index), None);
+        assert_eq!(val.access(&index), Some(Val::Int(30)));
     }
 
     // Literal creation tests

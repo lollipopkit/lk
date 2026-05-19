@@ -3,6 +3,7 @@ use anyhow::{Result, anyhow};
 use super::Parser;
 use crate::{
     expr::Expr,
+    stmt::{Stmt, StmtParser},
     token::{ParseError, Span, Token},
 };
 
@@ -131,11 +132,64 @@ impl<'a> Parser<'a> {
             return Err(anyhow!(self.err("Expected expression after closure parameters")));
         }
 
-        let body = self.parse_expr()?;
+        let body = if !self.eof() && self.tokens[self.pos] == Token::LBrace {
+            self.parse_closure_block_expr()?
+        } else {
+            self.parse_expr()?
+        };
         Ok(Expr::Closure {
             params,
             body: Box::new(body),
         })
+    }
+
+    fn parse_closure_block_expr(&mut self) -> Result<Expr> {
+        self.pos += 1;
+        let start = self.pos;
+        let mut depth = 0i32;
+        while !self.eof() {
+            match self.tokens[self.pos] {
+                Token::LBrace | Token::LParen | Token::LBracket => {
+                    depth += 1;
+                    self.pos += 1;
+                }
+                Token::RParen | Token::RBracket => {
+                    if depth > 0 {
+                        depth -= 1;
+                    }
+                    self.pos += 1;
+                }
+                Token::RBrace if depth == 0 => break,
+                Token::RBrace => {
+                    depth -= 1;
+                    self.pos += 1;
+                }
+                _ => self.pos += 1,
+            }
+        }
+        if self.eof() {
+            return Err(anyhow!(self.err("Expected '}' to close closure block")));
+        }
+        let end = self.pos;
+        self.pos += 1;
+
+        let mut inner = self.tokens[start..end].to_vec();
+        if inner.is_empty() {
+            return Ok(Expr::Val(crate::val::Val::Nil));
+        }
+        if !matches!(inner.last(), Some(Token::Semicolon)) {
+            inner.push(Token::Semicolon);
+        }
+        let mut stmt_parser = StmtParser::new(&inner);
+        let program = stmt_parser.parse_program()?;
+        let mut statements = program.statements;
+        if let Some(last) = statements.last_mut()
+            && let Stmt::Expr(expr) = last.as_ref()
+        {
+            let value = expr.clone();
+            *last = Box::new(Stmt::Return { value: Some(value) });
+        }
+        Ok(Expr::Block(statements))
     }
 
     /// Skip a type annotation after ':' in a parameter list.
@@ -322,5 +376,39 @@ impl<'a> Parser<'a> {
         }
 
         errors
+    }
+
+    /// Check if the current token can start a valid expression.
+    pub(super) fn is_valid_expr_start(&self) -> bool {
+        if self.eof() {
+            return false;
+        }
+
+        matches!(
+            self.tokens[self.pos],
+            Token::Nil
+                | Token::Bool(_)
+                | Token::Int(_)
+                | Token::Float(_)
+                | Token::Str(_)
+                | Token::Id(_)
+                | Token::LBracket
+                | Token::LBrace
+                | Token::LParen
+                | Token::Not
+                | Token::BitNot
+                | Token::Select
+                | Token::Pipe
+                | Token::Fn
+        )
+    }
+
+    /// Check if the current token is an invalid separator.
+    pub(super) fn is_invalid_separator(&self) -> bool {
+        if self.eof() {
+            return false;
+        }
+
+        matches!(self.tokens[self.pos], Token::Semicolon)
     }
 }

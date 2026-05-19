@@ -1,5 +1,5 @@
 use super::StmtParser;
-use crate::{ast::Parser as ExprParser, op::BinOp, stmt::Stmt, token::Token};
+use crate::{ast::Parser as ExprParser, expr::Expr, op::BinOp, stmt::Stmt, token::Token, val::Val};
 use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
@@ -139,6 +139,113 @@ impl<'a> StmtParser<'a> {
             value: Box::new(value),
             span: self.current_span(),
         })
+    }
+
+    pub fn try_parse_access_assign_stmt_with_id(&mut self, name: String) -> Result<Option<Stmt>> {
+        let start = self.pos;
+        let mut cursor = self.pos + 1;
+        let mut bracket_depth = 0i32;
+        let mut assign_pos = None;
+        let mut assign_op = None;
+        while cursor < self.len {
+            match &self.tokens[cursor] {
+                Token::LBracket => {
+                    bracket_depth += 1;
+                    cursor += 1;
+                }
+                Token::RBracket => {
+                    bracket_depth -= 1;
+                    cursor += 1;
+                }
+                Token::Assign
+                | Token::AddAssign
+                | Token::SubAssign
+                | Token::MulAssign
+                | Token::DivAssign
+                | Token::ModAssign
+                    if bracket_depth == 0 =>
+                {
+                    assign_pos = Some(cursor);
+                    assign_op = Some(self.tokens[cursor].clone());
+                    break;
+                }
+                Token::Semicolon if bracket_depth == 0 => break,
+                _ => cursor += 1,
+            }
+        }
+        let Some(assign_pos) = assign_pos else {
+            return Ok(None);
+        };
+
+        let key = if self.tokens.get(start + 1) == Some(&Token::LBracket)
+            && assign_pos >= start + 3
+            && self.tokens.get(assign_pos - 1) == Some(&Token::RBracket)
+        {
+            let mut parser = ExprParser::new(&self.tokens[start + 2..assign_pos - 1]);
+            parser.parse()?
+        } else if self.tokens.get(start + 1) == Some(&Token::Dot) {
+            match self.tokens.get(start + 2) {
+                Some(Token::Id(field)) => Expr::Val(Val::from_str(field.as_str())),
+                Some(Token::Str(field)) => Expr::Val(Val::from_str(field.as_str())),
+                other => {
+                    return Err(anyhow!(
+                        self.err(&format!("Expected field name in assignment target, found {:?}", other))
+                    ));
+                }
+            }
+        } else {
+            return Ok(None);
+        };
+
+        self.pos = assign_pos + 1;
+        let rhs = self.parse_expression()?;
+        self.expect_token(Token::Semicolon)?;
+
+        let current = Expr::Access(Box::new(Expr::Var(name.clone())), Box::new(key.clone()));
+        let value = match assign_op.expect("assignment operator found") {
+            Token::Assign => rhs,
+            Token::AddAssign => Expr::Bin(Box::new(current), BinOp::Add, Box::new(rhs)),
+            Token::SubAssign => Expr::Bin(Box::new(current), BinOp::Sub, Box::new(rhs)),
+            Token::MulAssign => Expr::Bin(Box::new(current), BinOp::Mul, Box::new(rhs)),
+            Token::DivAssign => Expr::Bin(Box::new(current), BinOp::Div, Box::new(rhs)),
+            Token::ModAssign => Expr::Bin(Box::new(current), BinOp::Mod, Box::new(rhs)),
+            _ => unreachable!(),
+        };
+
+        if self.tokens.get(start + 1) == Some(&Token::LBracket) && matches!(key, Expr::Val(Val::Int(_))) {
+            let list_set = Expr::CallExpr(
+                Box::new(Expr::Access(
+                    Box::new(Expr::Var("list".to_string())),
+                    Box::new(Expr::Val(Val::from_str("set"))),
+                )),
+                vec![Box::new(Expr::Var(name.clone())), Box::new(key), Box::new(value)],
+            );
+            let updated = Expr::Access(Box::new(list_set), Box::new(Expr::Val(Val::Int(0))));
+            Ok(Some(Stmt::Assign {
+                name,
+                value: Box::new(updated),
+                span: self.current_span(),
+            }))
+        } else if self.tokens.get(start + 1) == Some(&Token::Dot) {
+            let set_field = Expr::CallExpr(
+                Box::new(Expr::Var("__lk_set_field".to_string())),
+                vec![Box::new(Expr::Var(name.clone())), Box::new(key), Box::new(value)],
+            );
+            Ok(Some(Stmt::Assign {
+                name,
+                value: Box::new(set_field),
+                span: self.current_span(),
+            }))
+        } else {
+            let map_set = Expr::CallExpr(
+                Box::new(Expr::Access(
+                    Box::new(Expr::Var(name)),
+                    Box::new(Expr::Val(Val::from_str("set"))),
+                )),
+                vec![Box::new(key), Box::new(value)],
+            );
+            Ok(Some(Stmt::Expr(Box::new(map_set))))
+        }
     }
 
     pub fn parse_define_stmt_with_id(&mut self, name: String) -> Result<Stmt> {

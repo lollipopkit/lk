@@ -178,6 +178,9 @@ pub enum Expr {
         params: Vec<String>,
         body: Box<Expr>,
     },
+    /// Expression-level block, primarily for multi-statement closure bodies.
+    #[serde(skip)]
+    Block(Vec<Box<crate::stmt::Stmt>>),
     /// Match expression: match value { pattern => expr, ... }
     Match {
         value: Box<Expr>,
@@ -310,6 +313,7 @@ impl Expr {
             Expr::Closure { params: _, body } => {
                 body.collect_ctx_names(names);
             }
+            Expr::Block(_) => {}
             Expr::Match { value, arms } => {
                 value.collect_ctx_names(names);
                 for arm in arms {
@@ -676,6 +680,7 @@ impl Expr {
                     body: Box::new(body.fold_constants()),
                 }
             }
+            Expr::Block(statements) => Expr::Block(statements),
             Expr::Match { value, arms } => {
                 // Match expressions cannot be fully folded without runtime evaluation
                 // but we can fold the value and arm bodies
@@ -846,6 +851,7 @@ impl Display for Expr {
                 let params_str = params.join(", ");
                 write!(f, "|{}| {}", params_str, body)
             }
+            Expr::Block(_) => write!(f, "{{ ... }}"),
             Expr::Match { value, arms } => {
                 write!(f, "match {} {{", value)?;
                 for (i, arm) in arms.iter().enumerate() {
@@ -1354,6 +1360,7 @@ impl Expr {
                     debug_location: None,
                 }))))
             }
+            Expr::Block(_) => Err(anyhow!("Block expression can only be used as a closure body")),
             // 字面量值
             Expr::Val(val) => Ok(val.clone()),
         }

@@ -475,6 +475,7 @@ fn visit_expr_for_return_facts(expr: &Expr, hints: &HashMap<usize, Type>, env: &
             }
         }
         Expr::Closure { body, .. } => visit_expr_for_return_facts(body, hints, env),
+        Expr::Block(_) => {}
         Expr::Match { value, arms } => {
             visit_expr_for_return_facts(value, hints, env);
             for MatchArm { pattern, body } in arms {
@@ -607,6 +608,7 @@ fn visit_expr_calls(
             }
         }
         Expr::Closure { body, .. } => visit_expr_calls(body, hints, functions, facts, env),
+        Expr::Block(_) => {}
         Expr::Match { value, arms } => {
             visit_expr_calls(value, hints, functions, facts, env);
             for MatchArm { pattern, body } in arms {

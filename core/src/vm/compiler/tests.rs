@@ -4,6 +4,7 @@ use crate::token::Tokenizer;
 use crate::vm::compiler::Compiler;
 use crate::vm::{Function, Op, Vm, compile_program};
 use crate::{op::BinOp, val::Val, vm::context::VmContext};
+use std::sync::Arc;
 
 mod binding_slot_tests;
 mod call_fast_paths;
@@ -145,6 +146,62 @@ fn const_function_call_is_evaluated() {
             .any(|op| matches!(op, Op::Call { .. } | Op::CallNamed { .. })),
         "call opcode should be eliminated for const-evaluated function call"
     );
+}
+
+#[test]
+fn vm_match_variable_binding_is_visible_in_arm_body() {
+    let (_function, _ctx, result) = parse_compile_and_run("return match 99 { n => n, _ => 0 };");
+    assert_eq!(result.expect("vm result"), Val::Int(99));
+}
+
+#[test]
+fn vm_match_destructuring_bindings_are_visible_in_arm_body() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let pt = [10, 20];
+        let user = {"name": "Alice", "age": 30};
+        let sum = match pt { [x, y] => x + y, _ => 0 };
+        let name = match user { {"name": n} => n, _ => "unknown" };
+        return [sum, name];
+        "#,
+    );
+    assert_eq!(
+        result.expect("vm result"),
+        Val::List(Arc::new(vec![Val::Int(30), Val::from_str("Alice")]))
+    );
+}
+
+#[test]
+fn if_else_branch_assignments_do_not_stale_fold_later_comparisons() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let score = 75;
+        let g = "";
+        if (score >= 90) {
+            g = "A";
+        } else if (score >= 70) {
+            g = "C";
+        } else {
+            g = "F";
+        }
+        return g == "C";
+        "#,
+    );
+    assert_eq!(result.expect("vm result"), Val::Bool(true));
+}
+
+#[test]
+fn top_level_closure_can_compound_assign_captured_global() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let counter = 0;
+        fn inc() { counter += 1; }
+        inc();
+        inc();
+        return counter;
+        "#,
+    );
+    assert_eq!(result.expect("vm result"), Val::Int(2));
 }
 
 #[test]
@@ -993,5 +1050,223 @@ fn assign_runtime_expression_keeps_env() {
             .iter()
             .any(|op| matches!(op, Op::LoadGlobal(_, _) | Op::LoadLocal(_, _))),
         "runtime assignment should remain"
+    );
+}
+
+#[test]
+fn dynamic_negative_indexing_reads_from_end() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let xs = [10, 20, 30];
+        let text = "hello";
+        return [xs[-1], text[-1]];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::Int(30), Val::from_str("o")].into())
+    );
+}
+
+#[test]
+fn range_indexing_slices_lists_and_strings() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let xs = [10, 20, 30, 40];
+        let text = "hello";
+        return [xs[0..2], text[1..3]];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::List(vec![Val::Int(10), Val::Int(20)].into()), Val::from_str("el"),].into())
+    );
+}
+
+#[test]
+fn string_multiply_repeats_text() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        return ["ha" * 3, 2 * "go"];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::from_str("hahaha"), Val::from_str("gogo")].into())
+    );
+}
+
+#[test]
+fn not_nil_is_true() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        return !nil;
+        "#,
+    );
+
+    assert_eq!(result.expect("vm exec"), Val::Bool(true));
+}
+
+#[test]
+fn bare_map_keys_are_string_keys() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let user = {name: "Alice", age: 30};
+        return [user.name, user.age];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::from_str("Alice"), Val::Int(30)].into())
+    );
+}
+
+#[test]
+fn typeof_builtin_reports_runtime_type() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        return [typeof(42), typeof("x"), typeof(nil)];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::from_str("Int"), Val::from_str("String"), Val::from_str("Nil")].into())
+    );
+}
+
+#[test]
+fn for_comma_pattern_destructures_pairs() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let total = 0;
+        for i, item in [[0, 10], [1, 20], [2, 30]] {
+          total += i + item;
+        }
+        return total;
+        "#,
+    );
+
+    assert_eq!(result.expect("vm exec"), Val::Int(63));
+}
+
+#[test]
+fn list_literal_spread_concatenates_segments() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let a = [1, 2];
+        return [0, ..a, 3];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::Int(0), Val::Int(1), Val::Int(2), Val::Int(3)].into())
+    );
+}
+
+#[test]
+fn multi_statement_closure_block_returns_final_expression() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let f = |x| { let y = x + 1; y };
+        return f(4);
+        "#,
+    );
+
+    assert_eq!(result.expect("vm exec"), Val::Int(5));
+}
+
+#[test]
+fn indexed_and_dot_assignment_desugar_to_existing_mutation_ops() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        let xs = [1, 2, 3];
+        xs[1] += 10;
+        let m = {count: 1};
+        m.count += xs[1];
+        return [xs[1], m.count];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::Int(12), Val::Int(13)].into())
+    );
+}
+
+#[test]
+fn struct_dot_assignment_rebuilds_object_field() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        struct Point { x: Int, y: Int }
+        let p = Point { x: 1, y: 2 };
+        p.x += 9;
+        return [p.x, p.y];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::Int(10), Val::Int(2)].into())
+    );
+}
+
+#[test]
+fn default_positional_parameter_uses_default_thunk() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        fn greet(name, greeting = "hello") {
+            return greeting + ", " + name;
+        }
+        return [greet("Bob"), greet("Bob", "hi"), greet("Bob", greeting: "hey")];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(
+            vec![
+                Val::from_str("hello, Bob"),
+                Val::from_str("hi, Bob"),
+                Val::from_str("hey, Bob"),
+            ]
+            .into()
+        )
+    );
+}
+
+#[test]
+fn integer_bitwise_operators_execute() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        return [12 & 10, 12 | 10, ~0];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::Int(8), Val::Int(14), Val::Int(-1)].into())
+    );
+}
+
+#[test]
+fn struct_update_reuses_existing_fields_and_overrides_new_values() {
+    let (_function, _ctx, result) = parse_compile_and_run(
+        r#"
+        struct Point { x: Int, y: Int }
+        let p = Point { x: 1, y: 2 };
+        let p2 = Point { ..p, x: 10 };
+        return [p2.x, p2.y];
+        "#,
+    );
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::List(vec![Val::Int(10), Val::Int(2)].into())
     );
 }

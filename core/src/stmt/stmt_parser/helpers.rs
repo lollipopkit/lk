@@ -296,6 +296,14 @@ impl<'a> StmtParser<'a> {
     }
 
     pub(super) fn parse_inline_expr_until_named_delim(&mut self) -> Result<Expr> {
+        self.parse_inline_expr_until_delim(false)
+    }
+
+    pub(super) fn parse_inline_expr_until_param_delim(&mut self) -> Result<Expr> {
+        self.parse_inline_expr_until_delim(true)
+    }
+
+    fn parse_inline_expr_until_delim(&mut self, stop_at_rparen: bool) -> Result<Expr> {
         let start_pos = self.pos;
         let mut end_pos = start_pos;
         let mut paren: i32 = 0;
@@ -308,12 +316,14 @@ impl<'a> StmtParser<'a> {
                     paren += 1;
                     end_pos += 1;
                 }
-                Token::RParen => {
-                    if paren > 0 {
-                        paren -= 1;
-                    }
+                Token::RParen if paren > 0 => {
+                    paren -= 1;
                     end_pos += 1;
                 }
+                Token::RParen if stop_at_rparen && paren == 0 && bracket == 0 && brace == 0 => {
+                    break;
+                }
+                Token::RParen => end_pos += 1,
                 Token::LBracket => {
                     bracket += 1;
                     end_pos += 1;

@@ -1,6 +1,6 @@
 # LK Language Support for VS Code
 
-This extension provides language support for LK (Query Check Language) in Visual Studio Code, including syntax highlighting and language server features.
+This extension provides language support for LK in Visual Studio Code, including syntax highlighting, snippets, language configuration, and language server features.
 
 ## Language Server Implementation Guide
 
@@ -25,17 +25,24 @@ The extension follows the standard VS Code Language Server pattern with two main
 vscode-lk/
 ├── src/
 │   └── extension.ts          # Language Client implementation
+├── language-configuration.json
+│                             # Brackets, comments, indentation rules
 ├── syntaxes/
 │   └── lk.tmLanguage.json   # TextMate grammar for syntax highlighting
+├── snippets/
+│   └── lk.code-snippets.json # LK snippets
 ├── package.json              # Extension manifest
 └── ...                       # Other configuration files
 ```
 
 The LK LSP server is built separately in the `lsp/` directory of the main LK project.
+The previous standalone `lk-highlight` extension has been merged into this package; install only this extension for both TextMate highlighting and LSP features.
 
 ## Features
 
 - Syntax highlighting for LK files
+- Language configuration for `.lk` files
+- Snippets for common LK constructs
 - Language Server Protocol (LSP) integration for:
   - Real-time error detection and diagnostics
   - Code completion
@@ -70,15 +77,17 @@ The LK LSP server is built separately in the `lsp/` directory of the main LK pro
 ## Installation
 
 1. Clone this repository
-2. Install dependencies: `npm install`
-3. Compile the extension: `npm run compile`
+2. Install dependencies: `npm --prefix vsc-ext/lsp install`
+3. Compile the extension: `npm --prefix vsc-ext/lsp run compile`
 4. Build the LK LSP server: `cargo build -p lk-lsp`
-5. Open the extension in VS Code and press F5 to run the extension
+5. Run `make debug-lsp-ext` to open an Extension Development Host, or run `make vsix` to build the single VSIX package.
 
 ## Development
 
 - `npm run compile`: Compile the TypeScript source
 - `npm run watch`: Compile in watch mode
+- `make vsix`: Build the merged VS Code extension package from `vsc-ext/lsp`
+- `make debug-lsp-ext`: Launch VS Code with the merged extension and a repo-local `lk-lsp`
 
 ## LK Language Features
 
@@ -100,4 +109,4 @@ The extension supports the LK language with the following features:
 
 ## License
 
-MIT
+Apache-2.0

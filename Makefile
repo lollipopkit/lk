@@ -1,7 +1,7 @@
 NPM ?= npm
 
 VSC_EXT_DIR := vsc-ext
-VSC_EXTENSIONS := highlight lsp
+VSC_EXTENSIONS := lsp
 
 .PHONY: vsix $(VSC_EXTENSIONS:%=vsix-%) clean-vsix debug-lsp-ext install-lk
 

@@ -1,6 +1,33 @@
 use super::super::raw_boundary::region_allocator;
 use super::*;
 
+#[inline(always)]
+fn text_index_value(text: &str, index: i64) -> Val {
+    let len = if text.is_ascii() {
+        text.len()
+    } else {
+        text.chars().count()
+    };
+    let Some(index) = (if index < 0 {
+        len.checked_sub(index.unsigned_abs() as usize)
+    } else {
+        Some(index as usize)
+    }) else {
+        return Val::Nil;
+    };
+    if text.is_ascii() {
+        text.as_bytes()
+            .get(index)
+            .copied()
+            .map_or(Val::Nil, Val::ascii_char_value)
+    } else {
+        text.chars()
+            .nth(index)
+            .map(|character| Val::from_str(&character.to_string()))
+            .unwrap_or(Val::Nil)
+    }
+}
+
 pub(super) fn handles_basic_op(op: &Op) -> bool {
     matches!(
         op,
@@ -71,7 +98,10 @@ pub(super) fn exec_basic_op(
             let res = match (&regs[base as usize], &regs[idx as usize]) {
                 (Val::List(l), Val::Int(i)) => {
                     if *i < 0 {
-                        Val::Nil
+                        l.len()
+                            .checked_sub(i.unsigned_abs() as usize)
+                            .and_then(|idx| l.get(idx).cloned())
+                            .unwrap_or(Val::Nil)
                     } else {
                         let lptr = Arc::as_ptr(l) as *const Val as usize;
                         let hit = match index_ic[pc].as_mut() {
@@ -93,7 +123,7 @@ pub(super) fn exec_basic_op(
                 (base_val, Val::Int(i)) if base_val.as_str().is_some() => {
                     let s_str = base_val.as_str().unwrap();
                     if *i < 0 {
-                        Val::Nil
+                        text_index_value(s_str, *i)
                     } else {
                         let sptr = s_str.as_ptr() as usize;
                         let hit = match index_ic[pc].as_mut() {
@@ -126,7 +156,7 @@ pub(super) fn exec_basic_op(
                         }
                     }
                 }
-                _ => Val::Nil,
+                (base_val, key) => base_val.access(key).unwrap_or(Val::Nil),
             };
             assign_reg(frame_raw, regs, dst as usize, res);
             pc = next_pc_default;
@@ -230,6 +260,7 @@ pub(super) fn exec_basic_op(
         Op::Not(dst, src) => {
             match &regs[src as usize] {
                 Val::Bool(b) => assign_reg(frame_raw, regs, dst as usize, Val::Bool(!b)),
+                Val::Nil => assign_reg(frame_raw, regs, dst as usize, Val::Bool(true)),
                 other => {
                     return frame_return_common(frame_raw, pc, Err(anyhow!("Invalid operand: !{:?}", other))).map(Some);
                 }
@@ -428,52 +459,8 @@ pub(super) fn exec_basic_op(
             let key = &f.consts[kidx as usize];
             let res = if let Val::Int(i) = key {
                 match &regs[base as usize] {
-                    Val::List(l) => {
-                        if *i < 0 {
-                            Val::Nil
-                        } else {
-                            l.get(*i as usize).cloned().unwrap_or(Val::Nil)
-                        }
-                    }
-                    Val::Str(s) => {
-                        if *i < 0 {
-                            Val::Nil
-                        } else if s.is_ascii() {
-                            let bi = *i as usize;
-                            let bs = s.as_bytes();
-                            if bi < bs.len() {
-                                Val::ascii_char_value(bs[bi])
-                            } else {
-                                Val::Nil
-                            }
-                        } else {
-                            s.chars()
-                                .nth(*i as usize)
-                                .map(|c| Val::from_str(&c.to_string()))
-                                .unwrap_or(Val::Nil)
-                        }
-                    }
-                    Val::ShortStr(ss) => {
-                        if *i < 0 {
-                            Val::Nil
-                        } else {
-                            let s_str = ss.as_str();
-                            if s_str.is_ascii() {
-                                let bi = *i as usize;
-                                let bs = s_str.as_bytes();
-                                if bi < bs.len() {
-                                    Val::ascii_char_value(bs[bi])
-                                } else {
-                                    Val::Nil
-                                }
-                            } else {
-                                s_str
-                                    .chars()
-                                    .nth(*i as usize)
-                                    .map(|c| Val::from_str(&c.to_string()))
-                                    .unwrap_or(Val::Nil)
-                            }
-                        }
+                    Val::List(_) | Val::Str(_) | Val::ShortStr(_) => {
+                        regs[base as usize].access(&Val::Int(*i)).unwrap_or(Val::Nil)
                     }
                     _ => Val::Nil,
                 }
@@ -485,8 +472,7 @@ pub(super) fn exec_basic_op(
         }
         Op::ListIndexI(dst, base, index) => {
             let res = match &regs[base as usize] {
-                _ if index < 0 => Val::Nil,
-                Val::List(list) => list.get(index as usize).cloned().unwrap_or(Val::Nil),
+                Val::List(_) => regs[base as usize].access(&Val::Int(index as i64)).unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
             assign_reg(frame_raw, regs, dst as usize, res);
@@ -494,25 +480,7 @@ pub(super) fn exec_basic_op(
         }
         Op::StrIndexI(dst, base, index) => {
             let res = match &regs[base as usize] {
-                value if value.as_str().is_some() => {
-                    let text = value.as_str().unwrap();
-                    if index < 0 {
-                        Val::Nil
-                    } else if text.is_ascii() {
-                        let bi = index as usize;
-                        let bytes = text.as_bytes();
-                        if bi < bytes.len() {
-                            Val::ascii_char_value(bytes[bi])
-                        } else {
-                            Val::Nil
-                        }
-                    } else {
-                        text.chars()
-                            .nth(index as usize)
-                            .map(|character| Val::from_str(&character.to_string()))
-                            .unwrap_or(Val::Nil)
-                    }
-                }
+                value if value.as_str().is_some() => value.access(&Val::Int(index as i64)).unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
             assign_reg(frame_raw, regs, dst as usize, res);

@@ -159,7 +159,7 @@ pub(super) fn run_index(
     let result = match (&regs[base as usize], &regs[index as usize]) {
         (Val::List(list), Val::Int(index)) => {
             if *index < 0 {
-                Val::Nil
+                list_ops::index_value(list, *index).unwrap_or(Val::Nil)
             } else {
                 let list_ptr = Arc::as_ptr(list) as *const Val as usize;
                 let hit = match index_ic[pc].as_mut() {
@@ -181,7 +181,7 @@ pub(super) fn run_index(
         (base_val, Val::Int(index)) if base_val.as_str().is_some() => {
             let text = base_val.as_str().unwrap();
             if *index < 0 {
-                Val::Nil
+                string_ops::index_value(text, *index).unwrap_or(Val::Nil)
             } else {
                 let string_ptr = text.as_ptr() as usize;
                 let hit = match index_ic[pc].as_mut() {
@@ -200,7 +200,11 @@ pub(super) fn run_index(
                 }
             }
         }
-        _ => Val::Nil,
+        (Val::List(list), Val::List(key)) => list_ops::slice_range_value(list, key).unwrap_or(Val::Nil),
+        (base_val, Val::List(key)) if base_val.as_str().is_some() => {
+            string_ops::slice_range_value(base_val.as_str().unwrap(), key).unwrap_or(Val::Nil)
+        }
+        (base_val, key) => base_val.access(key).unwrap_or(Val::Nil),
     };
     assign_reg(frame_raw, regs, dst as usize, result);
     Ok(())

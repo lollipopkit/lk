@@ -438,6 +438,7 @@ impl TypeChecker {
                     .ok_or_else(|| Self::type_err("Match expression has no arms", None, None, Some(expr.clone())))
             }
             Expr::Paren(expr) => self.check_expr(expr),
+            Expr::Block(_) => Ok(Type::Any),
         }
     }
 
@@ -499,6 +500,17 @@ impl TypeChecker {
                 }
                 if self.is_string_like(&left_type) || self.is_string_like(&right_type) {
                     self.check_string_addition(left_expr, &left_type, right_expr, &right_type)
+                } else {
+                    self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
+                }
+            }
+            BinOp::Mul if self.is_string_like(&left_type) || self.is_string_like(&right_type) => {
+                let left_string = self.is_string_like(&left_type);
+                let right_string = self.is_string_like(&right_type);
+                let left_int = matches!(self.resolve_aliases(&left_type), Type::Int);
+                let right_int = matches!(self.resolve_aliases(&right_type), Type::Int);
+                if (left_string && right_int) || (left_int && right_string) {
+                    Ok(Type::String)
                 } else {
                     self.check_numeric_bin_op(left_expr, &left_type, right_expr, &right_type, op)
                 }

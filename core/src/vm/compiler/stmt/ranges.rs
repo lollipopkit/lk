@@ -45,8 +45,18 @@ impl FunctionBuilder {
             }
         }
         for name in mutated_names {
-            if let Some(val) = self.const_env.get(&name) {
-                self.const_bindings.insert(name, val.clone());
+            if let Some(val) = self.const_env.get(&name).cloned() {
+                if self.const_bindings.contains_key(&name) {
+                    self.const_bindings.insert(name.clone(), val.clone());
+                }
+                if let Some(idx) = self.lookup(&name) {
+                    let k = self.k(val);
+                    self.emit(Op::LoadK(idx, k));
+                    if self.global_defs.contains(&name) {
+                        let kname = self.k(Val::from_str(name.as_str()));
+                        self.emit(Op::DefineGlobal(kname, idx));
+                    }
+                }
             }
         }
         true
@@ -317,6 +327,84 @@ impl FunctionBuilder {
             }
             Stmt::Function { body, .. } => Self::stmt_assigns_name(body, target),
             _ => false,
+        }
+    }
+
+    pub(super) fn collect_stmt_assigned_names(stmt: &Stmt, out: &mut HashSet<String>) {
+        match stmt {
+            Stmt::Block { statements } => {
+                for stmt in statements {
+                    Self::collect_stmt_assigned_names(stmt, out);
+                }
+            }
+            Stmt::Assign { name, .. } | Stmt::CompoundAssign { name, .. } | Stmt::Define { name, .. } => {
+                out.insert(name.clone());
+            }
+            Stmt::Let { pattern, .. } => {
+                Self::collect_pattern_assigned_names(pattern, out);
+            }
+            Stmt::If {
+                then_stmt, else_stmt, ..
+            }
+            | Stmt::IfLet {
+                then_stmt, else_stmt, ..
+            } => {
+                Self::collect_stmt_assigned_names(then_stmt, out);
+                if let Some(else_stmt) = else_stmt {
+                    Self::collect_stmt_assigned_names(else_stmt, out);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::WhileLet { body, .. } | Stmt::For { body, .. } => {
+                Self::collect_stmt_assigned_names(body, out);
+            }
+            Stmt::Function { name, .. } => {
+                out.insert(name.clone());
+            }
+            Stmt::Impl { methods, .. } => {
+                for method in methods {
+                    Self::collect_stmt_assigned_names(method, out);
+                }
+            }
+            Stmt::Import(_)
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Return { .. }
+            | Stmt::Struct { .. }
+            | Stmt::TypeAlias { .. }
+            | Stmt::Trait { .. }
+            | Stmt::Expr(_)
+            | Stmt::Empty => {}
+        }
+    }
+
+    fn collect_pattern_assigned_names(pattern: &Pattern, out: &mut HashSet<String>) {
+        match pattern {
+            Pattern::Variable(name) => {
+                out.insert(name.clone());
+            }
+            Pattern::List { patterns, rest } => {
+                for pattern in patterns {
+                    Self::collect_pattern_assigned_names(pattern, out);
+                }
+                if let Some(rest) = rest {
+                    out.insert(rest.clone());
+                }
+            }
+            Pattern::Map { patterns, rest } => {
+                for (_, pattern) in patterns {
+                    Self::collect_pattern_assigned_names(pattern, out);
+                }
+                if let Some(rest) = rest {
+                    out.insert(rest.clone());
+                }
+            }
+            Pattern::Or(patterns) => {
+                for pattern in patterns {
+                    Self::collect_pattern_assigned_names(pattern, out);
+                }
+            }
+            Pattern::Guard { pattern, .. } => Self::collect_pattern_assigned_names(pattern, out),
+            Pattern::Literal(_) | Pattern::Wildcard | Pattern::Range { .. } => {}
         }
     }
 

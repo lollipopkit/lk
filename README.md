@@ -85,6 +85,10 @@ assert_eq!(result, Val::Bool(true));
 
 Note: command-line paths must be relative and sanitized.
 
+#### VS Code
+
+The VS Code support is a single merged extension under `vsc-ext/lsp`. It includes `.lk` language registration, TextMate highlighting, snippets, and the LK LSP client. Use `make debug-lsp-ext` for a local Extension Development Host, or `make vsix` to build the VSIX.
+
 ## License
 
 ```plaintext

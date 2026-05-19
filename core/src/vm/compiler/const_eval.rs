@@ -403,6 +403,7 @@ impl FunctionBuilder {
                 TemplateStringPart::Expr(inner) => self.expr_uses_only_const_bindings(inner),
             }),
             Closure { .. } => false,
+            Block(_) => false,
             Match { value, arms } => {
                 self.expr_uses_only_const_bindings(value)
                     && arms.iter().all(|arm| self.expr_uses_only_const_bindings(&arm.body))
@@ -488,7 +489,9 @@ impl FunctionBuilder {
                 }
                 _ => false,
             },
-            Closure { .. } | CallNamed(_, _, _) | Select { .. } | Match { .. } | StructLiteral { .. } => false,
+            Closure { .. } | Block(_) | CallNamed(_, _, _) | Select { .. } | Match { .. } | StructLiteral { .. } => {
+                false
+            }
         }
     }
 

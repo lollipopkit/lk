@@ -1,7 +1,7 @@
 {
   "name": "lk-lsp",
-  "displayName": "LK Language Server",
-  "description": "LK Language Server (client) for editor features via LSP",
+  "displayName": "LK Language Support",
+  "description": "LK language support for Visual Studio Code, including syntax highlighting, snippets, and LSP features",
   "version": "0.0.2",
   "publisher": "lollipopkit",
   "license": "Apache-2.0",
@@ -20,14 +20,37 @@
   "categories": [
     "Programming Languages"
   ],
-  "extensionDependencies": [
-    "lollipopkit.lk-highlight"
-  ],
   "main": "./out/extension.js",
   "activationEvents": [
     "onLanguage:lk"
   ],
   "contributes": {
+    "languages": [
+      {
+        "id": "lk",
+        "aliases": [
+          "LK",
+          "lk"
+        ],
+        "extensions": [
+          ".lk"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "lk",
+        "scopeName": "source.lk",
+        "path": "./syntaxes/lk.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "lk",
+        "path": "./snippets/lk.code-snippets.json"
+      }
+    ],
     "commands": [
       {
         "command": "lk.startServer",

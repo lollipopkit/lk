@@ -195,7 +195,7 @@ impl FunctionBuilder {
                     || arms.iter().any(|arm| Self::expr_mentions_name(&arm.body, target))
             }
             Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, expr)| Self::expr_mentions_name(expr, target)),
-            Expr::Val(_) | Expr::Closure { .. } | Expr::Select { .. } => false,
+            Expr::Val(_) | Expr::Closure { .. } | Expr::Block(_) | Expr::Select { .. } => false,
         }
     }
 
@@ -358,7 +358,7 @@ impl FunctionBuilder {
                     self.collect_loop_invariant_exprs_from_expr(value, loop_names, body, out);
                 }
             }
-            Expr::Val(_) | Expr::Var(_) | Expr::Closure { .. } | Expr::Select { .. } => {}
+            Expr::Val(_) | Expr::Var(_) | Expr::Closure { .. } | Expr::Block(_) | Expr::Select { .. } => {}
         }
     }
 
@@ -1140,7 +1140,11 @@ impl FunctionBuilder {
             }
             (BinOp::Add, Expr::Var(rhs_name)) => {
                 if let Some(rhs) = self.lookup(rhs_name) {
-                    self.emit(Op::AddInt(dst, dst, rhs));
+                    if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs) {
+                        self.emit(Op::AddInt(dst, dst, rhs));
+                    } else {
+                        self.emit(Op::Add(dst, dst, rhs));
+                    }
                     true
                 } else {
                     false
@@ -1148,7 +1152,11 @@ impl FunctionBuilder {
             }
             (BinOp::Sub, Expr::Var(rhs_name)) => {
                 if let Some(rhs) = self.lookup(rhs_name) {
-                    self.emit(Op::SubInt(dst, dst, rhs));
+                    if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs) {
+                        self.emit(Op::SubInt(dst, dst, rhs));
+                    } else {
+                        self.emit(Op::Sub(dst, dst, rhs));
+                    }
                     true
                 } else {
                     false
@@ -1159,17 +1167,29 @@ impl FunctionBuilder {
             // Only add/sub/mul have dedicated Int opcodes; div/mod fall back.
             (BinOp::Add, _) => {
                 let rhs_reg = self.expr(right);
-                self.emit(Op::AddInt(dst, dst, rhs_reg));
+                if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs_reg) {
+                    self.emit(Op::AddInt(dst, dst, rhs_reg));
+                } else {
+                    self.emit(Op::Add(dst, dst, rhs_reg));
+                }
                 true
             }
             (BinOp::Sub, _) => {
                 let rhs_reg = self.expr(right);
-                self.emit(Op::SubInt(dst, dst, rhs_reg));
+                if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs_reg) {
+                    self.emit(Op::SubInt(dst, dst, rhs_reg));
+                } else {
+                    self.emit(Op::Sub(dst, dst, rhs_reg));
+                }
                 true
             }
             (BinOp::Mul, _) => {
                 let rhs_reg = self.expr(right);
-                self.emit(Op::MulInt(dst, dst, rhs_reg));
+                if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs_reg) {
+                    self.emit(Op::MulInt(dst, dst, rhs_reg));
+                } else {
+                    self.emit(Op::Mul(dst, dst, rhs_reg));
+                }
                 true
             }
             _ => false,

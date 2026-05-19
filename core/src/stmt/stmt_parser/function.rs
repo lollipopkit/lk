@@ -26,6 +26,7 @@ impl<'a> StmtParser<'a> {
         let mut param_types: Vec<Option<Type>> = Vec::new();
         let mut named_params: Vec<NamedParamDecl> = Vec::new();
         let mut saw_named_block = false;
+        let mut saw_default_positional = false;
 
         while !self.eof() && self.tokens[self.pos] != Token::RParen {
             // 若遇到具名参数块，则解析之；具名块必须位于位置参数之后
@@ -67,8 +68,24 @@ impl<'a> StmtParser<'a> {
                 parsed_type = Some(ty);
             }
 
-            params.push(param_name);
-            param_types.push(parsed_type);
+            if !self.eof() && self.tokens[self.pos] == Token::Assign {
+                saw_default_positional = true;
+                self.pos += 1;
+                let default_expr = self.parse_inline_expr_until_param_delim()?;
+                named_params.push(NamedParamDecl {
+                    name: param_name,
+                    type_annotation: Some(parsed_type.unwrap_or(Type::Any)),
+                    default: Some(default_expr),
+                });
+            } else {
+                if saw_default_positional {
+                    return Err(anyhow!(self.err(
+                        "Required positional parameters cannot follow default positional parameters"
+                    )));
+                }
+                params.push(param_name);
+                param_types.push(parsed_type);
+            }
 
             // 分隔符：逗号或结束
             if !self.eof() && self.tokens[self.pos] == Token::Comma {

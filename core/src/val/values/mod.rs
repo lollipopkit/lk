@@ -690,10 +690,16 @@ impl Val {
             // String indexing and metadata
             (lhs, Val::Int(i)) if lhs.as_str().is_some() => {
                 let s_str = lhs.as_str().unwrap();
-                if *i < 0 {
-                    return None;
-                }
-                let idx = *i as usize;
+                let len = if s_str.is_ascii() {
+                    s_str.len()
+                } else {
+                    s_str.chars().count()
+                };
+                let idx = if *i < 0 {
+                    len.checked_sub(i.unsigned_abs() as usize)?
+                } else {
+                    *i as usize
+                };
                 if s_str.is_ascii() {
                     let bs = s_str.as_bytes();
                     if idx < bs.len() {
@@ -707,10 +713,36 @@ impl Val {
                 }
             }
             (Val::List(l), Val::Int(i)) => {
-                if *i < 0 {
-                    return None;
+                let idx = if *i < 0 {
+                    l.len().checked_sub(i.unsigned_abs() as usize)?
+                } else {
+                    *i as usize
+                };
+                l.get(idx).cloned()
+            }
+            (Val::List(l), Val::List(key)) => {
+                let (start, end) = range_key_bounds(key, l.len())?;
+                Some(Val::List(l[start..end].to_vec().into()))
+            }
+            (lhs, Val::List(key)) if lhs.as_str().is_some() => {
+                let text = lhs.as_str().unwrap();
+                let len = if text.is_ascii() {
+                    text.len()
+                } else {
+                    text.chars().count()
+                };
+                let (start, end) = range_key_bounds(key, len)?;
+                if text.is_ascii() {
+                    Some(Val::from_str(&text[start..end]))
+                } else {
+                    Some(Val::from_str(
+                        &text
+                            .chars()
+                            .skip(start)
+                            .take(end.saturating_sub(start))
+                            .collect::<String>(),
+                    ))
                 }
-                l.get(*i as usize).cloned()
             }
             (Val::List(l), key) if key.as_str() == Some("len") => Some(Val::Int(l.len() as i64)),
             (lhs, key) if lhs.as_str().is_some() && key.as_str() == Some("len") => {
@@ -893,6 +925,36 @@ impl core::fmt::Display for Val {
             }
             Val::Nil => write!(f, "nil"),
         }
+    }
+}
+
+#[inline]
+fn range_key_bounds(key: &[Val], len: usize) -> Option<(usize, usize)> {
+    let Val::Int(first) = key.first()? else {
+        return None;
+    };
+    let mut previous = *first;
+    for item in key.iter().skip(1) {
+        let Val::Int(current) = item else {
+            return None;
+        };
+        if *current != previous + 1 {
+            return None;
+        }
+        previous = *current;
+    }
+
+    let start = normalize_slice_bound(*first, len);
+    let end = normalize_slice_bound(previous + 1, len);
+    Some((start.min(end), end))
+}
+
+#[inline]
+fn normalize_slice_bound(index: i64, len: usize) -> usize {
+    if index < 0 {
+        len.saturating_sub(index.unsigned_abs() as usize)
+    } else {
+        (index as usize).min(len)
     }
 }
 

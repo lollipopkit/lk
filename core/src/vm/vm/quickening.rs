@@ -601,19 +601,33 @@ fn eval_index_kind(kind: QuickenedKind, regs: &[Val], base: u16, index: u16) -> 
 
 #[inline]
 fn index_list(values: &[Val], index: i64) -> Val {
-    if index < 0 {
-        Val::Nil
+    let index = if index < 0 {
+        match values.len().checked_sub(index.unsigned_abs() as usize) {
+            Some(index) => index,
+            None => return Val::Nil,
+        }
     } else {
-        values.get(index as usize).cloned().unwrap_or(Val::Nil)
-    }
+        index as usize
+    };
+    values.get(index).cloned().unwrap_or(Val::Nil)
 }
 
 #[inline]
 fn index_str(value: &str, index: i64) -> Val {
-    if index < 0 {
-        Val::Nil
-    } else if value.is_ascii() {
-        let index = index as usize;
+    let len = if value.is_ascii() {
+        value.len()
+    } else {
+        value.chars().count()
+    };
+    let index = if index < 0 {
+        match len.checked_sub(index.unsigned_abs() as usize) {
+            Some(index) => index,
+            None => return Val::Nil,
+        }
+    } else {
+        index as usize
+    };
+    if value.is_ascii() {
         let bytes = value.as_bytes();
         if index < bytes.len() {
             Val::ascii_char_value(bytes[index])

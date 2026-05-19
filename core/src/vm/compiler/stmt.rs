@@ -25,7 +25,7 @@ use crate::{
     op::BinOp,
     stmt::{ForPattern, Stmt},
     val::{FunctionNamedParamType, Type, Val},
-    vm::Op,
+    vm::{CaptureSpec, Op},
 };
 
 use super::FunctionBuilder;
@@ -414,6 +414,7 @@ impl FunctionBuilder {
                         // the rest of this frame and do not need a StoreLocal copy.
                         self.define_var_as(name, rv);
                         if self.export_toplevel_globals && self.loop_depth == 0 && self.var_scope_depth() == 0 {
+                            self.global_defs.insert(name.clone());
                             let kname = self.k(Val::from_str(name.as_str()));
                             self.emit(Op::DefineGlobal(kname, rv));
                         }
@@ -466,6 +467,7 @@ impl FunctionBuilder {
                 self.stmt_assign(name, value);
             }
             Stmt::Expr(e) => {
+                let globals_to_reload = self.called_closure_global_captures(e);
                 let reg = self.expr(e);
                 if let Some(var_name) = detect_mutating_receiver(e)
                     && let Some(idx) = self.lookup(var_name)
@@ -473,12 +475,28 @@ impl FunctionBuilder {
                 {
                     self.emit(Op::StoreLocal(idx, reg));
                 }
+                if !globals_to_reload.is_empty() {
+                    let mut names: Vec<_> = globals_to_reload;
+                    names.sort();
+                    for name in names {
+                        if let Some(idx) = self.lookup(&name) {
+                            let kname = self.k(Val::from_str(name.as_str()));
+                            self.emit(Op::LoadGlobal(idx, kname));
+                        }
+                    }
+                }
             }
             Stmt::If {
                 condition,
                 then_stmt,
                 else_stmt,
             } => {
+                let mut branch_assigned_names = std::collections::HashSet::new();
+                Self::collect_stmt_assigned_names(then_stmt, &mut branch_assigned_names);
+                if let Some(es) = else_stmt {
+                    Self::collect_stmt_assigned_names(es, &mut branch_assigned_names);
+                }
+
                 let rc = self.expr(condition);
                 let jf = self.code.len();
                 self.emit(Op::JmpFalse(rc, 0));
@@ -500,6 +518,9 @@ impl FunctionBuilder {
                     if let Op::Jmp(ref mut ofs) = self.code[jend_pos] {
                         *ofs = (cur_len as isize - jend_pos as isize) as i16;
                     }
+                }
+                for name in branch_assigned_names {
+                    self.forget_known_value(&name);
                 }
             }
             Stmt::While { condition, body } => {
@@ -805,6 +826,10 @@ impl FunctionBuilder {
                         && let Some(imm) = self.try_small_int_const(value)
                     {
                         self.emit(Op::AddIntImm(idx, idx, imm));
+                        if self.global_defs.contains(name) {
+                            let kname = self.k(Val::from_str(name.as_str()));
+                            self.emit(Op::DefineGlobal(kname, idx));
+                        }
                         return;
                     }
                     if matches!(op, BinOp::Sub)
@@ -813,6 +838,10 @@ impl FunctionBuilder {
                         && (-128..=127).contains(&neg)
                     {
                         self.emit(Op::AddIntImm(idx, idx, neg));
+                        if self.global_defs.contains(name) {
+                            let kname = self.k(Val::from_str(name.as_str()));
+                            self.emit(Op::DefineGlobal(kname, idx));
+                        }
                         return;
                     }
 
@@ -834,6 +863,10 @@ impl FunctionBuilder {
                             BinOp::Mod => self.emit(Op::Mod(idx, idx, r_value)),
                             BinOp::Div => self.emit(Op::Div(idx, idx, r_value)),
                             _ => return,
+                        }
+                        if self.global_defs.contains(name) {
+                            let kname = self.k(Val::from_str(name.as_str()));
+                            self.emit(Op::DefineGlobal(kname, idx));
                         }
                         return;
                     }
@@ -861,6 +894,25 @@ impl FunctionBuilder {
                             return;
                         }
                     }
+                    if self.global_defs.contains(name) {
+                        let kname = self.k(Val::from_str(name.as_str()));
+                        self.emit(Op::DefineGlobal(kname, idx));
+                    }
+                }
+                if self.capture_indices.contains_key(name) {
+                    let current = self.expr(&Expr::Var(name.clone()));
+                    let r_value = self.expr(value);
+                    let out = self.alloc();
+                    match op {
+                        BinOp::Add => self.emit(Op::Add(out, current, r_value)),
+                        BinOp::Sub => self.emit(Op::Sub(out, current, r_value)),
+                        BinOp::Mul => self.emit(Op::Mul(out, current, r_value)),
+                        BinOp::Div => self.emit(Op::Div(out, current, r_value)),
+                        BinOp::Mod => self.emit(Op::Mod(out, current, r_value)),
+                        _ => return,
+                    }
+                    let kname = self.k(Val::from_str(name.as_str()));
+                    self.emit(Op::DefineGlobal(kname, out));
                 }
             }
             Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {}
@@ -987,6 +1039,41 @@ impl FunctionBuilder {
                 self.emit_positional_call(reg_fn, arg_base, 3, 1, known_builtin.as_ref());
             }
             Stmt::Empty => {}
+        }
+    }
+}
+
+impl FunctionBuilder {
+    fn called_closure_global_captures(&self, expr: &Expr) -> Vec<String> {
+        let name = match expr {
+            Expr::Call(name, _) => name.as_str(),
+            Expr::CallExpr(callee, _) => {
+                let Expr::Var(name) = callee.as_ref() else {
+                    return Vec::new();
+                };
+                name.as_str()
+            }
+            _ => return Vec::new(),
+        };
+        let Some(Val::Closure(closure)) = self.const_env.get(name) else {
+            return self.global_defs.iter().cloned().collect();
+        };
+        let captured: Vec<_> = closure
+            .capture_specs
+            .iter()
+            .filter_map(|spec| match spec {
+                CaptureSpec::Global { name } | CaptureSpec::Register { name, .. }
+                    if self.global_defs.contains(name) =>
+                {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        if captured.is_empty() {
+            self.global_defs.iter().cloned().collect()
+        } else {
+            captured
         }
     }
 }

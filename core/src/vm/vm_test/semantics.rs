@@ -120,7 +120,7 @@ fn test_vm_nullish_short_circuit_right_not_evaluated() {
 fn test_vm_indexk_negative_and_overflow() {
     use Compiler;
 
-    // [1,2][ -1 ] -> nil
+    // [1,2][ -1 ] -> last element
     let expr = Expr::Access(
         Box::new(Expr::List(vec![
             Box::new(Expr::Val(Val::Int(1))),
@@ -130,7 +130,7 @@ fn test_vm_indexk_negative_and_overflow() {
     );
     let fun = Compiler::new().compile_expr(&expr);
     let out = exec_with_new_vm(&fun);
-    assert_eq!(out, Val::Nil);
+    assert_eq!(out, Val::Int(2));
 
     // "ab"[ 5 ] -> nil
     let expr = Expr::Access(

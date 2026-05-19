@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXT="$ROOT/vsc-ext/lsp"
-HIGHLIGHT_EXT="$ROOT/vsc-ext/highlight"
 EXAMPLES="$ROOT/examples/lk-example-workspace"
 SERVER="$ROOT/target/debug/lk-lsp"
 USER_DATA_DIR="${LK_VSCODE_USER_DATA_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/lk-vscode-lsp.XXXXXX")}"
@@ -66,15 +65,13 @@ cat >"$USER_DATA_DIR/User/settings.json" <<EOF
 EOF
 
 echo "Opening VS Code Extension Development Host..."
-echo "LSP ext:   $EXT"
-echo "Syntax:    $HIGHLIGHT_EXT"
+echo "Extension: $EXT"
 echo "Folder:    $EXAMPLES"
 echo "Server:    $SERVER"
 echo "User data: $USER_DATA_DIR"
 echo "VS Code:   $CODE_CLI"
 
 "$CODE_CLI" \
-  --extensionDevelopmentPath="$HIGHLIGHT_EXT" \
   --extensionDevelopmentPath="$EXT" \
   --user-data-dir="$USER_DATA_DIR" \
   --new-window "$EXAMPLES"

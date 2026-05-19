@@ -253,7 +253,10 @@ impl FunctionBuilder {
                 self.emit(Op::LoadK(dst, kidx));
             }
             Expr::Var(name) => {
-                if let Some(src) = self.lookup(name) {
+                if self.export_toplevel_globals && self.global_defs.contains(name) {
+                    let kname = self.k(Val::from_str(name.as_str()));
+                    self.emit(Op::LoadGlobal(dst, kname));
+                } else if let Some(src) = self.lookup(name) {
                     if src != dst {
                         self.emit(Op::Move(dst, src));
                     }
@@ -312,7 +315,9 @@ impl FunctionBuilder {
         match expr {
             Expr::Val(v) => Some(self.k(v.clone())),
             Expr::Var(name) => {
-                if let Some(val) = self.lookup_const(name) {
+                if self.const_names.contains(name)
+                    && let Some(val) = self.lookup_const(name)
+                {
                     let val = val.clone();
                     Some(self.k(val))
                 } else {
@@ -338,10 +343,11 @@ impl FunctionBuilder {
 
         match expr {
             Expr::Val(Val::Int(v)) => fits_i8(*v),
-            Expr::Var(name) => self.lookup_const(name).and_then(|val| match val {
+            Expr::Var(name) if self.const_names.contains(name) => self.lookup_const(name).and_then(|val| match val {
                 Val::Int(v) => fits_i8(*v),
                 _ => None,
             }),
+            Expr::Var(_) => None,
             Expr::Paren(inner) => self.try_small_int_const(inner),
             _ => match self.try_eval_const_expr(expr)? {
                 Val::Int(v) => fits_i8(v),
@@ -351,17 +357,21 @@ impl FunctionBuilder {
     }
 
     fn expr_operand(&mut self, expr: &Expr) -> u16 {
-        if let Some(kidx) = self.try_const_operand(expr) {
-            rk_make_const(kidx)
-        } else if let Expr::Var(name) = expr {
+        if let Expr::Var(name) = expr {
             // For simple local variable lookups, return the register directly
             // without allocating a new register and emitting LoadLocal.
             // This is safe because rk operands are read-only in binary ops.
-            if let Some(idx) = self.lookup(name) {
+            if self.export_toplevel_globals && self.global_defs.contains(name) {
+                self.expr(expr)
+            } else if let Some(idx) = self.lookup(name) {
                 idx // return variable register directly, no LoadLocal
+            } else if let Some(kidx) = self.try_const_operand(expr) {
+                rk_make_const(kidx)
             } else {
                 self.expr(expr) // global lookup needs LoadGlobal
             }
+        } else if let Some(kidx) = self.try_const_operand(expr) {
+            rk_make_const(kidx)
         } else {
             self.expr(expr)
         }
@@ -530,7 +540,12 @@ impl FunctionBuilder {
                 out
             }
             Expr::Closure { params, body } => {
-                let body_stmt = Stmt::Expr(Box::new((**body).clone()));
+                let body_stmt = match body.as_ref() {
+                    Expr::Block(statements) => Stmt::Block {
+                        statements: statements.clone(),
+                    },
+                    _ => Stmt::Expr(Box::new((**body).clone())),
+                };
                 let captures = self.collect_captures(None, params, &[], &body_stmt);
                 let compiled = Compiler::new().compile_function_with_captures(params, &[], &body_stmt, &captures);
                 let proto_idx = self.protos.len() as u16;
@@ -562,18 +577,20 @@ impl FunctionBuilder {
                 dst
             }
             Expr::Var(name) => {
-                if let Some(val) = self.lookup_const(name) {
+                let dst = self.alloc();
+                if self.const_names.contains(name)
+                    && let Some(val) = self.lookup_const(name)
+                {
                     let value = val.clone();
-                    let dst = self.alloc();
                     let k = self.k(value);
                     self.emit(Op::LoadK(dst, k));
-                    return dst;
-                }
-                let dst = self.alloc();
-                if let Some(idx) = self.lookup(name) {
+                } else if let Some(idx) = self.lookup(name) {
                     self.emit(Op::LoadLocal(dst, idx));
                 } else if let Some(cidx) = self.capture_indices.get(name) {
                     self.emit(Op::LoadCapture { dst, idx: *cidx });
+                } else if self.export_toplevel_globals && self.global_defs.contains(name) {
+                    let kname = self.k(Val::from_str(name.as_str()));
+                    self.emit(Op::LoadGlobal(dst, kname));
                 } else {
                     // Try global lookup at runtime
                     let kname = self.k(Val::from_str(name.as_str()));
@@ -753,6 +770,55 @@ impl FunctionBuilder {
                     return dst;
                 }
                 self.compile_bin_expr(e)
+            }
+            Expr::Match { value, arms } => {
+                let src = self.expr(value);
+                let out = self.alloc();
+                let mut end_jumps = Vec::with_capacity(arms.len());
+
+                for arm in arms {
+                    self.push_var_scope();
+                    let plan = self.register_scoped_pattern_plan(&arm.pattern);
+                    let matched = self.alloc();
+                    self.emit(Op::PatternMatch {
+                        dst: matched,
+                        src,
+                        plan,
+                    });
+                    let fail_jump = self.code.len();
+                    self.emit(Op::JmpFalse(matched, 0));
+
+                    let body = self.expr(&arm.body);
+                    if body != out {
+                        self.emit(Op::Move(out, body));
+                    }
+                    let end_jump = self.code.len();
+                    self.emit(Op::Jmp(0));
+                    end_jumps.push(end_jump);
+
+                    let next_arm = self.code.len();
+                    if let Op::JmpFalse(_, ofs) = &mut self.code[fail_jump] {
+                        *ofs = (next_arm as isize - fail_jump as isize) as i16;
+                    }
+                    self.pop_var_scope();
+                }
+
+                let err_kidx = self.k(Val::from_str("No pattern matched"));
+                self.emit(Op::Raise { err_kidx });
+                let end = self.code.len();
+                for jump in end_jumps {
+                    if let Op::Jmp(ofs) = &mut self.code[jump] {
+                        *ofs = (end as isize - jump as isize) as i16;
+                    }
+                }
+                out
+            }
+            Expr::Range { .. } => {
+                let dst = self.alloc();
+                let value = self.try_eval_const_expr(e).unwrap_or(Val::Nil);
+                let k = self.k(value);
+                self.emit(Op::LoadK(dst, k));
+                dst
             }
             Expr::List(items) => {
                 let dst = self.alloc();

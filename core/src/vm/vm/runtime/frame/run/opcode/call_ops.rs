@@ -98,8 +98,6 @@ pub(super) fn run_call_opcode(
         return Ok(None);
     }
     if let Some(callable) = NativeCallable::from_val(&regs[*rf as usize]) {
-        #[cfg(debug_assertions)]
-        eprintln!("encountered rust function call variant");
         let call_result: Result<()> =
             invoke_native_callable_with_ic(ctx, regs, &mut call_ic[pc], callable, *argc, ret_layout)
                 .map(|handled| debug_assert!(handled));
@@ -252,18 +250,30 @@ pub(super) fn run_call_opcode(
                     self_ptr,
                     CallFrameMeta::inline_return(resume_pc, *base, *retc, frame_base),
                 );
-                if call_args.len() != closure_arc.params.len() {
+                let positional_count = closure_arc.params.len();
+                let named_count = closure_arc.named_params.len();
+                if call_args.len() < positional_count
+                    || call_args.len() > positional_count + named_count
+                    || (named_count == 0 && call_args.len() != positional_count)
+                {
                     return frame_return_common(
                         frame_raw,
                         pc,
                         Err(anyhow!(
                             "Function expects {} positional arguments, got {}",
-                            closure_arc.params.len(),
+                            positional_count,
                             call_args.len()
                         )),
                     )
                     .map(Some);
                 }
+                let extra_positional_count = call_args.len().saturating_sub(positional_count);
+                let positional_call_args = if extra_positional_count == 0 {
+                    call_args
+                } else {
+                    let span = call_args.span();
+                    CallArgs::registers(RegisterSpan::new(span.base, positional_count, span.window))
+                };
                 let closure = closure_arc.as_ref();
                 let fun = closure.code.get_or_init(|| {
                     let c = Compiler::new();
@@ -281,7 +291,7 @@ pub(super) fn run_call_opcode(
                 let call_result = if closure.named_params.is_empty() {
                     Vm::exec_function_with_args(
                         fun.as_ref(),
-                        call_args,
+                        positional_call_args,
                         &[],
                         Some(Arc::clone(&captures_arc)),
                         Some(Arc::clone(&capture_specs_arc)),
@@ -292,7 +302,14 @@ pub(super) fn run_call_opcode(
                 } else {
                     let named_params = closure.named_params.as_ref();
                     allocator.with_indexed_vals(named_params.len(), |resolved_seed| -> Result<Val> {
+                        for idx in 0..extra_positional_count {
+                            let span = call_args.span();
+                            resolved_seed.push((idx, regs[span.base + positional_count + idx].clone()));
+                        }
                         for (idx, decl) in named_params.iter().enumerate() {
+                            if idx < extra_positional_count {
+                                continue;
+                            }
                             if let Some(default_fun) = closure.default_funcs.get(idx).and_then(|opt| opt.as_ref()) {
                                 let default_frame = closure
                                     .default_frame_info(idx)
@@ -302,7 +319,7 @@ pub(super) fn run_call_opcode(
                                     Vm::map_named_seed(default_fun, resolved_seed.as_slice(), seed_regs)?;
                                     Vm::exec_function_with_args(
                                         default_fun,
-                                        call_args,
+                                        positional_call_args,
                                         seed_regs.as_slice(),
                                         Some(Arc::clone(&captures_arc)),
                                         Some(Arc::clone(&capture_specs_arc)),
@@ -327,7 +344,7 @@ pub(super) fn run_call_opcode(
                             Vm::map_named_seed(fun, resolved_seed.as_slice(), seed_regs)?;
                             Vm::exec_function_with_args(
                                 fun.as_ref(),
-                                call_args,
+                                positional_call_args,
                                 seed_regs.as_slice(),
                                 Some(Arc::clone(&captures_arc)),
                                 Some(Arc::clone(&capture_specs_arc)),

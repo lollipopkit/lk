@@ -220,6 +220,7 @@ impl FreeVarCollector {
                 }
             }
             Expr::Closure { .. } => {}
+            Expr::Block(_) => {}
             Expr::Match { value, arms } => {
                 self.visit_expr(value);
                 for MatchArm { pattern, body } in arms {

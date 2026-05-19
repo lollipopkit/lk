@@ -25,7 +25,10 @@ pub(super) fn exec_index(
     let out = match (&regs[base as usize], &regs[idx as usize]) {
         (Val::List(list), Val::Int(index)) => {
             if *index < 0 {
-                Val::Nil
+                list.len()
+                    .checked_sub(index.unsigned_abs() as usize)
+                    .and_then(|idx| list.get(idx).cloned())
+                    .unwrap_or(Val::Nil)
             } else {
                 let list_ptr = Arc::as_ptr(list) as *const Val as usize;
                 let hit = match index_ic[pc].as_mut() {
@@ -47,7 +50,7 @@ pub(super) fn exec_index(
         (base_val, Val::Int(index)) if base_val.as_str().is_some() => {
             let text = base_val.as_str().unwrap();
             if *index < 0 {
-                Val::Nil
+                text_index_value(text, *index)
             } else {
                 let text_ptr = text.as_ptr() as usize;
                 let hit = match index_ic[pc].as_mut() {
@@ -76,9 +79,36 @@ pub(super) fn exec_index(
                 }
             }
         }
-        _ => Val::Nil,
+        (base_val, key) => base_val.access(key).unwrap_or(Val::Nil),
     };
     assign_reg(frame_raw, regs, dst as usize, out);
+}
+
+#[inline(always)]
+fn text_index_value(text: &str, index: i64) -> Val {
+    let len = if text.is_ascii() {
+        text.len()
+    } else {
+        text.chars().count()
+    };
+    let Some(index) = (if index < 0 {
+        len.checked_sub(index.unsigned_abs() as usize)
+    } else {
+        Some(index as usize)
+    }) else {
+        return Val::Nil;
+    };
+    if text.is_ascii() {
+        text.as_bytes()
+            .get(index)
+            .copied()
+            .map_or(Val::Nil, Val::ascii_char_value)
+    } else {
+        text.chars()
+            .nth(index)
+            .map(|character| Val::from_str(&character.to_string()))
+            .unwrap_or(Val::Nil)
+    }
 }
 
 #[inline(always)]
