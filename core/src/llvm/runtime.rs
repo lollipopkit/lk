@@ -26,6 +26,18 @@ use crate::{
     vm::{BytecodeModule, Vm, VmContext, decode_module},
 };
 
+mod collections;
+mod imports;
+mod math;
+#[cfg(test)]
+mod tests;
+
+pub use collections::*;
+use imports::stdlib_registrars_from_imports;
+#[cfg(test)]
+use imports::{imports_need_concurrency_globals, stdlib_module_names_from_imports};
+pub use math::*;
+
 #[cfg(not(test))]
 unsafe extern "Rust" {
     fn lk_stdlib_register_core_globals(registry: &mut ModuleRegistry);
@@ -761,36 +773,31 @@ impl Default for RuntimeState {
     }
 }
 
+#[derive(Default)]
 struct HandleTable {
-    next_handle: i64,
-    values: FastHashMap<i64, Arc<Val>>,
+    values: Vec<Val>,
 }
 
 impl HandleTable {
     fn alloc(&mut self, value: Val) -> i64 {
-        let arc = Arc::new(value);
-        loop {
-            let handle = self.next_handle;
-            self.next_handle = self.next_handle.wrapping_sub(1);
-            if encoding::is_reserved_sentinel(handle) || self.values.contains_key(&handle) {
-                continue;
-            }
-            self.values.insert(handle, arc.clone());
-            return handle;
-        }
+        let index = self.values.len();
+        self.values.push(value);
+        i64::MAX - index as i64
     }
 
     fn get(&self, handle: i64) -> Option<Val> {
-        self.values.get(&handle).map(|value| (**value).clone())
+        let index = usize::try_from(i64::MAX.checked_sub(handle)?).ok()?;
+        self.values.get(index).cloned()
     }
-}
 
-impl Default for HandleTable {
-    fn default() -> Self {
-        Self {
-            next_handle: i64::MAX,
-            values: fast_hash_map_new(),
-        }
+    fn get_ref(&self, handle: i64) -> Option<&Val> {
+        let index = usize::try_from(i64::MAX.checked_sub(handle)?).ok()?;
+        self.values.get(index)
+    }
+
+    fn get_mut(&mut self, handle: i64) -> Option<&mut Val> {
+        let index = usize::try_from(i64::MAX.checked_sub(handle)?).ok()?;
+        self.values.get_mut(index)
     }
 }
 
@@ -806,85 +813,6 @@ fn read_string(ptr: *const i8, len: i64) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_owned(),
         Err(_) => String::from_utf8_lossy(bytes).into_owned(),
-    }
-}
-
-fn stdlib_module_names_from_imports(imports: &[ImportStmt]) -> Vec<String> {
-    let mut names = Vec::new();
-    for import in imports {
-        match import {
-            ImportStmt::Module { module } | ImportStmt::ModuleAlias { module, .. } => {
-                push_unique(&mut names, module);
-            }
-            ImportStmt::Items {
-                source: ImportSource::Module(module),
-                ..
-            }
-            | ImportStmt::Namespace {
-                source: ImportSource::Module(module),
-                ..
-            } => {
-                push_unique(&mut names, module);
-            }
-            ImportStmt::File { .. }
-            | ImportStmt::Items {
-                source: ImportSource::File(_),
-                ..
-            }
-            | ImportStmt::Namespace {
-                source: ImportSource::File(_),
-                ..
-            } => {}
-        }
-    }
-    names
-}
-
-#[cfg(test)]
-fn imports_need_concurrency_globals(imports: &[ImportStmt]) -> bool {
-    stdlib_module_names_from_imports(imports)
-        .iter()
-        .any(|name| matches!(name.as_str(), "task" | "chan" | "time"))
-}
-
-fn stdlib_registrars_from_imports(imports: &[ImportStmt]) -> Vec<StdlibRegistrar> {
-    let mut registrars = Vec::new();
-    for name in stdlib_module_names_from_imports(imports) {
-        match name.as_str() {
-            "io" => push_unique_registrar(&mut registrars, register_stdlib_io_bridge),
-            "json" => push_unique_registrar(&mut registrars, register_stdlib_json_bridge),
-            "yaml" => push_unique_registrar(&mut registrars, register_stdlib_yaml_bridge),
-            "toml" => push_unique_registrar(&mut registrars, register_stdlib_toml_bridge),
-            "iter" => push_unique_registrar(&mut registrars, register_stdlib_iter_bridge),
-            "math" => push_unique_registrar(&mut registrars, register_stdlib_math_bridge),
-            "string" => push_unique_registrar(&mut registrars, register_stdlib_string_bridge),
-            "list" => push_unique_registrar(&mut registrars, register_stdlib_list_bridge),
-            "map" => push_unique_registrar(&mut registrars, register_stdlib_map_bridge),
-            "datetime" => push_unique_registrar(&mut registrars, register_stdlib_datetime_bridge),
-            "os" => push_unique_registrar(&mut registrars, register_stdlib_os_bridge),
-            "tcp" => push_unique_registrar(&mut registrars, register_stdlib_tcp_bridge),
-            "stream" => push_unique_registrar(&mut registrars, register_stdlib_stream_bridge),
-            "task" => {
-                push_unique_registrar(&mut registrars, register_stdlib_concurrency_globals_bridge);
-                push_unique_registrar(&mut registrars, register_stdlib_task_bridge);
-            }
-            "chan" => {
-                push_unique_registrar(&mut registrars, register_stdlib_concurrency_globals_bridge);
-                push_unique_registrar(&mut registrars, register_stdlib_chan_bridge);
-            }
-            "time" => {
-                push_unique_registrar(&mut registrars, register_stdlib_concurrency_globals_bridge);
-                push_unique_registrar(&mut registrars, register_stdlib_time_bridge);
-            }
-            _ => {}
-        }
-    }
-    registrars
-}
-
-fn push_unique(names: &mut Vec<String>, candidate: &str) {
-    if !names.iter().any(|name| name == candidate) {
-        names.push(candidate.to_string());
     }
 }
 
@@ -999,87 +927,6 @@ pub extern "C" fn lk_rt_define_global(name: i64, value: i64) {
         let val = state.decode_value(value);
         state.ctx.set(name_str, val);
     });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_build_list(ptr: *const i64, len: i64) -> i64 {
-    let len_usize = len.max(0) as usize;
-    with_state(|state| {
-        let elements = state.decode_values(ptr, len_usize);
-        let list = Val::List(Arc::new(elements));
-        state.encode_value(list)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_list_push(list: i64, value: i64) -> i64 {
-    with_state(|state| {
-        let item = state.decode_value(value);
-        match state.decode_value(list) {
-            Val::List(mut items) => {
-                Arc::make_mut(&mut items).push(item);
-                state.encode_value(Val::List(items))
-            }
-            other => {
-                eprintln!("lk_rt_list_push: target is not a List, got {}", other.type_name());
-                encoding::NIL_VALUE
-            }
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_build_map(ptr: *const i64, len: i64) -> i64 {
-    let len_usize = len.max(0) as usize;
-    with_state(|state| {
-        if len_usize == 0 {
-            return state.encode_value(Val::Map(Arc::new(fast_hash_map_new())));
-        }
-        if ptr.is_null() {
-            return encoding::NIL_VALUE;
-        }
-        let raw = unsafe { std::slice::from_raw_parts(ptr, len_usize * 2) };
-        let mut map = fast_hash_map_with_capacity(len_usize);
-        for i in 0..len_usize {
-            let key = state.decode_value(raw[2 * i]);
-            let val = state.decode_value(raw[2 * i + 1]);
-            match encode_map_key(&key) {
-                Ok(k) => {
-                    map.insert(k, val);
-                }
-                Err(err) => {
-                    eprintln!("lk_rt_build_map: {err}");
-                    return encoding::NIL_VALUE;
-                }
-            }
-        }
-        state.encode_value(Val::Map(Arc::new(map)))
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_map_set(map: i64, key: i64, value: i64) -> i64 {
-    with_state(|state| {
-        let key_value = state.decode_value(key);
-        let item = state.decode_value(value);
-        let encoded_key = match encode_map_key(&key_value) {
-            Ok(key) => key,
-            Err(err) => {
-                eprintln!("lk_rt_map_set: {err}");
-                return encoding::NIL_VALUE;
-            }
-        };
-        match state.decode_value(map) {
-            Val::Map(mut items) => {
-                Arc::make_mut(&mut items).insert(encoded_key, item);
-                state.encode_value(Val::Map(items))
-            }
-            other => {
-                eprintln!("lk_rt_map_set: target is not a Map, got {}", other.type_name());
-                encoding::NIL_VALUE
-            }
-        }
-    })
 }
 
 #[cold]
@@ -1385,6 +1232,44 @@ pub extern "C" fn lk_rt_float(value: f64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_floor(value: i64) -> i64 {
+    with_state(|state| {
+        let out = match state.decode_value(value) {
+            Val::Float(f) => f.floor() as i64,
+            Val::Int(i) => i,
+            _ => 0,
+        };
+        state.encode_value(Val::Int(out))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_starts_with(value: i64, prefix: i64) -> i64 {
+    with_state(|state| {
+        let value = state.decode_value(value);
+        let prefix = state.decode_value(prefix);
+        let out = match (value.as_str(), prefix.as_str()) {
+            (Some(value), Some(prefix)) => value.starts_with(prefix),
+            _ => false,
+        };
+        state.encode_value(Val::Bool(out))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_contains(value: i64, needle: i64) -> i64 {
+    with_state(|state| {
+        let value = state.decode_value(value);
+        let needle = state.decode_value(needle);
+        let out = match (value.as_str(), needle.as_str()) {
+            (Some(value), Some(needle)) => value.contains(needle),
+            _ => false,
+        };
+        state.encode_value(Val::Bool(out))
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_cmp(lhs: i64, rhs: i64, code: i64) -> i64 {
     with_state(|state| {
         let left = state.decode_value(lhs);
@@ -1409,307 +1294,4 @@ pub extern "C" fn lk_rt_cmp(lhs: i64, rhs: i64, code: i64) -> i64 {
             }
         }
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_add(lhs: i64, rhs: i64) -> i64 {
-    lk_rt_binop(lhs, rhs, BinOp::Add)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_sub(lhs: i64, rhs: i64) -> i64 {
-    lk_rt_binop(lhs, rhs, BinOp::Sub)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_mul(lhs: i64, rhs: i64) -> i64 {
-    lk_rt_binop(lhs, rhs, BinOp::Mul)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_div(lhs: i64, rhs: i64) -> i64 {
-    lk_rt_binop(lhs, rhs, BinOp::Div)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_mod(lhs: i64, rhs: i64) -> i64 {
-    lk_rt_binop(lhs, rhs, BinOp::Mod)
-}
-
-fn lk_rt_binop(lhs: i64, rhs: i64, op: BinOp) -> i64 {
-    with_state(|state| {
-        let left = state.decode_value(lhs);
-        let right = state.decode_value(rhs);
-        match op.eval_vals(&left, &right) {
-            Ok(value) => state.encode_value(value),
-            Err(err) => {
-                eprintln!("{} error: {err}", binop_helper_name(op));
-                encoding::NIL_VALUE
-            }
-        }
-    })
-}
-
-fn binop_helper_name(op: BinOp) -> &'static str {
-    match op {
-        BinOp::Add => "lk_rt_add",
-        BinOp::Sub => "lk_rt_sub",
-        BinOp::Mul => "lk_rt_mul",
-        BinOp::Div => "lk_rt_div",
-        BinOp::Mod => "lk_rt_mod",
-        _ => "lk_rt_binop",
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_access(base: i64, key: i64) -> i64 {
-    with_state(|state| {
-        let base_val = state.decode_value(base);
-        let key_val = state.decode_value(key);
-        let result = base_val.access(&key_val).unwrap_or(Val::Nil);
-        state.encode_value(result)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_index(base: i64, idx: i64) -> i64 {
-    with_state(|state| {
-        let base_val = state.decode_value(base);
-        let idx_val = state.decode_value(idx);
-        let result = index_value(&base_val, &idx_val);
-        state.encode_value(result)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_in(needle: i64, haystack: i64) -> i64 {
-    with_state(|state| {
-        let l = state.decode_value(needle);
-        let r = state.decode_value(haystack);
-        match BinOp::In.cmp(&l, &r) {
-            Ok(result) => state.encode_value(Val::Bool(result)),
-            Err(err) => {
-                eprintln!("lk_rt_in error: {err}");
-                encoding::NIL_VALUE
-            }
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_len(value: i64) -> i64 {
-    with_state(|state| {
-        let val = state.decode_value(value);
-        let len = match val {
-            Val::List(ref l) => l.len() as i64,
-            val if val.as_str().is_some() => val.as_str().unwrap().len() as i64,
-            Val::Map(ref m) => m.len() as i64,
-            _ => 0,
-        };
-        state.encode_value(Val::Int(len))
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_list_slice(list: i64, start: i64) -> i64 {
-    with_state(|state| {
-        let list_val = state.decode_value(list);
-        let start_val = state.decode_value(start);
-        let result = match (list_val, start_val) {
-            (Val::List(l), Val::Int(i)) => list_slice(&l, i),
-            _ => Val::Nil,
-        };
-        state.encode_value(result)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_to_iter(value: i64) -> i64 {
-    with_state(|state| {
-        let val = state.decode_value(value);
-        let iter = match val {
-            Val::List(_) | Val::Str(_) | Val::ShortStr(_) => val,
-            Val::Map(ref map) => map_to_iterable(map),
-            other => match other {
-                Val::Nil => Val::List(Arc::new(Vec::new())),
-                Val::Bool(_) | Val::Int(_) | Val::Float(_) | Val::Object(_) | Val::Task(_) | Val::Channel(_) => {
-                    Val::List(Arc::new(Vec::new()))
-                }
-                _ => Val::List(Arc::new(Vec::new())),
-            },
-        };
-        state.encode_value(iter)
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::val::Val;
-    use crate::{
-        stmt::{Program, stmt_parser::StmtParser},
-        token::Tokenizer,
-        vm::{ModuleFlags, compile_program, encode_module},
-    };
-    use once_cell::sync::Lazy;
-    use std::{
-        ffi::CString,
-        path::{Path, PathBuf},
-        sync::Mutex,
-    };
-
-    static RUNTIME_TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
-
-    fn reset_runtime_state() {
-        if let Some(mutex) = RUNTIME_STATE.get() {
-            let mut guard = mutex.lock().unwrap();
-            *guard = RuntimeState::default();
-        }
-    }
-
-    fn decode_for_tests(value: i64) -> Val {
-        with_state(|state| state.decode_value(value))
-    }
-
-    #[test]
-    fn intern_string_roundtrips() {
-        let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-        reset_runtime_state();
-        let text = b"hello";
-        let handle = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
-        let handle_again = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
-        assert_eq!(handle, handle_again);
-        assert!(matches!(decode_for_tests(handle), ref v if v.as_str() == Some("hello")));
-    }
-
-    #[test]
-    fn build_list_and_len() {
-        let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-        reset_runtime_state();
-        let values = [encoding::BOOL_TRUE_VALUE, 42, encoding::NIL_VALUE];
-        let list_handle = lk_rt_build_list(values.as_ptr(), values.len() as i64);
-        let len = lk_rt_len(list_handle);
-        assert_eq!(len, 3);
-        match decode_for_tests(list_handle) {
-            Val::List(list) => {
-                assert_eq!(list.len(), 3);
-                assert!(matches!(list[0], Val::Bool(true)));
-                assert!(matches!(list[1], Val::Int(42)));
-                assert!(matches!(list[2], Val::Nil));
-            }
-            other => panic!("unexpected value: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn define_and_load_global() {
-        let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-        reset_runtime_state();
-        let name_bytes = b"g";
-        let name_handle = lk_rt_intern_string(name_bytes.as_ptr().cast(), 1);
-        lk_rt_define_global(name_handle, encoding::BOOL_TRUE_VALUE);
-        let loaded = lk_rt_load_global(name_handle);
-        assert_eq!(loaded, encoding::BOOL_TRUE_VALUE);
-    }
-
-    fn add_one(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let value = args.first().cloned().unwrap_or(Val::Int(0));
-        match value {
-            Val::Int(i) => Ok(Val::Int(i + 1)),
-            _ => Ok(Val::Nil),
-        }
-    }
-
-    #[test]
-    fn call_rust_function() {
-        let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-        reset_runtime_state();
-        let func_handle = with_state(|state| state.encode_value(Val::RustFunction(add_one)));
-        let arg = 41i64;
-        let result = lk_rt_call(func_handle, &arg, 1, 1);
-        assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn stdlib_module_names_are_collected_from_module_imports() {
-        let imports = vec![
-            ImportStmt::Module {
-                module: "math".to_string(),
-            },
-            ImportStmt::Items {
-                items: Vec::new(),
-                source: ImportSource::Module("json".to_string()),
-            },
-            ImportStmt::Namespace {
-                alias: "m".to_string(),
-                source: ImportSource::File("local.lk".to_string()),
-            },
-            ImportStmt::ModuleAlias {
-                module: "math".to_string(),
-                alias: "m".to_string(),
-            },
-        ];
-
-        assert_eq!(
-            stdlib_module_names_from_imports(&imports),
-            vec!["math".to_string(), "json".to_string()]
-        );
-    }
-
-    #[test]
-    fn concurrency_globals_are_registered_only_for_concurrency_imports() {
-        assert!(!imports_need_concurrency_globals(&[ImportStmt::Module {
-            module: "math".to_string(),
-        }]));
-        assert!(imports_need_concurrency_globals(&[ImportStmt::Module {
-            module: "chan".to_string(),
-        }]));
-    }
-
-    fn compile_module_from_path(path: &Path) -> BytecodeModule {
-        let src = std::fs::read_to_string(path).expect("module source readable");
-        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(&src).expect("tokenize module");
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        let program: Program = parser.parse_program_with_enhanced_errors(&src).expect("parse module");
-        let func = compile_program(&program);
-        let mut module = BytecodeModule::new(func);
-        module.flags.insert(ModuleFlags::CONST_FOLDED);
-        module
-    }
-
-    #[test]
-    fn apply_imports_registers_bundled_module() {
-        let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-        reset_runtime_state();
-        lk_rt_begin_session();
-
-        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("workspace root")
-            .to_path_buf();
-        let examples_dir = workspace.join("examples");
-        let search_path = CString::new("examples").unwrap();
-        lk_rt_register_search_path(search_path.as_ptr(), search_path.as_bytes().len() as i64);
-
-        let fib_path = examples_dir.join("fib.lk");
-        let fib_module = compile_module_from_path(&fib_path);
-        let fib_bytes = encode_module(&fib_module).expect("encode module");
-        let fib_path_rel = CString::new("examples/fib.lk").unwrap();
-        let _ = lk_rt_register_bundled_module(
-            fib_path_rel.as_ptr(),
-            fib_path_rel.as_bytes().len() as i64,
-            fib_bytes.as_ptr(),
-            fib_bytes.len() as i64,
-        );
-
-        let imports_json = CString::new("[{\"File\":{\"path\":\"examples/fib\"}}]").unwrap();
-        let _ = lk_rt_register_imports(imports_json.as_ptr(), imports_json.as_bytes().len() as i64);
-        let apply = lk_rt_apply_imports();
-        assert_eq!(apply, 0, "apply imports succeeds");
-
-        let fib_name = CString::new("fib").unwrap();
-        let fib_handle = lk_rt_intern_string(fib_name.as_ptr(), fib_name.as_bytes().len() as i64);
-        let fib_value = lk_rt_load_global(fib_handle);
-        assert_ne!(fib_value, encoding::NIL_VALUE, "fib module is loaded");
-    }
 }

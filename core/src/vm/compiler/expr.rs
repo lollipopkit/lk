@@ -67,6 +67,20 @@ impl FunctionBuilder {
         dst
     }
 
+    fn emit_map_has(&mut self, map_reg: u16, key_expr: &Expr) -> u16 {
+        let dst = self.alloc();
+        if let Expr::Val(key) = key_expr
+            && key.as_str().is_some()
+        {
+            let key_idx = self.k(key.clone());
+            self.emit(Op::MapHasK(dst, map_reg, key_idx));
+        } else {
+            let key_reg = self.expr(key_expr);
+            self.emit(Op::MapHas(dst, map_reg, key_reg));
+        }
+        dst
+    }
+
     fn emit_map_set(&mut self, map_reg: u16, key_expr: &Expr, value_expr: &Expr) {
         let key_reg = if let Expr::Var(arg_name) = key_expr {
             self.lookup(arg_name).unwrap_or_else(|| self.expr(key_expr))
@@ -272,6 +286,19 @@ impl FunctionBuilder {
             };
             return self.emit_map_access(map_reg, &args[1]);
         }
+        // Fast path: stdlib map.has(m, k) when m is a local Map variable.
+        if args.len() == 2
+            && let Expr::Var(module_name) = obj_expr
+            && module_name == "map"
+            && self.lookup(module_name).is_none()
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("has")
+            && let Expr::Var(map_name) = args[0].as_ref()
+            && let Some(map_reg) = self.lookup(map_name)
+            && self.map_locals.contains(&map_reg)
+        {
+            return self.emit_map_has(map_reg, &args[1]);
+        }
         // Fast path: stdlib map.set(m, k, v) when m is a local Map variable.
         if args.len() == 3
             && let Expr::Var(module_name) = obj_expr
@@ -347,6 +374,19 @@ impl FunctionBuilder {
             self.emit(Op::StartsWithK(dst, obj_reg, kidx));
             return dst;
         }
+        // Fast path: str.contains("literal") — emit ContainsK directly
+        if args.len() == 1
+            && let Expr::Val(method_val) = field_expr
+            && method_val.as_str() == Some("contains")
+            && let Expr::Val(arg_val) = args[0].as_ref()
+            && arg_val.as_str().is_some()
+        {
+            let obj_reg = self.expr(obj_expr);
+            let kidx = self.k(arg_val.clone());
+            let dst = self.alloc();
+            self.emit(Op::ContainsK(dst, obj_reg, kidx));
+            return dst;
+        }
         // Fast path: m.set(k, v) — emit MapSet for locals tracked as Maps
         if args.len() == 2
             && let Expr::Var(var_name) = obj_expr
@@ -367,6 +407,16 @@ impl FunctionBuilder {
             && self.map_locals.contains(&map_reg)
         {
             return self.emit_map_access(map_reg, &args[0]);
+        }
+        // Fast path: m.has(k) — emit MapHas for map locals to avoid method dispatch
+        if args.len() == 1
+            && let Expr::Var(var_name) = obj_expr
+            && let Expr::Val(method_val2) = field_expr
+            && method_val2.as_str() == Some("has")
+            && let Some(map_reg) = self.lookup(var_name)
+            && self.map_locals.contains(&map_reg)
+        {
+            return self.emit_map_has(map_reg, &args[0]);
         }
 
         let obj_reg = self.expr(obj_expr);

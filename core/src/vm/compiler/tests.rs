@@ -1282,6 +1282,68 @@ fn stdlib_map_set_on_known_local_map_lowers_to_mapset() {
 }
 
 #[test]
+fn stdlib_map_has_literal_key_lowers_to_maphask() {
+    let source = r#"
+        import map;
+        let data = {};
+        data.set("answer", 42);
+        return map.has(data, "answer");
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Bool(true));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::MapHasK(_, _, _))),
+        "expected stdlib map.has(data, \"answer\") to lower to MapHasK in {:?}",
+        function.code
+    );
+    assert!(
+        !function.code.iter().any(|op| matches!(op, Op::Call { .. })),
+        "expected stdlib map.has fast path to avoid Call in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn map_method_has_dynamic_key_lowers_to_maphas() {
+    let source = r#"
+        let data = {};
+        data.set("answer", 42);
+        let key = "answer";
+        return data.has(key);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Bool(true));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::MapHas(_, _, _))),
+        "expected data.has(key) to lower to MapHas in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn string_contains_literal_lowers_to_containsk() {
+    let source = r#"
+        let line = "alpha-beta";
+        return line.contains("ha-b");
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Bool(true));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ContainsK(_, _, _))),
+        "expected str.contains(\"literal\") to lower to ContainsK in {:?}",
+        function.code
+    );
+    assert!(
+        !function.code.iter().any(|op| matches!(op, Op::Call { .. })),
+        "expected contains literal fast path to avoid Call in {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn len_on_expression_result_lowers_to_len_without_call() {
     let source = r#"
         let prefix = "ab";

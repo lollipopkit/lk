@@ -594,6 +594,46 @@ pub(super) fn run_opcode_code(
                 assign_reg(frame_raw, regs, *dst as usize, out);
                 pc += 1;
             }
+            Op::ContainsK(dst, src, kidx) => {
+                let needle = f.consts[*kidx as usize].as_str().unwrap_or("");
+                let out = match &regs[*src as usize] {
+                    Val::ShortStr(s) => Val::Bool(s.as_str().contains(needle)),
+                    Val::Str(s) => Val::Bool(s.as_str().contains(needle)),
+                    _ => Val::Bool(false),
+                };
+                assign_reg(frame_raw, regs, *dst as usize, out);
+                pc += 1;
+            }
+            Op::MapHas(dst, map, key) => {
+                let key = match regs[*key as usize].as_str() {
+                    Some(key) => key,
+                    None => {
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("has() key must be a string")))
+                            .map(Some);
+                    }
+                };
+                let out = match &regs[*map as usize] {
+                    Val::Map(map) => Val::Bool(map.contains_key(key)),
+                    _ => {
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("has() first argument must be a map")))
+                            .map(Some);
+                    }
+                };
+                assign_reg(frame_raw, regs, *dst as usize, out);
+                pc += 1;
+            }
+            Op::MapHasK(dst, map, kidx) => {
+                let key = f.consts[*kidx as usize].as_str().unwrap_or("");
+                let out = match &regs[*map as usize] {
+                    Val::Map(map) => Val::Bool(map.contains_key(key)),
+                    _ => {
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("has() first argument must be a map")))
+                            .map(Some);
+                    }
+                };
+                assign_reg(frame_raw, regs, *dst as usize, out);
+                pc += 1;
+            }
             Op::ListFoldAdd { acc, list } => {
                 let folded = if let Val::List(items) = &regs[*list as usize] {
                     Some(if let Val::Int(mut total) = regs[*acc as usize] {
@@ -1562,9 +1602,9 @@ pub(super) fn run_opcode_code(
                                 // Now get mutable access to the IC cache.
                                 if let Some(CallIc::ClosurePositional { cache, frame_info, .. }) = call_ic[pc].as_mut()
                                 {
-                                    let val = unsafe { &mut *self_ptr }.exec_function_positional_fast(
+                                    let val = unsafe { &mut *self_ptr }.exec_function_positional_fast_span(
                                         fun,
-                                        args_slice_fast,
+                                        RegisterSpan::new(start, n, RegisterWindowRef::Base(frame_base)),
                                         ctx,
                                         Some(frame_info),
                                         captures,
@@ -1674,9 +1714,9 @@ pub(super) fn run_opcode_code(
                             }) = call_ic[pc].as_mut()
                                 && cached_fast
                             {
-                                match vm_mut.exec_function_positional_fast(
+                                match vm_mut.exec_function_positional_fast_span(
                                     fun,
-                                    args_slice,
+                                    RegisterSpan::new(start, n, RegisterWindowRef::Base(frame_base)),
                                     ctx,
                                     Some(&*frame_info),
                                     captures.clone(),
@@ -1696,9 +1736,9 @@ pub(super) fn run_opcode_code(
                             } else {
                                 let mut cache = ClosureFastCache::new();
                                 let frame_info = closure.frame_info();
-                                match vm_mut.exec_function_positional_fast(
+                                match vm_mut.exec_function_positional_fast_span(
                                     fun,
-                                    args_slice,
+                                    RegisterSpan::new(start, n, RegisterWindowRef::Base(frame_base)),
                                     ctx,
                                     Some(&frame_info),
                                     captures,

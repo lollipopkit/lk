@@ -5,6 +5,8 @@ use crate::stmt::{Program, Stmt};
 use crate::val::Val;
 use crate::vm::{Function, Op};
 
+mod aot;
+
 #[test]
 fn emits_addition_ir() {
     let func = Function {
@@ -33,11 +35,50 @@ fn emits_addition_ir() {
     let artifact = compile_function_to_llvm(&func, "add", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lk_rt_add"),
-        "expected runtime add helper in IR:\n{}",
+        ir.contains(" = add i64 "),
+        "expected known-int Add to lower to native integer add:\n{}",
         ir
     );
     assert!(ir.contains("ret i64"), "expected return in IR:\n{}", ir);
+}
+
+#[test]
+fn emits_known_int_compare_ir() {
+    let func = Function {
+        consts: vec![Val::Int(40), Val::Int(2)],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::LoadK(1, 1),
+            Op::CmpGt(2, 0, 1),
+            Op::Ret { base: 2, retc: 1 },
+        ],
+        n_regs: 3,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "cmp_int", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains(" = icmp sgt i64 "),
+        "expected known-int compare to lower to native icmp:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("@lk_rt_cmp"),
+        "known-int compare should not require runtime compare helper:\n{}",
+        ir
+    );
 }
 
 #[test]
@@ -775,42 +816,6 @@ fn fused_add_jump_to_for_range_guard_advances_index() {
     assert!(
         ir.contains("forjmp_next"),
         "expected AddIntImmJmp targeting ForRangeLoop to advance the loop index:\n{}",
-        ir
-    );
-}
-
-#[test]
-fn lowers_zero_capture_function_closure_to_aot_function() {
-    let program = Program::new(vec![Box::new(Stmt::Function {
-        name: "inc".to_string(),
-        params: vec!["x".to_string()],
-        param_types: vec![None],
-        named_params: Vec::new(),
-        return_type: None,
-        body: Box::new(Stmt::Return {
-            value: Some(Box::new(Expr::Bin(
-                Box::new(Expr::Var("x".to_string())),
-                crate::op::BinOp::Add,
-                Box::new(Expr::Val(Val::Int(1))),
-            ))),
-        }),
-    })])
-    .expect("program");
-
-    let options = LlvmBackendOptions {
-        run_optimizations: false,
-        ..LlvmBackendOptions::default()
-    };
-    let artifact = compile_program_to_llvm(&program, options).expect("LLVM backend should lower closure");
-    let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lk_rt_make_aot_function"),
-        "expected MakeClosure to lower to AOT function helper:\n{}",
-        ir
-    );
-    assert!(
-        ir.contains("define i64 @lk_entry_proto_0"),
-        "expected nested closure proto to be emitted as native function:\n{}",
         ir
     );
 }

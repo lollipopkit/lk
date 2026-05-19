@@ -20,7 +20,7 @@ use super::analysis::{EscapeClass, EscapeSummary, FunctionAnalysis};
 use super::bytecode::{CaptureSpec, ClosureProto, Function, NamedParamLayoutEntry, Op, PatternPlan};
 
 const MAGIC: [u8; 3] = *b"LKB";
-pub const CURRENT_VERSION: u16 = 7;
+pub const CURRENT_VERSION: u16 = 8;
 
 /// Flags describing optimisation passes that were applied when emitting the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -875,6 +875,9 @@ fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u16(out, src);
         }
         Op::StartsWithK(dst, src, kidx) => encode_op3(out, 67, dst, src, kidx),
+        Op::ContainsK(dst, src, kidx) => encode_op3(out, 70, dst, src, kidx),
+        Op::MapHas(dst, map, key) => encode_op3(out, 71, dst, map, key),
+        Op::MapHasK(dst, map, kidx) => encode_op3(out, 72, dst, map, kidx),
         Op::Index { dst, base, idx } => encode_op3(out, 30, dst, base, idx),
         Op::ToIter { dst, src } => {
             write_u8(out, 31);
@@ -1262,6 +1265,9 @@ fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             val: read_u16(bytes, cursor)?,
         },
         67 => decode_op3(Op::StartsWithK, bytes, cursor)?,
+        70 => decode_op3(Op::ContainsK, bytes, cursor)?,
+        71 => decode_op3(Op::MapHas, bytes, cursor)?,
+        72 => decode_op3(Op::MapHasK, bytes, cursor)?,
         36 => Op::Jmp(read_i16(bytes, cursor)?),
         37 => Op::JmpFalse(read_u16(bytes, cursor)?, read_i16(bytes, cursor)?),
         38 => Op::Call {

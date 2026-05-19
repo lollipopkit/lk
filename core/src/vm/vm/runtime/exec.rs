@@ -11,7 +11,9 @@ use crate::vm::bytecode::{CaptureSpec, Function};
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{ClosureFastCache, VmCaches};
-use crate::vm::vm::frame::{CallArgs, CallFrame, CallFrameMeta, FrameInfo, FrameState, RegisterWindowRef};
+use crate::vm::vm::frame::{
+    CallArgs, CallFrame, CallFrameMeta, FrameInfo, FrameState, RegisterSpan, RegisterWindowRef,
+};
 use crate::vm::vm::guards::VmCurrentGuard;
 use crate::vm::vm::runtime::frame::run_frame;
 
@@ -70,7 +72,6 @@ impl Vm {
         let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
         let initial_stack_top = self.stack_top;
         let initial_frame_depth = self.frames.len();
-        let args_owned = args.map(<[Val]>::to_vec);
         let region_plan = f.analysis.as_ref().map(|analysis| analysis.region_plan.clone());
         let reg_count = f.n_regs as usize;
         let reg_base = self.allocate_stack_window(reg_count);
@@ -93,7 +94,7 @@ impl Vm {
             let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
             let regs = &mut self.stack[reg_base..reg_base + reg_count];
             let mut frame = FrameState::new(&mut call_frame, regs, region_alloc_ptr);
-            if let Some(a) = args_owned.as_deref()
+            if let Some(a) = args
                 && !f.param_regs.is_empty()
             {
                 let n = a.len().min(f.param_regs.len());
@@ -165,10 +166,11 @@ impl Vm {
         exec_result
     }
 
-    pub(super) fn exec_function_positional_fast(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn exec_function_positional_fast_span(
         &mut self,
         fun: &Function,
-        args: &[Val],
+        args: RegisterSpan,
         ctx: &mut VmContext,
         frame_info: Option<&FrameInfo>,
         captures: Option<Arc<ClosureCapture>>,
@@ -176,15 +178,15 @@ impl Vm {
         cache: Option<&mut ClosureFastCache>,
         return_meta: Option<CallFrameMeta>,
     ) -> Result<Val> {
-        if fun.param_regs.len() != args.len() {
+        if fun.param_regs.len() != args.len {
             return Err(anyhow!(
                 "Function expects {} positional arguments, got {}",
                 fun.param_regs.len(),
-                args.len()
+                args.len
             ));
         }
         match cache {
-            Some(cache_ref) => self.exec_function_positional_fast_impl(
+            Some(cache_ref) => self.exec_function_positional_fast_span_impl(
                 fun,
                 args,
                 ctx,
@@ -196,7 +198,7 @@ impl Vm {
             ),
             None => {
                 let mut temp_cache = ClosureFastCache::new();
-                self.exec_function_positional_fast_impl(
+                self.exec_function_positional_fast_span_impl(
                     fun,
                     args,
                     ctx,
@@ -210,10 +212,11 @@ impl Vm {
         }
     }
 
-    fn exec_function_positional_fast_impl(
+    #[allow(clippy::too_many_arguments)]
+    fn exec_function_positional_fast_span_impl(
         &mut self,
         fun: &Function,
-        args: &[Val],
+        args: RegisterSpan,
         ctx: &mut VmContext,
         frame_info: Option<&FrameInfo>,
         captures: Option<Arc<ClosureCapture>>,
@@ -223,10 +226,14 @@ impl Vm {
     ) -> Result<Val> {
         let reg_count = fun.n_regs as usize;
         let self_ptr: *mut Vm = self;
-        let arg_values: Vec<Val> = args.to_vec();
         let stack_base = self.allocate_stack_window(reg_count);
 
-        // Use cached region_plan if available (avoids Arc clone per call), otherwise compute and cache.
+        for (idx, param_reg) in fun.param_regs.iter().enumerate() {
+            let src_idx = args.base + idx;
+            let value = self.read_reg(args.window, src_idx).cloned().unwrap_or(Val::Nil);
+            self.stack[stack_base + *param_reg as usize] = value;
+        }
+
         let region_plan = if let Some(ref rp) = cache.region_plan {
             Some(Arc::clone(rp))
         } else {
@@ -238,9 +245,6 @@ impl Vm {
         let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
         let regs = &mut self.stack[stack_base..stack_base + reg_count];
         let mut callee_state = FrameState::new_ephemeral(&mut call_frame, regs, region_alloc_ptr);
-        for (idx, param_reg) in fun.param_regs.iter().enumerate() {
-            callee_state.regs[*param_reg as usize] = arg_values[idx].clone();
-        }
         if let Some(meta) = return_meta {
             callee_state.set_inline_return_meta(meta);
         }
@@ -373,23 +377,20 @@ impl Vm {
                 positional_span.len
             ));
         }
-        let positional_values: Vec<Val> = (0..positional_span.len)
-            .map(|idx| {
-                let src_idx = positional_span.base + idx;
-                vm.read_reg(positional_span.window, src_idx)
-                    .cloned()
-                    .unwrap_or(Val::Nil)
-            })
-            .collect();
         let reg_base = vm.allocate_stack_window(reg_count);
+        for (idx, param_reg) in fun.param_regs.iter().take(positional_span.len).enumerate() {
+            let src_idx = positional_span.base + idx;
+            let value = vm
+                .read_reg(positional_span.window, src_idx)
+                .cloned()
+                .unwrap_or(Val::Nil);
+            vm.stack[reg_base + *param_reg as usize] = value;
+        }
         let region_plan = fun.analysis.as_ref().map(|analysis| analysis.region_plan.clone());
         let mut call_frame = CallFrame::new(fun, reg_base, reg_count, captures, capture_specs, region_plan);
         let region_alloc_ptr: *const RegionAllocator = &vm.region_alloc;
         let regs = &mut vm.stack[reg_base..reg_base + reg_count];
         let mut callee_state = FrameState::new(&mut call_frame, regs, region_alloc_ptr);
-        for (idx, param_reg) in fun.param_regs.iter().take(positional_values.len()).enumerate() {
-            callee_state.regs[*param_reg as usize] = positional_values[idx].clone();
-        }
         for (reg_idx, value) in named_seed {
             let slot = *reg_idx as usize;
             callee_state.write_reg(slot, value.clone());

@@ -45,6 +45,17 @@ mod tests {
         assert_eq!(args.file.as_deref(), Some(Path::new("a.lk")));
     }
 
+    #[test]
+    fn test_cli_args_accepts_coverage_file() {
+        let args = CliArgs::try_parse_from(["lk", "coverage", "bench/workloads_business_algorithms.lk"])
+            .expect("should parse coverage command");
+        if let Some(Commands::Coverage { file }) = args.command {
+            assert_eq!(file, PathBuf::from("bench/workloads_business_algorithms.lk"));
+        } else {
+            panic!("expected coverage command");
+        }
+    }
+
     #[cfg(feature = "llvm")]
     #[test]
     fn test_cli_args_compile_positional_target() {

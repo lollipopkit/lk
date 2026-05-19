@@ -17,10 +17,10 @@ pub fn register_method(type_name: &str, method: &str, func: RustFunction) {
         .insert(method.to_string(), func);
 }
 
-/// Per-thread inline cache for method lookups.
-/// Avoids DashMap overhead on monomorphic call sites (same type + method name every time).
-/// Uses a simple single-entry cache per thread — this is highly effective because
-/// in tight loops, the same type+method pattern repeats 100% of the time.
+// Per-thread inline cache for method lookups.
+// Avoids DashMap overhead on monomorphic call sites (same type + method name every time).
+// Uses a simple single-entry cache per thread — this is highly effective because
+// in tight loops, the same type+method pattern repeats 100% of the time.
 thread_local! {
     static METHOD_IC: std::cell::RefCell<(u8, usize, Option<RustFunction>)> =
         std::cell::RefCell::new((0, 0, None));

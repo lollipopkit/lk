@@ -267,6 +267,12 @@ pub enum Op {
     },
     // String starts_with with constant prefix
     StartsWithK(u16 /*dst*/, u16 /*src*/, u16 /*kidx*/),
+    // String contains with constant needle
+    ContainsK(u16 /*dst*/, u16 /*src*/, u16 /*kidx*/),
+    // Map key membership test
+    MapHas(u16 /*dst*/, u16 /*map*/, u16 /*key*/),
+    // Map key membership test with constant string key
+    MapHasK(u16 /*dst*/, u16 /*map*/, u16 /*kidx*/),
     // Fold list values into an accumulator with Add semantics.
     // Semantically equivalent to: for v in list { acc += v }
     ListFoldAdd {
@@ -487,6 +493,9 @@ impl fmt::Debug for Op {
             Op::Len { dst, src } => write!(f, "Len r{}, r{}", dst, src),
             Op::Floor { dst, src } => write!(f, "Floor r{}, r{}", dst, src),
             Op::StartsWithK(dst, src, kidx) => write!(f, "StartsWithK r{}, r{}, k{}", dst, src, kidx),
+            Op::ContainsK(dst, src, kidx) => write!(f, "ContainsK r{}, r{}, k{}", dst, src, kidx),
+            Op::MapHas(dst, map, key) => write!(f, "MapHas r{}, r{}, r{}", dst, map, key),
+            Op::MapHasK(dst, map, kidx) => write!(f, "MapHasK r{}, r{}, k{}", dst, map, kidx),
             Op::ListFoldAdd { acc, list } => write!(f, "ListFoldAdd r{}, r{}", acc, list),
             Op::MapValuesFoldAdd { acc, map } => write!(f, "MapValuesFoldAdd r{}, r{}", acc, map),
             Op::Index { dst, base, idx } => write!(f, "Index r{}, r{}, r{}", dst, base, idx),

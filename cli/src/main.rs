@@ -1,12 +1,9 @@
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "llvm")]
 use std::fmt::Write as _;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Once};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-};
 
 static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str =
@@ -17,10 +14,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lk_core::llvm::{LlvmBackendOptions, OptLevel, compile_function_to_llvm};
 use lk_core::{
     module::ModuleRegistry,
-    package::{
-        DependencySpec, DetailedDependency, LOCK_FILE, LockFile, LockedPackage, MANIFEST_FILE, Manifest, PackageGraph,
-        PackageModule, PackageSection, cache_dir_for_source, find_manifest,
-    },
+    package::{PackageGraph, PackageModule},
     rt,
     stmt::{
         ImportSource, ImportStmt, ModuleResolver, Program, Stmt, deserialize_imports, execute_imports,
@@ -33,18 +27,25 @@ use lk_core::{
 };
 
 use anyhow::Context;
-#[cfg(feature = "llvm")]
-use llvm_tools::LlvmTools;
 
 mod bundler;
+mod coverage;
 #[cfg(test)]
 mod main_test;
+#[cfg(feature = "llvm")]
+mod native_runtime;
+mod paths;
+mod pkg;
 mod repl;
 
 use bundler::ModuleBundler;
-
+use coverage::run_coverage_report;
 #[cfg(feature = "llvm")]
-const RUNTIME_CRATE_NAME: &str = "lk-aot-runtime";
+use native_runtime::{ensure_runtime_staticlib, resolve_llvm_tool};
+#[cfg(test)]
+use paths::split_compile_args_with_cwd;
+use paths::{parse_program_file, parse_sanitized_path, sanitize_path, split_compile_args};
+use pkg::{init_package, run_pkg_command};
 
 #[cfg(feature = "llvm")]
 struct EncodedBundledModule {
@@ -171,7 +172,7 @@ impl From<EmitKind> for CompileMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum CompileMode {
+pub(crate) enum CompileMode {
     #[value(name = "lkb", alias = "bytecode")]
     Lkb,
     #[cfg(feature = "llvm")]
@@ -217,6 +218,12 @@ enum Commands {
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
     },
+    /// Report benchmark-critical packed/AOT coverage for a source file.
+    Coverage {
+        /// Source file to inspect
+        #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
+        file: PathBuf,
+    },
     /// Create and manage LK packages.
     Init {
         /// Package name. Defaults to the current directory name.
@@ -248,28 +255,6 @@ enum PkgCommand {
     Update { name: Option<String> },
     /// Print the resolved dependency tree.
     Tree,
-}
-
-fn read_file_content(path: &str) -> anyhow::Result<String> {
-    std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", path, e))
-}
-
-fn sanitize_path(raw: &str) -> anyhow::Result<PathBuf> {
-    let p = Path::new(raw);
-
-    for comp in p.components() {
-        if matches!(comp, Component::ParentDir) {
-            return Err(anyhow::anyhow!(
-                "Parent directory components ('..') are not allowed in file paths."
-            ));
-        }
-    }
-
-    Ok(p.to_path_buf())
-}
-
-fn parse_sanitized_path(raw: &str) -> Result<PathBuf, String> {
-    sanitize_path(raw).map_err(|e| e.to_string())
 }
 
 fn env_toggle_enabled(raw: &str) -> bool {
@@ -318,190 +303,6 @@ fn maybe_init_perf_tracing() {
 
         let _ = builder.try_init();
     });
-}
-
-fn parse_program_file(path: &Path) -> anyhow::Result<Program> {
-    let src = read_file_content(&path.to_string_lossy())?;
-    let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(&src) {
-        Ok(result) => result,
-        Err(parse_err) => {
-            eprintln!("Error: {}", parse_err);
-            std::process::exit(1);
-        }
-    };
-    let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-    match parser.parse_program_with_enhanced_errors(&src) {
-        Ok(program) => Ok(program),
-        Err(parse_err) => {
-            eprintln!("Error: {}", parse_err);
-            std::process::exit(1);
-        }
-    }
-}
-
-pub(crate) fn split_compile_args(args: &[String]) -> anyhow::Result<(Option<CompileMode>, PathBuf)> {
-    let cwd = std::env::current_dir().context("read current directory")?;
-    split_compile_args_with_cwd(args, &cwd)
-}
-
-pub(crate) fn split_compile_args_with_cwd(
-    args: &[String],
-    cwd: &Path,
-) -> anyhow::Result<(Option<CompileMode>, PathBuf)> {
-    match args.len() {
-        0 => Ok((None, default_compile_entry(cwd)?)),
-        1 => {
-            #[cfg(not(feature = "llvm"))]
-            if matches!(args[0].to_ascii_lowercase().as_str(), "llvm" | "exe") {
-                anyhow::bail!(
-                    "LLVM backend disabled at build time; rebuild with `--features llvm` to use '{}' target",
-                    args[0]
-                );
-            }
-            if let Ok(mode) = CompileMode::from_str(&args[0], true) {
-                return Ok((Some(mode), default_compile_entry(cwd)?));
-            }
-            Ok((None, sanitize_path(&args[0])?))
-        }
-        2 => {
-            #[cfg(not(feature = "llvm"))]
-            if matches!(args[0].to_ascii_lowercase().as_str(), "llvm" | "exe") {
-                anyhow::bail!(
-                    "LLVM backend disabled at build time; rebuild with `--features llvm` to use '{}' target",
-                    args[0]
-                );
-            }
-            let mode = CompileMode::from_str(&args[0], true)
-                .map_err(|_| anyhow::anyhow!("Unknown compile target '{}'", args[0]))?;
-            let file = sanitize_path(&args[1])?;
-            Ok((Some(mode), file))
-        }
-        _ => anyhow::bail!("compile requires [FILE] or [TARGET FILE]"),
-    }
-}
-
-fn default_compile_entry(cwd: &Path) -> anyhow::Result<PathBuf> {
-    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let root_main = cwd.join("main.lk");
-    if root_main.exists() {
-        return Ok(root_main);
-    }
-
-    let manifest_path = cwd.join(MANIFEST_FILE);
-    if !manifest_path.exists() {
-        anyhow::bail!("compile requires a file, or run it in a directory containing main.lk or Lk.toml");
-    }
-
-    let manifest = Manifest::read(&manifest_path)?;
-    if manifest.package.is_none() {
-        return default_workspace_compile_entry(&manifest, &cwd, &manifest_path);
-    }
-
-    let src_main = cwd.join("src").join("main.lk");
-    if src_main.exists() {
-        return Ok(src_main);
-    }
-
-    anyhow::bail!(
-        "{} does not define an implicit compile entry; expected {}",
-        manifest_path.display(),
-        src_main.display()
-    );
-}
-
-fn default_workspace_compile_entry(manifest: &Manifest, cwd: &Path, manifest_path: &Path) -> anyhow::Result<PathBuf> {
-    let Some(workspace) = manifest.workspace.as_ref() else {
-        anyhow::bail!(
-            "{} does not define a package or workspace entry; specify the app entry file explicitly",
-            manifest_path.display()
-        );
-    };
-
-    let mut entries = Vec::new();
-    for member in expand_workspace_member_dirs(cwd, &workspace.members)? {
-        let member_manifest_path = member.join(MANIFEST_FILE);
-        if !member_manifest_path.exists() {
-            continue;
-        }
-        let member_manifest = Manifest::read(&member_manifest_path)?;
-        if member_manifest.package.is_none() {
-            continue;
-        }
-        let main = member.join("src").join("main.lk");
-        if main.exists() {
-            entries.push(main.canonicalize().unwrap_or(main));
-        }
-    }
-
-    match entries.len() {
-        1 => Ok(entries.remove(0)),
-        0 => anyhow::bail!(
-            "{} is a workspace manifest without a package entry and no member src/main.lk was found; specify the app entry file explicitly",
-            manifest_path.display()
-        ),
-        _ => {
-            entries.sort();
-            let candidates = entries
-                .iter()
-                .map(|entry| format!("  - {}", entry.display()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            anyhow::bail!(
-                "{} has multiple workspace app entries; specify one explicitly:\n{}",
-                manifest_path.display(),
-                candidates
-            );
-        }
-    }
-}
-
-fn expand_workspace_member_dirs(root: &Path, members: &[String]) -> anyhow::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    for member in members {
-        if let Some(prefix) = member.strip_suffix("/*") {
-            let dir = root.join(prefix);
-            if !dir.exists() {
-                continue;
-            }
-            for entry in fs::read_dir(&dir).with_context(|| format!("read workspace member glob {}", dir.display()))? {
-                let entry = entry?;
-                if entry.file_type()?.is_dir() {
-                    out.push(entry.path());
-                }
-            }
-        } else {
-            out.push(root.join(member));
-        }
-    }
-    out.sort();
-    Ok(out)
-}
-
-#[cfg(feature = "llvm")]
-fn resolve_llvm_tool(tool: &str, env_var: &str) -> Option<PathBuf> {
-    if let Ok(explicit) = std::env::var(env_var) {
-        let path = PathBuf::from(explicit);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    if let Ok(tools) = LlvmTools::new()
-        && let Some(path) = tools.tool(tool)
-    {
-        return Some(path);
-    }
-    let fallback = PathBuf::from(tool);
-    if Command::new(&fallback)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
-    {
-        Some(fallback)
-    } else {
-        None
-    }
 }
 
 #[cfg(feature = "llvm")]
@@ -1411,6 +1212,10 @@ fn main() -> anyhow::Result<()> {
                 run_type_check(&file)?;
                 return Ok(());
             }
+            Commands::Coverage { file } => {
+                run_coverage_report(&file)?;
+                return Ok(());
+            }
             Commands::Init { name } => {
                 init_package(name)?;
                 return Ok(());
@@ -1591,202 +1396,6 @@ fn register_package_modules_from_meta(resolver: &Arc<ModuleResolver>, meta: Opti
     Ok(())
 }
 
-fn init_package(name: Option<String>) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir().context("read current directory")?;
-    let package_name = name
-        .or_else(|| cwd.file_name().map(|name| name.to_string_lossy().to_string()))
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "lk-package".to_string());
-    let manifest_path = cwd.join(MANIFEST_FILE);
-    if manifest_path.exists() {
-        anyhow::bail!("{} already exists", manifest_path.display());
-    }
-    let manifest = Manifest {
-        package: Some(PackageSection {
-            name: package_name.clone(),
-            version: Some("0.1.0".to_string()),
-            edition: Some("2026".to_string()),
-            license: None,
-            authors: Vec::new(),
-            description: None,
-        }),
-        workspace: None,
-        dependencies: BTreeMap::new(),
-    };
-    manifest.write(&manifest_path)?;
-    let src_dir = cwd.join("src");
-    fs::create_dir_all(&src_dir).with_context(|| format!("create {}", src_dir.display()))?;
-    let main_path = src_dir.join("main.lk");
-    if !main_path.exists() {
-        fs::write(
-            &main_path,
-            "println(\"hello from ${pkg}\");\n".replace("${pkg}", &package_name),
-        )
-        .with_context(|| format!("write {}", main_path.display()))?;
-    }
-    eprintln!("Created {}", manifest_path.display());
-    Ok(())
-}
-
-fn run_pkg_command(command: PkgCommand) -> anyhow::Result<()> {
-    match command {
-        PkgCommand::Add {
-            name,
-            source,
-            branch,
-            tag,
-            rev,
-        } => add_dependency(name, source, branch, tag, rev),
-        PkgCommand::Fetch => fetch_dependencies(None),
-        PkgCommand::Update { name } => fetch_dependencies(name),
-        PkgCommand::Tree => print_package_tree(),
-    }
-}
-
-fn load_project_manifest() -> anyhow::Result<(PathBuf, Manifest)> {
-    let cwd = std::env::current_dir().context("read current directory")?;
-    let manifest_path = find_manifest(&cwd).ok_or_else(|| anyhow::anyhow!("No {MANIFEST_FILE} found"))?;
-    let manifest = Manifest::read(&manifest_path)?;
-    Ok((manifest_path, manifest))
-}
-
-fn add_dependency(
-    name: String,
-    source: String,
-    branch: Option<String>,
-    tag: Option<String>,
-    rev: Option<String>,
-) -> anyhow::Result<()> {
-    let (manifest_path, mut manifest) = load_project_manifest()?;
-    let spec = if branch.is_none() && tag.is_none() && rev.is_none() {
-        DependencySpec::GitHub(source)
-    } else {
-        DependencySpec::Detailed(DetailedDependency {
-            github: Some(source),
-            branch,
-            tag,
-            rev,
-            ..Default::default()
-        })
-    };
-    manifest.dependencies.insert(name, spec);
-    manifest.write(&manifest_path)?;
-    eprintln!("Updated {}", manifest_path.display());
-    Ok(())
-}
-
-fn fetch_dependencies(only: Option<String>) -> anyhow::Result<()> {
-    let (manifest_path, manifest) = load_project_manifest()?;
-    let root = manifest_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("manifest has no parent"))?;
-    let mut lock = LockFile::read(&root.join(LOCK_FILE))?;
-    let mut locked = BTreeMap::new();
-    for pkg in lock.package {
-        locked.insert(pkg.name.clone(), pkg);
-    }
-
-    let dependencies = manifest.dependencies;
-    for (name, spec) in dependencies {
-        if only.as_ref().is_some_and(|only| only != &name) {
-            continue;
-        }
-        if spec.is_workspace() || spec.path().is_some() {
-            continue;
-        }
-        let source = spec
-            .git_url()
-            .ok_or_else(|| anyhow::anyhow!("dependency '{name}' has no git source"))?;
-        let dir = cache_dir_for_source(&source);
-        fetch_git_dependency(&source, &dir, &spec)?;
-        let rev = git_output(&dir, ["rev-parse", "HEAD"])?;
-        locked.insert(name.clone(), LockedPackage { name, source, rev });
-    }
-
-    lock = LockFile {
-        package: locked.into_values().collect(),
-    };
-    lock.write(&root.join(LOCK_FILE))?;
-    eprintln!("Updated {}", root.join(LOCK_FILE).display());
-    Ok(())
-}
-
-fn fetch_git_dependency(source: &str, dir: &Path, spec: &DependencySpec) -> anyhow::Result<()> {
-    if dir.exists() {
-        git_status(
-            Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .arg("fetch")
-                .arg("--tags")
-                .arg("--prune"),
-        )?;
-    } else {
-        if let Some(parent) = dir.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        }
-        git_status(Command::new("git").arg("clone").arg(source).arg(dir))?;
-    }
-
-    if let DependencySpec::Detailed(dep) = spec {
-        if let Some(rev) = dep.rev.as_ref() {
-            git_status(Command::new("git").arg("-C").arg(dir).arg("checkout").arg(rev))?;
-        } else if let Some(tag) = dep.tag.as_ref() {
-            git_status(
-                Command::new("git")
-                    .arg("-C")
-                    .arg(dir)
-                    .arg("checkout")
-                    .arg(format!("tags/{tag}")),
-            )?;
-        } else if let Some(branch) = dep.branch.as_ref() {
-            git_status(Command::new("git").arg("-C").arg(dir).arg("checkout").arg(branch))?;
-            git_status(Command::new("git").arg("-C").arg(dir).arg("pull").arg("--ff-only"))?;
-        }
-    }
-    Ok(())
-}
-
-fn git_status(cmd: &mut Command) -> anyhow::Result<()> {
-    let status = cmd.status().context("run git")?;
-    if !status.success() {
-        anyhow::bail!("git failed with status {status}");
-    }
-    Ok(())
-}
-
-fn git_output<const N: usize>(dir: &Path, args: [&str; N]) -> anyhow::Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .context("run git")?;
-    if !output.status.success() {
-        anyhow::bail!("git failed with status {}", output.status);
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn print_package_tree() -> anyhow::Result<()> {
-    let cwd = std::env::current_dir().context("read current directory")?;
-    let graph = PackageGraph::discover(&cwd)?.ok_or_else(|| anyhow::anyhow!("No {MANIFEST_FILE} found"))?;
-    let root_name = graph
-        .manifest
-        .package
-        .as_ref()
-        .map(|package| package.name.as_str())
-        .unwrap_or("<workspace>");
-    println!("{root_name} ({})", graph.manifest_dir().display());
-    for module in &graph.modules {
-        println!("  {} -> {}", module.name, module.root.display());
-    }
-    for missing in &graph.missing {
-        println!("  {} -> <missing; run lk pkg fetch>", missing);
-    }
-    Ok(())
-}
-
 fn register_embedded_modules(resolver: &Arc<ModuleResolver>, modules: &[BundledModule]) {
     for bundled in modules {
         let path = PathBuf::from(&bundled.path);
@@ -1794,156 +1403,5 @@ fn register_embedded_modules(resolver: &Arc<ModuleResolver>, modules: &[BundledM
         if !bundled.module.bundled_modules.is_empty() {
             register_embedded_modules(resolver, &bundled.module.bundled_modules);
         }
-    }
-}
-
-#[cfg(feature = "llvm")]
-fn ensure_runtime_staticlib(target_triple: Option<&str>, use_release: bool) -> anyhow::Result<Vec<PathBuf>> {
-    if let Some(packaged) = find_packaged_staticlibs(target_triple, use_release) {
-        return Ok(packaged);
-    }
-    Ok(vec![build_staticlib(RUNTIME_CRATE_NAME, target_triple, use_release)?])
-}
-
-#[cfg(feature = "llvm")]
-fn build_staticlib(crate_name: &str, target_triple: Option<&str>, use_release: bool) -> anyhow::Result<PathBuf> {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let runtime_target_root = std::env::var("LK_RUNTIME_TARGET_DIR")
-        .map(PathBuf::from)
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                workspace_root.join(path)
-            }
-        })
-        .unwrap_or_else(|_| workspace_root.join("target").join("lk-native"));
-
-    let mut cmd = Command::new(&cargo);
-    cmd.arg("build");
-    if crate_name == RUNTIME_CRATE_NAME {
-        cmd.arg("--manifest-path")
-            .arg(workspace_root.join("aot-runtime").join("Cargo.toml"));
-    } else {
-        cmd.arg("-p").arg(crate_name);
-    }
-    cmd.arg("--lib");
-    if use_release {
-        cmd.arg("--release");
-    }
-    if let Some(triple) = target_triple {
-        cmd.arg("--target").arg(triple);
-    }
-    cmd.current_dir(&workspace_root);
-    cmd.env("CARGO_TARGET_DIR", &runtime_target_root);
-    let status = cmd
-        .status()
-        .with_context(|| format!("failed to run `{cargo} build` for {crate_name} staticlib"))?;
-    if !status.success() {
-        anyhow::bail!("{cargo} build exited with status {status}");
-    }
-
-    let mut lib_path = runtime_target_root.clone();
-    if let Some(triple) = target_triple {
-        lib_path.push(triple);
-    }
-    lib_path.push(if use_release { "release" } else { "debug" });
-    let crate_stub = crate_name.replace('-', "_");
-    lib_path.push(format!("lib{crate_stub}.a"));
-    if !lib_path.exists() {
-        anyhow::bail!(
-            "runtime static library {} was not produced (expected `{}`)",
-            crate_name,
-            lib_path.display()
-        );
-    }
-    Ok(lib_path)
-}
-
-#[cfg(feature = "llvm")]
-fn find_packaged_staticlibs(target_triple: Option<&str>, use_release: bool) -> Option<Vec<PathBuf>> {
-    let mut roots = Vec::new();
-    if let Ok(env_dir) = std::env::var("LK_RUNTIME_LIB_DIR") {
-        let candidate = PathBuf::from(env_dir);
-        if candidate.exists() {
-            roots.push(candidate);
-        }
-    }
-
-    if let Ok(exe_path) = std::env::current_exe()
-        && let Some(bin_dir) = exe_path.parent()
-    {
-        roots.push(bin_dir.to_path_buf());
-        roots.push(bin_dir.join("lib"));
-        if let Some(parent) = bin_dir.parent() {
-            roots.push(parent.to_path_buf());
-            roots.push(parent.join("lib"));
-        }
-    }
-
-    let profile_dir = if use_release { "release" } else { "debug" };
-    let mut seen = std::collections::HashSet::new();
-
-    for root in roots.into_iter() {
-        if !seen.insert(root.clone()) {
-            continue;
-        }
-
-        let mut dirs = vec![
-            root.clone(),
-            root.join(profile_dir),
-            root.join("lib"),
-            root.join("lib").join(profile_dir),
-        ];
-        if let Some(triple) = target_triple {
-            dirs.push(root.join(triple));
-            dirs.push(root.join(triple).join(profile_dir));
-            dirs.push(root.join("lib").join(triple));
-            dirs.push(root.join("lib").join(triple).join(profile_dir));
-        }
-
-        for dir in dirs {
-            if let Some(paths) = staticlibs_from_dir(&dir) {
-                return Some(paths);
-            }
-        }
-    }
-
-    None
-}
-
-#[cfg(feature = "llvm")]
-fn staticlibs_from_dir(dir: &Path) -> Option<Vec<PathBuf>> {
-    if !dir.exists() {
-        return None;
-    }
-
-    let filename = format!("lib{}.a", RUNTIME_CRATE_NAME.replace('-', "_"));
-    let path = dir.join(filename);
-    if !path.exists() {
-        return None;
-    }
-
-    Some(vec![path])
-}
-
-#[cfg(all(test, feature = "llvm"))]
-mod packaged_staticlib_tests {
-    use super::staticlibs_from_dir;
-    use std::fs;
-
-    #[test]
-    fn uses_env_dir_when_all_libs_present() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("liblk_aot_runtime.a");
-        fs::write(&path, []).expect("write stub lib");
-
-        let libs = staticlibs_from_dir(temp.path()).expect("should discover libs");
-        assert_eq!(libs.len(), 1);
-        assert!(libs.iter().all(|p| p.exists()));
     }
 }

@@ -2,6 +2,16 @@
 mod tests {
     use crate::val::Val;
     use std::collections::HashMap;
+    use std::mem::size_of;
+
+    #[test]
+    fn val_stays_within_two_words() {
+        assert!(
+            size_of::<Val>() <= 16,
+            "Val grew to {} bytes; keep it within two machine words for register density",
+            size_of::<Val>()
+        );
+    }
 
     macro_rules! test_op {
         ($name:ident, $op:tt, $l:expr, $r:expr, $res:expr) => {

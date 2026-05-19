@@ -335,8 +335,10 @@ impl FunctionBuilder {
             | Op::Access(dst, _, _)
             | Op::AccessK(dst, _, _)
             | Op::IndexK(dst, _, _)
+            | Op::ContainsK(dst, _, _)
+            | Op::MapHas(dst, _, _)
+            | Op::MapHasK(dst, _, _)
             | Op::MakeClosure { dst, .. }
-            | Op::BuildMap { dst, .. }
             | Op::Call { base: dst, retc: 1, .. }
             | Op::CallNamed {
                 base_pos: dst, retc: 1, ..
@@ -365,10 +367,17 @@ impl FunctionBuilder {
             | Op::PatternMatch { dst, .. } => {
                 self.int_regs.remove(&dst);
                 self.list_locals.remove(&dst);
+                self.map_locals.remove(&dst);
             }
             Op::BuildList { dst, .. } => {
                 self.int_regs.remove(&dst);
                 self.list_locals.insert(dst);
+                self.map_locals.remove(&dst);
+            }
+            Op::BuildMap { dst, .. } => {
+                self.int_regs.remove(&dst);
+                self.list_locals.remove(&dst);
+                self.map_locals.insert(dst);
             }
             Op::ListFoldAdd { acc, .. } | Op::MapValuesFoldAdd { acc, .. } => {
                 self.int_regs.remove(&acc);
