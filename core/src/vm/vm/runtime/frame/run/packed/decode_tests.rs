@@ -91,6 +91,56 @@ mod tests {
     }
 
     #[test]
+    fn packed_hot_slot_fuses_int_arith_cmp_int_jmp_followed_by_move() {
+        let function = function_with(vec![
+            Op::SubInt(2, 0, 1),
+            Op::CmpIntJmp {
+                kind: crate::vm::IntCmpKind::Gt,
+                a: 2,
+                b: 3,
+                ofs: 2,
+            },
+            Op::Move(4, 2),
+            Op::Ret { base: 4, retc: 1 },
+        ]);
+        let bc = Bc32Function::try_from_function(&function).expect("sub-int+cmp-int-jmp+move must encode");
+        let word = bc.code32[0];
+        let slot = build_hot_slot(
+            &bc.code32,
+            bc.decoded.as_deref(),
+            &bc.consts,
+            0,
+            word,
+            bc32::tag_of(word),
+        )
+        .expect("arith cmp move hot slot");
+
+        match slot.kind {
+            PackedHotKind::IntArithCmpIntMove {
+                arith_op: PackedArithOp::Sub,
+                arith_dst: 2,
+                arith_a: 0,
+                arith_b: 1,
+                cmp_op: PackedCmpOp::Gt,
+                cmp_a: 2,
+                cmp_b: 3,
+                move_dst: 4,
+                move_src: 2,
+            } => {}
+            PackedHotKind::IntArithCmpIntJmp { .. } => {
+                panic!("expected IntArithCmpIntMove hot slot, got IntArithCmpIntJmp")
+            }
+            PackedHotKind::CmpIntMove { .. } => panic!("expected IntArithCmpIntMove hot slot, got CmpIntMove"),
+            other => panic!("expected IntArithCmpIntMove hot slot, got {other:?}"),
+        }
+        assert_eq!(
+            slot.next_pc,
+            bc.decoded.as_ref().unwrap().instrs[2].next_pc,
+            "fused slot must skip arith, compare and following Move"
+        );
+    }
+
+    #[test]
     fn packed_hot_slot_fuses_cmp_int_jmp_followed_by_add_int_imm() {
         let function = function_with(vec![
             Op::CmpIntJmp {
@@ -724,6 +774,69 @@ mod tests {
             }
         ));
         assert_eq!(slot.next_pc, bc.decoded.as_ref().unwrap().instrs[1].next_pc);
+    }
+
+    #[test]
+    fn packed_hot_slot_fuses_string_predicate_branch() {
+        let function = Function {
+            consts: vec![Val::from_str("api/"), Val::from_str("admin")],
+            code: vec![
+                Op::StartsWithK(2, 0, 0),
+                Op::BoolBranch(2, 3),
+                Op::ContainsK(3, 1, 1),
+                Op::BoolBranch(3, 1),
+                Op::Ret { base: 0, retc: 1 },
+            ],
+            n_regs: 4,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: None,
+        };
+        let bc = Bc32Function::try_from_function(&function).expect("string predicate branches must be BC32 encodable");
+
+        let starts_slot = build_hot_slot(
+            &bc.code32,
+            bc.decoded.as_deref(),
+            &bc.consts,
+            0,
+            bc.code32[0],
+            bc32::tag_of(bc.code32[0]),
+        )
+        .expect("starts-with branch hot slot");
+        assert!(
+            matches!(
+                starts_slot.kind,
+                PackedHotKind::StartsWithKJmp { src: 0, key: 0, ofs: 6 }
+            ),
+            "got {:?}",
+            starts_slot.kind
+        );
+        assert_eq!(starts_slot.next_pc, bc.decoded.as_ref().unwrap().instrs[1].next_pc);
+
+        let contains_pc = starts_slot.next_pc;
+        let contains_slot = build_hot_slot(
+            &bc.code32,
+            bc.decoded.as_deref(),
+            &bc.consts,
+            contains_pc,
+            bc.code32[contains_pc],
+            bc32::tag_of(bc.code32[contains_pc]),
+        )
+        .expect("contains branch hot slot");
+        assert!(
+            matches!(
+                contains_slot.kind,
+                PackedHotKind::ContainsKJmp { src: 1, key: 1, ofs: 3 }
+            ),
+            "got {:?}",
+            contains_slot.kind
+        );
+        assert_eq!(contains_slot.next_pc, bc.decoded.as_ref().unwrap().instrs[3].next_pc);
     }
 
     #[test]

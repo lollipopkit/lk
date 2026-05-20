@@ -122,8 +122,20 @@ pub(super) fn exec_hot_slot(
             arith_a,
             arith_b,
         } => {
-            exec_access_hot(frame_raw, regs, access_ic, pc, *access_dst, *base, *field);
-            exec_int_arith(frame_raw, regs, func, *arith_op, *arith_dst, *arith_a, *arith_b)?;
+            exec_access_int_arith_hot(
+                frame_raw,
+                regs,
+                func,
+                access_ic,
+                pc,
+                *access_dst,
+                *base,
+                *field,
+                *arith_op,
+                *arith_dst,
+                *arith_a,
+                *arith_b,
+            )?;
             None
         }
         PackedHotKind::AccessK { dst, base, key } => {
@@ -526,6 +538,36 @@ pub(super) fn exec_hot_slot(
             };
             if !cmp { Some(*jump_pc) } else { None }
         }
+        PackedHotKind::IntArithCmpIntMove {
+            arith_op,
+            arith_dst,
+            arith_a,
+            arith_b,
+            cmp_op,
+            cmp_a,
+            cmp_b,
+            move_dst,
+            move_src,
+        } => {
+            exec_int_arith(frame_raw, regs, func, *arith_op, *arith_dst, *arith_a, *arith_b)?;
+            record_branch(true);
+            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*cmp_a as usize], &regs[*cmp_b as usize]) else {
+                return Err(anyhow!("CmpI expects integer registers"));
+            };
+            let cmp = match cmp_op {
+                PackedCmpOp::Eq => lhs == rhs,
+                PackedCmpOp::Ne => lhs != rhs,
+                PackedCmpOp::Lt => lhs < rhs,
+                PackedCmpOp::Le => lhs <= rhs,
+                PackedCmpOp::Gt => lhs > rhs,
+                PackedCmpOp::Ge => lhs >= rhs,
+            };
+            if cmp {
+                let value = regs[*move_src as usize].clone();
+                assign_reg(frame_raw, regs, *move_dst as usize, value);
+            }
+            None
+        }
         PackedHotKind::AddIntFloorDivImm {
             add_dst,
             a,
@@ -614,10 +656,20 @@ pub(super) fn exec_hot_slot(
             exec_starts_with_k(frame_raw, regs, func, *dst, *src, *key);
             None
         }
+        PackedHotKind::StartsWithKJmp { src, key, ofs } => {
+            record_container(VmContainerMetric::String);
+            record_branch(true);
+            (!starts_with_k_bool(regs, func, *src, *key)).then_some(((pc as isize) + (*ofs as isize)) as usize)
+        }
         PackedHotKind::ContainsK { dst, src, key } => {
             record_container(VmContainerMetric::String);
             exec_contains_k(frame_raw, regs, func, *dst, *src, *key);
             None
+        }
+        PackedHotKind::ContainsKJmp { src, key, ofs } => {
+            record_container(VmContainerMetric::String);
+            record_branch(true);
+            (!contains_k_bool(regs, func, *src, *key)).then_some(((pc as isize) + (*ofs as isize)) as usize)
         }
         PackedHotKind::ToIter { dst, src } => {
             record_container(VmContainerMetric::Generic);
@@ -1034,29 +1086,18 @@ pub(super) fn exec_hot_slot(
             if !cmp {
                 Some(((pc as isize) + (*ofs as isize)) as usize)
             } else {
-                exec_int_arith(
+                exec_sub_access_sub_hot(
                     frame_raw,
                     regs,
                     func,
-                    PackedArithOp::Sub,
+                    access_ic,
+                    *access_pc,
                     *first_dst,
                     *first_a,
                     *first_b,
-                )?;
-                exec_access_hot(
-                    frame_raw,
-                    regs,
-                    access_ic,
-                    *access_pc,
                     *access_dst,
                     *access_base,
                     *access_field,
-                );
-                exec_int_arith(
-                    frame_raw,
-                    regs,
-                    func,
-                    PackedArithOp::Sub,
                     *final_dst,
                     *final_a,
                     *final_b,

@@ -69,6 +69,68 @@ pub(super) fn exec_access_hot(
 }
 
 #[inline(always)]
+fn access_int_value(regs: &[Val], base: u16, field: u16) -> Option<i64> {
+    match (&regs[base as usize], &regs[field as usize]) {
+        (Val::List(list), Val::Int(index)) if *index >= 0 => match list.get(*index as usize) {
+            Some(Val::Int(value)) => Some(*value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn int_arith_value(op: PackedArithOp, lhs: i64, rhs: i64) -> Option<i64> {
+    match op {
+        PackedArithOp::Add => Some(lhs + rhs),
+        PackedArithOp::Sub => Some(lhs - rhs),
+        PackedArithOp::Mul => Some(lhs * rhs),
+        PackedArithOp::Mod => Some(lhs % rhs),
+        PackedArithOp::Div => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn exec_access_int_arith_hot(
+    frame_raw: *mut FrameState<'_>,
+    regs: &mut [Val],
+    func: &Function,
+    access_ic: &mut [Option<AccessIc>],
+    pc: usize,
+    access_dst: u16,
+    base: u16,
+    field: u16,
+    arith_op: PackedArithOp,
+    arith_dst: u16,
+    arith_a: u16,
+    arith_b: u16,
+) -> Result<()> {
+    let Some(access_value) = access_int_value(regs, base, field) else {
+        exec_access_hot(frame_raw, regs, access_ic, pc, access_dst, base, field);
+        return exec_int_arith(frame_raw, regs, func, arith_op, arith_dst, arith_a, arith_b);
+    };
+
+    assign_reg(frame_raw, regs, access_dst as usize, Val::Int(access_value));
+    let maybe_out = match (arith_a == access_dst, arith_b == access_dst) {
+        (true, _) => match &regs[arith_b as usize] {
+            Val::Int(rhs) => int_arith_value(arith_op, access_value, *rhs),
+            _ => None,
+        },
+        (_, true) => match &regs[arith_a as usize] {
+            Val::Int(lhs) => int_arith_value(arith_op, *lhs, access_value),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(out) = maybe_out {
+        assign_reg(frame_raw, regs, arith_dst as usize, Val::Int(out));
+        Ok(())
+    } else {
+        exec_int_arith(frame_raw, regs, func, arith_op, arith_dst, arith_a, arith_b)
+    }
+}
+
+#[inline(always)]
 pub(super) fn exec_len(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: u16, src: u16) {
     let out = match &regs[src as usize] {
         Val::List(value) => Val::Int(value.len() as i64),
@@ -323,6 +385,57 @@ pub(super) fn exec_int_arith(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn exec_sub_access_sub_hot(
+    frame_raw: *mut FrameState<'_>,
+    regs: &mut [Val],
+    func: &Function,
+    access_ic: &mut [Option<AccessIc>],
+    access_pc: usize,
+    first_dst: u16,
+    first_a: u16,
+    first_b: u16,
+    access_dst: u16,
+    access_base: u16,
+    access_field: u16,
+    final_dst: u16,
+    final_a: u16,
+    final_b: u16,
+) -> Result<()> {
+    exec_int_arith(frame_raw, regs, func, PackedArithOp::Sub, first_dst, first_a, first_b)?;
+    let Some(access_value) = access_int_value(regs, access_base, access_field) else {
+        exec_access_hot(
+            frame_raw,
+            regs,
+            access_ic,
+            access_pc,
+            access_dst,
+            access_base,
+            access_field,
+        );
+        return exec_int_arith(frame_raw, regs, func, PackedArithOp::Sub, final_dst, final_a, final_b);
+    };
+
+    assign_reg(frame_raw, regs, access_dst as usize, Val::Int(access_value));
+    let maybe_out = match (final_a == access_dst, final_b == access_dst) {
+        (true, _) => match &regs[final_b as usize] {
+            Val::Int(rhs) => Some(access_value - *rhs),
+            _ => None,
+        },
+        (_, true) => match &regs[final_a as usize] {
+            Val::Int(lhs) => Some(*lhs - access_value),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(out) = maybe_out {
+        assign_reg(frame_raw, regs, final_dst as usize, Val::Int(out));
+        Ok(())
+    } else {
+        exec_int_arith(frame_raw, regs, func, PackedArithOp::Sub, final_dst, final_a, final_b)
+    }
+}
+
 #[inline(always)]
 pub(super) fn exec_arith_add_int_imm(
     frame_raw: *mut FrameState<'_>,
@@ -562,13 +675,12 @@ pub(super) fn exec_starts_with_k(
     src: u16,
     key: u16,
 ) {
-    let prefix = func.consts[key as usize].as_str().unwrap_or("");
-    let out = match &regs[src as usize] {
-        Val::ShortStr(value) => Val::Bool(value.as_str().starts_with(prefix)),
-        Val::Str(value) => Val::Bool(value.as_str().starts_with(prefix)),
-        _ => Val::Bool(false),
-    };
-    assign_reg(frame_raw, regs, dst as usize, out);
+    assign_reg(
+        frame_raw,
+        regs,
+        dst as usize,
+        Val::Bool(starts_with_k_bool(regs, func, src, key)),
+    );
 }
 
 #[inline(always)]
@@ -580,13 +692,32 @@ pub(super) fn exec_contains_k(
     src: u16,
     key: u16,
 ) {
+    assign_reg(
+        frame_raw,
+        regs,
+        dst as usize,
+        Val::Bool(contains_k_bool(regs, func, src, key)),
+    );
+}
+
+#[inline(always)]
+pub(super) fn starts_with_k_bool(regs: &[Val], func: &Function, src: u16, key: u16) -> bool {
+    let prefix = func.consts[key as usize].as_str().unwrap_or("");
+    match &regs[src as usize] {
+        Val::ShortStr(value) => value.as_str().starts_with(prefix),
+        Val::Str(value) => value.as_str().starts_with(prefix),
+        _ => false,
+    }
+}
+
+#[inline(always)]
+pub(super) fn contains_k_bool(regs: &[Val], func: &Function, src: u16, key: u16) -> bool {
     let needle = func.consts[key as usize].as_str().unwrap_or("");
-    let out = match &regs[src as usize] {
-        Val::ShortStr(value) => Val::Bool(value.as_str().contains(needle)),
-        Val::Str(value) => Val::Bool(value.as_str().contains(needle)),
-        _ => Val::Bool(false),
-    };
-    assign_reg(frame_raw, regs, dst as usize, out);
+    match &regs[src as usize] {
+        Val::ShortStr(value) => value.as_str().contains(needle),
+        Val::Str(value) => value.as_str().contains(needle),
+        _ => false,
+    }
 }
 
 #[inline(always)]

@@ -224,6 +224,17 @@ pub(in crate::vm::vm) enum PackedHotKind {
         cmp_b: u16,
         jump_pc: usize,
     },
+    IntArithCmpIntMove {
+        arith_op: PackedArithOp,
+        arith_dst: u16,
+        arith_a: u16,
+        arith_b: u16,
+        cmp_op: PackedCmpOp,
+        cmp_a: u16,
+        cmp_b: u16,
+        move_dst: u16,
+        move_src: u16,
+    },
     AddIntFloorDivImm {
         add_dst: u16,
         a: u16,
@@ -281,10 +292,20 @@ pub(in crate::vm::vm) enum PackedHotKind {
         src: u16,
         key: u16,
     },
+    StartsWithKJmp {
+        src: u16,
+        key: u16,
+        ofs: i16,
+    },
     ContainsK {
         dst: u16,
         src: u16,
         key: u16,
+    },
+    ContainsKJmp {
+        src: u16,
+        key: u16,
+        ofs: i16,
     },
     ToIter {
         dst: u16,

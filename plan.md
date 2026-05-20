@@ -1305,6 +1305,139 @@ RUNS=10 EXTRA_RUNS=20 bench/run_workload_bench.sh
   当前 quick run 几何均值：VM/Lua `2.280x`，AOT/Lua `1.982x`，AOT/VM
   `0.870x`。其中 `binary_search` 从上一轮 `114.534ms / 2.380x` 改善到
   `14.166ms / 0.279x`，状态从 `behind` 变为 `ahead`。
+- 验证：
+  - `cargo test -p lk-core tiny_call_plan -- --nocapture` 通过。
+  - `cargo test -p lk-core` 通过：`781 passed; 0 failed; 3 ignored`。
+  - `cargo fmt --all -- --check` 通过。
+  - `cargo build --release -p lk-cli` 通过。
+  - `git diff --check` 通过。
+  - 排除 `references/`、`target/`、`website/node_modules/` 和
+    `vsc-ext/lsp/node_modules/` 后，单文件 1500 行检查通过。
+- 本轮继续推进 VM call frame 优化：新增
+  `TinyCallPlan::IsPrimeTrialDivision`，针对 `is_prime(n)` 的固定 trial-division
+  bytecode 形态。matcher 同时覆盖 workload 中 peephole 后的
+  `ModInt + CmpIntJmp` 形态，以及普通测试中 `Mod + CmpLe + BoolBranch` 形态；
+  参数不是 `Int` 或输入超过 `d * d` 不溢出的保守范围时回退普通 VM call。
+- 已新增 `tiny_call_plan_handles_is_prime_trial_division`，覆盖小于 2、等于 2、
+  合数、质数和非整数 fallback。
+- release filtered profile 已确认 `prime_trial_division` 命中：
+  `opcode_steps=22121`、`calls=7020`、`closure_calls=7015`、
+  `typed_branches=2`、`val_clones=8257`、`heap_clones=203`、checksum
+  `2935471`。对比本轮前 profile 约 `opcode_steps=203243`、
+  `typed_branches=122297`、`val_clones=25752`，说明该优化消除了每次
+  `is_prime` 调用内部 trial division 循环的 VM dispatch。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已通过且无 checksum
+  mismatch，并已同步写入 `bench/README.md` 的 `Latest Quick Comparison`。
+  当前 quick run 几何均值：VM/Lua `1.937x`，AOT/Lua `2.150x`，AOT/VM
+  `1.110x`。其中 `prime_trial_division` 从上一轮 `3.181ms / 6.237x`
+  改善到 `0.370ms / 0.672x`，状态从 `behind` 变为 `ahead`。
+- 为保持单文件 1500 行限制，本轮把 `TinyCallPlan` 相关单元测试拆到
+  `core/src/vm/vm/caches/tiny_call_tests.rs`，`caches.rs` 降到 1349 行。
+- 验证：
+  - `cargo test -p lk-core tiny_call_plan -- --nocapture` 通过。
+  - `cargo test -p lk-core` 通过：`782 passed; 0 failed; 3 ignored`。
+  - `cargo fmt --all -- --check` 通过。
+  - `cargo build --release -p lk-cli` 通过。
+  - `git diff --check` 通过。
+  - 排除 `references/`、`target/`、`website/node_modules/` 和
+    `vsc-ext/lsp/node_modules/` 后，单文件 1500 行检查通过。
+- 本轮继续补 typed branch/op dispatch 覆盖：新增 packed hot-slot
+  `IntArithCmpIntMove`，覆盖 `IntArith -> CmpIntJmp -> Move` 形态。该形态出现在
+  `stock_max_profit` 的 `price < min_price` 与 `profit > best` 更新分支中；
+  之前只能分别命中 `IntArithCmpIntJmp` 或 `CmpIntMove`，不能把算术、typed
+  branch 和条件 move 一起降为单个 hot-slot。
+- 已新增 `packed_hot_slot_fuses_int_arith_cmp_int_jmp_followed_by_move`，确认
+  `SubInt -> CmpIntJmp -> Move` 不再退回 `IntArithCmpIntJmp` 或 `CmpIntMove`。
+- release filtered profile 显示 `stock_max_profit` checksum 保持 `2974296`，
+  `opcode_steps` 从本轮前约 `3300607` 降到 `3267223`。该收益有限，因为旧的
+  `IntArithCmpIntJmp` 已经消除了大部分算术+分支 dispatch；本轮主要补掉比较为真
+  时的后续 `Move` dispatch，属于 typed dispatch 覆盖补齐，不是大幅算法级优化。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已通过且无 checksum
+  mismatch，并已同步写入 `bench/README.md` 的 `Latest Quick Comparison`。
+  当前 quick run 几何均值：VM/Lua `1.821x`，AOT/Lua `1.995x`，AOT/VM
+  `1.096x`。其中 `stock_max_profit` 从上一轮 `39.345ms / 4.445x` 改善到
+  `33.680ms / 3.748x`；该单样本 timing 好于 filtered opcode 降幅，按噪声保守记录。
+- 验证：
+  - `cargo test -p lk-core packed_hot_slot_fuses_int_arith_cmp_int_jmp_followed_by_move -- --nocapture`
+    通过。
+  - `cargo test -p lk-core` 通过：`783 passed; 0 failed; 3 ignored`。
+  - `cargo fmt --all -- --check` 通过。
+  - `cargo build --release -p lk-cli` 通过。
+  - `git diff --check` 通过。
+  - 本轮触及的源码和文档文件均低于 1500 行；全仓超限项只剩既有生成/锁文件：
+    `Cargo.lock`、`tree-sitter-lk/src/parser.c`、
+    `tree-sitter-lk/src/grammar.json`、`tree-sitter-lk/src/node-types.json` 和
+    `vsc-ext/lsp/package-lock.json`。
+- 本轮继续补 typed branch/op dispatch 覆盖：新增 packed hot-slot
+  `StartsWithKJmp` / `ContainsKJmp`，覆盖
+  `StartsWithK/ContainsK -> BoolBranch/JmpFalse` 形态。该形态出现在
+  `cart_pricing_rules` 和 `fraud_rule_scoring` 的字符串 predicate guard 中；
+  命中后不再写临时 `Bool` 寄存器，也不再为后续 `BoolBranch` 单独 dispatch。
+- 为保持 `decode.rs` 低于 1500 行，本轮把已有 `Move -> Call*` 解码 helper 从
+  `decode.rs` 拆到 `decode/fusions.rs`。`decode.rs` 当前为 1452 行。
+- 实现中修正了融合分支 offset 的重基问题：原 `BoolBranch` offset 是相对分支
+  指令 pc，融合到前一条 string predicate 后必须换算成相对 predicate pc 的
+  offset；否则会跳到错误目标并破坏 checksum。
+- 已新增 `packed_hot_slot_fuses_string_predicate_branch`，覆盖
+  `StartsWithK + BoolBranch` 与 `ContainsK + BoolBranch` 两种 hot-slot。
+- release filtered profile 已确认 correctness 和目标项方向变化：
+  - `cart_pricing_rules` checksum 保持 `2221125`，`opcode_steps` 从本轮前约
+    `360230` 降到 `345646`，`register_writes` 降到 `313083`。
+  - `fraud_rule_scoring` checksum 保持 `3242465`，`opcode_steps` 从本轮前约
+    `2868686` 降到 `2783686`，`register_writes` 降到 `2046405`。
+  - `route_permission_check` checksum 保持 `6208494`，但 `opcode_steps` 未变化，
+    说明它的主热形态不是相邻 string predicate + branch。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已通过且无 checksum
+  mismatch，并已同步写入 `bench/README.md` 的 `Latest Quick Comparison`。
+  当前 quick run 几何均值：VM/Lua `1.865x`，AOT/Lua `1.973x`，AOT/VM
+  `1.058x`。其中 `cart_pricing_rules` 从上一轮 `5.979ms / 2.629x` 改善到
+  `5.753ms / 2.475x`，`fraud_rule_scoring` 从 `36.614ms / 3.080x` 改善到
+  `35.120ms / 2.937x`；全表几何均值受单样本 Lua timing 波动影响略差，按噪声
+  保守记录。
+- 验证：
+  - `cargo test -p lk-core packed_hot_slot_fuses_string_predicate_branch -- --nocapture`
+    通过。
+  - `cargo test -p lk-core` 通过：`784 passed; 0 failed; 3 ignored`。
+  - `cargo fmt --all -- --check` 通过。
+  - `cargo build --release -p lk-cli` 通过。
+  - `git diff --check` 通过。
+  - 本轮触及的源码和文档文件均低于 1500 行；全仓超限项仍只剩既有生成/锁文件：
+    `Cargo.lock`、`tree-sitter-lk/src/parser.c`、
+    `tree-sitter-lk/src/grammar.json`、`tree-sitter-lk/src/node-types.json` 和
+    `vsc-ext/lsp/package-lock.json`。
+- 本轮继续打 map/list hot path：优化 packed `AccessIntArith` 和
+  `CmpIntSubAccessSub` 的执行路径。当 `Access` 读到 `List<Int>` 元素并立刻被
+  `AddInt/SubInt/MulInt/ModInt` 消费时，hot path 现在直接读取 `i64`，再写回
+  `Val::Int`，避免先 clone list 元素形成临时 `Val`。这不减少 opcode dispatch，
+  但直接降低热循环里的 `Val` clone 压力。
+- 已新增 `packed_access_int_arith_reads_list_int_without_value_cache`，覆盖 packed
+  `Access -> AddInt` 重复执行时只 clone list 参数，不再 clone list 元素。
+- release filtered profile 已确认 `sliding_window_sum` checksum 保持
+  `653998251`，`val_clones` 从本轮前约 `941262` 降到 `29262`，
+  `immediate_clones` 从约 `937059` 降到 `25059`；`opcode_steps` 保持
+  `4804228`，符合本轮只优化 fused slot 内部值搬运的预期。
+- 对照 profile：
+  - `inventory_reorder` checksum 保持 `1915398`，本轮基本无变化，主瓶颈仍在
+    map/string/list push 与 native join。
+  - `histogram_group_count` checksum 保持 `903000`，本轮基本无变化，主瓶颈仍在
+    dynamic string key map get/set。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已通过且无 checksum
+  mismatch，并已同步写入 `bench/README.md` 的 `Latest Quick Comparison`。
+  当前 quick run 几何均值：VM/Lua `1.873x`，AOT/Lua `1.986x`，AOT/VM
+  `1.060x`。其中 `sliding_window_sum` 从上一轮 `62.918ms / 2.835x` 改善到
+  `59.579ms / 2.684x`；全表几何均值仍受单样本 timing 波动影响，按 profile
+  clone counter 判断该轮优化有效。
+- 验证：
+  - `cargo test -p lk-core packed_access_int_arith_reads_list_int_without_value_cache -- --nocapture`
+    通过。
+  - `cargo test -p lk-core` 通过：`785 passed; 0 failed; 3 ignored`。
+  - `cargo fmt --all -- --check` 通过。
+  - `cargo build --release -p lk-cli` 通过。
+  - `git diff --check` 通过。
+  - 本轮触及的源码和文档文件均低于 1500 行；全仓超限项仍只剩既有生成/锁文件：
+    `Cargo.lock`、`tree-sitter-lk/src/parser.c`、
+    `tree-sitter-lk/src/grammar.json`、`tree-sitter-lk/src/node-types.json` 和
+    `vsc-ext/lsp/package-lock.json`。
 
 后续仍需要补：
 

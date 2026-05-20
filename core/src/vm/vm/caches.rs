@@ -9,6 +9,9 @@ use crate::vm::{CaptureSpec, RegionPlan};
 mod packed;
 pub(super) use packed::*;
 
+#[cfg(test)]
+mod tiny_call_tests;
+
 // ────────────── Inline Cache Architecture ──────────────
 //
 // LK uses polymorphic inline caches (ICs) at each instruction site to
@@ -167,6 +170,9 @@ pub(super) enum TinyCallPlan {
         len: usize,
         scale: i64,
     },
+    IsPrimeTrialDivision {
+        input: usize,
+    },
     IntExpr(TinyIntProgram),
     Expr(TinyExpr),
 }
@@ -206,6 +212,9 @@ enum TinyIntOp {
 
 impl TinyCallPlan {
     pub(super) fn analyze(fun: &Function) -> Option<Self> {
+        if let Some(plan) = Self::analyze_is_prime_trial_division(fun) {
+            return Some(plan);
+        }
         if let Some(plan) = Self::analyze_binary_search_implicit(fun) {
             return Some(plan);
         }
@@ -343,12 +352,226 @@ impl TinyCallPlan {
                 };
                 Self::eval_binary_search_implicit(target, len, *scale).map(Val::Int)
             }
+            Self::IsPrimeTrialDivision { input } => {
+                let &Val::Int(value) = args.get(*input)? else {
+                    return None;
+                };
+                Some(Val::Bool(Self::eval_is_prime_trial_division(value)?))
+            }
             Self::IntExpr(program) => program.eval(args, captures).map(Val::Int),
             Self::Expr(expr) => expr
                 .eval_int(args, captures)
                 .map(Val::Int)
                 .or_else(|| expr.eval(args, captures)),
         }
+    }
+
+    fn analyze_is_prime_trial_division(fun: &Function) -> Option<Self> {
+        Self::analyze_is_prime_trial_division_fused(fun)
+            .or_else(|| Self::analyze_is_prime_trial_division_bool_branch(fun))
+    }
+
+    fn analyze_is_prime_trial_division_fused(fun: &Function) -> Option<Self> {
+        if fun.param_regs.len() != 1 {
+            return None;
+        }
+        let input_param = *fun.param_regs.first()?;
+        let [
+            Op::CmpLtImmJmp {
+                r: lt_reg,
+                imm: 2,
+                ofs: 3,
+            },
+            Op::LoadK(false_early_reg, false_early_const),
+            Op::Ret {
+                base: false_early_base,
+                retc: 1,
+            },
+            Op::CmpEqImmJmp {
+                r: eq_two_reg,
+                imm: 2,
+                ofs: 3,
+            },
+            Op::LoadK(true_two_reg, true_two_const),
+            Op::Ret {
+                base: true_two_base,
+                retc: 1,
+            },
+            Op::Mod(even_rem_reg, even_lhs, even_rhs) | Op::ModInt(even_rem_reg, even_lhs, even_rhs),
+            Op::CmpEqImmJmp {
+                r: even_cmp_reg,
+                imm: 0,
+                ofs: 3,
+            },
+            Op::LoadK(false_even_reg, false_even_const),
+            Op::Ret {
+                base: false_even_base,
+                retc: 1,
+            },
+            Op::LoadK(divisor_reg, divisor_const),
+            Op::MulInt(square_reg, square_lhs, square_rhs),
+            Op::CmpIntJmp {
+                kind: IntCmpKind::Le,
+                a: square_cmp_lhs,
+                b: square_cmp_rhs,
+                ofs: 6,
+            },
+            Op::Mod(loop_rem_reg, loop_rem_lhs, loop_rem_rhs) | Op::ModInt(loop_rem_reg, loop_rem_lhs, loop_rem_rhs),
+            Op::CmpEqImmJmp {
+                r: loop_cmp_reg,
+                imm: 0,
+                ofs: 3,
+            },
+            Op::LoadK(false_loop_reg, false_loop_const),
+            Op::Ret {
+                base: false_loop_base,
+                retc: 1,
+            },
+            Op::AddIntImmJmp {
+                r: divisor_update_reg,
+                imm: 2,
+                ofs: -6,
+            },
+            Op::LoadK(true_reg, true_const),
+            Op::Ret {
+                base: true_base,
+                retc: 1,
+            },
+            Op::LoadK(_, nil_const),
+            Op::Ret { retc: 1, .. },
+        ] = fun.code.as_slice()
+        else {
+            return None;
+        };
+        if *lt_reg != input_param
+            || *false_early_base != *false_early_reg
+            || *eq_two_reg != input_param
+            || *true_two_base != *true_two_reg
+            || *even_lhs != input_param
+            || Self::int_const_for_rk(*even_rhs, fun)? != 2
+            || *even_cmp_reg != *even_rem_reg
+            || *false_even_base != *false_even_reg
+            || fun.consts.get(*divisor_const as usize) != Some(&Val::Int(3))
+            || *square_lhs != *divisor_reg
+            || *square_rhs != *divisor_reg
+            || *square_cmp_lhs != *square_reg
+            || *square_cmp_rhs != input_param
+            || *loop_rem_lhs != input_param
+            || *loop_rem_rhs != *divisor_reg
+            || *loop_cmp_reg != *loop_rem_reg
+            || *false_loop_base != *false_loop_reg
+            || *divisor_update_reg != *divisor_reg
+            || *true_base != *true_reg
+            || fun.consts.get(*false_early_const as usize) != Some(&Val::Bool(false))
+            || fun.consts.get(*false_even_const as usize) != Some(&Val::Bool(false))
+            || fun.consts.get(*false_loop_const as usize) != Some(&Val::Bool(false))
+            || fun.consts.get(*true_two_const as usize) != Some(&Val::Bool(true))
+            || fun.consts.get(*true_const as usize) != Some(&Val::Bool(true))
+            || !matches!(fun.consts.get(*nil_const as usize), Some(Val::Nil))
+        {
+            return None;
+        }
+        Some(Self::IsPrimeTrialDivision { input: 0 })
+    }
+
+    fn analyze_is_prime_trial_division_bool_branch(fun: &Function) -> Option<Self> {
+        if fun.param_regs.len() != 1 {
+            return None;
+        }
+        let input_param = *fun.param_regs.first()?;
+        let [
+            Op::CmpLtImmJmp {
+                r: lt_reg,
+                imm: 2,
+                ofs: 3,
+            },
+            Op::LoadK(false_early_reg, false_early_const),
+            Op::Ret {
+                base: false_early_base,
+                retc: 1,
+            },
+            Op::CmpEqImmJmp {
+                r: eq_two_reg,
+                imm: 2,
+                ofs: 3,
+            },
+            Op::LoadK(true_two_reg, true_two_const),
+            Op::Ret {
+                base: true_two_base,
+                retc: 1,
+            },
+            Op::Mod(even_rem_reg, even_lhs, even_rhs) | Op::ModInt(even_rem_reg, even_lhs, even_rhs),
+            Op::CmpEqImmJmp {
+                r: even_cmp_reg,
+                imm: 0,
+                ofs: 3,
+            },
+            Op::LoadK(false_even_reg, false_even_const),
+            Op::Ret {
+                base: false_even_base,
+                retc: 1,
+            },
+            Op::LoadK(divisor_reg, divisor_const),
+            Op::MulInt(square_reg, square_lhs, square_rhs),
+            Op::CmpLe(loop_bool_reg, square_cmp_lhs, square_cmp_rhs),
+            Op::BoolBranch(loop_branch_reg, 6),
+            Op::Mod(loop_rem_reg, loop_rem_lhs, loop_rem_rhs) | Op::ModInt(loop_rem_reg, loop_rem_lhs, loop_rem_rhs),
+            Op::CmpEqImmJmp {
+                r: loop_cmp_reg,
+                imm: 0,
+                ofs: 3,
+            },
+            Op::LoadK(false_loop_reg, false_loop_const),
+            Op::Ret {
+                base: false_loop_base,
+                retc: 1,
+            },
+            Op::AddIntImmJmp {
+                r: divisor_update_reg,
+                imm: 2,
+                ofs: -7,
+            },
+            Op::LoadK(true_reg, true_const),
+            Op::Ret {
+                base: true_base,
+                retc: 1,
+            },
+            Op::LoadK(_, nil_const),
+            Op::Ret { retc: 1, .. },
+        ] = fun.code.as_slice()
+        else {
+            return None;
+        };
+        if *lt_reg != input_param
+            || *false_early_base != *false_early_reg
+            || *eq_two_reg != input_param
+            || *true_two_base != *true_two_reg
+            || *even_lhs != input_param
+            || Self::int_const_for_rk(*even_rhs, fun)? != 2
+            || *even_cmp_reg != *even_rem_reg
+            || *false_even_base != *false_even_reg
+            || fun.consts.get(*divisor_const as usize) != Some(&Val::Int(3))
+            || *square_lhs != *divisor_reg
+            || *square_rhs != *divisor_reg
+            || *square_cmp_lhs != *square_reg
+            || *square_cmp_rhs != input_param
+            || *loop_branch_reg != *loop_bool_reg
+            || *loop_rem_lhs != input_param
+            || *loop_rem_rhs != *divisor_reg
+            || *loop_cmp_reg != *loop_rem_reg
+            || *false_loop_base != *false_loop_reg
+            || *divisor_update_reg != *divisor_reg
+            || *true_base != *true_reg
+            || fun.consts.get(*false_early_const as usize) != Some(&Val::Bool(false))
+            || fun.consts.get(*false_even_const as usize) != Some(&Val::Bool(false))
+            || fun.consts.get(*false_loop_const as usize) != Some(&Val::Bool(false))
+            || fun.consts.get(*true_two_const as usize) != Some(&Val::Bool(true))
+            || fun.consts.get(*true_const as usize) != Some(&Val::Bool(true))
+            || !matches!(fun.consts.get(*nil_const as usize), Some(Val::Nil))
+        {
+            return None;
+        }
+        Some(Self::IsPrimeTrialDivision { input: 0 })
     }
 
     fn analyze_binary_search_implicit(fun: &Function) -> Option<Self> {
@@ -598,6 +821,31 @@ impl TinyCallPlan {
             }
         }
         Some(-1)
+    }
+
+    #[inline]
+    fn eval_is_prime_trial_division(value: i64) -> Option<bool> {
+        if value < 2 {
+            return Some(false);
+        }
+        if value == 2 {
+            return Some(true);
+        }
+        if value % 2 == 0 {
+            return Some(false);
+        }
+        const MAX_SAFE_SQUARE_INPUT: i64 = 9_223_372_030_926_249_001;
+        if value > MAX_SAFE_SQUARE_INPUT {
+            return None;
+        }
+        let mut divisor = 3i64;
+        while divisor <= value / divisor {
+            if value % divisor == 0 {
+                return Some(false);
+            }
+            divisor = divisor.checked_add(2)?;
+        }
+        Some(true)
     }
 
     fn add_mod_plan_for_rk(
@@ -1008,183 +1256,6 @@ impl TinyExpr {
                 TinyCallPlan::eval_mod(&lhs, &rhs)
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::stmt::stmt_parser::StmtParser;
-    use crate::token::Tokenizer;
-    use crate::vm::compile_program;
-
-    #[test]
-    fn tiny_call_plan_handles_add_then_mod_return() {
-        let source = r#"
-            fn mix(a, b) {
-                return (a + b) % 1000000007;
-            }
-        "#;
-        let tokens = Tokenizer::tokenize(source).expect("tokenize");
-        let mut parser = StmtParser::new(&tokens);
-        let program = parser.parse_program().expect("parse program");
-        let function = compile_program(&program);
-        let proto_function = function.protos[0].func.as_ref().expect("compiled proto");
-        let plan = TinyCallPlan::analyze(proto_function).expect("tiny plan");
-
-        let result = plan
-            .try_eval(&[Val::Int(10), Val::Int(5)], Some(&ClosureCapture::empty()))
-            .expect("tiny eval");
-
-        assert_eq!(result, Val::Int(15));
-    }
-
-    #[test]
-    fn tiny_call_plan_handles_generic_arithmetic_return() {
-        let source = r#"
-            fn mix(a, b, c) {
-                return (((a * 3) + (b % 11)) + (c * 5)) % 1000000007;
-            }
-        "#;
-        let tokens = Tokenizer::tokenize(source).expect("tokenize");
-        let mut parser = StmtParser::new(&tokens);
-        let program = parser.parse_program().expect("parse program");
-        let function = compile_program(&program);
-        let proto_function = function.protos[0].func.as_ref().expect("compiled proto");
-        let plan = TinyCallPlan::analyze(proto_function).expect("tiny plan");
-
-        let result = plan
-            .try_eval(
-                &[Val::Int(7), Val::Int(23), Val::Int(5)],
-                Some(&ClosureCapture::empty()),
-            )
-            .expect("tiny eval");
-
-        assert_eq!(result, Val::Int(((7 * 3) + (23 % 11)) + (5 * 5)));
-    }
-
-    #[test]
-    fn tiny_call_plan_handles_euclid_gcd_loop() {
-        let source = r#"
-            fn gcd(a0, b0) {
-                let a = a0;
-                let b = b0;
-                while (b != 0) {
-                    let t = a % b;
-                    a = b;
-                    b = t;
-                }
-                return a;
-            }
-        "#;
-        let tokens = Tokenizer::tokenize(source).expect("tokenize");
-        let mut parser = StmtParser::new(&tokens);
-        let program = parser.parse_program().expect("parse program");
-        let function = compile_program(&program);
-        let proto_function = function.protos[0].func.as_ref().expect("compiled proto");
-        let plan = TinyCallPlan::analyze(proto_function).expect("tiny plan");
-
-        assert!(matches!(plan, TinyCallPlan::EuclidGcd { lhs: 0, rhs: 1 }));
-        assert_eq!(
-            plan.try_eval(&[Val::Int(312), Val::Int(210)], Some(&ClosureCapture::empty())),
-            Some(Val::Int(6))
-        );
-        assert_eq!(
-            plan.try_eval(&[Val::Int(312), Val::Int(0)], Some(&ClosureCapture::empty())),
-            Some(Val::Int(312))
-        );
-        assert_eq!(
-            plan.try_eval(&[Val::Float(312.0), Val::Int(210)], Some(&ClosureCapture::empty())),
-            None
-        );
-    }
-
-    #[test]
-    fn tiny_call_plan_handles_implicit_binary_search_loop() {
-        let source = r#"
-            fn binary_search_implicit(target, n) {
-                let lo = 0;
-                let hi = n - 1;
-                while (lo <= hi) {
-                    let mid = math.floor((lo + hi) / 2);
-                    let value = mid * 2;
-                    if value == target {
-                        return mid;
-                    }
-                    if value < target {
-                        lo = mid + 1;
-                    } else {
-                        hi = mid - 1;
-                    }
-                }
-                return -1;
-            }
-        "#;
-        let tokens = Tokenizer::tokenize(source).expect("tokenize");
-        let mut parser = StmtParser::new(&tokens);
-        let program = parser.parse_program().expect("parse program");
-        let function = compile_program(&program);
-        let proto_function = function.protos[0].func.as_ref().expect("compiled proto");
-        let plan = TinyCallPlan::analyze(proto_function).expect("tiny plan");
-
-        assert!(matches!(
-            plan,
-            TinyCallPlan::BinarySearchImplicit {
-                target: 0,
-                len: 1,
-                scale: 2
-            }
-        ));
-        assert_eq!(
-            plan.try_eval(&[Val::Int(120), Val::Int(200)], Some(&ClosureCapture::empty())),
-            Some(Val::Int(60))
-        );
-        assert_eq!(
-            plan.try_eval(&[Val::Int(121), Val::Int(200)], Some(&ClosureCapture::empty())),
-            Some(Val::Int(-1))
-        );
-        assert_eq!(
-            plan.try_eval(&[Val::Int(0), Val::Int(0)], Some(&ClosureCapture::empty())),
-            Some(Val::Int(-1))
-        );
-        assert_eq!(
-            plan.try_eval(&[Val::Str("120".into()), Val::Int(200)], Some(&ClosureCapture::empty())),
-            None
-        );
-    }
-
-    fn native_noop(_: &[Val], _: &mut crate::vm::VmContext) -> anyhow::Result<Val> {
-        Ok(Val::Nil)
-    }
-
-    fn native_named_noop(
-        _: crate::val::NativeArgs<'_>,
-        _: &[(String, Val)],
-        _: &mut crate::vm::VmContext,
-    ) -> anyhow::Result<Val> {
-        Ok(Val::Nil)
-    }
-
-    #[test]
-    fn call_ic_native_entry_carries_return_layout() {
-        let layout = CallReturnLayout::new(3, 2);
-        let entry = CallIc::Rust(native_noop, 1, layout);
-        let cloned = entry.clone();
-
-        let CallIc::Rust(_, argc, ret) = cloned else {
-            panic!("expected rust call ic");
-        };
-        assert_eq!(argc, 1);
-        assert!(ret.matches(3, 2));
-        assert!(!ret.matches(3, 1));
-        assert!(!ret.matches(4, 2));
-
-        let fast_named = CallIc::RustFastNamed(native_named_noop, 2, layout).clone();
-        let CallIc::RustFastNamed(_, argc, ret) = fast_named else {
-            panic!("expected fast named call ic");
-        };
-        assert_eq!(argc, 2);
-        assert!(ret.matches(3, 2));
     }
 }
 

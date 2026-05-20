@@ -117,6 +117,22 @@ fn to_str_add_rhs_function() -> Function {
     }
 }
 
+fn access_int_arith_function() -> Function {
+    Function {
+        consts: Vec::new(),
+        code: vec![Op::Access(3, 0, 1), Op::AddInt(4, 2, 3), Op::Ret { base: 4, retc: 1 }],
+        n_regs: 5,
+        protos: Vec::new(),
+        param_regs: vec![0, 1, 2],
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    }
+}
+
 #[test]
 fn generic_add_quickens_int_site_and_reuses_it() {
     let _guard = METRICS_LOCK.lock().expect("metrics lock");
@@ -327,6 +343,37 @@ fn packed_compare_imm_branch_records_typed_branch_metric() {
     assert!(
         metrics.typed_branch_ops > 0,
         "packed immediate compare+branch should be counted as a typed branch"
+    );
+}
+
+#[test]
+fn packed_access_int_arith_reads_list_int_without_value_cache() {
+    let _guard = METRICS_LOCK.lock().expect("metrics lock");
+    vm_runtime_metrics_reset();
+    let function = pack_bc32(access_int_arith_function());
+    let mut vm = Vm::new();
+    let mut ctx = VmContext::new();
+
+    for _ in 0..6 {
+        let out = vm
+            .exec_with(
+                &function,
+                &mut ctx,
+                Some(&[
+                    Val::List(vec![Val::Int(10), Val::Int(32), Val::Int(99)].into()),
+                    Val::Int(1),
+                    Val::Int(10),
+                ]),
+            )
+            .expect("execute packed access+int arith");
+        assert_eq!(out, Val::Int(42));
+    }
+
+    let metrics = vm_runtime_metrics_snapshot();
+    assert!(metrics.quickening_hits > 0);
+    assert_eq!(
+        metrics.heap_val_clones, 6,
+        "only the list arguments should require heap clones across repeated packed executions"
     );
 }
 

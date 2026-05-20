@@ -1,5 +1,63 @@
 use super::*;
 
+type MoveCallDecode = (Vec<(u16, u16)>, u16, u16, u8, u8, PackedHotCallKind, usize);
+
+pub(super) fn decode_move_call(decoded: Option<&Bc32Decoded>, pc: usize) -> Option<MoveCallDecode> {
+    let decoded = decoded?;
+    let mut instr_idx = decoded.word_to_instr.get(pc).copied()? as usize;
+    let mut moves = Vec::new();
+    while let Some(instr) = decoded.instrs.get(instr_idx) {
+        match instr.op {
+            Op::Move(dst, src) => {
+                moves.push((dst, src));
+                instr_idx += 1;
+            }
+            Op::Call { f, base, argc, retc } => {
+                return moves_target_call_window(&moves, base, argc).then_some((
+                    moves,
+                    f,
+                    base,
+                    argc,
+                    retc,
+                    PackedHotCallKind::Generic,
+                    instr.next_pc,
+                ));
+            }
+            Op::CallClosureExact { f, base, argc, retc } => {
+                return moves_target_call_window(&moves, base, argc).then_some((
+                    moves,
+                    f,
+                    base,
+                    argc,
+                    retc,
+                    PackedHotCallKind::ClosureExact,
+                    instr.next_pc,
+                ));
+            }
+            Op::CallExact { f, base, argc, retc } => {
+                return moves_target_call_window(&moves, base, argc).then_some((
+                    moves,
+                    f,
+                    base,
+                    argc,
+                    retc,
+                    PackedHotCallKind::Exact,
+                    instr.next_pc,
+                ));
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn moves_target_call_window(moves: &[(u16, u16)], base: u16, argc: u8) -> bool {
+    let Some(end) = base.checked_add(argc as u16) else {
+        return false;
+    };
+    !moves.is_empty() && moves.iter().all(|(dst, _)| *dst >= base && *dst < end)
+}
+
 pub(super) fn decode_following_move(code32: &[u32], pc: usize) -> Option<(u16, u16, usize)> {
     let word = *code32.get(pc)?;
     let bc32::DecodedTag::Regular {
@@ -16,6 +74,25 @@ pub(super) fn decode_following_move(code32: &[u32], pc: usize) -> Option<(u16, u
     let (dst, src, _) = decode_abc(word, reg_ext);
     let next_pc = if reg_ext.is_some() { pc + 2 } else { pc + 1 };
     Some((dst, src, next_pc))
+}
+
+pub(super) fn decode_following_bool_branch(
+    code32: &[u32],
+    origin_pc: usize,
+    branch_pc: usize,
+    expected_reg: u16,
+) -> Option<(i16, usize)> {
+    let (op, next_pc) = fetch_packed_op(None, code32, branch_pc).ok()?;
+    let (reg, ofs) = match op {
+        Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs) => (r, ofs),
+        _ => return None,
+    };
+    if reg != expected_reg {
+        return None;
+    }
+    let target = branch_pc as isize + ofs as isize;
+    let fused_ofs = i16::try_from(target - origin_pc as isize).ok()?;
+    Some((fused_ofs, next_pc))
 }
 
 pub(super) fn decode_map_get_cmp_jmp(
@@ -77,6 +154,26 @@ pub(super) fn decode_following_cmp_int_jmp(code32: &[u32], pc: usize) -> Option<
         crate::vm::IntCmpKind::Ge => PackedCmpOp::Ge,
     };
     Some((op, a, b, ofs, pc + 3))
+}
+
+pub(super) fn decode_following_cmp_int_jmp_move(
+    code32: &[u32],
+    cmp_pc: usize,
+    expected_arith_dst: u16,
+) -> Option<(PackedCmpOp, u16, u16, u16, u16, usize)> {
+    let (cmp_op, cmp_a, cmp_b, ofs, move_pc) = decode_following_cmp_int_jmp(code32, cmp_pc)?;
+    if cmp_a != expected_arith_dst && cmp_b != expected_arith_dst {
+        return None;
+    }
+    let (move_dst, move_src, move_next_pc) = decode_following_move(code32, move_pc)?;
+    if move_src != expected_arith_dst {
+        return None;
+    }
+    let target_pc = ((cmp_pc as isize) + (ofs as isize)) as usize;
+    if target_pc != move_next_pc {
+        return None;
+    }
+    Some((cmp_op, cmp_a, cmp_b, move_dst, move_src, move_next_pc))
 }
 
 pub(super) fn decode_following_int_arith(

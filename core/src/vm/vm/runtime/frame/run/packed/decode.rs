@@ -42,60 +42,6 @@ fn decode_ab_imm(word: u32, reg_ext: Option<u32>) -> (u16, u16, i16) {
     (dst, src, imm)
 }
 
-type MoveCallDecode = (Vec<(u16, u16)>, u16, u16, u8, u8, PackedHotCallKind, usize);
-
-fn decode_move_call(decoded: Option<&Bc32Decoded>, pc: usize) -> Option<MoveCallDecode> {
-    let decoded = decoded?;
-    let mut instr_idx = decoded.word_to_instr.get(pc).copied()? as usize;
-    if instr_idx >= decoded.instrs.len() {
-        return None;
-    }
-    let mut moves = Vec::new();
-    while let Some(instr) = decoded.instrs.get(instr_idx) {
-        match instr.op {
-            Op::Move(dst, src) => {
-                moves.push((dst, src));
-                instr_idx += 1;
-            }
-            Op::Call { f, base, argc, retc } => {
-                if moves_target_call_window(&moves, base, argc) {
-                    return Some((moves, f, base, argc, retc, PackedHotCallKind::Generic, instr.next_pc));
-                }
-                return None;
-            }
-            Op::CallClosureExact { f, base, argc, retc } => {
-                if moves_target_call_window(&moves, base, argc) {
-                    return Some((
-                        moves,
-                        f,
-                        base,
-                        argc,
-                        retc,
-                        PackedHotCallKind::ClosureExact,
-                        instr.next_pc,
-                    ));
-                }
-                return None;
-            }
-            Op::CallExact { f, base, argc, retc } => {
-                if moves_target_call_window(&moves, base, argc) {
-                    return Some((moves, f, base, argc, retc, PackedHotCallKind::Exact, instr.next_pc));
-                }
-                return None;
-            }
-            _ => return None,
-        }
-    }
-    None
-}
-
-fn moves_target_call_window(moves: &[(u16, u16)], base: u16, argc: u8) -> bool {
-    let Some(end) = base.checked_add(argc as u16) else {
-        return false;
-    };
-    !moves.is_empty() && moves.iter().all(|(dst, _)| *dst >= base && *dst < end)
-}
-
 struct PackedMapUpsertAdd {
     cmp_dst: u16,
     default: PackedValueOperand,
@@ -274,7 +220,7 @@ pub(super) fn build_hot_slot(
             reg_ext.map(|word| (word & 0xFF) as u16).unwrap_or(0),
             ((ext >> 16) & 0xFF) as u16,
         );
-        let next_pc = if reg_ext.is_some() { pc + 3 } else { pc + 2 };
+        let mut next_pc = if reg_ext.is_some() { pc + 3 } else { pc + 2 };
         let kind = match ext_op {
             bc32::EXT_OP_ADD_INT => {
                 if let Some((add_dst, add_src, add_imm, fused_next_pc)) = decode_following_add_int_imm(code32, next_pc)
@@ -333,6 +279,25 @@ pub(super) fn build_hot_slot(
                             arith_b: c,
                             add_dst,
                             add_imm,
+                        },
+                    });
+                }
+                if let Some((cmp_op, cmp_a, cmp_b, move_dst, move_src, fused_next_pc)) =
+                    decode_following_cmp_int_jmp_move(code32, next_pc, f)
+                {
+                    return Some(PackedHotSlot {
+                        word,
+                        next_pc: fused_next_pc,
+                        kind: PackedHotKind::IntArithCmpIntMove {
+                            arith_op: PackedArithOp::Sub,
+                            arith_dst: f,
+                            arith_a: b,
+                            arith_b: c,
+                            cmp_op,
+                            cmp_a,
+                            cmp_b,
+                            move_dst,
+                            move_src,
                         },
                     });
                 }
@@ -488,6 +453,25 @@ pub(super) fn build_hot_slot(
                         },
                     });
                 }
+                if let Some((cmp_op, cmp_a, cmp_b, move_dst, move_src, fused_next_pc)) =
+                    decode_following_cmp_int_jmp_move(code32, next_pc, f)
+                {
+                    return Some(PackedHotSlot {
+                        word,
+                        next_pc: fused_next_pc,
+                        kind: PackedHotKind::IntArithCmpIntMove {
+                            arith_op: PackedArithOp::Mod,
+                            arith_dst: f,
+                            arith_a: b,
+                            arith_b: c,
+                            cmp_op,
+                            cmp_a,
+                            cmp_b,
+                            move_dst,
+                            move_src,
+                        },
+                    });
+                }
                 PackedHotKind::IntArith {
                     op: PackedArithOp::Mod,
                     dst: f,
@@ -502,8 +486,22 @@ pub(super) fn build_hot_slot(
                 b: c,
             },
             bc32::EXT_OP_FLOOR => PackedHotKind::Floor { dst: f, src: b },
-            bc32::EXT_OP_STARTS_WITH_K => PackedHotKind::StartsWithK { dst: f, src: b, key: c },
-            bc32::EXT_OP_CONTAINS_K => PackedHotKind::ContainsK { dst: f, src: b, key: c },
+            bc32::EXT_OP_STARTS_WITH_K => {
+                if let Some((ofs, branch_next_pc)) = decode_following_bool_branch(code32, pc, next_pc, f) {
+                    next_pc = branch_next_pc;
+                    PackedHotKind::StartsWithKJmp { src: b, key: c, ofs }
+                } else {
+                    PackedHotKind::StartsWithK { dst: f, src: b, key: c }
+                }
+            }
+            bc32::EXT_OP_CONTAINS_K => {
+                if let Some((ofs, branch_next_pc)) = decode_following_bool_branch(code32, pc, next_pc, f) {
+                    next_pc = branch_next_pc;
+                    PackedHotKind::ContainsKJmp { src: b, key: c, ofs }
+                } else {
+                    PackedHotKind::ContainsK { dst: f, src: b, key: c }
+                }
+            }
             bc32::EXT_OP_TO_ITER => PackedHotKind::ToIter { dst: f, src: b },
             bc32::EXT_OP_MAP_SET_INTERNED => PackedHotKind::MapSetInterned { map: f, key: b, val: c },
             bc32::EXT_OP_CALL_NATIVE_FAST => PackedHotKind::CallNativeFast {
