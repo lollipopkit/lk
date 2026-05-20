@@ -101,6 +101,98 @@ pub fn compile_function_to_llvm(
     LlvmBackend::new(options).compile_function_with_name(function, name)
 }
 
+fn op_written_regs(op: &Op) -> Vec<u16> {
+    match *op {
+        Op::LoadK(dst, _)
+        | Op::Move(dst, _)
+        | Op::StoreLocal(dst, _)
+        | Op::LoadLocal(dst, _)
+        | Op::Add(dst, _, _)
+        | Op::StrConcatKnownCap(dst, _, _)
+        | Op::StrConcatToStr(dst, _, _)
+        | Op::Sub(dst, _, _)
+        | Op::Mul(dst, _, _)
+        | Op::Div(dst, _, _)
+        | Op::Mod(dst, _, _)
+        | Op::AddInt(dst, _, _)
+        | Op::AddIntImm(dst, _, _)
+        | Op::SubInt(dst, _, _)
+        | Op::MulInt(dst, _, _)
+        | Op::ModInt(dst, _, _)
+        | Op::AddFloat(dst, _, _)
+        | Op::SubFloat(dst, _, _)
+        | Op::MulFloat(dst, _, _)
+        | Op::DivFloat(dst, _, _)
+        | Op::ModFloat(dst, _, _)
+        | Op::CmpEq(dst, _, _)
+        | Op::CmpNe(dst, _, _)
+        | Op::CmpLt(dst, _, _)
+        | Op::CmpLe(dst, _, _)
+        | Op::CmpGt(dst, _, _)
+        | Op::CmpGe(dst, _, _)
+        | Op::CmpI { dst, .. }
+        | Op::CmpEqImm(dst, _, _)
+        | Op::CmpNeImm(dst, _, _)
+        | Op::CmpLtImm(dst, _, _)
+        | Op::CmpLeImm(dst, _, _)
+        | Op::CmpGtImm(dst, _, _)
+        | Op::CmpGeImm(dst, _, _)
+        | Op::In(dst, _, _)
+        | Op::ToBool(dst, _)
+        | Op::Not(dst, _)
+        | Op::ToStr(dst, _)
+        | Op::LoadGlobal(dst, _)
+        | Op::LoadCapture { dst, .. }
+        | Op::BuildList { dst, .. }
+        | Op::Access(dst, _, _)
+        | Op::AccessK(dst, _, _)
+        | Op::Index { dst, .. }
+        | Op::IndexK(dst, _, _)
+        | Op::Len { dst, .. }
+        | Op::ListLen { dst, .. }
+        | Op::MapLen { dst, .. }
+        | Op::StrLen { dst, .. }
+        | Op::Floor { dst, .. }
+        | Op::FloorDivImm { dst, .. }
+        | Op::StartsWithK(dst, _, _)
+        | Op::ContainsK(dst, _, _)
+        | Op::ToIter { dst, .. }
+        | Op::BuildMap { dst, .. }
+        | Op::MapHas(dst, _, _)
+        | Op::MapHasK(dst, _, _)
+        | Op::MapGetInterned(dst, _, _)
+        | Op::MapGetDynamic(dst, _, _)
+        | Op::MakeClosure { dst, .. }
+        | Op::ListSlice { dst, .. }
+        | Op::CallMethod0 { dst, .. }
+        | Op::CallGlobalMethod0 { dst, .. }
+        | Op::NullishPick { dst, .. }
+        | Op::JmpFalseSet { dst, .. }
+        | Op::JmpTrueSet { dst, .. } => vec![dst],
+        Op::MapSet { map, .. }
+        | Op::MapSetMove { map, .. }
+        | Op::MapSetInterned(map, _, _)
+        | Op::MapSetInternedMove(map, _, _)
+        | Op::ListPush { list: map, .. }
+        | Op::ListPushMove { list: map, .. }
+        | Op::AddIntImmJmp { r: map, .. } => vec![map],
+        Op::ForRangePrep { step, .. } => vec![step],
+        Op::ForRangeLoop { idx, write_idx, .. } | Op::RangeLoopI { idx, write_idx, .. } => {
+            if write_idx {
+                vec![idx]
+            } else {
+                Vec::new()
+            }
+        }
+        Op::ForRangeStep { idx, .. } => vec![idx],
+        Op::Call { base, retc, .. }
+        | Op::CallExact { base, retc, .. }
+        | Op::CallClosureExact { base, retc, .. }
+        | Op::CallNativeFast { base, retc, .. } => (0..retc).map(|offset| base + u16::from(offset)).collect(),
+        _ => Vec::new(),
+    }
+}
+
 struct FunctionTranslator<'a> {
     function: &'a Function,
     function_name: &'a str,
@@ -109,6 +201,7 @@ struct FunctionTranslator<'a> {
     tmp_counter: usize,
     blocks: Vec<BlockRange>,
     block_index_by_start: BTreeMap<usize, usize>,
+    block_predecessors: Vec<Vec<usize>>,
     runtime_helpers: BTreeSet<RuntimeHelper>,
     known_regs: Vec<Option<KnownReg>>,
     known_globals: BTreeMap<String, KnownReg>,
@@ -137,6 +230,7 @@ impl<'a> FunctionTranslator<'a> {
             tmp_counter: 0,
             blocks: Vec::new(),
             block_index_by_start: BTreeMap::new(),
+            block_predecessors: Vec::new(),
             runtime_helpers: BTreeSet::new(),
             known_regs: vec![None; function.n_regs as usize],
             known_globals: BTreeMap::new(),
@@ -345,8 +439,76 @@ impl<'a> FunctionTranslator<'a> {
             end: self.function.code.len(),
             label: DEFAULT_RETURN_LABEL.to_string(),
         });
+        self.block_predecessors = self.compute_block_predecessors()?;
 
         Ok(())
+    }
+
+    fn compute_block_predecessors(&self) -> Result<Vec<Vec<usize>>> {
+        let mut predecessors = vec![Vec::<usize>::new(); self.blocks.len()];
+        for (block_idx, block) in self.blocks.iter().enumerate() {
+            if block.start == self.function.code.len() || block.start >= block.end {
+                continue;
+            }
+            let Some(op) = self.function.code.get(block.end - 1) else {
+                continue;
+            };
+            match op {
+                Op::Jmp(ofs)
+                | Op::Break(ofs)
+                | Op::Continue(ofs)
+                | Op::AddIntImmJmp { ofs, .. }
+                | Op::ForRangeStep { back_ofs: ofs, .. } => {
+                    let target = Self::compute_target(block.end - 1, *ofs, self.function.code.len())?;
+                    self.add_predecessor(&mut predecessors, target, block_idx)?;
+                }
+                Op::JmpFalse(_, ofs)
+                | Op::BoolBranch(_, ofs)
+                | Op::CmpLtImmJmp { ofs, .. }
+                | Op::CmpLeImmJmp { ofs, .. }
+                | Op::CmpEqImmJmp { ofs, .. }
+                | Op::CmpGtImmJmp { ofs, .. }
+                | Op::CmpGeImmJmp { ofs, .. }
+                | Op::CmpNeImmJmp { ofs, .. }
+                | Op::CmpIntJmp { ofs, .. }
+                | Op::JmpIfNil(_, ofs)
+                | Op::JmpIfNotNil(_, ofs)
+                | Op::JmpFalseSet { ofs, .. }
+                | Op::JmpTrueSet { ofs, .. }
+                | Op::NullishPick { ofs, .. }
+                | Op::ForRangeLoop { ofs, .. }
+                | Op::RangeLoopI { ofs, .. } => {
+                    let target = Self::compute_target(block.end - 1, *ofs, self.function.code.len())?;
+                    self.add_predecessor(&mut predecessors, target, block_idx)?;
+                    self.add_fallthrough_predecessor(&mut predecessors, block_idx)?;
+                }
+                Op::Ret { .. } => {}
+                _ => self.add_fallthrough_predecessor(&mut predecessors, block_idx)?,
+            }
+        }
+        for preds in &mut predecessors {
+            preds.sort_unstable();
+            preds.dedup();
+        }
+        Ok(predecessors)
+    }
+
+    fn add_predecessor(&self, predecessors: &mut [Vec<usize>], target: usize, predecessor: usize) -> Result<()> {
+        let block_idx = *self
+            .block_index_by_start
+            .get(&target)
+            .ok_or_else(|| anyhow!("no block found for branch target {}", target))?;
+        if let Some(preds) = predecessors.get_mut(block_idx) {
+            preds.push(predecessor);
+        }
+        Ok(())
+    }
+
+    fn add_fallthrough_predecessor(&self, predecessors: &mut [Vec<usize>], predecessor: usize) -> Result<()> {
+        let Some(next) = self.blocks.get(predecessor + 1) else {
+            return Ok(());
+        };
+        self.add_predecessor(predecessors, next.start, predecessor)
     }
 
     fn compute_target(current: usize, ofs: i16, len: usize) -> Result<usize> {
@@ -424,6 +586,7 @@ impl<'a> FunctionTranslator<'a> {
             return Ok(());
         }
         self.writer.raw_line(format!("{}:", block_label));
+        self.invalidate_known_regs_for_block(block_idx);
         if let Some(target) = self.skipped_block_targets.get(&block_idx) {
             self.writer.line(format!("br label %{}", target));
             return Ok(());
@@ -806,6 +969,54 @@ impl<'a> FunctionTranslator<'a> {
             }
         }
         Ok(())
+    }
+
+    fn invalidate_known_regs_for_block(&mut self, block_idx: usize) {
+        if block_idx == 0 {
+            return;
+        }
+        let Some(predecessors) = self.block_predecessors.get(block_idx).cloned() else {
+            self.known_regs.fill(None);
+            return;
+        };
+        if predecessors.len() == 1 && predecessors[0] + 1 == block_idx {
+            return;
+        }
+        self.invalidate_known_regs_written_on_untrusted_paths(block_idx, &predecessors);
+    }
+
+    fn invalidate_known_regs_written_on_untrusted_paths(&mut self, block_idx: usize, predecessors: &[usize]) {
+        if predecessors.is_empty() {
+            self.known_regs.fill(None);
+            return;
+        }
+        if predecessors.len() == 1 {
+            for idx in predecessors[0].saturating_add(1)..block_idx {
+                self.invalidate_known_regs_written_in_block(idx);
+            }
+            return;
+        }
+        let min_pred = predecessors.iter().copied().min().unwrap_or(block_idx);
+        for pred in predecessors.iter().copied() {
+            self.invalidate_known_regs_written_in_block(pred);
+        }
+        for idx in min_pred.saturating_add(1)..block_idx {
+            self.invalidate_known_regs_written_in_block(idx);
+        }
+    }
+
+    fn invalidate_known_regs_written_in_block(&mut self, block_idx: usize) {
+        let Some(block) = self.blocks.get(block_idx) else {
+            return;
+        };
+        for instr_idx in block.start..block.end {
+            let Some(op) = self.function.code.get(instr_idx) else {
+                continue;
+            };
+            for reg in op_written_regs(op) {
+                self.set_known(reg, None);
+            }
+        }
     }
 
     fn block_label_for_index(&self, index: usize) -> Result<String> {

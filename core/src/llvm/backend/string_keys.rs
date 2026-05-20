@@ -108,7 +108,31 @@ impl<'a> FunctionTranslator<'a> {
                 _ => {}
             }
         }
-        consumed
+        consumed && !self.string_key_alias_read_after_block(block_end, alias)
+    }
+
+    fn string_key_alias_read_after_block(&self, block_end: usize, mut alias: u16) -> bool {
+        for op in &self.function.code[block_end..] {
+            match *op {
+                Op::Access(_, _, field)
+                | Op::MapGetDynamic(_, _, field)
+                | Op::MapHas(_, _, field)
+                | Op::MapSet { key: field, .. }
+                | Op::MapSetMove { key: field, .. }
+                | Op::ListPush { val: field, .. }
+                | Op::ListPushMove { val: field, .. }
+                    if field == alias => {}
+                Op::Move(new_alias, src) | Op::LoadLocal(new_alias, src) | Op::StoreLocal(new_alias, src)
+                    if src == alias =>
+                {
+                    alias = new_alias;
+                }
+                _ if string_key_op_reads_reg(op, alias) => return true,
+                _ if string_key_op_writes_reg(op, alias) => return false,
+                _ => {}
+            }
+        }
+        false
     }
 }
 

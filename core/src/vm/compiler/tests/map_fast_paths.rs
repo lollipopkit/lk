@@ -837,3 +837,86 @@ fn map_index_dynamic_key_lowers_to_map_get_dynamic() {
         function.code
     );
 }
+
+#[test]
+fn map_upsert_with_pure_delta_delays_delta_until_after_nil_branch() {
+    let source = r#"
+        let stock = {};
+        let r = 3;
+        for i in 1..=4 {
+            let sku = "sku-${i % 2}";
+            let current = map.get(stock, sku);
+            let delta = ((i * 11) + r) % 37;
+            if current == nil {
+                stock.set(sku, delta);
+            } else {
+                stock.set(sku, current + delta);
+            }
+        }
+        return map.get(stock, "sku-1") + map.get(stock, "sku-0");
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(85));
+    let get_pos = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::MapGetDynamic(_, _, _)))
+        .expect("expected dynamic map get");
+    assert!(
+        matches!(function.code.get(get_pos + 1), Some(Op::CmpEq(..))),
+        "expected nil compare immediately after MapGetDynamic for packed branch fusion in {:?}",
+        function.code
+    );
+    assert!(
+        matches!(
+            function.code.get(get_pos + 2),
+            Some(Op::BoolBranch(..) | Op::JmpFalse(..))
+        ),
+        "expected branch immediately after MapGetDynamic nil compare in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn map_upsert_with_default_increment_delays_default_until_after_nil_branch() {
+    let source = r#"
+        let hist = {};
+        for i in 1..=4 {
+            let bucket = "b${i % 2}";
+            let current = map.get(hist, bucket);
+            if current == nil {
+                hist.set(bucket, 1);
+            } else {
+                hist.set(bucket, current + 1);
+            }
+        }
+        return map.get(hist, "b1") + map.get(hist, "b0");
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(4));
+    let get_pos = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::MapGetDynamic(_, _, _)))
+        .expect("expected dynamic map get");
+    assert!(
+        matches!(function.code.get(get_pos + 1), Some(Op::CmpEq(..))),
+        "expected nil compare immediately after MapGetDynamic for packed branch fusion in {:?}",
+        function.code
+    );
+    assert!(
+        matches!(
+            function.code.get(get_pos + 2),
+            Some(Op::BoolBranch(..) | Op::JmpFalse(..))
+        ),
+        "expected branch immediately after MapGetDynamic nil compare in {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::AddIntImm(..))),
+        "expected current + 1 to lower to AddIntImm in {:?}",
+        function.code
+    );
+}

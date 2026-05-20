@@ -929,6 +929,61 @@ fn shadowed_function_name_does_not_use_closure_exact_opcode() {
 }
 
 #[test]
+fn builtin_call_inside_named_function_keeps_packed_proto() {
+    let source = r#"
+        import math;
+        fn midpoint(lo, hi) {
+            return math.floor((lo + hi) / 2);
+        }
+        return midpoint(10, 20);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(15));
+    let proto = function
+        .protos
+        .iter()
+        .find(|proto| proto.self_name.as_deref() == Some("midpoint"))
+        .and_then(|proto| proto.func.as_ref())
+        .expect("midpoint proto");
+    assert!(
+        proto.code32.is_some(),
+        "method/builtin calls should not be treated as same-scope recursion in {:?}",
+        proto.code
+    );
+}
+
+#[test]
+fn mutually_recursive_named_functions_skip_packed_proto() {
+    let source = r#"
+        fn is_even(n) {
+            if n == 0 { return true; }
+            return is_odd(n - 1);
+        }
+        fn is_odd(n) {
+            if n == 0 { return false; }
+            return is_even(n - 1);
+        }
+        return is_even(10) && !is_even(11);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Bool(true));
+    for name in ["is_even", "is_odd"] {
+        let proto = function
+            .protos
+            .iter()
+            .find(|proto| proto.self_name.as_deref() == Some(name))
+            .and_then(|proto| proto.func.as_ref())
+            .expect("recursive proto");
+        assert!(
+            proto.code32.is_none(),
+            "same-scope recursive function {name} should use opcode runner to avoid small test-thread stack overflow"
+        );
+    }
+}
+
+#[test]
 fn floor_result_feeds_typed_integer_lowering() {
     let source = r#"
         import math;

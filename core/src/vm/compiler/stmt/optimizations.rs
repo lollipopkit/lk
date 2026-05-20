@@ -122,7 +122,7 @@ impl FunctionBuilder {
         }
     }
 
-    fn expr_mentions_name(expr: &Expr, target: &str) -> bool {
+    pub(super) fn expr_mentions_name(expr: &Expr, target: &str) -> bool {
         match expr {
             Expr::Var(name) => name == target,
             Expr::Paren(inner) | Expr::Unary(_, inner) => Self::expr_mentions_name(inner, target),

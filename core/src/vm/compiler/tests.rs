@@ -821,6 +821,44 @@ fn straight_line_known_call_inlines_without_runtime_call() {
 }
 
 #[test]
+fn branching_known_call_inlines_without_runtime_call() {
+    let source = r#"
+        fn risk(amount, country, risky) {
+            let score = 0;
+            if amount > 900 {
+                score += 40;
+            } else if amount > 400 {
+                score += 15;
+            }
+            if map.get(risky, country) != nil {
+                score += 35;
+            }
+            score += 2;
+            return score;
+        }
+        let risky = {"ng": true};
+        let result = risk(950, "ng", risky);
+        return result;
+        "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokenize");
+    let mut parser = StmtParser::new(&tokens);
+    let program = parser.parse_program().expect("parse program");
+    let function = compile_program(&program);
+    let mut ctx = VmContext::new();
+    let mut vm = Vm::new();
+    let result = vm.exec_with(&function, &mut ctx, None);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(77));
+    assert!(
+        !function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::Call { .. } | Op::CallClosureExact { .. } | Op::CallExact { .. })),
+        "branching helper call should inline into caller bytecode"
+    );
+}
+
+#[test]
 fn recursive_known_call_folds_with_fuel() {
     let (function, _ctx, result) = parse_compile_and_run(
         r#"

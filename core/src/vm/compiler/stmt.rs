@@ -42,6 +42,19 @@ mod traits;
 
 use globals::detect_mutating_receiver;
 
+struct MapAccessExpr<'a> {
+    map_name: &'a str,
+    key: &'a Expr,
+    module_style: bool,
+}
+
+struct MapSetExpr<'a> {
+    map_name: &'a str,
+    key: &'a Expr,
+    value: &'a Expr,
+    module_style: bool,
+}
+
 impl FunctionBuilder {
     fn template_split_join_len_pair<'a>(
         first: &'a Stmt,
@@ -106,13 +119,312 @@ impl FunctionBuilder {
         Some((line_name.as_str(), parts.as_slice(), len_name.as_str()))
     }
 
+    fn map_get_expr<'a>(expr: &'a Expr) -> Option<MapAccessExpr<'a>> {
+        let Expr::CallExpr(callee, args) = expr else {
+            return None;
+        };
+        let Expr::Access(receiver, method) = callee.as_ref() else {
+            return None;
+        };
+        let Expr::Val(method) = method.as_ref() else {
+            return None;
+        };
+        if method.as_str() != Some("get") {
+            return None;
+        }
+        match receiver.as_ref() {
+            Expr::Var(module_name) if module_name == "map" && args.len() == 2 => {
+                let Expr::Var(map_name) = args[0].as_ref() else {
+                    return None;
+                };
+                Some(MapAccessExpr {
+                    map_name: map_name.as_str(),
+                    key: args[1].as_ref(),
+                    module_style: true,
+                })
+            }
+            Expr::Var(map_name) if args.len() == 1 => Some(MapAccessExpr {
+                map_name: map_name.as_str(),
+                key: args[0].as_ref(),
+                module_style: false,
+            }),
+            _ => None,
+        }
+    }
+
+    fn map_set_expr<'a>(stmt: &'a Stmt) -> Option<MapSetExpr<'a>> {
+        let Stmt::Expr(expr) = stmt else {
+            return None;
+        };
+        let Expr::CallExpr(callee, args) = expr.as_ref() else {
+            return None;
+        };
+        let Expr::Access(receiver, method) = callee.as_ref() else {
+            return None;
+        };
+        let Expr::Val(method) = method.as_ref() else {
+            return None;
+        };
+        if method.as_str() != Some("set") {
+            return None;
+        }
+        match receiver.as_ref() {
+            Expr::Var(module_name) if module_name == "map" && args.len() == 3 => {
+                let Expr::Var(map_name) = args[0].as_ref() else {
+                    return None;
+                };
+                Some(MapSetExpr {
+                    map_name: map_name.as_str(),
+                    key: args[1].as_ref(),
+                    value: args[2].as_ref(),
+                    module_style: true,
+                })
+            }
+            Expr::Var(map_name) if args.len() == 2 => Some(MapSetExpr {
+                map_name: map_name.as_str(),
+                key: args[0].as_ref(),
+                value: args[1].as_ref(),
+                module_style: false,
+            }),
+            _ => None,
+        }
+    }
+
+    fn single_expr_stmt(stmt: &Stmt) -> Option<&Stmt> {
+        match stmt {
+            Stmt::Block { statements } if statements.len() == 1 => Some(statements[0].as_ref()),
+            other => Some(other),
+        }
+    }
+
+    fn condition_is_var_eq_nil(expr: &Expr, name: &str) -> bool {
+        let Expr::Bin(left, BinOp::Eq, right) = expr else {
+            return false;
+        };
+        (matches!(left.as_ref(), Expr::Var(var) if var == name) && matches!(right.as_ref(), Expr::Val(Val::Nil)))
+            || (matches!(right.as_ref(), Expr::Var(var) if var == name) && matches!(left.as_ref(), Expr::Val(Val::Nil)))
+    }
+
+    fn expr_is_pure_arith(expr: &Expr) -> bool {
+        match expr {
+            Expr::Val(Val::Int(_) | Val::Float(_)) | Expr::Var(_) => true,
+            Expr::Paren(inner) | Expr::Unary(_, inner) => Self::expr_is_pure_arith(inner),
+            Expr::Bin(left, op, right) if op.is_arith() => {
+                Self::expr_is_pure_arith(left) && Self::expr_is_pure_arith(right)
+            }
+            _ => false,
+        }
+    }
+
+    fn add_expr_uses_current_and_delta(expr: &Expr, current_name: &str, delta_name: &str) -> bool {
+        let Expr::Bin(left, BinOp::Add, right) = expr else {
+            return false;
+        };
+        (matches!(left.as_ref(), Expr::Var(name) if name == current_name)
+            && matches!(right.as_ref(), Expr::Var(name) if name == delta_name))
+            || (matches!(right.as_ref(), Expr::Var(name) if name == current_name)
+                && matches!(left.as_ref(), Expr::Var(name) if name == delta_name))
+    }
+
+    fn add_expr_uses_current_and_value(expr: &Expr, current_name: &str, value: &Expr) -> bool {
+        let Expr::Bin(left, BinOp::Add, right) = expr else {
+            return false;
+        };
+        (matches!(left.as_ref(), Expr::Var(name) if name == current_name) && right.as_ref() == value)
+            || (matches!(right.as_ref(), Expr::Var(name) if name == current_name) && left.as_ref() == value)
+    }
+
+    fn try_emit_map_upsert_default_add(&mut self, first: &Stmt, second: &Stmt, rest: &[Box<Stmt>]) -> bool {
+        let Stmt::Let {
+            pattern: Pattern::Variable(current_name),
+            value: current_value,
+            is_const: false,
+            ..
+        } = first
+        else {
+            return false;
+        };
+        let Some(get_expr) = Self::map_get_expr(current_value) else {
+            return false;
+        };
+        if get_expr.module_style && self.lookup("map").is_some() {
+            return false;
+        }
+        let Stmt::If {
+            condition,
+            then_stmt,
+            else_stmt: Some(else_stmt),
+        } = second
+        else {
+            return false;
+        };
+        if !Self::condition_is_var_eq_nil(condition, current_name)
+            || rest.iter().any(|stmt| Self::stmt_mentions_name(stmt, current_name))
+        {
+            return false;
+        }
+        let Some(then_set) = Self::single_expr_stmt(then_stmt).and_then(Self::map_set_expr) else {
+            return false;
+        };
+        let Some(else_set) = Self::single_expr_stmt(else_stmt).and_then(Self::map_set_expr) else {
+            return false;
+        };
+        let default_expr = then_set.value;
+        if ((then_set.module_style || else_set.module_style) && self.lookup("map").is_some())
+            || then_set.map_name != get_expr.map_name
+            || else_set.map_name != get_expr.map_name
+            || then_set.key != get_expr.key
+            || else_set.key != get_expr.key
+            || !Self::expr_is_pure_arith(default_expr)
+            || Self::expr_mentions_name(default_expr, current_name)
+            || !Self::add_expr_uses_current_and_value(else_set.value, current_name, default_expr)
+        {
+            return false;
+        }
+
+        let Some(map_reg) = self.lookup(get_expr.map_name) else {
+            return false;
+        };
+        let current_reg = self.emit_map_access(map_reg, get_expr.key);
+        self.define_var_as(current_name, current_reg);
+
+        let rc = self.expr(condition);
+        let jf = self.code.len();
+        self.emit(Op::JmpFalse(rc, 0));
+
+        self.with_const_scope(|builder| {
+            builder.emit_map_set(map_reg, get_expr.key, default_expr);
+        });
+
+        let jend_pos = self.code.len();
+        self.emit(Op::Jmp(0));
+        let else_label = self.code.len();
+        if let Op::JmpFalse(_, ref mut ofs) = self.code[jf] {
+            *ofs = (else_label as isize - jf as isize) as i16;
+        }
+        self.with_const_scope(|builder| {
+            builder.emit_map_set(map_reg, get_expr.key, else_set.value);
+        });
+        let cur_len = self.code.len();
+        if let Op::Jmp(ref mut ofs) = self.code[jend_pos] {
+            *ofs = (cur_len as isize - jend_pos as isize) as i16;
+        }
+        self.forget_known_value(current_name);
+        true
+    }
+
+    fn try_emit_delayed_map_upsert_delta(
+        &mut self,
+        first: &Stmt,
+        second: &Stmt,
+        third: &Stmt,
+        rest: &[Box<Stmt>],
+    ) -> bool {
+        let Stmt::Let {
+            pattern: Pattern::Variable(current_name),
+            value: current_value,
+            is_const: false,
+            ..
+        } = first
+        else {
+            return false;
+        };
+        let Some(get_expr) = Self::map_get_expr(current_value) else {
+            return false;
+        };
+        if get_expr.module_style && self.lookup("map").is_some() {
+            return false;
+        }
+        let Stmt::Let {
+            pattern: Pattern::Variable(delta_name),
+            value: delta_expr,
+            is_const: false,
+            ..
+        } = second
+        else {
+            return false;
+        };
+        if !Self::expr_is_pure_arith(delta_expr)
+            || Self::expr_mentions_name(delta_expr, current_name)
+            || rest.iter().any(|stmt| Self::stmt_mentions_name(stmt, current_name))
+            || rest.iter().any(|stmt| Self::stmt_mentions_name(stmt, delta_name))
+        {
+            return false;
+        }
+        let Stmt::If {
+            condition,
+            then_stmt,
+            else_stmt: Some(else_stmt),
+        } = third
+        else {
+            return false;
+        };
+        if !Self::condition_is_var_eq_nil(condition, current_name) {
+            return false;
+        }
+        let Some(then_set) = Self::single_expr_stmt(then_stmt).and_then(Self::map_set_expr) else {
+            return false;
+        };
+        let Some(else_set) = Self::single_expr_stmt(else_stmt).and_then(Self::map_set_expr) else {
+            return false;
+        };
+        if ((then_set.module_style || else_set.module_style) && self.lookup("map").is_some())
+            || then_set.map_name != get_expr.map_name
+            || else_set.map_name != get_expr.map_name
+            || then_set.key != get_expr.key
+            || else_set.key != get_expr.key
+            || !matches!(then_set.value, Expr::Var(name) if name == delta_name)
+            || !Self::add_expr_uses_current_and_delta(else_set.value, current_name, delta_name)
+        {
+            return false;
+        }
+
+        let Some(map_reg) = self.lookup(get_expr.map_name) else {
+            return false;
+        };
+        let current_reg = self.emit_map_access(map_reg, get_expr.key);
+        self.define_var_as(current_name, current_reg);
+
+        let rc = self.expr(condition);
+        let jf = self.code.len();
+        self.emit(Op::JmpFalse(rc, 0));
+
+        self.with_const_scope(|builder| {
+            let delta_reg = builder.expr(delta_expr);
+            builder.define_var_as(delta_name, delta_reg);
+            builder.emit_map_set(map_reg, get_expr.key, &Expr::Var(delta_name.to_string()));
+        });
+
+        let jend_pos = self.code.len();
+        self.emit(Op::Jmp(0));
+        let else_label = self.code.len();
+        if let Op::JmpFalse(_, ref mut ofs) = self.code[jf] {
+            *ofs = (else_label as isize - jf as isize) as i16;
+        }
+        self.with_const_scope(|builder| {
+            let delta_reg = builder.expr(delta_expr);
+            builder.define_var_as(delta_name, delta_reg);
+            builder.emit_map_set(map_reg, get_expr.key, else_set.value);
+        });
+        let cur_len = self.code.len();
+        if let Op::Jmp(ref mut ofs) = self.code[jend_pos] {
+            *ofs = (cur_len as isize - jend_pos as isize) as i16;
+        }
+        self.forget_known_value(current_name);
+        self.forget_known_value(delta_name);
+        true
+    }
+
     pub fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Block { statements } => {
                 self.with_const_scope(|builder| {
+                    let function_names = Self::direct_function_names_in_block(statements);
+                    builder.push_function_name_scope(&function_names);
                     if statements.len() == 2
                         && builder.try_emit_immediate_closure_factory_call_pair(&statements[0], &statements[1])
                     {
+                        builder.pop_function_name_scope(&function_names);
                         return;
                     }
                     let mut idx = 0;
@@ -129,9 +441,31 @@ impl FunctionBuilder {
                             idx += 2;
                             continue;
                         }
+                        if idx + 2 < statements.len()
+                            && builder.try_emit_delayed_map_upsert_delta(
+                                statements[idx].as_ref(),
+                                statements[idx + 1].as_ref(),
+                                statements[idx + 2].as_ref(),
+                                &statements[idx + 3..],
+                            )
+                        {
+                            idx += 3;
+                            continue;
+                        }
+                        if idx + 1 < statements.len()
+                            && builder.try_emit_map_upsert_default_add(
+                                statements[idx].as_ref(),
+                                statements[idx + 1].as_ref(),
+                                &statements[idx + 2..],
+                            )
+                        {
+                            idx += 2;
+                            continue;
+                        }
                         builder.stmt(&statements[idx]);
                         idx += 1;
                     }
+                    builder.pop_function_name_scope(&function_names);
                 });
             }
             Stmt::For {

@@ -13,13 +13,14 @@ use crate::val::{ClosureCapture, Val};
 use crate::vm::RegionPlan;
 use crate::vm::alloc::{AllocationRegion, RegionAllocator};
 use crate::vm::bc32::{self, Bc32Decoded, Tag};
-use crate::vm::bytecode::{CaptureSpec, Function, Op, rk_is_const, rk_make_const};
+use crate::vm::bytecode::{CaptureSpec, Function, Op, rk_index, rk_is_const, rk_make_const};
 use crate::vm::compiler::Compiler;
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{
-    AccessIc, CallIc, CallReturnLayout, ForRangeState, GlobalEntry, IndexIc, PackedArithOp, PackedCmpImmOp,
-    PackedCmpOp, PackedHotCallKind, PackedHotEntry, PackedHotKind, PackedHotSlot, PackedRangeTail, VmCaches,
+    AccessIc, CallIc, CallReturnLayout, ForRangeState, GlobalEntry, IndexIc, PackedAddOperand, PackedArithOp,
+    PackedCmpImmOp, PackedCmpOp, PackedHotCallKind, PackedHotEntry, PackedHotKind, PackedHotSlot, PackedRangeTail,
+    PackedValueOperand, VmCaches,
 };
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan};
 use crate::vm::{
@@ -344,7 +345,7 @@ pub(super) fn run_packed_code(
             }
             record_build_attempt();
             record_quickening_build_attempt();
-            if let Some(entry) = build_hot_slot(code32, decoded, pc, word, raw_tag) {
+            if let Some(entry) = build_hot_slot(code32, decoded, &func.consts, pc, word, raw_tag) {
                 record_quickening_build_success();
                 record_build_success();
                 let next_pc = entry.next_pc;

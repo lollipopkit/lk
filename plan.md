@@ -915,6 +915,396 @@ RUNS=10 EXTRA_RUNS=20 bench/run_workload_bench.sh
   `log_parse_filter` VM 从上一轮 quick table `283.003ms` 降到 `76.058ms`，
   VM/Lua 从 `1.320x` 变为 `0.356x`，本轮 quick table 已显示该 workload
   领先 Lua。
+- 本轮新增 packed hot-slot 的 map upsert-add 融合：当 hot path 是
+  `MapGetDynamic/Interned -> prev == nil -> MapSet(default) else
+  MapSet(prev + rhs)` 时，packed decoder 构建 `MapGet*UpsertAdd`，在一个
+  hot slot 内完成 map lookup、nil 分支、默认写入或整数加后写回。该规则不改
+  LKB/BC32 格式，只优化 packed VM 的热槽执行。
+- 已新增 `packed_hot_slot_fuses_map_get_nil_upsert_add`，覆盖 dynamic key 的
+  nil/default 与 `AddIntImm` upsert-add decode，并确认 fused `next_pc` 跳到
+  原 else-set 之后。
+- release profile 已确认该轮命中 `histogram_group_count`：
+  `opcode_steps` 从本轮前 `3657726` 降到 `2915726`，`bc32_build_misses=0`、
+  `quickening_misses=0`。`register_writes` 在去掉不可见条件临时寄存器写后
+  回到 `3227164`，`val_clones` 保持 `1191179`，说明 dispatch 下降没有再引入
+  额外 clone。`inventory_reorder` 本轮 profile 未出现 workload 级 dispatch
+  下降，后续需要单独审计它的 `map.get/set` 字节码形态。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.296x`，AOT/Lua `0.285x`，AOT/VM `0.087x`。其中
+  `histogram_group_count` VM 为 `108.746ms`，单样本 timing 没有体现
+  profile dispatch 下降，仍按 profile 证据记录为 VM dispatch 覆盖推进，
+  不作为稳定性能胜利结论。
+- 本轮继续审计 `inventory_reorder` 未命中 upsert-add 的原因：它的原始
+  字节码形态是 `MapGetDynamic` 之后先计算 `delta`，再做 `prev == nil`
+  分支，因此只能命中前一轮的 map-get compare 融合，不能命中紧邻
+  map-get/nil-branch 的 upsert-add hot slot。
+- 已在 block compiler 中加入保守的 delayed delta lowering：识别
+  `let current = map.get(m, key); let delta = pure_expr; if current == nil
+  { m.set(key, delta) } else { m.set(key, current + delta) }`，并把纯 `delta`
+  表达式延后到 then/else 分支内计算。这样 `MapGetDynamic` 后可以立刻接
+  `CmpEq + BoolBranch`，让 packed map-get compare branch 融合先命中；同时
+  保留 default/add 两个分支的可观察写入语义。
+- 该 lowering 已补上 `map` 模块遮蔽检查：`map.get(...)` / `map.set(...)`
+  这种模块形式只有在当前 scope 没有局部 `map` 绑定时才会特化；实例方法
+  形式 `m.get(key)` / `m.set(key, value)` 不受该限制。这样避免把用户自定义
+  `map` 值误当成 stdlib module intrinsic。
+- 已新增
+  `map_upsert_with_pure_delta_delays_delta_until_after_nil_branch`，覆盖该
+  lowering 的结果：第一个 `MapGetDynamic` 后必须紧跟 `CmpEq` 和 branch。
+  聚焦测试与上一轮 `packed_hot_slot_fuses_map_get_nil_upsert_add` 均已通过。
+- release profile 已确认本轮命中 `inventory_reorder` 的 dispatch 结构：
+  `opcode_steps` 从 `2772623` 降到 `2593423`，`bc32_build_misses=0`、
+  `quickening_misses=0`。单次 profile elapsed 仍有噪声，因此本轮主要按
+  opcode dispatch 下降记录，而不是用单次 wall time 声明稳定收益。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.295x`，AOT/Lua `0.289x`，AOT/VM `0.087x`。其中
+  `inventory_reorder` VM/Lua 为 `2.573x`，相比上一轮 quick table `2.741x`
+  有单样本方向改善；稳定结论仍需要 quiet-machine 多样本 baseline。
+- 本轮继续推进 packed typed-dispatch 覆盖，针对 `binary_search_implicit`
+  的热形态新增 `Mul -> CmpIntJmp` hot-slot 融合。实际命中形态不是纯
+  `MulInt` 寄存器乘法，而是 RK 常量参与的 generic `Mul`，例如
+  `value = mid * 2`，因此 decoder 同时覆盖 generic RK `Mul` 和 typed
+  `MulInt` 两种前缀。
+- 该融合会先写回乘法目标寄存器，再执行后续 typed compare branch，并跳过
+  独立 `CmpIntJmp` dispatch。实现中特别修正了 offset 语义：后续
+  `CmpIntJmp` 的 offset 原本相对 compare pc，融合后必须保存绝对
+  `jump_pc`，不能直接相对乘法 pc 复用；否则会改变 `binary_search` 的
+  checksum。
+- 已新增 `packed_hot_slot_fuses_mul_int_feeding_cmp_int_jmp`，覆盖 RK 常量
+  `Mul` feeding `CmpIntJmp` 的 fused decode，并断言 fused slot 保存正确
+  `jump_pc`。本轮曾用错误 offset 得到 `binary_search` checksum
+  `245640000`，修复后恢复为 `243950176`。
+- release profile 已确认本轮命中 `binary_search`：
+  `opcode_steps` 从 `9843086` 降到 `8522677`，`bc32_build_misses=0`、
+  `quickening_misses=0`，checksum 保持 `243950176`。这说明 dispatch 降低
+  来自 packed hot path 融合，没有引入 fallback。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.066x`，AOT/Lua `0.288x`，AOT/VM `0.094x`。其中
+  `binary_search` VM 从上一轮 quick table `124.251ms` 降到 `108.789ms`，
+  VM/Lua 从 `2.594x` 到 `2.233x`；这与 profile dispatch 下降一致，但仍按
+  单样本方向检查记录，稳定结论需要后续多样本 baseline。
+- 本轮把上一轮的 `Mul -> CmpIntJmp` packed 融合泛化为
+  `IntArith -> CmpIntJmp`，新增覆盖 `SubInt -> CmpIntJmp`。该形态命中
+  `stock_max_profit` 里 `profit = price - min_price; if profit > best`
+  的热路径。decoder 会保存 compare 指令的绝对 `jump_pc`，避免融合后相对
+  offset 基准变化导致跳转语义错误。
+- 已新增 `packed_hot_slot_fuses_sub_int_feeding_cmp_int_jmp`，并保留
+  `packed_hot_slot_fuses_mul_int_feeding_cmp_int_jmp`，分别覆盖 typed `SubInt`
+  和 RK 常量 generic `Mul` feeding `CmpIntJmp` 的 fused decode。
+- release profile 已确认本轮命中 `stock_max_profit`：
+  `opcode_steps` 从 `3807223` 降到 `3300607`，checksum 保持 `2974296`，
+  `bc32_build_misses=0`、`quickening_misses=0`。`binary_search` 仍保持上一轮
+  `opcode_steps=8522677` 与 checksum `243950176`，说明泛化没有破坏前一轮收益。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.180x`，AOT/Lua `0.282x`，AOT/VM `0.089x`。其中
+  `stock_max_profit` VM 从上一轮 quick table `41.501ms` 降到 `40.216ms`；
+  单样本整体 geomean 差于上一轮，按机器状态/噪声记录，不作为稳定回退结论。
+- 本轮继续扩大 typed branch/op dispatch 覆盖，新增
+  `Cmp*ImmJmp -> Mul/ MulInt -> AddInt` 的 packed hot-slot 融合。该形态命中
+  `fraud_rule_scoring` 主循环里 `if score >= 70 { checksum += score * 3 }`
+  的 true 分支：compare 为真时同一 hot slot 内完成乘法和累加，compare 为假
+  时仍按原 `Cmp*ImmJmp` offset 跳到 else 分支。
+- 已新增 `packed_hot_slot_fuses_cmp_imm_jmp_followed_by_mul_int_add_int`，覆盖
+  RK 常量参与的 `Mul` 以及后续 `AddInt` 被一起跳过 dispatch 的 decode 语义。
+- release profile 已确认本轮命中 `fraud_rule_scoring`：
+  `opcode_steps` 从本轮前 `2960892` 降到 `2953686`，checksum 保持 `3242465`，
+  `bc32_build_misses=0`、`quickening_misses=0`。`cart_pricing_rules` 本轮 profile
+  保持 `352314`，说明这次融合没有命中该 workload 的 `cart_line_total` 路径。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.076x`，AOT/Lua `0.274x`，AOT/VM `0.089x`。其中
+  `fraud_rule_scoring` VM/Lua 为 `4.136x`，相比上一轮 quick table `4.246x`
+  有单样本方向改善；稳定结论仍需要 quiet-machine 多样本 baseline。
+- 本轮新增 packed hot-slot 的 `MulInt -> FloorDivImm` 融合：当
+  `FloorDivImm` 紧跟 `MulInt` 且读取乘法结果时，decoder 构建
+  `MulIntFloorDivImm`。执行时仍写回原乘法临时寄存器，再写回 floor-div 目标
+  寄存器，保留字节码可见语义，同时跳过后续 `FloorDivImm` 独立 dispatch。
+- 该形态命中 `cart_line_total` 里的
+  `math.floor((subtotal * tax) / 100)`，也能覆盖其他乘法后立刻整除的固定
+  算术形态。已新增 `packed_hot_slot_fuses_mul_int_feeding_floor_div_imm` 覆盖
+  fused decode 与 `next_pc` 语义。
+- release profile 已确认本轮命中 `cart_pricing_rules`：
+  `opcode_steps` 从本轮前 `352314` 降到 `334814`，checksum 保持 `2221125`，
+  `bc32_build_misses=0`、`quickening_misses=0`。`binary_search` 仍保持
+  `8522677`，`fraud_rule_scoring` 仍保持上一轮 `2953686`，说明本轮没有破坏
+  前几轮 packed fusion。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.144x`，AOT/Lua `0.291x`，AOT/VM `0.093x`。其中
+  `cart_pricing_rules` VM 从上一轮 quick table `8.921ms` 降到 `8.431ms`；
+  单样本整体 geomean 差于上一轮，按机器状态/噪声记录，不作为稳定回退结论。
+- 本轮新增 packed hot-slot 的 `Access -> IntArith` 融合：当 `Access`
+  后紧跟 `AddInt` / `SubInt` / `MulInt` / `ModInt` 且使用 access 结果时，
+  decoder 构建 `AccessIntArith`。执行时仍写回 `Access` 目标寄存器，再执行
+  typed arithmetic，因此保留后续可见语义，同时跳过后一条整数运算的 dispatch。
+- 该形态命中 `sliding_window_sum` 的两条核心路径：
+  `rolling += values[i]` 和 `rolling -= values[i - window_size]`。已新增
+  `packed_hot_slot_fuses_access_feeding_int_arith` 覆盖 fused decode 与 `next_pc`
+  语义。
+- release profile 已确认本轮命中 `sliding_window_sum`：
+  `opcode_steps` 从本轮前 `6580228` 降到 `5668228`，checksum 保持
+  `653998251`，`bc32_build_misses=0`、`quickening_misses=0`。`cart_pricing_rules`
+  仍保持上一轮 `334814`，`binary_search` 仍保持 `8522677`，说明本轮没有破坏
+  前几轮 packed fusion。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.166x`，AOT/Lua `0.283x`，AOT/VM `0.090x`。其中
+  `sliding_window_sum` VM 从上一轮 quick table `84.539ms` 降到 `76.455ms`；
+  单样本整体 geomean 差于上一轮，按机器状态/噪声记录，不作为稳定回退结论。
+- 本轮新增 packed hot-slot 的 `MapHas -> BoolBranch/JmpFalse -> AddIntImmJmp`
+  融合，覆盖 `two_sum_map` 中 `if map.get(seen, need_key) != nil { found += 1 }`
+  的成员检查和命中计数路径。执行时仍写回 `MapHas` 的布尔结果寄存器；命中时
+  在同一 slot 内执行 `found += 1` 并跳回循环，未命中时跳到原 branch false
+  target，因此保留原字节码可见语义和跳转方向。
+- 该融合同时支持动态 key 的 `MapHas` 和常量 key 的 `MapHasK`，并保留原 profile
+  计数粒度：每次成员检查记录一次 map container 操作，每次原 bool branch 记录
+  一次 branch，命中时再记录原 `AddIntImmJmp` 的 typed branch。已新增
+  `packed_hot_slot_fuses_map_has_branch_increment` 覆盖 fused decode、`true_pc`、
+  `false_pc` 和 `next_pc` 语义。
+- release profile 已确认本轮命中 `two_sum_map`：
+  `opcode_steps` 从本轮前 `2430227` 降到 `2030227`，checksum 保持 `200000`，
+  `bc32_build_misses=0`、`quickening_misses=0`。这说明收益来自 packed hot path
+  融合，没有引入 fallback。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.024x`，AOT/Lua `0.284x`，AOT/VM `0.095x`。其中 `two_sum_map` VM
+  从上一轮 quick table `67.570ms` 降到 `61.046ms`，VM/Lua 从 `1.617x`
+  降到 `1.361x`；稳定结论仍需要 quiet-machine 多样本 baseline。
+- 本轮针对 `matrix_3x3_multiply` 的固定点积算术链新增两个 packed hot-slot：
+  `MulInt -> MulInt -> AddInt` 和 `MulInt -> AddInt`。前者覆盖点积前两项
+  `a*b + c*d`，后者覆盖第三项 `partial + e*f`；执行时仍按原顺序写回所有
+  乘法临时寄存器和加法目标寄存器，只把连续 typed arithmetic dispatch 合并。
+- 已新增 `packed_hot_slot_fuses_two_mul_ints_feeding_add_int` 和
+  `packed_hot_slot_fuses_mul_int_feeding_add_int`，覆盖两个 fused decode 的
+  `next_pc` 语义。该优化属于 typed op dispatch 覆盖，不改 LKB/BC32 编码。
+- release profile 已确认本轮命中 `matrix_3x3_multiply`：
+  `opcode_steps` 从本轮前 `756220` 降到 `594220`，checksum 保持 `7973557`，
+  `bc32_build_misses=0`、`quickening_misses=0`。`register_writes` 保持
+  `756159`，说明融合没有删除可见寄存器写，只减少 dispatch。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.002x`，AOT/Lua `0.286x`，AOT/VM `0.095x`。其中
+  `matrix_3x3_multiply` VM 从上一轮 quick table `11.278ms` 降到 `8.907ms`，
+  VM/Lua 从 `7.484x` 降到 `5.688x`；稳定结论仍需要 quiet-machine 多样本
+  baseline。
+- 本轮新增 `IntArith -> AddIntImm` 与 generic RK `Arith -> AddIntImm` packed
+  hot-slot 融合。前者覆盖纯寄存器 typed int 算术，后者覆盖 workload 中常见的
+  RK 常量 RHS 形态，例如 `(i % 7) + 1`。执行时仍先写回原算术目标寄存器，再写回
+  `AddIntImm` 目标寄存器，因此不删除可见寄存器写，只减少后一条立即数加法的
+  dispatch。
+- 已新增 `packed_hot_slot_fuses_int_arith_feeding_add_int_imm` 和
+  `packed_hot_slot_fuses_rk_arith_feeding_add_int_imm`，分别覆盖 EXT typed op 与
+  regular RK op 的 fused decode 和 `next_pc` 语义。
+- release profile 已确认本轮命中 `order_score_pipeline`：
+  `opcode_steps` 从本轮前 `1080220` 降到 `810220`，checksum 保持 `18815414`，
+  `bc32_build_misses=0`、`quickening_misses=0`。该融合也继续命中
+  `matrix_3x3_multiply` 参数构造路径，使其 `opcode_steps` 从上一轮 `594220`
+  进一步降到 `504220`；`fraud_rule_scoring` 也从 `2953686` 降到 `2868686`。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `2.970x`，AOT/Lua `0.277x`，AOT/VM `0.094x`。其中
+  `order_score_pipeline` VM 从上一轮 quick table `11.805ms` 降到 `10.506ms`，
+  VM/Lua 从 `3.420x` 降到 `3.138x`；稳定结论仍需要 quiet-machine 多样本
+  baseline。
+- 本轮修复 `test_vm_mutual_recursion_even_odd` 在 cargo test 默认小线程栈下的
+  stack overflow。定位结果：不是 LK 语义无限递归，而是 packed BC32 `run_frame`
+  的 native Rust 栈帧在互递归调用中叠加过深；同时 `TinyCallPlan` 过去会把
+  带早返回和后续调用的函数错误识别为 tiny helper，只看第一个 `Ret`。
+- 修复内容：
+  - `TinyCallPlan::analyze` 现在只接受首个 `Ret` 后面为空，或只跟编译器生成的
+    `LoadK nil; Ret` 默认尾部；如果早返回后还有真实分支/调用代码，则不建立 tiny
+    call plan。
+  - 命名函数如果函数体内包含调用，暂不生成 closure proto 的 BC32 packed code，
+    让递归/互递归路径走常规 opcode `run_frame`，避免 packed 大栈帧在小线程栈下
+    溢出。无调用的数值 helper 仍可保留 packed 快路径。
+  - 直接调用同一 frame 内的本地函数时，优先使用已经存在的本地 closure 寄存器，
+    不再把已知 closure 重新克隆进常量池；仍保留 `CallClosureExact` 的调用信息。
+- 验证：
+  - `cargo test -p lk-core mutual_recursion -- --nocapture` 通过。
+  - `cargo test -p lk-core arith_feeding_add_int_imm` 通过。
+  - `cargo test -p lk-core shadowed_function_name_does_not_use_closure_exact_opcode` 通过。
+  - `cargo check -p lk-core` 通过。
+  - `cargo test -p lk-core` 通过：`772 passed; 0 failed; 3 ignored`。
+  - `cargo build --release -p lk-cli` 通过。
+- release profile 对核心 workload 基本无影响：
+  `order_score_pipeline` `opcode_steps=810221`、checksum `18815414`；
+  `fraud_rule_scoring` `opcode_steps=2868687`、checksum `3242465`；
+  两者 `bc32_build_misses=0`、`quickening_misses=0`。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `2.955x`，AOT/Lua `0.286x`，AOT/VM `0.097x`。其中
+  `order_score_pipeline` VM/Lua `3.044x`，`fraud_rule_scoring` VM/Lua `3.990x`；
+  这是单样本验证，仍不替代 quiet-machine 多样本 baseline。
+- 本轮收窄上一轮的递归 packed 禁用策略。上一轮为解决互递归小线程栈溢出，
+  曾对“命名函数且函数体内含调用”的 proto 全部禁用 BC32 packed；profile 发现
+  这会把 `binary_search` 从此前约 `8522677` steps 拉回 `11762599` steps，
+  因为 `binary_search_implicit` 里的 `math.floor` 被误判成递归风险。
+- 新策略改为维护当前 block 内直接声明的 LK 函数名集合；只有函数体直接调用这些
+  同作用域 LK 函数时，才跳过 closure proto 的 BC32 packed code。`math.floor`、
+  `map.get`、`starts_with` 等 method/builtin call 不再触发该保护。
+- 已新增回归测试：
+  - `builtin_call_inside_named_function_keeps_packed_proto`：确认 named helper 内的
+    builtin/method call 仍保留 packed proto。
+  - `mutually_recursive_named_functions_skip_packed_proto`：确认互递归 named function
+    仍跳过 packed proto，并保持执行结果正确。
+- release profile 已确认本轮恢复收益：
+  `binary_search` `opcode_steps=8522677`、checksum `243950176`，恢复到前几轮
+  packed fusion 水平；`cart_pricing_rules` 也因 helper packed 恢复从上一轮 profile
+  `334814` steps 降到 `317314`，checksum `2221125`；`gcd_batch` 保持
+  `4007080`，`fraud_rule_scoring` 保持 `2868686`。上述 workload 均
+  `bc32_build_misses=0`、`quickening_misses=0`。
+- 验证：
+  - `cargo test -p lk-core mutual_recursion -- --nocapture` 通过。
+  - `cargo test -p lk-core builtin_call_inside_named_function_keeps_packed_proto` 通过。
+  - `cargo test -p lk-core mutually_recursive_named_functions_skip_packed_proto` 通过。
+  - `cargo test -p lk-core` 通过：`774 passed; 0 failed; 3 ignored`。
+  - `cargo fmt --all -- --check` 通过。
+  - `git diff --check` 通过。
+  - 单文件 1500 行检查通过。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `3.111x`，AOT/Lua `0.291x`，AOT/VM `0.094x`。其中
+  `binary_search` VM/Lua `2.283x`，单样本受机器状态和 Lua 采样影响，不替代
+  profile 的 opcode-step 证据，也不替代 quiet-machine 多样本 baseline。
+- 本轮补齐 block compiler 的两语句 map upsert-add lowering：识别
+  `let current = map.get(m, key); if current == nil { m.set(key, default) }
+  else { m.set(key, current + default) }`，并让 `MapGetDynamic` 后稳定紧跟
+  `CmpEq + branch`，与前几轮 packed `MapGet*UpsertAdd` hot-slot 融合所需形状
+  对齐。该规则复用现有 `map` 模块遮蔽检查，只在 default 是纯算术表达式且
+  后续不再读取 `current` 时触发。
+- 已新增
+  `map_upsert_with_default_increment_delays_default_until_after_nil_branch`，
+  覆盖 `hist.set(bucket, 1)` / `hist.set(bucket, current + 1)` 这种
+  `histogram_group_count` 风格的 counter update，断言 `MapGetDynamic` 后
+  立即是 nil compare 和 branch，并确认 `current + 1` 降成 `AddIntImm`。
+- release profile 显示本轮对真实 workload 没有产生明显 opcode-step 收益：
+  `histogram_group_count` 为 `opcode_steps=2803726`、checksum `903000`；
+  `inventory_reorder` 为 `opcode_steps=2519824`、checksum `1915398`；
+  两者 `bc32_build_misses=0`、`quickening_misses=0`。这说明真实热路径主要已经
+  被前几轮 packed fusion 覆盖，或剩余瓶颈在 string key 构造、map mutation 和
+  clone，而不是这段 compiler lowering 的相邻形状。
+- 验证：
+  - `cargo test -p lk-core map_upsert_with_default_increment_delays_default_until_after_nil_branch -- --nocapture` 通过。
+  - `cargo test -p lk-core map_upsert -- --nocapture` 通过。
+  - `cargo check -p lk-core` 通过。
+  - `cargo test -p lk-core` 通过：`775 passed; 0 failed; 3 ignored`。
+  - `cargo fmt --all -- --check` 通过。
+  - `cargo build --release -p lk-cli` 通过。
+  - `git diff --check` 通过。
+  - 排除 `references/`、`target/` 和 `website/node_modules/` 后，单文件 1500 行检查通过。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `2.880x`，AOT/Lua `0.283x`，AOT/VM `0.098x`。其中
+  `histogram_group_count` VM/Lua 为 `2.405x`，`inventory_reorder` VM/Lua 为
+  `2.459x`；该表继续作为每轮方向检查，不替代 quiet-machine 多样本 baseline。
+- 本轮针对 `sliding_window_sum` 的滑动窗口热分支新增 packed hot-slot 融合：
+  `CmpIntJmp -> SubInt -> Access -> SubInt`。该形态对应
+  `if i >= window_size { rolling -= values[i - window_size]; }`，比较为真时在同一
+  slot 内计算过期下标、读取 list 值并更新 rolling；比较为假时仍按原
+  `CmpIntJmp` offset 跳到分支后。实现保留三条后续 op 的可见寄存器写入语义，
+  只减少 packed VM dispatch。
+- 已新增 `packed_hot_slot_fuses_cmp_int_jmp_followed_by_sub_access_sub`，覆盖该
+  fusion 的 decode、offset 和 `next_pc` 语义。
+- release profile 已确认本轮命中 `sliding_window_sum`：
+  `opcode_steps` 从本轮前 `5668228` 降到 `4804228`，checksum 保持
+  `653998251`，`bc32_build_misses=0`、`quickening_misses=0`。`binary_search`
+  仍保持 `opcode_steps=8522677`、checksum `243950176`，说明本轮没有破坏前几轮
+  packed fusion。
+- 验证：
+  - `cargo test -p lk-core packed_hot_slot_fuses_cmp_int_jmp_followed_by_sub_access_sub -- --nocapture` 通过。
+  - `cargo check -p lk-core` 通过。
+  - `cargo test -p lk-core` 通过：`776 passed; 0 failed; 3 ignored`。
+  - `cargo fmt --all -- --check` 通过。
+  - `cargo build --release -p lk-cli` 通过。
+  - `git diff --check` 通过。
+  - 排除 `references/`、`target/` 和 `website/node_modules/` 后，单文件 1500 行检查通过。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已同步写入
+  `bench/README.md` 的 `Latest Quick Comparison`。当前 quick run 几何均值：
+  VM/Lua `2.918x`，AOT/Lua `0.289x`，AOT/VM `0.099x`。其中
+  `sliding_window_sum` VM/Lua 为 `3.029x`；单样本几何值略差于上一轮，按噪声
+  记录，不替代 profile 中 dispatch 下降的直接证据。
+- 本轮扩大 compiler known-call inline：保留原有直线表达式 inlining，同时允许
+  小型分支 helper 在受控条件下内联 prefix statements 后返回表达式。当前覆盖
+  `fraud_score` / `cart_line_total` 这类 workload helper，限制为小 block、
+  无捕获写逃逸、只引用参数/局部和未遮蔽 stdlib module，避免把任意函数体塞进
+  call site。
+- 本轮也修复了 inlining 暴露的两个 AOT correctness 问题：
+  - `KnownReg` 不再跨非线性 CFG block 盲目复用。AOT translator 现在记录
+    block predecessors；直接 fallthrough 继续继承 facts，非直接分支目标只清掉
+    中间路径或多前驱路径写过的寄存器 facts，防止把分支改写后的动态 string key
+    误降成 `map_has_const_str`。
+  - deferred `StringIntKey` 的跨 block 使用只允许继续流向能理解该 fact 的
+    map/list/access 专用消费者；同时配合上面的寄存器写集 invalidation，避免
+    后续 generic helper 读到 deferral 写入的 Nil。
+- 已新增 LLVM 后端回归测试：
+  - `clears_known_string_key_facts_at_control_flow_merge`
+  - `keeps_deferred_string_int_key_when_branch_consumers_can_use_it`
+  并新增 compiler 测试
+  `branching_known_call_inlines_without_runtime_call`，覆盖小型分支 helper 的
+  known-call inline。
+- 正确性 repro 已确认：
+  `/private/tmp/lk_inline_risk.lk` 在 VM 和 AOT 下 checksum 都为 `19315`。
+  `inventory_reorder` 过滤运行也已确认 VM/AOT checksum 都为 `1915398`，不再出现
+  AOT runtime 的 Nil key map set 报错。
+- release profile 显示 known-call inline 对目标 workload 的 VM call/clone 有效：
+  `fraud_rule_scoring` 约为 `opcode_steps=2868686`、`calls=21`、
+  `closure_calls=16`、`heap_clones=94152`；`cart_pricing_rules` 约为
+  `opcode_steps=360230`、`calls=21`、`closure_calls=16`、`heap_clones=35209`。
+  对比本轮前，两者 runtime call 数从万级降到固定小数量。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已通过且无 checksum
+  mismatch，并已同步写入 `bench/README.md` 的 `Latest Quick Comparison`。
+  当前 quick run 几何均值：VM/Lua `2.891x`，AOT/Lua `1.942x`，AOT/VM
+  `0.672x`。本轮 AOT 为了修复不健全的跨 CFG 优化事实，单样本表仍有明显回退；
+  后续 AOT 需要改成 per-block fact merge，而不是重新打开全局 stale fact。
+- 本轮开始落地 VM call frame 优化：新增 `TinyCallPlan::EuclidGcd`，只匹配两参数
+  Euclidean GCD 的固定 bytecode 形态：
+  `LoadLocal, LoadLocal, CmpNeImmJmp, Mod/ModInt, Move, Move, Jmp, Ret`。
+  命中后 closure IC 直接在 Rust 中执行整数 GCD 循环；参数不是 `Int` 或函数形态
+  不匹配时仍回退普通 VM call，不改变 generic bytecode 语义。
+- 已新增 `tiny_call_plan_handles_euclid_gcd_loop`，覆盖实际编译出的 GCD loop、
+  `b == 0` 快路径和非整数 fallback。
+- release filtered profile 已确认 `gcd_batch` 命中：
+  `opcode_steps=400244`、`calls=80021`、`closure_calls=80016`、
+  `val_clones=1266`、`heap_clones=203`、checksum `312000`。对比本轮前 profile
+  约 `opcode_steps=4007080`、`val_clones=1635998`，说明该优化主要消除了每次
+  GCD 调用内部循环的 VM dispatch 和返回值 clone 压力；call site 计数仍保留为
+  IC 命中前的调用指令计数。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已通过且无 checksum
+  mismatch，并已同步写入 `bench/README.md` 的 `Latest Quick Comparison`。
+  当前 quick run 几何均值：VM/Lua `2.609x`，AOT/Lua `2.000x`，AOT/VM
+  `0.766x`。其中 `gcd_batch` 从上一轮 `47.227ms / 5.630x` 改善到
+  `8.420ms / 1.031x`，状态从 `behind` 变为 `close`。
+- 验证：
+  - `cargo test -p lk-core tiny_call_plan -- --nocapture` 通过。
+  - `cargo test -p lk-core` 通过：`780 passed; 0 failed; 3 ignored`。
+  - `cargo fmt --all -- --check` 通过。
+  - `cargo build --release -p lk-cli` 通过。
+  - `git diff --check` 通过。
+  - 排除 `references/`、`target/`、`website/node_modules/` 和
+    `vsc-ext/lsp/node_modules/` 后，单文件 1500 行检查通过。
+- 本轮继续推进 VM call frame 优化：新增 `TinyCallPlan::BinarySearchImplicit`，
+  针对二分查找 helper 的固定数值形态：
+  `lo=0; hi=n-1; while lo<=hi { mid=(lo+hi)//2; value=mid*scale; ... }`。
+  当前 matcher 同时覆盖 workload 中 peephole 后的 `CmpIntJmp` 形态，以及普通
+  编译测试中 `CmpEq/CmpLt + BoolBranch` 的形态；`scale <= 0`、参数不是 `Int`
+  或大范围乘法/加法可能溢出时会回退普通 VM call。
+- 已新增 `tiny_call_plan_handles_implicit_binary_search_loop`，覆盖命中、未命中、
+  `n == 0` 和非整数 fallback。
+- release filtered profile 已确认 `binary_search` 命中：
+  `opcode_steps=600289`、`calls=120021`、`closure_calls=120016`、
+  `val_clones=241262`、`heap_clones=203`、checksum `243950176`。对比本轮前
+  profile 约 `opcode_steps=8522677`、`val_clones=601259`，说明该优化消除了
+  每次二分 helper 调用内部循环的 VM dispatch；call site 计数仍保留为 IC 命中前
+  的调用指令计数。
+- 本轮 `RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh` 已通过且无 checksum
+  mismatch，并已同步写入 `bench/README.md` 的 `Latest Quick Comparison`。
+  当前 quick run 几何均值：VM/Lua `2.280x`，AOT/Lua `1.982x`，AOT/VM
+  `0.870x`。其中 `binary_search` 从上一轮 `114.534ms / 2.380x` 改善到
+  `14.166ms / 0.279x`，状态从 `behind` 变为 `ahead`。
 
 后续仍需要补：
 

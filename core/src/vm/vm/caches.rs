@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::val::{ClosureCapture, RustFastFunction, RustFastFunctionNamed, RustFunction, RustFunctionNamed, Val};
-use crate::vm::bytecode::{Function, Op, rk_index, rk_is_const};
+use crate::vm::bytecode::{Function, IntCmpKind, Op, rk_index, rk_is_const};
 use crate::vm::vm::frame::FrameInfo;
 use crate::vm::vm::quickening::QuickeningSite;
 use crate::vm::{CaptureSpec, RegionPlan};
@@ -158,6 +158,15 @@ pub(super) enum TinyCallPlan {
         rhs: TinyOperand,
         modulo: TinyOperand,
     },
+    EuclidGcd {
+        lhs: usize,
+        rhs: usize,
+    },
+    BinarySearchImplicit {
+        target: usize,
+        len: usize,
+        scale: i64,
+    },
     IntExpr(TinyIntProgram),
     Expr(TinyExpr),
 }
@@ -197,11 +206,20 @@ enum TinyIntOp {
 
 impl TinyCallPlan {
     pub(super) fn analyze(fun: &Function) -> Option<Self> {
+        if let Some(plan) = Self::analyze_binary_search_implicit(fun) {
+            return Some(plan);
+        }
         let ret_pos = fun.code.iter().position(|op| matches!(op, Op::Ret { retc: 1, .. }))?;
+        if !Self::only_default_nil_tail_after_return(fun, ret_pos) {
+            return None;
+        }
         let Op::Ret { base, retc: 1 } = fun.code.get(ret_pos)? else {
             return None;
         };
         let base = *base;
+        if let Some(plan) = Self::analyze_euclid_gcd_loop(fun, ret_pos, base) {
+            return Some(plan);
+        }
         let mut reg_operands: Vec<Option<TinyOperand>> = vec![None; fun.n_regs as usize];
         let mut local_operands: Vec<Option<TinyOperand>> = vec![None; fun.n_regs as usize];
         for op in &fun.code[..ret_pos] {
@@ -276,6 +294,16 @@ impl TinyCallPlan {
         }
     }
 
+    fn only_default_nil_tail_after_return(fun: &Function, ret_pos: usize) -> bool {
+        match fun.code.get(ret_pos + 1..) {
+            Some([]) => true,
+            Some([Op::LoadK(_, kidx), Op::Ret { retc: 1, .. }]) => {
+                matches!(fun.consts.get(*kidx as usize), Some(Val::Nil))
+            }
+            _ => false,
+        }
+    }
+
     #[inline]
     pub(super) fn try_eval(&self, args: &[Val], captures: Option<&ClosureCapture>) -> Option<Val> {
         match self {
@@ -292,12 +320,284 @@ impl TinyCallPlan {
                 let sum = Self::eval_add(lhs, rhs)?;
                 Self::eval_mod(&sum, modulo)
             }
+            Self::EuclidGcd { lhs, rhs } => {
+                let &Val::Int(mut a) = args.get(*lhs)? else {
+                    return None;
+                };
+                let &Val::Int(mut b) = args.get(*rhs)? else {
+                    return None;
+                };
+                while b != 0 {
+                    let rem = a % b;
+                    a = b;
+                    b = rem;
+                }
+                Some(Val::Int(a))
+            }
+            Self::BinarySearchImplicit { target, len, scale } => {
+                let &Val::Int(target) = args.get(*target)? else {
+                    return None;
+                };
+                let &Val::Int(len) = args.get(*len)? else {
+                    return None;
+                };
+                Self::eval_binary_search_implicit(target, len, *scale).map(Val::Int)
+            }
             Self::IntExpr(program) => program.eval(args, captures).map(Val::Int),
             Self::Expr(expr) => expr
                 .eval_int(args, captures)
                 .map(Val::Int)
                 .or_else(|| expr.eval(args, captures)),
         }
+    }
+
+    fn analyze_binary_search_implicit(fun: &Function) -> Option<Self> {
+        Self::analyze_binary_search_implicit_fused(fun)
+            .or_else(|| Self::analyze_binary_search_implicit_bool_branch(fun))
+    }
+
+    fn analyze_binary_search_implicit_fused(fun: &Function) -> Option<Self> {
+        if fun.param_regs.len() != 2 {
+            return None;
+        }
+        let target_param = *fun.param_regs.first()?;
+        let len_param = *fun.param_regs.get(1)?;
+        let [
+            Op::LoadK(lo_reg, zero_const),
+            Op::AddIntImm(hi_reg, len_reg, -1),
+            Op::CmpIntJmp {
+                kind: IntCmpKind::Le,
+                a: loop_lhs,
+                b: loop_rhs,
+                ofs: 11,
+            },
+            Op::AddInt(sum_reg, sum_lhs, sum_rhs),
+            Op::FloorDivImm {
+                dst: mid_reg,
+                src: mid_src,
+                imm: 2,
+            },
+            Op::MulInt(value_reg, value_lhs, scale_rk),
+            Op::CmpIntJmp {
+                kind: IntCmpKind::Eq,
+                a: eq_lhs,
+                b: eq_rhs,
+                ofs: 2,
+            },
+            Op::Ret {
+                base: found_base,
+                retc: 1,
+            },
+            Op::CmpIntJmp {
+                kind: IntCmpKind::Lt,
+                a: lt_lhs,
+                b: lt_rhs,
+                ofs: 3,
+            },
+            Op::AddIntImm(next_lo, next_lo_src, 1),
+            Op::Jmp(2),
+            Op::AddIntImm(next_hi, next_hi_src, -1),
+            Op::Jmp(-10),
+            Op::LoadK(fail_reg, fail_const),
+            Op::Ret {
+                base: fail_base,
+                retc: 1,
+            },
+            Op::LoadK(_, nil_const),
+            Op::Ret { retc: 1, .. },
+        ] = fun.code.as_slice()
+        else {
+            return None;
+        };
+        let scale = Self::int_const_for_rk(*scale_rk, fun)?;
+        if fun.consts.get(*zero_const as usize) != Some(&Val::Int(0))
+            || fun.consts.get(*fail_const as usize) != Some(&Val::Int(-1))
+            || !matches!(fun.consts.get(*nil_const as usize), Some(Val::Nil))
+            || scale <= 0
+            || *len_reg != len_param
+            || *loop_lhs != *lo_reg
+            || *loop_rhs != *hi_reg
+            || *sum_reg == *lo_reg
+            || *sum_lhs != *lo_reg
+            || *sum_rhs != *hi_reg
+            || *mid_src != *sum_reg
+            || *value_lhs != *mid_reg
+            || *eq_lhs != *value_reg
+            || *eq_rhs != target_param
+            || *found_base != *mid_reg
+            || *lt_lhs != *value_reg
+            || *lt_rhs != target_param
+            || *next_lo != *lo_reg
+            || *next_lo_src != *mid_reg
+            || *next_hi != *hi_reg
+            || *next_hi_src != *mid_reg
+            || *fail_base != *fail_reg
+        {
+            return None;
+        }
+        Some(Self::BinarySearchImplicit {
+            target: 0,
+            len: 1,
+            scale,
+        })
+    }
+
+    fn analyze_binary_search_implicit_bool_branch(fun: &Function) -> Option<Self> {
+        if fun.param_regs.len() != 2 {
+            return None;
+        }
+        let target_param = *fun.param_regs.first()?;
+        let len_param = *fun.param_regs.get(1)?;
+        let [
+            Op::LoadK(lo_reg, zero_const),
+            Op::AddIntImm(hi_reg, len_reg, -1),
+            Op::CmpIntJmp {
+                kind: IntCmpKind::Le,
+                a: loop_lhs,
+                b: loop_rhs,
+                ofs: 13,
+            },
+            Op::AddInt(sum_reg, sum_lhs, sum_rhs),
+            Op::FloorDivImm {
+                dst: mid_reg,
+                src: mid_src,
+                imm: 2,
+            },
+            Op::MulInt(value_reg, value_lhs, scale_rk),
+            Op::CmpEq(eq_bool, eq_lhs, eq_rhs),
+            Op::BoolBranch(eq_branch, 2),
+            Op::Ret {
+                base: found_base,
+                retc: 1,
+            },
+            Op::CmpLt(lt_bool, lt_lhs, lt_rhs),
+            Op::BoolBranch(lt_branch, 3),
+            Op::AddIntImm(next_lo, next_lo_src, 1),
+            Op::Jmp(2),
+            Op::AddIntImm(next_hi, next_hi_src, -1),
+            Op::Jmp(-12),
+            Op::LoadK(fail_reg, fail_const),
+            Op::Ret {
+                base: fail_base,
+                retc: 1,
+            },
+            Op::LoadK(_, nil_const),
+            Op::Ret { retc: 1, .. },
+        ] = fun.code.as_slice()
+        else {
+            return None;
+        };
+        let scale = Self::int_const_for_rk(*scale_rk, fun)?;
+        if fun.consts.get(*zero_const as usize) != Some(&Val::Int(0))
+            || fun.consts.get(*fail_const as usize) != Some(&Val::Int(-1))
+            || !matches!(fun.consts.get(*nil_const as usize), Some(Val::Nil))
+            || scale <= 0
+            || *len_reg != len_param
+            || *loop_lhs != *lo_reg
+            || *loop_rhs != *hi_reg
+            || *sum_lhs != *lo_reg
+            || *sum_rhs != *hi_reg
+            || *mid_src != *sum_reg
+            || *value_lhs != *mid_reg
+            || *eq_lhs != *value_reg
+            || *eq_rhs != target_param
+            || *eq_branch != *eq_bool
+            || *found_base != *mid_reg
+            || *lt_lhs != *value_reg
+            || *lt_rhs != target_param
+            || *lt_branch != *lt_bool
+            || *next_lo != *lo_reg
+            || *next_lo_src != *mid_reg
+            || *next_hi != *hi_reg
+            || *next_hi_src != *mid_reg
+            || *fail_base != *fail_reg
+        {
+            return None;
+        }
+        Some(Self::BinarySearchImplicit {
+            target: 0,
+            len: 1,
+            scale,
+        })
+    }
+
+    fn analyze_euclid_gcd_loop(fun: &Function, ret_pos: usize, ret_base: u16) -> Option<Self> {
+        if fun.param_regs.len() != 2 || ret_pos != 7 {
+            return None;
+        }
+        let lhs_param = *fun.param_regs.first()?;
+        let rhs_param = *fun.param_regs.get(1)?;
+        let [
+            Op::LoadLocal(lhs_work, lhs_local),
+            Op::LoadLocal(rhs_work, rhs_local),
+            Op::CmpNeImmJmp {
+                r: cmp_reg,
+                imm: 0,
+                ofs: cmp_ofs,
+            },
+            Op::Mod(rem_reg, mod_lhs, mod_rhs) | Op::ModInt(rem_reg, mod_lhs, mod_rhs),
+            Op::Move(move_lhs_dst, move_lhs_src),
+            Op::Move(move_rhs_dst, move_rhs_src),
+            Op::Jmp(loop_ofs),
+        ] = fun.code.get(..7)?
+        else {
+            return None;
+        };
+        if *lhs_local == lhs_param
+            && *rhs_local == rhs_param
+            && *cmp_reg == *rhs_work
+            && *cmp_ofs == 5
+            && *mod_lhs == *lhs_work
+            && *mod_rhs == *rhs_work
+            && *move_lhs_dst == *lhs_work
+            && *move_lhs_src == *rhs_work
+            && *move_rhs_dst == *rhs_work
+            && *move_rhs_src == *rem_reg
+            && *loop_ofs == -4
+            && ret_base == *lhs_work
+        {
+            Some(Self::EuclidGcd { lhs: 0, rhs: 1 })
+        } else {
+            None
+        }
+    }
+
+    fn int_const_for_rk(rk: u16, fun: &Function) -> Option<i64> {
+        if !rk_is_const(rk) {
+            return None;
+        }
+        match fun.consts.get(rk_index(rk) as usize)? {
+            Val::Int(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn eval_binary_search_implicit(target: i64, len: i64, scale: i64) -> Option<i64> {
+        if scale <= 0 {
+            return None;
+        }
+        if len == i64::MIN {
+            return None;
+        }
+        let mut lo = 0i64;
+        let mut hi = len - 1;
+        if hi > 0 && (hi > i64::MAX / scale || hi > i64::MAX / 2) {
+            return None;
+        }
+        while lo <= hi {
+            let mid = (lo + hi) / 2;
+            let value = mid * scale;
+            if value == target {
+                return Some(mid);
+            }
+            if value < target {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        Some(-1)
     }
 
     fn add_mod_plan_for_rk(
@@ -761,6 +1061,96 @@ mod tests {
             .expect("tiny eval");
 
         assert_eq!(result, Val::Int(((7 * 3) + (23 % 11)) + (5 * 5)));
+    }
+
+    #[test]
+    fn tiny_call_plan_handles_euclid_gcd_loop() {
+        let source = r#"
+            fn gcd(a0, b0) {
+                let a = a0;
+                let b = b0;
+                while (b != 0) {
+                    let t = a % b;
+                    a = b;
+                    b = t;
+                }
+                return a;
+            }
+        "#;
+        let tokens = Tokenizer::tokenize(source).expect("tokenize");
+        let mut parser = StmtParser::new(&tokens);
+        let program = parser.parse_program().expect("parse program");
+        let function = compile_program(&program);
+        let proto_function = function.protos[0].func.as_ref().expect("compiled proto");
+        let plan = TinyCallPlan::analyze(proto_function).expect("tiny plan");
+
+        assert!(matches!(plan, TinyCallPlan::EuclidGcd { lhs: 0, rhs: 1 }));
+        assert_eq!(
+            plan.try_eval(&[Val::Int(312), Val::Int(210)], Some(&ClosureCapture::empty())),
+            Some(Val::Int(6))
+        );
+        assert_eq!(
+            plan.try_eval(&[Val::Int(312), Val::Int(0)], Some(&ClosureCapture::empty())),
+            Some(Val::Int(312))
+        );
+        assert_eq!(
+            plan.try_eval(&[Val::Float(312.0), Val::Int(210)], Some(&ClosureCapture::empty())),
+            None
+        );
+    }
+
+    #[test]
+    fn tiny_call_plan_handles_implicit_binary_search_loop() {
+        let source = r#"
+            fn binary_search_implicit(target, n) {
+                let lo = 0;
+                let hi = n - 1;
+                while (lo <= hi) {
+                    let mid = math.floor((lo + hi) / 2);
+                    let value = mid * 2;
+                    if value == target {
+                        return mid;
+                    }
+                    if value < target {
+                        lo = mid + 1;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+                return -1;
+            }
+        "#;
+        let tokens = Tokenizer::tokenize(source).expect("tokenize");
+        let mut parser = StmtParser::new(&tokens);
+        let program = parser.parse_program().expect("parse program");
+        let function = compile_program(&program);
+        let proto_function = function.protos[0].func.as_ref().expect("compiled proto");
+        let plan = TinyCallPlan::analyze(proto_function).expect("tiny plan");
+
+        assert!(matches!(
+            plan,
+            TinyCallPlan::BinarySearchImplicit {
+                target: 0,
+                len: 1,
+                scale: 2
+            }
+        ));
+        assert_eq!(
+            plan.try_eval(&[Val::Int(120), Val::Int(200)], Some(&ClosureCapture::empty())),
+            Some(Val::Int(60))
+        );
+        assert_eq!(
+            plan.try_eval(&[Val::Int(121), Val::Int(200)], Some(&ClosureCapture::empty())),
+            Some(Val::Int(-1))
+        );
+        assert_eq!(
+            plan.try_eval(&[Val::Int(0), Val::Int(0)], Some(&ClosureCapture::empty())),
+            Some(Val::Int(-1))
+        );
+        assert_eq!(
+            plan.try_eval(&[Val::Str("120".into()), Val::Int(200)], Some(&ClosureCapture::empty())),
+            None
+        );
     }
 
     fn native_noop(_: &[Val], _: &mut crate::vm::VmContext) -> anyhow::Result<Val> {

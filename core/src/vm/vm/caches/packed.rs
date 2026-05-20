@@ -1,4 +1,4 @@
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(in crate::vm::vm) enum PackedArithOp {
     Add,
     Sub,
@@ -7,7 +7,7 @@ pub(in crate::vm::vm) enum PackedArithOp {
     Mod,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(in crate::vm::vm) enum PackedCmpImmOp {
     Eq,
     Ne,
@@ -17,7 +17,7 @@ pub(in crate::vm::vm) enum PackedCmpImmOp {
     Ge,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(in crate::vm::vm) enum PackedCmpOp {
     Eq,
     Ne,
@@ -27,14 +27,26 @@ pub(in crate::vm::vm) enum PackedCmpOp {
     Ge,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
+pub(in crate::vm::vm) enum PackedValueOperand {
+    Reg(u16),
+    Const(u16),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(in crate::vm::vm) enum PackedAddOperand {
+    Reg(u16),
+    Imm(i16),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(in crate::vm::vm) enum PackedHotCallKind {
     Generic,
     ClosureExact,
     Exact,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(in crate::vm::vm) enum PackedHotKind {
     Move {
         dst: u16,
@@ -68,6 +80,15 @@ pub(in crate::vm::vm) enum PackedHotKind {
         dst: u16,
         base: u16,
         field: u16,
+    },
+    AccessIntArith {
+        access_dst: u16,
+        base: u16,
+        field: u16,
+        arith_op: PackedArithOp,
+        arith_dst: u16,
+        arith_a: u16,
+        arith_b: u16,
     },
     AccessK {
         dst: u16,
@@ -108,6 +129,16 @@ pub(in crate::vm::vm) enum PackedHotKind {
         rhs: u16,
         jump_pc: usize,
     },
+    MapGetInternedUpsertAdd {
+        get_dst: u16,
+        cmp_dst: u16,
+        map: u16,
+        key: u16,
+        default: PackedValueOperand,
+        default_load: Option<(u16, u16)>,
+        add_dst: u16,
+        add_rhs: PackedAddOperand,
+    },
     MapGetDynamic {
         dst: u16,
         map: u16,
@@ -121,15 +152,43 @@ pub(in crate::vm::vm) enum PackedHotKind {
         rhs: u16,
         jump_pc: usize,
     },
+    MapGetDynamicUpsertAdd {
+        get_dst: u16,
+        cmp_dst: u16,
+        map: u16,
+        key: u16,
+        default: PackedValueOperand,
+        default_load: Option<(u16, u16)>,
+        add_dst: u16,
+        add_rhs: PackedAddOperand,
+    },
     MapHas {
         dst: u16,
         map: u16,
         key: u16,
     },
+    MapHasIncJmp {
+        dst: u16,
+        map: u16,
+        key: u16,
+        inc_r: u16,
+        inc_imm: i16,
+        true_pc: usize,
+        false_pc: usize,
+    },
     MapHasK {
         dst: u16,
         map: u16,
         key: u16,
+    },
+    MapHasKIncJmp {
+        dst: u16,
+        map: u16,
+        key: u16,
+        inc_r: u16,
+        inc_imm: i16,
+        true_pc: usize,
+        false_pc: usize,
     },
     StrConcatKnownCap {
         dst: u16,
@@ -147,12 +206,56 @@ pub(in crate::vm::vm) enum PackedHotKind {
         a: u16,
         b: u16,
     },
+    IntArithAddIntImm {
+        arith_op: PackedArithOp,
+        arith_dst: u16,
+        arith_a: u16,
+        arith_b: u16,
+        add_dst: u16,
+        add_imm: i16,
+    },
+    IntArithCmpIntJmp {
+        arith_op: PackedArithOp,
+        arith_dst: u16,
+        arith_a: u16,
+        arith_b: u16,
+        cmp_op: PackedCmpOp,
+        cmp_a: u16,
+        cmp_b: u16,
+        jump_pc: usize,
+    },
     AddIntFloorDivImm {
         add_dst: u16,
         a: u16,
         b: u16,
         div_dst: u16,
         imm: i16,
+    },
+    MulIntFloorDivImm {
+        mul_dst: u16,
+        a: u16,
+        b: u16,
+        div_dst: u16,
+        imm: i16,
+    },
+    MulIntAddInt {
+        mul_dst: u16,
+        mul_a: u16,
+        mul_b: u16,
+        add_dst: u16,
+        add_a: u16,
+        add_b: u16,
+    },
+    MulIntMulIntAddInt {
+        first_dst: u16,
+        first_a: u16,
+        first_b: u16,
+        second_dst: u16,
+        second_a: u16,
+        second_b: u16,
+        add_dst: u16,
+        add_a: u16,
+        add_b: u16,
     },
     FloatArith {
         op: PackedArithOp,
@@ -244,6 +347,14 @@ pub(in crate::vm::vm) enum PackedHotKind {
         a: u16,
         b: u16,
     },
+    ArithAddIntImm {
+        op: PackedArithOp,
+        arith_dst: u16,
+        a: u16,
+        b: u16,
+        add_dst: u16,
+        add_imm: i16,
+    },
     AddIntImm {
         dst: u16,
         src: u16,
@@ -259,6 +370,18 @@ pub(in crate::vm::vm) enum PackedHotKind {
         op: PackedCmpImmOp,
         src: u16,
         imm: i16,
+        ofs: i16,
+    },
+    CmpImmMulIntAddInt {
+        op: PackedCmpImmOp,
+        src: u16,
+        imm: i16,
+        mul_dst: u16,
+        mul_a: u16,
+        mul_b: u16,
+        add_dst: u16,
+        add_a: u16,
+        add_b: u16,
         ofs: i16,
     },
     Cmp {
@@ -294,6 +417,22 @@ pub(in crate::vm::vm) enum PackedHotKind {
         dst: u16,
         src: u16,
         imm: i16,
+        ofs: i16,
+    },
+    CmpIntSubAccessSub {
+        op: PackedCmpOp,
+        a: u16,
+        b: u16,
+        first_dst: u16,
+        first_a: u16,
+        first_b: u16,
+        access_pc: usize,
+        access_dst: u16,
+        access_base: u16,
+        access_field: u16,
+        final_dst: u16,
+        final_a: u16,
+        final_b: u16,
         ofs: i16,
     },
     CmpJmp {
@@ -400,7 +539,7 @@ pub(in crate::vm::vm) enum PackedHotKind {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(in crate::vm::vm) struct PackedRangeTail {
     pub(in crate::vm::vm) guard_pc: usize,
     pub(in crate::vm::vm) body_pc: usize,

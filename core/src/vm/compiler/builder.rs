@@ -70,6 +70,7 @@ pub(crate) struct FunctionBuilder {
     pub(crate) loop_invariant_expr_regs: Vec<(Expr, u16)>,
     pub(crate) inferred_function_param_types: HashMap<String, Vec<Option<Type>>>,
     pub(crate) inferred_function_return_types: HashMap<String, Option<Type>>,
+    pub(crate) function_name_counts: HashMap<String, usize>,
 }
 
 impl FunctionBuilder {
@@ -117,6 +118,7 @@ impl FunctionBuilder {
             loop_invariant_expr_regs: Vec::new(),
             inferred_function_param_types: HashMap::new(),
             inferred_function_return_types: HashMap::new(),
+            function_name_counts: HashMap::new(),
         };
         for (idx, cap) in captures.iter().enumerate() {
             let name = match cap {
@@ -376,13 +378,17 @@ impl FunctionBuilder {
 
         let proto_idx = self.protos.len() as u16;
         let captures = self.collect_captures(name, params, named_params, body);
-        let compiled = Compiler::new().compile_function_with_param_types_and_captures(
+        let mut compiled = Compiler::new().compile_function_with_param_types_and_captures(
             params,
             param_types,
             named_params,
             body,
             &captures,
         );
+        if Self::stmt_calls_known_function(body, &self.function_name_counts) {
+            compiled.code32 = None;
+            compiled.bc32_decoded = None;
+        }
         let default_funcs: Vec<Option<Function>> = named_params
             .iter()
             .map(|decl| {
@@ -597,6 +603,158 @@ impl FunctionBuilder {
             Expr::Match { .. } => true,
             Expr::TemplateString(_) => true,
             _ => false,
+        }
+    }
+
+    pub(crate) fn push_function_name_scope(&mut self, names: &[String]) {
+        for name in names {
+            *self.function_name_counts.entry(name.clone()).or_insert(0) += 1;
+        }
+    }
+
+    pub(crate) fn pop_function_name_scope(&mut self, names: &[String]) {
+        for name in names {
+            let Some(count) = self.function_name_counts.get_mut(name) else {
+                continue;
+            };
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.function_name_counts.remove(name);
+            }
+        }
+    }
+
+    pub(crate) fn direct_function_names_in_block(statements: &[Box<Stmt>]) -> Vec<String> {
+        let mut names = Vec::new();
+        for stmt in statements {
+            if let Stmt::Function { name, .. } = stmt.as_ref() {
+                names.push(name.clone());
+            }
+        }
+        names
+    }
+
+    fn expr_calls_known_function(expr: &Expr, names: &HashMap<String, usize>) -> bool {
+        match expr {
+            Expr::Call(name, _) => names.contains_key(name),
+            Expr::CallExpr(callee, _) => matches!(callee.as_ref(), Expr::Var(name) if names.contains_key(name)),
+            Expr::CallNamed(callee, _, _) => Self::expr_calls_known_function(callee, names),
+            Expr::Bin(left, _, right)
+            | Expr::And(left, right)
+            | Expr::Or(left, right)
+            | Expr::NullishCoalescing(left, right)
+            | Expr::Access(left, right)
+            | Expr::OptionalAccess(left, right) => {
+                Self::expr_calls_known_function(left, names) || Self::expr_calls_known_function(right, names)
+            }
+            Expr::Unary(_, inner) | Expr::Paren(inner) => Self::expr_calls_known_function(inner, names),
+            Expr::List(items) => items.iter().any(|item| Self::expr_calls_known_function(item, names)),
+            Expr::Map(items) => items.iter().any(|(key, value)| {
+                Self::expr_calls_known_function(key, names) || Self::expr_calls_known_function(value, names)
+            }),
+            Expr::Conditional(condition, then_expr, else_expr) => {
+                Self::expr_calls_known_function(condition, names)
+                    || Self::expr_calls_known_function(then_expr, names)
+                    || Self::expr_calls_known_function(else_expr, names)
+            }
+            Expr::Range { start, end, step, .. } => {
+                start
+                    .as_ref()
+                    .is_some_and(|expr| Self::expr_calls_known_function(expr, names))
+                    || end
+                        .as_ref()
+                        .is_some_and(|expr| Self::expr_calls_known_function(expr, names))
+                    || step
+                        .as_ref()
+                        .is_some_and(|expr| Self::expr_calls_known_function(expr, names))
+            }
+            Expr::Block(statements) => statements
+                .iter()
+                .any(|stmt| Self::stmt_calls_known_function(stmt, names)),
+            Expr::Closure { body, .. } => Self::expr_calls_known_function(body, names),
+            Expr::StructLiteral { fields, .. } => fields
+                .iter()
+                .any(|(_, value)| Self::expr_calls_known_function(value, names)),
+            Expr::Match { value, arms } => {
+                Self::expr_calls_known_function(value, names)
+                    || arms.iter().any(|arm| Self::expr_calls_known_function(&arm.body, names))
+            }
+            Expr::TemplateString(parts) => parts.iter().any(|part| match part {
+                crate::expr::TemplateStringPart::Expr(expr) => Self::expr_calls_known_function(expr, names),
+                crate::expr::TemplateStringPart::Literal(_) => false,
+            }),
+            Expr::Select { cases, default_case } => {
+                cases.iter().any(|case| {
+                    let pattern_calls = match &case.pattern {
+                        crate::expr::SelectPattern::Recv { channel, .. } => {
+                            Self::expr_calls_known_function(channel, names)
+                        }
+                        crate::expr::SelectPattern::Send { channel, value } => {
+                            Self::expr_calls_known_function(channel, names)
+                                || Self::expr_calls_known_function(value, names)
+                        }
+                    };
+                    pattern_calls
+                        || case
+                            .guard
+                            .as_ref()
+                            .is_some_and(|guard| Self::expr_calls_known_function(guard, names))
+                        || Self::expr_calls_known_function(&case.body, names)
+                }) || default_case
+                    .as_ref()
+                    .is_some_and(|default| Self::expr_calls_known_function(default, names))
+            }
+            Expr::Val(_) | Expr::Var(_) => false,
+        }
+    }
+
+    pub(crate) fn stmt_calls_known_function(stmt: &Stmt, names: &HashMap<String, usize>) -> bool {
+        match stmt {
+            Stmt::Block { statements } => statements
+                .iter()
+                .any(|stmt| Self::stmt_calls_known_function(stmt, names)),
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::CompoundAssign { value, .. }
+            | Stmt::Define { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Return { value: Some(value) } => Self::expr_calls_known_function(value, names),
+            Stmt::If {
+                condition,
+                then_stmt,
+                else_stmt,
+            }
+            | Stmt::IfLet {
+                value: condition,
+                then_stmt,
+                else_stmt,
+                ..
+            } => {
+                Self::expr_calls_known_function(condition, names)
+                    || Self::stmt_calls_known_function(then_stmt, names)
+                    || else_stmt
+                        .as_ref()
+                        .is_some_and(|stmt| Self::stmt_calls_known_function(stmt, names))
+            }
+            Stmt::While { condition, body } => {
+                Self::expr_calls_known_function(condition, names) || Self::stmt_calls_known_function(body, names)
+            }
+            Stmt::WhileLet { value, body, .. }
+            | Stmt::For {
+                iterable: value, body, ..
+            } => Self::expr_calls_known_function(value, names) || Self::stmt_calls_known_function(body, names),
+            Stmt::Function { body, .. } => Self::stmt_calls_known_function(body, names),
+            Stmt::Impl { methods, .. } => methods
+                .iter()
+                .any(|method| Self::stmt_calls_known_function(method, names)),
+            Stmt::Import(_)
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Return { value: None }
+            | Stmt::Struct { .. }
+            | Stmt::TypeAlias { .. }
+            | Stmt::Trait { .. }
+            | Stmt::Empty => false,
         }
     }
 }

@@ -1269,6 +1269,94 @@ fn lowers_in_membership() {
 }
 
 #[test]
+fn clears_known_string_key_facts_at_control_flow_merge() {
+    let func = Function {
+        consts: vec![Val::from_str("us"), Val::from_str("ng")],
+        code: vec![
+            Op::LoadK(1, 0),
+            Op::JmpFalse(2, 2),
+            Op::LoadK(1, 1),
+            Op::MapHas(0, 3, 1),
+            Op::Ret { base: 0, retc: 1 },
+        ],
+        n_regs: 4,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "map_has_join_key", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_map_has(i64"),
+        "merged dynamic key should use generic map.has helper:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_map_has_const_str"),
+        "merged dynamic key must not reuse a stale const-string fact:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn keeps_deferred_string_int_key_when_branch_consumers_can_use_it() {
+    let func = Function {
+        consts: vec![Val::from_str("sku-"), Val::Int(1), Val::Int(10)],
+        code: vec![
+            Op::LoadK(1, 0),
+            Op::LoadK(2, 1),
+            Op::StrConcatToStr(1, 1, 2),
+            Op::MapGetDynamic(3, 4, 1),
+            Op::CmpEq(5, 3, 6),
+            Op::BoolBranch(5, 4),
+            Op::LoadK(7, 2),
+            Op::MapSet { map: 4, key: 1, val: 7 },
+            Op::Jmp(3),
+            Op::AddIntImm(8, 3, 1),
+            Op::MapSet { map: 4, key: 1, val: 8 },
+            Op::Ret { base: 4, retc: 1 },
+        ],
+        n_regs: 9,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact =
+        compile_function_to_llvm(&func, "branch_key_materialized", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_map_get_str_int") && ir.contains("call i64 @lk_rt_map_set_str_int"),
+        "branch consumers that understand deferred string-int keys should not read the Nil placeholder:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_to_string"),
+        "deferred branch-local string-int key should not be materialized unnecessarily:\n{}",
+        ir
+    );
+}
+
+#[test]
 fn lowers_map_has_typed_op() {
     let func = Function {
         consts: vec![Val::from_str("needle")],

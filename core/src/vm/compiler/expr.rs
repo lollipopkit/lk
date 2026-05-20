@@ -102,6 +102,89 @@ impl FunctionBuilder {
         expr.requested_ctx().iter().all(|name| allowed.contains(name))
     }
 
+    fn inline_stdlib_name_allowed(&self, name: &str) -> bool {
+        matches!(name, "map" | "math" | "list" | "os" | "string") && self.lookup(name).is_none()
+    }
+
+    fn inline_expr_uses_only_or_stdlib(&self, expr: &Expr, allowed: &HashSet<String>) -> bool {
+        expr.requested_ctx()
+            .iter()
+            .all(|name| allowed.contains(name) || self.inline_stdlib_name_allowed(name))
+    }
+
+    fn inline_branch_stmt_uses_only(&self, stmt: &Stmt, allowed: &HashSet<String>) -> bool {
+        match stmt {
+            Stmt::Block { statements } => statements
+                .iter()
+                .all(|stmt| self.inline_branch_stmt_uses_only(stmt, allowed)),
+            Stmt::Assign { name, value, .. } | Stmt::CompoundAssign { name, value, .. } => {
+                allowed.contains(name) && self.inline_expr_uses_only_or_stdlib(value, allowed)
+            }
+            Stmt::Expr(expr) => self.inline_expr_uses_only_or_stdlib(expr, allowed),
+            Stmt::If {
+                condition,
+                then_stmt,
+                else_stmt,
+            } => {
+                self.inline_expr_uses_only_or_stdlib(condition, allowed)
+                    && self.inline_branch_stmt_uses_only(then_stmt, allowed)
+                    && else_stmt
+                        .as_ref()
+                        .is_none_or(|stmt| self.inline_branch_stmt_uses_only(stmt, allowed))
+            }
+            _ => false,
+        }
+    }
+
+    fn inline_prefix_stmt_updates_allowed(&self, stmt: &Stmt, allowed: &mut HashSet<String>) -> bool {
+        match stmt {
+            Stmt::Let {
+                pattern: crate::expr::Pattern::Variable(local_name),
+                value,
+                ..
+            }
+            | Stmt::Define {
+                name: local_name,
+                value,
+            } => {
+                if !self.inline_expr_uses_only_or_stdlib(value, allowed) {
+                    return false;
+                }
+                allowed.insert(local_name.clone());
+                true
+            }
+            Stmt::Assign { name, value, .. } | Stmt::CompoundAssign { name, value, .. } => {
+                allowed.contains(name) && self.inline_expr_uses_only_or_stdlib(value, allowed)
+            }
+            Stmt::If {
+                condition,
+                then_stmt,
+                else_stmt,
+            } => {
+                self.inline_expr_uses_only_or_stdlib(condition, allowed)
+                    && self.inline_branch_stmt_uses_only(then_stmt, allowed)
+                    && else_stmt
+                        .as_ref()
+                        .is_none_or(|stmt| self.inline_branch_stmt_uses_only(stmt, allowed))
+            }
+            _ => false,
+        }
+    }
+
+    fn collect_inline_block_body(stmt: &Stmt) -> Option<(&[Box<Stmt>], &Expr)> {
+        let Stmt::Block { statements } = stmt else {
+            return None;
+        };
+        if statements.is_empty() || statements.len() > 12 {
+            return None;
+        }
+        let (last, prefix) = statements.split_last()?;
+        let Stmt::Return { value: Some(value) } = last.as_ref() else {
+            return None;
+        };
+        Some((prefix, value.as_ref()))
+    }
+
     fn try_inline_simple_known_call(&mut self, name: &str, args: &[Box<Expr>]) -> Option<u16> {
         let Some(Val::Closure(closure)) = self.const_env.get(name).cloned() else {
             return None;
@@ -109,28 +192,40 @@ impl FunctionBuilder {
         if !closure.named_params.is_empty() || !closure.capture_specs.is_empty() || closure.params.len() != args.len() {
             return None;
         }
-        let (prefix, returned) = Self::collect_inline_straight_line_body(closure.body.as_ref())?;
-        if Self::expr_contains_call(returned) {
-            return None;
-        }
+        let body = closure.body.as_ref();
         let mut allowed_names = closure.params.iter().cloned().collect::<HashSet<_>>();
-        for stmt in &prefix {
-            let Stmt::Let {
-                pattern: crate::expr::Pattern::Variable(local_name),
-                value,
-                ..
-            } = stmt
-            else {
-                return None;
+        let (prefix, returned, broad_block): (Vec<&Stmt>, &Expr, bool) =
+            if let Some((prefix, returned)) = Self::collect_inline_straight_line_body(body) {
+                for stmt in &prefix {
+                    let Stmt::Let {
+                        pattern: crate::expr::Pattern::Variable(local_name),
+                        value,
+                        ..
+                    } = stmt
+                    else {
+                        return None;
+                    };
+                    if Self::expr_contains_call(value) || !Self::inline_expr_uses_only(value, &allowed_names) {
+                        return None;
+                    }
+                    allowed_names.insert(local_name.clone());
+                }
+                if Self::expr_contains_call(returned) || !Self::inline_expr_uses_only(returned, &allowed_names) {
+                    return None;
+                }
+                (prefix, returned, false)
+            } else {
+                let (prefix, returned) = Self::collect_inline_block_body(body)?;
+                for stmt in prefix {
+                    if !self.inline_prefix_stmt_updates_allowed(stmt, &mut allowed_names) {
+                        return None;
+                    }
+                }
+                if !self.inline_expr_uses_only_or_stdlib(returned, &allowed_names) {
+                    return None;
+                }
+                (prefix.iter().map(|stmt| stmt.as_ref()).collect(), returned, true)
             };
-            if !Self::inline_expr_uses_only(value, &allowed_names) {
-                return None;
-            }
-            allowed_names.insert(local_name.clone());
-        }
-        if !Self::inline_expr_uses_only(returned, &allowed_names) {
-            return None;
-        }
 
         let mut arg_regs = Vec::with_capacity(args.len());
         for arg in args {
@@ -141,17 +236,23 @@ impl FunctionBuilder {
         for (param, reg) in closure.params.iter().zip(arg_regs) {
             self.define_var_as(param, reg);
         }
-        for stmt in prefix {
-            let Stmt::Let {
-                pattern: crate::expr::Pattern::Variable(name),
-                value,
-                ..
-            } = stmt
-            else {
-                unreachable!("inline prefix was validated before emission");
-            };
-            let reg = self.expr(value);
-            self.define_var_as(name, reg);
+        if broad_block {
+            for stmt in prefix {
+                self.stmt(stmt);
+            }
+        } else {
+            for stmt in prefix {
+                let Stmt::Let {
+                    pattern: crate::expr::Pattern::Variable(name),
+                    value,
+                    ..
+                } = stmt
+                else {
+                    unreachable!("inline prefix was validated before emission");
+                };
+                let reg = self.expr(value);
+                self.define_var_as(name, reg);
+            }
         }
         let result = self.expr(returned);
         self.pop_var_scope();
@@ -769,18 +870,17 @@ impl FunctionBuilder {
                 if let Some(inlined) = self.try_inline_simple_known_call(name, args) {
                     return inlined;
                 }
-                // If the callee is a locally-defined function registered in const_env,
-                // load it from the constant pool instead of via LoadGlobal (avoids hashtable lookup).
                 let known_callee = self.const_env.get(name).cloned();
-                let use_direct_call = known_callee.is_some() && self.call_safe_to_fold(name);
-                let f = if use_direct_call {
+                let local_callee = self.lookup(name);
+                let use_const_callee = local_callee.is_none() && known_callee.is_some() && self.call_safe_to_fold(name);
+                let f = if let Some(local) = local_callee {
+                    local
+                } else if use_const_callee {
                     let func_val = known_callee.as_ref().expect("known callee checked above");
                     let kidx = self.k(func_val.clone());
                     let f = self.alloc();
                     self.emit(Op::LoadK(f, kidx));
                     f
-                } else if let Some(local) = self.lookup(name) {
-                    local
                 } else {
                     let kname = self.k(Val::from_str(name.as_str()));
                     let f = self.alloc();
