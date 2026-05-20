@@ -20,6 +20,8 @@ static PACKED_HOT_BUILD_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static PACKED_HOT_BUILD_SUCCESSES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(debug_assertions)]
 static PACKED_HOT_SENTINEL_TAGS: OnceLock<Mutex<BTreeMap<u16, usize>>> = OnceLock::new();
+#[cfg(debug_assertions)]
+static PACKED_HOT_BUILD_MISS_TAGS: OnceLock<Mutex<BTreeMap<u16, usize>>> = OnceLock::new();
 
 #[cfg(debug_assertions)]
 pub(super) struct PackedHotStatsGuard {
@@ -57,6 +59,9 @@ impl Drop for PackedHotStatsGuard {
             let sentinel_skips = PACKED_HOT_SENTINEL_SKIPS.swap(0, Ordering::Relaxed);
             let attempts = PACKED_HOT_BUILD_ATTEMPTS.swap(0, Ordering::Relaxed);
             let successes = PACKED_HOT_BUILD_SUCCESSES.swap(0, Ordering::Relaxed);
+            if sentinel_skips == 0 && attempts == 0 && successes == 0 {
+                return;
+            }
             eprintln!(
                 "[packed-hot-cache] hits={} sentinel_skips={} build_successes={} build_attempts={}",
                 hits, sentinel_skips, successes, attempts
@@ -66,7 +71,18 @@ impl Drop for PackedHotStatsGuard {
                 if !guard.is_empty() {
                     eprintln!("[packed-hot-cache] sentinel breakdown:");
                     for (key, count) in guard.iter() {
-                        let label = sentinel_label(*key);
+                        let label = packed_word_label(*key);
+                        eprintln!("{} => {}", label, count);
+                    }
+                    guard.clear();
+                }
+            }
+            if let Some(map) = PACKED_HOT_BUILD_MISS_TAGS.get() {
+                let mut guard = map.lock().unwrap();
+                if !guard.is_empty() {
+                    eprintln!("[packed-hot-cache] build miss breakdown:");
+                    for (key, count) in guard.iter() {
+                        let label = packed_word_label(*key);
                         eprintln!("{} => {}", label, count);
                     }
                     guard.clear();
@@ -89,11 +105,7 @@ pub(super) fn record_sentinel_skip(_word: u32) {
         PACKED_HOT_SENTINEL_SKIPS.fetch_add(1, Ordering::Relaxed);
         let word = _word;
         let raw_tag = bc32::tag_of(word);
-        let key = if raw_tag == bc32::TAG_EXT {
-            0x100 | (((word >> 16) & 0xFF) as u16)
-        } else {
-            raw_tag as u16
-        };
+        let key = packed_word_key(word, raw_tag);
         let map = PACKED_HOT_SENTINEL_TAGS.get_or_init(|| Mutex::new(BTreeMap::new()));
         let mut guard = map.lock().unwrap();
         *guard.entry(key).or_insert(0) += 1;
@@ -101,7 +113,16 @@ pub(super) fn record_sentinel_skip(_word: u32) {
 }
 
 #[cfg(debug_assertions)]
-fn sentinel_label(key: u16) -> String {
+fn packed_word_key(word: u32, raw_tag: u8) -> u16 {
+    if raw_tag == bc32::TAG_EXT {
+        0x100 | (((word >> 16) & 0xFF) as u16)
+    } else {
+        raw_tag as u16
+    }
+}
+
+#[cfg(debug_assertions)]
+fn packed_word_label(key: u16) -> String {
     if (key & 0x100) != 0 {
         let ext_op = (key & 0xFF) as u8;
         return format!("  <Ext:{}:{}>", ext_op, ext_op_name(ext_op));
@@ -120,6 +141,7 @@ fn ext_op_name(ext_op: u8) -> &'static str {
         bc32::EXT_OP_STARTS_WITH_K => "StartsWithK",
         bc32::EXT_OP_CONTAINS_K => "ContainsK",
         bc32::EXT_OP_TO_ITER => "ToIter",
+        bc32::EXT_OP_MAP_HAS => "MapHas",
         bc32::EXT_OP_MAP_HAS_K => "MapHasK",
         bc32::EXT_OP_ADD_INT => "AddInt",
         bc32::EXT_OP_ADD_FLOAT => "AddFloat",
@@ -128,6 +150,7 @@ fn ext_op_name(ext_op: u8) -> &'static str {
         bc32::EXT_OP_MUL_INT => "MulInt",
         bc32::EXT_OP_MUL_FLOAT => "MulFloat",
         bc32::EXT_OP_DIV_FLOAT => "DivFloat",
+        bc32::EXT_OP_FLOOR_DIV_IMM => "FloorDivImm",
         bc32::EXT_OP_MOD_INT => "ModInt",
         bc32::EXT_OP_MOD_FLOAT => "ModFloat",
         bc32::EXT_OP_LIST_LEN => "ListLen",
@@ -137,12 +160,22 @@ fn ext_op_name(ext_op: u8) -> &'static str {
         bc32::EXT_OP_STR_INDEX_I => "StrIndexI",
         bc32::EXT_OP_MAP_GET_INTERNED => "MapGetInterned",
         bc32::EXT_OP_MAP_SET_INTERNED => "MapSetInterned",
+        bc32::EXT_OP_MAP_SET_INTERNED_MOVE => "MapSetInternedMove",
         bc32::EXT_OP_MAP_GET_DYNAMIC => "MapGetDynamic",
         bc32::EXT_OP_STR_CONCAT_KNOWN_CAP => "StrConcatKnownCap",
         bc32::EXT_OP_STR_CONCAT_TO_STR => "StrConcatToStr",
         bc32::EXT_OP_LIST_SET_I => "ListSetI",
         bc32::EXT_OP_CALL_NATIVE_FAST => "CallNativeFast",
         bc32::EXT_OP_CMP_I => "CmpI",
+        bc32::EXT_OP_CMP_I_JMP => "CmpIntJmp",
+        bc32::EXT_OP_CMP_EQ_IMM_JMP => "CmpEqImmJmp",
+        bc32::EXT_OP_CMP_NE_IMM_JMP => "CmpNeImmJmp",
+        bc32::EXT_OP_CMP_GT_IMM_JMP => "CmpGtImmJmp",
+        bc32::EXT_OP_CMP_GE_IMM_JMP => "CmpGeImmJmp",
+        bc32::EXT_OP_CMP_EQ_IMM16_JMP => "CmpEqImm16Jmp",
+        bc32::EXT_OP_CMP_NE_IMM16_JMP => "CmpNeImm16Jmp",
+        bc32::EXT_OP_CMP_GT_IMM16_JMP => "CmpGtImm16Jmp",
+        bc32::EXT_OP_CMP_GE_IMM16_JMP => "CmpGeImm16Jmp",
         bc32::EXT_OP_CALL_CLOSURE_EXACT => "CallClosureExact",
         bc32::EXT_OP_CALL_EXACT => "CallExact",
         bc32::EXT_OP_CALL_NAMED_FALLBACK => "CallNamedFallback",
@@ -162,4 +195,17 @@ pub(super) fn record_build_attempt() {
 pub(super) fn record_build_success() {
     #[cfg(debug_assertions)]
     PACKED_HOT_BUILD_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+pub(super) fn record_build_miss(_word: u32) {
+    #[cfg(debug_assertions)]
+    {
+        let word = _word;
+        let raw_tag = bc32::tag_of(word);
+        let key = packed_word_key(word, raw_tag);
+        let map = PACKED_HOT_BUILD_MISS_TAGS.get_or_init(|| Mutex::new(BTreeMap::new()));
+        let mut guard = map.lock().unwrap();
+        *guard.entry(key).or_insert(0) += 1;
+    }
 }

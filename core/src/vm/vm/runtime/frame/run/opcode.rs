@@ -23,17 +23,22 @@ mod string_ops;
 
 use anyhow::{Result, anyhow};
 
-use crate::val::{ClosureCapture, ClosureInit, ClosureValue, Type, Val};
+use crate::val::{ClosureCapture, ClosureInit, ClosureValue, Val};
 use crate::vm::RegionPlan;
 use crate::vm::alloc::RegionAllocator;
 use crate::vm::bytecode::{CaptureSpec, Function, Op};
 use crate::vm::compiler::Compiler;
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::{CallIc, CallReturnLayout, ClosureFastCache, ForRangeState, TinyCallPlan, VmCaches};
-use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan, RegisterWindowRef};
+use crate::vm::vm::caches::{CallIc, CallReturnLayout, ForRangeState, VmCaches};
+use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan};
+use crate::vm::{
+    VmCallMetric, VmContainerMetric, record_branch_op, record_call_op, record_container_op, record_opcode_step,
+    vm_runtime_metrics_enabled,
+};
 
 use super::helpers::{advance_for_range_tail, assign_reg, frame_return_common, handle_return_common};
+use super::math::floor_div_i64;
 use super::method_ops;
 use super::plan::build_named_call_plan;
 
@@ -74,7 +79,26 @@ pub(super) fn run_opcode_code(
     if for_range_ic.len() < f.code.len() {
         for_range_ic.resize(f.code.len(), None);
     }
+    let collect_metrics = vm_runtime_metrics_enabled();
+    let record_branch = |typed| {
+        if collect_metrics {
+            record_branch_op(typed);
+        }
+    };
+    let record_call = |kind| {
+        if collect_metrics {
+            record_call_op(kind);
+        }
+    };
+    let record_container = |kind| {
+        if collect_metrics {
+            record_container_op(kind);
+        }
+    };
     while pc < f.code.len() {
+        if collect_metrics {
+            record_opcode_step();
+        }
         match &f.code[pc] {
             Op::LoadK(dst, k) => {
                 assign_reg(frame_raw, regs, *dst as usize, f.consts[*k as usize].clone());
@@ -237,6 +261,18 @@ pub(super) fn run_opcode_code(
                 compare_ops::run_cmp_i(frame_raw, regs, *dst, *a, *b, *kind)?;
                 pc += 1;
             }
+            Op::CmpIntJmp { kind, a, b, ofs } => {
+                record_branch(true);
+                let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*a as usize], &regs[*b as usize]) else {
+                    return frame_return_common(frame_raw, pc, Err(anyhow!("CmpIntJmp expects integer registers")))
+                        .map(Some);
+                };
+                if kind.eval(*lhs, *rhs) {
+                    pc += 1;
+                } else {
+                    pc = ((pc as isize) + (*ofs as isize)) as usize;
+                }
+            }
             Op::In(dst, a, b) => {
                 compare_ops::run_in(frame_raw, regs, &f.consts, *dst, *a, *b)?;
                 pc += 1;
@@ -263,26 +299,32 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::Access(dst, base, field) => {
+                record_container(VmContainerMetric::Generic);
                 container_ops::run_access(frame_raw, regs, access_ic, pc, *dst, *base, *field);
                 pc += 1;
             }
             Op::AccessK(dst, base, kidx) => {
+                record_container(VmContainerMetric::Generic);
                 container_ops::run_access_k(frame_raw, regs, &f.consts, access_ic, pc, *dst, *base, *kidx);
                 pc += 1;
             }
             Op::Len { dst, src } => {
+                record_container(VmContainerMetric::Generic);
                 container_ops::run_len(frame_raw, regs, *dst, *src);
                 pc += 1;
             }
             Op::ListLen { dst, src } => {
+                record_container(VmContainerMetric::List);
                 container_ops::run_list_len(frame_raw, regs, *dst, *src);
                 pc += 1;
             }
             Op::MapLen { dst, src } => {
+                record_container(VmContainerMetric::Map);
                 container_ops::run_map_len(frame_raw, regs, *dst, *src);
                 pc += 1;
             }
             Op::StrLen { dst, src } => {
+                record_container(VmContainerMetric::String);
                 container_ops::run_str_len(frame_raw, regs, *dst, *src);
                 pc += 1;
             }
@@ -290,55 +332,76 @@ pub(super) fn run_opcode_code(
                 container_ops::run_floor(frame_raw, regs, *dst, *src);
                 pc += 1;
             }
+            Op::FloorDivImm { dst, src, imm } => {
+                let out = match &regs[*src as usize] {
+                    Val::Int(value) => Val::Int(floor_div_i64(*value, *imm as i64)),
+                    Val::Float(value) => Val::Int((value / *imm as f64).floor() as i64),
+                    _ => Val::Int(0),
+                };
+                assign_reg(frame_raw, regs, *dst as usize, out);
+                pc += 1;
+            }
             Op::StartsWithK(dst, src, kidx) => {
+                record_container(VmContainerMetric::String);
                 string_ops::run_starts_with_k(frame_raw, regs, &f.consts, *dst, *src, *kidx);
                 pc += 1;
             }
             Op::ContainsK(dst, src, kidx) => {
+                record_container(VmContainerMetric::String);
                 string_ops::run_contains_k(frame_raw, regs, &f.consts, *dst, *src, *kidx);
                 pc += 1;
             }
             Op::MapHas(dst, map, key) => {
+                record_container(VmContainerMetric::Map);
                 if let Err(err) = container_ops::run_map_has(frame_raw, regs, *dst, *map, *key) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::MapGetInterned(dst, map, kidx) => {
+                record_container(VmContainerMetric::Map);
                 container_ops::run_map_get_interned(frame_raw, regs, &f.consts, *dst, *map, *kidx);
                 pc += 1;
             }
             Op::MapGetDynamic(dst, map, key) => {
+                record_container(VmContainerMetric::Map);
                 container_ops::run_map_get_dynamic(frame_raw, regs, *dst, *map, *key);
                 pc += 1;
             }
             Op::MapHasK(dst, map, kidx) => {
+                record_container(VmContainerMetric::Map);
                 if let Err(err) = container_ops::run_map_has_k(frame_raw, regs, &f.consts, *dst, *map, *kidx) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::ListFoldAdd { acc, list } => {
+                record_container(VmContainerMetric::List);
                 container_ops::run_list_fold_add(frame_raw, regs, *acc, *list)?;
                 pc += 1;
             }
             Op::MapValuesFoldAdd { acc, map } => {
+                record_container(VmContainerMetric::Map);
                 container_ops::run_map_values_fold_add(frame_raw, regs, *acc, *map)?;
                 pc += 1;
             }
             Op::Index { dst, base, idx } => {
+                record_container(VmContainerMetric::Generic);
                 container_ops::run_index(frame_raw, regs, index_ic, caches.quickening, pc, *dst, *base, *idx)?;
                 pc += 1;
             }
             Op::IndexK(dst, base, kidx) => {
+                record_container(VmContainerMetric::Generic);
                 container_ops::run_index_k(frame_raw, regs, &f.consts, *dst, *base, *kidx);
                 pc += 1;
             }
             Op::ListIndexI(dst, base, index) => {
+                record_container(VmContainerMetric::List);
                 container_ops::run_list_index_i(frame_raw, regs, *dst, *base, *index);
                 pc += 1;
             }
             Op::StrIndexI(dst, base, index) => {
+                record_container(VmContainerMetric::String);
                 container_ops::run_str_index_i(frame_raw, regs, *dst, *base, *index);
                 pc += 1;
             }
@@ -363,14 +426,17 @@ pub(super) fn run_opcode_code(
                 return frame_return_common(frame_raw, pc, pattern_ops::run_raise(f, *err_kidx)).map(Some);
             }
             Op::ToIter { dst, src } => {
+                record_container(VmContainerMetric::Generic);
                 container_ops::run_to_iter(frame_raw, regs, *dst, *src, region_plan, region_allocator_ptr);
                 pc += 1;
             }
             Op::BuildList { dst, base, len } => {
+                record_container(VmContainerMetric::List);
                 container_ops::run_build_list(frame_raw, regs, *dst, *base, *len, region_plan, region_allocator_ptr);
                 pc += 1;
             }
             Op::BuildMap { dst, base, len } => {
+                record_container(VmContainerMetric::Map);
                 if let Err(err) =
                     container_ops::run_build_map(frame_raw, regs, *dst, *base, *len, region_plan, region_allocator_ptr)
                 {
@@ -379,6 +445,7 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::ListSlice { dst, src, start } => {
+                record_container(VmContainerMetric::List);
                 if let Err(err) = container_ops::run_list_slice(
                     frame_raw,
                     regs,
@@ -393,30 +460,49 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::ListPush { list, val } => {
+                record_container(VmContainerMetric::List);
                 if let Err(err) = container_ops::run_list_push(regs, *list, *val) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
+            Op::ListPushMove { list, val } => {
+                record_container(VmContainerMetric::List);
+                if let Err(err) = container_ops::run_list_push_move(regs, *list, *val) {
+                    return frame_return_common(frame_raw, pc, Err(err)).map(Some);
+                }
+                pc += 1;
+            }
             Op::ListSetI { dst, list, index, val } => {
+                record_container(VmContainerMetric::List);
                 if let Err(err) = container_ops::run_list_set_i(frame_raw, regs, *dst, *list, *index, *val) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::MapSet { map, key, val } => {
+                record_container(VmContainerMetric::Map);
                 if let Err(err) = container_ops::run_map_set(regs, *map, *key, *val) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::MapSetInterned(map, kidx, val) => {
+                record_container(VmContainerMetric::Map);
                 if let Err(err) = container_ops::run_map_set_interned(regs, &f.consts, *map, *kidx, *val) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
+            Op::MapSetInternedMove(map, kidx, val) => {
+                record_container(VmContainerMetric::Map);
+                if let Err(err) = container_ops::run_map_set_interned_move(regs, &f.consts, *map, *kidx, *val) {
+                    return frame_return_common(frame_raw, pc, Err(err)).map(Some);
+                }
+                pc += 1;
+            }
             Op::MapSetMove { map, key, val } => {
+                record_container(VmContainerMetric::Map);
                 if let Err(err) = container_ops::run_map_set_move(regs, *map, *key, *val) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
@@ -580,9 +666,11 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::Jmp(ofs) => {
+                record_branch(false);
                 pc = ((pc as isize) + (*ofs as isize)) as usize;
             }
             Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs) => {
+                record_branch(false);
                 let cond_falsey = matches!(regs[*r as usize], Val::Nil | Val::Bool(false));
                 if cond_falsey {
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
@@ -591,6 +679,7 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::CmpLtImmJmp { r, imm, ofs } => {
+                record_branch(true);
                 // Fused CmpLtImm + JmpFalse: if r < imm, fall through; else jump.
                 let skip = match &regs[*r as usize] {
                     Val::Int(x) => *x >= (*imm as i64),
@@ -603,6 +692,7 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::JmpNilOrFalseJmp { r, ofs } => {
+                record_branch(false);
                 // Fused: if r is nil or false, jump by ofs, else fall through.
                 let is_falsey = matches!(regs[*r as usize], Val::Nil | Val::Bool(false));
                 if is_falsey {
@@ -612,6 +702,7 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::AddIntImmJmp { r, imm, ofs } => {
+                record_branch(true);
                 // Fused: r += imm, then jump by ofs. Common loop tail.
                 if let Val::Int(x) = regs[*r as usize] {
                     // Check for overflow and wrap to avoid panics
@@ -684,6 +775,7 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::CmpLeImmJmp { r, imm, ofs } => {
+                record_branch(true);
                 // Fused CmpLeImm + JmpFalse: if r <= imm, fall through; else jump.
                 let skip = match &regs[*r as usize] {
                     Val::Int(x) => *x > (*imm as i64),
@@ -695,7 +787,47 @@ pub(super) fn run_opcode_code(
                     pc += 1;
                 }
             }
+            Op::CmpEqImmJmp { r, imm, ofs } => {
+                record_branch(true);
+                // Fused CmpEqImm + JmpFalse: if r == imm, fall through; else jump.
+                let skip = match &regs[*r as usize] {
+                    Val::Int(x) => *x != (*imm as i64),
+                    _ => true,
+                };
+                if skip {
+                    pc = ((pc as isize) + (*ofs as isize)) as usize;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::CmpGtImmJmp { r, imm, ofs } => {
+                record_branch(true);
+                // Fused CmpGtImm + JmpFalse: if r > imm, fall through; else jump.
+                let skip = match &regs[*r as usize] {
+                    Val::Int(x) => *x <= (*imm as i64),
+                    _ => true,
+                };
+                if skip {
+                    pc = ((pc as isize) + (*ofs as isize)) as usize;
+                } else {
+                    pc += 1;
+                }
+            }
+            Op::CmpGeImmJmp { r, imm, ofs } => {
+                record_branch(true);
+                // Fused CmpGeImm + JmpFalse: if r >= imm, fall through; else jump.
+                let skip = match &regs[*r as usize] {
+                    Val::Int(x) => *x < (*imm as i64),
+                    _ => true,
+                };
+                if skip {
+                    pc = ((pc as isize) + (*ofs as isize)) as usize;
+                } else {
+                    pc += 1;
+                }
+            }
             Op::CmpNeImmJmp { r, imm, ofs } => {
+                record_branch(true);
                 // Fused CmpNeImm + JmpFalse: if r == imm, jump; else fall through.
                 // Common for while (x != N) loop exit checks.
                 let skip = match &regs[*r as usize] {
@@ -709,6 +841,7 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::JmpFalseSet { r, dst, ofs } => {
+                record_branch(false);
                 let cond_falsey = matches!(regs[*r as usize], Val::Nil | Val::Bool(false));
                 if cond_falsey {
                     assign_reg(frame_raw, regs, *dst as usize, Val::Bool(false));
@@ -718,6 +851,7 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::JmpIfNil(r, ofs) => {
+                record_branch(false);
                 if matches!(regs[*r as usize], Val::Nil) {
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
                 } else {
@@ -725,6 +859,7 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::JmpIfNotNil(r, ofs) => {
+                record_branch(false);
                 if !matches!(regs[*r as usize], Val::Nil) {
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
                 } else {
@@ -732,6 +867,7 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::NullishPick { l, dst, ofs } => {
+                record_branch(false);
                 if !matches!(regs[*l as usize], Val::Nil) {
                     assign_reg(frame_raw, regs, *dst as usize, regs[*l as usize].clone());
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
@@ -740,6 +876,7 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::JmpTrueSet { r, dst, ofs } => {
+                record_branch(false);
                 let cond_truthy = !matches!(regs[*r as usize], Val::Nil | Val::Bool(false));
                 if cond_truthy {
                     assign_reg(frame_raw, regs, *dst as usize, Val::Bool(true));
@@ -754,6 +891,7 @@ pub(super) fn run_opcode_code(
                 argc,
                 retc,
             } => {
+                record_call(VmCallMetric::Generic);
                 if let Some(value) = call_ops::run_call_opcode(
                     frame_raw,
                     regs,
@@ -777,6 +915,7 @@ pub(super) fn run_opcode_code(
                 argc,
                 retc,
             } => {
+                record_call(VmCallMetric::Native);
                 if let Some(value) = call_ops::run_call_native_fast_opcode(
                     frame_raw,
                     regs,
@@ -795,10 +934,12 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::CallMethod0 { dst, receiver, method } => {
+                record_call(VmCallMetric::Method);
                 method_ops::run_call_method0(frame_raw, regs, ctx, f, *dst, *receiver, *method)?;
                 pc += 1;
             }
             Op::CallGlobalMethod0 { dst, receiver, method } => {
+                record_call(VmCallMetric::Method);
                 method_ops::run_call_global_method0(frame_raw, regs, ctx, f, global_ic, pc, *dst, *receiver, *method)?;
                 pc += 1;
             }
@@ -808,6 +949,7 @@ pub(super) fn run_opcode_code(
                 argc,
                 retc,
             } => {
+                record_call(VmCallMetric::Exact);
                 if let Some(value) = call_ops::run_call_exact_opcode(
                     frame_raw,
                     regs,
@@ -831,6 +973,7 @@ pub(super) fn run_opcode_code(
                 argc,
                 retc,
             } => {
+                record_call(VmCallMetric::Closure);
                 if let Some(value) = call_ops::run_call_closure_exact_opcode(
                     frame_raw,
                     regs,
@@ -856,6 +999,7 @@ pub(super) fn run_opcode_code(
                 namedc,
                 retc,
             } => {
+                record_call(VmCallMetric::Named);
                 if let Some(value) = call_ops::run_call_named_opcode(
                     frame_raw,
                     regs,
@@ -883,6 +1027,7 @@ pub(super) fn run_opcode_code(
                 namedc,
                 retc,
             } => {
+                record_call(VmCallMetric::Named);
                 if let Some(value) = call_ops::run_call_named_opcode(
                     frame_raw,
                     regs,

@@ -184,8 +184,8 @@ impl FunctionBuilder {
             analysis: self.analysis,
         };
 
-        // Peephole: fuse CmpLtImm + JmpFalse into CmpLtImmJmp
-        super::peephole::peephole_fuse_cmp_jmp(&mut f.code);
+        // Peephole: fuse common compare/branch and presence-check patterns.
+        super::peephole::peephole_fuse_cmp_jmp_with_consts(&mut f.code, &f.consts);
 
         if let Some(packed) = Bc32Function::try_from_function(&f) {
             let decoded = packed.decoded;

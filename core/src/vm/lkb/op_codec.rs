@@ -77,6 +77,12 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
         Op::MulFloat(dst, a, b) => encode_op3(out, 95, dst, a, b),
         Op::Div(dst, a, b) => encode_op3(out, 12, dst, a, b),
         Op::DivFloat(dst, a, b) => encode_op3(out, 96, dst, a, b),
+        Op::FloorDivImm { dst, src, imm } => {
+            write_u8(out, 100);
+            write_u16(out, dst);
+            write_u16(out, src);
+            write_i16(out, imm);
+        }
         Op::Mod(dst, a, b) => encode_op3(out, 13, dst, a, b),
         Op::ModInt(dst, a, b) => encode_op3(out, 97, dst, a, b),
         Op::ModFloat(dst, a, b) => encode_op3(out, 98, dst, a, b),
@@ -92,6 +98,13 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u16(out, a);
             write_u16(out, b);
             write_u8(out, kind as u8);
+        }
+        Op::CmpIntJmp { kind, a, b, ofs } => {
+            write_u8(out, 99);
+            write_u8(out, kind as u8);
+            write_u16(out, a);
+            write_u16(out, b);
+            write_i16(out, ofs);
         }
         Op::CmpEqImm(dst, src, imm) => {
             write_u8(out, 51);
@@ -208,6 +221,7 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
         Op::MapGetInterned(dst, map, kidx) => encode_op3(out, 78, dst, map, kidx),
         Op::MapGetDynamic(dst, map, key) => encode_op3(out, 80, dst, map, key),
         Op::MapSetInterned(map, kidx, val) => encode_op3(out, 79, map, kidx, val),
+        Op::MapSetInternedMove(map, kidx, val) => encode_op3(out, 105, map, kidx, val),
         Op::MapHasK(dst, map, kidx) => encode_op3(out, 72, dst, map, kidx),
         Op::Index { dst, base, idx } => encode_op3(out, 30, dst, base, idx),
         Op::ToIter { dst, src } => {
@@ -394,6 +408,24 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_i16(out, imm);
             write_i16(out, ofs);
         }
+        Op::CmpEqImmJmp { r, imm, ofs } => {
+            write_u8(out, 103);
+            write_u16(out, r);
+            write_i16(out, imm);
+            write_i16(out, ofs);
+        }
+        Op::CmpGtImmJmp { r, imm, ofs } => {
+            write_u8(out, 101);
+            write_u16(out, r);
+            write_i16(out, imm);
+            write_i16(out, ofs);
+        }
+        Op::CmpGeImmJmp { r, imm, ofs } => {
+            write_u8(out, 102);
+            write_u16(out, r);
+            write_i16(out, imm);
+            write_i16(out, ofs);
+        }
         Op::CmpNeImmJmp { r, imm, ofs } => {
             write_u8(out, 69);
             write_u16(out, r);
@@ -402,6 +434,11 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
         }
         Op::ListPush { list, val } => {
             write_u8(out, 61);
+            write_u16(out, list);
+            write_u16(out, val);
+        }
+        Op::ListPushMove { list, val } => {
+            write_u8(out, 104);
             write_u16(out, list);
             write_u16(out, val);
         }
@@ -516,6 +553,11 @@ pub(super) fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
         95 => decode_op3(Op::MulFloat, bytes, cursor)?,
         12 => decode_op3(Op::Div, bytes, cursor)?,
         96 => decode_op3(Op::DivFloat, bytes, cursor)?,
+        100 => Op::FloorDivImm {
+            dst: read_u16(bytes, cursor)?,
+            src: read_u16(bytes, cursor)?,
+            imm: read_i16(bytes, cursor)?,
+        },
         13 => decode_op3(Op::Mod, bytes, cursor)?,
         97 => decode_op3(Op::ModInt, bytes, cursor)?,
         98 => decode_op3(Op::ModFloat, bytes, cursor)?,
@@ -531,6 +573,13 @@ pub(super) fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             b: read_u16(bytes, cursor)?,
             kind: crate::vm::bytecode::IntCmpKind::from_u8(read_u8(bytes, cursor)?)
                 .ok_or_else(|| anyhow::anyhow!("invalid CmpI kind"))?,
+        },
+        99 => Op::CmpIntJmp {
+            kind: crate::vm::bytecode::IntCmpKind::from_u8(read_u8(bytes, cursor)?)
+                .ok_or_else(|| anyhow::anyhow!("invalid CmpIntJmp kind"))?,
+            a: read_u16(bytes, cursor)?,
+            b: read_u16(bytes, cursor)?,
+            ofs: read_i16(bytes, cursor)?,
         },
         20 => decode_op3(Op::In, bytes, cursor)?,
         21 => Op::LoadLocal(read_u16(bytes, cursor)?, read_u16(bytes, cursor)?),
@@ -662,12 +711,31 @@ pub(super) fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             imm: read_i16(bytes, cursor)?,
             ofs: read_i16(bytes, cursor)?,
         },
+        103 => Op::CmpEqImmJmp {
+            r: read_u16(bytes, cursor)?,
+            imm: read_i16(bytes, cursor)?,
+            ofs: read_i16(bytes, cursor)?,
+        },
         69 => Op::CmpNeImmJmp {
             r: read_u16(bytes, cursor)?,
             imm: read_i16(bytes, cursor)?,
             ofs: read_i16(bytes, cursor)?,
         },
+        101 => Op::CmpGtImmJmp {
+            r: read_u16(bytes, cursor)?,
+            imm: read_i16(bytes, cursor)?,
+            ofs: read_i16(bytes, cursor)?,
+        },
+        102 => Op::CmpGeImmJmp {
+            r: read_u16(bytes, cursor)?,
+            imm: read_i16(bytes, cursor)?,
+            ofs: read_i16(bytes, cursor)?,
+        },
         61 => Op::ListPush {
+            list: read_u16(bytes, cursor)?,
+            val: read_u16(bytes, cursor)?,
+        },
+        104 => Op::ListPushMove {
             list: read_u16(bytes, cursor)?,
             val: read_u16(bytes, cursor)?,
         },
@@ -704,6 +772,7 @@ pub(super) fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
         78 => decode_op3(Op::MapGetInterned, bytes, cursor)?,
         80 => decode_op3(Op::MapGetDynamic, bytes, cursor)?,
         79 => decode_op3(Op::MapSetInterned, bytes, cursor)?,
+        105 => decode_op3(Op::MapSetInternedMove, bytes, cursor)?,
         72 => decode_op3(Op::MapHasK, bytes, cursor)?,
         36 => Op::Jmp(read_i16(bytes, cursor)?),
         37 => Op::BoolBranch(read_u16(bytes, cursor)?, read_i16(bytes, cursor)?),

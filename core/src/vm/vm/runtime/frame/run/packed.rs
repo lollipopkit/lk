@@ -9,7 +9,7 @@ use anyhow::{Result, anyhow};
 
 use crate::op::BinOp;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
-use crate::val::{ClosureCapture, Type, Val};
+use crate::val::{ClosureCapture, Val};
 use crate::vm::RegionPlan;
 use crate::vm::alloc::{AllocationRegion, RegionAllocator};
 use crate::vm::bc32::{self, Bc32Decoded, Tag};
@@ -18,14 +18,14 @@ use crate::vm::compiler::Compiler;
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{
-    AccessIc, CallIc, CallReturnLayout, ClosureFastCache, ForRangeState, GlobalEntry, IndexIc, PackedArithOp,
-    PackedCmpImmOp, PackedCmpOp, PackedHotCallKind, PackedHotEntry, PackedHotKind, PackedHotSlot, PackedRangeTail,
-    TinyCallPlan, VmCaches,
+    AccessIc, CallIc, CallReturnLayout, ForRangeState, GlobalEntry, IndexIc, PackedArithOp, PackedCmpImmOp,
+    PackedCmpOp, PackedHotCallKind, PackedHotEntry, PackedHotKind, PackedHotSlot, PackedRangeTail, VmCaches,
 };
-use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan, RegisterWindowRef};
+use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan};
 use crate::vm::{
-    record_quickening_build_attempt, record_quickening_build_success, record_quickening_hit, record_quickening_miss,
-    record_quickening_sentinel_skip,
+    VmBc32FallbackMetric, VmCallMetric, record_bc32_fallback_op, record_bc32_fallback_reason, record_call_op,
+    record_opcode_step, record_quickening_build_attempt, record_quickening_build_success, record_quickening_hit,
+    record_quickening_miss, record_quickening_sentinel_skip, vm_runtime_metrics_enabled,
 };
 
 use super::helpers::{
@@ -34,9 +34,9 @@ use super::helpers::{
 };
 use super::invoke::{
     ArgWindow, NativeCallable, ReturnSlot, clear_pending_resume_pc, invoke_native_callable_with_ic,
-    invoke_rust_fast_function_named, invoke_rust_function_named_fast, invoke_vm_closure_fast, take_pending_resume_pc,
+    invoke_rust_fast_function_named, invoke_rust_function_named_fast, take_pending_resume_pc,
 };
-use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, int_binop, int_binop_imm, rk_read};
+use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, floor_div_i64, int_binop, int_binop_imm, rk_read};
 use super::method_ops;
 use super::plan::build_named_call_plan;
 use super::raw_boundary::region_allocator;
@@ -80,34 +80,79 @@ fn hot_call_operands(kind: &PackedHotKind) -> Option<(u16, u16, u8, u8, PackedHo
     }
 }
 
-fn validate_hot_exact_call(regs: &[Val], f: u16, argc: u8, kind: PackedHotCallKind) -> Result<()> {
-    match kind {
-        PackedHotCallKind::Generic => Ok(()),
-        PackedHotCallKind::ClosureExact => match &regs[f as usize] {
-            Val::Closure(closure) if closure.named_params.is_empty() && closure.params.len() == argc as usize => Ok(()),
-            Val::Closure(closure) if !closure.named_params.is_empty() => {
-                Err(anyhow!("exact closure call does not accept named fallback"))
-            }
-            Val::Closure(closure) => Err(anyhow!(
-                "Function expects {} positional arguments, got {}",
-                closure.params.len(),
-                argc
-            )),
-            other => Err(anyhow!("{} is not an exact closure", other.type_name())),
-        },
-        PackedHotCallKind::Exact => match &regs[f as usize] {
-            Val::Closure(closure) if closure.named_params.is_empty() && closure.params.len() == argc as usize => Ok(()),
-            Val::RustFunction(_) | Val::RustFastFunction(_) => Ok(()),
-            Val::Closure(closure) if !closure.named_params.is_empty() => {
-                Err(anyhow!("exact call does not accept named fallback"))
-            }
-            Val::Closure(closure) => Err(anyhow!(
-                "Function expects {} positional arguments, got {}",
-                closure.params.len(),
-                argc
-            )),
-            other => Err(anyhow!("{} is not an exact positional callable", other.type_name())),
-        },
+#[inline]
+fn record_packed_call_metric(kind: PackedHotCallKind) {
+    let metric = match kind {
+        PackedHotCallKind::Generic => VmCallMetric::Generic,
+        PackedHotCallKind::ClosureExact => VmCallMetric::Closure,
+        PackedHotCallKind::Exact => VmCallMetric::Exact,
+    };
+    record_call_op(metric);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_packed_call_kind(
+    frame_raw: *mut FrameState<'_>,
+    regs: &mut [Val],
+    ctx: &mut VmContext,
+    call_ic: &mut [Option<CallIc>],
+    pc: &mut usize,
+    next_pc: usize,
+    frame_base: usize,
+    region_allocator_ptr: *const RegionAllocator,
+    self_ptr: *mut Vm,
+    f: u16,
+    base: u16,
+    argc: u8,
+    retc: u8,
+    call_kind: PackedHotCallKind,
+) -> Result<Option<Val>> {
+    match call_kind {
+        PackedHotCallKind::Generic => call::run_call_packed(
+            frame_raw,
+            regs,
+            ctx,
+            call_ic,
+            pc,
+            next_pc,
+            frame_base,
+            region_allocator_ptr,
+            self_ptr,
+            f,
+            base,
+            argc,
+            retc,
+        ),
+        PackedHotCallKind::ClosureExact => call::run_call_closure_exact_packed(
+            frame_raw,
+            regs,
+            ctx,
+            call_ic,
+            pc,
+            next_pc,
+            frame_base,
+            region_allocator_ptr,
+            self_ptr,
+            f,
+            base,
+            argc,
+            retc,
+        ),
+        PackedHotCallKind::Exact => call::run_call_exact_packed(
+            frame_raw,
+            regs,
+            ctx,
+            call_ic,
+            pc,
+            next_pc,
+            frame_base,
+            region_allocator_ptr,
+            self_ptr,
+            f,
+            base,
+            argc,
+            retc,
+        ),
     }
 }
 
@@ -138,6 +183,7 @@ pub(super) fn run_packed_code(
     let _stats_guard = PackedHotStatsGuard::new();
     let mut pc = *pc_ref;
     let f = func;
+    let collect_metrics = vm_runtime_metrics_enabled();
     if access_ic.len() < f.code.len() {
         access_ic.resize(f.code.len(), None);
     }
@@ -165,6 +211,9 @@ pub(super) fn run_packed_code(
     }
 
     while pc < code32.len() {
+        if collect_metrics {
+            record_opcode_step();
+        }
         let word = code32[pc];
         let raw_tag = bc32::tag_of(word);
         if raw_tag == bc32::TAG_REG_EXT {
@@ -210,13 +259,15 @@ pub(super) fn run_packed_code(
                                 .map(Some);
                         }
                         if let Some((f, base, argc, retc, call_kind)) = hot_call_operands(&slot.kind) {
-                            validate_hot_exact_call(regs, f, argc, call_kind)?;
+                            if collect_metrics {
+                                record_packed_call_metric(call_kind);
+                            }
                             if let PackedHotKind::MoveCall { moves, .. } = &slot.kind {
                                 for (dst, src) in moves {
                                     assign_reg(frame_raw, regs, *dst as usize, regs[*src as usize].clone());
                                 }
                             }
-                            if let Some(value) = call::run_call_packed(
+                            if let Some(value) = run_packed_call_kind(
                                 frame_raw,
                                 regs,
                                 ctx,
@@ -230,6 +281,7 @@ pub(super) fn run_packed_code(
                                 base,
                                 argc,
                                 retc,
+                                call_kind,
                             )? {
                                 return Ok(Some(value));
                             }
@@ -241,6 +293,8 @@ pub(super) fn run_packed_code(
                             regs,
                             f,
                             ctx,
+                            frame_captures,
+                            frame_capture_specs,
                             access_ic,
                             index_ic,
                             global_ic,
@@ -250,6 +304,7 @@ pub(super) fn run_packed_code(
                             frame_base,
                             region_plan,
                             region_allocator_ptr,
+                            collect_metrics,
                         )?;
                         pc = override_pc.unwrap_or(slot.next_pc);
                         continue;
@@ -258,6 +313,9 @@ pub(super) fn run_packed_code(
                 PackedHotEntry::Miss(last_word) => {
                     if *last_word == word {
                         record_quickening_sentinel_skip();
+                        if collect_metrics {
+                            record_bc32_fallback_reason(VmBc32FallbackMetric::SentinelSkip);
+                        }
                         record_sentinel_skip(word);
                         skip_build = true;
                     }
@@ -270,9 +328,15 @@ pub(super) fn run_packed_code(
             {
                 match existing {
                     PackedHotEntry::Slot(slot) if slot.word != word => {
+                        if collect_metrics {
+                            record_bc32_fallback_reason(VmBc32FallbackMetric::StaleSlot);
+                        }
                         *entry = None;
                     }
                     PackedHotEntry::Miss(last_word) if *last_word != word => {
+                        if collect_metrics {
+                            record_bc32_fallback_reason(VmBc32FallbackMetric::StaleMiss);
+                        }
                         *entry = None;
                     }
                     _ => {}
@@ -300,7 +364,9 @@ pub(super) fn run_packed_code(
                 }
                 if let Some((f_reg, base_reg, argc_count, retc_count, call_kind)) = hot_call_operands(&entry.kind) {
                     let next_pc = entry.next_pc;
-                    validate_hot_exact_call(regs, f_reg, argc_count, call_kind)?;
+                    if collect_metrics {
+                        record_packed_call_metric(call_kind);
+                    }
                     if let PackedHotKind::MoveCall { moves, .. } = &entry.kind {
                         for (dst, src) in moves {
                             assign_reg(frame_raw, regs, *dst as usize, regs[*src as usize].clone());
@@ -310,7 +376,7 @@ pub(super) fn run_packed_code(
                         packed_hot.resize(pc + 1, None);
                     }
                     packed_hot[pc] = Some(PackedHotEntry::Slot(entry));
-                    if let Some(value) = call::run_call_packed(
+                    if let Some(value) = run_packed_call_kind(
                         frame_raw,
                         regs,
                         ctx,
@@ -324,6 +390,7 @@ pub(super) fn run_packed_code(
                         base_reg,
                         argc_count,
                         retc_count,
+                        call_kind,
                     )? {
                         return Ok(Some(value));
                     }
@@ -335,6 +402,8 @@ pub(super) fn run_packed_code(
                     regs,
                     f,
                     ctx,
+                    frame_captures,
+                    frame_capture_specs,
                     access_ic,
                     index_ic,
                     global_ic,
@@ -344,6 +413,7 @@ pub(super) fn run_packed_code(
                     frame_base,
                     region_plan,
                     region_allocator_ptr,
+                    collect_metrics,
                 )?;
                 if packed_hot.len() <= pc {
                     packed_hot.resize(pc + 1, None);
@@ -352,7 +422,12 @@ pub(super) fn run_packed_code(
                 pc = override_pc.unwrap_or(next_pc);
                 continue;
             } else {
+                if collect_metrics {
+                    record_bc32_fallback_op();
+                    record_bc32_fallback_reason(VmBc32FallbackMetric::BuildMiss);
+                }
                 record_quickening_miss();
+                record_build_miss(word);
                 if packed_hot.len() <= pc {
                     packed_hot.resize(pc + 1, None);
                 }
@@ -411,6 +486,9 @@ pub(super) fn run_packed_code(
                 argc,
                 retc,
             } => {
+                if collect_metrics {
+                    record_call_op(VmCallMetric::Generic);
+                }
                 if let Some(value) = call::run_call_packed(
                     frame_raw,
                     regs,
@@ -435,6 +513,9 @@ pub(super) fn run_packed_code(
                 argc,
                 retc,
             } => {
+                if collect_metrics {
+                    record_call_op(VmCallMetric::Native);
+                }
                 if let Some(value) = call::run_call_native_fast_packed(
                     frame_raw,
                     regs,
@@ -454,10 +535,16 @@ pub(super) fn run_packed_code(
                 }
             }
             Op::CallMethod0 { dst, receiver, method } => {
+                if collect_metrics {
+                    record_call_op(VmCallMetric::Method);
+                }
                 method_ops::run_call_method0(frame_raw, regs, ctx, f, dst, receiver, method)?;
                 pc = next_pc_default;
             }
             Op::CallGlobalMethod0 { dst, receiver, method } => {
+                if collect_metrics {
+                    record_call_op(VmCallMetric::Method);
+                }
                 method_ops::run_call_global_method0(frame_raw, regs, ctx, f, global_ic, pc, dst, receiver, method)?;
                 pc = next_pc_default;
             }
@@ -467,6 +554,9 @@ pub(super) fn run_packed_code(
                 argc,
                 retc,
             } => {
+                if collect_metrics {
+                    record_call_op(VmCallMetric::Exact);
+                }
                 if let Some(value) = call::run_call_exact_packed(
                     frame_raw,
                     regs,
@@ -491,6 +581,9 @@ pub(super) fn run_packed_code(
                 argc,
                 retc,
             } => {
+                if collect_metrics {
+                    record_call_op(VmCallMetric::Closure);
+                }
                 if let Some(value) = call::run_call_closure_exact_packed(
                     frame_raw,
                     regs,
@@ -517,6 +610,9 @@ pub(super) fn run_packed_code(
                 namedc,
                 retc,
             } => {
+                if collect_metrics {
+                    record_call_op(VmCallMetric::Named);
+                }
                 if let Some(value) = call::run_call_named_packed(
                     frame_raw,
                     regs,
@@ -545,6 +641,9 @@ pub(super) fn run_packed_code(
                 namedc,
                 retc,
             } => {
+                if collect_metrics {
+                    record_call_op(VmCallMetric::Named);
+                }
                 if let Some(value) = call::run_call_named_packed(
                     frame_raw,
                     regs,
@@ -634,6 +733,35 @@ pub(super) fn run_packed_code(
                     _ => {
                         return frame_return_common(frame_raw, pc, Err(anyhow!("ListPush target is not a List")))
                             .map(Some);
+                    }
+                }
+                pc = next_pc_default;
+            }
+            Op::ListPushMove { list, val } => {
+                let list_idx = list as usize;
+                let val_idx = val as usize;
+                if list_idx == val_idx {
+                    let pushed_val = regs[val_idx].clone();
+                    match &mut regs[list_idx] {
+                        Val::List(arc) => {
+                            Arc::make_mut(arc).push(pushed_val);
+                        }
+                        _ => {
+                            return frame_return_common(frame_raw, pc, Err(anyhow!("ListPush target is not a List")))
+                                .map(Some);
+                        }
+                    }
+                } else {
+                    if !matches!(regs[list_idx], Val::List(_)) {
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("ListPush target is not a List")))
+                            .map(Some);
+                    }
+                    let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+                    match &mut regs[list_idx] {
+                        Val::List(arc) => {
+                            Arc::make_mut(arc).push(pushed_val);
+                        }
+                        _ => unreachable!("ListPush target was checked before moving value"),
                     }
                 }
                 pc = next_pc_default;

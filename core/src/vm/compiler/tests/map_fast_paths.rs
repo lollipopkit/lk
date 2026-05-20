@@ -94,6 +94,31 @@ fn stdlib_map_get_on_known_local_map_lowers_to_map_get_dynamic() {
 }
 
 #[test]
+fn stdlib_map_get_ne_nil_branch_lowers_to_map_has_dynamic() {
+    let source = r#"
+        import map;
+        let data = {};
+        let key = "answer";
+        data.set(key, 42);
+        if map.get(data, key) != nil {
+            return 1;
+        }
+        return 0;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(1));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::MapHas(_, _, _) | Op::MapHasK(_, _, _))),
+        "expected presence-only stdlib map.get(data, key) to lower to MapHas/MapHasK in {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn stdlib_map_get_literal_key_lowers_to_map_get_interned() {
     let source = r#"
         import map;
@@ -487,6 +512,11 @@ fn pricing_helper_keeps_two_map_param_value_facts() {
         proto.code
     );
     assert!(
+        proto.code.iter().any(|op| matches!(op, Op::CmpGeImmJmp { imm: 5, .. })),
+        "pricing helper qty >= 5 guard should fuse to CmpGeImmJmp in {:?}",
+        proto.code
+    );
+    assert!(
         !proto.code.iter().any(|op| matches!(op, Op::Mul(_, _, _))),
         "pricing helper should not need generic multiply after map param facts in {:?}",
         proto.code
@@ -623,8 +653,11 @@ fn map_set_invalidates_homogeneous_value_fact() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(2));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::MapSetInterned(_, _, _))),
-        "expected map.set literal key to use MapSetInterned in {:?}",
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::MapSetInterned(_, _, _) | Op::MapSetInternedMove(_, _, _))),
+        "expected map.set literal key to use an interned map set opcode in {:?}",
         function.code
     );
     assert!(
@@ -672,13 +705,58 @@ fn stdlib_map_set_literal_key_lowers_to_map_set_interned() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(42));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::MapSetInterned(_, _, _))),
-        "expected stdlib map.set(data, \"answer\", 42) to lower to MapSetInterned in {:?}",
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::MapSetInterned(_, _, _) | Op::MapSetInternedMove(_, _, _))),
+        "expected stdlib map.set(data, \"answer\", 42) to lower to an interned map set opcode in {:?}",
         function.code
     );
     assert!(
         !function.code.iter().any(|op| matches!(op, Op::Call { .. })),
         "expected stdlib map.set/data.get fast paths to avoid Call in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn map_set_literal_key_temporary_value_lowers_to_move_set() {
+    let source = r#"
+        let data = {};
+        data.set("sku", "sku-${1}");
+        return data.get("sku");
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::from_str("sku-1"));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::MapSetInternedMove(_, _, _))),
+        "expected literal-key map.set with temporary value to lower to MapSetInternedMove in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn map_set_literal_key_variable_value_keeps_non_move_set() {
+    let source = r#"
+        let data = {};
+        let value = "sku-${1}";
+        data.set("sku", value);
+        return [data.get("sku"), value];
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    let expected = Val::from_str("sku-1");
+    let Val::List(values) = result.expect("vm exec") else {
+        panic!("expected list");
+    };
+    assert_eq!(values.as_slice(), [expected.clone(), expected]);
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::MapSetInterned(_, _, _))),
+        "expected literal-key map.set with variable value to keep MapSetInterned in {:?}",
         function.code
     );
 }

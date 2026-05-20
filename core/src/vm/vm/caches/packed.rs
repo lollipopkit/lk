@@ -60,6 +60,10 @@ pub(in crate::vm::vm) enum PackedHotKind {
         name_k: u16,
         src: u16,
     },
+    LoadCapture {
+        dst: u16,
+        idx: u16,
+    },
     Access {
         dst: u16,
         base: u16,
@@ -96,7 +100,33 @@ pub(in crate::vm::vm) enum PackedHotKind {
         map: u16,
         key: u16,
     },
+    MapGetInternedCmpJmp {
+        dst: u16,
+        map: u16,
+        key: u16,
+        op: PackedCmpOp,
+        rhs: u16,
+        jump_pc: usize,
+    },
     MapGetDynamic {
+        dst: u16,
+        map: u16,
+        key: u16,
+    },
+    MapGetDynamicCmpJmp {
+        dst: u16,
+        map: u16,
+        key: u16,
+        op: PackedCmpOp,
+        rhs: u16,
+        jump_pc: usize,
+    },
+    MapHas {
+        dst: u16,
+        map: u16,
+        key: u16,
+    },
+    MapHasK {
         dst: u16,
         map: u16,
         key: u16,
@@ -117,6 +147,13 @@ pub(in crate::vm::vm) enum PackedHotKind {
         a: u16,
         b: u16,
     },
+    AddIntFloorDivImm {
+        add_dst: u16,
+        a: u16,
+        b: u16,
+        div_dst: u16,
+        imm: i16,
+    },
     FloatArith {
         op: PackedArithOp,
         dst: u16,
@@ -127,7 +164,21 @@ pub(in crate::vm::vm) enum PackedHotKind {
         dst: u16,
         src: u16,
     },
+    FloorDivImm {
+        dst: u16,
+        src: u16,
+        imm: i16,
+    },
+    ToBool {
+        dst: u16,
+        src: u16,
+    },
     StartsWithK {
+        dst: u16,
+        src: u16,
+        key: u16,
+    },
+    ContainsK {
         dst: u16,
         src: u16,
         key: u16,
@@ -137,6 +188,11 @@ pub(in crate::vm::vm) enum PackedHotKind {
         src: u16,
     },
     MapSetInterned {
+        map: u16,
+        key: u16,
+        val: u16,
+    },
+    MapSetInternedMove {
         map: u16,
         key: u16,
         val: u16,
@@ -223,6 +279,23 @@ pub(in crate::vm::vm) enum PackedHotKind {
         b: u16,
         ofs: i16,
     },
+    CmpIntMove {
+        op: PackedCmpOp,
+        a: u16,
+        b: u16,
+        dst: u16,
+        src: u16,
+        ofs: i16,
+    },
+    CmpIntAddIntImm {
+        op: PackedCmpOp,
+        a: u16,
+        b: u16,
+        dst: u16,
+        src: u16,
+        imm: i16,
+        ofs: i16,
+    },
     CmpJmp {
         op: PackedCmpOp,
         a: u16,
@@ -236,11 +309,25 @@ pub(in crate::vm::vm) enum PackedHotKind {
         r: u16,
         ofs: i16,
     },
+    JmpFalseSet {
+        r: u16,
+        dst: u16,
+        ofs: i16,
+    },
+    JmpTrueSet {
+        r: u16,
+        dst: u16,
+        ofs: i16,
+    },
     Ret {
         base: u16,
         retc: u8,
     },
     ListPush {
+        list: u16,
+        val: u16,
+    },
+    ListPushMove {
         list: u16,
         val: u16,
     },

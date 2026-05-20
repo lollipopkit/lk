@@ -56,6 +56,20 @@ fn build_list_and_len() {
 }
 
 #[test]
+fn list_push_str_int_matches_dynamic_push() {
+    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+    reset_runtime_state();
+
+    let list_handle = lk_rt_build_list(std::ptr::null(), 0);
+    assert_eq!(
+        lk_rt_list_push_str_int(list_handle, c"sku-".as_ptr().cast(), 4, 7),
+        list_handle
+    );
+    assert_eq!(lk_rt_len(list_handle), 1);
+    assert!(matches!(decode_for_tests(lk_rt_index(list_handle, 0)), ref v if v.as_str() == Some("sku-7")));
+}
+
+#[test]
 fn string_int_key_helpers_match_dynamic_map_access() {
     let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
     reset_runtime_state();
@@ -65,8 +79,24 @@ fn string_int_key_helpers_match_dynamic_map_access() {
     let entries = [key, 41];
     let map = lk_rt_build_map(entries.as_ptr(), 1);
     assert_eq!(lk_rt_access_str_int(map, prefix.as_ptr().cast(), 1, 7), 41);
+    assert_eq!(lk_rt_map_get_str_int(map, prefix.as_ptr().cast(), 1, 7), 41);
+    assert_eq!(
+        lk_rt_map_get_const_str(map, prefix.as_ptr().cast(), 2),
+        encoding::NIL_VALUE
+    );
     assert_eq!(lk_rt_map_set_str_int(map, prefix.as_ptr().cast(), 1, 7, 42), map);
-    assert_eq!(lk_rt_access(map, key), 42);
+    assert_eq!(lk_rt_map_get_const_str(map, b"b7".as_ptr().cast(), 2), 42);
+    assert_eq!(
+        lk_rt_map_has_const_str(map, b"b7".as_ptr().cast(), 2),
+        encoding::BOOL_TRUE_VALUE
+    );
+    assert_eq!(
+        lk_rt_map_has_str_int(map, prefix.as_ptr().cast(), 1, 7),
+        encoding::BOOL_TRUE_VALUE
+    );
+    assert_eq!(lk_rt_map_set_const_str(map, b"b7".as_ptr().cast(), 2, 43), map);
+    assert_eq!(lk_rt_map_get_const_str(map, b"b7".as_ptr().cast(), 2), 43);
+    assert_eq!(lk_rt_access(map, key), 43);
 }
 
 #[test]
@@ -91,9 +121,50 @@ fn access_list_by_immediate_index_uses_current_handle_contents() {
     let list_handle = lk_rt_build_list(values.as_ptr(), values.len() as i64);
     assert_eq!(lk_rt_access(list_handle, 1), 20);
     assert_eq!(lk_rt_add_access(5, list_handle, 1), 25);
+    assert_eq!(lk_rt_mul_access(5, list_handle, 1), 100);
     assert_eq!(lk_rt_sub_access(50, list_handle, 2), 20);
     assert!(matches!(decode_for_tests(lk_rt_access(list_handle, -1)), Val::Nil));
     assert!(matches!(decode_for_tests(lk_rt_access(list_handle, 9)), Val::Nil));
+}
+
+#[test]
+fn add_map_get_const_str_matches_dynamic_add_access() {
+    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+    reset_runtime_state();
+
+    let key = lk_rt_intern_string(c"count".as_ptr().cast(), 5);
+    let entries = [key, 41];
+    let map = lk_rt_build_map(entries.as_ptr(), 1);
+    assert_eq!(lk_rt_add_map_get_const_str(1, map, c"count".as_ptr().cast(), 5), 42);
+    assert_eq!(
+        lk_rt_add_map_get_const_str(1, map, c"missing".as_ptr().cast(), 7),
+        encoding::NIL_VALUE
+    );
+    assert_eq!(
+        lk_rt_map_set_add_map_get_const_str(map, c"count".as_ptr().cast(), 5, 1),
+        map
+    );
+    assert_eq!(lk_rt_map_get_const_str(map, c"count".as_ptr().cast(), 5), 42);
+
+    let dyn_key = lk_rt_add(lk_rt_intern_string(c"b".as_ptr().cast(), 1), 7);
+    let dyn_entries = [dyn_key, 40];
+    let dyn_map = lk_rt_build_map(dyn_entries.as_ptr(), 1);
+    assert_eq!(lk_rt_add_map_get_str_int(2, dyn_map, c"b".as_ptr().cast(), 1, 7), 42);
+    assert_eq!(
+        lk_rt_map_set_add_map_get_str_int(dyn_map, c"b".as_ptr().cast(), 1, 7, 2),
+        dyn_map
+    );
+    assert_eq!(lk_rt_map_get_str_int(dyn_map, c"b".as_ptr().cast(), 1, 7), 42);
+    assert_eq!(
+        lk_rt_map_update_int_str_int(dyn_map, c"b".as_ptr().cast(), 1, 7, 10, 3),
+        dyn_map
+    );
+    assert_eq!(lk_rt_map_get_str_int(dyn_map, c"b".as_ptr().cast(), 1, 7), 45);
+    assert_eq!(
+        lk_rt_map_update_int_str_int(dyn_map, c"b".as_ptr().cast(), 1, 8, 10, 3),
+        dyn_map
+    );
+    assert_eq!(lk_rt_map_get_str_int(dyn_map, c"b".as_ptr().cast(), 1, 8), 10);
 }
 
 #[test]

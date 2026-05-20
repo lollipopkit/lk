@@ -98,11 +98,11 @@ impl FunctionBuilder {
         }
     }
 
-    fn expr_known_int(&self, expr: &Expr) -> bool {
+    pub(crate) fn expr_known_int(&self, expr: &Expr) -> bool {
         self.expr_value_fact(expr) == Some(Type::Int)
     }
 
-    fn expr_known_float(&self, expr: &Expr) -> bool {
+    pub(crate) fn expr_known_float(&self, expr: &Expr) -> bool {
         self.expr_value_fact(expr) == Some(Type::Float)
     }
 
@@ -195,7 +195,8 @@ impl FunctionBuilder {
             | Op::ListLen { dst, .. }
             | Op::MapLen { dst, .. }
             | Op::StrLen { dst, .. }
-            | Op::Floor { dst, .. } => {
+            | Op::Floor { dst, .. }
+            | Op::FloorDivImm { dst, .. } => {
                 self.int_regs.insert(dst);
                 self.float_regs.remove(&dst);
                 self.list_locals.remove(&dst);
@@ -335,7 +336,7 @@ impl FunctionBuilder {
                 self.map_value_types.remove(&acc);
                 self.map_value_adoptable.remove(&acc);
             }
-            Op::ListPush { list, val } => {
+            Op::ListPush { list, val } | Op::ListPushMove { list, val } => {
                 self.update_list_value_type_after_write(list, val);
                 if let Some(len) = self.list_lengths.get_mut(&list) {
                     *len = len.saturating_add(1);
@@ -344,7 +345,7 @@ impl FunctionBuilder {
                 self.list_lengths.remove(&val);
                 self.list_value_adoptable.remove(&val);
             }
-            Op::MapSetInterned(map, _, val) => {
+            Op::MapSetInterned(map, _, val) | Op::MapSetInternedMove(map, _, val) => {
                 self.update_map_value_type_after_write(map, val);
                 self.map_value_types.remove(&val);
                 self.map_value_adoptable.remove(&val);

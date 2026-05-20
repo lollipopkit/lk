@@ -97,8 +97,17 @@ pub(super) fn infer_integer_parameter_indices(function: &Function) -> BTreeSet<u
                     changed |= copy_sources(&mut sources, dst, src);
                     changed |= integers.insert(dst);
                 }
+                Op::FloorDivImm { dst, src, .. } => {
+                    mark_required_sources(&sources, &mut required, src);
+                    changed |= copy_sources(&mut sources, dst, src);
+                    changed |= integers.insert(dst);
+                }
                 Op::AddIntImmJmp { r, .. } => {
                     mark_required_sources(&sources, &mut required, r);
+                }
+                Op::CmpIntJmp { a, b, .. } => {
+                    mark_required_sources(&sources, &mut required, a);
+                    mark_required_sources(&sources, &mut required, b);
                 }
                 Op::Len { dst, .. } | Op::Floor { dst, .. } => {
                     changed |= integers.insert(dst);
@@ -129,7 +138,13 @@ pub(super) fn infer_integer_parameter_indices(function: &Function) -> BTreeSet<u
                 | Op::CmpLtImm(_, src, _)
                 | Op::CmpLeImm(_, src, _)
                 | Op::CmpGtImm(_, src, _)
-                | Op::CmpGeImm(_, src, _) => {
+                | Op::CmpGeImm(_, src, _)
+                | Op::CmpLtImmJmp { r: src, .. }
+                | Op::CmpLeImmJmp { r: src, .. }
+                | Op::CmpEqImmJmp { r: src, .. }
+                | Op::CmpGtImmJmp { r: src, .. }
+                | Op::CmpGeImmJmp { r: src, .. }
+                | Op::CmpNeImmJmp { r: src, .. } => {
                     mark_required_sources(&sources, &mut required, src);
                 }
                 _ => {}
@@ -180,6 +195,9 @@ pub(super) fn infer_integer_registers(function: &Function, integer_params: &BTre
                     if operand_is_known_integer(function, &integers, src) {
                         changed |= integers.insert(dst);
                     }
+                }
+                Op::FloorDivImm { dst, .. } => {
+                    changed |= integers.insert(dst);
                 }
                 Op::Len { dst, .. } | Op::Floor { dst, .. } => {
                     changed |= integers.insert(dst);
@@ -277,6 +295,7 @@ fn op_assigned_regs(op: &Op) -> Vec<u16> {
         | Op::MulInt(dst, _, _)
         | Op::MulFloat(dst, _, _)
         | Op::DivFloat(dst, _, _)
+        | Op::FloorDivImm { dst, .. }
         | Op::ModInt(dst, _, _)
         | Op::ModFloat(dst, _, _)
         | Op::CmpEq(dst, _, _)
@@ -373,6 +392,28 @@ pub(super) enum KnownReg {
         base: String,
         key: String,
     },
+    AccessedConstStr {
+        base_reg: u16,
+        base: String,
+        key: String,
+    },
+    AccessedStrInt {
+        base_reg: u16,
+        base: String,
+        prefix: String,
+        suffix: String,
+    },
+    AddMapGetConstStr {
+        lhs: String,
+        base_reg: u16,
+        key: String,
+    },
+    AddMapGetStrInt {
+        lhs: String,
+        base_reg: u16,
+        prefix: String,
+        suffix: String,
+    },
     StringIntKey {
         prefix: String,
         suffix: String,
@@ -412,7 +453,9 @@ pub(super) enum RuntimeHelper {
     BuildMap,
     ListPush,
     ListPushInt,
+    ListPushStrInt,
     MapSet,
+    MapSetConstStr,
     MapSetStrInt,
     StringIntKey,
     MakeAotFunction,
@@ -421,7 +464,11 @@ pub(super) enum RuntimeHelper {
     CallMethod,
     Access,
     AccessStrInt,
+    MapGetConstStr,
+    MapGetStrInt,
     MapHas,
+    MapHasConstStr,
+    MapHasStrInt,
     Index,
     IndexLen,
     In,
@@ -430,11 +477,21 @@ pub(super) enum RuntimeHelper {
     ToIter,
     MakeFloat,
     Floor,
+    FloorDivImm,
     StartsWith,
     StartsWithConst,
     Contains,
     Compare,
     AddAccess,
+    MulAccess,
+    AddMapGetConstStr,
+    AddMapGetStrInt,
+    MulMapGetConstStr,
+    MulMapGetStrInt,
+    MapSetAddMapGetConstStr,
+    MapSetAddMapGetStrInt,
+    MapUpdateIntConstStr,
+    MapUpdateIntStrInt,
     SubAccess,
     AddValue,
     SubValue,
@@ -445,7 +502,7 @@ pub(super) enum RuntimeHelper {
 }
 
 impl RuntimeHelper {
-    pub(super) const ALL: [RuntimeHelper; 38] = [
+    pub(super) const ALL: [RuntimeHelper; 54] = [
         RuntimeHelper::InternString,
         RuntimeHelper::ToString,
         RuntimeHelper::LoadGlobal,
@@ -454,7 +511,9 @@ impl RuntimeHelper {
         RuntimeHelper::BuildMap,
         RuntimeHelper::ListPush,
         RuntimeHelper::ListPushInt,
+        RuntimeHelper::ListPushStrInt,
         RuntimeHelper::MapSet,
+        RuntimeHelper::MapSetConstStr,
         RuntimeHelper::MapSetStrInt,
         RuntimeHelper::StringIntKey,
         RuntimeHelper::MakeAotFunction,
@@ -463,7 +522,11 @@ impl RuntimeHelper {
         RuntimeHelper::CallMethod,
         RuntimeHelper::Access,
         RuntimeHelper::AccessStrInt,
+        RuntimeHelper::MapGetConstStr,
+        RuntimeHelper::MapGetStrInt,
         RuntimeHelper::MapHas,
+        RuntimeHelper::MapHasConstStr,
+        RuntimeHelper::MapHasStrInt,
         RuntimeHelper::Index,
         RuntimeHelper::IndexLen,
         RuntimeHelper::In,
@@ -472,11 +535,21 @@ impl RuntimeHelper {
         RuntimeHelper::ToIter,
         RuntimeHelper::MakeFloat,
         RuntimeHelper::Floor,
+        RuntimeHelper::FloorDivImm,
         RuntimeHelper::StartsWith,
         RuntimeHelper::StartsWithConst,
         RuntimeHelper::Contains,
         RuntimeHelper::Compare,
         RuntimeHelper::AddAccess,
+        RuntimeHelper::MulAccess,
+        RuntimeHelper::AddMapGetConstStr,
+        RuntimeHelper::AddMapGetStrInt,
+        RuntimeHelper::MulMapGetConstStr,
+        RuntimeHelper::MulMapGetStrInt,
+        RuntimeHelper::MapSetAddMapGetConstStr,
+        RuntimeHelper::MapSetAddMapGetStrInt,
+        RuntimeHelper::MapUpdateIntConstStr,
+        RuntimeHelper::MapUpdateIntStrInt,
         RuntimeHelper::SubAccess,
         RuntimeHelper::AddValue,
         RuntimeHelper::SubValue,
@@ -496,7 +569,9 @@ impl RuntimeHelper {
             RuntimeHelper::BuildMap => "lk_rt_build_map",
             RuntimeHelper::ListPush => "lk_rt_list_push",
             RuntimeHelper::ListPushInt => "lk_rt_list_push_int",
+            RuntimeHelper::ListPushStrInt => "lk_rt_list_push_str_int",
             RuntimeHelper::MapSet => "lk_rt_map_set",
+            RuntimeHelper::MapSetConstStr => "lk_rt_map_set_const_str",
             RuntimeHelper::MapSetStrInt => "lk_rt_map_set_str_int",
             RuntimeHelper::StringIntKey => "lk_rt_str_int_key",
             RuntimeHelper::MakeAotFunction => "lk_rt_make_aot_function",
@@ -505,7 +580,11 @@ impl RuntimeHelper {
             RuntimeHelper::CallMethod => "lk_rt_call_method",
             RuntimeHelper::Access => "lk_rt_access",
             RuntimeHelper::AccessStrInt => "lk_rt_access_str_int",
+            RuntimeHelper::MapGetConstStr => "lk_rt_map_get_const_str",
+            RuntimeHelper::MapGetStrInt => "lk_rt_map_get_str_int",
             RuntimeHelper::MapHas => "lk_rt_map_has",
+            RuntimeHelper::MapHasConstStr => "lk_rt_map_has_const_str",
+            RuntimeHelper::MapHasStrInt => "lk_rt_map_has_str_int",
             RuntimeHelper::Index => "lk_rt_index",
             RuntimeHelper::IndexLen => "lk_rt_index_len",
             RuntimeHelper::In => "lk_rt_in",
@@ -514,11 +593,21 @@ impl RuntimeHelper {
             RuntimeHelper::ToIter => "lk_rt_to_iter",
             RuntimeHelper::MakeFloat => "lk_rt_float",
             RuntimeHelper::Floor => "lk_rt_floor",
+            RuntimeHelper::FloorDivImm => "lk_rt_floor_div_imm",
             RuntimeHelper::StartsWith => "lk_rt_starts_with",
             RuntimeHelper::StartsWithConst => "lk_rt_starts_with_const",
             RuntimeHelper::Contains => "lk_rt_contains",
             RuntimeHelper::Compare => "lk_rt_cmp",
             RuntimeHelper::AddAccess => "lk_rt_add_access",
+            RuntimeHelper::MulAccess => "lk_rt_mul_access",
+            RuntimeHelper::AddMapGetConstStr => "lk_rt_add_map_get_const_str",
+            RuntimeHelper::AddMapGetStrInt => "lk_rt_add_map_get_str_int",
+            RuntimeHelper::MulMapGetConstStr => "lk_rt_mul_map_get_const_str",
+            RuntimeHelper::MulMapGetStrInt => "lk_rt_mul_map_get_str_int",
+            RuntimeHelper::MapSetAddMapGetConstStr => "lk_rt_map_set_add_map_get_const_str",
+            RuntimeHelper::MapSetAddMapGetStrInt => "lk_rt_map_set_add_map_get_str_int",
+            RuntimeHelper::MapUpdateIntConstStr => "lk_rt_map_update_int_const_str",
+            RuntimeHelper::MapUpdateIntStrInt => "lk_rt_map_update_int_str_int",
             RuntimeHelper::SubAccess => "lk_rt_sub_access",
             RuntimeHelper::AddValue => "lk_rt_add",
             RuntimeHelper::SubValue => "lk_rt_sub",
@@ -549,7 +638,9 @@ impl RuntimeHelper {
             RuntimeHelper::BuildList => "declare i64 @lk_rt_build_list(i64*, i64)",
             RuntimeHelper::ListPush => "declare i64 @lk_rt_list_push(i64, i64)",
             RuntimeHelper::ListPushInt => "declare i64 @lk_rt_list_push_int(i64, i64)",
+            RuntimeHelper::ListPushStrInt => "declare i64 @lk_rt_list_push_str_int(i64, i8*, i64, i64)",
             RuntimeHelper::MapSet => "declare i64 @lk_rt_map_set(i64, i64, i64)",
+            RuntimeHelper::MapSetConstStr => "declare i64 @lk_rt_map_set_const_str(i64, i8*, i64, i64)",
             RuntimeHelper::MapSetStrInt => "declare i64 @lk_rt_map_set_str_int(i64, i8*, i64, i64, i64)",
             RuntimeHelper::StringIntKey => "declare i64 @lk_rt_str_int_key(i8*, i64, i64)",
             RuntimeHelper::MakeAotFunction => "declare i64 @lk_rt_make_aot_function(i8*, i64)",
@@ -559,7 +650,11 @@ impl RuntimeHelper {
             RuntimeHelper::BuildMap => "declare i64 @lk_rt_build_map(i64*, i64)",
             RuntimeHelper::Access => "declare i64 @lk_rt_access(i64, i64)",
             RuntimeHelper::AccessStrInt => "declare i64 @lk_rt_access_str_int(i64, i8*, i64, i64)",
+            RuntimeHelper::MapGetConstStr => "declare i64 @lk_rt_map_get_const_str(i64, i8*, i64)",
+            RuntimeHelper::MapGetStrInt => "declare i64 @lk_rt_map_get_str_int(i64, i8*, i64, i64)",
             RuntimeHelper::MapHas => "declare i64 @lk_rt_map_has(i64, i64)",
+            RuntimeHelper::MapHasConstStr => "declare i64 @lk_rt_map_has_const_str(i64, i8*, i64)",
+            RuntimeHelper::MapHasStrInt => "declare i64 @lk_rt_map_has_str_int(i64, i8*, i64, i64)",
             RuntimeHelper::Index => "declare i64 @lk_rt_index(i64, i64)",
             RuntimeHelper::IndexLen => "declare i64 @lk_rt_index_len(i64, i64)",
             RuntimeHelper::In => "declare i64 @lk_rt_in(i64, i64)",
@@ -568,11 +663,29 @@ impl RuntimeHelper {
             RuntimeHelper::ToIter => "declare i64 @lk_rt_to_iter(i64)",
             RuntimeHelper::MakeFloat => "declare i64 @lk_rt_float(double)",
             RuntimeHelper::Floor => "declare i64 @lk_rt_floor(i64)",
+            RuntimeHelper::FloorDivImm => "declare i64 @lk_rt_floor_div_imm(i64, i64)",
             RuntimeHelper::StartsWith => "declare i64 @lk_rt_starts_with(i64, i64)",
             RuntimeHelper::StartsWithConst => "declare i64 @lk_rt_starts_with_const(i64, i8*, i64)",
             RuntimeHelper::Contains => "declare i64 @lk_rt_contains(i64, i64)",
             RuntimeHelper::Compare => "declare i64 @lk_rt_cmp(i64, i64, i64)",
             RuntimeHelper::AddAccess => "declare i64 @lk_rt_add_access(i64, i64, i64)",
+            RuntimeHelper::MulAccess => "declare i64 @lk_rt_mul_access(i64, i64, i64)",
+            RuntimeHelper::AddMapGetConstStr => "declare i64 @lk_rt_add_map_get_const_str(i64, i64, i8*, i64)",
+            RuntimeHelper::AddMapGetStrInt => "declare i64 @lk_rt_add_map_get_str_int(i64, i64, i8*, i64, i64)",
+            RuntimeHelper::MulMapGetConstStr => "declare i64 @lk_rt_mul_map_get_const_str(i64, i64, i8*, i64)",
+            RuntimeHelper::MulMapGetStrInt => "declare i64 @lk_rt_mul_map_get_str_int(i64, i64, i8*, i64, i64)",
+            RuntimeHelper::MapSetAddMapGetConstStr => {
+                "declare i64 @lk_rt_map_set_add_map_get_const_str(i64, i8*, i64, i64)"
+            }
+            RuntimeHelper::MapSetAddMapGetStrInt => {
+                "declare i64 @lk_rt_map_set_add_map_get_str_int(i64, i8*, i64, i64, i64)"
+            }
+            RuntimeHelper::MapUpdateIntConstStr => {
+                "declare i64 @lk_rt_map_update_int_const_str(i64, i8*, i64, i64, i64)"
+            }
+            RuntimeHelper::MapUpdateIntStrInt => {
+                "declare i64 @lk_rt_map_update_int_str_int(i64, i8*, i64, i64, i64, i64)"
+            }
             RuntimeHelper::SubAccess => "declare i64 @lk_rt_sub_access(i64, i64, i64)",
             RuntimeHelper::AddValue => "declare i64 @lk_rt_add(i64, i64)",
             RuntimeHelper::SubValue => "declare i64 @lk_rt_sub(i64, i64)",

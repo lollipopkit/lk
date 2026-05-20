@@ -29,6 +29,20 @@ For a higher-confidence baseline refresh:
 RUNS=10 EXTRA_RUNS=20 bench/run_workload_bench.sh
 ```
 
+For VM-side diagnostics, enable one extra filtered LK run per workload. This
+prints opcode, call, branch, container, BC32 fallback-reason, and clone counters
+after the timing table:
+
+```bash
+PROFILE_WORKLOADS=1 bench/run_workload_bench.sh
+```
+
+To run only one LK workload directly, set `LK_WORKLOAD_FILTER`:
+
+```bash
+LK_WORKLOAD_FILTER=two_sum_map target/release/lk bench/workloads_business_algorithms.lk
+```
+
 ## Workloads
 
 `run_workload_bench.sh` runs one LK script and one equivalent Lua script, each
@@ -92,6 +106,43 @@ after a dedicated quiet-machine refresh.
 | order_score_pipeline | 10.271 | 2.228 | 4.610x | low | behind |
 
 Geometric mean ratio for this run: **3.727x**.
+
+## Latest Quick Comparison
+
+This table records the latest per-iteration validation run after the current
+implementation round. It is useful for spotting large direction changes, but it
+is not a replacement for the documented baseline above because it uses only one
+sample per engine.
+
+Command:
+
+```bash
+RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh
+```
+
+Date: 2026-05-20
+
+| Workload | LK VM (ms) | LK AOT (ms) | Lua (ms) | VM/Lua | AOT/Lua | AOT/VM | Conf. | Status |
+|----------|------------|-------------|----------|--------|---------|--------|-------|--------|
+| gcd_batch | 44.293 | 3.819 | 8.209 | 5.396x | 0.465x | 0.086x | high | behind |
+| prime_trial_division | 3.039 | 0.073 | 0.532 | 5.712x | 0.137x | 0.024x | high | behind |
+| binary_search | 111.901 | 3.907 | 53.286 | 2.100x | 0.073x | 0.035x | high | behind |
+| two_sum_map | 65.855 | 46.469 | 43.789 | 1.504x | 1.061x | 0.706x | high | behind |
+| sliding_window_sum | 75.841 | 33.251 | 21.682 | 3.498x | 1.534x | 0.438x | high | behind |
+| matrix_3x3_multiply | 10.760 | 0.052 | 1.505 | 7.150x | 0.035x | 0.005x | high | behind |
+| stock_max_profit | 41.049 | 0.594 | 10.227 | 4.014x | 0.058x | 0.014x | high | behind |
+| histogram_group_count | 105.723 | 63.023 | 46.817 | 2.258x | 1.346x | 0.596x | high | behind |
+| string_key_hash | 25.674 | 1.003 | 7.414 | 3.463x | 0.135x | 0.039x | high | behind |
+| order_score_pipeline | 10.875 | 0.220 | 3.368 | 3.229x | 0.065x | 0.020x | high | behind |
+| log_parse_filter | 76.058 | 83.553 | 213.835 | 0.356x | 0.391x | 1.099x | high | ahead |
+| cart_pricing_rules | 8.377 | 3.024 | 2.384 | 3.514x | 1.268x | 0.361x | high | behind |
+| route_permission_check | 15.843 | 0.145 | 3.278 | 4.833x | 0.044x | 0.009x | high | behind |
+| inventory_reorder | 75.369 | 46.645 | 29.367 | 2.566x | 1.588x | 0.619x | high | behind |
+| fraud_rule_scoring | 48.353 | 17.482 | 12.101 | 3.996x | 1.445x | 0.362x | high | behind |
+
+Geometric mean VM/Lua ratio: **3.013x**.
+AOT geometric mean ratio: **0.291x** vs Lua.
+AOT/VM geometric mean ratio: **0.096x**.
 
 ## Current Bottlenecks
 

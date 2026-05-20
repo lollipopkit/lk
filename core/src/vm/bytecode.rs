@@ -263,6 +263,11 @@ pub enum Op {
     MulInt(u16, u16, u16),
     MulFloat(u16, u16, u16),
     DivFloat(u16, u16, u16),
+    FloorDivImm {
+        dst: u16,
+        src: u16,
+        imm: i16,
+    },
     ModInt(u16, u16, u16),
     ModFloat(u16, u16, u16),
     // Comparisons -> Bool
@@ -405,6 +410,11 @@ pub enum Op {
         list: u16, // list register (must be List type) — mutated in-place via Arc::make_mut
         val: u16,  // value register to append
     },
+    // Append value to list in-place and consume a temporary value register.
+    ListPushMove {
+        list: u16,
+        val: u16,
+    },
     // Set a key-value pair in a map register in-place via Arc::make_mut
     MapSet {
         map: u16,
@@ -417,6 +427,8 @@ pub enum Op {
         key: u16,
         val: u16,
     },
+    // Set an interned key and consume a temporary value register.
+    MapSetInternedMove(u16 /*map*/, u16 /*kidx*/, u16 /*val*/),
     MakeClosure {
         dst: u16,
         proto: u16,
@@ -458,11 +470,36 @@ pub enum Op {
         imm: i16,
         ofs: i16,
     },
+    // Fused: compare src == imm, if false jump by ofs.
+    CmpEqImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
+    },
+    // Fused: compare src > imm, if false jump by ofs.
+    CmpGtImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
+    },
+    // Fused: compare src >= imm, if false jump by ofs.
+    CmpGeImmJmp {
+        r: u16,
+        imm: i16,
+        ofs: i16,
+    },
     // Fused: compare src != imm, if false (i.e., src == imm) jump by ofs.
     // Common for while(x != N) loop exit checks.
     CmpNeImmJmp {
         r: u16,
         imm: i16,
+        ofs: i16,
+    },
+    // Fused: compare two known-int registers, if false jump by ofs.
+    CmpIntJmp {
+        kind: IntCmpKind,
+        a: u16,
+        b: u16,
         ofs: i16,
     },
     Call {
@@ -579,6 +616,7 @@ impl Op {
             Op::MulInt(..) => Some("MulInt"),
             Op::MulFloat(..) => Some("MulFloat"),
             Op::DivFloat(..) => Some("DivFloat"),
+            Op::FloorDivImm { .. } => Some("FloorDivImm"),
             Op::ModInt(..) => Some("ModInt"),
             Op::ModFloat(..) => Some("ModFloat"),
             Op::CmpEqImm(..) => Some("CmpEqImm"),
@@ -603,13 +641,21 @@ impl Op {
             Op::Floor { .. } => Some("Floor"),
             Op::StartsWithK(..) => Some("StartsWithK"),
             Op::ContainsK(..) => Some("ContainsK"),
+            Op::MapHas(..) => Some("MapHas"),
             Op::MapHasK(..) => Some("MapHasK"),
             Op::ListPush { .. } => Some("ListPush"),
+            Op::ListPushMove { .. } => Some("ListPushMove"),
             Op::MapSet { .. } => Some("MapSet"),
             Op::MapSetMove { .. } => Some("MapSetMove"),
+            Op::MapSetInternedMove(..) => Some("MapSetInternedMove"),
             Op::CmpLtImmJmp { .. } => Some("CmpLtImmJmp"),
             Op::CmpLeImmJmp { .. } => Some("CmpLeImmJmp"),
+            Op::CmpEqImmJmp { .. } => Some("CmpEqImmJmp"),
+            Op::CmpGtImmJmp { .. } => Some("CmpGtImmJmp"),
+            Op::CmpGeImmJmp { .. } => Some("CmpGeImmJmp"),
+            Op::CmpNeImmJmp { .. } => Some("CmpNeImmJmp"),
             Op::AddIntImmJmp { .. } => Some("AddIntImmJmp"),
+            Op::CmpIntJmp { .. } => Some("CmpIntJmp"),
             Op::CallExact { .. } => Some("CallExact"),
             Op::CallClosureExact { .. } => Some("CallClosureExact"),
             Op::CallNativeFast { .. } => Some("CallNativeFast"),
@@ -648,7 +694,6 @@ impl Op {
             | Op::LoadCapture { .. }
             | Op::Access(..)
             | Op::Len { .. }
-            | Op::MapHas(..)
             | Op::ListFoldAdd { .. }
             | Op::MapValuesFoldAdd { .. }
             | Op::Index { .. }
@@ -664,7 +709,6 @@ impl Op {
             | Op::JmpFalse(..)
             | Op::JmpNilOrFalseJmp { .. }
             | Op::AddRangeCountImm { .. }
-            | Op::CmpNeImmJmp { .. }
             | Op::Call { .. }
             | Op::ForRangeLoop { .. }
             | Op::CallNamed { .. }
@@ -703,6 +747,7 @@ impl fmt::Debug for Op {
             Op::MulInt(d, a, b) => write!(f, "MulInt r{}, r{}, r{}", d, a, b),
             Op::MulFloat(d, a, b) => write!(f, "MulFloat r{}, r{}, r{}", d, a, b),
             Op::DivFloat(d, a, b) => write!(f, "DivFloat r{}, r{}, r{}", d, a, b),
+            Op::FloorDivImm { dst, src, imm } => write!(f, "FloorDivImm r{}, r{}, {}", dst, src, imm),
             Op::ModInt(d, a, b) => write!(f, "ModInt r{}, r{}, r{}", d, a, b),
             Op::ModFloat(d, a, b) => write!(f, "ModFloat r{}, r{}, r{}", d, a, b),
             Op::CmpEq(d, a, b) => write!(f, "CmpEq r{}, r{}, r{}", d, a, b),
@@ -770,8 +815,10 @@ impl fmt::Debug for Op {
                 write!(f, "ListSlice r{}, r{}, r{}", dst, src, start)
             }
             Op::ListPush { list, val } => write!(f, "ListPush r{}, r{}", list, val),
+            Op::ListPushMove { list, val } => write!(f, "ListPushMove r{}, r{}", list, val),
             Op::MapSet { map, key, val } => write!(f, "MapSet r{}, r{}, r{}", map, key, val),
             Op::MapSetMove { map, key, val } => write!(f, "MapSetMove r{}, r{}, r{}", map, key, val),
+            Op::MapSetInternedMove(map, kidx, val) => write!(f, "MapSetInternedMove r{}, k{}, r{}", map, kidx, val),
             Op::MakeClosure { dst, proto } => write!(f, "MakeClosure r{}, p{}", dst, proto),
             Op::Jmp(ofs) => write!(f, "Jmp {}", ofs),
             Op::JmpFalse(r, ofs) => write!(f, "JmpFalse r{}, {}", r, ofs),
@@ -793,7 +840,11 @@ impl fmt::Debug for Op {
                 target, idx, limit, step, inclusive, explicit, imm
             ),
             Op::CmpLeImmJmp { r, imm, ofs } => write!(f, "CmpLeImmJmp r{}, {}, {}", r, imm, ofs),
+            Op::CmpEqImmJmp { r, imm, ofs } => write!(f, "CmpEqImmJmp r{}, {}, {}", r, imm, ofs),
+            Op::CmpGtImmJmp { r, imm, ofs } => write!(f, "CmpGtImmJmp r{}, {}, {}", r, imm, ofs),
+            Op::CmpGeImmJmp { r, imm, ofs } => write!(f, "CmpGeImmJmp r{}, {}, {}", r, imm, ofs),
             Op::CmpNeImmJmp { r, imm, ofs } => write!(f, "CmpNeImmJmp r{}, {}, {}", r, imm, ofs),
+            Op::CmpIntJmp { kind, a, b, ofs } => write!(f, "CmpIntJmp.{:?} r{}, r{}, {}", kind, a, b, ofs),
             Op::Call {
                 f: rf,
                 base,

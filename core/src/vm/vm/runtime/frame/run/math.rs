@@ -33,6 +33,14 @@ pub(super) fn read_float_pair(regs: &[Val], consts: &[Val], a: u16, b: u16) -> O
 }
 
 #[inline]
+pub(super) fn floor_div_i64(lhs: i64, rhs: i64) -> i64 {
+    debug_assert_ne!(rhs, 0);
+    let q = lhs / rhs;
+    let r = lhs % rhs;
+    if r != 0 && ((r < 0) != (rhs < 0)) { q - 1 } else { q }
+}
+
+#[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn int_binop<F>(
     frame_raw: *mut super::FrameState<'_>,

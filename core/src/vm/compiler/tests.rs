@@ -812,7 +812,10 @@ fn straight_line_known_call_inlines_without_runtime_call() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(93));
     assert!(
-        !function.code.iter().any(|op| matches!(op, Op::Call { .. })),
+        !function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::Call { .. } | Op::CallClosureExact { .. } | Op::CallExact { .. })),
         "straight-line pure helper call should inline into arithmetic opcodes"
     );
 }

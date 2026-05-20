@@ -3,6 +3,7 @@ use super::*;
 use std::sync::Mutex;
 
 use crate::vm::analysis::{vm_runtime_metrics_reset, vm_runtime_metrics_snapshot};
+use crate::vm::bc32::Bc32Function;
 use crate::vm::bytecode::{Function, Op, rk_make_const};
 use crate::vm::{Vm, VmContext};
 
@@ -49,6 +50,13 @@ fn cmp_branch_function(op: Op) -> Function {
         bc32_decoded: None,
         analysis: None,
     }
+}
+
+fn pack_bc32(mut function: Function) -> Function {
+    let packed = Bc32Function::try_from_function(&function).expect("function should be BC32 packable");
+    function.code32 = Some(packed.code32);
+    function.bc32_decoded = packed.decoded;
+    function
 }
 
 fn empty_range_loop_function() -> Function {
@@ -299,6 +307,26 @@ fn opcode_compare_imm_branch_fusion_skips_temp_bool_register_write() {
     assert_eq!(
         metrics.register_writes, 3,
         "fused immediate compare+branch should write arguments and selected return constant, not the temporary bool"
+    );
+}
+
+#[test]
+fn packed_compare_imm_branch_records_typed_branch_metric() {
+    let _guard = METRICS_LOCK.lock().expect("metrics lock");
+    vm_runtime_metrics_reset();
+    let function = pack_bc32(cmp_branch_function(Op::CmpGtImm(2, 0, 900)));
+    let mut vm = Vm::new();
+    let mut ctx = VmContext::new();
+
+    let out = vm
+        .exec_with(&function, &mut ctx, Some(&[Val::Int(901), Val::Nil]))
+        .expect("execute packed fused immediate compare branch");
+    assert_eq!(out, Val::Int(1));
+
+    let metrics = vm_runtime_metrics_snapshot();
+    assert!(
+        metrics.typed_branch_ops > 0,
+        "packed immediate compare+branch should be counted as a typed branch"
     );
 }
 

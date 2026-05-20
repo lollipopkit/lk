@@ -9,34 +9,65 @@
 //!
 //! | Pattern | Fused Result | Benefit |
 //! |---------|-------------|---------|
-//! | `CmpLtImm + JmpFalse` | `CmpLtImmJmp` | 1 dispatch/iteration savings in while loops |
-//! | `CmpLeImm + JmpFalse` | `CmpLeImmJmp` | Same for <= based loops |
+//! | `CmpI + JmpFalse` | `CmpIntJmp` | 1 dispatch and one temp bool write saved in typed loops |
+//! | `CmpLtImm + JmpFalse/BoolBranch` | `CmpLtImmJmp` | 1 dispatch/iteration savings in while loops |
+//! | `CmpLeImm + JmpFalse/BoolBranch` | `CmpLeImmJmp` | Same for <= based loops |
+//! | `CmpEqImm + JmpFalse/BoolBranch` | `CmpEqImmJmp` | Same for `==` based guards |
+//! | `CmpGtImm + JmpFalse/BoolBranch` | `CmpGtImmJmp` | Same for `>` based guards |
+//! | `CmpGeImm + JmpFalse/BoolBranch` | `CmpGeImmJmp` | Same for `>=` based guards |
+//! | `CmpNeImm + JmpFalse/BoolBranch` | `CmpNeImmJmp` | Same for `while x != imm` loops |
 //! | `AddIntImm + Jmp` | `AddIntImmJmp` | Loop increment tail fusion |
 //! | `AddIntImm + ForRangeStep` | `AddIntImmJmp` | Range-loop accumulator tail fusion |
 //! | `LoadLocal + Ret/branch` | direct `Ret/branch` from local | Avoid copy-only locals |
 //! | `LoadLocal + read-only op` | read source local directly | Avoid copy-only locals |
 //! | `LoadK + RK op` | use RK const operand directly | Avoid constant materialization |
+//! | `MapGet + != nil + branch` | `MapHas + branch` | Avoid cloning map values for presence checks |
 //!
-//! These fused ops are handled natively in `opcode.rs`. BC32 packing sees
-//! them as unsupported opcodes and gracefully skips those functions, which
-//! then run on the optimized opcode.rs path.
+//! These fused ops are handled natively in both opcode and BC32 packed paths.
 
-use crate::vm::bytecode::{Op, RK_INDEX_MASK, rk_make_const};
+use crate::{
+    val::Val,
+    vm::bytecode::{Op, RK_INDEX_MASK, rk_index, rk_is_const, rk_make_const},
+};
 
 /// Fuse common two-instruction patterns into single fused opcodes.
 ///
-/// 1. `CmpLtImm(dst, src, imm)` + `JmpFalse(dst, ofs)` → `CmpLtImmJmp { src, imm, ofs+1 }`
-/// 2. `CmpLeImm(dst, src, imm)` + `JmpFalse(dst, ofs)` → `CmpLeImmJmp { src, imm, ofs+1 }`
-/// 3. `AddIntImm(dst, src, imm)` + `Jmp(ofs)` (when dst==src) → `AddIntImmJmp { dst, imm, ofs+1 }`
-/// 4. `AddIntImm(dst, src, imm)` + `ForRangeStep(back)` (when dst==src) → `AddIntImmJmp { dst, imm, back+1 }`
-/// 5. `LoadLocal(tmp, idx)` + single consumer read-only op using `tmp` → consumer reads `idx`
+/// 1. `CmpI(dst, a, b, kind)` + `JmpFalse(dst, ofs)` → `CmpIntJmp { kind, a, b, ofs+1 }`
+/// 2. `CmpLtImm(dst, src, imm)` + `JmpFalse/BoolBranch(dst, ofs)` → `CmpLtImmJmp { src, imm, ofs+1 }`
+/// 3. `CmpLeImm(dst, src, imm)` + `JmpFalse/BoolBranch(dst, ofs)` → `CmpLeImmJmp { src, imm, ofs+1 }`
+/// 4. `CmpEqImm(dst, src, imm)` + `JmpFalse/BoolBranch(dst, ofs)` → `CmpEqImmJmp { src, imm, ofs+1 }`
+/// 5. `CmpGtImm(dst, src, imm)` + `JmpFalse/BoolBranch(dst, ofs)` → `CmpGtImmJmp { src, imm, ofs+1 }`
+/// 6. `CmpGeImm(dst, src, imm)` + `JmpFalse/BoolBranch(dst, ofs)` → `CmpGeImmJmp { src, imm, ofs+1 }`
+/// 7. `CmpNeImm(dst, src, imm)` + `JmpFalse/BoolBranch(dst, ofs)` → `CmpNeImmJmp { src, imm, ofs+1 }`
+/// 5. `AddIntImm(dst, src, imm)` + `Jmp(ofs)` (when dst==src) → `AddIntImmJmp { dst, imm, ofs+1 }`
+/// 6. `AddIntImm(dst, src, imm)` + `ForRangeStep(back)` (when dst==src) → `AddIntImmJmp { dst, imm, back+1 }`
+/// 7. `LoadLocal(tmp, idx)` + single consumer read-only op using `tmp` → consumer reads `idx`
 ///
 /// The second instruction is removed and all relative jump offsets are adjusted.
+#[cfg(test)]
 pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
+    peephole_fuse_cmp_jmp_with_consts(code, &[]);
+}
+
+pub fn peephole_fuse_cmp_jmp_with_consts(code: &mut Vec<Op>, consts: &[Val]) {
     let mut removals: Vec<usize> = Vec::new();
 
     let mut i = 0;
     while i + 1 < code.len() {
+        if let Some(fused) = fuse_map_get_ne_nil_with_loaded_nil(code, consts, i) {
+            code[i] = fused.op;
+            removals.extend_from_slice(&[i + 1, i + 2]);
+            i += 4;
+            continue;
+        }
+
+        if let Some(fused) = fuse_map_get_ne_nil_with_known_nil(code, consts, i) {
+            code[i] = fused.op;
+            removals.push(i + 1);
+            i += 3;
+            continue;
+        }
+
         if let Op::LoadK(dst, kidx) = code[i]
             && kidx <= RK_INDEX_MASK
             && !has_branch_target_to(code, i + 1)
@@ -87,7 +118,19 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
         }
 
         match (&code[i], &code[i + 1]) {
-            (Op::CmpLtImm(dst, src, imm), Op::JmpFalse(r, ofs))
+            (Op::CmpI { dst, a, b, kind }, Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs))
+                if *dst == *r && (-128..=127).contains(ofs) =>
+            {
+                code[i] = Op::CmpIntJmp {
+                    kind: *kind,
+                    a: *a,
+                    b: *b,
+                    ofs: *ofs + 1,
+                };
+                removals.push(i + 1);
+                i += 2;
+            }
+            (Op::CmpLtImm(dst, src, imm), Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs))
                 if *dst == *r && (-128..=127).contains(imm) && (-128..=127).contains(ofs) =>
             {
                 code[i] = Op::CmpLtImmJmp {
@@ -98,10 +141,54 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
                 removals.push(i + 1);
                 i += 2;
             }
-            (Op::CmpLeImm(dst, src, imm), Op::JmpFalse(r, ofs))
+            (Op::CmpLeImm(dst, src, imm), Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs))
                 if *dst == *r && (-128..=127).contains(imm) && (-128..=127).contains(ofs) =>
             {
                 code[i] = Op::CmpLeImmJmp {
+                    r: *src,
+                    imm: *imm,
+                    ofs: *ofs + 1,
+                };
+                removals.push(i + 1);
+                i += 2;
+            }
+            (Op::CmpEqImm(dst, src, imm), Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs))
+                if *dst == *r && (-128..=127).contains(ofs) =>
+            {
+                code[i] = Op::CmpEqImmJmp {
+                    r: *src,
+                    imm: *imm,
+                    ofs: *ofs + 1,
+                };
+                removals.push(i + 1);
+                i += 2;
+            }
+            (Op::CmpGtImm(dst, src, imm), Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs))
+                if *dst == *r && (-128..=127).contains(ofs) =>
+            {
+                code[i] = Op::CmpGtImmJmp {
+                    r: *src,
+                    imm: *imm,
+                    ofs: *ofs + 1,
+                };
+                removals.push(i + 1);
+                i += 2;
+            }
+            (Op::CmpGeImm(dst, src, imm), Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs))
+                if *dst == *r && (-128..=127).contains(ofs) =>
+            {
+                code[i] = Op::CmpGeImmJmp {
+                    r: *src,
+                    imm: *imm,
+                    ofs: *ofs + 1,
+                };
+                removals.push(i + 1);
+                i += 2;
+            }
+            (Op::CmpNeImm(dst, src, imm), Op::JmpFalse(r, ofs) | Op::BoolBranch(r, ofs))
+                if *dst == *r && (-128..=127).contains(ofs) =>
+            {
+                code[i] = Op::CmpNeImmJmp {
                     r: *src,
                     imm: *imm,
                     ofs: *ofs + 1,
@@ -147,6 +234,8 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
         fixup_offsets(code, &removals);
     }
 
+    fuse_map_presence_after_rk_remap(code, consts);
+
     for op in code.iter_mut() {
         match *op {
             Op::JmpFalse(r, ofs) => *op = Op::BoolBranch(r, ofs),
@@ -172,6 +261,164 @@ pub fn peephole_fuse_cmp_jmp(code: &mut Vec<Op>) {
     }
 }
 
+fn fuse_map_presence_after_rk_remap(code: &mut Vec<Op>, consts: &[Val]) {
+    let mut removals: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i + 2 < code.len() {
+        if let Some(fused) = fuse_map_get_ne_nil_with_known_nil(code, consts, i) {
+            code[i] = fused.op;
+            removals.push(i + 1);
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+
+    if removals.is_empty() {
+        return;
+    }
+
+    for &idx in removals.iter().rev() {
+        code.remove(idx);
+    }
+    fixup_offsets(code, &removals);
+}
+
+struct FusedMapPresence {
+    op: Op,
+}
+
+fn fuse_map_get_ne_nil_with_loaded_nil(code: &[Op], consts: &[Val], i: usize) -> Option<FusedMapPresence> {
+    let load_idx = i + 1;
+    let cmp_idx = i + 2;
+    let branch_idx = i + 3;
+    let (nil_reg, nil_kidx) = match code.get(load_idx)? {
+        Op::LoadK(reg, kidx) => (*reg, *kidx),
+        _ => return None,
+    };
+    if !matches!(consts.get(nil_kidx as usize), Some(Val::Nil)) {
+        return None;
+    }
+    if has_branch_target_to(code, load_idx) || has_branch_target_to(code, cmp_idx) {
+        return None;
+    }
+    let (get_dst, fused_op) = map_presence_op_from_get(&code[i])?;
+    let cmp_dst = cmp_ne_reg_nil_at(code, cmp_idx, get_dst, Some(nil_reg), consts)?;
+    branch_reads(&code[branch_idx], cmp_dst)?;
+    if !reg_dead_after_single_consumer(code, branch_idx + 1, get_dst) {
+        return None;
+    }
+    Some(FusedMapPresence {
+        op: fused_op.with_dst(cmp_dst),
+    })
+}
+
+fn fuse_map_get_ne_nil_with_known_nil(code: &[Op], consts: &[Val], i: usize) -> Option<FusedMapPresence> {
+    let cmp_idx = i + 1;
+    let branch_idx = i + 2;
+    if has_branch_target_to(code, cmp_idx) {
+        return None;
+    }
+    let (get_dst, fused_op) = map_presence_op_from_get(&code[i])?;
+    let cmp_dst = cmp_ne_reg_nil_at(code, cmp_idx, get_dst, None, consts)?;
+    branch_reads(&code[branch_idx], cmp_dst)?;
+    if !reg_dead_after_single_consumer(code, branch_idx + 1, get_dst) {
+        return None;
+    }
+    Some(FusedMapPresence {
+        op: fused_op.with_dst(cmp_dst),
+    })
+}
+
+enum MapPresenceTemplate {
+    Dynamic { map: u16, key: u16 },
+    Interned { map: u16, kidx: u16 },
+}
+
+impl MapPresenceTemplate {
+    fn with_dst(self, dst: u16) -> Op {
+        match self {
+            Self::Dynamic { map, key } => Op::MapHas(dst, map, key),
+            Self::Interned { map, kidx } => Op::MapHasK(dst, map, kidx),
+        }
+    }
+}
+
+fn map_presence_op_from_get(op: &Op) -> Option<(u16, MapPresenceTemplate)> {
+    match *op {
+        Op::MapGetDynamic(dst, map, key) if rk_is_const(key) => Some((
+            dst,
+            MapPresenceTemplate::Interned {
+                map,
+                kidx: rk_index(key),
+            },
+        )),
+        Op::MapGetDynamic(dst, map, key) => Some((dst, MapPresenceTemplate::Dynamic { map, key })),
+        Op::MapGetInterned(dst, map, kidx) => Some((dst, MapPresenceTemplate::Interned { map, kidx })),
+        _ => None,
+    }
+}
+
+fn cmp_ne_reg_nil_at(code: &[Op], cmp_idx: usize, value_reg: u16, nil_reg: Option<u16>, consts: &[Val]) -> Option<u16> {
+    let op = code.get(cmp_idx)?;
+    let Op::CmpNe(dst, a, b) = *op else {
+        return None;
+    };
+    if a == value_reg && is_nil_operand(code, cmp_idx, b, nil_reg, consts) {
+        return Some(dst);
+    }
+    if b == value_reg && is_nil_operand(code, cmp_idx, a, nil_reg, consts) {
+        return Some(dst);
+    }
+    None
+}
+
+fn is_nil_operand(code: &[Op], pos: usize, operand: u16, nil_reg: Option<u16>, consts: &[Val]) -> bool {
+    if nil_reg == Some(operand) {
+        return true;
+    }
+    if rk_is_const(operand) && matches!(consts.get(rk_index(operand) as usize), Some(Val::Nil)) {
+        return true;
+    }
+    reg_last_write_is_nil_load(code, pos, operand, consts)
+}
+
+fn reg_last_write_is_nil_load(code: &[Op], pos: usize, reg: u16, consts: &[Val]) -> bool {
+    for op in code[..pos].iter().rev() {
+        if op_writes_reg(op, reg) {
+            return matches!(op, Op::LoadK(dst, kidx) if *dst == reg && matches!(consts.get(*kidx as usize), Some(Val::Nil)));
+        }
+        if op_reads_reg(op, reg) || is_control_boundary(op) {
+            return false;
+        }
+    }
+    false
+}
+
+fn is_control_boundary(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Jmp(_)
+            | Op::JmpFalse(_, _)
+            | Op::BoolBranch(_, _)
+            | Op::JmpIfNil(_, _)
+            | Op::JmpIfNotNil(_, _)
+            | Op::JmpFalseSet { .. }
+            | Op::JmpTrueSet { .. }
+            | Op::NullishPick { .. }
+            | Op::Break(_)
+            | Op::Continue(_)
+            | Op::Ret { .. }
+    )
+}
+
+fn branch_reads(op: &Op, reg: u16) -> Option<()> {
+    match *op {
+        Op::JmpFalse(r, _) | Op::BoolBranch(r, _) if r == reg => Some(()),
+        _ => None,
+    }
+}
+
 fn has_branch_target_to(code: &[Op], target: usize) -> bool {
     code.iter()
         .enumerate()
@@ -188,8 +435,12 @@ fn branch_target(pc: usize, op: &Op) -> Option<usize> {
         | Op::Break(ofs)
         | Op::Continue(ofs)
         | Op::AddIntImmJmp { ofs, .. }
+        | Op::CmpIntJmp { ofs, .. }
         | Op::CmpLtImmJmp { ofs, .. }
         | Op::CmpLeImmJmp { ofs, .. }
+        | Op::CmpEqImmJmp { ofs, .. }
+        | Op::CmpGtImmJmp { ofs, .. }
+        | Op::CmpGeImmJmp { ofs, .. }
         | Op::CmpNeImmJmp { ofs, .. }
         | Op::RangeLoopI { ofs, .. }
         | Op::ForRangeLoop { ofs, .. } => *ofs,
@@ -260,7 +511,8 @@ fn remap_single_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
         | Op::ListLen { src, .. }
         | Op::MapLen { src, .. }
         | Op::StrLen { src, .. }
-        | Op::Floor { src, .. } => remap(src),
+        | Op::Floor { src, .. }
+        | Op::FloorDivImm { src, .. } => remap(src),
         Op::Add(_, a, b)
         | Op::StrConcatKnownCap(_, a, b)
         | Op::StrConcatToStr(_, a, b)
@@ -295,6 +547,9 @@ fn remap_single_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
         Op::AddIntImm(_, src, _)
         | Op::CmpLtImmJmp { r: src, .. }
         | Op::CmpLeImmJmp { r: src, .. }
+        | Op::CmpEqImmJmp { r: src, .. }
+        | Op::CmpGtImmJmp { r: src, .. }
+        | Op::CmpGeImmJmp { r: src, .. }
         | Op::CmpNeImmJmp { r: src, .. }
         | Op::JmpNilOrFalseJmp { r: src, .. }
         | Op::AccessK(_, src, _)
@@ -305,7 +560,7 @@ fn remap_single_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
         | Op::ContainsK(_, src, _)
         | Op::MapGetInterned(_, src, _)
         | Op::MapHasK(_, src, _) => remap(src),
-        Op::CmpI { a, b, .. } => {
+        Op::CmpI { a, b, .. } | Op::CmpIntJmp { a, b, .. } => {
             remap(a);
             remap(b);
         }
@@ -346,6 +601,9 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpLtImmJmp { r: src, .. }
         | Op::JmpNilOrFalseJmp { r: src, .. }
         | Op::CmpLeImmJmp { r: src, .. }
+        | Op::CmpEqImmJmp { r: src, .. }
+        | Op::CmpGtImmJmp { r: src, .. }
+        | Op::CmpGeImmJmp { r: src, .. }
         | Op::CmpNeImmJmp { r: src, .. }
         | Op::Ret { base: src, retc: 1 }
         | Op::AddIntImm(_, src, _)
@@ -364,6 +622,7 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::MapLen { src, .. }
         | Op::StrLen { src, .. }
         | Op::Floor { src, .. }
+        | Op::FloorDivImm { src, .. }
         | Op::StartsWithK(_, src, _)
         | Op::ContainsK(_, src, _)
         | Op::MapGetInterned(_, src, _)
@@ -399,7 +658,7 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::MapGetDynamic(_, a, b)
         | Op::Index { base: a, idx: b, .. }
         | Op::ListSlice { src: a, start: b, .. } => is(a) || is(b),
-        Op::CmpI { a, b, .. } => is(a) || is(b),
+        Op::CmpI { a, b, .. } | Op::CmpIntJmp { a, b, .. } => is(a) || is(b),
         Op::NullishPick { l, .. } | Op::JmpFalseSet { r: l, .. } | Op::JmpTrueSet { r: l, .. } => is(l),
         Op::AddRangeCountImm { idx, limit, step, .. } => is(idx) || is(limit) || is(step),
         Op::ListSetI { list, val, .. } => is(list) || is(val),
@@ -407,7 +666,10 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
             let end = base.saturating_add(len.saturating_mul(2));
             reg >= *base && reg < end
         }
-        Op::ListPush { list, val } | Op::MapSetInterned(list, _, val) => is(list) || is(val),
+        Op::ListPush { list, val }
+        | Op::ListPushMove { list, val }
+        | Op::MapSetInterned(list, _, val)
+        | Op::MapSetInternedMove(list, _, val) => is(list) || is(val),
         Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => is(map) || is(key) || is(val),
         Op::ListFoldAdd { acc, list } => is(acc) || is(list),
         Op::MapValuesFoldAdd { acc, map } => is(acc) || is(map),
@@ -507,13 +769,16 @@ pub(super) fn op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::ListLen { dst, .. }
         | Op::MapLen { dst, .. }
         | Op::StrLen { dst, .. }
-        | Op::Floor { dst, .. } => is(dst),
+        | Op::Floor { dst, .. }
+        | Op::FloorDivImm { dst, .. } => is(dst),
         Op::LoadCapture { dst, .. } | Op::CmpI { dst, .. } | Op::ListSetI { dst, .. } => is(dst),
         Op::StoreLocal(idx, _) => is(idx),
         Op::AddIntImmJmp { r, .. } => is(r),
         Op::AddRangeCountImm { target, .. } => is(target),
         Op::ListPush { list, .. }
+        | Op::ListPushMove { list, .. }
         | Op::MapSetInterned(list, _, _)
+        | Op::MapSetInternedMove(list, _, _)
         | Op::ListFoldAdd { acc: list, .. }
         | Op::MapValuesFoldAdd { acc: list, .. } => is(list),
         Op::MapSet { map, .. } | Op::MapSetMove { map, .. } => is(map),
@@ -541,7 +806,12 @@ fn fixup_offsets(code: &mut [Op], removals: &[usize]) {
             | Op::JmpTrueSet { ofs, .. }
             | Op::NullishPick { ofs, .. }
             | Op::CmpLtImmJmp { ofs, .. }
+            | Op::CmpIntJmp { ofs, .. }
             | Op::CmpLeImmJmp { ofs, .. }
+            | Op::CmpEqImmJmp { ofs, .. }
+            | Op::CmpGtImmJmp { ofs, .. }
+            | Op::CmpGeImmJmp { ofs, .. }
+            | Op::CmpNeImmJmp { ofs, .. }
             | Op::JmpNilOrFalseJmp { ofs, .. }
             | Op::AddIntImmJmp { ofs, .. }
             | Op::Break(ofs)
@@ -593,7 +863,12 @@ fn set_offset(op: &mut Op, ofs: i16) {
         | Op::JmpTrueSet { ofs: o, .. }
         | Op::NullishPick { ofs: o, .. }
         | Op::CmpLtImmJmp { ofs: o, .. }
+        | Op::CmpIntJmp { ofs: o, .. }
         | Op::CmpLeImmJmp { ofs: o, .. }
+        | Op::CmpEqImmJmp { ofs: o, .. }
+        | Op::CmpGtImmJmp { ofs: o, .. }
+        | Op::CmpGeImmJmp { ofs: o, .. }
+        | Op::CmpNeImmJmp { ofs: o, .. }
         | Op::JmpNilOrFalseJmp { ofs: o, .. }
         | Op::AddIntImmJmp { ofs: o, .. }
         | Op::Break(o)
@@ -607,6 +882,201 @@ fn set_offset(op: &mut Op, ofs: i16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::bytecode::IntCmpKind;
+
+    #[test]
+    fn cmp_i_followed_by_branch_fuses_to_cmp_int_jmp() {
+        let mut code = vec![
+            Op::CmpI {
+                dst: 4,
+                a: 1,
+                b: 2,
+                kind: IntCmpKind::Lt,
+            },
+            Op::JmpFalse(4, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 3);
+        assert!(matches!(
+            code[0],
+            Op::CmpIntJmp {
+                kind: IntCmpKind::Lt,
+                a: 1,
+                b: 2,
+                ofs: 2
+            }
+        ));
+    }
+
+    #[test]
+    fn cmp_ne_imm_followed_by_branch_fuses_to_cmp_ne_imm_jmp() {
+        let mut code = vec![
+            Op::CmpNeImm(4, 1, 7),
+            Op::BoolBranch(4, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 3);
+        assert!(matches!(code[0], Op::CmpNeImmJmp { r: 1, imm: 7, ofs: 2 }));
+    }
+
+    #[test]
+    fn cmp_eq_imm_followed_by_branch_fuses_to_cmp_eq_imm_jmp() {
+        let mut code = vec![
+            Op::CmpEqImm(4, 1, 7),
+            Op::BoolBranch(4, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 3);
+        assert!(matches!(code[0], Op::CmpEqImmJmp { r: 1, imm: 7, ofs: 2 }));
+    }
+
+    #[test]
+    fn cmp_gt_ge_imm_followed_by_branch_fuses_to_cmp_imm_jmp() {
+        let mut code = vec![
+            Op::CmpGtImm(4, 1, 7),
+            Op::BoolBranch(4, 2),
+            Op::CmpGeImm(5, 2, 9),
+            Op::BoolBranch(5, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(code[0], Op::CmpGtImmJmp { r: 1, imm: 7, ofs: 2 }));
+        assert!(matches!(code[1], Op::CmpGeImmJmp { r: 2, imm: 9, ofs: 2 }));
+    }
+
+    #[test]
+    fn wide_cmp_imm_followed_by_branch_fuses_to_cmp_imm_jmp() {
+        let mut code = vec![
+            Op::CmpGtImm(4, 1, 900),
+            Op::BoolBranch(4, 2),
+            Op::CmpNeImm(5, 2, -300),
+            Op::BoolBranch(5, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(code[0], Op::CmpGtImmJmp { r: 1, imm: 900, ofs: 2 }));
+        assert!(matches!(
+            code[1],
+            Op::CmpNeImmJmp {
+                r: 2,
+                imm: -300,
+                ofs: 2
+            }
+        ));
+    }
+
+    #[test]
+    fn cmp_lt_le_imm_followed_by_branch_fuses_to_cmp_imm_jmp() {
+        let mut code = vec![
+            Op::CmpLtImm(4, 1, 7),
+            Op::BoolBranch(4, 2),
+            Op::CmpLeImm(5, 2, 9),
+            Op::BoolBranch(5, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(code[0], Op::CmpLtImmJmp { r: 1, imm: 7, ofs: 2 }));
+        assert!(matches!(code[1], Op::CmpLeImmJmp { r: 2, imm: 9, ofs: 2 }));
+    }
+
+    #[test]
+    fn map_get_dynamic_ne_nil_branch_fuses_to_map_has() {
+        let consts = vec![Val::Nil];
+        let mut code = vec![
+            Op::MapGetDynamic(4, 1, 2),
+            Op::LoadK(5, 0),
+            Op::CmpNe(6, 4, 5),
+            Op::BoolBranch(6, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp_with_consts(&mut code, &consts);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(code[0], Op::MapHas(6, 1, 2)));
+        assert!(matches!(code[1], Op::BoolBranch(6, 2)));
+    }
+
+    #[test]
+    fn map_get_dynamic_ne_prior_nil_reg_branch_fuses_to_map_has() {
+        let consts = vec![Val::Nil];
+        let mut code = vec![
+            Op::LoadK(5, 0),
+            Op::MapGetDynamic(4, 1, 2),
+            Op::CmpNe(6, 4, 5),
+            Op::BoolBranch(6, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp_with_consts(&mut code, &consts);
+
+        assert_eq!(code.len(), 5);
+        assert!(matches!(code[1], Op::MapHas(6, 1, 2)));
+        assert!(matches!(code[2], Op::BoolBranch(6, 2)));
+    }
+
+    #[test]
+    fn map_get_dynamic_ne_nil_rk_branch_fuses_to_map_has() {
+        let consts = vec![Val::Nil];
+        let mut code = vec![
+            Op::MapGetDynamic(4, 1, 2),
+            Op::CmpNe(6, 4, rk_make_const(0)),
+            Op::BoolBranch(6, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp_with_consts(&mut code, &consts);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(code[0], Op::MapHas(6, 1, 2)));
+        assert!(matches!(code[1], Op::BoolBranch(6, 2)));
+    }
+
+    #[test]
+    fn map_get_interned_ne_nil_branch_fuses_to_map_has_k() {
+        let consts = vec![Val::from_str("k"), Val::Nil];
+        let mut code = vec![
+            Op::MapGetInterned(4, 1, 0),
+            Op::LoadK(5, 1),
+            Op::CmpNe(6, 4, 5),
+            Op::JmpFalse(6, 2),
+            Op::Ret { base: 0, retc: 1 },
+            Op::Ret { base: 1, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp_with_consts(&mut code, &consts);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(code[0], Op::MapHasK(6, 1, 0)));
+        assert!(matches!(code[1], Op::BoolBranch(6, 2)));
+    }
 
     #[test]
     fn loadlocal_single_read_operand_is_remapped() {

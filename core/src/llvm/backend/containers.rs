@@ -1,6 +1,230 @@
 use super::*;
 
+enum CounterKeyKind {
+    ConstStr { key: String },
+    StrInt { prefix: String, suffix: String },
+}
+
+#[derive(Clone, Copy)]
+enum CounterOperand {
+    Literal(i64),
+    Const(u16),
+    Reg(u16),
+    Rk(u16),
+}
+
 impl<'a> FunctionTranslator<'a> {
+    pub(super) fn try_emit_map_nil_counter_update_pattern(
+        &mut self,
+        _block_idx: usize,
+        instr_idx: usize,
+    ) -> Result<bool> {
+        let Some((get_dst, map, key, key_kind)) = self.map_get_update_key(instr_idx) else {
+            return Ok(false);
+        };
+        let cmp_idx = instr_idx + 1;
+        let branch_idx = instr_idx + 2;
+        let Some(Op::CmpEq(cmp_reg, a, b)) = self.function.code.get(cmp_idx) else {
+            return Ok(false);
+        };
+        if !self.compare_is_get_eq_nil(*cmp_reg, *a, *b, get_dst) {
+            return Ok(false);
+        }
+        let Some(Op::BoolBranch(branch_reg, branch_ofs)) = self.function.code.get(branch_idx) else {
+            return Ok(false);
+        };
+        if *branch_reg != *cmp_reg {
+            return Ok(false);
+        }
+        let else_start = Self::compute_target(branch_idx, *branch_ofs, self.function.code.len())?;
+        let init_start = branch_idx + 1;
+        if else_start <= init_start {
+            return Ok(false);
+        }
+        let Some((init_value, init_next)) = self.parse_counter_init_set(init_start, map, key, &key_kind) else {
+            return Ok(false);
+        };
+        let Some(Op::Jmp(join_ofs)) = self.function.code.get(init_next) else {
+            return Ok(false);
+        };
+        let join = Self::compute_target(init_next, *join_ofs, self.function.code.len())?;
+        if join <= else_start {
+            return Ok(false);
+        }
+        let Some((delta_value, else_next)) = self.parse_counter_add_set(else_start, get_dst, map, key, &key_kind)
+        else {
+            return Ok(false);
+        };
+        if else_next != join {
+            return Ok(false);
+        }
+
+        let map_value = self.load_reg(map)?;
+        let init = self.counter_operand_value(init_value)?;
+        let delta = self.counter_operand_value(delta_value)?;
+        let updated = match key_kind {
+            CounterKeyKind::ConstStr { key } => {
+                let const_data = self.make_string_constant(&key);
+                self.anonymous_string_constants.push(const_data.clone());
+                let ptr = self.emit_string_pointer(&const_data);
+                self.require_helper(RuntimeHelper::MapUpdateIntConstStr);
+                let updated = self.fresh("mapupdatek");
+                self.writer.line(format!(
+                    "{updated} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len}, i64 {init}, i64 {delta})",
+                    RuntimeHelper::MapUpdateIntConstStr.symbol(),
+                    len = const_data.len
+                ));
+                updated
+            }
+            CounterKeyKind::StrInt { prefix, suffix } => {
+                let const_data = self.make_string_constant(&prefix);
+                self.anonymous_string_constants.push(const_data.clone());
+                let ptr = self.emit_string_pointer(&const_data);
+                self.require_helper(RuntimeHelper::MapUpdateIntStrInt);
+                let updated = self.fresh("mapupdatekey");
+                self.writer.line(format!(
+                    "{updated} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len}, i64 {suffix}, i64 {init}, i64 {delta})",
+                    RuntimeHelper::MapUpdateIntStrInt.symbol(),
+                    len = const_data.len
+                ));
+                updated
+            }
+        };
+        self.store_reg(map, &updated)?;
+        self.set_known(map, None);
+        let join_label = self.block_label_for_index(join)?;
+        self.mark_blocks_skipped(init_start, join, join_label.clone());
+        self.writer.line(format!("br label %{}", join_label));
+        Ok(true)
+    }
+
+    fn map_get_update_key(&self, instr_idx: usize) -> Option<(u16, u16, u16, CounterKeyKind)> {
+        match *self.function.code.get(instr_idx)? {
+            Op::MapGetInterned(dst, map, kidx) => {
+                let key = self.function.consts.get(kidx as usize)?.as_str()?.to_string();
+                Some((dst, map, kidx, CounterKeyKind::ConstStr { key }))
+            }
+            Op::MapGetDynamic(dst, map, key) => match self.known(key)? {
+                KnownReg::StringHandle { text, .. } => {
+                    Some((dst, map, key, CounterKeyKind::ConstStr { key: text.to_string() }))
+                }
+                KnownReg::StringIntKey { prefix, suffix } => Some((
+                    dst,
+                    map,
+                    key,
+                    CounterKeyKind::StrInt {
+                        prefix: prefix.to_string(),
+                        suffix: suffix.to_string(),
+                    },
+                )),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn compare_is_get_eq_nil(&self, cmp_reg: u16, a: u16, b: u16, get_dst: u16) -> bool {
+        let _ = cmp_reg;
+        (a == get_dst && self.operand_is_nil(b)) || (b == get_dst && self.operand_is_nil(a))
+    }
+
+    fn operand_is_nil(&self, operand: u16) -> bool {
+        rk_is_const(operand) && matches!(self.function.consts.get(rk_index(operand) as usize), Some(Val::Nil))
+    }
+
+    fn parse_counter_init_set(
+        &self,
+        start: usize,
+        map: u16,
+        key: u16,
+        key_kind: &CounterKeyKind,
+    ) -> Option<(CounterOperand, usize)> {
+        let (value, set_idx) = match *self.function.code.get(start)? {
+            Op::LoadK(_, kidx) => (CounterOperand::Const(kidx), start + 1),
+            _ => (
+                CounterOperand::Reg(self.map_set_value_at(start, map, key, key_kind)?),
+                start,
+            ),
+        };
+        let set_value = self.map_set_value_at(set_idx, map, key, key_kind)?;
+        match value {
+            CounterOperand::Const(_) => Some((value, set_idx + 1)),
+            CounterOperand::Reg(reg) if reg == set_value => Some((value, set_idx + 1)),
+            _ => None,
+        }
+    }
+
+    fn parse_counter_add_set(
+        &self,
+        start: usize,
+        get_dst: u16,
+        map: u16,
+        key: u16,
+        key_kind: &CounterKeyKind,
+    ) -> Option<(CounterOperand, usize)> {
+        let (add_dst, delta, set_idx) = match *self.function.code.get(start)? {
+            Op::AddIntImm(dst, src, imm) if src == get_dst => (dst, CounterOperand::Literal(imm as i64), start + 1),
+            Op::Add(dst, a, b) if a == get_dst => (dst, CounterOperand::Rk(b), start + 1),
+            Op::Add(dst, a, b) if b == get_dst => (dst, CounterOperand::Rk(a), start + 1),
+            _ => return None,
+        };
+        let set_value = self.map_set_value_at(set_idx, map, key, key_kind)?;
+        if set_value == add_dst {
+            Some((delta, set_idx + 1))
+        } else {
+            None
+        }
+    }
+
+    fn map_set_value_at(&self, idx: usize, map: u16, key: u16, key_kind: &CounterKeyKind) -> Option<u16> {
+        match *self.function.code.get(idx)? {
+            Op::MapSet {
+                map: set_map,
+                key: set_key,
+                val,
+            }
+            | Op::MapSetMove {
+                map: set_map,
+                key: set_key,
+                val,
+            } if set_map == map && set_key == key => Some(val),
+            Op::MapSetInterned(set_map, set_key, val) | Op::MapSetInternedMove(set_map, set_key, val)
+                if set_map == map
+                    && matches!(key_kind, CounterKeyKind::ConstStr { .. })
+                    && !rk_is_const(key)
+                    && set_key == key =>
+            {
+                Some(val)
+            }
+            Op::MapSetInterned(set_map, set_key, val) | Op::MapSetInternedMove(set_map, set_key, val)
+                if set_map == map
+                    && matches!(key_kind, CounterKeyKind::ConstStr { .. })
+                    && rk_is_const(key)
+                    && set_key == rk_index(key) =>
+            {
+                Some(val)
+            }
+            _ => None,
+        }
+    }
+
+    fn counter_operand_value(&mut self, operand: CounterOperand) -> Result<String> {
+        match operand {
+            CounterOperand::Literal(value) => Ok(value.to_string()),
+            CounterOperand::Const(kidx) => self.load_const_value(kidx),
+            CounterOperand::Reg(reg) => self.load_reg(reg),
+            CounterOperand::Rk(operand) => self.load_rk(operand),
+        }
+    }
+
+    fn mark_blocks_skipped(&mut self, start: usize, end: usize, target_label: String) {
+        for (idx, block) in self.blocks.iter().enumerate() {
+            if block.start >= start && block.start < end {
+                self.skipped_block_targets.insert(idx, target_label.clone());
+            }
+        }
+    }
+
     pub(super) fn emit_build_list(&mut self, dst: u16, base: u16, len: u16) -> Result<()> {
         if len == 0 {
             self.require_helper(RuntimeHelper::BuildList);
@@ -60,6 +284,22 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     pub(super) fn emit_list_push(&mut self, list: u16, val: u16) -> Result<()> {
+        if let Some(KnownReg::StringIntKey { prefix, suffix }) = self.known(val).cloned() {
+            let list_value = self.load_reg(list)?;
+            let const_data = self.make_string_constant(&prefix);
+            self.anonymous_string_constants.push(const_data.clone());
+            let ptr = self.emit_string_pointer(&const_data);
+            self.require_helper(RuntimeHelper::ListPushStrInt);
+            let updated = self.fresh("listpushkey");
+            self.writer.line(format!(
+                "{updated} = call i64 @{}(i64 {list_value}, i8* {ptr}, i64 {len}, i64 {suffix})",
+                RuntimeHelper::ListPushStrInt.symbol(),
+                len = const_data.len
+            ));
+            self.store_reg(list, &updated)?;
+            self.set_known(list, None);
+            return Ok(());
+        }
         let list_value = self.load_reg(list)?;
         let item_value = match self.materialize_string_int_key(val)? {
             Some(value) => value,
@@ -145,7 +385,30 @@ impl<'a> FunctionTranslator<'a> {
     }
 
     pub(super) fn emit_map_set(&mut self, map: u16, key: u16, val: u16) -> Result<()> {
+        if let Some(KnownReg::StringHandle { text, .. }) = self.known(key).cloned() {
+            if self.try_emit_map_set_add_map_get_const_str(map, &text, val)? {
+                return Ok(());
+            }
+            let map_value = self.load_reg(map)?;
+            let val_value = self.load_reg(val)?;
+            let const_data = self.make_string_constant(&text);
+            self.anonymous_string_constants.push(const_data.clone());
+            let ptr = self.emit_string_pointer(&const_data);
+            self.require_helper(RuntimeHelper::MapSetConstStr);
+            let updated = self.fresh("mapsetkey");
+            self.writer.line(format!(
+                "{updated} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len}, i64 {val_value})",
+                RuntimeHelper::MapSetConstStr.symbol(),
+                len = const_data.len
+            ));
+            self.store_reg(map, &updated)?;
+            self.set_known(map, None);
+            return Ok(());
+        }
         if let Some(KnownReg::StringIntKey { prefix, suffix }) = self.known(key).cloned() {
+            if self.try_emit_map_set_add_map_get_str_int(map, &prefix, &suffix, val)? {
+                return Ok(());
+            }
             let map_value = self.load_reg(map)?;
             let val_value = self.load_reg(val)?;
             let const_data = self.make_string_constant(&prefix);
@@ -186,14 +449,20 @@ impl<'a> FunctionTranslator<'a> {
             .and_then(Val::as_str)
             .ok_or_else(|| anyhow!("MapSetInterned expects string constant k{}", kidx))?
             .to_string();
+        if self.try_emit_map_set_add_map_get_const_str(map, &key, val)? {
+            return Ok(());
+        }
         let map_value = self.load_reg(map)?;
-        let key_value = self.intern_string_constant(kidx, &key)?;
         let val_value = self.load_reg(val)?;
-        self.require_helper(RuntimeHelper::MapSet);
+        let const_data = self.make_string_constant(&key);
+        self.anonymous_string_constants.push(const_data.clone());
+        let ptr = self.emit_string_pointer(&const_data);
+        self.require_helper(RuntimeHelper::MapSetConstStr);
         let updated = self.fresh("mapsetk");
         self.writer.line(format!(
-            "{updated} = call i64 @{}(i64 {map_value}, i64 {key_value}, i64 {val_value})",
-            RuntimeHelper::MapSet.symbol()
+            "{updated} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len}, i64 {val_value})",
+            RuntimeHelper::MapSetConstStr.symbol(),
+            len = const_data.len
         ));
         self.store_reg(map, &updated)?;
         self.set_known(map, None);
@@ -202,6 +471,34 @@ impl<'a> FunctionTranslator<'a> {
 
     pub(super) fn emit_map_has(&mut self, dst: u16, map: u16, key: u16) -> Result<()> {
         let map_value = self.load_reg(map)?;
+        if let Some(KnownReg::StringHandle { text, .. }) = self.known(key).cloned() {
+            let const_data = self.make_string_constant(&text);
+            self.anonymous_string_constants.push(const_data.clone());
+            let ptr = self.emit_string_pointer(&const_data);
+            self.require_helper(RuntimeHelper::MapHasConstStr);
+            let out = self.fresh("maphaskey");
+            self.writer.line(format!(
+                "{out} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len})",
+                RuntimeHelper::MapHasConstStr.symbol(),
+                len = const_data.len
+            ));
+            self.store_reg(dst, &out)?;
+            return Ok(());
+        }
+        if let Some(KnownReg::StringIntKey { prefix, suffix }) = self.known(key).cloned() {
+            let const_data = self.make_string_constant(&prefix);
+            self.anonymous_string_constants.push(const_data.clone());
+            let ptr = self.emit_string_pointer(&const_data);
+            self.require_helper(RuntimeHelper::MapHasStrInt);
+            let out = self.fresh("maphaskey");
+            self.writer.line(format!(
+                "{out} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len}, i64 {suffix})",
+                RuntimeHelper::MapHasStrInt.symbol(),
+                len = const_data.len
+            ));
+            self.store_reg(dst, &out)?;
+            return Ok(());
+        }
         let key_value = match self.materialize_string_int_key(key)? {
             Some(value) => value,
             None => self.load_reg(key)?,
@@ -218,8 +515,192 @@ impl<'a> FunctionTranslator<'a> {
             .ok_or_else(|| anyhow!("MapHasK expects string constant k{}", kidx))?
             .to_string();
         let map_value = self.load_reg(map)?;
-        let key_value = self.intern_string_constant(kidx, &key)?;
-        self.emit_map_has_with_key(dst, &map_value, &key_value)
+        let const_data = self.make_string_constant(&key);
+        self.anonymous_string_constants.push(const_data.clone());
+        let ptr = self.emit_string_pointer(&const_data);
+        self.require_helper(RuntimeHelper::MapHasConstStr);
+        let out = self.fresh("maphask");
+        self.writer.line(format!(
+            "{out} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len})",
+            RuntimeHelper::MapHasConstStr.symbol(),
+            len = const_data.len
+        ));
+        self.store_reg(dst, &out)?;
+        Ok(())
+    }
+
+    pub(super) fn emit_map_get_const_str(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+        map: u16,
+        kidx: u16,
+    ) -> Result<()> {
+        let key = self
+            .function
+            .consts
+            .get(kidx as usize)
+            .and_then(Val::as_str)
+            .ok_or_else(|| anyhow!("MapGetInterned expects string constant k{}", kidx))?
+            .to_string();
+        if self.try_emit_const_map_access(dst, map, &key)? {
+            return Ok(());
+        }
+        let map_value = self.load_reg(map)?;
+        if self.access_result_can_defer(instr_idx, block_end, dst) {
+            self.writer
+                .line(format!("store i64 {}, i64* %r{dst}, align 8", encoding::NIL_VALUE));
+            self.set_known(
+                dst,
+                Some(KnownReg::AccessedConstStr {
+                    base_reg: map,
+                    base: map_value,
+                    key,
+                }),
+            );
+            return Ok(());
+        }
+        let const_data = self.make_string_constant(&key);
+        self.anonymous_string_constants.push(const_data.clone());
+        let ptr = self.emit_string_pointer(&const_data);
+        self.require_helper(RuntimeHelper::MapGetConstStr);
+        let out = self.fresh("mapgetk");
+        self.writer.line(format!(
+            "{out} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len})",
+            RuntimeHelper::MapGetConstStr.symbol(),
+            len = const_data.len
+        ));
+        self.store_reg(dst, &out)?;
+        Ok(())
+    }
+
+    pub(super) fn emit_map_get_dynamic(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+        map: u16,
+        key: u16,
+    ) -> Result<bool> {
+        if let Some(KnownReg::StringHandle { text, .. }) = self.known(key).cloned() {
+            if self.try_emit_const_map_access(dst, map, &text)? {
+                return Ok(true);
+            }
+            let map_value = self.load_reg(map)?;
+            if self.access_result_can_defer(instr_idx, block_end, dst) {
+                self.writer
+                    .line(format!("store i64 {}, i64* %r{dst}, align 8", encoding::NIL_VALUE));
+                self.set_known(
+                    dst,
+                    Some(KnownReg::AccessedConstStr {
+                        base_reg: map,
+                        base: map_value,
+                        key: text,
+                    }),
+                );
+                return Ok(true);
+            }
+            let const_data = self.make_string_constant(&text);
+            self.anonymous_string_constants.push(const_data.clone());
+            let ptr = self.emit_string_pointer(&const_data);
+            self.require_helper(RuntimeHelper::MapGetConstStr);
+            let out = self.fresh("mapgetkey");
+            self.writer.line(format!(
+                "{out} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len})",
+                RuntimeHelper::MapGetConstStr.symbol(),
+                len = const_data.len
+            ));
+            self.store_reg(dst, &out)?;
+            return Ok(true);
+        }
+        let Some(KnownReg::StringIntKey { prefix, suffix }) = self.known(key).cloned() else {
+            return Ok(false);
+        };
+        let map_value = self.load_reg(map)?;
+        if self.access_result_can_defer(instr_idx, block_end, dst) {
+            self.writer
+                .line(format!("store i64 {}, i64* %r{dst}, align 8", encoding::NIL_VALUE));
+            self.set_known(
+                dst,
+                Some(KnownReg::AccessedStrInt {
+                    base_reg: map,
+                    base: map_value,
+                    prefix,
+                    suffix,
+                }),
+            );
+            return Ok(true);
+        }
+        let const_data = self.make_string_constant(&prefix);
+        self.anonymous_string_constants.push(const_data.clone());
+        let ptr = self.emit_string_pointer(&const_data);
+        self.require_helper(RuntimeHelper::MapGetStrInt);
+        let out = self.fresh("mapgetkey");
+        self.writer.line(format!(
+            "{out} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len}, i64 {suffix})",
+            RuntimeHelper::MapGetStrInt.symbol(),
+            len = const_data.len
+        ));
+        self.store_reg(dst, &out)?;
+        Ok(true)
+    }
+
+    fn try_emit_map_set_add_map_get_const_str(&mut self, map: u16, key: &str, val: u16) -> Result<bool> {
+        let Some(KnownReg::AddMapGetConstStr {
+            lhs,
+            base_reg,
+            key: access_key,
+        }) = self.known(val).cloned()
+        else {
+            return Ok(false);
+        };
+        if base_reg != map || access_key != key {
+            return Ok(false);
+        }
+        let map_value = self.load_reg(map)?;
+        let const_data = self.make_string_constant(key);
+        self.anonymous_string_constants.push(const_data.clone());
+        let ptr = self.emit_string_pointer(&const_data);
+        self.require_helper(RuntimeHelper::MapSetAddMapGetConstStr);
+        let updated = self.fresh("mapsetaddk");
+        self.writer.line(format!(
+            "{updated} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len}, i64 {lhs})",
+            RuntimeHelper::MapSetAddMapGetConstStr.symbol(),
+            len = const_data.len
+        ));
+        self.store_reg(map, &updated)?;
+        self.set_known(map, None);
+        Ok(true)
+    }
+
+    fn try_emit_map_set_add_map_get_str_int(&mut self, map: u16, prefix: &str, suffix: &str, val: u16) -> Result<bool> {
+        let Some(KnownReg::AddMapGetStrInt {
+            lhs,
+            base_reg,
+            prefix: access_prefix,
+            suffix: access_suffix,
+        }) = self.known(val).cloned()
+        else {
+            return Ok(false);
+        };
+        if base_reg != map || access_prefix != prefix || access_suffix != suffix {
+            return Ok(false);
+        }
+        let map_value = self.load_reg(map)?;
+        let const_data = self.make_string_constant(prefix);
+        self.anonymous_string_constants.push(const_data.clone());
+        let ptr = self.emit_string_pointer(&const_data);
+        self.require_helper(RuntimeHelper::MapSetAddMapGetStrInt);
+        let updated = self.fresh("mapsetaddkey");
+        self.writer.line(format!(
+            "{updated} = call i64 @{}(i64 {map_value}, i8* {ptr}, i64 {len}, i64 {suffix}, i64 {lhs})",
+            RuntimeHelper::MapSetAddMapGetStrInt.symbol(),
+            len = const_data.len
+        ));
+        self.store_reg(map, &updated)?;
+        self.set_known(map, None);
+        Ok(true)
     }
 
     fn emit_map_has_with_key(&mut self, dst: u16, map_value: &str, key_value: &str) -> Result<()> {
@@ -307,7 +788,14 @@ impl<'a> FunctionTranslator<'a> {
         let scan_end = block_end.min(instr_idx + 8);
         for op in &self.function.code[instr_idx + 1..scan_end] {
             match *op {
-                Op::Add(_, a, b) | Op::StrConcatKnownCap(_, a, b) | Op::StrConcatToStr(_, a, b) | Op::Sub(_, a, b)
+                Op::Add(_, a, b)
+                | Op::StrConcatKnownCap(_, a, b)
+                | Op::StrConcatToStr(_, a, b)
+                | Op::Sub(_, a, b)
+                | Op::Mul(_, a, b)
+                | Op::AddInt(_, a, b)
+                | Op::SubInt(_, a, b)
+                | Op::MulInt(_, a, b)
                     if a == alias || b == alias =>
                 {
                     consumed = true;
@@ -517,6 +1005,7 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::ToBool(_, src)
         | Op::Len { src, .. }
         | Op::Floor { src, .. }
+        | Op::FloorDivImm { src, .. }
         | Op::StartsWithK(_, src, _)
         | Op::ContainsK(_, src, _)
         | Op::JmpFalse(src, _)
@@ -546,6 +1035,7 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpGt(_, a, b)
         | Op::CmpGe(_, a, b)
         | Op::CmpI { a, b, .. }
+        | Op::CmpIntJmp { a, b, .. }
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
         | Op::Index { base: a, idx: b, .. } => a == reg || b == reg,
@@ -557,10 +1047,15 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpGtImm(_, src, _)
         | Op::CmpGeImm(_, src, _)
         | Op::CmpLtImmJmp { r: src, .. }
+        | Op::CmpLeImmJmp { r: src, .. }
+        | Op::CmpEqImmJmp { r: src, .. }
+        | Op::CmpGtImmJmp { r: src, .. }
+        | Op::CmpGeImmJmp { r: src, .. }
+        | Op::CmpNeImmJmp { r: src, .. }
         | Op::AddIntImmJmp { r: src, .. }
         | Op::AccessK(_, src, _)
         | Op::IndexK(_, src, _) => src == reg,
-        Op::ListPush { list, val } => list == reg || val == reg,
+        Op::ListPush { list, val } | Op::ListPushMove { list, val } => list == reg || val == reg,
         Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => map == reg || key == reg || val == reg,
         Op::Ret { base, retc } => retc > 0 && base == reg,
         _ => false,
@@ -606,6 +1101,7 @@ fn op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::IndexK(dst, _, _)
         | Op::Len { dst, .. }
         | Op::Floor { dst, .. }
+        | Op::FloorDivImm { dst, .. }
         | Op::StartsWithK(dst, _, _)
         | Op::ContainsK(dst, _, _)
         | Op::BuildMap { dst, .. }
@@ -630,6 +1126,10 @@ fn is_len_feed_neutral_op(op: &Op) -> bool {
             | Op::Mul(..)
             | Op::Div(..)
             | Op::Mod(..)
+            | Op::Access(..)
+            | Op::AccessK(..)
+            | Op::MapGetDynamic(..)
+            | Op::MapGetInterned(..)
             | Op::AddInt(..)
             | Op::SubInt(..)
             | Op::MulInt(..)
@@ -638,6 +1138,7 @@ fn is_len_feed_neutral_op(op: &Op) -> bool {
             | Op::SubFloat(..)
             | Op::MulFloat(..)
             | Op::DivFloat(..)
+            | Op::FloorDivImm { .. }
             | Op::ModFloat(..)
             | Op::AddIntImm(..)
     )

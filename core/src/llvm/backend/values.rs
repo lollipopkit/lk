@@ -74,7 +74,7 @@ impl<'a> FunctionTranslator<'a> {
         if self.operand_known_int(a) && self.operand_known_int(b) {
             return self.emit_binary(dst, a, b, op);
         }
-        self.emit_value_binary(dst, a, b, helper)
+        self.emit_value_binary_inner(dst, a, b, helper, true)
     }
 
     pub(super) fn emit_copy(&mut self, dst: u16, src: u16) -> Result<()> {
@@ -130,11 +130,28 @@ impl<'a> FunctionTranslator<'a> {
         if self.try_defer_string_length(instr_idx, block_end, dst, a, b)? {
             return Ok(());
         }
+        if self.try_defer_const_str_access_add(instr_idx, block_end, dst, a, b)? {
+            return Ok(());
+        }
+        if self.try_defer_str_int_access_add(instr_idx, block_end, dst, a, b)? {
+            return Ok(());
+        }
         self.emit_value_binary(dst, a, b, RuntimeHelper::AddValue)
     }
 
     pub(super) fn emit_value_binary(&mut self, dst: u16, a: u16, b: u16, helper: RuntimeHelper) -> Result<()> {
-        if self.try_emit_access_binary(dst, a, b, helper)? {
+        self.emit_value_binary_inner(dst, a, b, helper, false)
+    }
+
+    fn emit_value_binary_inner(
+        &mut self,
+        dst: u16,
+        a: u16,
+        b: u16,
+        helper: RuntimeHelper,
+        result_known_int: bool,
+    ) -> Result<()> {
+        if self.try_emit_access_binary(dst, a, b, helper, result_known_int)? {
             return Ok(());
         }
         let lhs = self.load_rk(a)?;
@@ -161,10 +178,26 @@ impl<'a> FunctionTranslator<'a> {
         self.writer
             .line(format!("{tmp} = call i64 @{}(i64 {lhs}, i64 {rhs})", helper.symbol()));
         self.store_reg(dst, &tmp)?;
+        if result_known_int {
+            self.set_known(dst, Some(KnownReg::Int));
+        }
         Ok(())
     }
 
-    pub(super) fn emit_str_concat_to_str(&mut self, dst: u16, lhs: u16, src: u16) -> Result<()> {
+    pub(super) fn emit_str_concat_to_str(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+        lhs: u16,
+        src: u16,
+    ) -> Result<()> {
+        if self.try_defer_str_concat_to_str_key(instr_idx, block_end, dst, lhs, src)? {
+            return Ok(());
+        }
+        if self.try_defer_string_length(instr_idx, block_end, dst, lhs, src)? {
+            return Ok(());
+        }
         let lhs_value = self.load_rk(lhs)?;
         let src_value = self.load_reg(src)?;
         self.require_helper(RuntimeHelper::ToString);
@@ -183,13 +216,68 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
-    fn try_emit_access_binary(&mut self, dst: u16, a: u16, b: u16, helper: RuntimeHelper) -> Result<bool> {
+    fn try_emit_access_binary(
+        &mut self,
+        dst: u16,
+        a: u16,
+        b: u16,
+        helper: RuntimeHelper,
+        result_known_int: bool,
+    ) -> Result<bool> {
         let (lhs, base, key, access_helper) = match helper {
             RuntimeHelper::AddValue => {
                 if let Some(KnownReg::AccessedValue { base, key }) = self.known(b).cloned() {
                     (self.load_rk(a)?, base, key, RuntimeHelper::AddAccess)
                 } else if let Some(KnownReg::AccessedValue { base, key }) = self.known(a).cloned() {
                     (self.load_rk(b)?, base, key, RuntimeHelper::AddAccess)
+                } else if let Some(KnownReg::AccessedConstStr { base, key, .. }) = self.known(b).cloned() {
+                    self.emit_const_str_access_binary(
+                        dst,
+                        a,
+                        &base,
+                        &key,
+                        RuntimeHelper::AddMapGetConstStr,
+                        result_known_int,
+                    )?;
+                    return Ok(true);
+                } else if let Some(KnownReg::AccessedConstStr { base, key, .. }) = self.known(a).cloned() {
+                    self.emit_const_str_access_binary(
+                        dst,
+                        b,
+                        &base,
+                        &key,
+                        RuntimeHelper::AddMapGetConstStr,
+                        result_known_int,
+                    )?;
+                    return Ok(true);
+                } else if let Some(KnownReg::AccessedStrInt {
+                    base, prefix, suffix, ..
+                }) = self.known(b).cloned()
+                {
+                    self.emit_str_int_access_binary(
+                        dst,
+                        a,
+                        &base,
+                        &prefix,
+                        &suffix,
+                        RuntimeHelper::AddMapGetStrInt,
+                        result_known_int,
+                    )?;
+                    return Ok(true);
+                } else if let Some(KnownReg::AccessedStrInt {
+                    base, prefix, suffix, ..
+                }) = self.known(a).cloned()
+                {
+                    self.emit_str_int_access_binary(
+                        dst,
+                        b,
+                        &base,
+                        &prefix,
+                        &suffix,
+                        RuntimeHelper::AddMapGetStrInt,
+                        result_known_int,
+                    )?;
+                    return Ok(true);
                 } else {
                     return Ok(false);
                 }
@@ -200,6 +288,63 @@ impl<'a> FunctionTranslator<'a> {
                 };
                 (self.load_rk(a)?, base, key, RuntimeHelper::SubAccess)
             }
+            RuntimeHelper::MulValue => {
+                if let Some(KnownReg::AccessedValue { base, key }) = self.known(b).cloned() {
+                    (self.load_rk(a)?, base, key, RuntimeHelper::MulAccess)
+                } else if let Some(KnownReg::AccessedValue { base, key }) = self.known(a).cloned() {
+                    (self.load_rk(b)?, base, key, RuntimeHelper::MulAccess)
+                } else if let Some(KnownReg::AccessedConstStr { base, key, .. }) = self.known(b).cloned() {
+                    self.emit_const_str_access_binary(
+                        dst,
+                        a,
+                        &base,
+                        &key,
+                        RuntimeHelper::MulMapGetConstStr,
+                        result_known_int,
+                    )?;
+                    return Ok(true);
+                } else if let Some(KnownReg::AccessedConstStr { base, key, .. }) = self.known(a).cloned() {
+                    self.emit_const_str_access_binary(
+                        dst,
+                        b,
+                        &base,
+                        &key,
+                        RuntimeHelper::MulMapGetConstStr,
+                        result_known_int,
+                    )?;
+                    return Ok(true);
+                } else if let Some(KnownReg::AccessedStrInt {
+                    base, prefix, suffix, ..
+                }) = self.known(b).cloned()
+                {
+                    self.emit_str_int_access_binary(
+                        dst,
+                        a,
+                        &base,
+                        &prefix,
+                        &suffix,
+                        RuntimeHelper::MulMapGetStrInt,
+                        result_known_int,
+                    )?;
+                    return Ok(true);
+                } else if let Some(KnownReg::AccessedStrInt {
+                    base, prefix, suffix, ..
+                }) = self.known(a).cloned()
+                {
+                    self.emit_str_int_access_binary(
+                        dst,
+                        b,
+                        &base,
+                        &prefix,
+                        &suffix,
+                        RuntimeHelper::MulMapGetStrInt,
+                        result_known_int,
+                    )?;
+                    return Ok(true);
+                } else {
+                    return Ok(false);
+                }
+            }
             _ => return Ok(false),
         };
         self.require_helper(access_helper);
@@ -209,7 +354,172 @@ impl<'a> FunctionTranslator<'a> {
             access_helper.symbol()
         ));
         self.store_reg(dst, &out)?;
+        if result_known_int {
+            self.set_known(dst, Some(KnownReg::Int));
+        }
         Ok(true)
+    }
+
+    fn emit_const_str_access_binary(
+        &mut self,
+        dst: u16,
+        lhs_reg: u16,
+        base: &str,
+        key: &str,
+        helper: RuntimeHelper,
+        result_known_int: bool,
+    ) -> Result<()> {
+        let lhs = self.load_rk(lhs_reg)?;
+        let const_data = self.make_string_constant(key);
+        self.anonymous_string_constants.push(const_data.clone());
+        let ptr = self.emit_string_pointer(&const_data);
+        self.require_helper(helper);
+        let out = self.fresh(helper.temp_prefix());
+        self.writer.line(format!(
+            "{out} = call i64 @{}(i64 {lhs}, i64 {base}, i8* {ptr}, i64 {len})",
+            helper.symbol(),
+            len = const_data.len
+        ));
+        self.store_reg(dst, &out)?;
+        if result_known_int {
+            self.set_known(dst, Some(KnownReg::Int));
+        }
+        Ok(())
+    }
+
+    fn emit_str_int_access_binary(
+        &mut self,
+        dst: u16,
+        lhs_reg: u16,
+        base: &str,
+        prefix: &str,
+        suffix: &str,
+        helper: RuntimeHelper,
+        result_known_int: bool,
+    ) -> Result<()> {
+        let lhs = self.load_rk(lhs_reg)?;
+        let const_data = self.make_string_constant(prefix);
+        self.anonymous_string_constants.push(const_data.clone());
+        let ptr = self.emit_string_pointer(&const_data);
+        self.require_helper(helper);
+        let out = self.fresh(helper.temp_prefix());
+        self.writer.line(format!(
+            "{out} = call i64 @{}(i64 {lhs}, i64 {base}, i8* {ptr}, i64 {len}, i64 {suffix})",
+            helper.symbol(),
+            len = const_data.len
+        ));
+        self.store_reg(dst, &out)?;
+        if result_known_int {
+            self.set_known(dst, Some(KnownReg::Int));
+        }
+        Ok(())
+    }
+
+    fn try_defer_const_str_access_add(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+        a: u16,
+        b: u16,
+    ) -> Result<bool> {
+        let Some((lhs_reg, base_reg, key)) = self.const_str_access_add_parts(a, b) else {
+            return Ok(false);
+        };
+        if !self.binary_result_feeds_only_map_set(instr_idx, block_end, dst) {
+            return Ok(false);
+        }
+        let lhs = self.load_rk(lhs_reg)?;
+        self.writer
+            .line(format!("store i64 {}, i64* %r{dst}, align 8", encoding::NIL_VALUE));
+        self.set_known(dst, Some(KnownReg::AddMapGetConstStr { lhs, base_reg, key }));
+        Ok(true)
+    }
+
+    fn try_defer_str_int_access_add(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+        a: u16,
+        b: u16,
+    ) -> Result<bool> {
+        let Some((lhs_reg, base_reg, prefix, suffix)) = self.str_int_access_add_parts(a, b) else {
+            return Ok(false);
+        };
+        if !self.binary_result_feeds_only_map_set(instr_idx, block_end, dst) {
+            return Ok(false);
+        }
+        let lhs = self.load_rk(lhs_reg)?;
+        self.writer
+            .line(format!("store i64 {}, i64* %r{dst}, align 8", encoding::NIL_VALUE));
+        self.set_known(
+            dst,
+            Some(KnownReg::AddMapGetStrInt {
+                lhs,
+                base_reg,
+                prefix,
+                suffix,
+            }),
+        );
+        Ok(true)
+    }
+
+    fn const_str_access_add_parts(&self, a: u16, b: u16) -> Option<(u16, u16, String)> {
+        if let Some(KnownReg::AccessedConstStr { base_reg, key, .. }) = self.known(b) {
+            return Some((a, *base_reg, key.clone()));
+        }
+        if let Some(KnownReg::AccessedConstStr { base_reg, key, .. }) = self.known(a) {
+            return Some((b, *base_reg, key.clone()));
+        }
+        None
+    }
+
+    fn str_int_access_add_parts(&self, a: u16, b: u16) -> Option<(u16, u16, String, String)> {
+        if let Some(KnownReg::AccessedStrInt {
+            base_reg,
+            prefix,
+            suffix,
+            ..
+        }) = self.known(b)
+        {
+            return Some((a, *base_reg, prefix.clone(), suffix.clone()));
+        }
+        if let Some(KnownReg::AccessedStrInt {
+            base_reg,
+            prefix,
+            suffix,
+            ..
+        }) = self.known(a)
+        {
+            return Some((b, *base_reg, prefix.clone(), suffix.clone()));
+        }
+        None
+    }
+
+    fn binary_result_feeds_only_map_set(&self, instr_idx: usize, block_end: usize, dst: u16) -> bool {
+        let mut alias = dst;
+        let scan_end = block_end.min(instr_idx + 8);
+        for op in &self.function.code[instr_idx + 1..scan_end] {
+            match *op {
+                Op::MapSet { val, .. }
+                | Op::MapSetMove { val, .. }
+                | Op::MapSetInterned(_, _, val)
+                | Op::MapSetInternedMove(_, _, val)
+                    if val == alias =>
+                {
+                    return true;
+                }
+                Op::Move(new_alias, src) | Op::LoadLocal(new_alias, src) | Op::StoreLocal(new_alias, src)
+                    if src == alias =>
+                {
+                    alias = new_alias;
+                }
+                _ if value_op_reads_reg(op, alias) || value_op_writes_reg(op, alias) => return false,
+                _ => {}
+            }
+        }
+        false
     }
 
     pub(super) fn emit_to_str(&mut self, dst: u16, src: u16) -> Result<()> {
@@ -295,6 +605,44 @@ impl<'a> FunctionTranslator<'a> {
         self.writer.line(format!(
             "{out} = call i64 @{}(i64 {value})",
             RuntimeHelper::Floor.symbol()
+        ));
+        self.store_reg(dst, out)?;
+        self.set_known(dst, Some(KnownReg::Int));
+        Ok(())
+    }
+
+    pub(super) fn emit_floor_div_imm(&mut self, dst: u16, src: u16, imm: i16) -> Result<()> {
+        if imm != 0 && self.operand_known_int(src) {
+            let lhs = self.load_reg(src)?;
+            let divisor = imm as i64;
+            let q = self.fresh("floordivq");
+            let r = self.fresh("floordivr");
+            let r_nonzero = self.fresh("floordivrnz");
+            let sign_diff = self.fresh("floordivsign");
+            let adjust = self.fresh("floordivadj");
+            let adjust_i64 = self.fresh("floordivadji");
+            let out = self.fresh("floordiv");
+            self.writer.line(format!("{q} = sdiv i64 {lhs}, {divisor}"));
+            self.writer.line(format!("{r} = srem i64 {lhs}, {divisor}"));
+            self.writer.line(format!("{r_nonzero} = icmp ne i64 {r}, 0"));
+            if divisor > 0 {
+                self.writer.line(format!("{sign_diff} = icmp slt i64 {r}, 0"));
+            } else {
+                self.writer.line(format!("{sign_diff} = icmp sgt i64 {r}, 0"));
+            }
+            self.writer.line(format!("{adjust} = and i1 {r_nonzero}, {sign_diff}"));
+            self.writer.line(format!("{adjust_i64} = zext i1 {adjust} to i64"));
+            self.writer.line(format!("{out} = sub i64 {q}, {adjust_i64}"));
+            self.store_reg(dst, out)?;
+            self.set_known(dst, Some(KnownReg::Int));
+            return Ok(());
+        }
+        let value = self.load_reg(src)?;
+        self.require_helper(RuntimeHelper::FloorDivImm);
+        let out = self.fresh("floordiv");
+        self.writer.line(format!(
+            "{out} = call i64 @{}(i64 {value}, i64 {imm})",
+            RuntimeHelper::FloorDivImm.symbol()
         ));
         self.store_reg(dst, out)?;
         self.set_known(dst, Some(KnownReg::Int));
@@ -787,5 +1135,127 @@ impl<'a> FunctionTranslator<'a> {
     pub(super) fn format_double(value: f64) -> String {
         let bits = value.to_bits();
         format!("0x{:016X}", bits)
+    }
+}
+
+fn value_op_reads_reg(op: &Op, reg: u16) -> bool {
+    match *op {
+        Op::Move(_, src)
+        | Op::StoreLocal(_, src)
+        | Op::LoadLocal(_, src)
+        | Op::Not(_, src)
+        | Op::ToStr(_, src)
+        | Op::ToBool(_, src)
+        | Op::Len { src, .. }
+        | Op::Floor { src, .. }
+        | Op::FloorDivImm { src, .. }
+        | Op::JmpFalse(src, _)
+        | Op::BoolBranch(src, _)
+        | Op::JmpIfNil(src, _)
+        | Op::JmpIfNotNil(src, _) => src == reg,
+        Op::Add(_, a, b)
+        | Op::StrConcatKnownCap(_, a, b)
+        | Op::StrConcatToStr(_, a, b)
+        | Op::Sub(_, a, b)
+        | Op::Mul(_, a, b)
+        | Op::Div(_, a, b)
+        | Op::Mod(_, a, b)
+        | Op::AddInt(_, a, b)
+        | Op::SubInt(_, a, b)
+        | Op::MulInt(_, a, b)
+        | Op::ModInt(_, a, b)
+        | Op::AddFloat(_, a, b)
+        | Op::SubFloat(_, a, b)
+        | Op::MulFloat(_, a, b)
+        | Op::DivFloat(_, a, b)
+        | Op::ModFloat(_, a, b)
+        | Op::CmpEq(_, a, b)
+        | Op::CmpNe(_, a, b)
+        | Op::CmpLt(_, a, b)
+        | Op::CmpLe(_, a, b)
+        | Op::CmpGt(_, a, b)
+        | Op::CmpGe(_, a, b)
+        | Op::CmpI { a, b, .. }
+        | Op::CmpIntJmp { a, b, .. }
+        | Op::In(_, a, b)
+        | Op::Access(_, a, b)
+        | Op::Index { base: a, idx: b, .. }
+        | Op::MapHas(_, a, b)
+        | Op::MapGetDynamic(_, a, b) => a == reg || b == reg,
+        Op::AddIntImm(_, src, _)
+        | Op::CmpEqImm(_, src, _)
+        | Op::CmpNeImm(_, src, _)
+        | Op::CmpLtImm(_, src, _)
+        | Op::CmpLeImm(_, src, _)
+        | Op::CmpGtImm(_, src, _)
+        | Op::CmpGeImm(_, src, _)
+        | Op::CmpLtImmJmp { r: src, .. }
+        | Op::CmpLeImmJmp { r: src, .. }
+        | Op::CmpEqImmJmp { r: src, .. }
+        | Op::CmpGtImmJmp { r: src, .. }
+        | Op::CmpGeImmJmp { r: src, .. }
+        | Op::CmpNeImmJmp { r: src, .. }
+        | Op::AddIntImmJmp { r: src, .. }
+        | Op::AccessK(_, src, _)
+        | Op::IndexK(_, src, _)
+        | Op::MapHasK(_, src, _)
+        | Op::MapGetInterned(_, src, _) => src == reg,
+        Op::ListPush { list, val } | Op::ListPushMove { list, val } => list == reg || val == reg,
+        Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => map == reg || key == reg || val == reg,
+        Op::MapSetInterned(map, _, val) | Op::MapSetInternedMove(map, _, val) => map == reg || val == reg,
+        Op::Ret { base, retc } => retc > 0 && base == reg,
+        _ => false,
+    }
+}
+
+fn value_op_writes_reg(op: &Op, reg: u16) -> bool {
+    match *op {
+        Op::LoadK(dst, _)
+        | Op::Move(dst, _)
+        | Op::StoreLocal(dst, _)
+        | Op::LoadLocal(dst, _)
+        | Op::Not(dst, _)
+        | Op::ToStr(dst, _)
+        | Op::ToBool(dst, _)
+        | Op::Add(dst, _, _)
+        | Op::StrConcatKnownCap(dst, _, _)
+        | Op::StrConcatToStr(dst, _, _)
+        | Op::Sub(dst, _, _)
+        | Op::Mul(dst, _, _)
+        | Op::Div(dst, _, _)
+        | Op::Mod(dst, _, _)
+        | Op::AddInt(dst, _, _)
+        | Op::SubInt(dst, _, _)
+        | Op::MulInt(dst, _, _)
+        | Op::ModInt(dst, _, _)
+        | Op::AddFloat(dst, _, _)
+        | Op::SubFloat(dst, _, _)
+        | Op::MulFloat(dst, _, _)
+        | Op::DivFloat(dst, _, _)
+        | Op::ModFloat(dst, _, _)
+        | Op::CmpEq(dst, _, _)
+        | Op::CmpNe(dst, _, _)
+        | Op::CmpLt(dst, _, _)
+        | Op::CmpLe(dst, _, _)
+        | Op::CmpGt(dst, _, _)
+        | Op::CmpGe(dst, _, _)
+        | Op::CmpI { dst, .. }
+        | Op::In(dst, _, _)
+        | Op::Access(dst, _, _)
+        | Op::AccessK(dst, _, _)
+        | Op::Index { dst, .. }
+        | Op::IndexK(dst, _, _)
+        | Op::Len { dst, .. }
+        | Op::Floor { dst, .. }
+        | Op::FloorDivImm { dst, .. }
+        | Op::BuildMap { dst, .. }
+        | Op::BuildList { dst, .. }
+        | Op::MapHas(dst, _, _)
+        | Op::MapHasK(dst, _, _)
+        | Op::MapGetInterned(dst, _, _)
+        | Op::MapGetDynamic(dst, _, _)
+        | Op::MakeClosure { dst, .. } => dst == reg,
+        Op::NullishPick { dst, .. } | Op::JmpFalseSet { dst, .. } | Op::JmpTrueSet { dst, .. } => dst == reg,
+        _ => false,
     }
 }

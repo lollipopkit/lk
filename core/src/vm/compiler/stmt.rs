@@ -21,7 +21,7 @@
 //! temporary register allocation and extra load/store cycles.
 
 use crate::{
-    expr::{Expr, Pattern},
+    expr::{Expr, Pattern, TemplateStringPart},
     op::BinOp,
     stmt::{ForPattern, Stmt},
     val::Val,
@@ -43,6 +43,69 @@ mod traits;
 use globals::detect_mutating_receiver;
 
 impl FunctionBuilder {
+    fn template_split_join_len_pair<'a>(
+        first: &'a Stmt,
+        second: &'a Stmt,
+        rest: &[Box<Stmt>],
+    ) -> Option<(&'a str, &'a [TemplateStringPart], &'a str)> {
+        let Stmt::Let {
+            pattern: Pattern::Variable(line_name),
+            value: line_value,
+            is_const: false,
+            ..
+        } = first
+        else {
+            return None;
+        };
+        let Expr::TemplateString(parts) = line_value.as_ref() else {
+            return None;
+        };
+        let Stmt::Let {
+            pattern: Pattern::Variable(len_name),
+            value,
+            is_const: false,
+            ..
+        } = second
+        else {
+            return None;
+        };
+        let Expr::CallExpr(len_callee, len_args) = value.as_ref() else {
+            return None;
+        };
+        if !len_args.is_empty() {
+            return None;
+        }
+        let Expr::Access(join_call, len_field) = len_callee.as_ref() else {
+            return None;
+        };
+        let Expr::Val(len_method) = len_field.as_ref() else {
+            return None;
+        };
+        if len_method.as_str() != Some("len") {
+            return None;
+        }
+        let Expr::CallExpr(join_callee, join_args) = join_call.as_ref() else {
+            return None;
+        };
+        let Expr::Access(join_receiver, join_field) = join_callee.as_ref() else {
+            return None;
+        };
+        let Expr::Val(join_method) = join_field.as_ref() else {
+            return None;
+        };
+        if join_method.as_str() != Some("join") {
+            return None;
+        }
+        let split_receiver = super::expr_call::split_join_same_separator_receiver(join_receiver, join_args)?;
+        if !matches!(split_receiver, Expr::Var(name) if name == line_name) {
+            return None;
+        }
+        if rest.iter().any(|stmt| Self::stmt_mentions_name(stmt, line_name)) {
+            return None;
+        }
+        Some((line_name.as_str(), parts.as_slice(), len_name.as_str()))
+    }
+
     pub fn stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Block { statements } => {
@@ -52,8 +115,22 @@ impl FunctionBuilder {
                     {
                         return;
                     }
-                    for st in statements {
-                        builder.stmt(st);
+                    let mut idx = 0;
+                    while idx < statements.len() {
+                        if let Some((_line_name, parts, len_name)) = statements.get(idx + 1).and_then(|next| {
+                            Self::template_split_join_len_pair(
+                                statements[idx].as_ref(),
+                                next.as_ref(),
+                                &statements[idx + 2..],
+                            )
+                        }) {
+                            let len_reg = builder.compile_template_string_len(parts);
+                            builder.define_var_as(len_name, len_reg);
+                            idx += 2;
+                            continue;
+                        }
+                        builder.stmt(&statements[idx]);
+                        idx += 1;
                     }
                 });
             }

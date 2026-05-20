@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::vm::RegionPlan;
@@ -146,11 +146,29 @@ pub struct VmCoverageReport {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VmRuntimeMetrics {
+    pub opcode_steps: u64,
     pub val_clones: u64,
     pub immediate_val_clones: u64,
     pub heap_val_clones: u64,
     pub register_writes: u64,
     pub return_value_moves: u64,
+    pub branch_ops: u64,
+    pub typed_branch_ops: u64,
+    pub call_ops: u64,
+    pub native_call_ops: u64,
+    pub closure_call_ops: u64,
+    pub exact_call_ops: u64,
+    pub named_call_ops: u64,
+    pub method_call_ops: u64,
+    pub container_ops: u64,
+    pub list_ops: u64,
+    pub map_ops: u64,
+    pub string_ops: u64,
+    pub bc32_fallback_ops: u64,
+    pub bc32_fallback_build_misses: u64,
+    pub bc32_hot_stale_slots: u64,
+    pub bc32_hot_stale_misses: u64,
+    pub bc32_hot_sentinel_skips: u64,
     pub quickening_hits: u64,
     pub quickening_build_attempts: u64,
     pub quickening_build_successes: u64,
@@ -160,21 +178,44 @@ pub struct VmRuntimeMetrics {
 }
 
 #[cfg(test)]
+impl VmRuntimeMetrics {
+    const ZERO: Self = Self {
+        opcode_steps: 0,
+        val_clones: 0,
+        immediate_val_clones: 0,
+        heap_val_clones: 0,
+        register_writes: 0,
+        return_value_moves: 0,
+        branch_ops: 0,
+        typed_branch_ops: 0,
+        call_ops: 0,
+        native_call_ops: 0,
+        closure_call_ops: 0,
+        exact_call_ops: 0,
+        named_call_ops: 0,
+        method_call_ops: 0,
+        container_ops: 0,
+        list_ops: 0,
+        map_ops: 0,
+        string_ops: 0,
+        bc32_fallback_ops: 0,
+        bc32_fallback_build_misses: 0,
+        bc32_hot_stale_slots: 0,
+        bc32_hot_stale_misses: 0,
+        bc32_hot_sentinel_skips: 0,
+        quickening_hits: 0,
+        quickening_build_attempts: 0,
+        quickening_build_successes: 0,
+        quickening_misses: 0,
+        quickening_deopts: 0,
+        quickening_sentinel_skips: 0,
+    };
+}
+
+#[cfg(test)]
 thread_local! {
     static THREAD_RUNTIME_METRICS: std::cell::Cell<VmRuntimeMetrics> =
-        const { std::cell::Cell::new(VmRuntimeMetrics {
-            val_clones: 0,
-            immediate_val_clones: 0,
-            heap_val_clones: 0,
-            register_writes: 0,
-            return_value_moves: 0,
-            quickening_hits: 0,
-            quickening_build_attempts: 0,
-            quickening_build_successes: 0,
-            quickening_misses: 0,
-            quickening_deopts: 0,
-            quickening_sentinel_skips: 0,
-        }) };
+        const { std::cell::Cell::new(VmRuntimeMetrics::ZERO) };
 }
 
 #[cfg(test)]
@@ -187,38 +228,138 @@ fn update_thread_runtime_metrics(update: impl FnOnce(&mut VmRuntimeMetrics)) {
     });
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static VAL_CLONES: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static IMMEDIATE_VAL_CLONES: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static HEAP_VAL_CLONES: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static REGISTER_WRITES: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static RETURN_VALUE_MOVES: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
+static OPCODE_STEPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static BRANCH_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static TYPED_BRANCH_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static CALL_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static NATIVE_CALL_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static CLOSURE_CALL_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static EXACT_CALL_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static NAMED_CALL_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static METHOD_CALL_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static CONTAINER_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static LIST_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static MAP_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static STRING_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static BC32_FALLBACK_OPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static BC32_FALLBACK_BUILD_MISSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static BC32_HOT_STALE_SLOTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static BC32_HOT_STALE_MISSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static BC32_HOT_SENTINEL_SKIPS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
 static QUICKENING_HITS: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static QUICKENING_BUILD_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static QUICKENING_BUILD_SUCCESSES: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static QUICKENING_MISSES: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static QUICKENING_DEOPTS: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static QUICKENING_SENTINEL_SKIPS: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 static RUNTIME_METRICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 #[inline]
 fn runtime_metrics_enabled() -> bool {
     RUNTIME_METRICS_ENABLED.load(Ordering::Relaxed)
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn vm_runtime_metrics_enabled() -> bool {
+    runtime_metrics_enabled()
+}
+
+#[cfg(test)]
+#[inline]
+pub(crate) fn vm_runtime_metrics_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum VmCallMetric {
+    Generic,
+    Native,
+    Closure,
+    Exact,
+    Named,
+    Method,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum VmContainerMetric {
+    Generic,
+    List,
+    Map,
+    String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum VmBc32FallbackMetric {
+    BuildMiss,
+    StaleSlot,
+    StaleMiss,
+    SentinelSkip,
+}
+
+#[cfg(not(test))]
+#[inline]
+fn increment(counter: &AtomicU64) {
+    if runtime_metrics_enabled() {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+#[inline]
+fn increment_thread(update: impl FnOnce(&mut VmRuntimeMetrics)) {
+    update_thread_runtime_metrics(update);
+}
+
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn record_opcode_step() {
+    increment(&OPCODE_STEPS);
+}
+
+#[cfg(test)]
+#[inline]
+pub(crate) fn record_opcode_step() {
+    increment_thread(|metrics| metrics.opcode_steps += 1);
+}
+
+#[cfg(not(test))]
 #[inline]
 pub(crate) fn record_val_clone(heap_backed: bool) {
     if !runtime_metrics_enabled() {
@@ -231,10 +372,6 @@ pub(crate) fn record_val_clone(heap_backed: bool) {
         IMMEDIATE_VAL_CLONES.fetch_add(1, Ordering::Relaxed);
     }
 }
-
-#[cfg(all(not(test), not(debug_assertions)))]
-#[inline]
-pub(crate) fn record_val_clone(_heap_backed: bool) {}
 
 #[cfg(test)]
 #[inline]
@@ -249,18 +386,11 @@ pub(crate) fn record_val_clone(heap_backed: bool) {
     });
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 #[inline]
 pub(crate) fn record_register_write() {
-    if !runtime_metrics_enabled() {
-        return;
-    }
-    REGISTER_WRITES.fetch_add(1, Ordering::Relaxed);
+    increment(&REGISTER_WRITES);
 }
-
-#[cfg(all(not(test), not(debug_assertions)))]
-#[inline]
-pub(crate) fn record_register_write() {}
 
 #[cfg(test)]
 #[inline]
@@ -268,18 +398,11 @@ pub(crate) fn record_register_write() {
     update_thread_runtime_metrics(|metrics| metrics.register_writes += 1);
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 #[inline]
 pub(crate) fn record_return_value_move() {
-    if !runtime_metrics_enabled() {
-        return;
-    }
-    RETURN_VALUE_MOVES.fetch_add(1, Ordering::Relaxed);
+    increment(&RETURN_VALUE_MOVES);
 }
-
-#[cfg(all(not(test), not(debug_assertions)))]
-#[inline]
-pub(crate) fn record_return_value_move() {}
 
 #[cfg(test)]
 #[inline]
@@ -287,18 +410,146 @@ pub(crate) fn record_return_value_move() {
     update_thread_runtime_metrics(|metrics| metrics.return_value_moves += 1);
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 #[inline]
-pub(crate) fn record_quickening_hit() {
+pub(crate) fn record_branch_op(typed: bool) {
     if !runtime_metrics_enabled() {
         return;
     }
-    QUICKENING_HITS.fetch_add(1, Ordering::Relaxed);
+    BRANCH_OPS.fetch_add(1, Ordering::Relaxed);
+    if typed {
+        TYPED_BRANCH_OPS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
-#[cfg(all(not(test), not(debug_assertions)))]
+#[cfg(test)]
 #[inline]
-pub(crate) fn record_quickening_hit() {}
+pub(crate) fn record_branch_op(typed: bool) {
+    update_thread_runtime_metrics(|metrics| {
+        metrics.branch_ops += 1;
+        if typed {
+            metrics.typed_branch_ops += 1;
+        }
+    });
+}
+
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn record_call_op(kind: VmCallMetric) {
+    if !runtime_metrics_enabled() {
+        return;
+    }
+    CALL_OPS.fetch_add(1, Ordering::Relaxed);
+    match kind {
+        VmCallMetric::Generic => {}
+        VmCallMetric::Native => {
+            NATIVE_CALL_OPS.fetch_add(1, Ordering::Relaxed);
+        }
+        VmCallMetric::Closure => {
+            CLOSURE_CALL_OPS.fetch_add(1, Ordering::Relaxed);
+        }
+        VmCallMetric::Exact => {
+            EXACT_CALL_OPS.fetch_add(1, Ordering::Relaxed);
+        }
+        VmCallMetric::Named => {
+            NAMED_CALL_OPS.fetch_add(1, Ordering::Relaxed);
+        }
+        VmCallMetric::Method => {
+            METHOD_CALL_OPS.fetch_add(1, Ordering::Relaxed);
+        }
+    };
+}
+
+#[cfg(test)]
+#[inline]
+pub(crate) fn record_call_op(kind: VmCallMetric) {
+    update_thread_runtime_metrics(|metrics| {
+        metrics.call_ops += 1;
+        match kind {
+            VmCallMetric::Generic => {}
+            VmCallMetric::Native => metrics.native_call_ops += 1,
+            VmCallMetric::Closure => metrics.closure_call_ops += 1,
+            VmCallMetric::Exact => metrics.exact_call_ops += 1,
+            VmCallMetric::Named => metrics.named_call_ops += 1,
+            VmCallMetric::Method => metrics.method_call_ops += 1,
+        }
+    });
+}
+
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn record_container_op(kind: VmContainerMetric) {
+    if !runtime_metrics_enabled() {
+        return;
+    }
+    CONTAINER_OPS.fetch_add(1, Ordering::Relaxed);
+    match kind {
+        VmContainerMetric::Generic => {}
+        VmContainerMetric::List => {
+            LIST_OPS.fetch_add(1, Ordering::Relaxed);
+        }
+        VmContainerMetric::Map => {
+            MAP_OPS.fetch_add(1, Ordering::Relaxed);
+        }
+        VmContainerMetric::String => {
+            STRING_OPS.fetch_add(1, Ordering::Relaxed);
+        }
+    };
+}
+
+#[cfg(test)]
+#[inline]
+pub(crate) fn record_container_op(kind: VmContainerMetric) {
+    update_thread_runtime_metrics(|metrics| {
+        metrics.container_ops += 1;
+        match kind {
+            VmContainerMetric::Generic => {}
+            VmContainerMetric::List => metrics.list_ops += 1,
+            VmContainerMetric::Map => metrics.map_ops += 1,
+            VmContainerMetric::String => metrics.string_ops += 1,
+        }
+    });
+}
+
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn record_bc32_fallback_op() {
+    increment(&BC32_FALLBACK_OPS);
+}
+
+#[cfg(test)]
+#[inline]
+pub(crate) fn record_bc32_fallback_op() {
+    update_thread_runtime_metrics(|metrics| metrics.bc32_fallback_ops += 1);
+}
+
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn record_bc32_fallback_reason(reason: VmBc32FallbackMetric) {
+    match reason {
+        VmBc32FallbackMetric::BuildMiss => increment(&BC32_FALLBACK_BUILD_MISSES),
+        VmBc32FallbackMetric::StaleSlot => increment(&BC32_HOT_STALE_SLOTS),
+        VmBc32FallbackMetric::StaleMiss => increment(&BC32_HOT_STALE_MISSES),
+        VmBc32FallbackMetric::SentinelSkip => increment(&BC32_HOT_SENTINEL_SKIPS),
+    }
+}
+
+#[cfg(test)]
+#[inline]
+pub(crate) fn record_bc32_fallback_reason(reason: VmBc32FallbackMetric) {
+    update_thread_runtime_metrics(|metrics| match reason {
+        VmBc32FallbackMetric::BuildMiss => metrics.bc32_fallback_build_misses += 1,
+        VmBc32FallbackMetric::StaleSlot => metrics.bc32_hot_stale_slots += 1,
+        VmBc32FallbackMetric::StaleMiss => metrics.bc32_hot_stale_misses += 1,
+        VmBc32FallbackMetric::SentinelSkip => metrics.bc32_hot_sentinel_skips += 1,
+    });
+}
+
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn record_quickening_hit() {
+    increment(&QUICKENING_HITS);
+}
 
 #[cfg(test)]
 #[inline]
@@ -306,18 +557,11 @@ pub(crate) fn record_quickening_hit() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_hits += 1);
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 #[inline]
 pub(crate) fn record_quickening_build_attempt() {
-    if !runtime_metrics_enabled() {
-        return;
-    }
-    QUICKENING_BUILD_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    increment(&QUICKENING_BUILD_ATTEMPTS);
 }
-
-#[cfg(all(not(test), not(debug_assertions)))]
-#[inline]
-pub(crate) fn record_quickening_build_attempt() {}
 
 #[cfg(test)]
 #[inline]
@@ -325,18 +569,11 @@ pub(crate) fn record_quickening_build_attempt() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_build_attempts += 1);
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 #[inline]
 pub(crate) fn record_quickening_build_success() {
-    if !runtime_metrics_enabled() {
-        return;
-    }
-    QUICKENING_BUILD_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+    increment(&QUICKENING_BUILD_SUCCESSES);
 }
-
-#[cfg(all(not(test), not(debug_assertions)))]
-#[inline]
-pub(crate) fn record_quickening_build_success() {}
 
 #[cfg(test)]
 #[inline]
@@ -344,18 +581,11 @@ pub(crate) fn record_quickening_build_success() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_build_successes += 1);
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 #[inline]
 pub(crate) fn record_quickening_miss() {
-    if !runtime_metrics_enabled() {
-        return;
-    }
-    QUICKENING_MISSES.fetch_add(1, Ordering::Relaxed);
+    increment(&QUICKENING_MISSES);
 }
-
-#[cfg(all(not(test), not(debug_assertions)))]
-#[inline]
-pub(crate) fn record_quickening_miss() {}
 
 #[cfg(test)]
 #[inline]
@@ -363,18 +593,11 @@ pub(crate) fn record_quickening_miss() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_misses += 1);
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 #[inline]
 pub(crate) fn record_quickening_deopt() {
-    if !runtime_metrics_enabled() {
-        return;
-    }
-    QUICKENING_DEOPTS.fetch_add(1, Ordering::Relaxed);
+    increment(&QUICKENING_DEOPTS);
 }
-
-#[cfg(all(not(test), not(debug_assertions)))]
-#[inline]
-pub(crate) fn record_quickening_deopt() {}
 
 #[cfg(test)]
 #[inline]
@@ -382,18 +605,11 @@ pub(crate) fn record_quickening_deopt() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_deopts += 1);
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 #[inline]
 pub(crate) fn record_quickening_sentinel_skip() {
-    if !runtime_metrics_enabled() {
-        return;
-    }
-    QUICKENING_SENTINEL_SKIPS.fetch_add(1, Ordering::Relaxed);
+    increment(&QUICKENING_SENTINEL_SKIPS);
 }
-
-#[cfg(all(not(test), not(debug_assertions)))]
-#[inline]
-pub(crate) fn record_quickening_sentinel_skip() {}
 
 #[cfg(test)]
 #[inline]
@@ -401,14 +617,32 @@ pub(crate) fn record_quickening_sentinel_skip() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_sentinel_skips += 1);
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
     VmRuntimeMetrics {
+        opcode_steps: OPCODE_STEPS.load(Ordering::Relaxed),
         val_clones: VAL_CLONES.load(Ordering::Relaxed),
         immediate_val_clones: IMMEDIATE_VAL_CLONES.load(Ordering::Relaxed),
         heap_val_clones: HEAP_VAL_CLONES.load(Ordering::Relaxed),
         register_writes: REGISTER_WRITES.load(Ordering::Relaxed),
         return_value_moves: RETURN_VALUE_MOVES.load(Ordering::Relaxed),
+        branch_ops: BRANCH_OPS.load(Ordering::Relaxed),
+        typed_branch_ops: TYPED_BRANCH_OPS.load(Ordering::Relaxed),
+        call_ops: CALL_OPS.load(Ordering::Relaxed),
+        native_call_ops: NATIVE_CALL_OPS.load(Ordering::Relaxed),
+        closure_call_ops: CLOSURE_CALL_OPS.load(Ordering::Relaxed),
+        exact_call_ops: EXACT_CALL_OPS.load(Ordering::Relaxed),
+        named_call_ops: NAMED_CALL_OPS.load(Ordering::Relaxed),
+        method_call_ops: METHOD_CALL_OPS.load(Ordering::Relaxed),
+        container_ops: CONTAINER_OPS.load(Ordering::Relaxed),
+        list_ops: LIST_OPS.load(Ordering::Relaxed),
+        map_ops: MAP_OPS.load(Ordering::Relaxed),
+        string_ops: STRING_OPS.load(Ordering::Relaxed),
+        bc32_fallback_ops: BC32_FALLBACK_OPS.load(Ordering::Relaxed),
+        bc32_fallback_build_misses: BC32_FALLBACK_BUILD_MISSES.load(Ordering::Relaxed),
+        bc32_hot_stale_slots: BC32_HOT_STALE_SLOTS.load(Ordering::Relaxed),
+        bc32_hot_stale_misses: BC32_HOT_STALE_MISSES.load(Ordering::Relaxed),
+        bc32_hot_sentinel_skips: BC32_HOT_SENTINEL_SKIPS.load(Ordering::Relaxed),
         quickening_hits: QUICKENING_HITS.load(Ordering::Relaxed),
         quickening_build_attempts: QUICKENING_BUILD_ATTEMPTS.load(Ordering::Relaxed),
         quickening_build_successes: QUICKENING_BUILD_SUCCESSES.load(Ordering::Relaxed),
@@ -418,24 +652,37 @@ pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
     }
 }
 
-#[cfg(all(not(test), not(debug_assertions)))]
-pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
-    VmRuntimeMetrics::default()
-}
-
 #[cfg(test)]
 pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
     THREAD_RUNTIME_METRICS.with(std::cell::Cell::get)
 }
 
-#[cfg(all(not(test), debug_assertions))]
+#[cfg(not(test))]
 pub fn vm_runtime_metrics_reset() {
     RUNTIME_METRICS_ENABLED.store(true, Ordering::Relaxed);
+    OPCODE_STEPS.store(0, Ordering::Relaxed);
     VAL_CLONES.store(0, Ordering::Relaxed);
     IMMEDIATE_VAL_CLONES.store(0, Ordering::Relaxed);
     HEAP_VAL_CLONES.store(0, Ordering::Relaxed);
     REGISTER_WRITES.store(0, Ordering::Relaxed);
     RETURN_VALUE_MOVES.store(0, Ordering::Relaxed);
+    BRANCH_OPS.store(0, Ordering::Relaxed);
+    TYPED_BRANCH_OPS.store(0, Ordering::Relaxed);
+    CALL_OPS.store(0, Ordering::Relaxed);
+    NATIVE_CALL_OPS.store(0, Ordering::Relaxed);
+    CLOSURE_CALL_OPS.store(0, Ordering::Relaxed);
+    EXACT_CALL_OPS.store(0, Ordering::Relaxed);
+    NAMED_CALL_OPS.store(0, Ordering::Relaxed);
+    METHOD_CALL_OPS.store(0, Ordering::Relaxed);
+    CONTAINER_OPS.store(0, Ordering::Relaxed);
+    LIST_OPS.store(0, Ordering::Relaxed);
+    MAP_OPS.store(0, Ordering::Relaxed);
+    STRING_OPS.store(0, Ordering::Relaxed);
+    BC32_FALLBACK_OPS.store(0, Ordering::Relaxed);
+    BC32_FALLBACK_BUILD_MISSES.store(0, Ordering::Relaxed);
+    BC32_HOT_STALE_SLOTS.store(0, Ordering::Relaxed);
+    BC32_HOT_STALE_MISSES.store(0, Ordering::Relaxed);
+    BC32_HOT_SENTINEL_SKIPS.store(0, Ordering::Relaxed);
     QUICKENING_HITS.store(0, Ordering::Relaxed);
     QUICKENING_BUILD_ATTEMPTS.store(0, Ordering::Relaxed);
     QUICKENING_BUILD_SUCCESSES.store(0, Ordering::Relaxed);
@@ -443,9 +690,6 @@ pub fn vm_runtime_metrics_reset() {
     QUICKENING_DEOPTS.store(0, Ordering::Relaxed);
     QUICKENING_SENTINEL_SKIPS.store(0, Ordering::Relaxed);
 }
-
-#[cfg(all(not(test), not(debug_assertions)))]
-pub fn vm_runtime_metrics_reset() {}
 
 #[cfg(test)]
 pub fn vm_runtime_metrics_reset() {
@@ -625,6 +869,7 @@ pub fn opcode_name(op: &Op) -> &'static str {
         Op::MulInt(..) => "MulInt",
         Op::MulFloat(..) => "MulFloat",
         Op::DivFloat(..) => "DivFloat",
+        Op::FloorDivImm { .. } => "FloorDivImm",
         Op::ModInt(..) => "ModInt",
         Op::ModFloat(..) => "ModFloat",
         Op::CmpEq(..) => "CmpEq",
@@ -663,6 +908,7 @@ pub fn opcode_name(op: &Op) -> &'static str {
         Op::MapGetInterned(..) => "MapGetInterned",
         Op::MapGetDynamic(..) => "MapGetDynamic",
         Op::MapSetInterned(..) => "MapSetInterned",
+        Op::MapSetInternedMove(..) => "MapSetInternedMove",
         Op::MapHasK(..) => "MapHasK",
         Op::ListFoldAdd { .. } => "ListFoldAdd",
         Op::MapValuesFoldAdd { .. } => "MapValuesFoldAdd",
@@ -675,6 +921,7 @@ pub fn opcode_name(op: &Op) -> &'static str {
         Op::BuildMap { .. } => "BuildMap",
         Op::ListSlice { .. } => "ListSlice",
         Op::ListPush { .. } => "ListPush",
+        Op::ListPushMove { .. } => "ListPushMove",
         Op::MapSet { .. } => "MapSet",
         Op::MapSetMove { .. } => "MapSetMove",
         Op::MakeClosure { .. } => "MakeClosure",
@@ -686,7 +933,11 @@ pub fn opcode_name(op: &Op) -> &'static str {
         Op::AddIntImmJmp { .. } => "AddIntImmJmp",
         Op::AddRangeCountImm { .. } => "AddRangeCountImm",
         Op::CmpLeImmJmp { .. } => "CmpLeImmJmp",
+        Op::CmpEqImmJmp { .. } => "CmpEqImmJmp",
+        Op::CmpGtImmJmp { .. } => "CmpGtImmJmp",
+        Op::CmpGeImmJmp { .. } => "CmpGeImmJmp",
         Op::CmpNeImmJmp { .. } => "CmpNeImmJmp",
+        Op::CmpIntJmp { .. } => "CmpIntJmp",
         Op::Call { .. } => "Call",
         Op::CallExact { .. } => "CallExact",
         Op::CallClosureExact { .. } => "CallClosureExact",
@@ -723,6 +974,7 @@ pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
         | Op::MulInt(..)
         | Op::MulFloat(..)
         | Op::DivFloat(..)
+        | Op::FloorDivImm { .. }
         | Op::ModInt(..)
         | Op::ModFloat(..)
         | Op::Floor { .. }
@@ -743,7 +995,11 @@ pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
         | Op::CmpGeImm(..)
         | Op::CmpLtImmJmp { .. }
         | Op::CmpLeImmJmp { .. }
+        | Op::CmpEqImmJmp { .. }
+        | Op::CmpGtImmJmp { .. }
+        | Op::CmpGeImmJmp { .. }
         | Op::CmpNeImmJmp { .. }
+        | Op::CmpIntJmp { .. }
         | Op::In(..) => VmOpcodeCategory::Compare,
         Op::LoadLocal(..) | Op::StoreLocal(..) => VmOpcodeCategory::Local,
         Op::LoadGlobal(..) | Op::DefineGlobal(..) | Op::LoadCapture { .. } => VmOpcodeCategory::Global,
@@ -771,8 +1027,10 @@ pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
         | Op::BuildMap { .. }
         | Op::ListSlice { .. }
         | Op::ListPush { .. }
+        | Op::ListPushMove { .. }
         | Op::MapSet { .. }
         | Op::MapSetInterned(..)
+        | Op::MapSetInternedMove(..)
         | Op::MapSetMove { .. } => VmOpcodeCategory::Container,
         Op::JmpIfNil(..)
         | Op::JmpIfNotNil(..)

@@ -1251,6 +1251,25 @@ pub extern "C" fn lk_rt_floor(value: i64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_floor_div_imm(value: i64, divisor: i64) -> i64 {
+    with_state(|state| {
+        if divisor == 0 {
+            return encoding::NIL_VALUE;
+        }
+        let out = match state.decode_value(value) {
+            Val::Int(lhs) => {
+                let q = lhs / divisor;
+                let r = lhs % divisor;
+                if r != 0 && ((r < 0) != (divisor < 0)) { q - 1 } else { q }
+            }
+            Val::Float(lhs) => (lhs / divisor as f64).floor() as i64,
+            _ => 0,
+        };
+        state.encode_value(Val::Int(out))
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_starts_with(value: i64, prefix: i64) -> i64 {
     with_state(|state| {
         let value = state.decode_value(value);

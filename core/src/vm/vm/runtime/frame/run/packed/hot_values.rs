@@ -125,6 +125,33 @@ pub(super) fn exec_map_set_interned(func: &Function, regs: &mut [Val], map: u16,
 }
 
 #[inline(always)]
+pub(super) fn exec_map_set_interned_move(
+    func: &Function,
+    regs: &mut [Val],
+    map: u16,
+    key: u16,
+    val: u16,
+) -> Result<()> {
+    let map_idx = map as usize;
+    let val_idx = val as usize;
+    if map_idx == val_idx {
+        return exec_map_set_interned(func, regs, map, key, val);
+    }
+    let key = func.consts[key as usize]
+        .string_key_arcstr()
+        .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
+    if !matches!(regs[map_idx], Val::Map(_)) {
+        return Err(anyhow!("MapSet target is not a Map"));
+    }
+    let value = std::mem::replace(&mut regs[val_idx], Val::Nil);
+    match &mut regs[map_idx] {
+        Val::Map(map) => insert_map_entry(map, key, value),
+        _ => unreachable!("MapSet target was checked before moving value"),
+    }
+    Ok(())
+}
+
+#[inline(always)]
 pub(super) fn exec_int_arith(
     frame_raw: *mut FrameState<'_>,
     regs: &mut [Val],
@@ -213,6 +240,17 @@ pub(super) fn exec_floor(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: 
 }
 
 #[inline(always)]
+pub(super) fn exec_floor_div_imm(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: u16, src: u16, imm: i16) {
+    let divisor = imm as i64;
+    let out = match &regs[src as usize] {
+        Val::Int(value) => Val::Int(floor_div_i64(*value, divisor)),
+        Val::Float(value) => Val::Int((value / divisor as f64).floor() as i64),
+        _ => Val::Int(0),
+    };
+    assign_reg(frame_raw, regs, dst as usize, out);
+}
+
+#[inline(always)]
 pub(super) fn exec_starts_with_k(
     frame_raw: *mut FrameState<'_>,
     regs: &mut [Val],
@@ -225,6 +263,24 @@ pub(super) fn exec_starts_with_k(
     let out = match &regs[src as usize] {
         Val::ShortStr(value) => Val::Bool(value.as_str().starts_with(prefix)),
         Val::Str(value) => Val::Bool(value.as_str().starts_with(prefix)),
+        _ => Val::Bool(false),
+    };
+    assign_reg(frame_raw, regs, dst as usize, out);
+}
+
+#[inline(always)]
+pub(super) fn exec_contains_k(
+    frame_raw: *mut FrameState<'_>,
+    regs: &mut [Val],
+    func: &Function,
+    dst: u16,
+    src: u16,
+    key: u16,
+) {
+    let needle = func.consts[key as usize].as_str().unwrap_or("");
+    let out = match &regs[src as usize] {
+        Val::ShortStr(value) => Val::Bool(value.as_str().contains(needle)),
+        Val::Str(value) => Val::Bool(value.as_str().contains(needle)),
         _ => Val::Bool(false),
     };
     assign_reg(frame_raw, regs, dst as usize, out);

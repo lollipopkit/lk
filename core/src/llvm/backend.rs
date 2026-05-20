@@ -118,6 +118,7 @@ struct FunctionTranslator<'a> {
     native_closures: BTreeMap<u16, NativeClosureBinding>,
     native_closure_ir: Vec<String>,
     specialized_native_closures: BTreeMap<String, String>,
+    skipped_block_targets: BTreeMap<usize, String>,
     capture_specs: Option<&'a [CaptureSpec]>,
     initial_known_params: BTreeMap<usize, KnownReg>,
     integer_param_indices: BTreeSet<usize>,
@@ -145,6 +146,7 @@ impl<'a> FunctionTranslator<'a> {
             native_closures: BTreeMap::new(),
             native_closure_ir: Vec::new(),
             specialized_native_closures: BTreeMap::new(),
+            skipped_block_targets: BTreeMap::new(),
             capture_specs: None,
             initial_known_params: BTreeMap::new(),
             integer_param_indices,
@@ -274,7 +276,15 @@ impl<'a> FunctionTranslator<'a> {
                     starts.insert(target);
                     starts.insert(idx + 1);
                 }
-                Op::JmpFalse(_, ofs) | Op::BoolBranch(_, ofs) | Op::CmpLtImmJmp { ofs, .. } => {
+                Op::JmpFalse(_, ofs)
+                | Op::BoolBranch(_, ofs)
+                | Op::CmpLtImmJmp { ofs, .. }
+                | Op::CmpLeImmJmp { ofs, .. }
+                | Op::CmpEqImmJmp { ofs, .. }
+                | Op::CmpGtImmJmp { ofs, .. }
+                | Op::CmpGeImmJmp { ofs, .. }
+                | Op::CmpNeImmJmp { ofs, .. }
+                | Op::CmpIntJmp { ofs, .. } => {
                     let target = Self::compute_target(idx, *ofs, self.function.code.len())?;
                     starts.insert(target);
                     starts.insert(idx + 1);
@@ -414,17 +424,27 @@ impl<'a> FunctionTranslator<'a> {
             return Ok(());
         }
         self.writer.raw_line(format!("{}:", block_label));
+        if let Some(target) = self.skipped_block_targets.get(&block_idx) {
+            self.writer.line(format!("br label %{}", target));
+            return Ok(());
+        }
         let mut terminated = false;
         for instr_idx in block_start..block_end {
             let op = &self.function.code[instr_idx];
             match op {
+                _ if self.try_emit_map_nil_counter_update_pattern(block_idx, instr_idx)? => {
+                    terminated = true;
+                    break;
+                }
                 Op::LoadK(dst, kidx) => self.emit_load_const(instr_idx, block_end, *dst, *kidx)?,
                 Op::Move(dst, src) => self.emit_copy(*dst, *src)?,
                 Op::StoreLocal(idx, src) => self.emit_store_local(*idx, *src)?,
                 Op::LoadLocal(dst, idx) => self.emit_load_local(*dst, *idx)?,
                 Op::Add(dst, a, b) => self.emit_add_value(instr_idx, block_end, *dst, *a, *b)?,
-                Op::StrConcatKnownCap(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::AddValue)?,
-                Op::StrConcatToStr(dst, lhs, src) => self.emit_str_concat_to_str(*dst, *lhs, *src)?,
+                Op::StrConcatKnownCap(dst, a, b) => self.emit_add_value(instr_idx, block_end, *dst, *a, *b)?,
+                Op::StrConcatToStr(dst, lhs, src) => {
+                    self.emit_str_concat_to_str(instr_idx, block_end, *dst, *lhs, *src)?
+                }
                 Op::Sub(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::SubValue)?,
                 Op::Mul(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::MulValue)?,
                 Op::Div(dst, a, b) => self.emit_value_binary(*dst, *a, *b, RuntimeHelper::DivValue)?,
@@ -460,7 +480,7 @@ impl<'a> FunctionTranslator<'a> {
                 Op::LoadCapture { dst, idx } => self.emit_load_capture(*dst, *idx)?,
                 Op::DefineGlobal(kidx, src) => self.emit_define_global(*kidx, *src)?,
                 Op::BuildList { dst, base, len } => self.emit_build_list(*dst, *base, *len)?,
-                Op::ListPush { list, val } => self.emit_list_push(*list, *val)?,
+                Op::ListPush { list, val } | Op::ListPushMove { list, val } => self.emit_list_push(*list, *val)?,
                 Op::Call { f, base, argc, retc }
                 | Op::CallExact { f, base, argc, retc }
                 | Op::CallClosureExact { f, base, argc, retc }
@@ -481,6 +501,7 @@ impl<'a> FunctionTranslator<'a> {
                     self.emit_len(*dst, *src)?
                 }
                 Op::Floor { dst, src } => self.emit_floor(*dst, *src)?,
+                Op::FloorDivImm { dst, src, imm } => self.emit_floor_div_imm(*dst, *src, *imm)?,
                 Op::StartsWithK(dst, src, kidx) => {
                     self.emit_string_predicate_k(*dst, *src, *kidx, RuntimeHelper::StartsWith)?
                 }
@@ -491,14 +512,20 @@ impl<'a> FunctionTranslator<'a> {
                 Op::BuildMap { dst, base, len } => self.emit_build_map(*dst, *base, *len)?,
                 Op::MapHas(dst, map, key) => self.emit_map_has(*dst, *map, *key)?,
                 Op::MapHasK(dst, map, kidx) => self.emit_map_has_const(*dst, *map, *kidx)?,
-                Op::MapGetInterned(dst, map, kidx) => self.emit_access_const(*dst, *map, *kidx)?,
+                Op::MapGetInterned(dst, map, kidx) => {
+                    self.emit_map_get_const_str(instr_idx, block_end, *dst, *map, *kidx)?
+                }
                 Op::MapGetDynamic(dst, map, key) => {
-                    self.emit_access_or_defer_value(instr_idx, block_end, *dst, *map, *key)?
+                    if !self.emit_map_get_dynamic(instr_idx, block_end, *dst, *map, *key)? {
+                        self.emit_access_or_defer_value(instr_idx, block_end, *dst, *map, *key)?;
+                    }
                 }
                 Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => {
                     self.emit_map_set(*map, *key, *val)?
                 }
-                Op::MapSetInterned(map, kidx, val) => self.emit_map_set_const(*map, *kidx, *val)?,
+                Op::MapSetInterned(map, kidx, val) | Op::MapSetInternedMove(map, kidx, val) => {
+                    self.emit_map_set_const(*map, *kidx, *val)?
+                }
                 Op::MakeClosure { dst, proto } => self.emit_make_closure(*dst, *proto)?,
                 Op::ListSlice { dst, src, start } => self.emit_list_slice(*dst, *src, *start)?,
                 Op::Jmp(ofs) => {
@@ -542,7 +569,37 @@ impl<'a> FunctionTranslator<'a> {
                     break;
                 }
                 Op::CmpLtImmJmp { r, imm, ofs } => {
-                    self.emit_cmp_lt_imm_jmp(block_idx, instr_idx, *r, *imm, *ofs)?;
+                    self.emit_cmp_imm_jmp(block_idx, instr_idx, *r, *imm, *ofs, "slt")?;
+                    terminated = true;
+                    break;
+                }
+                Op::CmpLeImmJmp { r, imm, ofs } => {
+                    self.emit_cmp_imm_jmp(block_idx, instr_idx, *r, *imm, *ofs, "sle")?;
+                    terminated = true;
+                    break;
+                }
+                Op::CmpEqImmJmp { r, imm, ofs } => {
+                    self.emit_cmp_imm_jmp(block_idx, instr_idx, *r, *imm, *ofs, "eq")?;
+                    terminated = true;
+                    break;
+                }
+                Op::CmpGtImmJmp { r, imm, ofs } => {
+                    self.emit_cmp_imm_jmp(block_idx, instr_idx, *r, *imm, *ofs, "sgt")?;
+                    terminated = true;
+                    break;
+                }
+                Op::CmpGeImmJmp { r, imm, ofs } => {
+                    self.emit_cmp_imm_jmp(block_idx, instr_idx, *r, *imm, *ofs, "sge")?;
+                    terminated = true;
+                    break;
+                }
+                Op::CmpNeImmJmp { r, imm, ofs } => {
+                    self.emit_cmp_imm_jmp(block_idx, instr_idx, *r, *imm, *ofs, "ne")?;
+                    terminated = true;
+                    break;
+                }
+                Op::CmpIntJmp { kind, a, b, ofs } => {
+                    self.emit_cmp_int_jmp(block_idx, instr_idx, *a, *b, *kind, *ofs)?;
                     terminated = true;
                     break;
                 }
@@ -783,7 +840,15 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
-    fn emit_cmp_lt_imm_jmp(&mut self, block_idx: usize, instr_idx: usize, r: u16, imm: i16, ofs: i16) -> Result<()> {
+    fn emit_cmp_imm_jmp(
+        &mut self,
+        block_idx: usize,
+        instr_idx: usize,
+        r: u16,
+        imm: i16,
+        ofs: i16,
+        op: &str,
+    ) -> Result<()> {
         let target = Self::compute_target(instr_idx, ofs, self.function.code.len())?;
         let target_label = self.block_label_for_index(target)?;
         let fallthrough = self
@@ -797,16 +862,16 @@ impl<'a> FunctionTranslator<'a> {
             "{is_sentinel} = icmp sle i64 {value}, {sentinel_max}",
             sentinel_max = encoding::BOOL_TRUE_VALUE
         ));
-        let is_lt = self.fresh("cmpimm_lt");
+        let cmp = self.fresh("cmpimm");
         self.writer
-            .line(format!("{is_lt} = icmp slt i64 {value}, {}", imm as i64));
+            .line(format!("{cmp} = icmp {op} i64 {value}, {}", imm as i64));
         let not_sentinel = self.fresh("cmpimm_not_sentinel");
         self.writer.line(format!("{not_sentinel} = xor i1 {is_sentinel}, true"));
-        let is_int_lt = self.fresh("cmpimm_int_lt");
+        let is_int_match = self.fresh("cmpimm_int_match");
         self.writer
-            .line(format!("{is_int_lt} = and i1 {is_lt}, {not_sentinel}"));
+            .line(format!("{is_int_match} = and i1 {cmp}, {not_sentinel}"));
         let should_jump = self.fresh("cmpimm_jump");
-        self.writer.line(format!("{should_jump} = xor i1 {is_int_lt}, true"));
+        self.writer.line(format!("{should_jump} = xor i1 {is_int_match}, true"));
         self.writer.line(format!(
             "br i1 {should_jump}, label %{}, label %{}",
             target_label, fallthrough

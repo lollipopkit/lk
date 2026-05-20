@@ -3,9 +3,10 @@ use super::*;
 use crate::expr::Expr;
 use crate::stmt::{Program, Stmt};
 use crate::val::Val;
-use crate::vm::{Function, Op};
+use crate::vm::{Function, IntCmpKind, Op};
 
 mod aot;
+mod map_lowering;
 
 #[test]
 fn emits_addition_ir() {
@@ -679,6 +680,269 @@ fn lowers_build_map_and_access() {
 }
 
 #[test]
+fn lowers_access_feeding_typed_int_add_to_access_helper() {
+    let func = Function {
+        consts: vec![Val::Int(10), Val::Int(0), Val::Int(5)],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::BuildList {
+                dst: 1,
+                base: 0,
+                len: 1,
+            },
+            Op::LoadK(2, 1),
+            Op::LoadK(4, 2),
+            Op::Access(3, 1, 2),
+            Op::AddInt(5, 4, 3),
+            Op::Ret { base: 5, retc: 1 },
+        ],
+        n_regs: 6,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "access_add_int", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_add_access"),
+        "expected typed access + add to fuse into add_access helper:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_access"),
+        "deferred typed access should not materialize standalone access helper:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_access_feeding_mul_to_access_helper() {
+    let func = Function {
+        consts: vec![],
+        code: vec![Op::Access(2, 0, 1), Op::Mul(3, 4, 2), Op::Ret { base: 3, retc: 1 }],
+        n_regs: 5,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "mul_access", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_mul_access"),
+        "expected access + mul to fuse into mul_access helper:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_access"),
+        "deferred access should not materialize standalone access helper:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_str_concat_to_str_feeding_iter_len_to_length_fact() {
+    let func = Function {
+        consts: vec![Val::from_str("tenant-"), Val::Int(42), Val::from_str("-region")],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::LoadK(1, 1),
+            Op::StrConcatToStr(2, 0, 1),
+            Op::LoadK(3, 2),
+            Op::StrConcatKnownCap(2, 2, 3),
+            Op::ToIter { dst: 3, src: 2 },
+            Op::Len { dst: 4, src: 3 },
+            Op::Ret { base: 4, retc: 1 },
+        ],
+        n_regs: 5,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "str_concat_len", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_int_decimal_len"),
+        "expected integer string-length helper for deferred concat:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_to_string") && !ir.contains("call i64 @lk_rt_add("),
+        "deferred concat length should not materialize string concat:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_to_iter") && !ir.contains("call i64 @lk_rt_len"),
+        "deferred concat length should satisfy to_iter.len without runtime helpers:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_map_get_interned_to_const_str_helper() {
+    let func = Function {
+        consts: vec![Val::Str("key".into())],
+        code: vec![Op::MapGetInterned(2, 1, 0), Op::Ret { base: 2, retc: 1 }],
+        n_regs: 3,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "map_get_const", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_map_get_const_str"),
+        "expected MapGetInterned to lower to const-string map helper:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_map_get_string_int_key_without_materializing_key() {
+    let func = Function {
+        consts: vec![Val::from_str("n"), Val::Int(7)],
+        code: vec![
+            Op::LoadK(1, 0),
+            Op::LoadK(2, 1),
+            Op::Add(3, 1, 2),
+            Op::MapGetDynamic(0, 4, 3),
+            Op::Ret { base: 0, retc: 1 },
+        ],
+        n_regs: 5,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "map_get_str_int", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_map_get_str_int"),
+        "expected MapGetDynamic with deferred string-int key to use direct map helper:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_str_int_key"),
+        "MapGetDynamic should not materialize the string-int key handle before lookup:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_access_str_int"),
+        "MapGetDynamic should use map-only helper instead of generic access helper:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_dynamic_string_key_map_ops_to_const_str_helpers() {
+    let func = Function {
+        consts: vec![Val::from_str("answer")],
+        code: vec![
+            Op::LoadK(3, 0),
+            Op::MapGetDynamic(0, 2, 3),
+            Op::MapHas(1, 2, 3),
+            Op::MapSet { map: 2, key: 3, val: 4 },
+            Op::Ret { base: 0, retc: 1 },
+        ],
+        n_regs: 5,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact =
+        compile_function_to_llvm(&func, "map_dynamic_const_keys", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_map_get_const_str"),
+        "expected dynamic known string map.get to use const-string helper:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("call i64 @lk_rt_map_has_const_str"),
+        "expected dynamic known string map.has to use const-string helper:\n{}",
+        ir
+    );
+    assert!(
+        ir.contains("call i64 @lk_rt_map_set_const_str"),
+        "expected dynamic known string map.set to use const-string helper:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_access"),
+        "dynamic known string map.get should not use generic access:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_map_has(i64"),
+        "dynamic known string map.has should not use generic map_has:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_map_set(i64"),
+        "dynamic known string map.set should not use generic map_set:\n{}",
+        ir
+    );
+}
+
+#[test]
 fn lowers_list_push_and_map_set() {
     let func = Function {
         consts: vec![],
@@ -717,16 +981,149 @@ fn lowers_list_push_and_map_set() {
 }
 
 #[test]
+fn lowers_list_push_string_int_key_without_materializing_key() {
+    let func = Function {
+        consts: vec![Val::from_str("sku-"), Val::Int(7)],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::LoadK(1, 1),
+            Op::StrConcatToStr(2, 0, 1),
+            Op::BuildList {
+                dst: 3,
+                base: 0,
+                len: 0,
+            },
+            Op::ListPush { list: 3, val: 2 },
+            Op::Ret { base: 3, retc: 1 },
+        ],
+        n_regs: 4,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact =
+        compile_function_to_llvm(&func, "list_push_string_int", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_list_push_str_int"),
+        "expected string-int list push helper call in IR:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_str_int_key"),
+        "list push string-int key should not materialize a temporary string key:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_list_push(i64"),
+        "list push string-int key should not use generic list_push:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_nil_compare_without_runtime_compare_helper() {
+    let nil = crate::vm::rk_make_const(3);
+    let func = Function {
+        consts: vec![Val::from_str("n"), Val::Int(7), Val::Int(1), Val::Nil],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::LoadK(1, 1),
+            Op::StrConcatToStr(2, 0, 1),
+            Op::MapGetDynamic(3, 4, 2),
+            Op::CmpNe(5, 3, nil),
+            Op::Ret { base: 5, retc: 1 },
+        ],
+        n_regs: 6,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "nil_compare", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("icmp ne i64"),
+        "expected direct nil comparison in IR:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_cmp"),
+        "nil comparison should not use runtime compare helper:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_map_set_interned_to_const_str_helper() {
+    let func = Function {
+        consts: vec![Val::from_str("answer")],
+        code: vec![Op::MapSetInterned(0, 0, 1), Op::Ret { base: 0, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "map_set_const", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_map_set_const_str"),
+        "expected MapSetInterned to lower to const-string map set helper:\n{}",
+        ir
+    );
+}
+
+#[test]
 fn lowers_fused_integer_jump_ops() {
     let func = Function {
         consts: vec![Val::Int(0)],
         code: vec![
             Op::LoadK(0, 0),
             Op::CmpLtImmJmp { r: 0, imm: 5, ofs: 2 },
+            Op::CmpLeImmJmp { r: 0, imm: 7, ofs: 2 },
+            Op::CmpEqImmJmp { r: 0, imm: 8, ofs: 2 },
+            Op::CmpGtImmJmp { r: 0, imm: 3, ofs: 2 },
+            Op::CmpGeImmJmp { r: 0, imm: 4, ofs: 2 },
+            Op::CmpNeImmJmp { r: 0, imm: 9, ofs: 2 },
+            Op::CmpIntJmp {
+                kind: IntCmpKind::Lt,
+                a: 0,
+                b: 1,
+                ofs: 2,
+            },
             Op::AddIntImmJmp { r: 0, imm: 1, ofs: -1 },
             Op::Ret { base: 0, retc: 1 },
         ],
-        n_regs: 1,
+        n_regs: 2,
         protos: Vec::new(),
         param_regs: Vec::new(),
         named_param_regs: Vec::new(),
@@ -894,8 +1291,48 @@ fn lowers_map_has_typed_op() {
     let artifact = compile_function_to_llvm(&func, "map_has", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
     assert!(
-        ir.contains("call i64 @lk_rt_map_has"),
-        "expected runtime map.has helper call in IR:\n{}",
+        ir.contains("call i64 @lk_rt_map_has_const_str"),
+        "expected runtime map.has const-string helper call in IR:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_map_has_string_int_key_without_materializing_key() {
+    let func = Function {
+        consts: vec![Val::from_str("n"), Val::Int(7)],
+        code: vec![
+            Op::LoadK(1, 0),
+            Op::LoadK(2, 1),
+            Op::Add(3, 1, 2),
+            Op::MapHas(0, 4, 3),
+            Op::Ret { base: 0, retc: 1 },
+        ],
+        n_regs: 5,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "map_has_str_int", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_map_has_str_int"),
+        "expected MapHas with deferred string-int key to use direct helper:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_str_int_key"),
+        "MapHas should not materialize the string-int key handle before lookup:\n{}",
         ir
     );
 }

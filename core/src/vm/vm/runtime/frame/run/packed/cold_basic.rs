@@ -39,6 +39,8 @@ pub(super) fn handles_basic_op(op: &Op) -> bool {
             | Op::JmpIfNotNil(_, _)
             | Op::CmpLtImmJmp { .. }
             | Op::CmpLeImmJmp { .. }
+            | Op::CmpGtImmJmp { .. }
+            | Op::CmpGeImmJmp { .. }
             | Op::AddIntImmJmp { .. }
             | Op::ToBool(_, _)
             | Op::ToIter { .. }
@@ -58,6 +60,7 @@ pub(super) fn handles_basic_op(op: &Op) -> bool {
             | Op::MapGetInterned(_, _, _)
             | Op::MapGetDynamic(_, _, _)
             | Op::MapSetInterned(_, _, _)
+            | Op::MapSetInternedMove(_, _, _)
             | Op::MapHasK(_, _, _)
             | Op::ForRangePrep { .. }
             | Op::ForRangeLoop { .. }
@@ -202,6 +205,30 @@ pub(super) fn exec_basic_op(
             // Fused CmpLeImm + JmpFalse: if r <= imm, fall through; else jump.
             let skip = match &regs[r as usize] {
                 Val::Int(x) => *x > (imm as i64),
+                _ => true,
+            };
+            if skip {
+                pc = ((pc as isize) + (ofs as isize)) as usize;
+            } else {
+                pc = next_pc_default;
+            }
+        }
+        Op::CmpGtImmJmp { r, imm, ofs } => {
+            // Fused CmpGtImm + JmpFalse: if r > imm, fall through; else jump.
+            let skip = match &regs[r as usize] {
+                Val::Int(x) => *x <= (imm as i64),
+                _ => true,
+            };
+            if skip {
+                pc = ((pc as isize) + (ofs as isize)) as usize;
+            } else {
+                pc = next_pc_default;
+            }
+        }
+        Op::CmpGeImmJmp { r, imm, ofs } => {
+            // Fused CmpGeImm + JmpFalse: if r >= imm, fall through; else jump.
+            let skip = match &regs[r as usize] {
+                Val::Int(x) => *x < (imm as i64),
                 _ => true,
             };
             if skip {
@@ -548,6 +575,36 @@ pub(super) fn exec_basic_op(
                 Val::Map(arc) => insert_map_entry(arc, key, pushed_val),
                 _ => {
                     return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map"))).map(Some);
+                }
+            }
+            pc = next_pc_default;
+        }
+        Op::MapSetInternedMove(map, kidx, val) => {
+            let map_idx = map as usize;
+            let val_idx = val as usize;
+            if map_idx == val_idx {
+                let key = f.consts[kidx as usize]
+                    .string_key_arcstr()
+                    .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
+                let pushed_val = regs[val_idx].clone();
+                match &mut regs[map_idx] {
+                    Val::Map(arc) => insert_map_entry(arc, key, pushed_val),
+                    _ => {
+                        return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map")))
+                            .map(Some);
+                    }
+                }
+            } else {
+                let key = f.consts[kidx as usize]
+                    .string_key_arcstr()
+                    .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
+                if !matches!(regs[map_idx], Val::Map(_)) {
+                    return frame_return_common(frame_raw, pc, Err(anyhow!("MapSet target is not a Map"))).map(Some);
+                }
+                let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+                match &mut regs[map_idx] {
+                    Val::Map(arc) => insert_map_entry(arc, key, pushed_val),
+                    _ => unreachable!("MapSet target was checked before moving value"),
                 }
             }
             pc = next_pc_default;

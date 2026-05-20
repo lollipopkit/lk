@@ -1,7 +1,7 @@
 use super::FunctionBuilder;
 use crate::{expr::Expr, val::Val, vm::Op};
 
-fn expr_result_is_temporary(expr: &Expr) -> bool {
+pub(super) fn expr_result_is_temporary(expr: &Expr) -> bool {
     match expr {
         Expr::Var(_) => false,
         Expr::Paren(inner) => expr_result_is_temporary(inner),
@@ -70,7 +70,11 @@ impl FunctionBuilder {
             } else {
                 self.expr(value_expr)
             };
-            self.emit(Op::MapSetInterned(map_reg, key_idx, val_reg));
+            if val_reg != map_reg && expr_result_is_temporary(value_expr) {
+                self.emit(Op::MapSetInternedMove(map_reg, key_idx, val_reg));
+            } else {
+                self.emit(Op::MapSetInterned(map_reg, key_idx, val_reg));
+            }
             return;
         }
 

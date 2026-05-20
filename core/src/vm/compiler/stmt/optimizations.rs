@@ -541,7 +541,7 @@ impl FunctionBuilder {
         true
     }
 
-    fn stmt_mentions_name(stmt: &Stmt, target: &str) -> bool {
+    pub(super) fn stmt_mentions_name(stmt: &Stmt, target: &str) -> bool {
         match stmt {
             Stmt::Block { statements } => statements.iter().any(|stmt| Self::stmt_mentions_name(stmt, target)),
             Stmt::Let { pattern, value, .. } => {

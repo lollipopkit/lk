@@ -425,6 +425,67 @@ fn zero_arg_global_method_call_fuses_receiver_load() {
 }
 
 #[test]
+fn template_split_join_len_lowers_to_original_len() {
+    let source = r#"
+        let r = 12;
+        let i = 34;
+        let line = "ts=${r}|tenant=t${i % 13}|status=ok|path=/api/v1/orders/${i % 19}";
+        return line.split("|").join("|").len();
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::Int("ts=12|tenant=t8|status=ok|path=/api/v1/orders/15".len() as i64)
+    );
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::Len { .. })),
+        "expected split/join/len on template string to lower to direct Len in {:?}",
+        function.code
+    );
+    assert!(
+        !function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::ToIter { .. } | Op::Call { .. })),
+        "expected split/join/len peephole to avoid ToIter and method calls in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn temporary_template_split_join_len_skips_line_materialization() {
+    let source = r#"
+        let r = 12;
+        let i = 34;
+        let line = "ts=${r}|tenant=t${i % 13}|status=ok|path=/api/v1/orders/${i % 19}";
+        let parsed_len = line.split("|").join("|").len();
+        return parsed_len % 7;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(
+        result.expect("vm exec"),
+        Val::Int(("ts=12|tenant=t8|status=ok|path=/api/v1/orders/15".len() % 7) as i64)
+    );
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::StrLen { .. })),
+        "expected template length lowering to measure interpolated pieces in {:?}",
+        function.code
+    );
+    assert!(
+        function
+            .code
+            .iter()
+            .filter(|op| matches!(op, Op::StrConcatKnownCap(_, _, _) | Op::StrConcatToStr(_, _, _)))
+            .count()
+            <= 1,
+        "temporary line should not be fully materialized before len in {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn template_string_starts_from_first_literal() {
     let source = r#"
         let i = 42;
@@ -470,7 +531,7 @@ fn template_string_numeric_expr_uses_direct_concat() {
 }
 
 #[test]
-fn known_int_register_compare_lowers_to_cmp_i() {
+fn known_int_register_compare_lowers_to_cmp_int_jmp() {
     let source = r#"
         let i = 0;
         let limit = 3;
@@ -484,8 +545,8 @@ fn known_int_register_compare_lowers_to_cmp_i() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(3));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::CmpI { .. })),
-        "known int register comparison should lower to CmpI in {:?}",
+        function.code.iter().any(|op| matches!(op, Op::CmpIntJmp { .. })),
+        "known int register loop comparison should fuse to CmpIntJmp in {:?}",
         function.code
     );
 }
@@ -881,6 +942,34 @@ fn floor_result_feeds_typed_integer_lowering() {
         function.code.iter().any(|op| matches!(op, Op::MulInt(_, _, _))),
         "Floor result should be tracked as Int for following arithmetic in {:?}",
         function.code
+    );
+}
+
+#[test]
+fn math_floor_int_division_by_const_lowers_to_floor_div_imm() {
+    let source = r#"
+        import math;
+        fn midpoint(lo, hi) {
+            return math.floor((lo + hi) / 2);
+        }
+        return midpoint(5, 8);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(6));
+    let helper = function
+        .protos
+        .iter()
+        .find(|proto| proto.self_name.as_deref() == Some("midpoint"))
+        .and_then(|proto| proto.code.get())
+        .expect("midpoint should be compiled");
+    assert!(
+        helper
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::FloorDivImm { imm: 2, .. })),
+        "math.floor((int_expr) / 2) should lower to FloorDivImm in {:?}",
+        helper.code
     );
 }
 

@@ -22,6 +22,30 @@ impl<'a> FunctionTranslator<'a> {
         Ok(true)
     }
 
+    pub(super) fn try_defer_str_concat_to_str_key(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+        lhs: u16,
+        src: u16,
+    ) -> Result<bool> {
+        if !self.operand_known_int(src) {
+            return Ok(false);
+        }
+        let Some(KnownReg::StringHandle { text, .. }) = self.known(lhs).cloned() else {
+            return Ok(false);
+        };
+        if !self.string_int_key_can_defer(instr_idx, block_end, dst) {
+            return Ok(false);
+        }
+        let suffix = self.load_reg(src)?;
+        self.writer
+            .line(format!("store i64 {}, i64* %r{dst}, align 8", encoding::NIL_VALUE));
+        self.set_known(dst, Some(KnownReg::StringIntKey { prefix: text, suffix }));
+        Ok(true)
+    }
+
     pub(super) fn materialize_string_int_key(&mut self, reg: u16) -> Result<Option<String>> {
         let Some(KnownReg::StringIntKey { prefix, suffix }) = self.known(reg).cloned() else {
             return Ok(None);
@@ -61,8 +85,10 @@ impl<'a> FunctionTranslator<'a> {
         for op in &self.function.code[instr_idx + 1..block_end] {
             match *op {
                 Op::Access(_, _, field) if field == alias => consumed = true,
+                Op::MapGetDynamic(_, _, key) if key == alias => consumed = true,
+                Op::MapHas(_, _, key) if key == alias => consumed = true,
                 Op::MapSet { key, .. } | Op::MapSetMove { key, .. } if key == alias => consumed = true,
-                Op::ListPush { val, .. } if val == alias => consumed = true,
+                Op::ListPush { val, .. } | Op::ListPushMove { val, .. } if val == alias => consumed = true,
                 Op::BuildList { base, len, .. } if reg_in_range(alias, base, len) => consumed = true,
                 Op::Call { base, argc, .. }
                 | Op::CallExact { base, argc, .. }
@@ -105,7 +131,8 @@ fn string_key_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::JmpFalse(src, _)
         | Op::BoolBranch(src, _)
         | Op::JmpIfNil(src, _)
-        | Op::JmpIfNotNil(src, _) => src == reg,
+        | Op::JmpIfNotNil(src, _)
+        | Op::FloorDivImm { src, .. } => src == reg,
         Op::Add(_, a, b)
         | Op::StrConcatKnownCap(_, a, b)
         | Op::StrConcatToStr(_, a, b)
@@ -129,6 +156,7 @@ fn string_key_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpGt(_, a, b)
         | Op::CmpGe(_, a, b)
         | Op::CmpI { a, b, .. }
+        | Op::CmpIntJmp { a, b, .. }
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
         | Op::Index { base: a, idx: b, .. } => a == reg || b == reg,
@@ -140,10 +168,15 @@ fn string_key_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpGtImm(_, src, _)
         | Op::CmpGeImm(_, src, _)
         | Op::CmpLtImmJmp { r: src, .. }
+        | Op::CmpLeImmJmp { r: src, .. }
+        | Op::CmpEqImmJmp { r: src, .. }
+        | Op::CmpGtImmJmp { r: src, .. }
+        | Op::CmpGeImmJmp { r: src, .. }
+        | Op::CmpNeImmJmp { r: src, .. }
         | Op::AddIntImmJmp { r: src, .. }
         | Op::AccessK(_, src, _)
         | Op::IndexK(_, src, _) => src == reg,
-        Op::ListPush { list, val } => list == reg || val == reg,
+        Op::ListPush { list, val } | Op::ListPushMove { list, val } => list == reg || val == reg,
         Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => map == reg || key == reg || val == reg,
         Op::CallMethod0 { receiver, .. } => receiver == reg,
         Op::CallGlobalMethod0 { .. } => false,
@@ -191,6 +224,7 @@ fn string_key_op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::IndexK(dst, _, _)
         | Op::Len { dst, .. }
         | Op::Floor { dst, .. }
+        | Op::FloorDivImm { dst, .. }
         | Op::StartsWithK(dst, _, _)
         | Op::ContainsK(dst, _, _)
         | Op::BuildMap { dst, .. }

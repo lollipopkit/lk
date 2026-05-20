@@ -8,6 +8,7 @@ use crate::vm::vm::Vm;
 use crate::vm::vm::caches::VmCaches;
 use crate::vm::vm::frame::FrameState;
 
+mod call_common;
 mod helpers;
 mod ic;
 mod invoke;

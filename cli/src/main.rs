@@ -23,7 +23,10 @@ use lk_core::{
     token::Tokenizer,
     typ::TypeChecker,
     val::Val,
-    vm::{self, BundledModule, BytecodeModule, Compiler, ModuleFlags, ModuleMeta, Vm, VmContext, compile_program},
+    vm::{
+        self, BundledModule, BytecodeModule, Compiler, ModuleFlags, ModuleMeta, Vm, VmContext, compile_program,
+        vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+    },
 };
 
 use anyhow::Context;
@@ -306,6 +309,56 @@ fn maybe_init_perf_tracing() {
 
         let _ = builder.try_init();
     });
+}
+
+fn vm_profile_enabled() -> bool {
+    std::env::var("LK_VM_PROFILE")
+        .ok()
+        .is_some_and(|value| env_toggle_enabled(&value))
+}
+
+fn vm_profile_begin() -> bool {
+    let enabled = vm_profile_enabled();
+    if enabled {
+        vm_runtime_metrics_reset();
+    }
+    enabled
+}
+
+fn print_vm_profile_metrics() {
+    let metrics = vm_runtime_metrics_snapshot();
+    eprintln!(
+        "VM profile: opcode_steps={} branches={} typed_branches={} calls={} native_calls={} closure_calls={} exact_calls={} named_calls={} method_calls={} containers={} list_ops={} map_ops={} string_ops={} bc32_fallbacks={} bc32_build_misses={} bc32_stale_slots={} bc32_stale_misses={} bc32_sentinel_skips={} val_clones={} immediate_clones={} heap_clones={} register_writes={} return_value_moves={} quickening_hits={} quickening_build_attempts={} quickening_build_successes={} quickening_misses={} quickening_deopts={} quickening_sentinel_skips={}",
+        metrics.opcode_steps,
+        metrics.branch_ops,
+        metrics.typed_branch_ops,
+        metrics.call_ops,
+        metrics.native_call_ops,
+        metrics.closure_call_ops,
+        metrics.exact_call_ops,
+        metrics.named_call_ops,
+        metrics.method_call_ops,
+        metrics.container_ops,
+        metrics.list_ops,
+        metrics.map_ops,
+        metrics.string_ops,
+        metrics.bc32_fallback_ops,
+        metrics.bc32_fallback_build_misses,
+        metrics.bc32_hot_stale_slots,
+        metrics.bc32_hot_stale_misses,
+        metrics.bc32_hot_sentinel_skips,
+        metrics.val_clones,
+        metrics.immediate_val_clones,
+        metrics.heap_val_clones,
+        metrics.register_writes,
+        metrics.return_value_moves,
+        metrics.quickening_hits,
+        metrics.quickening_build_attempts,
+        metrics.quickening_build_successes,
+        metrics.quickening_misses,
+        metrics.quickening_deopts,
+        metrics.quickening_sentinel_skips,
+    );
 }
 
 #[cfg(feature = "llvm")]
@@ -1274,8 +1327,12 @@ fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("Failed to replay imports for {}", src_path_str))?;
         }
 
+        let profile = vm_profile_begin();
         let mut vm = vm::Vm::new();
         let result = vm.exec_with(&module.entry, &mut base_env, None);
+        if profile {
+            print_vm_profile_metrics();
+        }
 
         rt::shutdown_runtime();
 
@@ -1340,10 +1397,14 @@ fn main() -> anyhow::Result<()> {
 
     let exec_result: anyhow::Result<(Val, VmContext)> = {
         let compiled = compile_program(&program);
+        let profile = vm_profile_begin();
         let mut vm = Vm::new();
         let val = vm
             .exec_with(&compiled, &mut base_env, None)
             .with_context(|| "VM execution failed")?;
+        if profile {
+            print_vm_profile_metrics();
+        }
         let env_after = base_env.snapshot();
         Ok((val, env_after))
     };

@@ -123,6 +123,7 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             Ok(EncodedOp::new(word, reg_ext))
         }
         Op::CmpI { dst, a, b, kind } => Ok(pack_cmp_i(dst, a, b, kind)),
+        Op::CmpIntJmp { kind, a, b, ofs } => Ok(pack_cmp_i_jmp(a, b, kind, ofs)),
         Op::Jmp(ofs) => Ok(EncodedOp::new(
             ((encode_tag_with_flags(Tag::Jmp, 0) as u32) << 24) | (ofs as i32 as u32 & 0x00FF_FFFF),
             None,
@@ -157,12 +158,15 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
         Op::MapLen { dst, src } => pack_ext_op(EXT_OP_MAP_LEN, dst, src, 0),
         Op::StrLen { dst, src } => pack_ext_op(EXT_OP_STR_LEN, dst, src, 0),
         Op::Floor { dst, src } => pack_ext_op(EXT_OP_FLOOR, dst, src, 0),
+        Op::FloorDivImm { dst, src, imm } => pack_ext_op_i8(EXT_OP_FLOOR_DIV_IMM, "FloorDivImm", dst, src, imm),
         Op::StartsWithK(dst, src, kidx) => pack_ext_op(EXT_OP_STARTS_WITH_K, dst, src, kidx),
         Op::ContainsK(dst, src, kidx) => pack_ext_op(EXT_OP_CONTAINS_K, dst, src, kidx),
         Op::ToIter { dst, src } => pack_ext_op(EXT_OP_TO_ITER, dst, src, 0),
         Op::MapGetInterned(dst, map, kidx) => pack_ext_op(EXT_OP_MAP_GET_INTERNED, dst, map, kidx),
         Op::MapGetDynamic(dst, map, key) => pack_ext_op(EXT_OP_MAP_GET_DYNAMIC, dst, map, key),
         Op::MapSetInterned(map, kidx, val) => pack_ext_op(EXT_OP_MAP_SET_INTERNED, map, kidx, val),
+        Op::MapSetInternedMove(map, kidx, val) => pack_ext_op(EXT_OP_MAP_SET_INTERNED_MOVE, map, kidx, val),
+        Op::MapHas(dst, map, key) => pack_ext_op(EXT_OP_MAP_HAS, dst, map, key),
         Op::MapHasK(dst, map, kidx) => pack_ext_op(EXT_OP_MAP_HAS_K, dst, map, kidx),
         Op::ListSetI { dst, list, index, val } => pack_ext_op_i16_reg(EXT_OP_LIST_SET_I, dst, list, index, val),
         Op::Index { dst, base, idx } => {
@@ -289,6 +293,11 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
         }
         Op::ListPush { list, val } => {
             let word = pack(Tag::ListPush, 0, list as u8, val as u8, 0);
+            let reg_ext = pack_reg_ext_bits(list, val, 0);
+            Ok(EncodedOp::new(word, reg_ext))
+        }
+        Op::ListPushMove { list, val } => {
+            let word = pack(Tag::ListPush, 1, list as u8, val as u8, 0);
             let reg_ext = pack_reg_ext_bits(list, val, 0);
             Ok(EncodedOp::new(word, reg_ext))
         }
@@ -440,6 +449,7 @@ pub(crate) fn decode_word_with_hi(tag: Tag, flags: u8, w: u32, hi: (u16, u16, u1
             src: b_reg,
             start: c_reg,
         },
+        Tag::ListPush if flags & 1 != 0 => Op::ListPushMove { list: a, val: b_reg },
         Tag::ListPush => Op::ListPush { list: a, val: b_reg },
         Tag::MapSet if flags & 1 != 0 => Op::MapSetMove {
             map: a,
@@ -532,10 +542,21 @@ impl Bc32Function {
                     ensure_i8_range("CmpLeImmJmp", "imm", *imm as i32).map_err(|err| PackIssue::new(err, i))?;
                     2 + pack_reg_ext_bits(*r, 0, 0).is_some() as usize
                 }
+                Op::CmpEqImmJmp { r, imm, .. }
+                | Op::CmpGtImmJmp { r, imm, .. }
+                | Op::CmpGeImmJmp { r, imm, .. }
+                | Op::CmpNeImmJmp { r, imm, .. } => {
+                    if (-128..=127).contains(imm) {
+                        2 + pack_reg_ext_bits(*r, 0, 0).is_some() as usize
+                    } else {
+                        3 + pack_reg_ext_bits(*r, 0, 0).is_some() as usize
+                    }
+                }
                 Op::AddIntImmJmp { r, imm, .. } => {
                     ensure_i8_range("AddIntImmJmp", "imm", *imm as i32).map_err(|err| PackIssue::new(err, i))?;
                     2 + pack_reg_ext_bits(*r, 0, 0).is_some() as usize
                 }
+                Op::CmpIntJmp { .. } => 3,
                 Op::JmpFalseSet { .. } => 1,
                 Op::JmpTrueSet { .. } => 1,
                 Op::NullishPick { .. } => 1,
@@ -643,7 +664,62 @@ impl Bc32Function {
                             ));
                         }
                     }
+                    Op::CmpEqImmJmp { ofs, .. } => {
+                        let j = (i as isize) + ofs as isize;
+                        if j < 0 || j as usize >= n {
+                            return Err(PackIssue::new(
+                                Bc32Reject::BranchTargetOutOfBounds {
+                                    opcode: opcode_name(op),
+                                },
+                                i,
+                            ));
+                        }
+                    }
+                    Op::CmpGtImmJmp { ofs, .. } => {
+                        let j = (i as isize) + ofs as isize;
+                        if j < 0 || j as usize >= n {
+                            return Err(PackIssue::new(
+                                Bc32Reject::BranchTargetOutOfBounds {
+                                    opcode: opcode_name(op),
+                                },
+                                i,
+                            ));
+                        }
+                    }
+                    Op::CmpGeImmJmp { ofs, .. } => {
+                        let j = (i as isize) + ofs as isize;
+                        if j < 0 || j as usize >= n {
+                            return Err(PackIssue::new(
+                                Bc32Reject::BranchTargetOutOfBounds {
+                                    opcode: opcode_name(op),
+                                },
+                                i,
+                            ));
+                        }
+                    }
+                    Op::CmpNeImmJmp { ofs, .. } => {
+                        let j = (i as isize) + ofs as isize;
+                        if j < 0 || j as usize >= n {
+                            return Err(PackIssue::new(
+                                Bc32Reject::BranchTargetOutOfBounds {
+                                    opcode: opcode_name(op),
+                                },
+                                i,
+                            ));
+                        }
+                    }
                     Op::AddIntImmJmp { ofs, .. } => {
+                        let j = (i as isize) + ofs as isize;
+                        if j < 0 || j as usize >= n {
+                            return Err(PackIssue::new(
+                                Bc32Reject::BranchTargetOutOfBounds {
+                                    opcode: opcode_name(op),
+                                },
+                                i,
+                            ));
+                        }
+                    }
+                    Op::CmpIntJmp { ofs, .. } => {
                         let j = (i as isize) + ofs as isize;
                         if j < 0 || j as usize >= n {
                             return Err(PackIssue::new(
@@ -830,6 +906,34 @@ impl Bc32Function {
                     }
                     out.push(pack_ext_word(0, (wofs >> 8) as u8, (wofs & 0xFF) as u8));
                 }
+                Op::CmpNeImmJmp { r, imm, ofs } => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
+                    compare::pack_cmp_ne_imm_jmp(*r, *imm, wofs)
+                        .map_err(|err| PackIssue::new(err, i))?
+                        .emit(&mut out);
+                }
+                Op::CmpEqImmJmp { r, imm, ofs } => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
+                    compare::pack_cmp_eq_imm_jmp(*r, *imm, wofs)
+                        .map_err(|err| PackIssue::new(err, i))?
+                        .emit(&mut out);
+                }
+                Op::CmpGtImmJmp { r, imm, ofs } => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
+                    compare::pack_cmp_gt_imm_jmp(*r, *imm, wofs)
+                        .map_err(|err| PackIssue::new(err, i))?
+                        .emit(&mut out);
+                }
+                Op::CmpGeImmJmp { r, imm, ofs } => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
+                    compare::pack_cmp_ge_imm_jmp(*r, *imm, wofs)
+                        .map_err(|err| PackIssue::new(err, i))?
+                        .emit(&mut out);
+                }
                 Op::AddIntImmJmp { r, imm, ofs } => {
                     let tgt = ((i as isize) + *ofs as isize) as usize;
                     let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
@@ -838,6 +942,11 @@ impl Bc32Function {
                         out.push(ext);
                     }
                     out.push(pack_ext_word(0, (wofs >> 8) as u8, (wofs & 0xFF) as u8));
+                }
+                Op::CmpIntJmp { kind, a, b, ofs } => {
+                    let tgt = ((i as isize) + *ofs as isize) as usize;
+                    let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i16;
+                    pack_cmp_i_jmp(*a, *b, *kind, wofs).emit(&mut out);
                 }
                 Op::Call { f, base, argc, retc } => {
                     if *retc == 1 && pack_reg_ext_bits(*f, *base, 0).is_none() {

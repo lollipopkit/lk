@@ -1,6 +1,18 @@
 use super::*;
 
 impl<'a> FunctionTranslator<'a> {
+    #[inline]
+    fn int_cmp_op(kind: crate::vm::IntCmpKind) -> &'static str {
+        match kind {
+            crate::vm::IntCmpKind::Eq => "eq",
+            crate::vm::IntCmpKind::Ne => "ne",
+            crate::vm::IntCmpKind::Lt => "slt",
+            crate::vm::IntCmpKind::Le => "sle",
+            crate::vm::IntCmpKind::Gt => "sgt",
+            crate::vm::IntCmpKind::Ge => "sge",
+        }
+    }
+
     pub(super) fn emit_int_compare_kind(
         &mut self,
         dst: u16,
@@ -8,18 +20,73 @@ impl<'a> FunctionTranslator<'a> {
         b: u16,
         kind: crate::vm::IntCmpKind,
     ) -> Result<()> {
-        let op = match kind {
-            crate::vm::IntCmpKind::Eq => "eq",
-            crate::vm::IntCmpKind::Ne => "ne",
-            crate::vm::IntCmpKind::Lt => "slt",
-            crate::vm::IntCmpKind::Le => "sle",
-            crate::vm::IntCmpKind::Gt => "sgt",
-            crate::vm::IntCmpKind::Ge => "sge",
-        };
-        self.emit_compare(dst, a, b, op)
+        self.emit_compare(dst, a, b, Self::int_cmp_op(kind))
+    }
+
+    pub(super) fn emit_cmp_int_jmp(
+        &mut self,
+        block_idx: usize,
+        instr_idx: usize,
+        a: u16,
+        b: u16,
+        kind: crate::vm::IntCmpKind,
+        ofs: i16,
+    ) -> Result<()> {
+        let target = Self::compute_target(instr_idx, ofs, self.function.code.len())?;
+        let target_label = self.block_label_for_index(target)?;
+        let fallthrough = self
+            .blocks
+            .get(block_idx + 1)
+            .map(|block| block.label.clone())
+            .unwrap_or_else(|| DEFAULT_RETURN_LABEL.to_string());
+        let lhs = self.load_reg(a)?;
+        let rhs = self.load_reg(b)?;
+        let lhs_is_sentinel = self.fresh("cmpint_lhs_sentinel");
+        self.writer.line(format!(
+            "{lhs_is_sentinel} = icmp sle i64 {lhs}, {sentinel_max}",
+            sentinel_max = encoding::BOOL_TRUE_VALUE
+        ));
+        let rhs_is_sentinel = self.fresh("cmpint_rhs_sentinel");
+        self.writer.line(format!(
+            "{rhs_is_sentinel} = icmp sle i64 {rhs}, {sentinel_max}",
+            sentinel_max = encoding::BOOL_TRUE_VALUE
+        ));
+        let any_sentinel = self.fresh("cmpint_any_sentinel");
+        self.writer
+            .line(format!("{any_sentinel} = or i1 {lhs_is_sentinel}, {rhs_is_sentinel}"));
+        let cmp = self.fresh("cmpint");
+        self.writer
+            .line(format!("{cmp} = icmp {} i64 {lhs}, {rhs}", Self::int_cmp_op(kind)));
+        let not_sentinel = self.fresh("cmpint_not_sentinel");
+        self.writer
+            .line(format!("{not_sentinel} = xor i1 {any_sentinel}, true"));
+        let is_int_match = self.fresh("cmpint_match");
+        self.writer
+            .line(format!("{is_int_match} = and i1 {cmp}, {not_sentinel}"));
+        let should_jump = self.fresh("cmpint_jump");
+        self.writer.line(format!("{should_jump} = xor i1 {is_int_match}, true"));
+        self.writer.line(format!(
+            "br i1 {should_jump}, label %{}, label %{}",
+            target_label, fallthrough
+        ));
+        Ok(())
     }
 
     pub(super) fn emit_compare(&mut self, dst: u16, a: u16, b: u16, op: &str) -> Result<()> {
+        if matches!(op, "eq" | "ne") {
+            if self.compare_operand_is_nil(a) {
+                let rhs = if self.compare_operand_is_nil(b) {
+                    encoding::NIL_VALUE.to_string()
+                } else {
+                    self.load_rk(b)?
+                };
+                return self.emit_bool_compare(dst, &encoding::NIL_VALUE.to_string(), &rhs, op, "cmpnil");
+            }
+            if self.compare_operand_is_nil(b) {
+                let lhs = self.load_rk(a)?;
+                return self.emit_bool_compare(dst, &lhs, &encoding::NIL_VALUE.to_string(), op, "cmpnil");
+            }
+        }
         let lhs = self.load_rk(a)?;
         let rhs = self.load_rk(b)?;
         if self.operand_known_int(a) && self.operand_known_int(b) {
@@ -42,6 +109,10 @@ impl<'a> FunctionTranslator<'a> {
         ));
         self.store_reg(dst, &select)?;
         Ok(())
+    }
+
+    fn compare_operand_is_nil(&self, operand: u16) -> bool {
+        rk_is_const(operand) && matches!(self.function.consts.get(rk_index(operand) as usize), Some(Val::Nil))
     }
 
     pub(super) fn emit_to_bool(&mut self, dst: u16, src: u16) -> Result<()> {

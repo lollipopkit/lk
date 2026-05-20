@@ -350,6 +350,12 @@ fn test_bc32_current_typed_ops_roundtrip_gate() {
                 b: 14,
                 kind: IntCmpKind::Ge,
             },
+            Op::CmpIntJmp {
+                kind: IntCmpKind::Lt,
+                a: 15,
+                b: 14,
+                ofs: 1,
+            },
             Op::Floor { dst: 16, src: 17 },
             Op::ListLen { dst: 17, src: 18 },
             Op::MapLen { dst: 18, src: 19 },
@@ -368,9 +374,11 @@ fn test_bc32_current_typed_ops_roundtrip_gate() {
             Op::AccessK(25, 26, 1),
             Op::MapGetInterned(26, 27, 1),
             Op::MapSetInterned(27, 1, 28),
+            Op::MapSetInternedMove(27, 1, 28),
             Op::MapGetDynamic(28, 27, 29),
             Op::MapHasK(27, 28, 1),
             Op::ListPush { list: 28, val: 29 },
+            Op::ListPushMove { list: 28, val: 29 },
             Op::MapSet {
                 map: 29,
                 key: 30,
@@ -419,6 +427,9 @@ fn test_bc32_current_typed_ops_roundtrip_gate() {
             },
             Op::CmpLtImmJmp { r: 32, imm: 7, ofs: 2 },
             Op::CmpLeImmJmp { r: 33, imm: 8, ofs: 1 },
+            Op::CmpGtImmJmp { r: 34, imm: 9, ofs: 1 },
+            Op::CmpGeImmJmp { r: 35, imm: 10, ofs: 1 },
+            Op::CmpNeImmJmp { r: 34, imm: -3, ofs: 1 },
             Op::AddIntImmJmp { r: 34, imm: 1, ofs: -2 },
             Op::ForRangePrep {
                 idx: 35,
@@ -572,6 +583,38 @@ fn test_bc32_map_has_k_packed_execution() {
     assert!(matches!(out, Val::Bool(true)));
 }
 
+#[test]
+fn test_bc32_map_has_dynamic_packed_execution() {
+    let mut map = fast_hash_map_with_capacity(1);
+    map.insert("needle".into(), Val::Int(1));
+    let mut f = Function {
+        consts: vec![Val::Map(Arc::new(map)), Val::from_str("needle")],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::LoadK(1, 1),
+            Op::MapHas(2, 0, 1),
+            Op::Ret { base: 2, retc: 1 },
+        ],
+        n_regs: 3,
+        protos: vec![],
+        param_regs: vec![],
+        named_param_regs: vec![],
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+    let bc = Bc32Function::try_from_function(&f).expect("MapHas packed encoding");
+    f.code32 = Some(bc.code32);
+    f.bc32_decoded = bc.decoded;
+
+    let mut vm = crate::vm::Vm::new();
+    let mut ctx = crate::vm::VmContext::new_without_core_vm_builtins();
+    let out = vm.exec(&f, &mut ctx).expect("packed MapHas execution");
+    assert!(matches!(out, Val::Bool(true)));
+}
+
 pub(super) fn exec_packed_function(mut f: Function) -> Val {
     let bc = Bc32Function::try_from_function(&f).expect("typed op packed encoding");
     f.code32 = Some(bc.code32);
@@ -631,6 +674,7 @@ fn test_bc32_typed_numeric_packed_execution() {
             Op::DivFloat(5, 4, 0),
             Op::ModFloat(6, 5, 1),
             Op::Floor { dst: 7, src: 6 },
+            Op::FloorDivImm { dst: 7, src: 7, imm: 2 },
             Op::Ret { base: 7, retc: 1 },
         ],
         n_regs: 8,
@@ -767,13 +811,24 @@ fn test_bc32_fused_jumps_out_of_range_regs_use_reg_ext() {
         code: vec![
             Op::CmpLtImmJmp { r: 300, imm: 7, ofs: 2 },
             Op::CmpLeImmJmp { r: 301, imm: 8, ofs: 1 },
+            Op::CmpGtImmJmp { r: 304, imm: 9, ofs: 1 },
+            Op::CmpGeImmJmp {
+                r: 305,
+                imm: 10,
+                ofs: 1,
+            },
+            Op::CmpNeImmJmp {
+                r: 303,
+                imm: -3,
+                ofs: 1,
+            },
             Op::AddIntImmJmp {
                 r: 302,
                 imm: 1,
                 ofs: -2,
             },
         ],
-        n_regs: 303,
+        n_regs: 306,
         protos: vec![],
         param_regs: vec![],
         named_param_regs: vec![],
@@ -784,15 +839,77 @@ fn test_bc32_fused_jumps_out_of_range_regs_use_reg_ext() {
         analysis: None,
     };
     let bc = Bc32Function::try_from_function(&f).expect("fused jump reg-ext encodable");
-    assert_eq!(bc.code32.len(), 9);
+    assert_eq!(bc.code32.len(), 18);
     let decoded = bc.decode();
     let expected = vec![
         Op::CmpLtImmJmp { r: 300, imm: 7, ofs: 6 },
         Op::CmpLeImmJmp { r: 301, imm: 8, ofs: 3 },
+        Op::CmpGtImmJmp { r: 304, imm: 9, ofs: 3 },
+        Op::CmpGeImmJmp {
+            r: 305,
+            imm: 10,
+            ofs: 3,
+        },
+        Op::CmpNeImmJmp {
+            r: 303,
+            imm: -3,
+            ofs: 3,
+        },
         Op::AddIntImmJmp {
             r: 302,
             imm: 1,
             ofs: -6,
+        },
+    ];
+    assert_eq!(format!("{:?}", decoded.code), format!("{:?}", expected));
+}
+
+#[test]
+fn test_bc32_wide_cmp_imm_jumps_round_trip() {
+    let f = Function {
+        consts: vec![],
+        code: vec![
+            Op::CmpEqImmJmp { r: 1, imm: 300, ofs: 3 },
+            Op::CmpNeImmJmp {
+                r: 260,
+                imm: -300,
+                ofs: 2,
+            },
+            Op::CmpGtImmJmp { r: 2, imm: 900, ofs: 1 },
+            Op::CmpGeImmJmp {
+                r: 261,
+                imm: 400,
+                ofs: -2,
+            },
+        ],
+        n_regs: 262,
+        protos: vec![],
+        param_regs: vec![],
+        named_param_regs: vec![],
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+    let bc = Bc32Function::try_from_function(&f).expect("wide fused cmp imm jumps must be BC32 encodable");
+    let decoded = bc.decode();
+    let expected = vec![
+        Op::CmpEqImmJmp {
+            r: 1,
+            imm: 300,
+            ofs: 10,
+        },
+        Op::CmpNeImmJmp {
+            r: 260,
+            imm: -300,
+            ofs: 7,
+        },
+        Op::CmpGtImmJmp { r: 2, imm: 900, ofs: 3 },
+        Op::CmpGeImmJmp {
+            r: 261,
+            imm: 400,
+            ofs: -7,
         },
     ];
     assert_eq!(format!("{:?}", decoded.code), format!("{:?}", expected));
@@ -832,6 +949,11 @@ fn test_bc32_extended_string_intrinsics() {
         consts: vec![Val::from_str("pro"), Val::from_str("needle")],
         code: vec![
             Op::Floor { dst: 300, src: 301 },
+            Op::FloorDivImm {
+                dst: 301,
+                src: 300,
+                imm: 2,
+            },
             Op::StartsWithK(302, 303, 0),
             Op::ContainsK(304, 305, 1),
             Op::ToIter { dst: 306, src: 307 },
@@ -847,11 +969,11 @@ fn test_bc32_extended_string_intrinsics() {
         analysis: None,
     };
     let bc = Bc32Function::try_from_function(&f).expect("extended intrinsic ops encodable");
-    assert_eq!(bc.code32.len(), 8);
+    assert_eq!(bc.code32.len(), 10);
     let decoded = bc.decode();
     assert_eq!(format!("{:?}", decoded.code), format!("{:?}", f.code));
     let decoded_table = Bc32Decoded::from_words(&bc.code32).expect("decoded table");
-    assert_eq!(decoded_table.instrs.len(), 4);
+    assert_eq!(decoded_table.instrs.len(), 5);
 }
 
 #[test]
@@ -972,6 +1094,7 @@ fn test_bc32_collection_ops_out_of_range_regs_use_reg_ext() {
                 start: 301,
             },
             Op::ListPush { list: 300, val: 301 },
+            Op::ListPushMove { list: 300, val: 301 },
             Op::ListSetI {
                 dst: 304,
                 list: 300,
@@ -989,6 +1112,7 @@ fn test_bc32_collection_ops_out_of_range_regs_use_reg_ext() {
                 val: 304,
             },
             Op::MapSetInterned(302, 1, 4),
+            Op::MapSetInternedMove(302, 1, 4),
             Op::MapGetDynamic(304, 302, 4),
         ],
         n_regs: 305,
@@ -1002,7 +1126,7 @@ fn test_bc32_collection_ops_out_of_range_regs_use_reg_ext() {
         analysis: None,
     };
     let bc = Bc32Function::try_from_function(&f).expect("collection reg-ext encodable");
-    assert_eq!(bc.code32.len(), 19);
+    assert_eq!(bc.code32.len(), 23);
 
     let decoded = bc.decode();
     assert_eq!(format!("{:?}", decoded.code), format!("{:?}", f.code));

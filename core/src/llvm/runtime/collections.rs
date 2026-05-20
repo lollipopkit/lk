@@ -38,6 +38,14 @@ pub extern "C" fn lk_rt_list_push_int(list: i64, value: i64) -> i64 {
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_list_push_str_int(list: i64, prefix: *const i8, prefix_len: i64, suffix: i64) -> i64 {
+    with_state(|state| {
+        let key = cached_str_int_key(state, prefix, prefix_len, suffix);
+        list_push_decoded(state, list, Val::Str(key), "lk_rt_list_push_str_int")
+    })
+}
+
 fn list_push_decoded(state: &mut RuntimeState, list: i64, item: Val, helper: &str) -> i64 {
     if let Some(Val::List(items)) = state.handles.get_mut(list) {
         Arc::make_mut(items).push(item);
@@ -107,6 +115,31 @@ pub extern "C" fn lk_rt_map_set(map: i64, key: i64, value: i64) -> i64 {
             }
             other => {
                 eprintln!("lk_rt_map_set: target is not a Map, got {}", other.type_name());
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_set_const_str(map: i64, key: *const i8, key_len: i64, value: i64) -> i64 {
+    let key = Val::intern_str(read_str_int_prefix(key, key_len).as_ref());
+    with_state(|state| {
+        let item = state.decode_value(value);
+        if let Some(Val::Map(items)) = state.handles.get_mut(map) {
+            Val::map_insert_arcstr(Arc::make_mut(items), key, item);
+            return map;
+        }
+        match state.decode_value(map) {
+            Val::Map(mut items) => {
+                Val::map_insert_arcstr(Arc::make_mut(&mut items), key, item);
+                state.encode_value(Val::Map(items))
+            }
+            other => {
+                eprintln!(
+                    "lk_rt_map_set_const_str: target is not a Map, got {}",
+                    other.type_name()
+                );
                 encoding::NIL_VALUE
             }
         }
@@ -226,6 +259,30 @@ pub extern "C" fn lk_rt_access_str_int(base: i64, prefix: *const i8, prefix_len:
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_get_const_str(base: i64, key: *const i8, key_len: i64) -> i64 {
+    let key = read_str_int_prefix(key, key_len);
+    with_state(|state| {
+        let result = state.handles.get_ref(base).and_then(|value| match value {
+            Val::Map(map) => Some(Val::map_get_str(map, key.as_ref()).cloned().unwrap_or(Val::Nil)),
+            _ => None,
+        });
+        state.encode_value(result.unwrap_or(Val::Nil))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_get_str_int(base: i64, prefix: *const i8, prefix_len: i64, suffix: i64) -> i64 {
+    with_state(|state| {
+        let key = cached_str_int_key(state, prefix, prefix_len, suffix);
+        let result = state.handles.get_ref(base).and_then(|value| match value {
+            Val::Map(map) => Some(Val::map_get_str(map, key.as_str()).cloned().unwrap_or(Val::Nil)),
+            _ => None,
+        });
+        state.encode_value(result.unwrap_or(Val::Nil))
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_map_has(base: i64, key: i64) -> i64 {
     with_state(|state| {
         let out = state.handles.get_ref(base).is_some_and(|value| match value {
@@ -234,6 +291,18 @@ pub extern "C" fn lk_rt_map_has(base: i64, key: i64) -> i64 {
                 .get_ref(key)
                 .and_then(Val::as_str)
                 .is_some_and(|key| Val::map_contains_str(map, key)),
+            _ => false,
+        });
+        state.encode_value(Val::Bool(out))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_has_const_str(base: i64, key: *const i8, key_len: i64) -> i64 {
+    let key = read_str_int_prefix(key, key_len);
+    with_state(|state| {
+        let out = state.handles.get_ref(base).is_some_and(|value| match value {
+            Val::Map(map) => Val::map_contains_str(map, key.as_ref()),
             _ => false,
         });
         state.encode_value(Val::Bool(out))
@@ -255,6 +324,368 @@ pub extern "C" fn lk_rt_map_has_str_int(base: i64, prefix: *const i8, prefix_len
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_add_access(lhs: i64, base: i64, key: i64) -> i64 {
     lk_rt_binop_access(lhs, base, key, BinOp::Add)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_mul_access(lhs: i64, base: i64, key: i64) -> i64 {
+    lk_rt_binop_access(lhs, base, key, BinOp::Mul)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_add_map_get_const_str(lhs: i64, base: i64, key: *const i8, key_len: i64) -> i64 {
+    let key = read_str_int_prefix(key, key_len);
+    with_state(|state| {
+        if let Val::Int(left) = encoding::decode_immediate(lhs)
+            && let Some(Val::Map(map)) = state.handles.get_ref(base)
+            && let Some(Val::Int(right)) = Val::map_get_str(map, key.as_ref())
+        {
+            return state.encode_value(Val::Int(left + right));
+        }
+        let left = state.decode_value(lhs);
+        let right = state
+            .handles
+            .get_ref(base)
+            .and_then(|value| match value {
+                Val::Map(map) => Some(Val::map_get_str(map, key.as_ref()).cloned().unwrap_or(Val::Nil)),
+                _ => None,
+            })
+            .unwrap_or(Val::Nil);
+        match BinOp::Add.eval_vals(&left, &right) {
+            Ok(value) => state.encode_value(value),
+            Err(err) => {
+                eprintln!("lk_rt_add_map_get_const_str error: {err}");
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_add_map_get_str_int(
+    lhs: i64,
+    base: i64,
+    prefix: *const i8,
+    prefix_len: i64,
+    suffix: i64,
+) -> i64 {
+    with_state(|state| {
+        let key = cached_str_int_key(state, prefix, prefix_len, suffix);
+        if let Val::Int(left) = encoding::decode_immediate(lhs)
+            && let Some(Val::Map(map)) = state.handles.get_ref(base)
+            && let Some(Val::Int(right)) = Val::map_get_str(map, key.as_str())
+        {
+            return state.encode_value(Val::Int(left + right));
+        }
+        let left = state.decode_value(lhs);
+        let right = state
+            .handles
+            .get_ref(base)
+            .and_then(|value| match value {
+                Val::Map(map) => Some(Val::map_get_str(map, key.as_str()).cloned().unwrap_or(Val::Nil)),
+                _ => None,
+            })
+            .unwrap_or(Val::Nil);
+        match BinOp::Add.eval_vals(&left, &right) {
+            Ok(value) => state.encode_value(value),
+            Err(err) => {
+                eprintln!("lk_rt_add_map_get_str_int error: {err}");
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_mul_map_get_const_str(lhs: i64, base: i64, key: *const i8, key_len: i64) -> i64 {
+    let key = read_str_int_prefix(key, key_len);
+    with_state(|state| {
+        if let Val::Int(left) = encoding::decode_immediate(lhs)
+            && let Some(Val::Map(map)) = state.handles.get_ref(base)
+            && let Some(Val::Int(right)) = Val::map_get_str(map, key.as_ref())
+        {
+            return state.encode_value(Val::Int(left * right));
+        }
+        let left = state.decode_value(lhs);
+        let right = state
+            .handles
+            .get_ref(base)
+            .and_then(|value| match value {
+                Val::Map(map) => Some(Val::map_get_str(map, key.as_ref()).cloned().unwrap_or(Val::Nil)),
+                _ => None,
+            })
+            .unwrap_or(Val::Nil);
+        match BinOp::Mul.eval_vals(&left, &right) {
+            Ok(value) => state.encode_value(value),
+            Err(err) => {
+                eprintln!("lk_rt_mul_map_get_const_str error: {err}");
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_mul_map_get_str_int(
+    lhs: i64,
+    base: i64,
+    prefix: *const i8,
+    prefix_len: i64,
+    suffix: i64,
+) -> i64 {
+    with_state(|state| {
+        let key = cached_str_int_key(state, prefix, prefix_len, suffix);
+        if let Val::Int(left) = encoding::decode_immediate(lhs)
+            && let Some(Val::Map(map)) = state.handles.get_ref(base)
+            && let Some(Val::Int(right)) = Val::map_get_str(map, key.as_str())
+        {
+            return state.encode_value(Val::Int(left * right));
+        }
+        let left = state.decode_value(lhs);
+        let right = state
+            .handles
+            .get_ref(base)
+            .and_then(|value| match value {
+                Val::Map(map) => Some(Val::map_get_str(map, key.as_str()).cloned().unwrap_or(Val::Nil)),
+                _ => None,
+            })
+            .unwrap_or(Val::Nil);
+        match BinOp::Mul.eval_vals(&left, &right) {
+            Ok(value) => state.encode_value(value),
+            Err(err) => {
+                eprintln!("lk_rt_mul_map_get_str_int error: {err}");
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_set_add_map_get_const_str(map: i64, key: *const i8, key_len: i64, lhs: i64) -> i64 {
+    let lookup_key = read_str_int_prefix(key, key_len);
+    let encoded_key = Val::intern_str(lookup_key.as_ref());
+    with_state(|state| {
+        let lhs_int = match encoding::decode_immediate(lhs) {
+            Val::Int(value) => Some(value),
+            _ => None,
+        };
+        let left = lhs_int.map(Val::Int).unwrap_or_else(|| state.decode_value(lhs));
+        if let Some(Val::Map(items)) = state.handles.get_mut(map) {
+            if let Some(left) = lhs_int
+                && let Some(right) = Val::map_get_str(items, lookup_key.as_ref()).and_then(|value| match value {
+                    Val::Int(value) => Some(*value),
+                    _ => None,
+                })
+            {
+                Val::map_insert_arcstr(Arc::make_mut(items), encoded_key, Val::Int(left + right));
+                return map;
+            }
+            let right = Val::map_get_str(items, lookup_key.as_ref())
+                .cloned()
+                .unwrap_or(Val::Nil);
+            let value = match BinOp::Add.eval_vals(&left, &right) {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("lk_rt_map_set_add_map_get_const_str error: {err}");
+                    return encoding::NIL_VALUE;
+                }
+            };
+            Val::map_insert_arcstr(Arc::make_mut(items), encoded_key, value);
+            return map;
+        }
+        match state.decode_value(map) {
+            Val::Map(mut items) => {
+                if let Some(left) = lhs_int
+                    && let Some(right) = Val::map_get_str(&items, lookup_key.as_ref()).and_then(|value| match value {
+                        Val::Int(value) => Some(*value),
+                        _ => None,
+                    })
+                {
+                    Val::map_insert_arcstr(Arc::make_mut(&mut items), encoded_key, Val::Int(left + right));
+                    return state.encode_value(Val::Map(items));
+                }
+                let right = Val::map_get_str(&items, lookup_key.as_ref())
+                    .cloned()
+                    .unwrap_or(Val::Nil);
+                let value = match BinOp::Add.eval_vals(&left, &right) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        eprintln!("lk_rt_map_set_add_map_get_const_str error: {err}");
+                        return encoding::NIL_VALUE;
+                    }
+                };
+                Val::map_insert_arcstr(Arc::make_mut(&mut items), encoded_key, value);
+                state.encode_value(Val::Map(items))
+            }
+            other => {
+                eprintln!(
+                    "lk_rt_map_set_add_map_get_const_str: target is not a Map, got {}",
+                    other.type_name()
+                );
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_set_add_map_get_str_int(
+    map: i64,
+    prefix: *const i8,
+    prefix_len: i64,
+    suffix: i64,
+    lhs: i64,
+) -> i64 {
+    with_state(|state| {
+        let key = cached_str_int_key(state, prefix, prefix_len, suffix);
+        let lhs_int = match encoding::decode_immediate(lhs) {
+            Val::Int(value) => Some(value),
+            _ => None,
+        };
+        let left = lhs_int.map(Val::Int).unwrap_or_else(|| state.decode_value(lhs));
+        if let Some(Val::Map(items)) = state.handles.get_mut(map) {
+            if let Some(left) = lhs_int
+                && let Some(right) = Val::map_get_str(items, key.as_str()).and_then(|value| match value {
+                    Val::Int(value) => Some(*value),
+                    _ => None,
+                })
+            {
+                Val::map_insert_arcstr(Arc::make_mut(items), key, Val::Int(left + right));
+                return map;
+            }
+            let right = Val::map_get_str(items, key.as_str()).cloned().unwrap_or(Val::Nil);
+            let value = match BinOp::Add.eval_vals(&left, &right) {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("lk_rt_map_set_add_map_get_str_int error: {err}");
+                    return encoding::NIL_VALUE;
+                }
+            };
+            Val::map_insert_arcstr(Arc::make_mut(items), key, value);
+            return map;
+        }
+        match state.decode_value(map) {
+            Val::Map(mut items) => {
+                if let Some(left) = lhs_int
+                    && let Some(right) = Val::map_get_str(&items, key.as_str()).and_then(|value| match value {
+                        Val::Int(value) => Some(*value),
+                        _ => None,
+                    })
+                {
+                    Val::map_insert_arcstr(Arc::make_mut(&mut items), key, Val::Int(left + right));
+                    return state.encode_value(Val::Map(items));
+                }
+                let right = Val::map_get_str(&items, key.as_str()).cloned().unwrap_or(Val::Nil);
+                let value = match BinOp::Add.eval_vals(&left, &right) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        eprintln!("lk_rt_map_set_add_map_get_str_int error: {err}");
+                        return encoding::NIL_VALUE;
+                    }
+                };
+                Val::map_insert_arcstr(Arc::make_mut(&mut items), key, value);
+                state.encode_value(Val::Map(items))
+            }
+            other => {
+                eprintln!(
+                    "lk_rt_map_set_add_map_get_str_int: target is not a Map, got {}",
+                    other.type_name()
+                );
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_update_int_const_str(map: i64, key: *const i8, key_len: i64, init: i64, delta: i64) -> i64 {
+    let lookup_key = read_str_int_prefix(key, key_len);
+    let encoded_key = Val::intern_str(lookup_key.as_ref());
+    with_state(|state| {
+        let init_value = state.decode_value(init);
+        let delta_value = state.decode_value(delta);
+        if let Some(Val::Map(items)) = state.handles.get_mut(map) {
+            let value = map_update_value(items, lookup_key.as_ref(), &init_value, &delta_value);
+            Val::map_insert_arcstr(Arc::make_mut(items), encoded_key, value);
+            return map;
+        }
+        match state.decode_value(map) {
+            Val::Map(mut items) => {
+                let value = map_update_value(&items, lookup_key.as_ref(), &init_value, &delta_value);
+                Val::map_insert_arcstr(Arc::make_mut(&mut items), encoded_key, value);
+                state.encode_value(Val::Map(items))
+            }
+            other => {
+                eprintln!(
+                    "lk_rt_map_update_int_const_str: target is not a Map, got {}",
+                    other.type_name()
+                );
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lk_rt_map_update_int_str_int(
+    map: i64,
+    prefix: *const i8,
+    prefix_len: i64,
+    suffix: i64,
+    init: i64,
+    delta: i64,
+) -> i64 {
+    with_state(|state| {
+        let key = cached_str_int_key(state, prefix, prefix_len, suffix);
+        let init_value = state.decode_value(init);
+        let delta_value = state.decode_value(delta);
+        if let Some(Val::Map(items)) = state.handles.get_mut(map) {
+            let value = map_update_value(items, key.as_str(), &init_value, &delta_value);
+            Val::map_insert_arcstr(Arc::make_mut(items), key, value);
+            return map;
+        }
+        match state.decode_value(map) {
+            Val::Map(mut items) => {
+                let value = map_update_value(&items, key.as_str(), &init_value, &delta_value);
+                Val::map_insert_arcstr(Arc::make_mut(&mut items), key, value);
+                state.encode_value(Val::Map(items))
+            }
+            other => {
+                eprintln!(
+                    "lk_rt_map_update_int_str_int: target is not a Map, got {}",
+                    other.type_name()
+                );
+                encoding::NIL_VALUE
+            }
+        }
+    })
+}
+
+fn map_update_value(
+    items: &crate::util::fast_map::FastHashMap<arcstr::ArcStr, Val>,
+    key: &str,
+    init: &Val,
+    delta: &Val,
+) -> Val {
+    match Val::map_get_str(items, key) {
+        None | Some(Val::Nil) => init.clone(),
+        Some(Val::Int(left)) => match delta {
+            Val::Int(right) => Val::Int(left + right),
+            _ => match BinOp::Add.eval_vals(&Val::Int(*left), delta) {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("lk_rt_map_update_int add error: {err}");
+                    Val::Nil
+                }
+            },
+        },
+        Some(current) => match BinOp::Add.eval_vals(current, delta) {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("lk_rt_map_update_int add error: {err}");
+                Val::Nil
+            }
+        },
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -509,6 +940,7 @@ fn list_int_binop_access(state: &mut RuntimeState, lhs: i64, base: i64, key: i64
     let value = match op {
         BinOp::Add => left + right,
         BinOp::Sub => left - right,
+        BinOp::Mul => left * right,
         _ => unreachable!("unsupported access binop"),
     };
     Some(state.encode_value(Val::Int(value)))
@@ -518,6 +950,7 @@ fn access_binop_helper_name(op: BinOp) -> &'static str {
     match op {
         BinOp::Add => "lk_rt_add_access",
         BinOp::Sub => "lk_rt_sub_access",
+        BinOp::Mul => "lk_rt_mul_access",
         _ => "lk_rt_binop_access",
     }
 }

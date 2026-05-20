@@ -6,9 +6,17 @@ import map;
 import string;
 
 let seed = os.epoch();
+let workload_filter = os.env.get("LK_WORKLOAD_FILTER", "");
+let t0 = 0.0;
+let t1 = 0.0;
+let checksum = 0;
 
 fn emit(name, checksum, t0, t1) {
     println("workload|${name}|checksum=${checksum}|elapsed=${(t1 - t0) * 1000}ms");
+}
+
+fn should_run(name) {
+    return workload_filter == "" || workload_filter == name;
 }
 
 fn gcd(a0, b0) {
@@ -22,14 +30,16 @@ fn gcd(a0, b0) {
     return a;
 }
 
-let t0 = os.clock();
-let checksum = 0;
-let gcd_iters = 80000 + (seed - seed);
-for i in 1..=gcd_iters {
-    checksum += gcd((i * 37) + 11, (i * 19) + 7);
+if should_run("gcd_batch") {
+    t0 = os.clock();
+    checksum = 0;
+    let gcd_iters = 80000 + (seed - seed);
+    for i in 1..=gcd_iters {
+        checksum += gcd((i * 37) + 11, (i * 19) + 7);
+    }
+    t1 = os.clock();
+    emit("gcd_batch", checksum, t0, t1);
 }
-let t1 = os.clock();
-emit("gcd_batch", checksum, t0, t1);
 
 fn is_prime(n) {
     if n < 2 { return false; }
@@ -43,16 +53,18 @@ fn is_prime(n) {
     return true;
 }
 
-t0 = os.clock();
-checksum = 0;
-let prime_limit = 7000 + (seed - seed);
-for n in 2..=prime_limit {
-    if is_prime(n) {
-        checksum += n;
+if should_run("prime_trial_division") {
+    t0 = os.clock();
+    checksum = 0;
+    let prime_limit = 7000 + (seed - seed);
+    for n in 2..=prime_limit {
+        if is_prime(n) {
+            checksum += n;
+        }
     }
+    t1 = os.clock();
+    emit("prime_trial_division", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("prime_trial_division", checksum, t0, t1);
 
 fn binary_search_implicit(target, n) {
     let lo = 0;
@@ -72,143 +84,157 @@ fn binary_search_implicit(target, n) {
     return -1;
 }
 
-t0 = os.clock();
-checksum = 0;
-let search_iters = 120000 + (seed - seed);
-let search_n = 4096 + (seed - seed);
-for i in 1..=search_iters {
-    let target = (i % search_n) * 2;
-    checksum += binary_search_implicit(target, search_n);
+if should_run("binary_search") {
+    t0 = os.clock();
+    checksum = 0;
+    let search_iters = 120000 + (seed - seed);
+    let search_n = 4096 + (seed - seed);
+    for i in 1..=search_iters {
+        let target = (i % search_n) * 2;
+        checksum += binary_search_implicit(target, search_n);
+    }
+    t1 = os.clock();
+    emit("binary_search", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("binary_search", checksum, t0, t1);
 
-t0 = os.clock();
-checksum = 0;
-let two_sum_rounds = 2500 + (seed - seed);
-let two_sum_width = 80 + (seed - seed);
-for r in 1..=two_sum_rounds {
-    let seen = {};
-    let found = 0;
-    let target = two_sum_width + 1;
-    for i in 1..=two_sum_width {
-        seen.set("n${i}", i + r);
-    }
-    for i in 1..=two_sum_width {
-        let need = target - i;
-        let need_key = "n${need}";
-        if map.get(seen, need_key) != nil {
-            found += 1;
+if should_run("two_sum_map") {
+    t0 = os.clock();
+    checksum = 0;
+    let two_sum_rounds = 2500 + (seed - seed);
+    let two_sum_width = 80 + (seed - seed);
+    for r in 1..=two_sum_rounds {
+        let seen = {};
+        let found = 0;
+        let target = two_sum_width + 1;
+        for i in 1..=two_sum_width {
+            seen.set("n${i}", i + r);
         }
+        for i in 1..=two_sum_width {
+            let need = target - i;
+            let need_key = "n${need}";
+            if map.get(seen, need_key) != nil {
+                found += 1;
+            }
+        }
+        checksum += found;
     }
-    checksum += found;
+    t1 = os.clock();
+    emit("two_sum_map", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("two_sum_map", checksum, t0, t1);
 
-t0 = os.clock();
-checksum = 0;
-let window_iters = 4000 + (seed - seed);
-let window_n = 120 + (seed - seed);
-let window_size = 12 + (seed - seed);
-for r in 1..=window_iters {
-    let values = [];
-    for i in 0..window_n {
-        values.push(((i * 31) + r) % 251);
-    }
-    let rolling = 0;
-    for i in 0..window_n {
-        rolling += values[i];
-        if i >= window_size {
-            rolling -= values[i - window_size];
+if should_run("sliding_window_sum") {
+    t0 = os.clock();
+    checksum = 0;
+    let window_iters = 4000 + (seed - seed);
+    let window_n = 120 + (seed - seed);
+    let window_size = 12 + (seed - seed);
+    for r in 1..=window_iters {
+        let values = [];
+        for i in 0..window_n {
+            values.push(((i * 31) + r) % 251);
         }
-        if i >= (window_size - 1) {
-            checksum += rolling;
+        let rolling = 0;
+        for i in 0..window_n {
+            rolling += values[i];
+            if i >= window_size {
+                rolling -= values[i - window_size];
+            }
+            if i >= (window_size - 1) {
+                checksum += rolling;
+            }
         }
     }
+    t1 = os.clock();
+    emit("sliding_window_sum", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("sliding_window_sum", checksum, t0, t1);
 
-t0 = os.clock();
-checksum = 0;
-let mat_iters = 18000 + (seed - seed);
-for r in 1..=mat_iters {
-    let a00 = (r % 13) + 1; let a01 = 2; let a02 = 3;
-    let a10 = 4; let a11 = (r % 17) + 5; let a12 = 6;
-    let a20 = 7; let a21 = 8; let a22 = (r % 19) + 9;
-    let b00 = 3; let b01 = (r % 11) + 1; let b02 = 5;
-    let b10 = 7; let b11 = 9; let b12 = (r % 7) + 2;
-    let b20 = 4; let b21 = 6; let b22 = 8;
-    checksum += (a00 * b00) + (a01 * b10) + (a02 * b20);
-    checksum += (a10 * b01) + (a11 * b11) + (a12 * b21);
-    checksum += (a20 * b02) + (a21 * b12) + (a22 * b22);
+if should_run("matrix_3x3_multiply") {
+    t0 = os.clock();
+    checksum = 0;
+    let mat_iters = 18000 + (seed - seed);
+    for r in 1..=mat_iters {
+        let a00 = (r % 13) + 1; let a01 = 2; let a02 = 3;
+        let a10 = 4; let a11 = (r % 17) + 5; let a12 = 6;
+        let a20 = 7; let a21 = 8; let a22 = (r % 19) + 9;
+        let b00 = 3; let b01 = (r % 11) + 1; let b02 = 5;
+        let b10 = 7; let b11 = 9; let b12 = (r % 7) + 2;
+        let b20 = 4; let b21 = 6; let b22 = 8;
+        checksum += (a00 * b00) + (a01 * b10) + (a02 * b20);
+        checksum += (a10 * b01) + (a11 * b11) + (a12 * b21);
+        checksum += (a20 * b02) + (a21 * b12) + (a22 * b22);
+    }
+    t1 = os.clock();
+    emit("matrix_3x3_multiply", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("matrix_3x3_multiply", checksum, t0, t1);
 
-t0 = os.clock();
-checksum = 0;
-let stock_rounds = 3000 + (seed - seed);
-let stock_n = 180 + (seed - seed);
-for r in 1..=stock_rounds {
-    let min_price = 1000000;
-    let best = 0;
-    for i in 1..=stock_n {
-        let price = ((i * 97) + (r * 13)) % 1009;
-        if price < min_price {
-            min_price = price;
+if should_run("stock_max_profit") {
+    t0 = os.clock();
+    checksum = 0;
+    let stock_rounds = 3000 + (seed - seed);
+    let stock_n = 180 + (seed - seed);
+    for r in 1..=stock_rounds {
+        let min_price = 1000000;
+        let best = 0;
+        for i in 1..=stock_n {
+            let price = ((i * 97) + (r * 13)) % 1009;
+            if price < min_price {
+                min_price = price;
+            }
+            let profit = price - min_price;
+            if profit > best {
+                best = profit;
+            }
         }
-        let profit = price - min_price;
-        if profit > best {
-            best = profit;
-        }
+        checksum += best;
     }
-    checksum += best;
+    t1 = os.clock();
+    emit("stock_max_profit", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("stock_max_profit", checksum, t0, t1);
 
-t0 = os.clock();
-checksum = 0;
-let hist_rounds = 3500 + (seed - seed);
-let hist_n = 90 + (seed - seed);
-for r in 1..=hist_rounds {
-    let hist = {};
-    for i in 1..=hist_n {
-        let bucket = ((i * 17) + r) % 32;
-        let key = "b${bucket}";
-        let prev = map.get(hist, key);
-        if prev == nil {
-            hist.set(key, 1);
-        } else {
-            hist.set(key, prev + 1);
+if should_run("histogram_group_count") {
+    t0 = os.clock();
+    checksum = 0;
+    let hist_rounds = 3500 + (seed - seed);
+    let hist_n = 90 + (seed - seed);
+    for r in 1..=hist_rounds {
+        let hist = {};
+        for i in 1..=hist_n {
+            let bucket = ((i * 17) + r) % 32;
+            let key = "b${bucket}";
+            let prev = map.get(hist, key);
+            if prev == nil {
+                hist.set(key, 1);
+            } else {
+                hist.set(key, prev + 1);
+            }
+        }
+        for b in 0..32 {
+            let key = "b${b}";
+            let v = map.get(hist, key);
+            if v != nil {
+                checksum += v * v;
+            }
         }
     }
-    for b in 0..32 {
-        let key = "b${b}";
-        let v = map.get(hist, key);
-        if v != nil {
-            checksum += v * v;
-        }
-    }
+    t1 = os.clock();
+    emit("histogram_group_count", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("histogram_group_count", checksum, t0, t1);
 
-t0 = os.clock();
-checksum = 0;
-let hash_rounds = 5000 + (seed - seed);
-for r in 1..=hash_rounds {
-    let s = "tenant-${r}-order-${r % 97}-region-${r % 11}";
-    let h = 2166136261;
-    for ch in s {
-        h = ((h * 16777619) + ch.len()) % 1000000007;
+if should_run("string_key_hash") {
+    t0 = os.clock();
+    checksum = 0;
+    let hash_rounds = 5000 + (seed - seed);
+    for r in 1..=hash_rounds {
+        let s = "tenant-${r}-order-${r % 97}-region-${r % 11}";
+        let h = 2166136261;
+        for ch in s {
+            h = ((h * 16777619) + ch.len()) % 1000000007;
+        }
+        checksum += h;
     }
-    checksum += h;
+    t1 = os.clock();
+    emit("string_key_hash", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("string_key_hash", checksum, t0, t1);
 
 fn score_order(price, qty, discount) {
     let subtotal = price * qty;
@@ -216,64 +242,68 @@ fn score_order(price, qty, discount) {
     return subtotal + fee - discount;
 }
 
-t0 = os.clock();
-checksum = 0;
-let pipeline_iters = 90000 + (seed - seed);
-for i in 1..=pipeline_iters {
-    checksum += score_order((i % 101) + 1, (i % 7) + 1, i % 13);
+if should_run("order_score_pipeline") {
+    t0 = os.clock();
+    checksum = 0;
+    let pipeline_iters = 90000 + (seed - seed);
+    for i in 1..=pipeline_iters {
+        checksum += score_order((i % 101) + 1, (i % 7) + 1, i % 13);
+    }
+    t1 = os.clock();
+    emit("order_score_pipeline", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("order_score_pipeline", checksum, t0, t1);
 
-t0 = os.clock();
-checksum = 0;
-let log_rounds = 2200 + (seed - seed);
-let log_width = 72 + (seed - seed);
-for r in 1..=log_rounds {
-    let status_counts = {};
-    for i in 1..=log_width {
-        let status = "ok";
-        if (((i + r) % 17) == 0) {
-            let line = "ts=${r}|tenant=t${i % 13}|status=error|path=/api/v1/orders/${i % 19}";
-            let parsed_len = line.split("|").join("|").len();
-            checksum += parsed_len % 7;
-            let prev = map.get(status_counts, "error");
-            if prev == nil {
-                status_counts.set("error", 1);
+if should_run("log_parse_filter") {
+    t0 = os.clock();
+    checksum = 0;
+    let log_rounds = 2200 + (seed - seed);
+    let log_width = 72 + (seed - seed);
+    for r in 1..=log_rounds {
+        let status_counts = {};
+        for i in 1..=log_width {
+            let status = "ok";
+            if (((i + r) % 17) == 0) {
+                let line = "ts=${r}|tenant=t${i % 13}|status=error|path=/api/v1/orders/${i % 19}";
+                let parsed_len = line.split("|").join("|").len();
+                checksum += parsed_len % 7;
+                let prev = map.get(status_counts, "error");
+                if prev == nil {
+                    status_counts.set("error", 1);
+                } else {
+                    status_counts.set("error", prev + 1);
+                }
+            } else if (((i + r) % 5) == 0) {
+                let line = "ts=${r}|tenant=t${i % 13}|status=warn|path=/api/v1/orders/${i % 19}";
+                let parsed_len = line.split("|").join("|").len();
+                checksum += parsed_len % 7;
+                let prev = map.get(status_counts, "warn");
+                if prev == nil {
+                    status_counts.set("warn", 1);
+                } else {
+                    status_counts.set("warn", prev + 1);
+                }
             } else {
-                status_counts.set("error", prev + 1);
-            }
-        } else if (((i + r) % 5) == 0) {
-            let line = "ts=${r}|tenant=t${i % 13}|status=warn|path=/api/v1/orders/${i % 19}";
-            let parsed_len = line.split("|").join("|").len();
-            checksum += parsed_len % 7;
-            let prev = map.get(status_counts, "warn");
-            if prev == nil {
-                status_counts.set("warn", 1);
-            } else {
-                status_counts.set("warn", prev + 1);
-            }
-        } else {
-            let line = "ts=${r}|tenant=t${i % 13}|status=${status}|path=/api/v1/orders/${i % 19}";
-            let parsed_len = line.split("|").join("|").len();
-            checksum += parsed_len % 7;
-            let prev = map.get(status_counts, status);
-            if prev == nil {
-                status_counts.set(status, 1);
-            } else {
-                status_counts.set(status, prev + 1);
+                let line = "ts=${r}|tenant=t${i % 13}|status=${status}|path=/api/v1/orders/${i % 19}";
+                let parsed_len = line.split("|").join("|").len();
+                checksum += parsed_len % 7;
+                let prev = map.get(status_counts, status);
+                if prev == nil {
+                    status_counts.set(status, 1);
+                } else {
+                    status_counts.set(status, prev + 1);
+                }
             }
         }
+        let ok_count = map.get(status_counts, "ok");
+        let warn_count = map.get(status_counts, "warn");
+        let error_count = map.get(status_counts, "error");
+        if ok_count != nil { checksum += ok_count; }
+        if warn_count != nil { checksum += warn_count * 7; }
+        if error_count != nil { checksum += error_count * 31; }
     }
-    let ok_count = map.get(status_counts, "ok");
-    let warn_count = map.get(status_counts, "warn");
-    let error_count = map.get(status_counts, "error");
-    if ok_count != nil { checksum += ok_count; }
-    if warn_count != nil { checksum += warn_count * 7; }
-    if error_count != nil { checksum += error_count * 31; }
+    t1 = os.clock();
+    emit("log_parse_filter", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("log_parse_filter", checksum, t0, t1);
 
 fn cart_line_total(sku, qty, region, prices, tax_rates) {
     let price = map.get(prices, sku);
@@ -288,82 +318,88 @@ fn cart_line_total(sku, qty, region, prices, tax_rates) {
     return subtotal - discount + math.floor((subtotal * tax) / 100);
 }
 
-t0 = os.clock();
-checksum = 0;
-let cart_rounds = 5000 + (seed - seed);
-let prices = {"basic": 19, "pro": 49, "team": 99, "addon": 7};
-let tax_rates = {"us": 8, "eu": 20, "apac": 12};
-for r in 1..=cart_rounds {
-    let region = "us";
-    if ((r % 3) == 1) {
-        region = "eu";
-    } else if ((r % 3) == 2) {
-        region = "apac";
+if should_run("cart_pricing_rules") {
+    t0 = os.clock();
+    checksum = 0;
+    let cart_rounds = 5000 + (seed - seed);
+    let prices = {"basic": 19, "pro": 49, "team": 99, "addon": 7};
+    let tax_rates = {"us": 8, "eu": 20, "apac": 12};
+    for r in 1..=cart_rounds {
+        let region = "us";
+        if ((r % 3) == 1) {
+            region = "eu";
+        } else if ((r % 3) == 2) {
+            region = "apac";
+        }
+        checksum += cart_line_total("basic", (r % 6) + 1, region, prices, tax_rates);
+        checksum += cart_line_total("pro", (r % 4) + 1, region, prices, tax_rates);
+        checksum += cart_line_total("team", (r % 3) + 1, region, prices, tax_rates);
+        if ((r % 2) == 0) {
+            checksum += cart_line_total("addon", (r % 8) + 1, region, prices, tax_rates);
+        }
     }
-    checksum += cart_line_total("basic", (r % 6) + 1, region, prices, tax_rates);
-    checksum += cart_line_total("pro", (r % 4) + 1, region, prices, tax_rates);
-    checksum += cart_line_total("team", (r % 3) + 1, region, prices, tax_rates);
-    if ((r % 2) == 0) {
-        checksum += cart_line_total("addon", (r % 8) + 1, region, prices, tax_rates);
-    }
+    t1 = os.clock();
+    emit("cart_pricing_rules", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("cart_pricing_rules", checksum, t0, t1);
 
-t0 = os.clock();
-checksum = 0;
-let route_rounds = 90000 + (seed - seed);
-let role_levels = {"guest": 0, "user": 10, "analyst": 40, "ops": 70, "admin": 100};
-for i in 1..=route_rounds {
-    if ((i % 11) == 0) {
-        checksum += (i % 97) + map.get(role_levels, "admin") + "/admin/users".len();
-    } else if ((i % 7) == 0) {
-        checksum += (i % 97) + map.get(role_levels, "ops") + "DELETE".len();
-    } else if ((i % 5) == 0) {
-        checksum += (i % 97) + map.get(role_levels, "analyst") + "/reports/daily".len();
-    } else if ((i % 2) == 0) {
-        checksum += (i % 97) + map.get(role_levels, "user") + "/api/orders".len();
-    } else {
-        checksum += 3 + map.get(role_levels, "guest");
+if should_run("route_permission_check") {
+    t0 = os.clock();
+    checksum = 0;
+    let route_rounds = 90000 + (seed - seed);
+    let role_levels = {"guest": 0, "user": 10, "analyst": 40, "ops": 70, "admin": 100};
+    for i in 1..=route_rounds {
+        if ((i % 11) == 0) {
+            checksum += (i % 97) + map.get(role_levels, "admin") + "/admin/users".len();
+        } else if ((i % 7) == 0) {
+            checksum += (i % 97) + map.get(role_levels, "ops") + "DELETE".len();
+        } else if ((i % 5) == 0) {
+            checksum += (i % 97) + map.get(role_levels, "analyst") + "/reports/daily".len();
+        } else if ((i % 2) == 0) {
+            checksum += (i % 97) + map.get(role_levels, "user") + "/api/orders".len();
+        } else {
+            checksum += 3 + map.get(role_levels, "guest");
+        }
     }
+    t1 = os.clock();
+    emit("route_permission_check", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("route_permission_check", checksum, t0, t1);
 
-t0 = os.clock();
-checksum = 0;
-let inventory_rounds = 2800 + (seed - seed);
-for r in 1..=inventory_rounds {
-    let stock = {};
-    let reorder = [];
-    for i in 1..=64 {
-        let sku = "sku-${i % 23}";
-        let current = map.get(stock, sku);
-        let delta = ((i * 11) + r) % 37;
-        if current == nil {
-            stock.set(sku, delta);
-        } else {
-            stock.set(sku, current + delta);
+if should_run("inventory_reorder") {
+    t0 = os.clock();
+    checksum = 0;
+    let inventory_rounds = 2800 + (seed - seed);
+    for r in 1..=inventory_rounds {
+        let stock = {};
+        let reorder = [];
+        for i in 1..=64 {
+            let sku = "sku-${i % 23}";
+            let current = map.get(stock, sku);
+            let delta = ((i * 11) + r) % 37;
+            if current == nil {
+                stock.set(sku, delta);
+            } else {
+                stock.set(sku, current + delta);
+            }
         }
+        for i in 0..23 {
+            let sku = "sku-${i}";
+            let available = map.get(stock, sku);
+            if available == nil {
+                available = 0;
+            }
+            let demand = ((r + i * 7) % 41) + 5;
+            if available < demand {
+                reorder.push(sku);
+                checksum += (demand - available) * (i + 1);
+            } else {
+                checksum += available % 17;
+            }
+        }
+        checksum += reorder.join(",").len();
     }
-    for i in 0..23 {
-        let sku = "sku-${i}";
-        let available = map.get(stock, sku);
-        if available == nil {
-            available = 0;
-        }
-        let demand = ((r + i * 7) % 41) + 5;
-        if available < demand {
-            reorder.push(sku);
-            checksum += (demand - available) * (i + 1);
-        } else {
-            checksum += available % 17;
-        }
-    }
-    checksum += reorder.join(",").len();
+    t1 = os.clock();
+    emit("inventory_reorder", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("inventory_reorder", checksum, t0, t1);
 
 fn fraud_score(amount, country, device, prior_declines, risky_countries) {
     let score = 0;
@@ -382,32 +418,34 @@ fn fraud_score(amount, country, device, prior_declines, risky_countries) {
     return score;
 }
 
-t0 = os.clock();
-checksum = 0;
-let fraud_rounds = 85000 + (seed - seed);
-let risky_countries = {"ng": true, "ru": true, "kp": true};
-for i in 1..=fraud_rounds {
-    let country = "us";
-    if ((i % 29) == 0) {
-        country = "ng";
-    } else if ((i % 31) == 0) {
-        country = "ru";
-    } else if ((i % 7) == 0) {
-        country = "de";
+if should_run("fraud_rule_scoring") {
+    t0 = os.clock();
+    checksum = 0;
+    let fraud_rounds = 85000 + (seed - seed);
+    let risky_countries = {"ng": true, "ru": true, "kp": true};
+    for i in 1..=fraud_rounds {
+        let country = "us";
+        if ((i % 29) == 0) {
+            country = "ng";
+        } else if ((i % 31) == 0) {
+            country = "ru";
+        } else if ((i % 7) == 0) {
+            country = "de";
+        }
+        let device = "ios";
+        if ((i % 19) == 0) {
+            device = "emu-android";
+        } else if ((i % 5) == 0) {
+            device = "web";
+        }
+        let amount = ((i * 37) % 1200) + 1;
+        let score = fraud_score(amount, country, device, i % 4, risky_countries);
+        if score >= 70 {
+            checksum += score * 2;
+        } else {
+            checksum += score + 1;
+        }
     }
-    let device = "ios";
-    if ((i % 19) == 0) {
-        device = "emu-android";
-    } else if ((i % 5) == 0) {
-        device = "web";
-    }
-    let amount = ((i * 37) % 1200) + 1;
-    let score = fraud_score(amount, country, device, i % 4, risky_countries);
-    if score >= 70 {
-        checksum += score * 2;
-    } else {
-        checksum += score + 1;
-    }
+    t1 = os.clock();
+    emit("fraud_rule_scoring", checksum, t0, t1);
 }
-t1 = os.clock();
-emit("fraud_rule_scoring", checksum, t0, t1);

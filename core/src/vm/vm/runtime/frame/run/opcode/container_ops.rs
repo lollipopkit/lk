@@ -424,6 +424,26 @@ pub(super) fn run_list_push(regs: &mut [Val], list: u16, val: u16) -> Result<()>
 }
 
 #[inline]
+pub(super) fn run_list_push_move(regs: &mut [Val], list: u16, val: u16) -> Result<()> {
+    let list_idx = list as usize;
+    let val_idx = val as usize;
+    if list_idx == val_idx {
+        return run_list_push(regs, list, val);
+    }
+    if !matches!(regs[list_idx], Val::List(_)) {
+        return Err(anyhow!("ListPush target is not a List"));
+    }
+    let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+    match &mut regs[list_idx] {
+        Val::List(arc) => {
+            push_list_entry(arc, pushed_val);
+            Ok(())
+        }
+        _ => unreachable!("ListPush target was checked before moving value"),
+    }
+}
+
+#[inline]
 pub(super) fn run_list_set_i(
     frame_raw: *mut FrameState<'_>,
     regs: &mut [Val],
@@ -477,6 +497,29 @@ pub(super) fn run_map_set_interned(regs: &mut [Val], consts: &[Val], map: u16, k
             Ok(())
         }
         _ => Err(anyhow!("MapSet target is not a Map")),
+    }
+}
+
+#[inline]
+pub(super) fn run_map_set_interned_move(regs: &mut [Val], consts: &[Val], map: u16, kidx: u16, val: u16) -> Result<()> {
+    let map_idx = map as usize;
+    let val_idx = val as usize;
+    if map_idx == val_idx {
+        return run_map_set_interned(regs, consts, map, kidx, val);
+    }
+    let key_arc = consts[kidx as usize]
+        .string_key_arcstr()
+        .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
+    if !matches!(regs[map_idx], Val::Map(_)) {
+        return Err(anyhow!("MapSet target is not a Map"));
+    }
+    let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+    match &mut regs[map_idx] {
+        Val::Map(arc) => {
+            insert_map_entry(arc, key_arc, pushed_val);
+            Ok(())
+        }
+        _ => unreachable!("MapSet target was checked before moving value"),
     }
 }
 

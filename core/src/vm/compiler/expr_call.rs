@@ -1,17 +1,35 @@
-use super::FunctionBuilder;
-use crate::{expr::Expr, vm::Op};
+use super::{FunctionBuilder, expr_map::expr_result_is_temporary};
+use crate::{expr::Expr, op::BinOp, val::Val, vm::Op};
+
+pub(super) fn same_string_literal(lhs: &Expr, rhs: &Expr) -> bool {
+    matches!((lhs, rhs), (Expr::Val(lhs), Expr::Val(rhs)) if lhs.as_str().is_some() && lhs.as_str() == rhs.as_str())
+}
+
+pub(super) fn split_join_same_separator_receiver<'a>(obj_expr: &'a Expr, args: &[Box<Expr>]) -> Option<&'a Expr> {
+    if args.len() != 1 {
+        return None;
+    }
+    let Expr::CallExpr(split_callee, split_args) = obj_expr else {
+        return None;
+    };
+    if split_args.len() != 1 || !same_string_literal(split_args[0].as_ref(), args[0].as_ref()) {
+        return None;
+    }
+    let Expr::Access(split_receiver, split_field) = split_callee.as_ref() else {
+        return None;
+    };
+    let Expr::Val(split_method) = split_field.as_ref() else {
+        return None;
+    };
+    (split_method.as_str() == Some("split")).then_some(split_receiver.as_ref())
+}
 
 impl FunctionBuilder {
     pub(crate) fn compile_method_call(&mut self, obj_expr: &Expr, field_expr: &Expr, args: &[Box<Expr>]) -> u16 {
         if args.len() == 1
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("join")
-            && let Expr::CallExpr(split_callee, split_args) = obj_expr
-            && split_args.len() == 1
-            && split_args[0].as_ref() == args[0].as_ref()
-            && let Expr::Access(split_receiver, split_field) = split_callee.as_ref()
-            && let Expr::Val(split_method) = split_field.as_ref()
-            && split_method.as_str() == Some("split")
+            && let Some(split_receiver) = split_join_same_separator_receiver(obj_expr, args)
         {
             return self.expr(split_receiver);
         }
@@ -89,6 +107,21 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("len")
         {
+            if let Expr::CallExpr(join_callee, join_args) = obj_expr
+                && let Expr::Access(join_receiver, join_field) = join_callee.as_ref()
+                && let Expr::Val(join_method) = join_field.as_ref()
+                && join_method.as_str() == Some("join")
+                && let Some(split_receiver) = split_join_same_separator_receiver(join_receiver, join_args)
+            {
+                let obj_reg = self.expr(split_receiver);
+                let out = self.alloc();
+                if matches!(split_receiver, Expr::Val(value) if value.as_str().is_some()) {
+                    self.emit(Op::StrLen { dst: out, src: obj_reg });
+                } else {
+                    self.emit(Op::Len { dst: out, src: obj_reg });
+                }
+                return out;
+            }
             let obj_reg = self.expr(obj_expr);
             let out = self.alloc();
             if self.list_locals.contains(&obj_reg) {
@@ -114,10 +147,17 @@ impl FunctionBuilder {
             } else {
                 self.expr(&args[0])
             };
-            self.emit(Op::ListPush {
-                list: list_reg,
-                val: val_reg,
-            });
+            if val_reg != list_reg && expr_result_is_temporary(&args[0]) {
+                self.emit(Op::ListPushMove {
+                    list: list_reg,
+                    val: val_reg,
+                });
+            } else {
+                self.emit(Op::ListPush {
+                    list: list_reg,
+                    val: val_reg,
+                });
+            }
             return list_reg;
         }
         if args.len() == 2
@@ -173,6 +213,17 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("floor")
         {
+            if let Expr::Bin(lhs, BinOp::Div, rhs) = args[0].as_ref()
+                && (self.expr_known_int(lhs.as_ref()) || self.expr_known_float(lhs.as_ref()))
+                && let Expr::Val(Val::Int(imm)) = rhs.as_ref()
+                && *imm != 0
+                && let Ok(imm) = i16::try_from(*imm)
+            {
+                let src = self.expr(lhs);
+                let dst = self.alloc();
+                self.emit(Op::FloorDivImm { dst, src, imm });
+                return dst;
+            }
             let src_reg = self.expr(&args[0]);
             let dst = self.alloc();
             self.emit(Op::Floor { dst, src: src_reg });

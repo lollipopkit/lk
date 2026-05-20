@@ -36,6 +36,31 @@ use super::FunctionBuilder;
 use super::driver::Compiler;
 
 impl FunctionBuilder {
+    pub(crate) fn compile_template_string_len(&mut self, parts: &[TemplateStringPart]) -> u16 {
+        let literal_len = parts
+            .iter()
+            .filter_map(|part| match part {
+                TemplateStringPart::Literal(text) => Some(text.len() as i64),
+                TemplateStringPart::Expr(_) => None,
+            })
+            .sum::<i64>();
+        let out = self.alloc();
+        let k = self.k(Val::Int(literal_len));
+        self.emit(Op::LoadK(out, k));
+        for part in parts {
+            let TemplateStringPart::Expr(expr) = part else {
+                continue;
+            };
+            let value = self.expr(expr);
+            let text = self.alloc();
+            self.emit(Op::ToStr(text, value));
+            let len = self.alloc();
+            self.emit(Op::StrLen { dst: len, src: text });
+            self.emit(Op::AddInt(out, out, len));
+        }
+        out
+    }
+
     fn lookup_loop_invariant_expr(&self, expr: &Expr) -> Option<u16> {
         self.loop_invariant_expr_regs
             .iter()
@@ -86,9 +111,6 @@ impl FunctionBuilder {
         }
         let (prefix, returned) = Self::collect_inline_straight_line_body(closure.body.as_ref())?;
         if Self::expr_contains_call(returned) {
-            return None;
-        }
-        if !prefix.is_empty() {
             return None;
         }
         let mut allowed_names = closure.params.iter().cloned().collect::<HashSet<_>>();

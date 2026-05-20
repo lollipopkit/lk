@@ -121,8 +121,11 @@ fn list_push_invalidates_homogeneous_value_fact() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(2));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::ListPush { .. })),
-        "expected list.push to lower to ListPush in {:?}",
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::ListPush { .. } | Op::ListPushMove { .. })),
+        "expected list.push to lower to a list push opcode in {:?}",
         function.code
     );
     assert!(
@@ -131,6 +134,45 @@ fn list_push_invalidates_homogeneous_value_fact() {
             .iter()
             .any(|op| matches!(op, Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
         "list.push should invalidate homogeneous element facts before later add in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn list_push_temporary_value_lowers_to_move_push() {
+    let source = r#"
+        let data = [];
+        data.push("sku-${1}");
+        return data[0];
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::from_str("sku-1"));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListPushMove { .. })),
+        "expected temporary list.push argument to lower to ListPushMove in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn list_push_variable_value_keeps_non_move_push() {
+    let source = r#"
+        let data = [];
+        let value = "sku-${1}";
+        data.push(value);
+        return [data[0], value];
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    let expected = Val::from_str("sku-1");
+    let Val::List(values) = result.expect("vm exec") else {
+        panic!("expected list");
+    };
+    assert_eq!(values.as_slice(), [expected.clone(), expected]);
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListPush { .. })),
+        "expected variable list.push argument to keep ListPush in {:?}",
         function.code
     );
 }

@@ -3,13 +3,14 @@
 set -uo pipefail
 
 BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
-BASE_RUNS="${RUNS:-5}"
-EXTRA_RUNS="${EXTRA_RUNS:-10}"
+BASE_RUNS="${RUNS:-3}"
+EXTRA_RUNS="${EXTRA_RUNS:-3}"
 REGRESSION_MARGIN="${REGRESSION_MARGIN:-0.03}"
 NOISE_MARGIN="${NOISE_MARGIN:-0.08}"
 LK_BIN="/Users/lk/proj/lk/target/release/lk"
 LUA_BIN="lua"
 RUN_AOT="${RUN_AOT:-1}"
+PROFILE_WORKLOADS="${PROFILE_WORKLOADS:-0}"
 
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
@@ -52,6 +53,74 @@ ratio_of() {
 
 fmt_ms() {
   awk -v value="$1" 'BEGIN { printf "%.3f", value }'
+}
+
+fmt_ratio_cell() {
+  local value="$1"
+  if [ "$value" = "?" ]; then
+    printf "?"
+  else
+    printf "%sx" "$value"
+  fi
+}
+
+profile_value() {
+  local file="$1"
+  local key="$2"
+  sed -n 's/^VM profile: //p' "$file" | tr ' ' '\n' | awk -F= -v key="$key" '$1 == key { print $2; found = 1 } END { if (!found) print "0" }'
+}
+
+collect_profile_once() {
+  local widths=(28 12 10 10 8 10 10 10 10 10 10 10 10)
+  echo ""
+  echo "VM Profile by Workload"
+  printf "%-28s %12s %10s %10s %8s %10s %10s %10s %10s %10s %10s %10s %10s\n" \
+    "Workload" "Opcodes" "Calls" "Branches" "Typed" "Containers" "List" "Map" "String" "Bc32Miss" "Bc32Sent" "Clones" "HeapClone"
+  print_separator "${widths[@]}"
+
+  for name in "${WORKLOADS[@]}"; do
+    local err_file opcodes calls branches typed containers list_ops map_ops string_ops bc32_misses bc32_sentinel clones heap_clones
+    err_file="$TMPDIR/profile_${name}.err"
+    LK_VM_PROFILE=1 LK_WORKLOAD_FILTER="$name" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk" >/dev/null 2>"$err_file"
+    opcodes=$(profile_value "$err_file" opcode_steps)
+    calls=$(profile_value "$err_file" calls)
+    branches=$(profile_value "$err_file" branches)
+    typed=$(profile_value "$err_file" typed_branches)
+    containers=$(profile_value "$err_file" containers)
+    list_ops=$(profile_value "$err_file" list_ops)
+    map_ops=$(profile_value "$err_file" map_ops)
+    string_ops=$(profile_value "$err_file" string_ops)
+    bc32_misses=$(profile_value "$err_file" bc32_build_misses)
+    bc32_sentinel=$(profile_value "$err_file" bc32_sentinel_skips)
+    clones=$(profile_value "$err_file" val_clones)
+    heap_clones=$(profile_value "$err_file" heap_clones)
+    printf "%-28s %12s %10s %10s %8s %10s %10s %10s %10s %10s %10s %10s %10s\n" \
+      "$name" "$opcodes" "$calls" "$branches" "$typed" "$containers" "$list_ops" "$map_ops" "$string_ops" "$bc32_misses" "$bc32_sentinel" "$clones" "$heap_clones"
+  done
+}
+
+repeat_char() {
+  local char="$1"
+  local count="$2"
+  awk -v char="$char" -v count="$count" 'BEGIN {
+    for (i = 0; i < count; i++) {
+      printf "%s", char
+    }
+  }'
+}
+
+print_separator() {
+  local widths=("$@")
+  local first=1
+  local width
+  for width in "${widths[@]}"; do
+    if [ "$first" -eq 0 ]; then
+      printf " "
+    fi
+    repeat_char "-" "$width"
+    first=0
+  done
+  printf "\n"
 }
 
 spread_of() {
@@ -197,6 +266,9 @@ fi
 echo "Runs: $BASE_RUNS base + $EXTRA_RUNS adaptive extra when regression/noise is suspected"
 echo "Regression margin: $(awk -v x="$REGRESSION_MARGIN" 'BEGIN { printf "%.1f%%", x * 100 }') vs documented baseline"
 echo "Noise margin: $(awk -v x="$NOISE_MARGIN" 'BEGIN { printf "%.1f%%", x * 100 }') max spread"
+if [ "$PROFILE_WORKLOADS" != "0" ]; then
+  echo "VM profile: enabled, one extra filtered LK run per workload"
+fi
 echo ""
 
 for name in "${WORKLOADS[@]}"; do
@@ -223,20 +295,24 @@ if should_extend_runs "$REASONS"; then
   echo "Adaptive rerun triggered:"
   sed 's/^/  - /' "$REASONS"
   echo "Running $EXTRA_RUNS additional samples for the full workload suite..."
-  for _ in $(seq 1 "$EXTRA_RUNS"); do
-    run_once
-  done
+  if [ "$EXTRA_RUNS" -gt 0 ]; then
+    for _ in $(seq 1 "$EXTRA_RUNS"); do
+      run_once
+    done
+  fi
   echo ""
 fi
 
 TOTAL_RUNS=$(awk 'END { print NR }' "$TMPDIR/lk_${WORKLOADS[0]}.dat")
 
 if [ "$RUN_AOT" != "0" ]; then
+  table_widths=(28 10 10 10 10 10 10 8 10 11 8)
   printf "%-28s %10s %10s %10s %10s %10s %10s %8s %10s %11s %s\n" "Workload" "LK VM" "LK AOT" "Lua" "VM/Lua" "AOT/Lua" "AOT/VM" "Noise" "Conf." "Status" "Checksum"
-  printf "%-28s %10s %10s %10s %10s %10s %10s %8s %10s %11s %s\n" "────────────────────────────" "──────────" "──────────" "──────────" "──────────" "──────────" "──────────" "────────" "──────────" "───────────" "────────"
+  print_separator "${table_widths[@]}"
 else
+  table_widths=(28 10 10 10 8 10 11 8)
   printf "%-28s %10s %10s %10s %8s %10s %11s %s\n" "Workload" "LK (ms)" "Lua (ms)" "Ratio" "Noise" "Conf." "Status" "Checksum"
-  printf "%-28s %10s %10s %10s %8s %10s %11s %s\n" "────────────────────────────" "──────────" "──────────" "──────────" "────────" "──────────" "───────────" "────────"
+  print_separator "${table_widths[@]}"
 fi
 mismatch_count=0
 ratio_file="$TMPDIR/ratios.dat"
@@ -254,9 +330,12 @@ for name in "${WORKLOADS[@]}"; do
     aot_lua_ratio=$(ratio_of "$aot_ms" "$lua_ms")
     aot_vm_ratio=$(ratio_of "$aot_ms" "$lk_ms")
     aot_fmt=$(fmt_ms "$aot_ms")
+    aot_lua_cell=$(fmt_ratio_cell "$aot_lua_ratio")
+    aot_vm_cell=$(fmt_ratio_cell "$aot_vm_ratio")
   fi
   lk_fmt=$(fmt_ms "$lk_ms")
   lua_fmt=$(fmt_ms "$lua_ms")
+  ratio_cell=$(fmt_ratio_cell "$ratio")
   lk_spread=$(spread_of "$TMPDIR/lk_${name}.dat" "$lk_ms")
   lua_spread=$(spread_of "$TMPDIR/lua_${name}.dat" "$lua_ms")
   noise=$(max_of_two "$lk_spread" "$lua_spread")
@@ -284,9 +363,9 @@ for name in "${WORKLOADS[@]}"; do
       checksum="MISMATCH lk=$lk_sum aot=$aot_sum lua=$lua_sum"
       mismatch_count=$((mismatch_count + 1))
     fi
-    printf "%-28s %10s %10s %10s %10sx %10sx %10sx %8s %10s %11s %s\n" "$name" "$lk_fmt" "$aot_fmt" "$lua_fmt" "$ratio" "$aot_lua_ratio" "$aot_vm_ratio" "$noise" "$confidence" "$status" "$checksum"
+    printf "%-28s %10s %10s %10s %10s %10s %10s %8s %10s %11s %s\n" "$name" "$lk_fmt" "$aot_fmt" "$lua_fmt" "$ratio_cell" "$aot_lua_cell" "$aot_vm_cell" "$noise" "$confidence" "$status" "$checksum"
   else
-    printf "%-28s %10s %10s %10sx %8s %10s %11s %s\n" "$name" "$lk_fmt" "$lua_fmt" "$ratio" "$noise" "$confidence" "$status" "$checksum"
+    printf "%-28s %10s %10s %10s %8s %10s %11s %s\n" "$name" "$lk_fmt" "$lua_fmt" "$ratio_cell" "$noise" "$confidence" "$status" "$checksum"
   fi
 done
 geo_ratio=$(awk '{ sum += log($1); n++ } END { if (n > 0) { printf "%.3f", exp(sum / n) } else { print "?" } }' "$ratio_file")
@@ -307,4 +386,8 @@ echo "Noise is max((p80-p20)/median) across LK and Lua samples for that workload
 if [ "$mismatch_count" -gt 0 ]; then
   echo "Checksum mismatches: $mismatch_count" >&2
   exit 1
+fi
+
+if [ "$PROFILE_WORKLOADS" != "0" ]; then
+  collect_profile_once
 fi

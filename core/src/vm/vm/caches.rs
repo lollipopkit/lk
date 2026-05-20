@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::val::{ClosureCapture, RustFastFunction, RustFastFunctionNamed, RustFunction, RustFunctionNamed, Val};
-use crate::vm::RegionPlan;
 use crate::vm::bytecode::{Function, Op, rk_index, rk_is_const};
 use crate::vm::vm::frame::FrameInfo;
 use crate::vm::vm::quickening::QuickeningSite;
+use crate::vm::{CaptureSpec, RegionPlan};
 
 mod packed;
 pub(super) use packed::*;
@@ -93,6 +93,8 @@ pub(super) enum CallIc {
         argc: u8,
         ret: CallReturnLayout,
         tiny: Option<TinyCallPlan>,
+        captures: Option<Arc<ClosureCapture>>,
+        capture_specs: Option<Arc<Vec<CaptureSpec>>>,
         cache: ClosureFastCache,
         frame_info: FrameInfo,
     },
@@ -117,6 +119,8 @@ impl Clone for CallIc {
                 argc,
                 ret,
                 tiny,
+                captures,
+                capture_specs,
                 cache,
                 frame_info,
             } => CallIc::ClosurePositional {
@@ -125,6 +129,8 @@ impl Clone for CallIc {
                 argc: *argc,
                 ret: *ret,
                 tiny: tiny.clone(),
+                captures: captures.clone(),
+                capture_specs: capture_specs.clone(),
                 cache: cache.clone(),
                 frame_info: frame_info.clone(),
             },

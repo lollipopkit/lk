@@ -318,6 +318,16 @@ pub(super) fn try_exec_math_op(
             assign_reg(frame_raw, regs, dst as usize, out);
             pc = next_pc_default;
         }
+        Op::FloorDivImm { dst, src, imm } => {
+            let divisor = imm as i64;
+            let out = match &regs[src as usize] {
+                Val::Int(value) => Val::Int(floor_div_i64(*value, divisor)),
+                Val::Float(value) => Val::Int((value / divisor as f64).floor() as i64),
+                _ => Val::Int(0),
+            };
+            assign_reg(frame_raw, regs, dst as usize, out);
+            pc = next_pc_default;
+        }
         Op::StartsWithK(dst, src, kidx) => {
             let prefix = f.consts[kidx as usize].as_str().unwrap_or("");
             let out = match &regs[src as usize] {

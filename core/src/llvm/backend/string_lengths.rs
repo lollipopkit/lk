@@ -83,11 +83,15 @@ impl<'a> FunctionTranslator<'a> {
                     future_string_regs.insert(dst);
                 }
                 Op::Add(new_alias, a, b)
+                | Op::StrConcatKnownCap(new_alias, a, b)
+                | Op::StrConcatToStr(new_alias, a, b)
                     if a == alias && self.string_length_operand_can_part(b, &future_string_regs, &future_int_regs) =>
                 {
                     alias = new_alias;
                 }
                 Op::Add(new_alias, a, b)
+                | Op::StrConcatKnownCap(new_alias, a, b)
+                | Op::StrConcatToStr(new_alias, a, b)
                     if b == alias && self.string_length_operand_can_part(a, &future_string_regs, &future_int_regs) =>
                 {
                     alias = new_alias;
@@ -208,10 +212,14 @@ fn string_length_op_stops_scan(op: &Op) -> bool {
             | Op::JmpFalse(_, _)
             | Op::BoolBranch(_, _)
             | Op::CmpLtImmJmp { .. }
+            | Op::CmpIntJmp { .. }
             | Op::JmpNilOrFalseJmp { .. }
             | Op::AddIntImmJmp { .. }
             | Op::AddRangeCountImm { .. }
             | Op::CmpLeImmJmp { .. }
+            | Op::CmpEqImmJmp { .. }
+            | Op::CmpGtImmJmp { .. }
+            | Op::CmpGeImmJmp { .. }
             | Op::CmpNeImmJmp { .. }
             | Op::Break(_)
             | Op::Continue(_)
@@ -238,7 +246,8 @@ fn string_length_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::JmpFalse(src, _)
         | Op::BoolBranch(src, _)
         | Op::JmpIfNil(src, _)
-        | Op::JmpIfNotNil(src, _) => src == reg,
+        | Op::JmpIfNotNil(src, _)
+        | Op::FloorDivImm { src, .. } => src == reg,
         Op::Add(_, a, b)
         | Op::StrConcatKnownCap(_, a, b)
         | Op::StrConcatToStr(_, a, b)
@@ -262,6 +271,7 @@ fn string_length_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpGt(_, a, b)
         | Op::CmpGe(_, a, b)
         | Op::CmpI { a, b, .. }
+        | Op::CmpIntJmp { a, b, .. }
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
         | Op::Index { base: a, idx: b, .. } => a == reg || b == reg,
@@ -273,10 +283,15 @@ fn string_length_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpGtImm(_, src, _)
         | Op::CmpGeImm(_, src, _)
         | Op::CmpLtImmJmp { r: src, .. }
+        | Op::CmpLeImmJmp { r: src, .. }
+        | Op::CmpEqImmJmp { r: src, .. }
+        | Op::CmpGtImmJmp { r: src, .. }
+        | Op::CmpGeImmJmp { r: src, .. }
+        | Op::CmpNeImmJmp { r: src, .. }
         | Op::AddIntImmJmp { r: src, .. }
         | Op::AccessK(_, src, _)
         | Op::IndexK(_, src, _) => src == reg,
-        Op::ListPush { list, val } => list == reg || val == reg,
+        Op::ListPush { list, val } | Op::ListPushMove { list, val } => list == reg || val == reg,
         Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => map == reg || key == reg || val == reg,
         Op::Ret { base, retc } => retc > 0 && base == reg,
         _ => false,
@@ -322,6 +337,7 @@ fn string_length_op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::IndexK(dst, _, _)
         | Op::Len { dst, .. }
         | Op::Floor { dst, .. }
+        | Op::FloorDivImm { dst, .. }
         | Op::StartsWithK(dst, _, _)
         | Op::ContainsK(dst, _, _)
         | Op::BuildMap { dst, .. }
