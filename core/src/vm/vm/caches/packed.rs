@@ -138,6 +138,7 @@ pub(in crate::vm::vm) enum PackedHotKind {
         default_load: Option<(u16, u16)>,
         add_dst: u16,
         add_rhs: PackedAddOperand,
+        write_temps: bool,
     },
     MapGetDynamic {
         dst: u16,
@@ -161,6 +162,7 @@ pub(in crate::vm::vm) enum PackedHotKind {
         default_load: Option<(u16, u16)>,
         add_dst: u16,
         add_rhs: PackedAddOperand,
+        write_temps: bool,
     },
     MapHas {
         dst: u16,

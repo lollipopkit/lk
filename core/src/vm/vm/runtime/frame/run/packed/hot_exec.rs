@@ -254,6 +254,7 @@ pub(super) fn exec_hot_slot(
             default_load,
             add_dst,
             add_rhs,
+            write_temps,
         } => {
             record_container(VmContainerMetric::Map);
             record_container(VmContainerMetric::Map);
@@ -275,6 +276,7 @@ pub(super) fn exec_hot_slot(
                 *default_load,
                 *add_dst,
                 *add_rhs,
+                *write_temps,
             )?;
             None
         }
@@ -320,6 +322,7 @@ pub(super) fn exec_hot_slot(
             default_load,
             add_dst,
             add_rhs,
+            write_temps,
         } => {
             record_container(VmContainerMetric::Map);
             record_container(VmContainerMetric::Map);
@@ -342,6 +345,7 @@ pub(super) fn exec_hot_slot(
                 *default_load,
                 *add_dst,
                 *add_rhs,
+                *write_temps,
             )?;
             None
         }

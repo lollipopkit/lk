@@ -311,34 +311,38 @@ pub(super) fn exec_map_upsert_add(
     default_load: Option<(u16, u16)>,
     add_dst: u16,
     add_rhs: PackedAddOperand,
+    write_temps: bool,
 ) -> Result<()> {
-    let current = match &regs[map as usize] {
-        Val::Map(map) => lookup_key
-            .as_ref()
-            .and_then(|key| Val::map_get_str(map, key.as_str()).cloned())
-            .unwrap_or(Val::Nil),
-        _ => Val::Nil,
-    };
-    assign_reg(frame_raw, regs, get_dst as usize, current);
-    let is_nil = matches!(regs[get_dst as usize], Val::Nil);
     let _ = cmp_dst;
-
-    let value = if is_nil {
-        let value = packed_value_operand(regs, func, default);
-        if let Some((reg, kidx)) = default_load {
+    let (is_nil, get_temp, value) = {
+        let current_ref = match &regs[map as usize] {
+            Val::Map(map) => lookup_key.as_ref().and_then(|key| Val::map_get_str(map, key.as_str())),
+            _ => None,
+        };
+        let is_nil = current_ref.is_none();
+        let get_temp = write_temps.then(|| current_ref.cloned().unwrap_or(Val::Nil));
+        let value = if is_nil {
+            packed_value_operand(regs, func, default)
+        } else {
+            let rhs = packed_add_operand_value(regs, add_rhs);
+            let current = current_ref.expect("non-nil map lookup must have a value");
+            match (current, &rhs) {
+                (Val::Int(lhs), Val::Int(rhs)) => Val::Int(lhs + rhs),
+                _ => BinOp::Add.eval_vals(current, &rhs)?,
+            }
+        };
+        (is_nil, get_temp, value)
+    };
+    if let Some(value) = get_temp {
+        assign_reg(frame_raw, regs, get_dst as usize, value);
+    }
+    if is_nil {
+        if write_temps && let Some((reg, kidx)) = default_load {
             assign_reg(frame_raw, regs, reg as usize, func.consts[kidx as usize].clone());
         }
-        value
-    } else {
-        let rhs = packed_add_operand_value(regs, add_rhs);
-        let current = &regs[get_dst as usize];
-        let value = match (current, &rhs) {
-            (Val::Int(lhs), Val::Int(rhs)) => Val::Int(lhs + rhs),
-            _ => BinOp::Add.eval_vals(current, &rhs)?,
-        };
+    } else if write_temps {
         assign_reg(frame_raw, regs, add_dst as usize, value.clone());
-        value
-    };
+    }
 
     match &mut regs[map as usize] {
         Val::Map(map) => insert_map_entry(map, key, value),

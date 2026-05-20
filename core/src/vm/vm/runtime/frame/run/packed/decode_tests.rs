@@ -637,6 +637,7 @@ mod tests {
                 default_load: Some((4, 2)),
                 add_dst: 5,
                 add_rhs: PackedAddOperand::Imm(1),
+                write_temps: false,
             }
         ));
         assert_eq!(slot.next_pc, instr_pc(bc.decoded.as_ref().unwrap(), 9).unwrap());

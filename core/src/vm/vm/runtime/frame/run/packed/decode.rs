@@ -48,6 +48,7 @@ struct PackedMapUpsertAdd {
     default_load: Option<(u16, u16)>,
     add_dst: u16,
     add_rhs: PackedAddOperand,
+    write_temps: bool,
     next_pc: usize,
 }
 
@@ -166,12 +167,19 @@ fn decode_map_get_upsert_add(
         return None;
     }
 
+    let mut temps = vec![get_dst, cmp_dst, add_dst];
+    if let Some((reg, _)) = default_load {
+        temps.push(reg);
+    }
+    let write_temps = !regs_dead_after_pc(decoded, after_pc, &temps);
+
     Some(PackedMapUpsertAdd {
         cmp_dst,
         default,
         default_load,
         add_dst,
         add_rhs,
+        write_temps,
         next_pc: after_pc,
     })
 }
@@ -554,6 +562,7 @@ pub(super) fn build_hot_slot(
                             default_load: fused.default_load,
                             add_dst: fused.add_dst,
                             add_rhs: fused.add_rhs,
+                            write_temps: fused.write_temps,
                         },
                     });
                 }
@@ -588,6 +597,7 @@ pub(super) fn build_hot_slot(
                             default_load: fused.default_load,
                             add_dst: fused.add_dst,
                             add_rhs: fused.add_rhs,
+                            write_temps: fused.write_temps,
                         },
                     });
                 }
