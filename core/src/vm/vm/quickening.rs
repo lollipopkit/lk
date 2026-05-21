@@ -4,9 +4,9 @@ use crate::op::BinOp;
 use crate::val::Val;
 use crate::vm::bytecode::{rk_index, rk_is_const};
 use crate::vm::{
-    record_quickening_build_attempt_known_enabled, record_quickening_build_success_known_enabled,
-    record_quickening_deopt_known_enabled, record_quickening_hit_known_enabled, record_quickening_miss_known_enabled,
-    write_register_value,
+    copy_container_value_for_register_with_metrics, record_quickening_build_attempt_known_enabled,
+    record_quickening_build_success_known_enabled, record_quickening_deopt_known_enabled,
+    record_quickening_hit_known_enabled, record_quickening_miss_known_enabled, write_register_value_with_metrics,
 };
 
 const WARMUP_THRESHOLD: u8 = 4;
@@ -61,7 +61,7 @@ impl QuickeningSite {
         {
             if let Some(out) = eval_add_kind(kind, regs, consts, lhs, rhs) {
                 record_hit(collect_metrics);
-                assign_reg(regs, dst as usize, out);
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
                 return Ok(true);
             }
             self.deopt(collect_metrics);
@@ -84,7 +84,7 @@ impl QuickeningSite {
                 self.kind = Some(kind);
                 record_build_success(collect_metrics);
             }
-            assign_reg(regs, dst as usize, out);
+            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             Ok(true)
         } else {
             self.hits = 0;
@@ -109,7 +109,7 @@ impl QuickeningSite {
             let kind = self.kind.expect("numeric quickening kind");
             if let Some(value) = eval_numeric_kind(kind, regs, consts, lhs, rhs) {
                 record_hit(collect_metrics);
-                assign_reg(regs, dst as usize, value);
+                assign_reg_with_metrics(regs, dst as usize, value, collect_metrics);
                 return Ok(true);
             }
             self.deopt(collect_metrics);
@@ -131,7 +131,7 @@ impl QuickeningSite {
                 self.kind = Some(kind);
                 record_build_success(collect_metrics);
             }
-            assign_reg(regs, dst as usize, value);
+            assign_reg_with_metrics(regs, dst as usize, value, collect_metrics);
             Ok(true)
         } else {
             self.hits = 0;
@@ -154,7 +154,12 @@ impl QuickeningSite {
         if self.kind == Some(expected) {
             if let (Val::Int(a), Val::Int(b)) = (rk_read(regs, consts, lhs), rk_read(regs, consts, rhs)) {
                 record_hit(collect_metrics);
-                assign_reg(regs, dst as usize, Val::Bool(expected.eval_int_cmp(a, b)));
+                assign_reg_with_metrics(
+                    regs,
+                    dst as usize,
+                    Val::Bool(expected.eval_int_cmp(a, b)),
+                    collect_metrics,
+                );
                 return Ok(true);
             }
             self.deopt(collect_metrics);
@@ -174,7 +179,12 @@ impl QuickeningSite {
                 self.kind = Some(expected);
                 record_build_success(collect_metrics);
             }
-            assign_reg(regs, dst as usize, Val::Bool(expected.eval_int_cmp(a, b)));
+            assign_reg_with_metrics(
+                regs,
+                dst as usize,
+                Val::Bool(expected.eval_int_cmp(a, b)),
+                collect_metrics,
+            );
             Ok(true)
         } else {
             self.hits = 0;
@@ -667,9 +677,9 @@ pub(in crate::vm::vm) fn execute_index_site(
     }
     let site = &mut sites[pc];
     if let Some(kind @ (QuickenedKind::IndexListInt | QuickenedKind::IndexStrInt)) = site.kind {
-        if let Some(out) = eval_index_kind(kind, regs, base, index) {
+        if let Some(out) = eval_index_kind(kind, regs, base, index, collect_metrics) {
             record_hit(collect_metrics);
-            assign_reg(regs, dst as usize, out);
+            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             return Ok(true);
         }
         site.deopt(collect_metrics);
@@ -685,14 +695,14 @@ pub(in crate::vm::vm) fn execute_index_site(
     record_build_attempt(collect_metrics);
     let observed = observe_index_kind(regs, base, index);
     if let Some(kind) = observed
-        && let Some(out) = eval_index_kind(kind, regs, base, index)
+        && let Some(out) = eval_index_kind(kind, regs, base, index, collect_metrics)
     {
         site.hits = site.hits.saturating_add(1);
         if site.hits >= WARMUP_THRESHOLD {
             site.kind = Some(kind);
             record_build_success(collect_metrics);
         }
-        assign_reg(regs, dst as usize, out);
+        assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
         Ok(true)
     } else {
         site.hits = 0;
@@ -711,9 +721,11 @@ fn observe_index_kind(regs: &[Val], base: u16, index: u16) -> Option<QuickenedKi
 }
 
 #[inline]
-fn eval_index_kind(kind: QuickenedKind, regs: &[Val], base: u16, index: u16) -> Option<Val> {
+fn eval_index_kind(kind: QuickenedKind, regs: &[Val], base: u16, index: u16, collect_metrics: bool) -> Option<Val> {
     match (kind, &regs[base as usize], &regs[index as usize]) {
-        (QuickenedKind::IndexListInt, Val::List(values), Val::Int(index)) => Some(index_list(values, *index)),
+        (QuickenedKind::IndexListInt, Val::List(values), Val::Int(index)) => {
+            Some(index_list(values, *index, collect_metrics))
+        }
         (QuickenedKind::IndexStrInt, value, Val::Int(index)) if value.as_str().is_some() => {
             Some(index_str(value.as_str().unwrap(), *index))
         }
@@ -722,7 +734,7 @@ fn eval_index_kind(kind: QuickenedKind, regs: &[Val], base: u16, index: u16) -> 
 }
 
 #[inline]
-fn index_list(values: &[Val], index: i64) -> Val {
+fn index_list(values: &[Val], index: i64, collect_metrics: bool) -> Val {
     let index = if index < 0 {
         match values.len().checked_sub(index.unsigned_abs() as usize) {
             Some(index) => index,
@@ -731,7 +743,10 @@ fn index_list(values: &[Val], index: i64) -> Val {
     } else {
         index as usize
     };
-    values.get(index).cloned().unwrap_or(Val::Nil)
+    values
+        .get(index)
+        .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
+        .unwrap_or(Val::Nil)
 }
 
 #[inline]
@@ -766,9 +781,17 @@ fn index_str(value: &str, index: i64) -> Val {
 }
 
 #[inline]
-pub(in crate::vm::vm) fn fallback_add(regs: &mut [Val], consts: &[Val], dst: u16, lhs: u16, rhs: u16) -> Result<()> {
-    let out = BinOp::Add.eval_vals(rk_read(regs, consts, lhs), rk_read(regs, consts, rhs))?;
-    assign_reg(regs, dst as usize, out);
+pub(in crate::vm::vm) fn fallback_add(
+    regs: &mut [Val],
+    consts: &[Val],
+    dst: u16,
+    lhs: u16,
+    rhs: u16,
+    collect_metrics: bool,
+) -> Result<()> {
+    let out =
+        BinOp::Add.eval_vals_with_metrics(rk_read(regs, consts, lhs), rk_read(regs, consts, rhs), collect_metrics)?;
+    assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
     Ok(())
 }
 
@@ -781,9 +804,10 @@ fn rk_read<'a>(regs: &'a [Val], consts: &'a [Val], rk: u16) -> &'a Val {
     }
 }
 
-#[inline]
-fn assign_reg(regs: &mut [Val], idx: usize, value: Val) {
-    write_register_value(regs, idx, value);
+/// Known-enabled `assign_reg` for quickening paths.
+#[inline(always)]
+fn assign_reg_with_metrics(regs: &mut [Val], idx: usize, value: Val, collect_metrics: bool) {
+    write_register_value_with_metrics(regs, idx, value, collect_metrics);
 }
 
 #[cfg(test)]

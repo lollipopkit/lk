@@ -1,9 +1,10 @@
 use crate::val::Val;
 use crate::vm::bytecode::{rk_index, rk_is_const};
+use crate::vm::copy_container_value_for_register_with_metrics;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{AccessIc, IndexIc, ListEntry, ObjectStrEntry, StrEntry};
 
-use super::helpers::assign_reg_slice;
+use super::helpers::assign_reg_with_metrics;
 
 impl Vm {
     #[inline(always)]
@@ -48,7 +49,14 @@ impl Vm {
     }
 
     #[inline(always)]
-    pub(super) fn update_list_ic(index_ic: &mut [Option<IndexIc>], pc: usize, base_ptr: usize, idx: i64, value: &Val) {
+    pub(super) fn update_list_ic(
+        index_ic: &mut [Option<IndexIc>],
+        pc: usize,
+        base_ptr: usize,
+        idx: i64,
+        value: &Val,
+        collect_metrics: bool,
+    ) {
         match index_ic[pc].as_mut() {
             Some(IndexIc::List(slots)) => {
                 let (hit, entry) = Vm::promote_or_insert(
@@ -57,11 +65,11 @@ impl Vm {
                     || ListEntry {
                         base_ptr,
                         idx,
-                        value: value.clone(),
+                        value: copy_container_value_for_register_with_metrics(value, collect_metrics),
                     },
                 );
                 if hit {
-                    entry.value = value.clone();
+                    entry.value = copy_container_value_for_register_with_metrics(value, collect_metrics);
                 }
             }
             _ => {
@@ -69,7 +77,7 @@ impl Vm {
                     Some(ListEntry {
                         base_ptr,
                         idx,
-                        value: value.clone(),
+                        value: copy_container_value_for_register_with_metrics(value, collect_metrics),
                     }),
                     None,
                     None,
@@ -80,7 +88,14 @@ impl Vm {
     }
 
     #[inline(always)]
-    pub(super) fn update_str_ic(index_ic: &mut [Option<IndexIc>], pc: usize, base_ptr: usize, idx: i64, value: &Val) {
+    pub(super) fn update_str_ic(
+        index_ic: &mut [Option<IndexIc>],
+        pc: usize,
+        base_ptr: usize,
+        idx: i64,
+        value: &Val,
+        collect_metrics: bool,
+    ) {
         match index_ic[pc].as_mut() {
             Some(IndexIc::Str(slots)) => {
                 let (hit, entry) = Vm::promote_or_insert(
@@ -89,11 +104,11 @@ impl Vm {
                     || StrEntry {
                         base_ptr,
                         idx,
-                        value: value.clone(),
+                        value: copy_container_value_for_register_with_metrics(value, collect_metrics),
                     },
                 );
                 if hit {
-                    entry.value = value.clone();
+                    entry.value = copy_container_value_for_register_with_metrics(value, collect_metrics);
                 }
             }
             _ => {
@@ -101,7 +116,7 @@ impl Vm {
                     Some(StrEntry {
                         base_ptr,
                         idx,
-                        value: value.clone(),
+                        value: copy_container_value_for_register_with_metrics(value, collect_metrics),
                     }),
                     None,
                     None,
@@ -118,6 +133,7 @@ impl Vm {
         obj_ptr: usize,
         key: &str,
         value: &Val,
+        collect_metrics: bool,
     ) {
         match access_ic[pc].as_mut() {
             Some(AccessIc::ObjectStr(slots)) => {
@@ -127,11 +143,11 @@ impl Vm {
                     || ObjectStrEntry {
                         obj_ptr,
                         key: key.to_string(),
-                        value: value.clone(),
+                        value: copy_container_value_for_register_with_metrics(value, collect_metrics),
                     },
                 );
                 if hit {
-                    entry.value = value.clone();
+                    entry.value = copy_container_value_for_register_with_metrics(value, collect_metrics);
                 }
             }
             _ => {
@@ -139,7 +155,7 @@ impl Vm {
                     Some(ObjectStrEntry {
                         obj_ptr,
                         key: key.to_string(),
-                        value: value.clone(),
+                        value: copy_container_value_for_register_with_metrics(value, collect_metrics),
                     }),
                     None,
                     None,
@@ -152,7 +168,6 @@ impl Vm {
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn arith2_try_numeric(
-        frame_raw: *mut super::FrameState<'_, '_>,
         regs: &mut [Val],
         consts: &[Val],
         dst: u16,
@@ -161,6 +176,7 @@ impl Vm {
         op_label: &'static str,
         iop: impl FnOnce(i64, i64) -> i64,
         fop: impl FnOnce(f64, f64) -> f64,
+        collect_metrics: bool,
     ) -> bool {
         let ar = if rk_is_const(a) {
             &consts[rk_index(a) as usize]
@@ -175,19 +191,19 @@ impl Vm {
         let dst_idx = dst as usize;
         match (ar, br) {
             (Val::Int(x), Val::Int(y)) => {
-                assign_reg_slice(frame_raw, regs, dst_idx, Val::Int(iop(*x, *y)));
+                assign_reg_with_metrics(regs, dst_idx, Val::Int(iop(*x, *y)), collect_metrics);
                 true
             }
             (Val::Float(x), Val::Float(y)) => {
-                assign_reg_slice(frame_raw, regs, dst_idx, Val::Float(fop(*x, *y)));
+                assign_reg_with_metrics(regs, dst_idx, Val::Float(fop(*x, *y)), collect_metrics);
                 true
             }
             (Val::Int(x), Val::Float(y)) => {
-                assign_reg_slice(frame_raw, regs, dst_idx, Val::Float(fop(*x as f64, *y)));
+                assign_reg_with_metrics(regs, dst_idx, Val::Float(fop(*x as f64, *y)), collect_metrics);
                 true
             }
             (Val::Float(x), Val::Int(y)) => {
-                assign_reg_slice(frame_raw, regs, dst_idx, Val::Float(fop(*x, *y as f64)));
+                assign_reg_with_metrics(regs, dst_idx, Val::Float(fop(*x, *y as f64)), collect_metrics);
                 true
             }
             _ => {
@@ -206,7 +222,6 @@ impl Vm {
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn cmp2_try_numeric(
-        frame_raw: *mut super::FrameState<'_, '_>,
         regs: &mut [Val],
         consts: &[Val],
         dst: u16,
@@ -214,6 +229,7 @@ impl Vm {
         b: u16,
         iop: impl FnOnce(i64, i64) -> bool,
         fop: impl FnOnce(f64, f64) -> bool,
+        collect_metrics: bool,
     ) -> bool {
         let ar = if rk_is_const(a) {
             &consts[rk_index(a) as usize]
@@ -233,7 +249,7 @@ impl Vm {
             _ => None,
         };
         if let Some(res) = res_opt {
-            assign_reg_slice(frame_raw, regs, dst as usize, Val::Bool(res));
+            assign_reg_with_metrics(regs, dst as usize, Val::Bool(res), collect_metrics);
             true
         } else {
             false

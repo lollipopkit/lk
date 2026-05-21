@@ -640,7 +640,7 @@ pub(crate) enum VmValueCopyMetric {
 }
 
 #[cfg(not(test))]
-#[inline]
+#[inline(always)]
 fn increment(counter: &AtomicU64) {
     if runtime_metrics_enabled() {
         counter.fetch_add(1, Ordering::Relaxed);
@@ -654,7 +654,8 @@ fn increment_thread(update: impl FnOnce(&mut VmRuntimeMetrics)) {
 }
 
 #[cfg(not(test))]
-#[inline]
+#[cfg(not(test))]
+#[inline(always)]
 pub(crate) fn record_opcode_step_known_enabled() {
     OPCODE_STEPS.fetch_add(1, Ordering::Relaxed);
 }
@@ -750,10 +751,19 @@ pub(crate) fn record_copy_policy_clone(kind: VmValueCopyMetric, heap_backed: boo
     });
 }
 
+/// Known-enabled variant: caller has already checked `collect_metrics`,
+/// so this unconditionally increments the counter without reading the
+/// global metrics gate atomically.
 #[cfg(not(test))]
+#[inline(always)]
+pub(crate) fn record_register_write_known_enabled() {
+    REGISTER_WRITES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(test)]
 #[inline]
-pub(crate) fn record_register_write() {
-    increment(&REGISTER_WRITES);
+pub(crate) fn record_register_write_known_enabled() {
+    update_thread_runtime_metrics(|metrics| metrics.register_writes += 1);
 }
 
 #[cfg(test)]

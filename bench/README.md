@@ -124,31 +124,32 @@ Date: 2026-05-21
 
 | Workload | LK VM (ms) | LK AOT (ms) | Lua (ms) | VM/Lua | AOT/Lua | AOT/VM | Conf. | Status |
 |----------|------------|-------------|----------|--------|---------|--------|-------|--------|
-| gcd_batch | 8.282 | 6.359 | 7.956 | 1.041x | 0.799x | 0.768x | high | close |
-| prime_trial_division | 0.396 | 1.579 | 0.546 | 0.725x | 2.892x | 3.987x | high | ahead |
-| binary_search | 13.818 | 11.327 | 50.063 | 0.276x | 0.226x | 0.820x | high | ahead |
-| two_sum_map | 59.220 | 112.249 | 42.965 | 1.378x | 2.613x | 1.895x | high | behind |
-| sliding_window_sum | 56.389 | 71.623 | 21.916 | 2.573x | 3.268x | 1.270x | high | behind |
-| matrix_3x3_multiply | 6.260 | 2.264 | 1.502 | 4.168x | 1.507x | 0.362x | high | behind |
-| stock_max_profit | 32.757 | 34.905 | 10.026 | 3.267x | 3.481x | 1.066x | high | behind |
-| histogram_group_count | 96.289 | 107.933 | 45.330 | 2.124x | 2.381x | 1.121x | high | behind |
-| string_key_hash | 24.422 | 28.269 | 7.213 | 3.386x | 3.919x | 1.158x | high | behind |
-| order_score_pipeline | 9.187 | 7.677 | 3.359 | 2.735x | 2.286x | 0.836x | high | behind |
-| log_parse_filter | 68.165 | 99.357 | 212.876 | 0.320x | 0.467x | 1.458x | high | ahead |
-| cart_pricing_rules | 4.957 | 5.778 | 2.380 | 2.083x | 2.428x | 1.166x | high | behind |
-| route_permission_check | 15.580 | 15.276 | 3.366 | 4.629x | 4.538x | 0.980x | high | behind |
-| inventory_reorder | 71.106 | 81.000 | 29.597 | 2.402x | 2.737x | 1.139x | high | behind |
-| fraud_rule_scoring | 28.181 | 32.064 | 12.197 | 2.310x | 2.629x | 1.138x | high | behind |
+| gcd_batch | 8.044 | 7.846 | 8.108 | 0.992x | 0.968x | 0.975x | high | close |
+| prime_trial_division | 0.413 | 1.794 | 0.539 | 0.766x | 3.328x | 4.344x | high | ahead |
+| binary_search | 13.914 | 10.846 | 50.464 | 0.276x | 0.215x | 0.780x | high | ahead |
+| two_sum_map | 61.061 | 115.144 | 41.891 | 1.458x | 2.749x | 1.886x | high | behind |
+| sliding_window_sum | 54.439 | 71.670 | 22.108 | 2.462x | 3.242x | 1.317x | high | behind |
+| matrix_3x3_multiply | 6.109 | 2.262 | 1.467 | 4.164x | 1.542x | 0.370x | high | behind |
+| stock_max_profit | 32.279 | 34.253 | 9.934 | 3.249x | 3.448x | 1.061x | high | behind |
+| histogram_group_count | 93.568 | 107.289 | 44.218 | 2.116x | 2.426x | 1.147x | high | behind |
+| string_key_hash | 24.111 | 28.266 | 7.232 | 3.334x | 3.908x | 1.172x | high | behind |
+| order_score_pipeline | 8.497 | 7.561 | 3.345 | 2.540x | 2.260x | 0.890x | high | behind |
+| log_parse_filter | 68.583 | 100.385 | 210.904 | 0.325x | 0.476x | 1.464x | high | ahead |
+| cart_pricing_rules | 4.777 | 5.583 | 2.354 | 2.029x | 2.372x | 1.169x | high | behind |
+| route_permission_check | 13.913 | 15.176 | 3.431 | 4.055x | 4.423x | 1.091x | high | behind |
+| inventory_reorder | 67.513 | 81.054 | 29.956 | 2.254x | 2.706x | 1.201x | high | behind |
+| fraud_rule_scoring | 26.855 | 32.576 | 11.547 | 2.326x | 2.821x | 1.213x | high | behind |
 
-Geometric mean VM/Lua ratio: **1.719x**.
-AOT geometric mean ratio: **1.925x** vs Lua.
-AOT/VM geometric mean ratio: **1.120x**.
+Geometric mean VM/Lua ratio: **1.687x**.
+AOT geometric mean ratio: **1.973x** vs Lua.
+AOT/VM geometric mean ratio: **1.170x**.
 
 ## Current Bottlenecks
 
 The real workload suite is the completion gate for claiming broad VM
-performance improvements. LK remains behind Lua on every current workload, so
-microbenchmark wins are not considered sufficient evidence.
+performance improvements. LK is now ahead or close on several loop-heavy
+workloads, but the geometric mean is still behind Lua, so microbenchmark wins
+are not considered sufficient evidence.
 
 Primary bottlenecks:
 - General VM overhead in realistic while loops and function calls

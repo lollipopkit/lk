@@ -346,6 +346,10 @@ pub(in crate::vm::vm) enum PackedHotKind {
         idx: u16,
         write_idx: bool,
         ofs: i16,
+        /// Pre-computed back-PC for ForRangeStep fusion. If the next BC32 word is a
+        /// ForRangeStep, this caches the jump target — avoiding a per-iteration
+        /// decode of the extension word.
+        fusion_back_pc: Option<usize>,
     },
     ForRangeStep {
         back_ofs: i16,

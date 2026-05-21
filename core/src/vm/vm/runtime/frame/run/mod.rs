@@ -1,4 +1,5 @@
 use anyhow::Result;
+
 use std::sync::Arc;
 
 use crate::val::{ClosureCapture, Val};
@@ -9,7 +10,6 @@ use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{FrameDispatchPlan, RuntimeDispatchMode, VmCaches};
 use crate::vm::vm::frame::{FrameExecutionParts, FrameState};
-use crate::vm::vm_runtime_metrics_enabled;
 
 mod call_common;
 mod helpers;
@@ -69,6 +69,7 @@ impl FrameRuntimeView<'_, '_> {
             0,
             Val::Nil,
             self.self_ptr,
+            self.collect_metrics,
         )
     }
 }
@@ -89,6 +90,7 @@ pub(crate) fn run_frame(
         capture_specs: frame_capture_specs,
         region_plan,
         region_allocator: region_allocator_ptr,
+        collect_metrics,
     } = frame.execution_parts();
     let frame_raw = frame_raw.cast::<FrameState<'_, '_>>();
     let mut runtime = FrameRuntimeView {
@@ -98,7 +100,7 @@ pub(crate) fn run_frame(
         ctx,
         caches,
         dispatch_plan,
-        collect_metrics: vm_runtime_metrics_enabled(),
+        collect_metrics,
         base: frame_base,
         captures: frame_captures,
         capture_specs: frame_capture_specs,

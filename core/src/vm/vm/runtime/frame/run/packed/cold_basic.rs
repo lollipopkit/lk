@@ -94,6 +94,7 @@ pub(super) fn exec_basic_op(
     region_plan: Option<&RegionPlan>,
     region_allocator_ptr: *const RegionAllocator,
     self_ptr: *mut Vm,
+    collect_metrics: bool,
 ) -> Result<Option<Val>> {
     let mut pc = *pc_ref;
     match op {
@@ -103,22 +104,28 @@ pub(super) fn exec_basic_op(
                     if *i < 0 {
                         l.len()
                             .checked_sub(i.unsigned_abs() as usize)
-                            .and_then(|idx| l.get(idx).map(copy_value_for_register))
+                            .and_then(|idx| {
+                                l.get(idx)
+                                    .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
+                            })
                             .unwrap_or(Val::Nil)
                     } else {
                         let lptr = Arc::as_ptr(l) as *const Val as usize;
                         let hit = match index_ic[pc].as_mut() {
-                            Some(IndexIc::List(slots)) => {
-                                Vm::lookup_promote(slots, |e| e.base_ptr == lptr && e.idx == *i)
-                                    .map(|entry| copy_value_for_register(&entry.value))
-                            }
+                            Some(IndexIc::List(slots)) => Vm::lookup_promote(slots, |e| {
+                                e.base_ptr == lptr && e.idx == *i
+                            })
+                            .map(|entry| copy_container_value_for_register_with_metrics(&entry.value, collect_metrics)),
                             _ => None,
                         };
                         if let Some(v) = hit {
                             v
                         } else {
-                            let v = l.get(*i as usize).map(copy_value_for_register).unwrap_or(Val::Nil);
-                            Vm::update_list_ic(index_ic, pc, lptr, *i, &v);
+                            let v = l
+                                .get(*i as usize)
+                                .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
+                                .unwrap_or(Val::Nil);
+                            Vm::update_list_ic(index_ic, pc, lptr, *i, &v, collect_metrics);
                             v
                         }
                     }
@@ -130,10 +137,10 @@ pub(super) fn exec_basic_op(
                     } else {
                         let sptr = s_str.as_ptr() as usize;
                         let hit = match index_ic[pc].as_mut() {
-                            Some(IndexIc::Str(slots)) => {
-                                Vm::lookup_promote(slots, |e| e.base_ptr == sptr && e.idx == *i)
-                                    .map(|entry| copy_value_for_register(&entry.value))
-                            }
+                            Some(IndexIc::Str(slots)) => Vm::lookup_promote(slots, |e| {
+                                e.base_ptr == sptr && e.idx == *i
+                            })
+                            .map(|entry| copy_container_value_for_register_with_metrics(&entry.value, collect_metrics)),
                             _ => None,
                         };
                         if let Some(v) = hit {
@@ -154,14 +161,14 @@ pub(super) fn exec_basic_op(
                                     .map(|c| Val::from_str(&c.to_string()))
                                     .unwrap_or(Val::Nil)
                             };
-                            Vm::update_str_ic(index_ic, pc, sptr, *i, &v);
+                            Vm::update_str_ic(index_ic, pc, sptr, *i, &v, collect_metrics);
                             v
                         }
                     }
                 }
-                (base_val, key) => base_val.access(key).unwrap_or(Val::Nil),
+                (base_val, key) => base_val.access_with_metrics(key, collect_metrics).unwrap_or(Val::Nil),
             };
-            assign_reg(frame_raw, regs, dst as usize, res);
+            assign_reg_with_metrics(regs, dst as usize, res, collect_metrics);
             pc = next_pc_default;
         }
         Op::Jmp(ofs) => {
@@ -241,13 +248,13 @@ pub(super) fn exec_basic_op(
             // Fused: r += imm, then jump by ofs.
             if let Val::Int(x) = regs[r as usize] {
                 let result = x.wrapping_add(imm as i64);
-                assign_reg(frame_raw, regs, r as usize, Val::Int(result));
+                assign_reg_with_metrics(regs, r as usize, Val::Int(result), collect_metrics);
             }
             pc = ((pc as isize) + (ofs as isize)) as usize;
         }
         Op::ToBool(dst, src) => {
             let truthy = !matches!(regs[src as usize], Val::Nil | Val::Bool(false));
-            assign_reg(frame_raw, regs, dst as usize, Val::Bool(truthy));
+            assign_reg_with_metrics(regs, dst as usize, Val::Bool(truthy), collect_metrics);
             pc = next_pc_default;
         }
         Op::ToIter { dst, src } => {
@@ -256,7 +263,9 @@ pub(super) fn exec_basic_op(
                 .map(|plan| plan.region_for(dst as usize) == AllocationRegion::ThreadLocal)
                 .unwrap_or(false);
             let out = match &regs[src as usize] {
-                v if matches!(v, Val::List(_)) || v.as_str().is_some() => copy_value_for_register(v),
+                v if matches!(v, Val::List(_)) || v.as_str().is_some() => {
+                    copy_value_for_register_with_metrics(v, collect_metrics)
+                }
                 Val::Map(m) => {
                     let mut entries: Vec<_> = m.iter().collect();
                     entries.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
@@ -264,7 +273,13 @@ pub(super) fn exec_basic_op(
                         let allocator = region_allocator(region_allocator_ptr);
                         allocator.with_val_buffer(entries.len(), |scratch| {
                             for (key, value) in entries.iter() {
-                                let pair = Val::List(vec![Val::from_str(key.as_str()), (*value).clone()].into());
+                                let pair = Val::List(
+                                    vec![
+                                        Val::from_str(key.as_str()),
+                                        copy_value_for_register_with_metrics(value, collect_metrics),
+                                    ]
+                                    .into(),
+                                );
                                 scratch.push(pair);
                             }
                             let data = scratch.split_off(0);
@@ -273,8 +288,13 @@ pub(super) fn exec_basic_op(
                     } else {
                         let mut pairs = Vec::with_capacity(entries.len());
                         for (key, value) in entries {
-                            let pair =
-                                Val::List(vec![Val::from_str(key.as_str()), copy_value_for_register(value)].into());
+                            let pair = Val::List(
+                                vec![
+                                    Val::from_str(key.as_str()),
+                                    copy_value_for_register_with_metrics(value, collect_metrics),
+                                ]
+                                .into(),
+                            );
                             pairs.push(pair);
                         }
                         Val::List(pairs.into())
@@ -282,13 +302,13 @@ pub(super) fn exec_basic_op(
                 }
                 _ => Val::List(Vec::<Val>::new().into()),
             };
-            assign_reg(frame_raw, regs, dst as usize, out);
+            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             pc = next_pc_default;
         }
         Op::Not(dst, src) => {
             match &regs[src as usize] {
-                Val::Bool(b) => assign_reg(frame_raw, regs, dst as usize, Val::Bool(!b)),
-                Val::Nil => assign_reg(frame_raw, regs, dst as usize, Val::Bool(true)),
+                Val::Bool(b) => assign_reg_with_metrics(regs, dst as usize, Val::Bool(!b), collect_metrics),
+                Val::Nil => assign_reg_with_metrics(regs, dst as usize, Val::Bool(true), collect_metrics),
                 other => {
                     return frame_return_common(frame_raw, pc, Err(anyhow!("Invalid operand: !{:?}", other))).map(Some);
                 }
@@ -297,7 +317,7 @@ pub(super) fn exec_basic_op(
         }
         Op::NullishPick { l, dst, ofs } => {
             if !matches!(regs[l as usize], Val::Nil) {
-                assign_reg_from_reg(frame_raw, regs, dst as usize, l as usize);
+                assign_reg_from_reg_with_metrics(regs, dst as usize, l as usize, collect_metrics);
                 pc = ((pc as isize) + (ofs as isize)) as usize;
             } else {
                 pc = next_pc_default;
@@ -311,7 +331,8 @@ pub(super) fn exec_basic_op(
             } else {
                 Val::Nil
             };
-            return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
+            return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr, collect_metrics)
+                .map(Some);
         }
         Op::Break(ofs) => {
             pc = ((pc as isize) + (ofs as isize)) as usize;
@@ -321,51 +342,17 @@ pub(super) fn exec_basic_op(
         }
         Op::LoadGlobal(dst, name_k) => {
             let name_val = &f.consts[name_k as usize];
-            let mut out = Val::Nil;
-            if let Some(s) = name_val.as_str() {
-                let key_ptr = s.as_ptr() as usize;
-                let cur_gen = ctx.generation();
-                let local_shadowed = ctx.is_local_name(s);
-                if !local_shadowed {
-                    if let Some(GlobalEntry(ptr, v, generation)) = &global_ic[pc]
-                        && *ptr == key_ptr
-                        && *generation == cur_gen
-                    {
-                        out = v.clone();
-                    } else if let Some(v) = ctx.get(s) {
-                        out = v.clone();
-                        global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
-                    }
-                }
-                if matches!(out, Val::Nil)
-                    && let Some(v) = ctx.get_value(s)
-                {
-                    out = v;
-                    if !local_shadowed {
-                        global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
-                    }
-                }
-                if matches!(out, Val::Nil)
-                    && let Some(builtin) = ctx.resolver().get_builtin(s)
-                {
-                    out = builtin.clone();
-                    if !local_shadowed {
-                        global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
-                    }
-                }
-            } else {
-                let fallback_name = format!("{}", name_val);
-                if let Some(v) = ctx.get(fallback_name.as_str()) {
-                    out = v.clone();
-                }
-            }
-            assign_reg(frame_raw, regs, dst as usize, out);
+            let out = load_global_for_register(ctx, global_ic, pc, name_val, collect_metrics);
+            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             pc = next_pc_default;
         }
         Op::DefineGlobal(name_k, src) => {
             let name_val = &f.consts[name_k as usize];
             if let Some(s) = name_val.as_str() {
-                ctx.set(s.to_string(), copy_value_for_register(&regs[src as usize]));
+                ctx.set(
+                    s.to_string(),
+                    copy_value_for_register_with_metrics(&regs[src as usize], collect_metrics),
+                );
             }
             pc = next_pc_default;
         }
@@ -375,7 +362,11 @@ pub(super) fn exec_basic_op(
                     if *i < 0 {
                         Some(Val::Nil)
                     } else {
-                        Some(l.get(*i as usize).map(copy_value_for_register).unwrap_or(Val::Nil))
+                        Some(
+                            l.get(*i as usize)
+                                .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
+                                .unwrap_or(Val::Nil),
+                        )
                     }
                 }
                 (base_val, Val::Int(i)) if base_val.as_str().is_some() => {
@@ -400,8 +391,10 @@ pub(super) fn exec_basic_op(
                         )
                     }
                 }
-                (Val::Map(m), Val::Str(s)) => Val::map_get_str(m, s.as_str()).map(copy_value_for_register),
-                (Val::Map(m), Val::ShortStr(s)) => Val::map_get_str(m, s.as_str()).map(copy_value_for_register),
+                (Val::Map(m), Val::Str(s)) => Val::map_get_str(m, s.as_str())
+                    .map(|value| copy_value_for_register_with_metrics(value, collect_metrics)),
+                (Val::Map(m), Val::ShortStr(s)) => Val::map_get_str(m, s.as_str())
+                    .map(|value| copy_value_for_register_with_metrics(value, collect_metrics)),
                 (Val::Object(object), Val::Str(s)) => {
                     let fields = &object.fields;
                     let optr = Arc::as_ptr(fields) as usize;
@@ -409,7 +402,7 @@ pub(super) fn exec_basic_op(
                     match access_ic[pc].as_mut() {
                         Some(AccessIc::ObjectStr(slots)) => {
                             Vm::lookup_promote(slots, |e| e.obj_ptr == optr && e.key.as_str() == kstr)
-                                .map(|entry| copy_value_for_register(&entry.value))
+                                .map(|entry| copy_value_for_register_with_metrics(&entry.value, collect_metrics))
                         }
                         _ => None,
                     }
@@ -421,7 +414,7 @@ pub(super) fn exec_basic_op(
                     match access_ic[pc].as_mut() {
                         Some(AccessIc::ObjectStr(slots)) => {
                             Vm::lookup_promote(slots, |e| e.obj_ptr == optr && e.key.as_str() == kstr)
-                                .map(|entry| copy_value_for_register(&entry.value))
+                                .map(|entry| copy_value_for_register_with_metrics(&entry.value, collect_metrics))
                         }
                         _ => None,
                     }
@@ -431,19 +424,21 @@ pub(super) fn exec_basic_op(
             let res = if let Some(v) = hit_val {
                 v
             } else {
-                let v = regs[base as usize].access(&regs[field as usize]).unwrap_or(Val::Nil);
+                let v = regs[base as usize]
+                    .access_with_metrics(&regs[field as usize], collect_metrics)
+                    .unwrap_or(Val::Nil);
                 match (&regs[base as usize], &regs[field as usize]) {
                     (Val::Object(object), field_val) if field_val.as_str().is_some() => {
                         let s = field_val.as_str().unwrap();
                         let fields = &object.fields;
                         let optr = Arc::as_ptr(fields) as usize;
-                        Vm::update_object_ic(access_ic, pc, optr, s, &v);
+                        Vm::update_object_ic(access_ic, pc, optr, s, &v, collect_metrics);
                     }
                     _ => {}
                 }
                 v
             };
-            assign_reg(frame_raw, regs, dst as usize, res);
+            assign_reg_with_metrics(regs, dst as usize, res, collect_metrics);
             pc = next_pc_default;
         }
         Op::AccessK(dst, base, kidx) => {
@@ -451,7 +446,9 @@ pub(super) fn exec_basic_op(
             let res = if let Some(s) = key.as_str() {
                 let (hit_val, obj_ptr) = match &regs[base as usize] {
                     Val::Map(m) => {
-                        let out = Val::map_get_str(m, s).map(copy_value_for_register).unwrap_or(Val::Nil);
+                        let out = Val::map_get_str(m, s)
+                            .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
+                            .unwrap_or(Val::Nil);
                         (Some(out), None)
                     }
                     Val::Object(object) => {
@@ -460,7 +457,7 @@ pub(super) fn exec_basic_op(
                         let out = match access_ic[pc].as_mut() {
                             Some(AccessIc::ObjectStr(slots)) => {
                                 Vm::lookup_promote(slots, |e| e.obj_ptr == optr && e.key.as_str() == s)
-                                    .map(|entry| copy_value_for_register(&entry.value))
+                                    .map(|entry| copy_value_for_register_with_metrics(&entry.value, collect_metrics))
                             }
                             _ => None,
                         };
@@ -471,47 +468,53 @@ pub(super) fn exec_basic_op(
                 if let Some(v) = hit_val {
                     v
                 } else {
-                    let v = regs[base as usize].access(key).unwrap_or(Val::Nil);
+                    let v = regs[base as usize]
+                        .access_with_metrics(key, collect_metrics)
+                        .unwrap_or(Val::Nil);
                     if let Some(optr) = obj_ptr {
-                        Vm::update_object_ic(access_ic, pc, optr, s, &v);
+                        Vm::update_object_ic(access_ic, pc, optr, s, &v, collect_metrics);
                     }
                     v
                 }
             } else {
                 Val::Nil
             };
-            assign_reg(frame_raw, regs, dst as usize, res);
+            assign_reg_with_metrics(regs, dst as usize, res, collect_metrics);
             pc = next_pc_default;
         }
         Op::IndexK(dst, base, kidx) => {
             let key = &f.consts[kidx as usize];
             let res = if let Val::Int(i) = key {
                 match &regs[base as usize] {
-                    Val::List(_) | Val::Str(_) | Val::ShortStr(_) => {
-                        regs[base as usize].access(&Val::Int(*i)).unwrap_or(Val::Nil)
-                    }
+                    Val::List(_) | Val::Str(_) | Val::ShortStr(_) => regs[base as usize]
+                        .access_with_metrics(&Val::Int(*i), collect_metrics)
+                        .unwrap_or(Val::Nil),
                     _ => Val::Nil,
                 }
             } else {
                 Val::Nil
             };
-            assign_reg(frame_raw, regs, dst as usize, res);
+            assign_reg_with_metrics(regs, dst as usize, res, collect_metrics);
             pc = next_pc_default;
         }
         Op::ListIndexI(dst, base, index) => {
             let res = match &regs[base as usize] {
-                Val::List(_) => regs[base as usize].access(&Val::Int(index as i64)).unwrap_or(Val::Nil),
+                Val::List(_) => regs[base as usize]
+                    .access_with_metrics(&Val::Int(index as i64), collect_metrics)
+                    .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
-            assign_reg(frame_raw, regs, dst as usize, res);
+            assign_reg_with_metrics(regs, dst as usize, res, collect_metrics);
             pc = next_pc_default;
         }
         Op::StrIndexI(dst, base, index) => {
             let res = match &regs[base as usize] {
-                value if value.as_str().is_some() => value.access(&Val::Int(index as i64)).unwrap_or(Val::Nil),
+                value if value.as_str().is_some() => value
+                    .access_with_metrics(&Val::Int(index as i64), collect_metrics)
+                    .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
-            assign_reg(frame_raw, regs, dst as usize, res);
+            assign_reg_with_metrics(regs, dst as usize, res, collect_metrics);
             pc = next_pc_default;
         }
         Op::MapHasK(dst, map, kidx) => {
@@ -523,28 +526,28 @@ pub(super) fn exec_basic_op(
                         .map(Some);
                 }
             };
-            assign_reg(frame_raw, regs, dst as usize, out);
+            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             pc = next_pc_default;
         }
         Op::MapGetInterned(dst, map, kidx) => {
             let key = f.consts[kidx as usize].as_str().unwrap_or("");
             let out = match &regs[map as usize] {
                 Val::Map(map) => Val::map_get_str(map, key)
-                    .map(copy_value_for_register)
+                    .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
                     .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
-            assign_reg(frame_raw, regs, dst as usize, out);
+            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             pc = next_pc_default;
         }
         Op::MapGetDynamic(dst, map, key) => {
             let out = match (&regs[map as usize], regs[key as usize].as_str()) {
                 (Val::Map(map), Some(key)) => Val::map_get_str(map, key)
-                    .map(copy_value_for_register)
+                    .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
                     .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
-            assign_reg(frame_raw, regs, dst as usize, out);
+            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             pc = next_pc_default;
         }
         Op::ListSetI { dst, list, index, val } => {
@@ -552,7 +555,10 @@ pub(super) fn exec_basic_op(
                 return frame_return_common(frame_raw, pc, Err(anyhow!("set() index must be non-negative"))).map(Some);
             } else if let Val::List(items) = &regs[list as usize] {
                 let index = index as usize;
-                let Some(old) = items.get(index).map(copy_value_for_register) else {
+                let Some(old) = items
+                    .get(index)
+                    .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
+                else {
                     return frame_return_common(
                         frame_raw,
                         pc,
@@ -561,21 +567,25 @@ pub(super) fn exec_basic_op(
                     .map(Some);
                 };
                 let mut updated = Vec::with_capacity(items.len());
-                updated.extend(items.iter().map(copy_value_for_register));
-                updated[index] = copy_value_for_register(&regs[val as usize]);
+                updated.extend(
+                    items
+                        .iter()
+                        .map(|value| copy_value_for_register_with_metrics(value, collect_metrics)),
+                );
+                updated[index] = copy_value_for_register_with_metrics(&regs[val as usize], collect_metrics);
                 Val::List(vec![Val::List(Arc::new(updated)), old].into())
             } else {
                 return frame_return_common(frame_raw, pc, Err(anyhow!("set() first argument must be a list")))
                     .map(Some);
             };
-            assign_reg(frame_raw, regs, dst as usize, out);
+            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             pc = next_pc_default;
         }
         Op::MapSetInterned(map, kidx, val) => {
             let key = f.consts[kidx as usize]
                 .string_key_arcstr()
                 .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
-            let pushed_val = copy_value_for_register(&regs[val as usize]);
+            let pushed_val = copy_value_for_register_with_metrics(&regs[val as usize], collect_metrics);
             match &mut regs[map as usize] {
                 Val::Map(arc) => insert_map_entry(arc, key, pushed_val),
                 _ => {
@@ -591,7 +601,7 @@ pub(super) fn exec_basic_op(
                 let key = f.consts[kidx as usize]
                     .string_key_arcstr()
                     .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
-                let pushed_val = copy_value_for_register(&regs[val_idx]);
+                let pushed_val = copy_value_for_register_with_metrics(&regs[val_idx], collect_metrics);
                 match &mut regs[map_idx] {
                     Val::Map(arc) => insert_map_entry(arc, key, pushed_val),
                     _ => {
@@ -641,7 +651,7 @@ pub(super) fn exec_basic_op(
             };
             let step_val = if !explicit {
                 let step_val = if i0 <= ilim { 1 } else { -1 };
-                assign_reg(frame_raw, regs, step_reg, Val::Int(step_val));
+                assign_reg_with_metrics(regs, step_reg, Val::Int(step_val), collect_metrics);
                 step_val
             } else {
                 match &regs[step_reg] {
@@ -683,7 +693,7 @@ pub(super) fn exec_basic_op(
             };
             if state_entry.should_continue() {
                 if write_idx {
-                    assign_reg(frame_raw, regs, idx_reg, Val::Int(state_entry.current));
+                    assign_reg_with_metrics(regs, idx_reg, Val::Int(state_entry.current), collect_metrics);
                 }
                 state_entry.current += state_entry.step;
                 pc = next_pc_default;
@@ -702,20 +712,12 @@ pub(super) fn exec_basic_op(
             let value = &regs[src as usize];
             match plan.pattern.matches(value, Some(&*ctx))? {
                 Some(bound) => {
-                    for binding in &plan.bindings {
-                        if let Some((_, v)) = bound.iter().find(|(name, _)| name == &binding.name) {
-                            assign_reg(frame_raw, regs, binding.reg as usize, v.clone());
-                        } else {
-                            assign_reg(frame_raw, regs, binding.reg as usize, Val::Nil);
-                        }
-                    }
-                    assign_reg(frame_raw, regs, dst as usize, Val::Bool(true));
+                    assign_pattern_bindings_with_metrics(regs, &plan.bindings, &bound, collect_metrics);
+                    assign_reg_with_metrics(regs, dst as usize, Val::Bool(true), collect_metrics);
                 }
                 None => {
-                    for binding in &plan.bindings {
-                        assign_reg(frame_raw, regs, binding.reg as usize, Val::Nil);
-                    }
-                    assign_reg(frame_raw, regs, dst as usize, Val::Bool(false));
+                    clear_pattern_bindings_with_metrics(regs, &plan.bindings, collect_metrics);
+                    assign_reg_with_metrics(regs, dst as usize, Val::Bool(false), collect_metrics);
                 }
             }
             pc = next_pc_default;
@@ -731,15 +733,13 @@ pub(super) fn exec_basic_op(
             match plan.pattern.matches(value, Some(&*ctx))? {
                 Some(bound) => {
                     let mut assigned = Vec::with_capacity(plan.bindings.len());
-                    for binding in &plan.bindings {
-                        if let Some((_, v)) = bound.iter().find(|(name, _)| name == &binding.name) {
-                            let cloned = v.clone();
-                            assign_reg(frame_raw, regs, binding.reg as usize, cloned.clone());
-                            assigned.push((binding.name.clone(), cloned));
-                        } else {
-                            assign_reg(frame_raw, regs, binding.reg as usize, Val::Nil);
-                        }
-                    }
+                    assign_pattern_bindings_for_context_with_metrics(
+                        regs,
+                        &plan.bindings,
+                        &bound,
+                        &mut assigned,
+                        collect_metrics,
+                    );
                     for (name, val) in assigned {
                         if is_const {
                             ctx.define_const(name, val);
@@ -777,17 +777,19 @@ pub(super) fn exec_basic_op(
             if use_thread_local {
                 let allocator = region_allocator(region_allocator_ptr);
                 let list_val = allocator.with_val_buffer(n, |scratch| {
-                    scratch.extend((0..n).map(|i| copy_value_for_register(&regs[start + i])));
+                    scratch.extend(
+                        (0..n).map(|i| copy_value_for_register_with_metrics(&regs[start + i], collect_metrics)),
+                    );
                     let data = scratch.split_off(0);
                     Val::List(data.into())
                 });
-                assign_reg(frame_raw, regs, dst as usize, list_val);
+                assign_reg_with_metrics(regs, dst as usize, list_val, collect_metrics);
             } else {
                 let mut v = Vec::with_capacity(n);
                 for i in 0..n {
-                    v.push(copy_value_for_register(&regs[start + i]));
+                    v.push(copy_value_for_register_with_metrics(&regs[start + i], collect_metrics));
                 }
-                assign_reg(frame_raw, regs, dst as usize, Val::List(v.into()));
+                assign_reg_with_metrics(regs, dst as usize, Val::List(v.into()), collect_metrics);
             }
             pc = next_pc_default;
         }
@@ -806,7 +808,7 @@ pub(super) fn exec_basic_op(
                         let value;
                         {
                             let key_val = &regs[start + 2 * i];
-                            value = copy_value_for_register(&regs[start + 2 * i + 1]);
+                            value = copy_value_for_register_with_metrics(&regs[start + 2 * i + 1], collect_metrics);
                             key_arc = key_val
                                 .primitive_key_arcstr()
                                 .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", key_val))?;
@@ -820,7 +822,7 @@ pub(super) fn exec_basic_op(
                     Ok(Val::Map(Arc::new(map)))
                 });
                 match map_val {
-                    Ok(val) => assign_reg(frame_raw, regs, dst as usize, val),
+                    Ok(val) => assign_reg_with_metrics(regs, dst as usize, val, collect_metrics),
                     Err(err) => {
                         return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                     }
@@ -832,7 +834,7 @@ pub(super) fn exec_basic_op(
                     let value;
                     {
                         let key_val = &regs[start + 2 * i];
-                        value = copy_value_for_register(&regs[start + 2 * i + 1]);
+                        value = copy_value_for_register_with_metrics(&regs[start + 2 * i + 1], collect_metrics);
                         key_arc = match key_val.primitive_key_arcstr() {
                             Some(key_arc) => key_arc,
                             None => {
@@ -847,22 +849,22 @@ pub(super) fn exec_basic_op(
                     }
                     Val::map_insert_arcstr(&mut map, key_arc, value);
                 }
-                assign_reg(frame_raw, regs, dst as usize, Val::Map(Arc::new(map)));
+                assign_reg_with_metrics(regs, dst as usize, Val::Map(Arc::new(map)), collect_metrics);
             }
             pc = next_pc_default;
         }
         Op::MakeClosure { dst, proto } => {
-            let clo = make_closure_value(f, proto, ctx, regs, frame_base)?;
-            assign_reg(frame_raw, regs, dst as usize, clo);
+            let clo = make_closure_value(f, proto, ctx, regs, frame_base, collect_metrics)?;
+            assign_reg_with_metrics(regs, dst as usize, clo, collect_metrics);
             pc = next_pc_default;
         }
         Op::LoadLocal(dst, idx) => {
-            assign_reg_from_local_load(frame_raw, regs, dst as usize, idx as usize);
+            assign_reg_from_local_load_with_metrics(regs, dst as usize, idx as usize, collect_metrics);
             pc = next_pc_default;
         }
         Op::StoreLocal(idx, src) => {
             let may_take = local_store_may_take_source(f, pc);
-            assign_local_from_reg_or_take(frame_raw, regs, idx as usize, src as usize, may_take);
+            assign_local_from_reg_or_take_with_metrics(regs, idx as usize, src as usize, may_take, collect_metrics);
             pc = next_pc_default;
         }
         _ => unreachable!("basic packed op predicate drifted"),

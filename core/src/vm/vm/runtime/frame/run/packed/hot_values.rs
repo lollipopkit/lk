@@ -1,16 +1,16 @@
+use super::super::helpers::assign_reg_with_metrics;
 use super::*;
-use crate::vm::copy_const_value_for_register;
-use crate::vm::copy_container_value_for_register as copy_value_for_register;
+use crate::vm::{copy_const_value_for_register_with_metrics, copy_container_value_for_register_with_metrics};
 
 #[inline(always)]
 pub(super) fn exec_access_hot(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     access_ic: &mut [Option<AccessIc>],
     pc: usize,
     dst: u16,
     base: u16,
     field: u16,
+    collect_metrics: bool,
 ) {
     let hit_val = match (&regs[base as usize], &regs[field as usize]) {
         (Val::List(list), Val::Int(index)) => {
@@ -19,7 +19,7 @@ pub(super) fn exec_access_hot(
             } else {
                 Some(
                     list.get(*index as usize)
-                        .map(copy_value_for_register)
+                        .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
                         .unwrap_or(Val::Nil),
                 )
             }
@@ -43,9 +43,8 @@ pub(super) fn exec_access_hot(
                 )
             }
         }
-        (Val::Map(map), key) if key.as_str().is_some() => {
-            Val::map_get_str(map, key.as_str().unwrap()).map(copy_value_for_register)
-        }
+        (Val::Map(map), key) if key.as_str().is_some() => Val::map_get_str(map, key.as_str().unwrap())
+            .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics)),
         (Val::Object(object), key) if key.as_str().is_some() => {
             let fields = &object.fields;
             let object_ptr = Arc::as_ptr(fields) as usize;
@@ -53,7 +52,7 @@ pub(super) fn exec_access_hot(
             match access_ic[pc].as_mut() {
                 Some(AccessIc::ObjectStr(slots)) => {
                     Vm::lookup_promote(slots, |entry| entry.obj_ptr == object_ptr && entry.key.as_str() == key)
-                        .map(|entry| copy_value_for_register(&entry.value))
+                        .map(|entry| copy_container_value_for_register_with_metrics(&entry.value, collect_metrics))
                 }
                 _ => None,
             }
@@ -63,17 +62,19 @@ pub(super) fn exec_access_hot(
     let result = if let Some(value) = hit_val {
         value
     } else {
-        let value = regs[base as usize].access(&regs[field as usize]).unwrap_or(Val::Nil);
+        let value = regs[base as usize]
+            .access_with_metrics(&regs[field as usize], collect_metrics)
+            .unwrap_or(Val::Nil);
         if let (Val::Object(object), field_val) = (&regs[base as usize], &regs[field as usize])
             && let Some(key) = field_val.as_str()
         {
             let fields = &object.fields;
             let object_ptr = Arc::as_ptr(fields) as usize;
-            Vm::update_object_ic(access_ic, pc, object_ptr, key, &value);
+            Vm::update_object_ic(access_ic, pc, object_ptr, key, &value, collect_metrics);
         }
         value
     };
-    assign_reg(frame_raw, regs, dst as usize, result);
+    assign_reg_with_metrics(regs, dst as usize, result, collect_metrics);
 }
 
 #[inline(always)]
@@ -100,7 +101,6 @@ fn int_arith_value(op: PackedArithOp, lhs: i64, rhs: i64) -> Option<i64> {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn exec_access_int_arith_hot(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     access_ic: &mut [Option<AccessIc>],
@@ -112,13 +112,14 @@ pub(super) fn exec_access_int_arith_hot(
     arith_dst: u16,
     arith_a: u16,
     arith_b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     let Some(access_value) = access_int_value(regs, base, field) else {
-        exec_access_hot(frame_raw, regs, access_ic, pc, access_dst, base, field);
-        return exec_int_arith(frame_raw, regs, func, arith_op, arith_dst, arith_a, arith_b);
+        exec_access_hot(regs, access_ic, pc, access_dst, base, field, collect_metrics);
+        return exec_int_arith(regs, func, arith_op, arith_dst, arith_a, arith_b, collect_metrics);
     };
 
-    assign_reg(frame_raw, regs, access_dst as usize, Val::Int(access_value));
+    assign_reg_with_metrics(regs, access_dst as usize, Val::Int(access_value), collect_metrics);
     let maybe_out = match (arith_a == access_dst, arith_b == access_dst) {
         (true, _) => match &regs[arith_b as usize] {
             Val::Int(rhs) => int_arith_value(arith_op, access_value, *rhs),
@@ -131,15 +132,15 @@ pub(super) fn exec_access_int_arith_hot(
         _ => None,
     };
     if let Some(out) = maybe_out {
-        assign_reg(frame_raw, regs, arith_dst as usize, Val::Int(out));
+        assign_reg_with_metrics(regs, arith_dst as usize, Val::Int(out), collect_metrics);
         Ok(())
     } else {
-        exec_int_arith(frame_raw, regs, func, arith_op, arith_dst, arith_a, arith_b)
+        exec_int_arith(regs, func, arith_op, arith_dst, arith_a, arith_b, collect_metrics)
     }
 }
 
 #[inline(always)]
-pub(super) fn exec_len(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst: u16, src: u16) {
+pub(super) fn exec_len(regs: &mut [Val], dst: u16, src: u16, collect_metrics: bool) {
     let out = match &regs[src as usize] {
         Val::List(value) => Val::Int(value.len() as i64),
         Val::ShortStr(value) => Val::Int(value.as_str().len() as i64),
@@ -147,32 +148,35 @@ pub(super) fn exec_len(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst
         Val::Map(value) => Val::Int(value.len() as i64),
         _ => Val::Int(0),
     };
-    assign_reg(frame_raw, regs, dst as usize, out);
+    assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
 }
 
 #[inline(always)]
 pub(super) fn exec_index(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     index_ic: &mut [Option<IndexIc>],
     pc: usize,
     dst: u16,
     base: u16,
     idx: u16,
+    collect_metrics: bool,
 ) {
     let out = match (&regs[base as usize], &regs[idx as usize]) {
         (Val::List(list), Val::Int(index)) => {
             if *index < 0 {
                 list.len()
                     .checked_sub(index.unsigned_abs() as usize)
-                    .and_then(|idx| list.get(idx).map(copy_value_for_register))
+                    .and_then(|idx| {
+                        list.get(idx)
+                            .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
+                    })
                     .unwrap_or(Val::Nil)
             } else {
                 let list_ptr = Arc::as_ptr(list) as *const Val as usize;
                 let hit = match index_ic[pc].as_mut() {
                     Some(IndexIc::List(slots)) => {
                         Vm::lookup_promote(slots, |entry| entry.base_ptr == list_ptr && entry.idx == *index)
-                            .map(|entry| copy_value_for_register(&entry.value))
+                            .map(|entry| copy_container_value_for_register_with_metrics(&entry.value, collect_metrics))
                     }
                     _ => None,
                 };
@@ -181,9 +185,9 @@ pub(super) fn exec_index(
                 } else {
                     let value = list
                         .get(*index as usize)
-                        .map(copy_value_for_register)
+                        .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
                         .unwrap_or(Val::Nil);
-                    Vm::update_list_ic(index_ic, pc, list_ptr, *index, &value);
+                    Vm::update_list_ic(index_ic, pc, list_ptr, *index, &value, collect_metrics);
                     value
                 }
             }
@@ -197,7 +201,7 @@ pub(super) fn exec_index(
                 let hit = match index_ic[pc].as_mut() {
                     Some(IndexIc::Str(slots)) => {
                         Vm::lookup_promote(slots, |entry| entry.base_ptr == text_ptr && entry.idx == *index)
-                            .map(|entry| copy_value_for_register(&entry.value))
+                            .map(|entry| copy_container_value_for_register_with_metrics(&entry.value, collect_metrics))
                     }
                     _ => None,
                 };
@@ -215,14 +219,14 @@ pub(super) fn exec_index(
                             .map(|character| Val::from_str(&character.to_string()))
                             .unwrap_or(Val::Nil)
                     };
-                    Vm::update_str_ic(index_ic, pc, text_ptr, *index, &value);
+                    Vm::update_str_ic(index_ic, pc, text_ptr, *index, &value, collect_metrics);
                     value
                 }
             }
         }
-        (base_val, key) => base_val.access(key).unwrap_or(Val::Nil),
+        (base_val, key) => base_val.access_with_metrics(key, collect_metrics).unwrap_or(Val::Nil),
     };
-    assign_reg(frame_raw, regs, dst as usize, out);
+    assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
 }
 
 #[inline(always)]
@@ -253,11 +257,18 @@ fn text_index_value(text: &str, index: i64) -> Val {
 }
 
 #[inline(always)]
-pub(super) fn exec_map_set_interned(func: &Function, regs: &mut [Val], map: u16, key: u16, val: u16) -> Result<()> {
+pub(super) fn exec_map_set_interned(
+    func: &Function,
+    regs: &mut [Val],
+    map: u16,
+    key: u16,
+    val: u16,
+    collect_metrics: bool,
+) -> Result<()> {
     let key = func.consts[key as usize]
         .string_key_arcstr()
         .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
-    let value = copy_value_for_register(&regs[val as usize]);
+    let value = copy_container_value_for_register_with_metrics(&regs[val as usize], collect_metrics);
     match &mut regs[map as usize] {
         Val::Map(map) => insert_map_entry(map, key, value),
         _ => return Err(anyhow!("MapSet target is not a Map")),
@@ -272,11 +283,12 @@ pub(super) fn exec_map_set_interned_move(
     map: u16,
     key: u16,
     val: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     let map_idx = map as usize;
     let val_idx = val as usize;
     if map_idx == val_idx {
-        return exec_map_set_interned(func, regs, map, key, val);
+        return exec_map_set_interned(func, regs, map, key, val, collect_metrics);
     }
     let key = func.consts[key as usize]
         .string_key_arcstr()
@@ -293,24 +305,34 @@ pub(super) fn exec_map_set_interned_move(
 }
 
 #[inline(always)]
-pub(super) fn packed_value_operand(regs: &[Val], func: &Function, operand: PackedValueOperand) -> Val {
+pub(super) fn packed_value_operand(
+    regs: &[Val],
+    func: &Function,
+    operand: PackedValueOperand,
+    collect_metrics: bool,
+) -> Val {
     match operand {
-        PackedValueOperand::Reg(reg) => copy_value_for_register(&regs[reg as usize]),
-        PackedValueOperand::Const(kidx) => copy_const_value_for_register(&func.consts[kidx as usize]),
+        PackedValueOperand::Reg(reg) => {
+            copy_container_value_for_register_with_metrics(&regs[reg as usize], collect_metrics)
+        }
+        PackedValueOperand::Const(kidx) => {
+            copy_const_value_for_register_with_metrics(&func.consts[kidx as usize], collect_metrics)
+        }
     }
 }
 
 #[inline(always)]
-pub(super) fn packed_add_operand_value(regs: &[Val], operand: PackedAddOperand) -> Val {
+pub(super) fn packed_add_operand_value(regs: &[Val], operand: PackedAddOperand, collect_metrics: bool) -> Val {
     match operand {
-        PackedAddOperand::Reg(reg) => copy_value_for_register(&regs[reg as usize]),
+        PackedAddOperand::Reg(reg) => {
+            copy_container_value_for_register_with_metrics(&regs[reg as usize], collect_metrics)
+        }
         PackedAddOperand::Imm(value) => Val::Int(value as i64),
     }
 }
 
 #[inline(always)]
 pub(super) fn exec_map_upsert_add(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     get_dst: u16,
@@ -323,6 +345,7 @@ pub(super) fn exec_map_upsert_add(
     add_dst: u16,
     add_rhs: PackedAddOperand,
     write_temps: bool,
+    collect_metrics: bool,
 ) -> Result<()> {
     let _ = cmp_dst;
     let (is_nil, get_temp, value) = {
@@ -331,28 +354,32 @@ pub(super) fn exec_map_upsert_add(
             _ => None,
         };
         let is_nil = current_ref.is_none();
-        let get_temp = write_temps.then(|| current_ref.map(copy_value_for_register).unwrap_or(Val::Nil));
+        let get_temp = write_temps.then(|| {
+            current_ref
+                .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
+                .unwrap_or(Val::Nil)
+        });
         let value = if is_nil {
-            packed_value_operand(regs, func, default)
+            packed_value_operand(regs, func, default, collect_metrics)
         } else {
-            let rhs = packed_add_operand_value(regs, add_rhs);
+            let rhs = packed_add_operand_value(regs, add_rhs, collect_metrics);
             let current = current_ref.expect("non-nil map lookup must have a value");
             match (current, &rhs) {
                 (Val::Int(lhs), Val::Int(rhs)) => Val::Int(lhs + rhs),
-                _ => BinOp::Add.eval_vals(current, &rhs)?,
+                _ => BinOp::Add.eval_vals_with_metrics(current, &rhs, collect_metrics)?,
             }
         };
         (is_nil, get_temp, value)
     };
     if let Some(value) = get_temp {
-        assign_reg(frame_raw, regs, get_dst as usize, value);
+        assign_reg_with_metrics(regs, get_dst as usize, value, collect_metrics);
     }
     if is_nil {
         if write_temps && let Some((reg, kidx)) = default_load {
-            assign_reg_const_copy(frame_raw, regs, reg as usize, &func.consts[kidx as usize]);
+            assign_reg_const_copy_with_metrics(regs, reg as usize, &func.consts[kidx as usize], collect_metrics);
         }
     } else if write_temps {
-        assign_reg_copy(frame_raw, regs, add_dst as usize, &value);
+        assign_reg_copy_with_metrics(regs, add_dst as usize, &value, collect_metrics);
     }
 
     match &mut regs[map as usize] {
@@ -364,13 +391,13 @@ pub(super) fn exec_map_upsert_add(
 
 #[inline(always)]
 pub(super) fn exec_int_arith(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     op: PackedArithOp,
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     if let (Val::Int(lhs), Val::Int(rhs)) = (&regs[a as usize], &regs[b as usize]) {
         let out = match op {
@@ -379,22 +406,22 @@ pub(super) fn exec_int_arith(
             PackedArithOp::Mul => lhs * rhs,
             PackedArithOp::Mod => lhs % rhs,
             PackedArithOp::Div => {
-                let out = BinOp::Div.eval_vals(&regs[a as usize], &regs[b as usize])?;
-                assign_reg(frame_raw, regs, dst as usize, out);
+                let out = BinOp::Div.eval_vals_with_metrics(&regs[a as usize], &regs[b as usize], collect_metrics)?;
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
                 return Ok(());
             }
         };
-        assign_reg(frame_raw, regs, dst as usize, Val::Int(out));
+        assign_reg_with_metrics(regs, dst as usize, Val::Int(out), collect_metrics);
     } else {
         match op {
-            PackedArithOp::Add => int_binop(frame_raw, regs, &func.consts, dst, a, b, |x, y| x + y, BinOp::Add)?,
-            PackedArithOp::Sub => int_binop(frame_raw, regs, &func.consts, dst, a, b, |x, y| x - y, BinOp::Sub)?,
-            PackedArithOp::Mul => int_binop(frame_raw, regs, &func.consts, dst, a, b, |x, y| x * y, BinOp::Mul)?,
+            PackedArithOp::Add => int_binop(regs, &func.consts, dst, a, b, |x, y| x + y, BinOp::Add, collect_metrics)?,
+            PackedArithOp::Sub => int_binop(regs, &func.consts, dst, a, b, |x, y| x - y, BinOp::Sub, collect_metrics)?,
+            PackedArithOp::Mul => int_binop(regs, &func.consts, dst, a, b, |x, y| x * y, BinOp::Mul, collect_metrics)?,
             PackedArithOp::Div => {
-                let out = BinOp::Div.eval_vals(&regs[a as usize], &regs[b as usize])?;
-                assign_reg(frame_raw, regs, dst as usize, out);
+                let out = BinOp::Div.eval_vals_with_metrics(&regs[a as usize], &regs[b as usize], collect_metrics)?;
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             }
-            PackedArithOp::Mod => int_binop(frame_raw, regs, &func.consts, dst, a, b, |x, y| x % y, BinOp::Mod)?,
+            PackedArithOp::Mod => int_binop(regs, &func.consts, dst, a, b, |x, y| x % y, BinOp::Mod, collect_metrics)?,
         }
     }
     Ok(())
@@ -402,7 +429,6 @@ pub(super) fn exec_int_arith(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn exec_sub_access_sub_hot(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     access_ic: &mut [Option<AccessIc>],
@@ -416,22 +442,39 @@ pub(super) fn exec_sub_access_sub_hot(
     final_dst: u16,
     final_a: u16,
     final_b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
-    exec_int_arith(frame_raw, regs, func, PackedArithOp::Sub, first_dst, first_a, first_b)?;
+    exec_int_arith(
+        regs,
+        func,
+        PackedArithOp::Sub,
+        first_dst,
+        first_a,
+        first_b,
+        collect_metrics,
+    )?;
     let Some(access_value) = access_int_value(regs, access_base, access_field) else {
         exec_access_hot(
-            frame_raw,
             regs,
             access_ic,
             access_pc,
             access_dst,
             access_base,
             access_field,
+            collect_metrics,
         );
-        return exec_int_arith(frame_raw, regs, func, PackedArithOp::Sub, final_dst, final_a, final_b);
+        return exec_int_arith(
+            regs,
+            func,
+            PackedArithOp::Sub,
+            final_dst,
+            final_a,
+            final_b,
+            collect_metrics,
+        );
     };
 
-    assign_reg(frame_raw, regs, access_dst as usize, Val::Int(access_value));
+    assign_reg_with_metrics(regs, access_dst as usize, Val::Int(access_value), collect_metrics);
     let maybe_out = match (final_a == access_dst, final_b == access_dst) {
         (true, _) => match &regs[final_b as usize] {
             Val::Int(rhs) => Some(access_value - *rhs),
@@ -444,16 +487,23 @@ pub(super) fn exec_sub_access_sub_hot(
         _ => None,
     };
     if let Some(out) = maybe_out {
-        assign_reg(frame_raw, regs, final_dst as usize, Val::Int(out));
+        assign_reg_with_metrics(regs, final_dst as usize, Val::Int(out), collect_metrics);
         Ok(())
     } else {
-        exec_int_arith(frame_raw, regs, func, PackedArithOp::Sub, final_dst, final_a, final_b)
+        exec_int_arith(
+            regs,
+            func,
+            PackedArithOp::Sub,
+            final_dst,
+            final_a,
+            final_b,
+            collect_metrics,
+        )
     }
 }
 
 #[inline(always)]
 pub(super) fn exec_arith_add_int_imm(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     op: PackedArithOp,
@@ -462,6 +512,7 @@ pub(super) fn exec_arith_add_int_imm(
     b: u16,
     add_dst: u16,
     add_imm: i16,
+    collect_metrics: bool,
 ) -> Result<()> {
     let arith_value = match (rk_read(regs, &func.consts, a), rk_read(regs, &func.consts, b)) {
         (Val::Int(x), Val::Int(y)) => match op {
@@ -479,19 +530,18 @@ pub(super) fn exec_arith_add_int_imm(
             }
         },
         (lhs, rhs) => match op {
-            PackedArithOp::Add => BinOp::Add.eval_vals(lhs, rhs)?,
-            PackedArithOp::Sub => BinOp::Sub.eval_vals(lhs, rhs)?,
-            PackedArithOp::Mul => BinOp::Mul.eval_vals(lhs, rhs)?,
-            PackedArithOp::Mod => BinOp::Mod.eval_vals(lhs, rhs)?,
-            PackedArithOp::Div => BinOp::Div.eval_vals(lhs, rhs)?,
+            PackedArithOp::Add => BinOp::Add.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
+            PackedArithOp::Sub => BinOp::Sub.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
+            PackedArithOp::Mul => BinOp::Mul.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
+            PackedArithOp::Mod => BinOp::Mod.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
+            PackedArithOp::Div => BinOp::Div.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
         },
     };
-    assign_reg(frame_raw, regs, arith_dst as usize, arith_value);
+    assign_reg_with_metrics(regs, arith_dst as usize, arith_value, collect_metrics);
     if let Val::Int(x) = regs[arith_dst as usize] {
-        assign_reg(frame_raw, regs, add_dst as usize, Val::Int(x + add_imm as i64));
+        assign_reg_with_metrics(regs, add_dst as usize, Val::Int(x + add_imm as i64), collect_metrics);
     } else {
         int_binop_imm(
-            frame_raw,
             regs,
             &func.consts,
             add_dst,
@@ -499,6 +549,7 @@ pub(super) fn exec_arith_add_int_imm(
             add_imm,
             |x, y| x + y,
             BinOp::Add,
+            collect_metrics,
         )?;
     }
     Ok(())
@@ -506,28 +557,28 @@ pub(super) fn exec_arith_add_int_imm(
 
 #[inline(always)]
 pub(super) fn exec_arith_hot(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     op: PackedArithOp,
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     if let (Val::Int(x), Val::Int(y)) = (rk_read(regs, &func.consts, a), rk_read(regs, &func.consts, b)) {
         match op {
-            PackedArithOp::Add => assign_reg(frame_raw, regs, dst as usize, Val::Int(*x + *y)),
-            PackedArithOp::Sub => assign_reg(frame_raw, regs, dst as usize, Val::Int(*x - *y)),
-            PackedArithOp::Mul => assign_reg(frame_raw, regs, dst as usize, Val::Int(*x * *y)),
+            PackedArithOp::Add => assign_reg_with_metrics(regs, dst as usize, Val::Int(*x + *y), collect_metrics),
+            PackedArithOp::Sub => assign_reg_with_metrics(regs, dst as usize, Val::Int(*x - *y), collect_metrics),
+            PackedArithOp::Mul => assign_reg_with_metrics(regs, dst as usize, Val::Int(*x * *y), collect_metrics),
             PackedArithOp::Div => {
                 let res = *x as f64 / *y as f64;
                 if res.fract() == 0.0 {
-                    assign_reg(frame_raw, regs, dst as usize, Val::Int(res as i64));
+                    assign_reg_with_metrics(regs, dst as usize, Val::Int(res as i64), collect_metrics);
                 } else {
-                    assign_reg(frame_raw, regs, dst as usize, Val::Float(res));
+                    assign_reg_with_metrics(regs, dst as usize, Val::Float(res), collect_metrics);
                 }
             }
-            PackedArithOp::Mod => assign_reg(frame_raw, regs, dst as usize, Val::Int(*x % *y)),
+            PackedArithOp::Mod => assign_reg_with_metrics(regs, dst as usize, Val::Int(*x % *y), collect_metrics),
         }
         return Ok(());
     }
@@ -539,13 +590,12 @@ pub(super) fn exec_arith_hot(
             if let Some(a_str) = a_val.as_str()
                 && let Some(out) = Val::concat_str_add_rhs(a_str, b_val)
             {
-                assign_reg(frame_raw, regs, dst as usize, out);
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             } else if let Some(b_str) = b_val.as_str()
                 && let Some(out) = Val::concat_add_lhs_str(a_val, b_str)
             {
-                assign_reg(frame_raw, regs, dst as usize, out);
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             } else if !Vm::arith2_try_numeric(
-                frame_raw,
                 regs,
                 &func.consts,
                 dst,
@@ -554,14 +604,18 @@ pub(super) fn exec_arith_hot(
                 "add",
                 |x, y| x + y,
                 |x, y| x + y,
+                collect_metrics,
             ) {
-                let out = BinOp::Add.eval_vals(rk_read(regs, &func.consts, a), rk_read(regs, &func.consts, b))?;
-                assign_reg(frame_raw, regs, dst as usize, out);
+                let out = BinOp::Add.eval_vals_with_metrics(
+                    rk_read(regs, &func.consts, a),
+                    rk_read(regs, &func.consts, b),
+                    collect_metrics,
+                )?;
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             }
         }
         PackedArithOp::Sub => {
             if !Vm::arith2_try_numeric(
-                frame_raw,
                 regs,
                 &func.consts,
                 dst,
@@ -570,14 +624,18 @@ pub(super) fn exec_arith_hot(
                 "sub",
                 |x, y| x - y,
                 |x, y| x - y,
+                collect_metrics,
             ) {
-                let out = BinOp::Sub.eval_vals(rk_read(regs, &func.consts, a), rk_read(regs, &func.consts, b))?;
-                assign_reg(frame_raw, regs, dst as usize, out);
+                let out = BinOp::Sub.eval_vals_with_metrics(
+                    rk_read(regs, &func.consts, a),
+                    rk_read(regs, &func.consts, b),
+                    collect_metrics,
+                )?;
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             }
         }
         PackedArithOp::Mul => {
             if !Vm::arith2_try_numeric(
-                frame_raw,
                 regs,
                 &func.consts,
                 dst,
@@ -586,9 +644,14 @@ pub(super) fn exec_arith_hot(
                 "mul",
                 |x, y| x * y,
                 |x, y| x * y,
+                collect_metrics,
             ) {
-                let out = BinOp::Mul.eval_vals(rk_read(regs, &func.consts, a), rk_read(regs, &func.consts, b))?;
-                assign_reg(frame_raw, regs, dst as usize, out);
+                let out = BinOp::Mul.eval_vals_with_metrics(
+                    rk_read(regs, &func.consts, a),
+                    rk_read(regs, &func.consts, b),
+                    collect_metrics,
+                )?;
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             }
         }
         PackedArithOp::Div => {
@@ -598,23 +661,33 @@ pub(super) fn exec_arith_hot(
                 (Val::Int(x), Val::Int(y)) => {
                     let res = *x as f64 / *y as f64;
                     if res.fract() == 0.0 {
-                        assign_reg(frame_raw, regs, dst as usize, Val::Int(res as i64));
+                        assign_reg_with_metrics(regs, dst as usize, Val::Int(res as i64), collect_metrics);
                     } else {
-                        assign_reg(frame_raw, regs, dst as usize, Val::Float(res));
+                        assign_reg_with_metrics(regs, dst as usize, Val::Float(res), collect_metrics);
                     }
                 }
-                (Val::Float(x), Val::Float(y)) => assign_reg(frame_raw, regs, dst as usize, Val::Float(x / y)),
-                (Val::Int(x), Val::Float(y)) => assign_reg(frame_raw, regs, dst as usize, Val::Float(*x as f64 / y)),
-                (Val::Float(x), Val::Int(y)) => assign_reg(frame_raw, regs, dst as usize, Val::Float(x / *y as f64)),
+                (Val::Float(x), Val::Float(y)) => {
+                    assign_reg_with_metrics(regs, dst as usize, Val::Float(x / y), collect_metrics)
+                }
+                (Val::Int(x), Val::Float(y)) => {
+                    assign_reg_with_metrics(regs, dst as usize, Val::Float(*x as f64 / y), collect_metrics)
+                }
+                (Val::Float(x), Val::Int(y)) => {
+                    assign_reg_with_metrics(regs, dst as usize, Val::Float(x / *y as f64), collect_metrics)
+                }
                 _ => {
-                    let out = BinOp::Div.eval_vals(ar, br)?;
-                    assign_reg(frame_raw, regs, dst as usize, out);
+                    let out = BinOp::Div.eval_vals_with_metrics(ar, br, collect_metrics)?;
+                    assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
                 }
             }
         }
         PackedArithOp::Mod => {
-            let out = BinOp::Mod.eval_vals(rk_read(regs, &func.consts, a), rk_read(regs, &func.consts, b))?;
-            assign_reg(frame_raw, regs, dst as usize, out);
+            let out = BinOp::Mod.eval_vals_with_metrics(
+                rk_read(regs, &func.consts, a),
+                rk_read(regs, &func.consts, b),
+                collect_metrics,
+            )?;
+            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
         }
     }
     Ok(())
@@ -622,13 +695,13 @@ pub(super) fn exec_arith_hot(
 
 #[inline(always)]
 pub(super) fn exec_float_arith(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     op: PackedArithOp,
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     let lhs = &regs[a as usize];
     let rhs = &regs[b as usize];
@@ -647,71 +720,74 @@ pub(super) fn exec_float_arith(
             PackedArithOp::Div => lhs / rhs,
             PackedArithOp::Mod => lhs % rhs,
         };
-        assign_reg(frame_raw, regs, dst as usize, Val::Float(out));
+        assign_reg_with_metrics(regs, dst as usize, Val::Float(out), collect_metrics);
     } else {
         match op {
-            PackedArithOp::Add => float_binop(frame_raw, regs, &func.consts, dst, a, b, |x, y| x + y, BinOp::Add)?,
-            PackedArithOp::Sub => float_binop(frame_raw, regs, &func.consts, dst, a, b, |x, y| x - y, BinOp::Sub)?,
-            PackedArithOp::Mul => float_binop(frame_raw, regs, &func.consts, dst, a, b, |x, y| x * y, BinOp::Mul)?,
-            PackedArithOp::Div => float_binop(frame_raw, regs, &func.consts, dst, a, b, |x, y| x / y, BinOp::Div)?,
-            PackedArithOp::Mod => float_binop(frame_raw, regs, &func.consts, dst, a, b, |x, y| x % y, BinOp::Mod)?,
+            PackedArithOp::Add => {
+                float_binop(regs, &func.consts, dst, a, b, |x, y| x + y, BinOp::Add, collect_metrics)?
+            }
+            PackedArithOp::Sub => {
+                float_binop(regs, &func.consts, dst, a, b, |x, y| x - y, BinOp::Sub, collect_metrics)?
+            }
+            PackedArithOp::Mul => {
+                float_binop(regs, &func.consts, dst, a, b, |x, y| x * y, BinOp::Mul, collect_metrics)?
+            }
+            PackedArithOp::Div => {
+                float_binop(regs, &func.consts, dst, a, b, |x, y| x / y, BinOp::Div, collect_metrics)?
+            }
+            PackedArithOp::Mod => {
+                float_binop(regs, &func.consts, dst, a, b, |x, y| x % y, BinOp::Mod, collect_metrics)?
+            }
         }
     }
     Ok(())
 }
 
 #[inline(always)]
-pub(super) fn exec_floor(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst: u16, src: u16) {
+pub(super) fn exec_floor(regs: &mut [Val], dst: u16, src: u16, collect_metrics: bool) {
     let out = match &regs[src as usize] {
         Val::Float(value) => Val::Int(value.floor() as i64),
         Val::Int(value) => Val::Int(*value),
         _ => Val::Int(0),
     };
-    assign_reg(frame_raw, regs, dst as usize, out);
+    assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
 }
 
 #[inline(always)]
-pub(super) fn exec_floor_div_imm(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst: u16, src: u16, imm: i16) {
+pub(super) fn exec_floor_div_imm(regs: &mut [Val], dst: u16, src: u16, imm: i16, collect_metrics: bool) {
     let divisor = imm as i64;
     let out = match &regs[src as usize] {
         Val::Int(value) => Val::Int(floor_div_i64(*value, divisor)),
         Val::Float(value) => Val::Int((value / divisor as f64).floor() as i64),
         _ => Val::Int(0),
     };
-    assign_reg(frame_raw, regs, dst as usize, out);
+    assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
 }
 
 #[inline(always)]
 pub(super) fn exec_starts_with_k(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     dst: u16,
     src: u16,
     key: u16,
+    collect_metrics: bool,
 ) {
-    assign_reg(
-        frame_raw,
+    assign_reg_with_metrics(
         regs,
         dst as usize,
         Val::Bool(starts_with_k_bool(regs, func, src, key)),
+        collect_metrics,
     );
 }
 
 #[inline(always)]
-pub(super) fn exec_contains_k(
-    frame_raw: *mut FrameState<'_, '_>,
-    regs: &mut [Val],
-    func: &Function,
-    dst: u16,
-    src: u16,
-    key: u16,
-) {
-    assign_reg(
-        frame_raw,
+pub(super) fn exec_contains_k(regs: &mut [Val], func: &Function, dst: u16, src: u16, key: u16, collect_metrics: bool) {
+    assign_reg_with_metrics(
         regs,
         dst as usize,
         Val::Bool(contains_k_bool(regs, func, src, key)),
+        collect_metrics,
     );
 }
 
@@ -737,19 +813,21 @@ pub(super) fn contains_k_bool(regs: &[Val], func: &Function, src: u16, key: u16)
 
 #[inline(always)]
 pub(super) fn exec_to_iter(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     src: u16,
     region_plan: Option<&RegionPlan>,
     region_allocator_ptr: *const RegionAllocator,
+    collect_metrics: bool,
 ) {
     let use_thread_local = region_plan
         .as_ref()
         .map(|plan| plan.region_for(dst as usize) == AllocationRegion::ThreadLocal)
         .unwrap_or(false);
     let out = match &regs[src as usize] {
-        value if matches!(value, Val::List(_)) || value.as_str().is_some() => copy_value_for_register(value),
+        value if matches!(value, Val::List(_)) || value.as_str().is_some() => {
+            copy_container_value_for_register_with_metrics(value, collect_metrics)
+        }
         Val::Map(map) => {
             let mut entries: Vec<_> = map.iter().collect();
             entries.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
@@ -758,7 +836,11 @@ pub(super) fn exec_to_iter(
                 allocator.with_val_buffer(entries.len(), |scratch| {
                     for (key, value) in entries.iter() {
                         scratch.push(Val::List(
-                            vec![Val::from_str(key.as_str()), copy_value_for_register(value)].into(),
+                            vec![
+                                Val::from_str(key.as_str()),
+                                copy_container_value_for_register_with_metrics(value, collect_metrics),
+                            ]
+                            .into(),
                         ));
                     }
                     let data = scratch.split_off(0);
@@ -768,7 +850,11 @@ pub(super) fn exec_to_iter(
                 let mut pairs = Vec::with_capacity(entries.len());
                 for (key, value) in entries {
                     pairs.push(Val::List(
-                        vec![Val::from_str(key.as_str()), copy_value_for_register(value)].into(),
+                        vec![
+                            Val::from_str(key.as_str()),
+                            copy_container_value_for_register_with_metrics(value, collect_metrics),
+                        ]
+                        .into(),
                     ));
                 }
                 Val::List(pairs.into())
@@ -776,5 +862,5 @@ pub(super) fn exec_to_iter(
         }
         _ => Val::List(Vec::<Val>::new().into()),
     };
-    assign_reg(frame_raw, regs, dst as usize, out);
+    assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
 }

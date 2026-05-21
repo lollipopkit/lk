@@ -1,70 +1,54 @@
 use anyhow::Result;
 
-use crate::op::BinOp;
 use crate::val::Val;
-use crate::vm::vm::frame::FrameState;
+use crate::vm::copy_container_value_for_register_with_metrics;
 
-use super::super::super::helpers::assign_reg;
+use super::super::super::helpers::{assign_reg_with_metrics, fold_add_values_with_metrics};
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_fold_add(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     acc: u16,
     list: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     let folded = if let Val::List(items) = &regs[list as usize] {
-        Some(fold_add_values(&regs[acc as usize], items.iter())?)
+        Some(fold_add_values_with_metrics(
+            &regs[acc as usize],
+            items.iter(),
+            collect_metrics,
+        )?)
     } else {
         None
     };
     if let Some(out) = folded {
-        assign_reg(frame_raw, regs, acc as usize, out);
+        assign_reg_with_metrics(regs, acc as usize, out, collect_metrics);
     }
     Ok(())
 }
 
-pub(in crate::vm::vm::runtime::frame::run::opcode::container_ops) fn fold_add_values<'a>(
-    initial: &Val,
-    values: impl Iterator<Item = &'a Val> + Clone,
-) -> Result<Val> {
-    if let Val::Int(initial_total) = initial {
-        let mut total = *initial_total;
-        let mut all_int = true;
-        for item in values.clone() {
-            if let Val::Int(value) = item {
-                total = total.wrapping_add(*value);
-            } else {
-                all_int = false;
-                break;
-            }
-        }
-        if all_int {
-            return Ok(Val::Int(total));
-        }
-    }
-
-    let mut out = initial.clone();
-    for item in values {
-        out = BinOp::Add.eval_vals(&out, item)?;
-    }
-    Ok(out)
-}
-
 #[inline]
-pub(super) fn index_value(list: &[Val], index: i64) -> Option<Val> {
+pub(super) fn index_value(list: &[Val], index: i64, collect_metrics: bool) -> Option<Val> {
     let index = if index < 0 {
         list.len().checked_sub(index.unsigned_abs() as usize)?
     } else {
         index as usize
     };
-    Some(list.get(index).cloned().unwrap_or(Val::Nil))
+    Some(
+        list.get(index)
+            .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
+            .unwrap_or(Val::Nil),
+    )
 }
 
 #[inline]
-pub(super) fn slice_range_value(list: &[Val], key: &[Val]) -> Option<Val> {
+pub(super) fn slice_range_value(list: &[Val], key: &[Val], collect_metrics: bool) -> Option<Val> {
     let (start, end) = range_key_bounds(key, list.len())?;
-    Some(Val::List(list[start..end].to_vec().into()))
+    let mut out = Vec::with_capacity(end.saturating_sub(start));
+    for value in &list[start..end] {
+        out.push(copy_container_value_for_register_with_metrics(value, collect_metrics));
+    }
+    Some(Val::List(out.into()))
 }
 
 #[inline]

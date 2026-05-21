@@ -395,35 +395,38 @@ impl ClosureValue {
 
     #[inline]
     pub(crate) fn frame_info(&self) -> FrameInfo {
-        self.frame_info_cache
-            .get_or_init(|| {
-                FrameInfo::new(
-                    self.debug_name.as_deref().unwrap_or("<closure>"),
-                    self.debug_location.as_deref(),
-                )
-            })
-            .clone()
+        self.frame_info_ref().clone()
     }
 
-    pub(crate) fn default_frame_info(&self, idx: usize) -> Option<FrameInfo> {
+    #[inline]
+    pub(crate) fn frame_info_ref(&self) -> &FrameInfo {
+        self.frame_info_cache.get_or_init(|| {
+            FrameInfo::new(
+                self.debug_name.as_deref().unwrap_or("<closure>"),
+                self.debug_location.as_deref(),
+            )
+        })
+    }
+
+    pub(crate) fn default_frame_info_ref(&self, idx: usize) -> Option<&FrameInfo> {
         let cache = self.default_frame_infos.get_or_init(|| {
-            let base_info = self.frame_info();
-            let base_name = base_info.name.clone();
-            let base_location = base_info.location.clone();
+            let base_info = self.frame_info_ref();
+            let base_name = Arc::clone(&base_info.name);
+            let base_location = base_info.location.as_ref().map(Arc::clone);
             self.named_params
                 .iter()
                 .enumerate()
                 .map(|(param_idx, decl)| {
                     if self.default_funcs.get(param_idx).and_then(|opt| opt.as_ref()).is_some() {
                         let default_name = format!("{}::<default:{}>", base_name.as_ref(), decl.name);
-                        Some(FrameInfo::new(default_name, base_location.clone()))
+                        Some(FrameInfo::new(default_name, base_location.as_ref().map(Arc::clone)))
                     } else {
                         None
                     }
                 })
                 .collect()
         });
-        cache.get(idx).and_then(|info| info.clone())
+        cache.get(idx).and_then(|info| info.as_ref())
     }
 
     pub(crate) fn named_param_index(&self) -> &FastHashMap<ArcStr, usize> {
@@ -436,7 +439,11 @@ impl ClosureValue {
         })
     }
 
-    pub(crate) fn build_named_slots(&self, named: &[(String, Val)]) -> Result<Vec<Option<Val>>> {
+    pub(crate) fn build_named_slots_with_metrics(
+        &self,
+        named: &[(String, Val)],
+        collect_metrics: bool,
+    ) -> Result<Vec<Option<Val>>> {
         let named_params = self.named_params.as_ref();
         if named_params.is_empty() {
             return if named.is_empty() {
@@ -455,7 +462,10 @@ impl ClosureValue {
             if named_slots[idx].is_some() {
                 return Err(anyhow!("Duplicate named argument: {}", name));
             }
-            named_slots[idx] = Some(value.clone());
+            named_slots[idx] = Some(crate::vm::copy_call_arg_value_for_register_with_metrics(
+                value,
+                collect_metrics,
+            ));
         }
         Ok(named_slots)
     }
@@ -657,14 +667,21 @@ impl Val {
         }))
     }
 
-    fn bind_positional_params(call_env: &mut VmContext, params: &[String], args: &[Val], layout_info: &CallLayoutInfo) {
+    fn bind_positional_params(
+        call_env: &mut VmContext,
+        params: &[String],
+        args: &[Val],
+        layout_info: &CallLayoutInfo,
+        collect_metrics: bool,
+    ) {
         for (idx, (param, arg_val)) in params.iter().zip(args.iter()).enumerate() {
+            let value = crate::vm::copy_call_arg_value_for_register_with_metrics(arg_val, collect_metrics);
             if let Some(slot) = layout_info.param_slots.get(idx).copied().flatten() {
-                call_env.bind_param_at_slot(param.clone(), slot, arg_val.clone());
+                call_env.bind_param_at_slot(param.clone(), slot, value);
             } else if let Some(&slot) = layout_info.param_slot_by_name.get(param.as_str()) {
-                call_env.bind_param_at_slot(param.clone(), slot, arg_val.clone());
+                call_env.bind_param_at_slot(param.clone(), slot, value);
             } else {
-                call_env.define(param.clone(), arg_val.clone());
+                call_env.define(param.clone(), value);
             }
         }
     }
@@ -684,9 +701,49 @@ impl Val {
 
     #[inline]
     pub(crate) fn access(&self, field: &Val) -> Option<Val> {
+        self.access_impl(field, None)
+    }
+
+    #[inline]
+    pub(crate) fn access_with_metrics(&self, field: &Val, collect_metrics: bool) -> Option<Val> {
+        self.access_impl(field, Some(collect_metrics))
+    }
+
+    #[inline]
+    fn access_copy_value(value: &Val, collect_metrics: Option<bool>) -> Val {
+        match collect_metrics {
+            Some(collect_metrics) => crate::vm::copy_container_value_for_register_with_metrics(value, collect_metrics),
+            None => value.clone(),
+        }
+    }
+
+    #[inline]
+    fn access_copy_slice(slice: &[Val], collect_metrics: Option<bool>) -> Arc<Vec<Val>> {
+        if slice.is_empty() {
+            return Arc::new(Vec::new());
+        }
+        match collect_metrics {
+            Some(collect_metrics) => {
+                let mut out = Vec::with_capacity(slice.len());
+                for value in slice {
+                    out.push(crate::vm::copy_container_value_for_register_with_metrics(
+                        value,
+                        collect_metrics,
+                    ));
+                }
+                Arc::new(out)
+            }
+            None => Arc::new(slice.to_vec()),
+        }
+    }
+
+    #[inline]
+    fn access_impl(&self, field: &Val, collect_metrics: Option<bool>) -> Option<Val> {
         match (self, field) {
             // Map: field lookup by key only (do not shadow keys with synthetic fields)
-            (Val::Map(m), key) if key.as_str().is_some() => Self::map_get_str(m, key.as_str().unwrap()).cloned(),
+            (Val::Map(m), key) if key.as_str().is_some() => {
+                Self::map_get_str(m, key.as_str().unwrap()).map(|value| Self::access_copy_value(value, collect_metrics))
+            }
             // String indexing and metadata
             (lhs, Val::Int(i)) if lhs.as_str().is_some() => {
                 let s_str = lhs.as_str().unwrap();
@@ -718,11 +775,11 @@ impl Val {
                 } else {
                     *i as usize
                 };
-                l.get(idx).cloned()
+                l.get(idx).map(|value| Self::access_copy_value(value, collect_metrics))
             }
             (Val::List(l), Val::List(key)) => {
                 let (start, end) = range_key_bounds(key, l.len())?;
-                Some(Val::List(l[start..end].to_vec().into()))
+                Some(Val::List(Self::access_copy_slice(&l[start..end], collect_metrics)))
             }
             (lhs, Val::List(key)) if lhs.as_str().is_some() => {
                 let text = lhs.as_str().unwrap();
@@ -760,11 +817,20 @@ impl Val {
                     return None;
                 }
                 let (key, value) = entries[idx];
-                Some(Val::List(vec![Val::from_str(key.as_str()), value.clone()].into()))
+                Some(Val::List(
+                    vec![
+                        Val::from_str(key.as_str()),
+                        Self::access_copy_value(value, collect_metrics),
+                    ]
+                    .into(),
+                ))
             }
-            (Val::Object(object), key) if key.as_str().is_some() => object.fields.get(key.as_str().unwrap()).cloned(),
+            (Val::Object(object), key) if key.as_str().is_some() => object
+                .fields
+                .get(key.as_str().unwrap())
+                .map(|value| Self::access_copy_value(value, collect_metrics)),
             (Val::Task(task), key) if key.as_str() == Some("value") => match &task.value {
-                Some(v) => Some(v.clone()),
+                Some(v) => Some(Self::access_copy_value(v, collect_metrics)),
                 None => Some(Val::Nil),
             },
             (Val::Channel(channel), key) => match key.as_str() {
@@ -777,32 +843,71 @@ impl Val {
     }
 
     #[inline]
-    pub(crate) fn clone_list_slice(slice: &[Val]) -> Arc<Vec<Val>> {
+    pub(crate) fn clone_list_slice_with_metrics(slice: &[Val], collect_metrics: bool) -> Arc<Vec<Val>> {
         if slice.is_empty() {
             return Arc::new(Vec::new());
         }
-        Arc::new(slice.to_vec())
+        if !collect_metrics {
+            return Arc::new(slice.to_vec());
+        }
+        let mut vec = Vec::with_capacity(slice.len());
+        for value in slice {
+            vec.push(crate::vm::copy_container_value_for_register_with_metrics(
+                value,
+                collect_metrics,
+            ));
+        }
+        Arc::new(vec)
     }
 
     #[inline]
-    pub(crate) fn concat_lists(left: &[Val], right: &[Val]) -> Arc<Vec<Val>> {
+    pub(crate) fn concat_lists_with_metrics(left: &[Val], right: &[Val], collect_metrics: bool) -> Arc<Vec<Val>> {
         if left.is_empty() {
-            return Self::clone_list_slice(right);
+            return Self::clone_list_slice_with_metrics(right, collect_metrics);
         }
         if right.is_empty() {
-            return Self::clone_list_slice(left);
+            return Self::clone_list_slice_with_metrics(left, collect_metrics);
+        }
+        if !collect_metrics {
+            let mut vec = Vec::with_capacity(left.len() + right.len());
+            vec.extend_from_slice(left);
+            vec.extend_from_slice(right);
+            return Arc::new(vec);
         }
         let mut vec = Vec::with_capacity(left.len() + right.len());
-        vec.extend_from_slice(left);
-        vec.extend_from_slice(right);
+        for value in left.iter().chain(right.iter()) {
+            vec.push(crate::vm::copy_container_value_for_register_with_metrics(
+                value,
+                collect_metrics,
+            ));
+        }
         Arc::new(vec)
     }
 
     #[inline(always)]
     pub fn append_to_list(list: &[Val], value: &Val) -> Arc<Vec<Val>> {
+        Self::append_to_list_with_metrics(list, value, crate::vm::vm_runtime_metrics_enabled())
+    }
+
+    #[inline(always)]
+    pub fn append_to_list_with_metrics(list: &[Val], value: &Val, collect_metrics: bool) -> Arc<Vec<Val>> {
+        if !collect_metrics {
+            let mut vec = Vec::with_capacity(list.len() + 1);
+            vec.extend_from_slice(list);
+            vec.push(value.clone());
+            return Arc::new(vec);
+        }
         let mut vec = Vec::with_capacity(list.len() + 1);
-        vec.extend_from_slice(list);
-        vec.push(value.clone());
+        for item in list {
+            vec.push(crate::vm::copy_container_value_for_register_with_metrics(
+                item,
+                collect_metrics,
+            ));
+        }
+        vec.push(crate::vm::copy_container_value_for_register_with_metrics(
+            value,
+            collect_metrics,
+        ));
         Arc::new(vec)
     }
 }

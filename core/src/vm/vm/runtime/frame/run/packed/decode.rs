@@ -933,7 +933,34 @@ pub(super) fn build_hot_slot(
                 let flags = ((ext_word >> 16) & 0xFF) as u8;
                 let write_idx = (flags & 2) == 0;
                 next_pc += 1;
-                PackedHotKind::ForRangeLoop { idx, write_idx, ofs }
+                // Pre-compute ForRangeStep fusion: if next word is ForRangeStep,
+                // decode its back-offset now and cache it so the runtime loop doesn't
+                // need to re-decode it every iteration.
+                let fusion_back_pc = if let Some(&step_w) = code32.get(next_pc) {
+                    if bc32::tag_of(step_w) == bc32::TAG_FOR_RANGE_STEP {
+                        let ext_idx = next_pc + 1;
+                        let mut ext = code32.get(ext_idx).copied();
+                        if ext.is_some() && bc32::tag_of(ext.unwrap()) == bc32::TAG_REG_EXT {
+                            ext = code32.get(ext_idx + 1).copied();
+                        }
+                        if let Some(e) = ext {
+                            let back = (((((e >> 8) & 0xFF) as u16) << 8) | ((e & 0xFF) as u16)) as i16;
+                            Some(((next_pc as isize) + (back as isize)) as usize)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                PackedHotKind::ForRangeLoop {
+                    idx,
+                    write_idx,
+                    ofs,
+                    fusion_back_pc,
+                }
             }
             Tag::ForRangeStep => {
                 let ext_word = *code32.get(next_pc)?;

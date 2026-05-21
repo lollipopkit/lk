@@ -9,7 +9,6 @@ use crate::{
 
 use crate::vm::bytecode::{CaptureSpec, Function};
 use crate::vm::context::VmContext;
-use crate::vm::copy_call_arg_value_for_register;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{ClosureFastCache, FunctionRuntimePlan};
 use crate::vm::vm::frame::{
@@ -17,6 +16,7 @@ use crate::vm::vm::frame::{
 };
 use crate::vm::vm::guards::VmCurrentGuard;
 use crate::vm::vm::runtime::frame::run_frame;
+use crate::vm::{copy_call_arg_value_for_register_with_metrics, vm_runtime_metrics_enabled};
 
 fn push_optional_call_frame(ctx: &mut VmContext, frame_info: Option<&FrameInfo>) -> bool {
     if let Some(info) = frame_info {
@@ -95,7 +95,7 @@ impl Vm {
         named: &[(u16, Val)],
         captures: Option<Arc<ClosureCapture>>,
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
-        frame_info: Option<FrameInfo>,
+        frame_info: Option<&FrameInfo>,
     ) -> Result<Val> {
         self.exec_inner(f, ctx, positional, named, captures, capture_specs, frame_info)
     }
@@ -109,15 +109,16 @@ impl Vm {
         named: &[(u16, Val)],
         captures: Option<Arc<ClosureCapture>>,
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
-        frame_info: Option<FrameInfo>,
+        frame_info: Option<&FrameInfo>,
     ) -> Result<Val> {
         let _vm_fast_path_guard = VmFastPathGuard::enable();
         let self_ptr: *mut Vm = self;
         let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
         let initial_stack_top = self.stack_top;
         let initial_frame_depth = self.frames.len();
+        let collect_metrics = vm_runtime_metrics_enabled();
         let runtime = self.prepare_top_level_runtime(f);
-        let activation = self.activate_runtime_frame(runtime, FrameStateSetup::synchronized());
+        let activation = self.activate_runtime_frame(runtime, FrameStateSetup::synchronized(collect_metrics));
         let exec_result = {
             let runtime_caches = &mut self.runtime_caches;
             let mut activation_parts = activation.into_parts(f, captures, capture_specs);
@@ -130,7 +131,7 @@ impl Vm {
             if !named.is_empty() {
                 frame.seed_named_call_arg_values(named);
             }
-            let pushed_frame = push_optional_call_frame(ctx, frame_info.as_ref());
+            let pushed_frame = push_optional_call_frame(ctx, frame_info);
 
             let exec_result = run_frame(&mut frame, ctx, runtime_caches.vm_caches(), self_ptr);
             finish_optional_call_frame(ctx, pushed_frame, exec_result)
@@ -151,7 +152,7 @@ impl Vm {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn exec_function_positional_fast_span(
+    pub(super) fn exec_function_positional_fast_span_unchecked(
         &mut self,
         fun: &Function,
         args: RegisterSpan,
@@ -161,14 +162,13 @@ impl Vm {
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
         cache: &mut ClosureFastCache,
         return_meta: CallFrameMeta,
+        collect_metrics: bool,
     ) -> Result<Val> {
-        if fun.param_regs.len() != args.len {
-            return Err(anyhow!(
-                "Function expects {} positional arguments, got {}",
-                fun.param_regs.len(),
-                args.len
-            ));
-        }
+        debug_assert_eq!(
+            fun.param_regs.len(),
+            args.len,
+            "unchecked positional fast call requires validated arity"
+        );
         self.exec_function_positional_fast_span_impl(
             fun,
             args,
@@ -178,6 +178,7 @@ impl Vm {
             capture_specs,
             cache,
             return_meta,
+            collect_metrics,
         )
     }
 
@@ -192,10 +193,12 @@ impl Vm {
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
         cache: &mut ClosureFastCache,
         return_meta: CallFrameMeta,
+        collect_metrics: bool,
     ) -> Result<Val> {
         let runtime = cache.prepare_function_runtime(fun);
         let self_ptr: *mut Vm = self;
-        let activation = self.activate_runtime_frame(runtime, FrameStateSetup::inline_ephemeral(return_meta));
+        let activation =
+            self.activate_runtime_frame(runtime, FrameStateSetup::inline_ephemeral(return_meta, collect_metrics));
         activation.seed_positional_from_stack(&mut self.stack, args, &fun.param_regs);
 
         let mut activation_parts = activation.into_parts(fun, captures, capture_specs);
@@ -248,6 +251,7 @@ impl Vm {
         fun: &Function,
         named_bindings: &[(usize, Val)],
         out: &mut Vec<(u16, Val)>,
+        collect_metrics: bool,
     ) -> Result<()> {
         out.clear();
         if named_bindings.is_empty() {
@@ -262,7 +266,10 @@ impl Vm {
                 .get(*idx)
                 .copied()
                 .ok_or_else(|| anyhow!("Named parameter index {} out of range", idx))?;
-            out.push((reg, copy_call_arg_value_for_register(value)));
+            out.push((
+                reg,
+                copy_call_arg_value_for_register_with_metrics(value, collect_metrics),
+            ));
         }
         Ok(())
     }
@@ -299,7 +306,8 @@ impl Vm {
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
         ctx: &mut VmContext,
         self_ptr: *mut Vm,
-        frame_info: Option<FrameInfo>,
+        frame_info: Option<&FrameInfo>,
+        collect_metrics: bool,
     ) -> Result<Val> {
         let vm = unsafe { &mut *self_ptr };
         let parent_window = vm
@@ -317,7 +325,7 @@ impl Vm {
         }
         let mut nested_cache = vm.nested_cache_pool.pop().unwrap_or_else(ClosureFastCache::new);
         let runtime = nested_cache.prepare_function_runtime(fun);
-        let activation = vm.activate_runtime_frame(runtime, FrameStateSetup::synchronized());
+        let activation = vm.activate_runtime_frame(runtime, FrameStateSetup::synchronized(collect_metrics));
         activation.seed_positional_from_stack(&mut vm.stack, positional_span, &fun.param_regs);
         let mut activation_parts = activation.into_parts(fun, captures, capture_specs);
         let reg_base = activation_parts.stack_base();
@@ -327,7 +335,7 @@ impl Vm {
             let slot = *reg_idx as usize;
             callee_state.write_reg(slot, std::mem::replace(value, Val::Nil));
         }
-        let pushed_frame = push_optional_call_frame(ctx, frame_info.as_ref());
+        let pushed_frame = push_optional_call_frame(ctx, frame_info);
 
         let exec_result = run_frame(&mut callee_state, ctx, nested_cache.vm_caches(), self_ptr);
         drop(callee_state);

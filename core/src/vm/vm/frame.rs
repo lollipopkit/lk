@@ -4,8 +4,8 @@ use crate::val::{ClosureCapture, Val};
 use crate::vm::RegionPlan;
 use crate::vm::alloc::RegionAllocator;
 use crate::vm::{
-    copy_call_arg_value_for_register, copy_value_for_register, take_register_value, write_register_copy,
-    write_register_value,
+    copy_call_arg_value_for_register_with_metrics, copy_value_for_register_with_metrics, take_register_value,
+    write_register_copy_with_metrics, write_register_value_with_metrics,
 };
 
 use super::super::bytecode::{CaptureSpec, Function};
@@ -103,6 +103,7 @@ pub(super) struct FrameExecutionParts<'frame, 'func> {
     pub(super) capture_specs: &'frame Option<Arc<Vec<CaptureSpec>>>,
     pub(super) region_plan: Option<&'frame RegionPlan>,
     pub(super) region_allocator: *const RegionAllocator,
+    pub(super) collect_metrics: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,12 +203,13 @@ impl FrameActivation {
     pub(super) fn seed_positional_from_stack(&self, stack: &mut [Val], args: RegisterSpan, param_regs: &[u16]) {
         let src_base = args.stack_base();
         let count = args.len.min(param_regs.len());
+        let collect_metrics = self.setup.collect_metrics;
         for (idx, param_reg) in param_regs.iter().take(count).enumerate() {
             let value = stack
                 .get(src_base + idx)
-                .map(copy_call_arg_value_for_register)
+                .map(|value| copy_call_arg_value_for_register_with_metrics(value, collect_metrics))
                 .unwrap_or(Val::Nil);
-            write_register_value(stack, self.window.base() + *param_reg as usize, value);
+            write_register_value_with_metrics(stack, self.window.base() + *param_reg as usize, value, collect_metrics);
         }
     }
 }
@@ -309,28 +311,32 @@ pub(super) struct FrameState<'frame, 'func> {
     region_allocator: *const RegionAllocator,
     inline_return_meta: Option<CallFrameMeta>,
     sync_on_drop: bool,
+    collect_metrics: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct FrameStateSetup {
     sync_on_drop: bool,
     inline_return_meta: Option<CallFrameMeta>,
+    collect_metrics: bool,
 }
 
 impl FrameStateSetup {
     #[inline]
-    pub(super) const fn synchronized() -> Self {
+    pub(super) const fn synchronized(collect_metrics: bool) -> Self {
         Self {
             sync_on_drop: true,
             inline_return_meta: None,
+            collect_metrics,
         }
     }
 
     #[inline]
-    pub(super) const fn inline_ephemeral(meta: CallFrameMeta) -> Self {
+    pub(super) const fn inline_ephemeral(meta: CallFrameMeta, collect_metrics: bool) -> Self {
         Self {
             sync_on_drop: false,
             inline_return_meta: Some(meta),
+            collect_metrics,
         }
     }
 }
@@ -356,6 +362,7 @@ impl<'frame, 'func> FrameState<'frame, 'func> {
             region_allocator,
             inline_return_meta: setup.inline_return_meta,
             sync_on_drop: setup.sync_on_drop,
+            collect_metrics: setup.collect_metrics,
         }
     }
 
@@ -397,20 +404,25 @@ impl<'frame, 'func> FrameState<'frame, 'func> {
     #[inline]
     pub(super) fn write_reg(&mut self, idx: usize, value: Val) {
         self.record_reg_write(idx);
-        write_register_value(&mut self.regs, idx, value);
+        write_register_value_with_metrics(&mut self.regs, idx, value, self.collect_metrics);
     }
 
     #[inline]
     #[allow(dead_code)]
     pub(super) fn write_reg_copy(&mut self, idx: usize, value: &Val) {
         self.record_reg_write(idx);
-        write_register_copy(&mut self.regs, idx, value);
+        write_register_copy_with_metrics(&mut self.regs, idx, value, self.collect_metrics);
     }
 
     #[inline]
     pub(super) fn write_reg_call_arg_copy(&mut self, idx: usize, value: &Val) {
         self.record_reg_write(idx);
-        write_register_value(&mut self.regs, idx, copy_call_arg_value_for_register(value));
+        write_register_value_with_metrics(
+            &mut self.regs,
+            idx,
+            copy_call_arg_value_for_register_with_metrics(value, self.collect_metrics),
+            self.collect_metrics,
+        );
     }
 
     #[inline]
@@ -443,7 +455,7 @@ impl<'frame, 'func> FrameState<'frame, 'func> {
         if may_take {
             take_register_value(&mut self.regs, idx)
         } else {
-            copy_value_for_register(&self.regs[idx])
+            copy_value_for_register_with_metrics(&self.regs[idx], self.collect_metrics)
         }
     }
 
@@ -472,6 +484,7 @@ impl<'frame, 'func> FrameState<'frame, 'func> {
             capture_specs: &self.capture_specs,
             region_plan: self.region_plan.as_deref(),
             region_allocator: self.region_allocator,
+            collect_metrics: self.collect_metrics,
         }
     }
 }
@@ -486,9 +499,6 @@ impl<'frame, 'func> Drop for FrameState<'frame, 'func> {
                 frame.pc = self.pc;
                 frame.reg_base = self.reg_base;
                 frame.reg_count = self.reg_count;
-                frame.captures = self.captures.clone();
-                frame.capture_specs = self.capture_specs.clone();
-                frame.region_plan = self.region_plan.clone();
             }
         }
     }
@@ -544,7 +554,7 @@ mod tests {
         );
         let allocator = RegionAllocator::new();
         let alloc_ptr: *const RegionAllocator = &allocator;
-        let state = FrameState::from_frame(&mut frame, &mut regs, alloc_ptr, FrameStateSetup::synchronized());
+        let state = FrameState::from_frame(&mut frame, &mut regs, alloc_ptr, FrameStateSetup::synchronized(false));
 
         let plan = state.region_plan.as_ref().expect("region plan available");
         assert_eq!(plan.region_for(0), AllocationRegion::Heap);
@@ -614,7 +624,7 @@ mod tests {
         let mut vm = Vm::new();
         let runtime = vm.prepare_top_level_runtime(&function);
         let window = StackWindow::from_runtime(8, &runtime);
-        let setup = FrameStateSetup::synchronized();
+        let setup = FrameStateSetup::synchronized(false);
         let activation = FrameActivation::new(window, runtime, setup);
 
         let parts = activation.into_parts(&function, None, None);
@@ -655,7 +665,7 @@ mod tests {
         let mut vm = Vm::new();
         let runtime = vm.prepare_top_level_runtime(&function);
         let window = StackWindow::from_runtime(12, &runtime);
-        let setup = FrameStateSetup::synchronized();
+        let setup = FrameStateSetup::synchronized(false);
         let activation = FrameActivation::new(window, runtime, setup);
 
         let parts = activation.into_parts(&function, None, None);
@@ -688,7 +698,7 @@ mod tests {
         let mut vm = Vm::new();
         let runtime = vm.prepare_top_level_runtime(&function);
         let window = StackWindow::from_runtime(2, &runtime);
-        let activation = FrameActivation::new(window, runtime, FrameStateSetup::synchronized());
+        let activation = FrameActivation::new(window, runtime, FrameStateSetup::synchronized(false));
         let mut parts = activation.into_parts(&function, None, None);
         let mut stack = vec![Val::Int(99), Val::Int(88), Val::Nil, Val::Nil];
         let allocator = RegionAllocator::new();
@@ -720,7 +730,7 @@ mod tests {
         let mut vm = Vm::new();
         let runtime = vm.prepare_top_level_runtime(&function);
         let window = StackWindow::from_runtime(3, &runtime);
-        let activation = FrameActivation::new(window, runtime, FrameStateSetup::synchronized());
+        let activation = FrameActivation::new(window, runtime, FrameStateSetup::synchronized(false));
         let mut stack = vec![Val::Int(11), Val::Int(22), Val::Nil, Val::Nil, Val::Nil, Val::Nil];
 
         activation.seed_positional_from_stack(&mut stack, RegisterSpan::new(0, 2, RegisterWindowRef::Base(0)), &[1, 0]);
@@ -749,7 +759,7 @@ mod tests {
         let mut frame = CallFrame::new(&function, 0, 3, RuntimeDispatchSites::new(0, None), None, None, None);
         let allocator = RegionAllocator::new();
         let alloc_ptr: *const RegionAllocator = &allocator;
-        let mut state = FrameState::from_frame(&mut frame, &mut regs, alloc_ptr, FrameStateSetup::synchronized());
+        let mut state = FrameState::from_frame(&mut frame, &mut regs, alloc_ptr, FrameStateSetup::synchronized(false));
 
         state.write_reg(1, Val::Int(42));
         assert_eq!(state.borrow_reg(1), Some(&Val::Int(42)));
@@ -783,7 +793,7 @@ mod tests {
         let mut frame = CallFrame::new(&function, 0, 3, RuntimeDispatchSites::new(0, None), None, None, None);
         let allocator = RegionAllocator::new();
         let alloc_ptr: *const RegionAllocator = &allocator;
-        let mut state = FrameState::from_frame(&mut frame, &mut regs, alloc_ptr, FrameStateSetup::synchronized());
+        let mut state = FrameState::from_frame(&mut frame, &mut regs, alloc_ptr, FrameStateSetup::synchronized(false));
 
         state.seed_positional_from_values(&[2, 0], &[Val::Int(5), Val::Int(9), Val::Int(99)]);
         state.seed_named_call_arg_values(&[(1, Val::Int(7)), (9, Val::Int(100))]);
@@ -819,7 +829,7 @@ mod tests {
                 &mut frame,
                 &mut regs,
                 alloc_ptr,
-                FrameStateSetup::inline_ephemeral(meta),
+                FrameStateSetup::inline_ephemeral(meta, false),
             );
             assert_eq!(state.take_inline_return_meta().map(|meta| meta.resume_pc), Some(9));
             state.set_pc(7);

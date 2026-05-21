@@ -3,7 +3,10 @@ use std::{cell::RefCell, sync::Arc};
 use anyhow::{Result, anyhow};
 
 use super::{CallLayoutInfo, ClosureCapture, ClosureValue, NamedParamKind, NativeArgs, Val, vm_fast_path_forced};
-use crate::vm::{CaptureSpec, Compiler, FrameInfo, Function, Vm, VmContext, with_current_vm};
+use crate::vm::{
+    CaptureSpec, Compiler, FrameInfo, Function, Vm, VmContext, copy_call_arg_value_for_register_with_metrics,
+    vm_runtime_metrics_enabled, with_current_vm,
+};
 
 impl Val {
     /// Call this value as a function with the given arguments.
@@ -28,8 +31,11 @@ impl Val {
                 let scope_capacity = params.len() + closure.named_params.len();
                 let mut named_slots: Vec<Option<Val>> = vec![None; closure.named_params.len()];
                 closure.with_call_env(ctx, scope_capacity, |call_env, layout_info| {
-                    let frame_info = closure.frame_info();
-                    call_env.push_call_frame(frame_info.name.clone(), frame_info.location.clone());
+                    let frame_info = closure.frame_info_ref();
+                    call_env.push_call_frame(
+                        Arc::clone(&frame_info.name),
+                        frame_info.location.as_ref().map(Arc::clone),
+                    );
                     let result = Self::call_named_vm_fast(closure, args, &mut named_slots, call_env, layout_info);
                     call_env.pop_call_frame();
                     result
@@ -77,11 +83,15 @@ impl Val {
                         pos.len()
                     ));
                 }
-                let mut named_slots = closure.build_named_slots(named)?;
+                let collect_metrics = vm_runtime_metrics_enabled();
+                let mut named_slots = closure.build_named_slots_with_metrics(named, collect_metrics)?;
                 let scope_capacity = params.len() + closure.named_params.len();
                 closure.with_call_env(ctx, scope_capacity, |call_env, layout_info| {
-                    let frame_info = closure.frame_info();
-                    call_env.push_call_frame(frame_info.name.clone(), frame_info.location.clone());
+                    let frame_info = closure.frame_info_ref();
+                    call_env.push_call_frame(
+                        Arc::clone(&frame_info.name),
+                        frame_info.location.as_ref().map(Arc::clone),
+                    );
                     let result = Self::call_named_vm_fast(closure, pos, &mut named_slots, call_env, layout_info);
                     call_env.pop_call_frame();
                     result
@@ -107,7 +117,8 @@ impl Val {
         call_env: &mut VmContext,
         layout_info: &CallLayoutInfo,
     ) -> Result<Val> {
-        let frame_info = closure.frame_info();
+        let frame_info = closure.frame_info_ref();
+        let collect_metrics = vm_runtime_metrics_enabled();
         let params = closure.params.as_ref();
         let named_params = closure.named_params.as_ref();
         let named_kinds = closure.named_param_kinds();
@@ -121,7 +132,7 @@ impl Val {
                 closure.capture_specs.as_ref(),
             ))
         });
-        Self::bind_positional_params(call_env, params, pos, layout_info);
+        Self::bind_positional_params(call_env, params, pos, layout_info, collect_metrics);
         let named_regs = &fun.named_param_regs;
         debug_assert_eq!(
             named_regs.len(),
@@ -145,7 +156,7 @@ impl Val {
                             .and_then(|opt| opt.as_ref())
                             .expect("default function must exist for DefaultThunk kind");
                         let default_frame = closure
-                            .default_frame_info(idx)
+                            .default_frame_info_ref(idx)
                             .expect("default frame info should exist");
                         let layout = closure
                             .default_seed_regs(idx)
@@ -156,7 +167,10 @@ impl Val {
                                 .get(*seed_idx)
                                 .copied()
                                 .expect("default seed layout must cover parent indices");
-                            default_named_seed.push((reg, seed_val.clone()));
+                            default_named_seed.push((
+                                reg,
+                                copy_call_arg_value_for_register_with_metrics(seed_val, collect_metrics),
+                            ));
                         }
                         Self::exec_function_with_bindings(
                             default_fun,
@@ -165,7 +179,7 @@ impl Val {
                             default_named_seed.as_slice(),
                             &closure.captures,
                             &closure.capture_specs,
-                            Some(default_frame.clone()),
+                            Some(default_frame),
                         )?
                     }
                     NamedParamKind::OptionalNil => Val::Nil,
@@ -174,8 +188,16 @@ impl Val {
                     }
                 }
             };
-            Self::bind_named_param_value(call_env, decl, value.clone(), layout_info);
-            named_seed_pairs.push((idx, value.clone()));
+            Self::bind_named_param_value(
+                call_env,
+                decl,
+                copy_call_arg_value_for_register_with_metrics(&value, collect_metrics),
+                layout_info,
+            );
+            named_seed_pairs.push((
+                idx,
+                copy_call_arg_value_for_register_with_metrics(&value, collect_metrics),
+            ));
             named_seed.push((named_regs[idx], value));
         }
         call_env.preload_slot_mappings_per_depth(&layout_info.locals);
@@ -186,7 +208,7 @@ impl Val {
             named_seed.as_slice(),
             &closure.captures,
             &closure.capture_specs,
-            Some(frame_info.clone()),
+            Some(frame_info),
         )
     }
 
@@ -197,18 +219,18 @@ impl Val {
         named_seed: &[(u16, Val)],
         captures: &Arc<ClosureCapture>,
         capture_specs: &Arc<Vec<CaptureSpec>>,
-        frame_info: Option<FrameInfo>,
+        frame_info: Option<&FrameInfo>,
     ) -> Result<Val> {
+        let frame_captures = || {
+            if captures.is_empty() && capture_specs.is_empty() {
+                (None, None)
+            } else {
+                (Some(Arc::clone(captures)), Some(Arc::clone(capture_specs)))
+            }
+        };
         if let Some(res) = with_current_vm(|vm| {
-            vm.exec_with_bindings(
-                fun,
-                env,
-                Some(pos),
-                named_seed,
-                Some(Arc::clone(captures)),
-                Some(Arc::clone(capture_specs)),
-                frame_info.clone(),
-            )
+            let (captures, capture_specs) = frame_captures();
+            vm.exec_with_bindings(fun, env, Some(pos), named_seed, captures, capture_specs, frame_info)
         }) {
             res
         } else {
@@ -218,15 +240,8 @@ impl Val {
             let mut vm = VM_POOL_NAMED_CALL
                 .with(|cell| cell.borrow_mut().take())
                 .unwrap_or_default();
-            let res = vm.exec_with_bindings(
-                fun,
-                env,
-                Some(pos),
-                named_seed,
-                Some(Arc::clone(captures)),
-                Some(Arc::clone(capture_specs)),
-                frame_info,
-            );
+            let (captures, capture_specs) = frame_captures();
+            let res = vm.exec_with_bindings(fun, env, Some(pos), named_seed, captures, capture_specs, frame_info);
             VM_POOL_NAMED_CALL.with(|cell| {
                 let _ = cell.borrow_mut().replace(vm);
             });

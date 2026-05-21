@@ -1,20 +1,34 @@
 use crate::val::Val;
 
+#[cfg(test)]
+use super::analysis::record_register_write;
+#[cfg(test)]
+use super::analysis::vm_runtime_metrics_enabled;
 use super::analysis::{
-    VmValueCopyMetric, record_copy_policy_clone, record_register_write, record_return_value_move, record_val_clone,
-    vm_runtime_metrics_enabled,
+    VmValueCopyMetric, record_copy_policy_clone, record_register_write_known_enabled, record_return_value_move,
+    record_val_clone,
 };
 
 #[inline(always)]
+#[cfg(test)]
 pub(crate) fn write_register_value(regs: &mut [Val], idx: usize, value: Val) {
     debug_assert!(idx < regs.len(), "register write out of frame window");
     record_register_write();
     regs[idx] = value;
 }
 
+/// Same as `write_register_value` but skips the atomic metrics gate read when
+/// `collect_metrics` is false. The execution hot path already reads the gate
+/// once per frame via `FrameRuntimeView::collect_metrics`; this avoids
+/// repeating the `runtime_metrics_enabled()` atomic read on every register
+/// write in tight arithmetic loops.
 #[inline(always)]
-pub(crate) fn copy_value_for_register(value: &Val) -> Val {
-    copy_value_for_register_with_metric(value, VmValueCopyMetric::Generic)
+pub(crate) fn write_register_value_with_metrics(regs: &mut [Val], idx: usize, value: Val, collect_metrics: bool) {
+    debug_assert!(idx < regs.len(), "register write out of frame window");
+    if collect_metrics {
+        record_register_write_known_enabled();
+    }
+    regs[idx] = value;
 }
 
 #[inline(always)]
@@ -23,6 +37,7 @@ pub(crate) fn copy_value_for_register_with_metrics(value: &Val, collect_metrics:
 }
 
 #[inline(always)]
+#[cfg(test)]
 pub(crate) fn copy_call_arg_value_for_register(value: &Val) -> Val {
     copy_value_for_register_with_metric(value, VmValueCopyMetric::CallArg)
 }
@@ -34,6 +49,7 @@ pub(crate) fn copy_call_arg_value_for_register_with_metrics(value: &Val, collect
 }
 
 #[inline(always)]
+#[cfg(test)]
 pub(crate) fn copy_const_value_for_register(value: &Val) -> Val {
     copy_value_for_register_with_metric(value, VmValueCopyMetric::ConstLoad)
 }
@@ -45,6 +61,7 @@ pub(crate) fn copy_const_value_for_register_with_metrics(value: &Val, collect_me
 }
 
 #[inline(always)]
+#[cfg(test)]
 pub(crate) fn copy_container_value_for_register(value: &Val) -> Val {
     copy_value_for_register_with_metric(value, VmValueCopyMetric::Container)
 }
@@ -56,6 +73,7 @@ pub(crate) fn copy_container_value_for_register_with_metrics(value: &Val, collec
 }
 
 #[inline(always)]
+#[cfg(test)]
 fn copy_value_for_register_with_metric(value: &Val, metric: VmValueCopyMetric) -> Val {
     copy_value_for_register_with_metric_gate(value, metric, vm_runtime_metrics_enabled())
 }
@@ -100,36 +118,33 @@ fn copy_heap_value_for_register_with_metric_gate(value: &Val, metric: VmValueCop
 }
 
 #[inline(always)]
+#[cfg(test)]
 pub(crate) fn write_register_copy(regs: &mut [Val], idx: usize, value: &Val) {
     write_register_copy_with_metrics(regs, idx, value, vm_runtime_metrics_enabled());
 }
 
 #[inline(always)]
 pub(crate) fn write_register_copy_with_metrics(regs: &mut [Val], idx: usize, value: &Val, collect_metrics: bool) {
-    write_register_value(
+    write_register_value_with_metrics(
         regs,
         idx,
         copy_value_for_register_with_metric_gate(value, VmValueCopyMetric::Register, collect_metrics),
+        collect_metrics,
     );
-}
-
-#[inline(always)]
-#[allow(dead_code)]
-pub(crate) fn write_register_const_copy(regs: &mut [Val], idx: usize, value: &Val) {
-    write_register_const_copy_with_metrics(regs, idx, value, vm_runtime_metrics_enabled());
 }
 
 #[inline(always)]
 pub(crate) fn write_register_const_copy_with_metrics(regs: &mut [Val], idx: usize, value: &Val, collect_metrics: bool) {
-    write_register_value(
+    write_register_value_with_metrics(
         regs,
         idx,
         copy_value_for_register_with_metric_gate(value, VmValueCopyMetric::ConstLoad, collect_metrics),
+        collect_metrics,
     );
 }
 
 #[inline(always)]
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn copy_register_value(regs: &mut [Val], dst_idx: usize, src_idx: usize) {
     copy_register_value_with_metrics(regs, dst_idx, src_idx, vm_runtime_metrics_enabled());
 }
@@ -147,11 +162,11 @@ pub(crate) fn copy_register_value_with_metrics(
         return;
     }
     let value = copy_value_for_register_with_metric_gate(&regs[src_idx], VmValueCopyMetric::Register, collect_metrics);
-    write_register_value(regs, dst_idx, value);
+    write_register_value_with_metrics(regs, dst_idx, value, collect_metrics);
 }
 
 #[inline(always)]
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn copy_local_load_register_value(regs: &mut [Val], dst_idx: usize, src_idx: usize) {
     copy_local_load_register_value_with_metrics(regs, dst_idx, src_idx, vm_runtime_metrics_enabled());
 }
@@ -167,7 +182,7 @@ pub(crate) fn copy_local_load_register_value_with_metrics(
 }
 
 #[inline(always)]
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn copy_local_store_register_value(regs: &mut [Val], dst_idx: usize, src_idx: usize) {
     copy_local_store_register_value_with_metrics(regs, dst_idx, src_idx, vm_runtime_metrics_enabled());
 }
@@ -196,7 +211,7 @@ fn copy_local_register_value_with_metric(
         return;
     }
     let value = copy_value_for_register_with_metric_gate(&regs[src_idx], metric, collect_metrics);
-    write_register_value(regs, dst_idx, value);
+    write_register_value_with_metrics(regs, dst_idx, value, collect_metrics);
 }
 
 #[inline(always)]

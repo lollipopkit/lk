@@ -65,9 +65,13 @@ impl BinOp {
     }
 
     fn arith(&self, l: &Val, r: &Val) -> Result<Val> {
+        self.arith_with_metrics(l, r, crate::vm::vm_runtime_metrics_enabled())
+    }
+
+    fn arith_with_metrics(&self, l: &Val, r: &Val, collect_metrics: bool) -> Result<Val> {
         match self {
-            BinOp::Add => l + r,
-            BinOp::Sub => l - r,
+            BinOp::Add => l.add_with_metrics(r, collect_metrics),
+            BinOp::Sub => l.sub_with_metrics(r, collect_metrics),
             BinOp::Mul => l * r,
             BinOp::Div => l / r,
             BinOp::Mod => l % r,
@@ -173,8 +177,12 @@ impl BinOp {
     }
 
     pub(crate) fn eval_vals(&self, l_val: &Val, r_val: &Val) -> Result<Val> {
+        self.eval_vals_with_metrics(l_val, r_val, crate::vm::vm_runtime_metrics_enabled())
+    }
+
+    pub(crate) fn eval_vals_with_metrics(&self, l_val: &Val, r_val: &Val, collect_metrics: bool) -> Result<Val> {
         if self.is_arith() {
-            self.arith(l_val, r_val)
+            self.arith_with_metrics(l_val, r_val, collect_metrics)
         } else if self.is_cmp() {
             Ok(Val::Bool(self.cmp(l_val, r_val)?))
         } else {

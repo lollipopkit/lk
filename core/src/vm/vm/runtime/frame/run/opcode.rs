@@ -25,27 +25,26 @@ use anyhow::{Result, anyhow};
 
 use crate::val::{ClosureCapture, ClosureInit, ClosureValue, Val};
 use crate::vm::alloc::RegionAllocator;
-use crate::vm::bytecode::{CaptureSpec, Op};
+use crate::vm::bytecode::Op;
 use crate::vm::compiler::Compiler;
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::{CallIc, CallReturnLayout, ForRangeState};
-use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan};
+use crate::vm::vm::caches::{CallIc, ForRangeState};
 use crate::vm::{
-    VmCallMetric, VmContainerMetric, record_branch_op_known_enabled, record_call_op_known_enabled,
-    record_container_op_known_enabled, record_opcode_step_known_enabled, take_register_value,
+    VmCallMetric, VmContainerMetric, copy_value_for_register_with_metrics, record_branch_op_known_enabled,
+    record_call_op_known_enabled, record_container_op_known_enabled, record_opcode_step_known_enabled,
+    take_register_value,
 };
 
 use super::FrameRuntimeView;
 use super::helpers::{
-    advance_for_range_tail, assign_local_from_reg_or_take_with_metrics, assign_reg, assign_reg_const_copy_with_metrics,
+    advance_for_range_tail, assign_local_from_reg_or_take_with_metrics, assign_reg_const_copy_with_metrics,
     assign_reg_from_local_load_with_metrics, assign_reg_from_reg_or_take_with_metrics,
-    assign_reg_from_reg_with_metrics, frame_return_common, handle_return_common, local_store_may_take_source,
-    register_move_may_take_source,
+    assign_reg_from_reg_with_metrics, assign_reg_with_metrics, copy_capture_spec_value, frame_return_common,
+    handle_return_common, local_store_may_take_source, register_move_may_take_source,
 };
 use super::math::floor_div_i64;
 use super::method_ops;
-use super::plan::get_or_build_named_call_site_plan;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<Option<Val>> {
@@ -92,120 +91,67 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 pc += 1;
             }
             Op::LoadK(dst, k) => {
-                assign_reg_const_copy_with_metrics(
-                    frame_raw,
-                    regs,
-                    *dst as usize,
-                    &f.consts[*k as usize],
-                    collect_metrics,
-                );
+                assign_reg_const_copy_with_metrics(regs, *dst as usize, &f.consts[*k as usize], collect_metrics);
                 pc += 1;
             }
             Op::Move(dst, src) => {
                 let may_take = register_move_may_take_source(f, pc, *src);
-                assign_reg_from_reg_or_take_with_metrics(
-                    frame_raw,
-                    regs,
-                    *dst as usize,
-                    *src as usize,
-                    may_take,
-                    collect_metrics,
-                );
+                assign_reg_from_reg_or_take_with_metrics(regs, *dst as usize, *src as usize, may_take, collect_metrics);
                 pc += 1;
             }
             Op::ToStr(dst, src) => {
-                if string_ops::run_to_str(frame_raw, regs, &f.consts, &f.code, pc, *dst, *src) {
+                if string_ops::run_to_str(regs, &f.consts, &f.code, pc, *dst, *src, collect_metrics) {
                     pc += 2;
                 } else {
                     pc += 1;
                 }
             }
             Op::Add(dst, a, b) => {
-                arithmetic_ops::run_add(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                arithmetic_ops::run_add(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::StrConcatKnownCap(dst, a, b) => {
-                arithmetic_ops::run_str_concat_known_cap(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_str_concat_known_cap(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::StrConcatToStr(dst, lhs, src) => {
-                arithmetic_ops::run_str_concat_to_str(frame_raw, regs, &f.consts, *dst, *lhs, *src)?;
+                arithmetic_ops::run_str_concat_to_str(regs, &f.consts, *dst, *lhs, *src, collect_metrics)?;
                 pc += 1;
             }
             Op::Sub(dst, a, b) => {
-                arithmetic_ops::run_sub(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                arithmetic_ops::run_sub(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::Mul(dst, a, b) => {
-                arithmetic_ops::run_mul(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                arithmetic_ops::run_mul(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::Div(dst, a, b) => {
-                arithmetic_ops::run_div(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_div(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::Mod(dst, a, b) => {
-                arithmetic_ops::run_mod(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                arithmetic_ops::run_mod(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::AddInt(dst, a, b) => {
-                arithmetic_ops::run_add_int(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_add_int(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::AddFloat(dst, a, b) => {
-                arithmetic_ops::run_add_float(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_add_float(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::AddIntImm(dst, a, imm) => {
-                arithmetic_ops::run_add_int_imm(frame_raw, regs, &f.consts, *dst, *a, *imm)?;
+                arithmetic_ops::run_add_int_imm(regs, &f.consts, *dst, *a, *imm, collect_metrics)?;
                 pc += 1;
             }
             Op::SubInt(dst, a, b) => {
-                arithmetic_ops::run_sub_int(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_sub_int(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::SubFloat(dst, a, b) => {
-                arithmetic_ops::run_sub_float(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_sub_float(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             op @ (Op::CmpEqImm(..)
@@ -214,26 +160,26 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             | Op::CmpLeImm(..)
             | Op::CmpGtImm(..)
             | Op::CmpGeImm(..)) => {
-                pc = compare_ops::run_cmp_imm_or_branch(frame_raw, regs, &f.consts, &f.code, pc, op)?;
+                pc = compare_ops::run_cmp_imm_or_branch(regs, &f.consts, &f.code, pc, op, collect_metrics)?;
             }
             Op::MulInt(dst, a, b) => {
-                arithmetic_ops::run_mul_int(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_mul_int(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::MulFloat(dst, a, b) => {
-                arithmetic_ops::run_mul_float(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_mul_float(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::DivFloat(dst, a, b) => {
-                arithmetic_ops::run_div_float(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_div_float(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::ModInt(dst, a, b) => {
-                arithmetic_ops::run_mod_int(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_mod_int(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::ModFloat(dst, a, b) => {
-                arithmetic_ops::run_mod_float(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                arithmetic_ops::run_mod_float(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::CmpEq(dst, a, b) => {
@@ -243,17 +189,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     pc = compare_ops::run_cmp_eq_jmp_false(regs, &f.consts, pc, *ofs, *a, *b);
                     continue;
                 }
-                compare_ops::run_cmp_eq(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                compare_ops::run_cmp_eq(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::CmpNe(dst, a, b) => {
@@ -263,17 +199,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     pc = compare_ops::run_cmp_ne_jmp_false(regs, &f.consts, pc, *ofs, *a, *b);
                     continue;
                 }
-                compare_ops::run_cmp_ne(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                compare_ops::run_cmp_ne(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::CmpLt(dst, a, b) => {
@@ -283,17 +209,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     pc = compare_ops::run_cmp_lt_jmp_false(regs, &f.consts, pc, *ofs, *a, *b)?;
                     continue;
                 }
-                compare_ops::run_cmp_lt(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                compare_ops::run_cmp_lt(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::CmpLe(dst, a, b) => {
@@ -303,17 +219,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     pc = compare_ops::run_cmp_le_jmp_false(regs, &f.consts, pc, *ofs, *a, *b)?;
                     continue;
                 }
-                compare_ops::run_cmp_le(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                compare_ops::run_cmp_le(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::CmpGt(dst, a, b) => {
@@ -323,17 +229,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     pc = compare_ops::run_cmp_gt_jmp_false(regs, &f.consts, pc, *ofs, *a, *b)?;
                     continue;
                 }
-                compare_ops::run_cmp_gt(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                compare_ops::run_cmp_gt(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::CmpGe(dst, a, b) => {
@@ -343,17 +239,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     pc = compare_ops::run_cmp_ge_jmp_false(regs, &f.consts, pc, *ofs, *a, *b)?;
                     continue;
                 }
-                compare_ops::run_cmp_ge(
-                    frame_raw,
-                    regs,
-                    &f.consts,
-                    quickening,
-                    pc,
-                    *dst,
-                    *a,
-                    *b,
-                    collect_metrics,
-                )?;
+                compare_ops::run_cmp_ge(regs, &f.consts, quickening, pc, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::CmpI { dst, a, b, kind } => {
@@ -363,7 +249,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     pc = compare_ops::run_cmp_i_jmp_false(regs, pc, *ofs, *a, *b, *kind)?;
                     continue;
                 }
-                compare_ops::run_cmp_i(frame_raw, regs, *dst, *a, *b, *kind)?;
+                compare_ops::run_cmp_i(regs, *dst, *a, *b, *kind, collect_metrics)?;
                 pc += 1;
             }
             Op::CmpIntJmp { kind, a, b, ofs } => {
@@ -379,17 +265,16 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 }
             }
             Op::In(dst, a, b) => {
-                compare_ops::run_in(frame_raw, regs, &f.consts, *dst, *a, *b)?;
+                compare_ops::run_in(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::LoadLocal(dst, idx) => {
-                assign_reg_from_local_load_with_metrics(frame_raw, regs, *dst as usize, *idx as usize, collect_metrics);
+                assign_reg_from_local_load_with_metrics(regs, *dst as usize, *idx as usize, collect_metrics);
                 pc += 1;
             }
             Op::StoreLocal(idx, src) => {
                 let may_take = local_store_may_take_source(f, pc);
                 assign_local_from_reg_or_take_with_metrics(
-                    frame_raw,
                     regs,
                     *idx as usize,
                     *src as usize,
@@ -399,49 +284,57 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 pc += 1;
             }
             Op::LoadGlobal(dst, name_k) => {
-                global_ops::run_load_global(frame_raw, regs, &f.consts, ctx, global_ic, pc, *dst, *name_k);
+                global_ops::run_load_global(regs, &f.consts, ctx, global_ic, pc, *dst, *name_k, collect_metrics);
                 pc += 1;
             }
             Op::DefineGlobal(name_k, src) => {
-                global_ops::run_define_global(regs, &f.consts, ctx, *name_k, *src);
+                global_ops::run_define_global(regs, &f.consts, ctx, *name_k, *src, collect_metrics);
                 pc += 1;
             }
             Op::LoadCapture { dst, idx } => {
-                global_ops::run_load_capture(frame_raw, regs, ctx, frame_captures, frame_capture_specs, *dst, *idx)?;
+                global_ops::run_load_capture(
+                    regs,
+                    ctx,
+                    frame_captures,
+                    frame_capture_specs,
+                    *dst,
+                    *idx,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::Access(dst, base, field) => {
                 record_container(VmContainerMetric::Generic);
-                container_ops::run_access(frame_raw, regs, access_ic, pc, *dst, *base, *field);
+                container_ops::run_access(regs, access_ic, pc, *dst, *base, *field, collect_metrics);
                 pc += 1;
             }
             Op::AccessK(dst, base, kidx) => {
                 record_container(VmContainerMetric::Generic);
-                container_ops::run_access_k(frame_raw, regs, &f.consts, access_ic, pc, *dst, *base, *kidx);
+                container_ops::run_access_k(regs, &f.consts, access_ic, pc, *dst, *base, *kidx, collect_metrics);
                 pc += 1;
             }
             Op::Len { dst, src } => {
                 record_container(VmContainerMetric::Generic);
-                container_ops::run_len(frame_raw, regs, *dst, *src);
+                container_ops::run_len(regs, *dst, *src, collect_metrics);
                 pc += 1;
             }
             Op::ListLen { dst, src } => {
                 record_container(VmContainerMetric::List);
-                container_ops::run_list_len(frame_raw, regs, *dst, *src);
+                container_ops::run_list_len(regs, *dst, *src, collect_metrics);
                 pc += 1;
             }
             Op::MapLen { dst, src } => {
                 record_container(VmContainerMetric::Map);
-                container_ops::run_map_len(frame_raw, regs, *dst, *src);
+                container_ops::run_map_len(regs, *dst, *src, collect_metrics);
                 pc += 1;
             }
             Op::StrLen { dst, src } => {
                 record_container(VmContainerMetric::String);
-                container_ops::run_str_len(frame_raw, regs, *dst, *src);
+                container_ops::run_str_len(regs, *dst, *src, collect_metrics);
                 pc += 1;
             }
             Op::Floor { dst, src } => {
-                container_ops::run_floor(frame_raw, regs, *dst, *src);
+                container_ops::run_floor(regs, *dst, *src, collect_metrics);
                 pc += 1;
             }
             Op::FloorDivImm { dst, src, imm } => {
@@ -450,85 +343,75 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     Val::Float(value) => Val::Int((value / *imm as f64).floor() as i64),
                     _ => Val::Int(0),
                 };
-                assign_reg(frame_raw, regs, *dst as usize, out);
+                assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
                 pc += 1;
             }
             Op::StartsWithK(dst, src, kidx) => {
                 record_container(VmContainerMetric::String);
-                string_ops::run_starts_with_k(frame_raw, regs, &f.consts, *dst, *src, *kidx);
+                string_ops::run_starts_with_k(regs, &f.consts, *dst, *src, *kidx, collect_metrics);
                 pc += 1;
             }
             Op::ContainsK(dst, src, kidx) => {
                 record_container(VmContainerMetric::String);
-                string_ops::run_contains_k(frame_raw, regs, &f.consts, *dst, *src, *kidx);
+                string_ops::run_contains_k(regs, &f.consts, *dst, *src, *kidx, collect_metrics);
                 pc += 1;
             }
             Op::MapHas(dst, map, key) => {
                 record_container(VmContainerMetric::Map);
-                if let Err(err) = container_ops::run_map_has(frame_raw, regs, *dst, *map, *key) {
+                if let Err(err) = container_ops::run_map_has(regs, *dst, *map, *key, collect_metrics) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::MapGetInterned(dst, map, kidx) => {
                 record_container(VmContainerMetric::Map);
-                container_ops::run_map_get_interned(frame_raw, regs, &f.consts, *dst, *map, *kidx);
+                container_ops::run_map_get_interned(regs, &f.consts, *dst, *map, *kidx, collect_metrics);
                 pc += 1;
             }
             Op::MapGetDynamic(dst, map, key) => {
                 record_container(VmContainerMetric::Map);
-                container_ops::run_map_get_dynamic(frame_raw, regs, *dst, *map, *key);
+                container_ops::run_map_get_dynamic(regs, *dst, *map, *key, collect_metrics);
                 pc += 1;
             }
             Op::MapHasK(dst, map, kidx) => {
                 record_container(VmContainerMetric::Map);
-                if let Err(err) = container_ops::run_map_has_k(frame_raw, regs, &f.consts, *dst, *map, *kidx) {
+                if let Err(err) = container_ops::run_map_has_k(regs, &f.consts, *dst, *map, *kidx, collect_metrics) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::ListFoldAdd { acc, list } => {
                 record_container(VmContainerMetric::List);
-                container_ops::run_list_fold_add(frame_raw, regs, *acc, *list)?;
+                container_ops::run_list_fold_add(regs, *acc, *list, collect_metrics)?;
                 pc += 1;
             }
             Op::MapValuesFoldAdd { acc, map } => {
                 record_container(VmContainerMetric::Map);
-                container_ops::run_map_values_fold_add(frame_raw, regs, *acc, *map)?;
+                container_ops::run_map_values_fold_add(regs, *acc, *map, collect_metrics)?;
                 pc += 1;
             }
             Op::Index { dst, base, idx } => {
                 record_container(VmContainerMetric::Generic);
-                container_ops::run_index(
-                    frame_raw,
-                    regs,
-                    index_ic,
-                    quickening,
-                    pc,
-                    *dst,
-                    *base,
-                    *idx,
-                    collect_metrics,
-                )?;
+                container_ops::run_index(regs, index_ic, quickening, pc, *dst, *base, *idx, collect_metrics)?;
                 pc += 1;
             }
             Op::IndexK(dst, base, kidx) => {
                 record_container(VmContainerMetric::Generic);
-                container_ops::run_index_k(frame_raw, regs, &f.consts, *dst, *base, *kidx);
+                container_ops::run_index_k(regs, &f.consts, *dst, *base, *kidx, collect_metrics);
                 pc += 1;
             }
             Op::ListIndexI(dst, base, index) => {
                 record_container(VmContainerMetric::List);
-                container_ops::run_list_index_i(frame_raw, regs, *dst, *base, *index);
+                container_ops::run_list_index_i(regs, *dst, *base, *index, collect_metrics);
                 pc += 1;
             }
             Op::StrIndexI(dst, base, index) => {
                 record_container(VmContainerMetric::String);
-                container_ops::run_str_index_i(frame_raw, regs, *dst, *base, *index);
+                container_ops::run_str_index_i(regs, *dst, *base, *index, collect_metrics);
                 pc += 1;
             }
             Op::PatternMatch { dst, src, plan } => {
-                pattern_ops::run_pattern_match(frame_raw, regs, ctx, f, *dst, *src, *plan)?;
+                pattern_ops::run_pattern_match(regs, ctx, f, *dst, *src, *plan, collect_metrics)?;
                 pc += 1;
             }
             Op::PatternMatchOrFail {
@@ -537,9 +420,16 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 err_kidx,
                 is_const,
             } => {
-                if let Err(err) =
-                    pattern_ops::run_pattern_match_or_fail(frame_raw, regs, ctx, f, *src, *plan, *err_kidx, *is_const)
-                {
+                if let Err(err) = pattern_ops::run_pattern_match_or_fail(
+                    regs,
+                    ctx,
+                    f,
+                    *src,
+                    *plan,
+                    *err_kidx,
+                    *is_const,
+                    collect_metrics,
+                ) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
@@ -549,19 +439,33 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             }
             Op::ToIter { dst, src } => {
                 record_container(VmContainerMetric::Generic);
-                container_ops::run_to_iter(frame_raw, regs, *dst, *src, region_plan, region_allocator_ptr);
+                container_ops::run_to_iter(regs, *dst, *src, region_plan, region_allocator_ptr, collect_metrics);
                 pc += 1;
             }
             Op::BuildList { dst, base, len } => {
                 record_container(VmContainerMetric::List);
-                container_ops::run_build_list(frame_raw, regs, *dst, *base, *len, region_plan, region_allocator_ptr);
+                container_ops::run_build_list(
+                    regs,
+                    *dst,
+                    *base,
+                    *len,
+                    region_plan,
+                    region_allocator_ptr,
+                    collect_metrics,
+                );
                 pc += 1;
             }
             Op::BuildMap { dst, base, len } => {
                 record_container(VmContainerMetric::Map);
-                if let Err(err) =
-                    container_ops::run_build_map(frame_raw, regs, *dst, *base, *len, region_plan, region_allocator_ptr)
-                {
+                if let Err(err) = container_ops::run_build_map(
+                    regs,
+                    *dst,
+                    *base,
+                    *len,
+                    region_plan,
+                    region_allocator_ptr,
+                    collect_metrics,
+                ) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
@@ -569,13 +473,13 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             Op::ListSlice { dst, src, start } => {
                 record_container(VmContainerMetric::List);
                 if let Err(err) = container_ops::run_list_slice(
-                    frame_raw,
                     regs,
                     *dst,
                     *src,
                     *start,
                     region_plan,
                     region_allocator_ptr,
+                    collect_metrics,
                 ) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
@@ -583,49 +487,53 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             }
             Op::ListPush { list, val } => {
                 record_container(VmContainerMetric::List);
-                if let Err(err) = container_ops::run_list_push(regs, *list, *val) {
+                if let Err(err) = container_ops::run_list_push(regs, *list, *val, collect_metrics) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::ListPushMove { list, val } => {
                 record_container(VmContainerMetric::List);
-                if let Err(err) = container_ops::run_list_push_move(regs, *list, *val) {
+                if let Err(err) = container_ops::run_list_push_move(regs, *list, *val, collect_metrics) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::ListSetI { dst, list, index, val } => {
                 record_container(VmContainerMetric::List);
-                if let Err(err) = container_ops::run_list_set_i(frame_raw, regs, *dst, *list, *index, *val) {
+                if let Err(err) = container_ops::run_list_set_i(regs, *dst, *list, *index, *val, collect_metrics) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::MapSet { map, key, val } => {
                 record_container(VmContainerMetric::Map);
-                if let Err(err) = container_ops::run_map_set(regs, *map, *key, *val) {
+                if let Err(err) = container_ops::run_map_set(regs, *map, *key, *val, collect_metrics) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::MapSetInterned(map, kidx, val) => {
                 record_container(VmContainerMetric::Map);
-                if let Err(err) = container_ops::run_map_set_interned(regs, &f.consts, *map, *kidx, *val) {
+                if let Err(err) =
+                    container_ops::run_map_set_interned(regs, &f.consts, *map, *kidx, *val, collect_metrics)
+                {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::MapSetInternedMove(map, kidx, val) => {
                 record_container(VmContainerMetric::Map);
-                if let Err(err) = container_ops::run_map_set_interned_move(regs, &f.consts, *map, *kidx, *val) {
+                if let Err(err) =
+                    container_ops::run_map_set_interned_move(regs, &f.consts, *map, *kidx, *val, collect_metrics)
+                {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
             }
             Op::MapSetMove { map, key, val } => {
                 record_container(VmContainerMetric::Map);
-                if let Err(err) = container_ops::run_map_set_move(regs, *map, *key, *val) {
+                if let Err(err) = container_ops::run_map_set_move(regs, *map, *key, *val, collect_metrics) {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
@@ -657,7 +565,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 };
                 let step_val = if !*explicit {
                     let step_val = if i0 <= ilim { 1 } else { -1 };
-                    assign_reg(frame_raw, regs, step_reg, Val::Int(step_val));
+                    assign_reg_with_metrics(regs, step_reg, Val::Int(step_val), collect_metrics);
                     step_val
                 } else {
                     match &regs[step_reg] {
@@ -708,7 +616,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     };
                     if keep_going {
                         if *write_idx {
-                            assign_reg(frame_raw, regs, idx_reg, Val::Int(state.current));
+                            assign_reg_with_metrics(regs, idx_reg, Val::Int(state.current), collect_metrics);
                         }
                         state.current += state.step;
                         if let Some(Op::ForRangeStep { back_ofs, .. }) = f.code.get(pc + 1) {
@@ -724,7 +632,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                         // semantics. For native `for i in 0..N {}`, the loop variable is scoped
                         // so this extra write is harmless.
                         if *write_idx {
-                            assign_reg(frame_raw, regs, idx_reg, Val::Int(state.current));
+                            assign_reg_with_metrics(regs, idx_reg, Val::Int(state.current), collect_metrics);
                         }
                         *slot = None;
                         pc = ((pc as isize) + (*ofs as isize)) as usize;
@@ -748,7 +656,6 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     let body_pc = guard_pc + 1;
                     let exit_pc = ((guard_pc as isize) + (*ofs as isize)) as usize;
                     pc = match advance_for_range_tail(
-                        frame_raw,
                         regs,
                         for_range_ic,
                         guard_pc,
@@ -756,6 +663,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                         exit_pc,
                         *idx,
                         *write_idx,
+                        collect_metrics,
                     ) {
                         Ok(next_pc) => next_pc,
                         Err(err) => return frame_return_common(frame_raw, pc, Err(err)).map(Some),
@@ -765,7 +673,8 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 }
             }
             Op::MakeClosure { dst, proto } => {
-                if let Some(value) = closure_ops::run_make_closure_opcode(frame_raw, regs, ctx, &mut pc, f, dst, proto)?
+                if let Some(value) =
+                    closure_ops::run_make_closure_opcode(regs, ctx, &mut pc, f, dst, proto, collect_metrics)?
                 {
                     return Ok(Some(value));
                 }
@@ -773,8 +682,8 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
 
             Op::Not(dst, src) => {
                 match &regs[*src as usize] {
-                    Val::Bool(b) => assign_reg(frame_raw, regs, *dst as usize, Val::Bool(!b)),
-                    Val::Nil => assign_reg(frame_raw, regs, *dst as usize, Val::Bool(true)),
+                    Val::Bool(b) => assign_reg_with_metrics(regs, *dst as usize, Val::Bool(!b), collect_metrics),
+                    Val::Nil => assign_reg_with_metrics(regs, *dst as usize, Val::Bool(true), collect_metrics),
                     other => {
                         return frame_return_common(frame_raw, pc, Err(anyhow!("Invalid operand: !{:?}", other)))
                             .map(Some);
@@ -784,7 +693,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             }
             Op::ToBool(dst, src) => {
                 let truthy = !matches!(regs[*src as usize], Val::Nil | Val::Bool(false));
-                assign_reg(frame_raw, regs, *dst as usize, Val::Bool(truthy));
+                assign_reg_with_metrics(regs, *dst as usize, Val::Bool(truthy), collect_metrics);
                 pc += 1;
             }
             Op::Jmp(ofs) => {
@@ -829,7 +738,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 if let Val::Int(x) = regs[*r as usize] {
                     // Check for overflow and wrap to avoid panics
                     let result = x.wrapping_add(*imm as i64);
-                    assign_reg(frame_raw, regs, *r as usize, Val::Int(result));
+                    assign_reg_with_metrics(regs, *r as usize, Val::Int(result), collect_metrics);
                 }
                 pc = ((pc as isize) + (*ofs as isize)) as usize;
             }
@@ -882,7 +791,12 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     match &regs[target_idx] {
                         Val::Int(value) => {
                             let delta = count.wrapping_mul(*imm as i64);
-                            assign_reg(frame_raw, regs, target_idx, Val::Int((*value).wrapping_add(delta)));
+                            assign_reg_with_metrics(
+                                regs,
+                                target_idx,
+                                Val::Int((*value).wrapping_add(delta)),
+                                collect_metrics,
+                            );
                         }
                         other => {
                             return frame_return_common(
@@ -966,7 +880,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 record_branch(false);
                 let cond_falsey = matches!(regs[*r as usize], Val::Nil | Val::Bool(false));
                 if cond_falsey {
-                    assign_reg(frame_raw, regs, *dst as usize, Val::Bool(false));
+                    assign_reg_with_metrics(regs, *dst as usize, Val::Bool(false), collect_metrics);
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
                 } else {
                     pc += 1;
@@ -991,7 +905,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             Op::NullishPick { l, dst, ofs } => {
                 record_branch(false);
                 if !matches!(regs[*l as usize], Val::Nil) {
-                    assign_reg_from_reg_with_metrics(frame_raw, regs, *dst as usize, *l as usize, collect_metrics);
+                    assign_reg_from_reg_with_metrics(regs, *dst as usize, *l as usize, collect_metrics);
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
                 } else {
                     pc += 1;
@@ -1001,7 +915,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 record_branch(false);
                 let cond_truthy = !matches!(regs[*r as usize], Val::Nil | Val::Bool(false));
                 if cond_truthy {
-                    assign_reg(frame_raw, regs, *dst as usize, Val::Bool(true));
+                    assign_reg_with_metrics(regs, *dst as usize, Val::Bool(true), collect_metrics);
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
                 } else {
                     pc += 1;
@@ -1059,12 +973,22 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             }
             Op::CallMethod0 { dst, receiver, method } => {
                 record_call(VmCallMetric::Method);
-                method_ops::run_call_method0(frame_raw, regs, ctx, f, *dst, *receiver, *method)?;
+                method_ops::run_call_method0(regs, ctx, f, *dst, *receiver, *method, collect_metrics)?;
                 pc += 1;
             }
             Op::CallGlobalMethod0 { dst, receiver, method } => {
                 record_call(VmCallMetric::Method);
-                method_ops::run_call_global_method0(frame_raw, regs, ctx, f, global_ic, pc, *dst, *receiver, *method)?;
+                method_ops::run_call_global_method0(
+                    regs,
+                    ctx,
+                    f,
+                    global_ic,
+                    pc,
+                    *dst,
+                    *receiver,
+                    *method,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::CallExact {
@@ -1087,6 +1011,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     base,
                     argc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
@@ -1111,6 +1036,7 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     base,
                     argc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
@@ -1182,7 +1108,8 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 } else {
                     Val::Nil
                 };
-                return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr).map(Some);
+                return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr, collect_metrics)
+                    .map(Some);
             }
             Op::Break(ofs) => {
                 // Break: jump to loop end

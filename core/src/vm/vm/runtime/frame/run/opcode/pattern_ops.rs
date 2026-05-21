@@ -3,38 +3,32 @@ use anyhow::{Result, anyhow};
 use crate::val::Val;
 use crate::vm::bytecode::Function;
 use crate::vm::context::VmContext;
-use crate::vm::vm::frame::FrameState;
 
-use super::super::helpers::assign_reg;
+use super::super::helpers::{
+    assign_pattern_bindings_for_context_with_metrics, assign_pattern_bindings_with_metrics, assign_reg_with_metrics,
+    clear_pattern_bindings_with_metrics,
+};
 
 #[inline]
 pub(super) fn run_pattern_match(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &VmContext,
     function: &Function,
     dst: u16,
     src: u16,
     plan_index: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     let plan = &function.pattern_plans[plan_index as usize];
     let value = &regs[src as usize];
     match plan.pattern.matches(value, Some(ctx))? {
         Some(bound) => {
-            for binding in &plan.bindings {
-                if let Some((_, value)) = bound.iter().find(|(name, _)| name == &binding.name) {
-                    assign_reg(frame_raw, regs, binding.reg as usize, value.clone());
-                } else {
-                    assign_reg(frame_raw, regs, binding.reg as usize, Val::Nil);
-                }
-            }
-            assign_reg(frame_raw, regs, dst as usize, Val::Bool(true));
+            assign_pattern_bindings_with_metrics(regs, &plan.bindings, &bound, collect_metrics);
+            assign_reg_with_metrics(regs, dst as usize, Val::Bool(true), collect_metrics);
         }
         None => {
-            for binding in &plan.bindings {
-                assign_reg(frame_raw, regs, binding.reg as usize, Val::Nil);
-            }
-            assign_reg(frame_raw, regs, dst as usize, Val::Bool(false));
+            clear_pattern_bindings_with_metrics(regs, &plan.bindings, collect_metrics);
+            assign_reg_with_metrics(regs, dst as usize, Val::Bool(false), collect_metrics);
         }
     }
     Ok(())
@@ -43,7 +37,6 @@ pub(super) fn run_pattern_match(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_pattern_match_or_fail(
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     function: &Function,
@@ -51,6 +44,7 @@ pub(super) fn run_pattern_match_or_fail(
     plan_index: u16,
     err_index: u16,
     is_const: bool,
+    collect_metrics: bool,
 ) -> Result<()> {
     let plan = &function.pattern_plans[plan_index as usize];
     let value = &regs[src as usize];
@@ -59,15 +53,7 @@ pub(super) fn run_pattern_match_or_fail(
     };
 
     let mut assigned = Vec::with_capacity(plan.bindings.len());
-    for binding in &plan.bindings {
-        if let Some((_, value)) = bound.iter().find(|(name, _)| name == &binding.name) {
-            let cloned = value.clone();
-            assign_reg(frame_raw, regs, binding.reg as usize, cloned.clone());
-            assigned.push((binding.name.clone(), cloned));
-        } else {
-            assign_reg(frame_raw, regs, binding.reg as usize, Val::Nil);
-        }
-    }
+    assign_pattern_bindings_for_context_with_metrics(regs, &plan.bindings, &bound, &mut assigned, collect_metrics);
     for (name, value) in assigned {
         if is_const {
             ctx.define_const(name, value);

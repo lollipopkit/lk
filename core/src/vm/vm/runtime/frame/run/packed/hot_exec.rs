@@ -1,10 +1,10 @@
+use super::super::helpers::assign_reg_with_metrics;
 use super::*;
 use crate::vm::{self, VmCallMetric, VmContainerMetric};
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn exec_hot_slot(
     entry: &PackedHotSlot,
-    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     ctx: &mut VmContext,
@@ -27,62 +27,25 @@ pub(super) fn exec_hot_slot(
     let result = match &entry.kind {
         PackedHotKind::Nop => None,
         PackedHotKind::Move { dst, src } => {
-            assign_packed_move_with_metrics(frame_raw, regs, func, pc, *dst, *src, collect_metrics);
+            assign_packed_move_with_metrics(regs, func, pc, *dst, *src, collect_metrics);
             None
         }
         PackedHotKind::LoadK { dst, kidx } => {
-            assign_packed_const_with_metrics(frame_raw, regs, func, *dst, *kidx, collect_metrics);
+            assign_packed_const_with_metrics(regs, func, *dst, *kidx, collect_metrics);
             None
         }
         PackedHotKind::LoadLocal { dst, idx } => {
-            assign_packed_local_load_with_metrics(frame_raw, regs, *dst, *idx, collect_metrics);
+            assign_packed_local_load_with_metrics(regs, *dst, *idx, collect_metrics);
             None
         }
         PackedHotKind::StoreLocal { idx, src } => {
-            assign_packed_local_store_with_metrics(frame_raw, regs, func, pc, *idx, *src, collect_metrics);
+            assign_packed_local_store_with_metrics(regs, func, pc, *idx, *src, collect_metrics);
             None
         }
         PackedHotKind::LoadGlobal { dst, name_k } => {
             let name_val = &func.consts[*name_k as usize];
-            let mut out = Val::Nil;
-            if let Some(s) = name_val.as_str() {
-                let key_ptr = s.as_ptr() as usize;
-                let cur_gen = ctx.generation();
-                let local_shadowed = ctx.is_local_name(s);
-                if !local_shadowed {
-                    if let Some(GlobalEntry(ptr, v, generation)) = &global_ic[pc]
-                        && *ptr == key_ptr
-                        && *generation == cur_gen
-                    {
-                        out = v.clone();
-                    } else if let Some(v) = ctx.get(s) {
-                        out = v.clone();
-                        global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
-                    }
-                }
-                if matches!(out, Val::Nil)
-                    && let Some(v) = ctx.get_value(s)
-                {
-                    out = v;
-                    if !local_shadowed {
-                        global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
-                    }
-                }
-                if matches!(out, Val::Nil)
-                    && let Some(builtin) = ctx.resolver().get_builtin(s)
-                {
-                    out = builtin.clone();
-                    if !local_shadowed {
-                        global_ic[pc] = Some(GlobalEntry(key_ptr, out.clone(), cur_gen));
-                    }
-                }
-            } else {
-                let fallback_name = format!("{}", name_val);
-                if let Some(v) = ctx.get(fallback_name.as_str()) {
-                    out = copy_value_for_register_with_metrics(v, collect_metrics);
-                }
-            }
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            let out = load_global_for_register(ctx, global_ic, pc, name_val, collect_metrics);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::DefineGlobal { name_k, src } => {
@@ -95,11 +58,19 @@ pub(super) fn exec_hot_slot(
             None
         }
         PackedHotKind::LoadCapture { dst, idx } => {
-            closure::run_load_capture(frame_raw, regs, ctx, frame_captures, frame_capture_specs, *dst, *idx)?;
+            closure::run_load_capture(
+                regs,
+                ctx,
+                frame_captures,
+                frame_capture_specs,
+                *dst,
+                *idx,
+                collect_metrics,
+            )?;
             None
         }
         PackedHotKind::Access { dst, base, field } => {
-            exec_access_hot(frame_raw, regs, access_ic, pc, *dst, *base, *field);
+            exec_access_hot(regs, access_ic, pc, *dst, *base, *field, collect_metrics);
             None
         }
         PackedHotKind::AccessIntArith {
@@ -112,7 +83,6 @@ pub(super) fn exec_hot_slot(
             arith_b,
         } => {
             exec_access_int_arith_hot(
-                frame_raw,
                 regs,
                 func,
                 access_ic,
@@ -124,6 +94,7 @@ pub(super) fn exec_hot_slot(
                 *arith_dst,
                 *arith_a,
                 *arith_b,
+                collect_metrics,
             )?;
             None
         }
@@ -156,16 +127,18 @@ pub(super) fn exec_hot_slot(
                 if let Some(value) = hit_value {
                     value
                 } else {
-                    let value = regs[*base as usize].access(key_val).unwrap_or(Val::Nil);
+                    let value = regs[*base as usize]
+                        .access_with_metrics(key_val, collect_metrics)
+                        .unwrap_or(Val::Nil);
                     if let Some(object_ptr) = object_ptr {
-                        Vm::update_object_ic(access_ic, pc, object_ptr, key_str, &value);
+                        Vm::update_object_ic(access_ic, pc, object_ptr, key_str, &value, collect_metrics);
                     }
                     value
                 }
             } else {
                 Val::Nil
             };
-            assign_reg(frame_raw, regs, *dst as usize, result);
+            assign_reg_with_metrics(regs, *dst as usize, result, collect_metrics);
             None
         }
         PackedHotKind::ListLen { dst, src } => {
@@ -174,7 +147,7 @@ pub(super) fn exec_hot_slot(
                 Val::List(list) => Val::Int(list.len() as i64),
                 _ => Val::Int(0),
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::MapLen { dst, src } => {
@@ -183,7 +156,7 @@ pub(super) fn exec_hot_slot(
                 Val::Map(map) => Val::Int(map.len() as i64),
                 _ => Val::Int(0),
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::StrLen { dst, src } => {
@@ -193,17 +166,17 @@ pub(super) fn exec_hot_slot(
                 Val::Str(value) => Val::Int(value.len() as i64),
                 _ => Val::Int(0),
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::Len { dst, src } => {
             record_container(VmContainerMetric::Generic);
-            exec_len(frame_raw, regs, *dst, *src);
+            exec_len(regs, *dst, *src, collect_metrics);
             None
         }
         PackedHotKind::Index { dst, base, idx } => {
             record_container(VmContainerMetric::Generic);
-            exec_index(frame_raw, regs, index_ic, pc, *dst, *base, *idx);
+            exec_index(regs, index_ic, pc, *dst, *base, *idx, collect_metrics);
             None
         }
         PackedHotKind::MapGetInterned { dst, map, key } => {
@@ -215,7 +188,7 @@ pub(super) fn exec_hot_slot(
                     .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::MapGetInternedCmpJmp {
@@ -235,7 +208,7 @@ pub(super) fn exec_hot_slot(
                     .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             let lhs = &regs[*dst as usize];
             let rhs = rk_read(regs, &func.consts, *rhs);
             let cmp = match op {
@@ -264,7 +237,6 @@ pub(super) fn exec_hot_slot(
                 .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
             let lookup_key = Some(key.clone());
             exec_map_upsert_add(
-                frame_raw,
                 regs,
                 func,
                 *get_dst,
@@ -277,6 +249,7 @@ pub(super) fn exec_hot_slot(
                 *add_dst,
                 *add_rhs,
                 *write_temps,
+                collect_metrics,
             )?;
             None
         }
@@ -288,7 +261,7 @@ pub(super) fn exec_hot_slot(
                     .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::MapGetDynamicCmpJmp {
@@ -307,7 +280,7 @@ pub(super) fn exec_hot_slot(
                     .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             let lhs = &regs[*dst as usize];
             let rhs = rk_read(regs, &func.consts, *rhs);
             let cmp = match op {
@@ -337,7 +310,6 @@ pub(super) fn exec_hot_slot(
                 .primitive_key_arcstr()
                 .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", regs[key_reg as usize]))?;
             exec_map_upsert_add(
-                frame_raw,
                 regs,
                 func,
                 *get_dst,
@@ -350,6 +322,7 @@ pub(super) fn exec_hot_slot(
                 *add_dst,
                 *add_rhs,
                 *write_temps,
+                collect_metrics,
             )?;
             None
         }
@@ -360,7 +333,7 @@ pub(super) fn exec_hot_slot(
                 (Val::Map(_), None) => Val::Bool(false),
                 _ => return Err(anyhow!("has() first argument must be a map")),
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::MapHasIncJmp {
@@ -379,15 +352,15 @@ pub(super) fn exec_hot_slot(
                 (Val::Map(_), None) => false,
                 _ => return Err(anyhow!("has() first argument must be a map")),
             };
-            assign_reg(frame_raw, regs, *dst as usize, Val::Bool(contains));
+            assign_reg_with_metrics(regs, *dst as usize, Val::Bool(contains), collect_metrics);
             if contains {
                 record_branch(true);
                 if let Val::Int(x) = regs[*inc_r as usize] {
-                    assign_reg(
-                        frame_raw,
+                    assign_reg_with_metrics(
                         regs,
                         *inc_r as usize,
                         Val::Int(x.wrapping_add(*inc_imm as i64)),
+                        collect_metrics,
                     );
                 }
                 Some(*true_pc)
@@ -402,7 +375,7 @@ pub(super) fn exec_hot_slot(
                 Val::Map(map) => Val::Bool(Val::map_contains_str(map, key)),
                 _ => return Err(anyhow!("has() first argument must be a map")),
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::MapHasKIncJmp {
@@ -421,15 +394,15 @@ pub(super) fn exec_hot_slot(
                 Val::Map(map) => Val::map_contains_str(map, key),
                 _ => return Err(anyhow!("has() first argument must be a map")),
             };
-            assign_reg(frame_raw, regs, *dst as usize, Val::Bool(contains));
+            assign_reg_with_metrics(regs, *dst as usize, Val::Bool(contains), collect_metrics);
             if contains {
                 record_branch(true);
                 if let Val::Int(x) = regs[*inc_r as usize] {
-                    assign_reg(
-                        frame_raw,
+                    assign_reg_with_metrics(
                         regs,
                         *inc_r as usize,
                         Val::Int(x.wrapping_add(*inc_imm as i64)),
+                        collect_metrics,
                     );
                 }
                 Some(*true_pc)
@@ -439,12 +412,12 @@ pub(super) fn exec_hot_slot(
         }
         PackedHotKind::MapSetInterned { map, key, val } => {
             record_container(VmContainerMetric::Map);
-            exec_map_set_interned(func, regs, *map, *key, *val)?;
+            exec_map_set_interned(func, regs, *map, *key, *val, collect_metrics)?;
             None
         }
         PackedHotKind::MapSetInternedMove { map, key, val } => {
             record_container(VmContainerMetric::Map);
-            exec_map_set_interned_move(func, regs, *map, *key, *val)?;
+            exec_map_set_interned_move(func, regs, *map, *key, *val, collect_metrics)?;
             None
         }
         PackedHotKind::StrConcatKnownCap { dst, a, b } => {
@@ -453,9 +426,9 @@ pub(super) fn exec_hot_slot(
             let b_val = &regs[*b as usize];
             let out = match (a_val.as_str(), b_val.as_str()) {
                 (Some(a_str), Some(b_str)) => Val::concat_strings(a_str, b_str),
-                _ => BinOp::Add.eval_vals(a_val, b_val)?,
+                _ => BinOp::Add.eval_vals_with_metrics(a_val, b_val, collect_metrics)?,
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::StrConcatToStr { dst, lhs, src } => {
@@ -467,13 +440,13 @@ pub(super) fn exec_hot_slot(
                 value
             } else {
                 let rhs = Val::to_str_value(&regs[*src as usize]);
-                BinOp::Add.eval_vals(lhs_val, &rhs)?
+                BinOp::Add.eval_vals_with_metrics(lhs_val, &rhs, collect_metrics)?
             };
-            assign_reg(frame_raw, regs, *dst as usize, out);
+            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             None
         }
         PackedHotKind::IntArith { op, dst, a, b } => {
-            exec_int_arith(frame_raw, regs, func, *op, *dst, *a, *b)?;
+            exec_int_arith(regs, func, *op, *dst, *a, *b, collect_metrics)?;
             None
         }
         PackedHotKind::IntArithAddIntImm {
@@ -484,13 +457,12 @@ pub(super) fn exec_hot_slot(
             add_dst,
             add_imm,
         } => {
-            exec_int_arith(frame_raw, regs, func, *arith_op, *arith_dst, *arith_a, *arith_b)?;
+            exec_int_arith(regs, func, *arith_op, *arith_dst, *arith_a, *arith_b, collect_metrics)?;
             let src_idx = *arith_dst as usize;
             if let Val::Int(x) = regs[src_idx] {
-                assign_reg(frame_raw, regs, *add_dst as usize, Val::Int(x + *add_imm as i64));
+                assign_reg_with_metrics(regs, *add_dst as usize, Val::Int(x + *add_imm as i64), collect_metrics);
             } else {
                 int_binop_imm(
-                    frame_raw,
                     regs,
                     &func.consts,
                     *add_dst,
@@ -498,6 +470,7 @@ pub(super) fn exec_hot_slot(
                     *add_imm,
                     |x, y| x + y,
                     BinOp::Add,
+                    collect_metrics,
                 )?;
             }
             None
@@ -521,20 +494,49 @@ pub(super) fn exec_hot_slot(
                     PackedArithOp::Sub => Val::Int(lhs - rhs),
                     PackedArithOp::Mul => Val::Int(lhs * rhs),
                     PackedArithOp::Mod => Val::Int(lhs % rhs),
-                    PackedArithOp::Div => BinOp::Div.eval_vals(&Val::Int(*lhs), &Val::Int(*rhs))?,
+                    PackedArithOp::Div => {
+                        BinOp::Div.eval_vals_with_metrics(&Val::Int(*lhs), &Val::Int(*rhs), collect_metrics)?
+                    }
                 },
                 (lhs, rhs) => match arith_op {
-                    PackedArithOp::Add => BinOp::Add.eval_vals(lhs, rhs)?,
-                    PackedArithOp::Sub => BinOp::Sub.eval_vals(lhs, rhs)?,
-                    PackedArithOp::Mul => BinOp::Mul.eval_vals(lhs, rhs)?,
-                    PackedArithOp::Mod => BinOp::Mod.eval_vals(lhs, rhs)?,
-                    PackedArithOp::Div => BinOp::Div.eval_vals(lhs, rhs)?,
+                    PackedArithOp::Add => BinOp::Add.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
+                    PackedArithOp::Sub => BinOp::Sub.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
+                    PackedArithOp::Mul => BinOp::Mul.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
+                    PackedArithOp::Mod => BinOp::Mod.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
+                    PackedArithOp::Div => BinOp::Div.eval_vals_with_metrics(lhs, rhs, collect_metrics)?,
                 },
             };
-            assign_reg(frame_raw, regs, *arith_dst as usize, arith_value);
+            // Extract integer from arith result before moving it into the register.
+            // When arith_dst matches a compare operand, reuse this extracted value
+            // to avoid re-reading and type-checking the register.
+            let arith_int = if let Val::Int(n) = arith_value { Some(n) } else { None };
+            assign_reg_with_metrics(regs, *arith_dst as usize, arith_value, collect_metrics);
             record_branch(true);
-            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*cmp_a as usize], &regs[*cmp_b as usize]) else {
-                return Err(anyhow!("CmpI expects integer registers"));
+            let cmp_a_idx = *cmp_a as usize;
+            let cmp_b_idx = *cmp_b as usize;
+            let arith_dst_idx = *arith_dst as usize;
+            let (lhs, rhs) = if let Some(n) = arith_int {
+                if cmp_a_idx == arith_dst_idx {
+                    let Val::Int(rhs) = regs[cmp_b_idx] else {
+                        return Err(anyhow!("CmpI expects integer register"));
+                    };
+                    (n, rhs)
+                } else if cmp_b_idx == arith_dst_idx {
+                    let Val::Int(lhs) = regs[cmp_a_idx] else {
+                        return Err(anyhow!("CmpI expects integer register"));
+                    };
+                    (lhs, n)
+                } else {
+                    let (Val::Int(lhs), Val::Int(rhs)) = (&regs[cmp_a_idx], &regs[cmp_b_idx]) else {
+                        return Err(anyhow!("CmpI expects integer registers"));
+                    };
+                    (*lhs, *rhs)
+                }
+            } else {
+                let (Val::Int(lhs), Val::Int(rhs)) = (&regs[cmp_a_idx], &regs[cmp_b_idx]) else {
+                    return Err(anyhow!("CmpI expects integer registers"));
+                };
+                (*lhs, *rhs)
             };
             let cmp = match cmp_op {
                 PackedCmpOp::Eq => lhs == rhs,
@@ -557,7 +559,7 @@ pub(super) fn exec_hot_slot(
             move_dst,
             move_src,
         } => {
-            exec_int_arith(frame_raw, regs, func, *arith_op, *arith_dst, *arith_a, *arith_b)?;
+            exec_int_arith(regs, func, *arith_op, *arith_dst, *arith_a, *arith_b, collect_metrics)?;
             record_branch(true);
             let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*cmp_a as usize], &regs[*cmp_b as usize]) else {
                 return Err(anyhow!("CmpI expects integer registers"));
@@ -571,13 +573,7 @@ pub(super) fn exec_hot_slot(
                 PackedCmpOp::Ge => lhs >= rhs,
             };
             if cmp {
-                assign_reg_from_reg_with_metrics(
-                    frame_raw,
-                    regs,
-                    *move_dst as usize,
-                    *move_src as usize,
-                    collect_metrics,
-                );
+                assign_reg_from_reg_with_metrics(regs, *move_dst as usize, *move_src as usize, collect_metrics);
             }
             None
         }
@@ -588,8 +584,8 @@ pub(super) fn exec_hot_slot(
             div_dst,
             imm,
         } => {
-            exec_int_arith(frame_raw, regs, func, PackedArithOp::Add, *add_dst, *a, *b)?;
-            exec_floor_div_imm(frame_raw, regs, *div_dst, *add_dst, *imm);
+            exec_int_arith(regs, func, PackedArithOp::Add, *add_dst, *a, *b, collect_metrics)?;
+            exec_floor_div_imm(regs, *div_dst, *add_dst, *imm, collect_metrics);
             None
         }
         PackedHotKind::MulIntFloorDivImm {
@@ -599,8 +595,8 @@ pub(super) fn exec_hot_slot(
             div_dst,
             imm,
         } => {
-            exec_int_arith(frame_raw, regs, func, PackedArithOp::Mul, *mul_dst, *a, *b)?;
-            exec_floor_div_imm(frame_raw, regs, *div_dst, *mul_dst, *imm);
+            exec_int_arith(regs, func, PackedArithOp::Mul, *mul_dst, *a, *b, collect_metrics)?;
+            exec_floor_div_imm(regs, *div_dst, *mul_dst, *imm, collect_metrics);
             None
         }
         PackedHotKind::MulIntAddInt {
@@ -611,8 +607,24 @@ pub(super) fn exec_hot_slot(
             add_a,
             add_b,
         } => {
-            exec_int_arith(frame_raw, regs, func, PackedArithOp::Mul, *mul_dst, *mul_a, *mul_b)?;
-            exec_int_arith(frame_raw, regs, func, PackedArithOp::Add, *add_dst, *add_a, *add_b)?;
+            exec_int_arith(
+                regs,
+                func,
+                PackedArithOp::Mul,
+                *mul_dst,
+                *mul_a,
+                *mul_b,
+                collect_metrics,
+            )?;
+            exec_int_arith(
+                regs,
+                func,
+                PackedArithOp::Add,
+                *add_dst,
+                *add_a,
+                *add_b,
+                collect_metrics,
+            )?;
             None
         }
         PackedHotKind::MulIntMulIntAddInt {
@@ -627,46 +639,54 @@ pub(super) fn exec_hot_slot(
             add_b,
         } => {
             exec_int_arith(
-                frame_raw,
                 regs,
                 func,
                 PackedArithOp::Mul,
                 *first_dst,
                 *first_a,
                 *first_b,
+                collect_metrics,
             )?;
             exec_int_arith(
-                frame_raw,
                 regs,
                 func,
                 PackedArithOp::Mul,
                 *second_dst,
                 *second_a,
                 *second_b,
+                collect_metrics,
             )?;
-            exec_int_arith(frame_raw, regs, func, PackedArithOp::Add, *add_dst, *add_a, *add_b)?;
+            exec_int_arith(
+                regs,
+                func,
+                PackedArithOp::Add,
+                *add_dst,
+                *add_a,
+                *add_b,
+                collect_metrics,
+            )?;
             None
         }
         PackedHotKind::FloatArith { op, dst, a, b } => {
-            exec_float_arith(frame_raw, regs, func, *op, *dst, *a, *b)?;
+            exec_float_arith(regs, func, *op, *dst, *a, *b, collect_metrics)?;
             None
         }
         PackedHotKind::Floor { dst, src } => {
-            exec_floor(frame_raw, regs, *dst, *src);
+            exec_floor(regs, *dst, *src, collect_metrics);
             None
         }
         PackedHotKind::FloorDivImm { dst, src, imm } => {
-            exec_floor_div_imm(frame_raw, regs, *dst, *src, *imm);
+            exec_floor_div_imm(regs, *dst, *src, *imm, collect_metrics);
             None
         }
         PackedHotKind::ToBool { dst, src } => {
             let truthy = !matches!(regs[*src as usize], Val::Nil | Val::Bool(false));
-            assign_reg(frame_raw, regs, *dst as usize, Val::Bool(truthy));
+            assign_reg_with_metrics(regs, *dst as usize, Val::Bool(truthy), collect_metrics);
             None
         }
         PackedHotKind::StartsWithK { dst, src, key } => {
             record_container(VmContainerMetric::String);
-            exec_starts_with_k(frame_raw, regs, func, *dst, *src, *key);
+            exec_starts_with_k(regs, func, *dst, *src, *key, collect_metrics);
             None
         }
         PackedHotKind::StartsWithKJmp { src, key, ofs } => {
@@ -676,7 +696,7 @@ pub(super) fn exec_hot_slot(
         }
         PackedHotKind::ContainsK { dst, src, key } => {
             record_container(VmContainerMetric::String);
-            exec_contains_k(frame_raw, regs, func, *dst, *src, *key);
+            exec_contains_k(regs, func, *dst, *src, *key, collect_metrics);
             None
         }
         PackedHotKind::ContainsKJmp { src, key, ofs } => {
@@ -686,7 +706,7 @@ pub(super) fn exec_hot_slot(
         }
         PackedHotKind::ToIter { dst, src } => {
             record_container(VmContainerMetric::Generic);
-            exec_to_iter(frame_raw, regs, *dst, *src, region_plan, region_allocator_ptr);
+            exec_to_iter(regs, *dst, *src, region_plan, region_allocator_ptr, collect_metrics);
             None
         }
         PackedHotKind::BuildList { dst, base, len } => {
@@ -706,13 +726,13 @@ pub(super) fn exec_hot_slot(
                     let data = scratch.split_off(0);
                     Val::List(data.into())
                 });
-                assign_reg(frame_raw, regs, *dst as usize, list_val);
+                assign_reg_with_metrics(regs, *dst as usize, list_val, collect_metrics);
             } else {
                 let mut values = Vec::with_capacity(len);
                 for i in 0..len {
                     values.push(copy_value_for_register_with_metrics(&regs[start + i], collect_metrics));
                 }
-                assign_reg(frame_raw, regs, *dst as usize, Val::List(values.into()));
+                assign_reg_with_metrics(regs, *dst as usize, Val::List(values.into()), collect_metrics);
             }
             None
         }
@@ -741,7 +761,7 @@ pub(super) fn exec_hot_slot(
                     }
                     Ok::<Val, anyhow::Error>(Val::Map(Arc::new(map)))
                 })?;
-                assign_reg(frame_raw, regs, *dst as usize, map_val);
+                assign_reg_with_metrics(regs, *dst as usize, map_val, collect_metrics);
             } else {
                 let mut map: FastHashMap<ArcStr, Val> = fast_hash_map_with_capacity(len);
                 for i in 0..len {
@@ -752,7 +772,7 @@ pub(super) fn exec_hot_slot(
                         .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", key_val))?;
                     Val::map_insert_arcstr(&mut map, key_arc, value);
                 }
-                assign_reg(frame_raw, regs, *dst as usize, Val::Map(Arc::new(map)));
+                assign_reg_with_metrics(regs, *dst as usize, Val::Map(Arc::new(map)), collect_metrics);
             }
             None
         }
@@ -778,7 +798,7 @@ pub(super) fn exec_hot_slot(
             };
             let step_val = if !*explicit {
                 let step_val = if i0 <= ilim { 1 } else { -1 };
-                assign_reg(frame_raw, regs, step_reg, Val::Int(step_val));
+                assign_reg_with_metrics(regs, step_reg, Val::Int(step_val), collect_metrics);
                 step_val
             } else {
                 match &regs[step_reg] {
@@ -795,10 +815,19 @@ pub(super) fn exec_hot_slot(
             }
             None
         }
-        PackedHotKind::ForRangeLoop { idx, write_idx, ofs } => {
-            let state_entry = match for_range_ic.get_mut(pc).and_then(Option::as_mut) {
-                Some(state) => state,
-                None => return Err(anyhow!("For-range state missing at pc {}", pc)),
+        PackedHotKind::ForRangeLoop {
+            idx,
+            write_idx,
+            ofs,
+            fusion_back_pc,
+        } => {
+            // Direct indexing: hot slots are only built for valid PCs after ForRangePrep
+            // has populated for_range_ic. Bounds-check is redundant (pc < code32.len()
+            // and for_range_ic is pre-allocated to match). The Option unwrap is safe
+            // because ForRangeLoop slots are only built when state exists.
+            let state_entry = match for_range_ic.get_mut(pc) {
+                Some(Some(state)) => state,
+                _ => return Err(anyhow!("For-range state missing at pc {}", pc)),
             };
             let keep_going = if state_entry.positive {
                 if state_entry.inclusive {
@@ -814,33 +843,18 @@ pub(super) fn exec_hot_slot(
             if keep_going {
                 let current = state_entry.current;
                 if *write_idx {
-                    assign_reg(frame_raw, regs, *idx as usize, Val::Int(current));
+                    assign_reg_with_metrics(regs, *idx as usize, Val::Int(current), collect_metrics);
                 }
                 state_entry.current += state_entry.step;
-                // ForRange fusion: peek at next BC32 word. If it's ForRangeStep,
-                // jump directly back to the loop guard — saves one PackedHotSlot
-                // dispatch per for-range iteration.
-                if let Some(code32) = func.code32.as_ref() {
-                    let step_pc = entry.next_pc;
-                    if let Some(&step_w) = code32.get(step_pc)
-                        && bc32::tag_of(step_w) == bc32::TAG_FOR_RANGE_STEP
-                    {
-                        let ext_idx = step_pc + 1;
-                        let mut ext = code32.get(ext_idx).copied();
-                        if ext.is_some() && bc32::tag_of(ext.unwrap()) == bc32::TAG_REG_EXT {
-                            ext = code32.get(ext_idx + 1).copied();
-                        }
-                        if let Some(e) = ext {
-                            let back = (((((e >> 8) & 0xFF) as u16) << 8) | ((e & 0xFF) as u16)) as i16;
-                            return Ok(Some(((step_pc as isize) + (back as isize)) as usize));
-                        }
-                    }
+                // Use pre-computed fusion target if available
+                if let Some(back_pc) = fusion_back_pc {
+                    return Ok(Some(*back_pc));
                 }
                 None
             } else {
                 // Write final counter value on exit for correct post-loop counter value.
                 if *write_idx {
-                    assign_reg(frame_raw, regs, *idx as usize, Val::Int(state_entry.current));
+                    assign_reg_with_metrics(regs, *idx as usize, Val::Int(state_entry.current), collect_metrics);
                 }
                 for_range_ic[pc] = None;
                 Some(((pc as isize) + (*ofs as isize)) as usize)
@@ -850,7 +864,6 @@ pub(super) fn exec_hot_slot(
             let guard_pc = ((pc as isize) + (*back_ofs as isize)) as usize;
             match tail {
                 Some(tail) => Some(advance_for_range_tail(
-                    frame_raw,
                     regs,
                     for_range_ic,
                     tail.guard_pc,
@@ -858,13 +871,14 @@ pub(super) fn exec_hot_slot(
                     tail.exit_pc,
                     tail.idx,
                     tail.write_idx,
+                    collect_metrics,
                 )?),
                 None => Some(guard_pc),
             }
         }
         PackedHotKind::ToStr { dst, src } => {
             let s = Val::to_str_value(&regs[*src as usize]);
-            assign_reg(frame_raw, regs, *dst as usize, s);
+            assign_reg_with_metrics(regs, *dst as usize, s, collect_metrics);
             None
         }
         PackedHotKind::ToStrAddRhs {
@@ -878,17 +892,17 @@ pub(super) fn exec_hot_slot(
             if let Some(lhs_str) = lhs_val.as_str()
                 && let Some(value) = Val::concat_str_tostr_rhs(lhs_str, &regs[*src as usize])
             {
-                assign_reg(frame_raw, regs, *out as usize, value);
+                assign_reg_with_metrics(regs, *out as usize, value, collect_metrics);
                 None
             } else {
                 let s = Val::to_str_value(&regs[*src as usize]);
-                assign_reg(frame_raw, regs, *tmp as usize, s);
+                assign_reg_with_metrics(regs, *tmp as usize, s, collect_metrics);
                 Some(*add_pc)
             }
         }
         PackedHotKind::MakeClosure { dst, proto } => {
-            let clo = make_closure_value(func, *proto, ctx, regs, frame_base)?;
-            assign_reg(frame_raw, regs, *dst as usize, clo);
+            let clo = make_closure_value(func, *proto, ctx, regs, frame_base, collect_metrics)?;
+            assign_reg_with_metrics(regs, *dst as usize, clo, collect_metrics);
             None
         }
         PackedHotKind::ArithAddIntImm {
@@ -899,105 +913,24 @@ pub(super) fn exec_hot_slot(
             add_dst,
             add_imm,
         } => {
-            exec_arith_add_int_imm(frame_raw, regs, func, *op, *arith_dst, *a, *b, *add_dst, *add_imm)?;
+            exec_arith_add_int_imm(regs, func, *op, *arith_dst, *a, *b, *add_dst, *add_imm, collect_metrics)?;
             None
         }
         PackedHotKind::Arith { op, dst, a, b } => {
-            exec_arith_hot(frame_raw, regs, func, *op, *dst, *a, *b)?;
+            exec_arith_hot(regs, func, *op, *dst, *a, *b, collect_metrics)?;
             None
         }
         PackedHotKind::Cmp { op, dst, a, b } => {
-            match op {
-                PackedCmpOp::Eq => assign_reg(
-                    frame_raw,
-                    regs,
-                    *dst as usize,
-                    Val::Bool(rk_read(regs, &func.consts, *a) == rk_read(regs, &func.consts, *b)),
-                ),
-                PackedCmpOp::Ne => assign_reg(
-                    frame_raw,
-                    regs,
-                    *dst as usize,
-                    Val::Bool(rk_read(regs, &func.consts, *a) != rk_read(regs, &func.consts, *b)),
-                ),
-                PackedCmpOp::Lt => {
-                    if !Vm::cmp2_try_numeric(frame_raw, regs, &func.consts, *dst, *a, *b, |x, y| x < y, |x, y| x < y) {
-                        let res = BinOp::Lt.cmp(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
-                        assign_reg(frame_raw, regs, *dst as usize, Val::Bool(res));
-                    }
-                }
-                PackedCmpOp::Le => {
-                    if !Vm::cmp2_try_numeric(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *a,
-                        *b,
-                        |x, y| x <= y,
-                        |x, y| x <= y,
-                    ) {
-                        let res = BinOp::Le.cmp(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
-                        assign_reg(frame_raw, regs, *dst as usize, Val::Bool(res));
-                    }
-                }
-                PackedCmpOp::Gt => {
-                    if !Vm::cmp2_try_numeric(frame_raw, regs, &func.consts, *dst, *a, *b, |x, y| x > y, |x, y| x > y) {
-                        let res = BinOp::Gt.cmp(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
-                        assign_reg(frame_raw, regs, *dst as usize, Val::Bool(res));
-                    }
-                }
-                PackedCmpOp::Ge => {
-                    if !Vm::cmp2_try_numeric(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *a,
-                        *b,
-                        |x, y| x >= y,
-                        |x, y| x >= y,
-                    ) {
-                        let res = BinOp::Ge.cmp(rk_read(regs, &func.consts, *a), rk_read(regs, &func.consts, *b))?;
-                        assign_reg(frame_raw, regs, *dst as usize, Val::Bool(res));
-                    }
-                }
-            }
+            hot_compare::exec_cmp_hot(regs, func, *op, *dst, *a, *b, collect_metrics)?;
             None
         }
         PackedHotKind::CmpInt { op, dst, a, b } => {
-            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*a as usize], &regs[*b as usize]) else {
-                return Err(anyhow!("CmpI expects integer registers"));
-            };
-            let cmp = match op {
-                PackedCmpOp::Eq => lhs == rhs,
-                PackedCmpOp::Ne => lhs != rhs,
-                PackedCmpOp::Lt => lhs < rhs,
-                PackedCmpOp::Le => lhs <= rhs,
-                PackedCmpOp::Gt => lhs > rhs,
-                PackedCmpOp::Ge => lhs >= rhs,
-            };
-            assign_reg(frame_raw, regs, *dst as usize, Val::Bool(cmp));
+            hot_compare::exec_cmp_int(regs, *op, *dst, *a, *b, collect_metrics)?;
             None
         }
         PackedHotKind::CmpIntJmp { op, a, b, ofs } => {
             record_branch(true);
-            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*a as usize], &regs[*b as usize]) else {
-                return Err(anyhow!("CmpI expects integer registers"));
-            };
-            let cmp = match op {
-                PackedCmpOp::Eq => lhs == rhs,
-                PackedCmpOp::Ne => lhs != rhs,
-                PackedCmpOp::Lt => lhs < rhs,
-                PackedCmpOp::Le => lhs <= rhs,
-                PackedCmpOp::Gt => lhs > rhs,
-                PackedCmpOp::Ge => lhs >= rhs,
-            };
-            if !cmp {
-                Some(((pc as isize) + (*ofs as isize)) as usize)
-            } else {
-                None
-            }
+            hot_compare::exec_cmp_int_jmp(regs, *op, *a, *b, pc, *ofs)?
         }
         PackedHotKind::CmpIntMove {
             op,
@@ -1008,23 +941,7 @@ pub(super) fn exec_hot_slot(
             ofs,
         } => {
             record_branch(true);
-            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*a as usize], &regs[*b as usize]) else {
-                return Err(anyhow!("CmpI expects integer registers"));
-            };
-            let cmp = match op {
-                PackedCmpOp::Eq => lhs == rhs,
-                PackedCmpOp::Ne => lhs != rhs,
-                PackedCmpOp::Lt => lhs < rhs,
-                PackedCmpOp::Le => lhs <= rhs,
-                PackedCmpOp::Gt => lhs > rhs,
-                PackedCmpOp::Ge => lhs >= rhs,
-            };
-            if !cmp {
-                Some(((pc as isize) + (*ofs as isize)) as usize)
-            } else {
-                assign_reg_from_reg_with_metrics(frame_raw, regs, *dst as usize, *src as usize, collect_metrics);
-                None
-            }
+            hot_compare::exec_cmp_int_move(regs, *op, *a, *b, *dst, *src, pc, *ofs, collect_metrics)?
         }
         PackedHotKind::CmpIntAddIntImm {
             op,
@@ -1036,38 +953,7 @@ pub(super) fn exec_hot_slot(
             ofs,
         } => {
             record_branch(true);
-            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*a as usize], &regs[*b as usize]) else {
-                return Err(anyhow!("CmpI expects integer registers"));
-            };
-            let cmp = match op {
-                PackedCmpOp::Eq => lhs == rhs,
-                PackedCmpOp::Ne => lhs != rhs,
-                PackedCmpOp::Lt => lhs < rhs,
-                PackedCmpOp::Le => lhs <= rhs,
-                PackedCmpOp::Gt => lhs > rhs,
-                PackedCmpOp::Ge => lhs >= rhs,
-            };
-            if !cmp {
-                Some(((pc as isize) + (*ofs as isize)) as usize)
-            } else {
-                let dst_idx = *dst as usize;
-                let src_idx = *src as usize;
-                if let Val::Int(value) = regs[src_idx] {
-                    assign_reg(frame_raw, regs, dst_idx, Val::Int(value + *imm as i64));
-                } else {
-                    int_binop_imm(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *src,
-                        *imm,
-                        |x, y| x + y,
-                        BinOp::Add,
-                    )?;
-                }
-                None
-            }
+            hot_compare::exec_cmp_int_add_int_imm(regs, func, *op, *a, *b, *dst, *src, *imm, pc, *ofs, collect_metrics)?
         }
         PackedHotKind::CmpIntSubAccessSub {
             op,
@@ -1086,60 +972,31 @@ pub(super) fn exec_hot_slot(
             ofs,
         } => {
             record_branch(true);
-            let (Val::Int(lhs), Val::Int(rhs)) = (&regs[*a as usize], &regs[*b as usize]) else {
-                return Err(anyhow!("CmpI expects integer registers"));
-            };
-            let cmp = match op {
-                PackedCmpOp::Eq => lhs == rhs,
-                PackedCmpOp::Ne => lhs != rhs,
-                PackedCmpOp::Lt => lhs < rhs,
-                PackedCmpOp::Le => lhs <= rhs,
-                PackedCmpOp::Gt => lhs > rhs,
-                PackedCmpOp::Ge => lhs >= rhs,
-            };
-            if !cmp {
-                Some(((pc as isize) + (*ofs as isize)) as usize)
-            } else {
-                exec_sub_access_sub_hot(
-                    frame_raw,
-                    regs,
-                    func,
-                    access_ic,
-                    *access_pc,
-                    *first_dst,
-                    *first_a,
-                    *first_b,
-                    *access_dst,
-                    *access_base,
-                    *access_field,
-                    *final_dst,
-                    *final_a,
-                    *final_b,
-                )?;
-                None
-            }
+            hot_compare::exec_cmp_int_sub_access_sub(
+                regs,
+                func,
+                access_ic,
+                *op,
+                *a,
+                *b,
+                *first_dst,
+                *first_a,
+                *first_b,
+                *access_pc,
+                *access_dst,
+                *access_base,
+                *access_field,
+                *final_dst,
+                *final_a,
+                *final_b,
+                pc,
+                *ofs,
+                collect_metrics,
+            )?
         }
         PackedHotKind::CmpJmp { op, a, b, ofs } => {
             record_branch(false);
-            let lhs = rk_read(regs, &func.consts, *a);
-            let rhs = rk_read(regs, &func.consts, *b);
-            let cmp = match (op, lhs, rhs) {
-                (PackedCmpOp::Eq, left, right) => left == right,
-                (PackedCmpOp::Ne, left, right) => left != right,
-                (PackedCmpOp::Lt, Val::Int(left), Val::Int(right)) => left < right,
-                (PackedCmpOp::Le, Val::Int(left), Val::Int(right)) => left <= right,
-                (PackedCmpOp::Gt, Val::Int(left), Val::Int(right)) => left > right,
-                (PackedCmpOp::Ge, Val::Int(left), Val::Int(right)) => left >= right,
-                (PackedCmpOp::Lt, _, _) => BinOp::Lt.cmp(lhs, rhs)?,
-                (PackedCmpOp::Le, _, _) => BinOp::Le.cmp(lhs, rhs)?,
-                (PackedCmpOp::Gt, _, _) => BinOp::Gt.cmp(lhs, rhs)?,
-                (PackedCmpOp::Ge, _, _) => BinOp::Ge.cmp(lhs, rhs)?,
-            };
-            if !cmp {
-                Some(((pc as isize) + (*ofs as isize)) as usize)
-            } else {
-                None
-            }
+            hot_compare::exec_cmp_jmp(regs, func, *op, *a, *b, pc, *ofs)?
         }
         PackedHotKind::Jmp { ofs } => {
             record_branch(false);
@@ -1156,7 +1013,7 @@ pub(super) fn exec_hot_slot(
         PackedHotKind::JmpFalseSet { r, dst, ofs } => {
             record_branch(false);
             if matches!(regs[*r as usize], Val::Nil | Val::Bool(false)) {
-                assign_reg(frame_raw, regs, *dst as usize, Val::Bool(false));
+                assign_reg_with_metrics(regs, *dst as usize, Val::Bool(false), collect_metrics);
                 Some(((pc as isize) + (*ofs as isize)) as usize)
             } else {
                 None
@@ -1165,7 +1022,7 @@ pub(super) fn exec_hot_slot(
         PackedHotKind::JmpTrueSet { r, dst, ofs } => {
             record_branch(false);
             if !matches!(regs[*r as usize], Val::Nil | Val::Bool(false)) {
-                assign_reg(frame_raw, regs, *dst as usize, Val::Bool(true));
+                assign_reg_with_metrics(regs, *dst as usize, Val::Bool(true), collect_metrics);
                 Some(((pc as isize) + (*ofs as isize)) as usize)
             } else {
                 None
@@ -1269,17 +1126,27 @@ pub(super) fn exec_hot_slot(
             let callable = NativeCallable::from_val(&regs[*f as usize])
                 .ok_or_else(|| anyhow!("CallNativeFast target is not a native function"))?;
             let ret_layout = CallReturnLayout::new(*base, *retc);
-            invoke_native_callable_with_ic(ctx, regs, pc_slot, callable, *argc, ret_layout)?;
+            invoke_native_callable_with_ic(ctx, regs, pc_slot, callable, *argc, ret_layout, collect_metrics)?;
             None
         }
         PackedHotKind::CallMethod0 { dst, receiver, method } => {
             record_call(VmCallMetric::Method);
-            method_ops::run_call_method0(frame_raw, regs, ctx, func, *dst, *receiver, *method)?;
+            method_ops::run_call_method0(regs, ctx, func, *dst, *receiver, *method, collect_metrics)?;
             None
         }
         PackedHotKind::CallGlobalMethod0 { dst, receiver, method } => {
             record_call(VmCallMetric::Method);
-            method_ops::run_call_global_method0(frame_raw, regs, ctx, func, global_ic, pc, *dst, *receiver, *method)?;
+            method_ops::run_call_global_method0(
+                regs,
+                ctx,
+                func,
+                global_ic,
+                pc,
+                *dst,
+                *receiver,
+                *method,
+                collect_metrics,
+            )?;
             None
         }
         PackedHotKind::Call { .. } | PackedHotKind::CallClosureExact { .. } | PackedHotKind::CallExact { .. } => {
@@ -1290,10 +1157,9 @@ pub(super) fn exec_hot_slot(
             let dst_idx = *dst as usize;
             let src_idx = *src as usize;
             if let Val::Int(x) = regs[src_idx] {
-                assign_reg(frame_raw, regs, dst_idx, Val::Int(x + *imm as i64));
+                assign_reg_with_metrics(regs, dst_idx, Val::Int(x + *imm as i64), collect_metrics);
             } else {
                 int_binop_imm(
-                    frame_raw,
                     regs,
                     &func.consts,
                     *dst,
@@ -1301,100 +1167,18 @@ pub(super) fn exec_hot_slot(
                     *imm,
                     |x, y| x + y,
                     BinOp::Add,
+                    collect_metrics,
                 )?;
             }
             None
         }
         PackedHotKind::CmpImm { op, dst, src, imm } => {
-            let dst_idx = *dst as usize;
-            let src_idx = *src as usize;
-            let imm_i64 = *imm as i64;
-            match (&regs[src_idx], op) {
-                (Val::Int(x), PackedCmpImmOp::Eq) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x == imm_i64)),
-                (Val::Int(x), PackedCmpImmOp::Ne) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x != imm_i64)),
-                (Val::Int(x), PackedCmpImmOp::Lt) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x < imm_i64)),
-                (Val::Int(x), PackedCmpImmOp::Le) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x <= imm_i64)),
-                (Val::Int(x), PackedCmpImmOp::Gt) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x > imm_i64)),
-                (Val::Int(x), PackedCmpImmOp::Ge) => assign_reg(frame_raw, regs, dst_idx, Val::Bool(*x >= imm_i64)),
-                _ => match op {
-                    PackedCmpImmOp::Eq => cmp_eq_imm(frame_raw, regs, &func.consts, *dst, *src, *imm, BinOp::Eq)?,
-                    PackedCmpImmOp::Ne => cmp_ne_imm(frame_raw, regs, &func.consts, *dst, *src, *imm, BinOp::Ne)?,
-                    PackedCmpImmOp::Lt => cmp_ord_imm(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *src,
-                        *imm,
-                        |x, y| x < y,
-                        |x, y| x < y,
-                        BinOp::Lt,
-                    )?,
-                    PackedCmpImmOp::Le => cmp_ord_imm(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *src,
-                        *imm,
-                        |x, y| x <= y,
-                        |x, y| x <= y,
-                        BinOp::Le,
-                    )?,
-                    PackedCmpImmOp::Gt => cmp_ord_imm(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *src,
-                        *imm,
-                        |x, y| x > y,
-                        |x, y| x > y,
-                        BinOp::Gt,
-                    )?,
-                    PackedCmpImmOp::Ge => cmp_ord_imm(
-                        frame_raw,
-                        regs,
-                        &func.consts,
-                        *dst,
-                        *src,
-                        *imm,
-                        |x, y| x >= y,
-                        |x, y| x >= y,
-                        BinOp::Ge,
-                    )?,
-                },
-            }
+            hot_compare::exec_cmp_imm(regs, func, *op, *dst, *src, *imm, collect_metrics)?;
             None
         }
         PackedHotKind::CmpImmJmp { op, src, imm, ofs } => {
             record_branch(true);
-            let src_idx = *src as usize;
-            let imm_i64 = *imm as i64;
-            let cmp = match (regs.get(src_idx), op) {
-                (Some(Val::Int(x)), PackedCmpImmOp::Eq) => *x == imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Ne) => *x != imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Lt) => *x < imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Le) => *x <= imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Gt) => *x > imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Ge) => *x >= imm_i64,
-                _ => {
-                    let imm_val = Val::Int(imm_i64);
-                    match op {
-                        PackedCmpImmOp::Eq => rk_read(regs, &func.consts, *src) == &imm_val,
-                        PackedCmpImmOp::Ne => rk_read(regs, &func.consts, *src) != &imm_val,
-                        PackedCmpImmOp::Lt => BinOp::Lt.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
-                        PackedCmpImmOp::Le => BinOp::Le.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
-                        PackedCmpImmOp::Gt => BinOp::Gt.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
-                        PackedCmpImmOp::Ge => BinOp::Ge.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
-                    }
-                }
-            };
-            if !cmp {
-                Some(((pc as isize) + (*ofs as isize)) as usize)
-            } else {
-                None
-            }
+            hot_compare::exec_cmp_imm_jmp(regs, func, *op, *src, *imm, pc, *ofs)?
         }
         PackedHotKind::CmpImmMulIntAddInt {
             op,
@@ -1409,85 +1193,37 @@ pub(super) fn exec_hot_slot(
             ofs,
         } => {
             record_branch(true);
-            let src_idx = *src as usize;
-            let imm_i64 = *imm as i64;
-            let cmp = match (regs.get(src_idx), op) {
-                (Some(Val::Int(x)), PackedCmpImmOp::Eq) => *x == imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Ne) => *x != imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Lt) => *x < imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Le) => *x <= imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Gt) => *x > imm_i64,
-                (Some(Val::Int(x)), PackedCmpImmOp::Ge) => *x >= imm_i64,
-                _ => {
-                    let imm_val = Val::Int(imm_i64);
-                    match op {
-                        PackedCmpImmOp::Eq => rk_read(regs, &func.consts, *src) == &imm_val,
-                        PackedCmpImmOp::Ne => rk_read(regs, &func.consts, *src) != &imm_val,
-                        PackedCmpImmOp::Lt => BinOp::Lt.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
-                        PackedCmpImmOp::Le => BinOp::Le.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
-                        PackedCmpImmOp::Gt => BinOp::Gt.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
-                        PackedCmpImmOp::Ge => BinOp::Ge.cmp(rk_read(regs, &func.consts, *src), &imm_val)?,
-                    }
-                }
-            };
-            if !cmp {
-                Some(((pc as isize) + (*ofs as isize)) as usize)
-            } else {
-                int_binop(
-                    frame_raw,
-                    regs,
-                    &func.consts,
-                    *mul_dst,
-                    *mul_a,
-                    *mul_b,
-                    i64::wrapping_mul,
-                    BinOp::Mul,
-                )?;
-                int_binop(
-                    frame_raw,
-                    regs,
-                    &func.consts,
-                    *add_dst,
-                    *add_a,
-                    *add_b,
-                    i64::wrapping_add,
-                    BinOp::Add,
-                )?;
-                None
-            }
+            hot_compare::exec_cmp_imm_mul_int_add_int(
+                regs,
+                func,
+                *op,
+                *src,
+                *imm,
+                *mul_dst,
+                *mul_a,
+                *mul_b,
+                *add_dst,
+                *add_a,
+                *add_b,
+                pc,
+                *ofs,
+                collect_metrics,
+            )?
         }
         PackedHotKind::CmpLtImmJmp { r, imm, ofs } => {
             record_branch(true);
-            // Fused: if r < imm, fall through; else jump.
-            let skip = match &regs[*r as usize] {
-                Val::Int(x) => *x >= (*imm as i64),
-                _ => true,
-            };
-            if skip {
-                Some(((pc as isize) + (*ofs as isize)) as usize)
-            } else {
-                None
-            }
+            hot_compare::exec_cmp_lt_imm_jmp(regs, *r, *imm, pc, *ofs)
         }
         PackedHotKind::CmpLeImmJmp { r, imm, ofs } => {
             record_branch(true);
-            // Fused: if r <= imm, fall through; else jump.
-            let skip = match &regs[*r as usize] {
-                Val::Int(x) => *x > (*imm as i64),
-                _ => true,
-            };
-            if skip {
-                Some(((pc as isize) + (*ofs as isize)) as usize)
-            } else {
-                None
-            }
+            hot_compare::exec_cmp_le_imm_jmp(regs, *r, *imm, pc, *ofs)
         }
         PackedHotKind::AddIntImmJmp { r, imm, ofs } => {
             record_branch(true);
             // Fused: r += imm, then jump by ofs.
             if let Val::Int(x) = regs[*r as usize] {
                 let result = x.wrapping_add(*imm as i64);
-                assign_reg(frame_raw, regs, *r as usize, Val::Int(result));
+                assign_reg_with_metrics(regs, *r as usize, Val::Int(result), collect_metrics);
             }
             Some(((pc as isize) + (*ofs as isize)) as usize)
         }

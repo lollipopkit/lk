@@ -10,9 +10,9 @@ use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{CallIc, CallReturnLayout, ClosureFastCache};
 use crate::vm::vm::frame::{CallFrameMeta, FrameInfo, RegisterSpan};
-use crate::vm::write_register_value;
+use crate::vm::write_register_value_with_metrics;
 
-use super::raw_boundary::{exec_positional_fast_span, with_vm_mut};
+use super::raw_boundary::{exec_positional_fast_span_unchecked, with_vm_mut};
 
 #[derive(Clone, Copy)]
 pub(super) enum NativeCallable {
@@ -65,9 +65,9 @@ impl ReturnSlot {
     }
 
     #[inline]
-    pub(super) fn write(self, regs: &mut [Val], value: Val) {
+    pub(super) fn write(self, regs: &mut [Val], value: Val, collect_metrics: bool) {
         if self.retc > 0 {
-            write_register_value(regs, self.base, value);
+            write_register_value_with_metrics(regs, self.base, value, collect_metrics);
         }
     }
 }
@@ -80,6 +80,7 @@ pub(super) fn invoke_native_callable_with_ic(
     callable: NativeCallable,
     argc: u8,
     ret: CallReturnLayout,
+    collect_metrics: bool,
 ) -> Result<bool> {
     let base = ret.base as usize;
     let argc_usize = argc as usize;
@@ -134,13 +135,13 @@ pub(super) fn invoke_native_callable_with_ic(
         },
     };
 
-    ReturnSlot::new(base, ret.retc).write(regs, value);
+    ReturnSlot::new(base, ret.retc).write(regs, value, collect_metrics);
     Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
 #[inline]
-pub(super) fn invoke_vm_closure_fast(
+pub(super) fn invoke_vm_closure_fast_unchecked(
     self_ptr: *mut Vm,
     fun: &Function,
     args: RegisterSpan,
@@ -150,8 +151,9 @@ pub(super) fn invoke_vm_closure_fast(
     capture_specs: Option<Arc<Vec<CaptureSpec>>>,
     cache: &mut ClosureFastCache,
     return_meta: CallFrameMeta,
+    collect_metrics: bool,
 ) -> Result<Val> {
-    exec_positional_fast_span(
+    exec_positional_fast_span_unchecked(
         self_ptr,
         fun,
         args,
@@ -161,6 +163,7 @@ pub(super) fn invoke_vm_closure_fast(
         capture_specs,
         cache,
         return_meta,
+        collect_metrics,
     )
 }
 

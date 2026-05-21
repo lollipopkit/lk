@@ -72,7 +72,7 @@ pub(super) fn take_inline_return_meta(frame: *mut FrameState<'_, '_>) -> Option<
 
 #[allow(clippy::too_many_arguments)]
 #[inline]
-pub(super) fn exec_positional_fast_span(
+pub(super) fn exec_positional_fast_span_unchecked(
     vm: *mut Vm,
     fun: &Function,
     args: RegisterSpan,
@@ -82,8 +82,19 @@ pub(super) fn exec_positional_fast_span(
     capture_specs: Option<Arc<Vec<CaptureSpec>>>,
     cache: &mut ClosureFastCache,
     return_meta: CallFrameMeta,
+    collect_metrics: bool,
 ) -> Result<Val> {
     with_vm_mut(vm, |vm| {
-        vm.exec_function_positional_fast_span(fun, args, ctx, frame_info, captures, capture_specs, cache, return_meta)
+        vm.exec_function_positional_fast_span_unchecked(
+            fun,
+            args,
+            ctx,
+            frame_info,
+            captures,
+            capture_specs,
+            cache,
+            return_meta,
+            collect_metrics,
+        )
     })
 }
