@@ -1,14 +1,6 @@
 use super::FunctionBuilder;
 use crate::{expr::Expr, val::Val, vm::Op};
 
-pub(super) fn expr_result_is_temporary(expr: &Expr) -> bool {
-    match expr {
-        Expr::Var(_) => false,
-        Expr::Paren(inner) => expr_result_is_temporary(inner),
-        _ => true,
-    }
-}
-
 impl FunctionBuilder {
     pub(crate) fn emit_map_from_named_args(&mut self, named_args: &[(String, Box<Expr>)]) -> u16 {
         let dst = self.alloc();
@@ -38,18 +30,7 @@ impl FunctionBuilder {
     }
 
     pub(crate) fn emit_map_access(&mut self, map_reg: u16, key_expr: &Expr) -> u16 {
-        let dst = self.alloc();
-        if let Some(key_idx) = self.map_literal_key_const(key_expr) {
-            self.emit(Op::MapGetInterned(dst, map_reg, key_idx));
-        } else if self.reg_known_map(map_reg) {
-            let key_reg = self.expr(key_expr);
-            self.emit(Op::MapGetDynamic(dst, map_reg, key_reg));
-        } else {
-            let key_reg = self.expr(key_expr);
-            self.emit(Op::Access(dst, map_reg, key_reg));
-        }
-        self.mark_map_lookup_result(dst, map_reg);
-        dst
+        self.emit_typed_map_access(map_reg, key_expr)
     }
 
     pub(crate) fn emit_map_has(&mut self, map_reg: u16, key_expr: &Expr) -> u16 {
@@ -70,11 +51,7 @@ impl FunctionBuilder {
             } else {
                 self.expr(value_expr)
             };
-            if val_reg != map_reg && expr_result_is_temporary(value_expr) {
-                self.emit(Op::MapSetInternedMove(map_reg, key_idx, val_reg));
-            } else {
-                self.emit(Op::MapSetInterned(map_reg, key_idx, val_reg));
-            }
+            self.emit(Op::MapSetInterned(map_reg, key_idx, val_reg));
             return;
         }
 
@@ -88,27 +65,14 @@ impl FunctionBuilder {
         } else {
             self.expr(value_expr)
         };
-        if key_reg != map_reg
-            && val_reg != map_reg
-            && key_reg != val_reg
-            && expr_result_is_temporary(key_expr)
-            && expr_result_is_temporary(value_expr)
-        {
-            self.emit(Op::MapSetMove {
-                map: map_reg,
-                key: key_reg,
-                val: val_reg,
-            });
-        } else {
-            self.emit(Op::MapSet {
-                map: map_reg,
-                key: key_reg,
-                val: val_reg,
-            });
-        }
+        self.emit(Op::MapSet {
+            map: map_reg,
+            key: key_reg,
+            val: val_reg,
+        });
     }
 
-    fn map_literal_key_const(&mut self, key_expr: &Expr) -> Option<u16> {
+    pub(crate) fn map_literal_key_const(&mut self, key_expr: &Expr) -> Option<u16> {
         let Expr::Val(key) = key_expr else {
             return None;
         };

@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use crate::{
     expr::Expr,
-    stmt::StmtParser,
+    stmt::{Stmt, StmtParser},
     token::Tokenizer,
     val::{Type, Val},
     vm,
-    vm::{Compiler, Op, compile_program},
+    vm::{Compiler, IntCmpKind, Op, compile_program},
 };
 
 #[test]
@@ -99,6 +99,38 @@ fn function_analysis_survives_round_trip() {
 }
 
 #[test]
+fn performance_fact_queries_survive_round_trip() {
+    let source = r#"
+        let data = [1, 2, 3];
+        return data[1] + 1;
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokenize");
+    let mut parser = StmtParser::new(&tokens);
+    let program = parser.parse_program().expect("parse program");
+    let function = compile_program(&program);
+    let original_list_reg = function
+        .code
+        .iter()
+        .find_map(|op| match op {
+            Op::BuildList { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .expect("list register");
+
+    let module = BytecodeModule::new(function);
+    let bytes = encode_module(&module).expect("encode with performance facts");
+    let decoded = decode_module(&bytes).expect("decode with performance facts");
+    let decoded_perf = &decoded.entry.analysis.as_ref().expect("decoded analysis").perf;
+
+    assert_eq!(decoded_perf.value_kind(original_list_reg), vm::PerfValueKind::List);
+    assert_eq!(
+        decoded_perf.list_value_kind(original_list_reg),
+        Some(vm::PerfValueKind::Int)
+    );
+    assert_eq!(decoded_perf.list_known_len(original_list_reg), Some(3));
+}
+
+#[test]
 fn closure_param_types_survive_round_trip() {
     let source = r#"
         fn score(price: Int, qty: Int, discount: Int) -> Int {
@@ -139,4 +171,94 @@ fn closure_param_types_survive_round_trip() {
     let mut ctx = vm::VmContext::new();
     let result = vm.exec(&decoded.entry, &mut ctx).expect("vm exec decoded");
     assert_eq!(result, Val::Int(37));
+}
+
+#[test]
+fn register_index_opcodes_survive_round_trip() {
+    let function = Compiler::new().compile_function_with_param_types_and_captures(
+        &["values".to_string(), "text".to_string(), "idx".to_string()],
+        &[
+            Some(Type::List(Box::new(Type::Int))),
+            Some(Type::String),
+            Some(Type::Int),
+        ],
+        &[],
+        &Stmt::Block {
+            statements: vec![
+                Box::new(Stmt::Expr(Box::new(Expr::Access(
+                    Box::new(Expr::Var("text".to_string())),
+                    Box::new(Expr::Var("idx".to_string())),
+                )))),
+                Box::new(Stmt::Return {
+                    value: Some(Box::new(Expr::Access(
+                        Box::new(Expr::Var("values".to_string())),
+                        Box::new(Expr::Var("idx".to_string())),
+                    ))),
+                }),
+            ],
+        },
+        &[],
+    );
+
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListIndex(_, _, _))),
+        "expected ListIndex before LKB roundtrip in {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::StrIndex(_, _, _))),
+        "expected StrIndex before LKB roundtrip in {:?}",
+        function.code
+    );
+
+    let module = BytecodeModule::new(function);
+    let bytes = encode_module(&module).expect("encode");
+    let decoded = decode_module(&bytes).expect("decode");
+    assert!(
+        decoded.entry.code.iter().any(|op| matches!(op, Op::ListIndex(_, _, _))),
+        "expected ListIndex after LKB roundtrip in {:?}",
+        decoded.entry.code
+    );
+    assert!(
+        decoded.entry.code.iter().any(|op| matches!(op, Op::StrIndex(_, _, _))),
+        "expected StrIndex after LKB roundtrip in {:?}",
+        decoded.entry.code
+    );
+}
+
+#[test]
+fn cmove_int_survives_round_trip() {
+    let function = Function {
+        consts: vec![Val::Int(10), Val::Int(7)],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::LoadK(1, 1),
+            Op::CMoveInt {
+                dst: 0,
+                src: 1,
+                a: 1,
+                b: 0,
+                kind: IntCmpKind::Lt,
+            },
+            Op::Ret { base: 0, retc: 1 },
+        ],
+        n_regs: 2,
+        protos: vec![],
+        param_regs: vec![],
+        named_param_regs: vec![],
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let module = BytecodeModule::new(function);
+    let bytes = encode_module(&module).expect("encode");
+    let decoded = decode_module(&bytes).expect("decode");
+    assert!(
+        decoded.entry.code.iter().any(|op| matches!(op, Op::CMoveInt { .. })),
+        "expected CMoveInt after LKB roundtrip in {:?}",
+        decoded.entry.code
+    );
 }

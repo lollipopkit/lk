@@ -715,6 +715,8 @@ fn remap_single_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
         | Op::CmpGe(_, a, b)
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
+        | Op::ListIndex(_, a, b)
+        | Op::StrIndex(_, a, b)
         | Op::Index { base: a, idx: b, .. }
         | Op::ListSlice { src: a, start: b, .. }
         | Op::MapHas(_, a, b)
@@ -824,7 +826,9 @@ fn can_defer_loadlocal_across(op: &Op, dst: u16, src: u16) -> bool {
             | Op::Access(_, _, _)
             | Op::AccessK(_, _, _)
             | Op::IndexK(_, _, _)
+            | Op::ListIndex(_, _, _)
             | Op::ListIndexI(_, _, _)
+            | Op::StrIndex(_, _, _)
             | Op::StrIndexI(_, _, _)
             | Op::Len { .. }
             | Op::ListLen { .. }

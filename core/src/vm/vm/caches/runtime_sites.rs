@@ -19,8 +19,7 @@ pub(in crate::vm::vm) struct FunctionRuntimePlan {
 
 impl FunctionRuntimePlan {
     #[inline(always)]
-    #[cfg(test)]
-    fn from_function(fun: &Function, region_plan: Option<Arc<RegionPlan>>) -> Self {
+    pub(in crate::vm::vm) fn from_function(fun: &Function, region_plan: Option<Arc<RegionPlan>>) -> Self {
         let dispatch_sites = RuntimeDispatchSites::from_function(fun);
         Self::from_parts(fun, dispatch_sites, region_plan)
     }
@@ -429,6 +428,19 @@ impl ClosureFastCache {
         self.prepare_function_sites(runtime.func_key, runtime.dispatch_sites);
         self.prepare_packed_hot_for_function(runtime.func_key);
         runtime
+    }
+
+    #[inline(always)]
+    pub(in crate::vm::vm) fn prepare_cached_function_runtime(
+        &mut self,
+        runtime: &FunctionRuntimePlan,
+    ) -> FunctionRuntimePlan {
+        if self.prepared_func_key != runtime.func_key {
+            self.clear_function_sites_for_key(runtime.func_key);
+        }
+        self.prepare_function_sites(runtime.func_key, runtime.dispatch_sites);
+        self.prepare_packed_hot_for_function(runtime.func_key);
+        runtime.clone()
     }
 
     #[inline(always)]

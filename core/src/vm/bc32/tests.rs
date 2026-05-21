@@ -44,7 +44,6 @@ fn test_bc32_roundtrip_simple() {
     let bc = Bc32Function::try_from_function(&f).expect("encodable");
     let f2 = bc.decode();
     let expected = vec![
-        Op::Nop,
         Op::LoadK(0, 0),
         Op::Move(1, 0),
         Op::ToStr(2, 1),
@@ -53,6 +52,45 @@ fn test_bc32_roundtrip_simple() {
         Op::BoolBranch(2, -1),
     ];
     assert_eq!(format!("{:?}", f2.code), format!("{:?}", expected));
+}
+
+#[test]
+fn test_bc32_elides_nop_but_keeps_source_pc_mapping() {
+    let f = Function {
+        consts: vec![Val::Int(42)],
+        code: vec![
+            Op::Nop,
+            Op::LoadK(0, 0),
+            Op::Nop,
+            Op::Move(1, 0),
+            Op::Ret { base: 1, retc: 1 },
+        ],
+        n_regs: 2,
+        protos: vec![],
+        param_regs: vec![],
+        named_param_regs: vec![],
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    let bc = Bc32Function::try_from_function(&f).expect("encodable");
+    let decoded = bc.decoded.as_ref().expect("decoded table");
+
+    assert_eq!(decoded.instrs.len(), 3);
+    assert_eq!(
+        decoded.instrs.iter().map(|instr| instr.source_pc).collect::<Vec<_>>(),
+        vec![1, 3, 4]
+    );
+    assert_eq!(
+        format!("{:?}", bc.decode().code),
+        format!(
+            "{:?}",
+            vec![Op::LoadK(0, 0), Op::Move(1, 0), Op::Ret { base: 1, retc: 1 }]
+        )
+    );
 }
 
 #[test]
@@ -358,6 +396,13 @@ fn test_bc32_current_typed_ops_roundtrip_gate() {
                 b: 14,
                 ofs: 1,
             },
+            Op::CMoveInt {
+                dst: 16,
+                src: 15,
+                a: 15,
+                b: 14,
+                kind: IntCmpKind::Lt,
+            },
             Op::Floor { dst: 16, src: 17 },
             Op::ListLen { dst: 17, src: 18 },
             Op::MapLen { dst: 18, src: 19 },
@@ -365,6 +410,7 @@ fn test_bc32_current_typed_ops_roundtrip_gate() {
             Op::StartsWithK(20, 21, 1),
             Op::ContainsK(21, 22, 2),
             Op::IndexK(22, 23, 0),
+            Op::ListIndex(23, 24, 25),
             Op::ListIndexI(23, 24, 2),
             Op::ListSetI {
                 dst: 23,
@@ -372,6 +418,7 @@ fn test_bc32_current_typed_ops_roundtrip_gate() {
                 index: 2,
                 val: 25,
             },
+            Op::StrIndex(24, 25, 26),
             Op::StrIndexI(24, 25, 3),
             Op::AccessK(25, 26, 1),
             Op::MapGetInterned(26, 27, 1),

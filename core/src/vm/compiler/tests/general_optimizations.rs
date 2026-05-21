@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::resolve::slots::SlotResolver;
 use crate::util::fast_map::fast_hash_map_with_capacity;
-use crate::vm::{AllocationRegion, EscapeClass, PerfValueKind};
+use crate::val::Type;
+use crate::vm::{AllocationRegion, EscapeClass, IntCmpKind, PerfValueKind};
 
 use super::{
     BinOp, Compiler, Expr, ForPattern, Op, Stmt, Val, compile_and_run, compile_and_run_with_ctx, make_assign,
@@ -297,8 +298,8 @@ fn function_builder_exports_register_performance_facts() {
     let analysis = func.analysis.as_ref().expect("analysis available");
 
     assert_eq!(
-        analysis.perf.register(0).map(|fact| fact.value.kind),
-        Some(PerfValueKind::Int),
+        analysis.perf.value_kind(0),
+        PerfValueKind::Int,
         "LoadK int destination should be exported as a register fact"
     );
 }
@@ -325,15 +326,71 @@ fn typed_lowering_keeps_container_performance_facts_available() {
     ]);
     let function = Compiler::new().compile_expr(&expr);
     let analysis = function.analysis.as_ref().expect("analysis available");
+    let list_reg = function
+        .code
+        .iter()
+        .find_map(|op| match op {
+            Op::BuildList { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .expect("list builder destination");
+
+    assert_eq!(analysis.perf.value_kind(list_reg), PerfValueKind::List);
+    assert_eq!(analysis.perf.list_value_kind(list_reg), Some(PerfValueKind::Int));
+    assert_eq!(analysis.perf.list_known_len(list_reg), Some(3));
     assert!(
-        analysis
-            .perf
-            .registers
+        analysis.perf.list_value_type(list_reg).is_some(),
+        "expected homogeneous int list performance fact for r{list_reg}"
+    );
+}
+
+#[test]
+fn unknown_call_side_effect_clears_container_value_facts() {
+    let source = r#"
+        fn touch(xs) {
+            xs.push("x");
+            return nil;
+        }
+        let data = [1];
+        touch(data);
+        let v = data[0];
+        return v + 1;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(2));
+    assert!(
+        function
+            .code
             .iter()
-            .flatten()
-            .any(|fact| fact.list.is_some_and(|list| list.value_kind == PerfValueKind::Int)),
-        "expected homogeneous int list performance fact in {:?}",
-        analysis.perf.registers
+            .all(|op| !matches!(op, Op::ListIndex(_, _, _) | Op::ListIndexI(_, _, _))),
+        "list value facts must be invalidated after unknown call side effects: {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().all(|op| !matches!(op, Op::AddInt(_, _, _))),
+        "stale Int facts after the call must not feed typed arithmetic: {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn branch_mutation_clears_container_value_facts_after_merge() {
+    let source = r#"
+        let data = [1];
+        if true {
+            data.push("x");
+        }
+        let v = data[0];
+        return v + 1;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(2));
+    assert!(
+        function.code.iter().all(|op| !matches!(op, Op::AddInt(_, _, _))),
+        "branch-mutated list element facts must not feed typed arithmetic: {:?}",
+        function.code
     );
 }
 
@@ -466,8 +523,30 @@ fn dynamic_list_access_stays_current_after_mutation() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(42));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::Access(_, _, _))),
-        "expected dynamic list access to use Access in {:?}",
+        function.code.iter().any(|op| matches!(op, Op::ListIndex(_, _, _))),
+        "expected facts-proven dynamic list access to use ListIndex in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn dynamic_string_index_uses_typed_opcode() {
+    let function = Compiler::new().compile_function_with_param_types_and_captures(
+        &["text".to_string(), "idx".to_string()],
+        &[Some(Type::String), Some(Type::Int)],
+        &[],
+        &Stmt::Return {
+            value: Some(Box::new(Expr::Access(
+                Box::new(Expr::Var("text".to_string())),
+                Box::new(Expr::Var("idx".to_string())),
+            ))),
+        },
+        &[],
+    );
+
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::StrIndex(_, _, _))),
+        "expected facts-proven dynamic string access to use StrIndex in {:?}",
         function.code
     );
 }
@@ -652,6 +731,32 @@ fn known_int_register_compare_lowers_to_cmp_int_jmp() {
     assert!(
         function.code.iter().any(|op| matches!(op, Op::CmpIntJmp { .. })),
         "known int register loop comparison should fuse to CmpIntJmp in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn known_int_single_assignment_if_lowers_to_cmove_int() {
+    let source = r#"
+        let best = 10;
+        let candidate = 7;
+        if candidate < best {
+            best = candidate;
+        }
+        return best;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(7));
+    assert!(
+        function.code.iter().any(|op| matches!(
+            op,
+            Op::CMoveInt {
+                kind: IntCmpKind::Lt,
+                ..
+            }
+        )),
+        "known int conditional assignment should lower to CMoveInt in {:?}",
         function.code
     );
 }
@@ -1209,5 +1314,154 @@ fn range_loop_hoists_immutable_string_literal() {
             .all(|op| !matches!(op, Op::LoadK(_, _))),
         "expected immutable string literal to be loaded before the loop body in {:?}",
         run_proto.code
+    );
+}
+
+#[test]
+fn range_loop_hoists_immutable_integer_literals() {
+    let source = r#"
+        fn run(n) {
+            let total = 0;
+            for i in 1..=n {
+                let a = 2;
+                let b = 3;
+                total += (i * a) + b;
+            }
+            return total;
+        }
+        return run(4);
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(32));
+    let run_proto = function
+        .protos
+        .iter()
+        .find_map(|proto| proto.func.as_ref())
+        .expect("compiled run function");
+    let loop_pos = run_proto
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::RangeLoopI { .. } | Op::ForRangeLoop { .. }))
+        .expect("expected range loop");
+    let step_pos = run_proto
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::ForRangeStep { .. }))
+        .expect("expected range loop step");
+    assert!(
+        run_proto.code[loop_pos..step_pos]
+            .iter()
+            .all(|op| !matches!(op, Op::LoadK(_, _))),
+        "expected immutable integer literals to be loaded before the loop body in {:?}",
+        run_proto.code
+    );
+}
+
+#[test]
+fn range_loop_hoists_facts_proven_map_gets_from_branches() {
+    let source = r#"
+        import map;
+        let levels = {"guest": 1, "admin": 10};
+        let total = 0;
+        for i in 1..=6 {
+            if ((i % 2) == 0) {
+                total += map.get(levels, "admin");
+            } else {
+                total += map.get(levels, "guest");
+            }
+        }
+        return total;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(33));
+    let loop_pos = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::RangeLoopI { .. } | Op::ForRangeLoop { .. }))
+        .expect("expected range loop");
+    let map_get_positions: Vec<_> = function
+        .code
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, op)| matches!(op, Op::MapGetInterned(_, _, _)).then_some(idx))
+        .collect();
+    assert_eq!(
+        map_get_positions.len(),
+        2,
+        "expected one hoisted get per branch key in {:?}",
+        function.code
+    );
+    assert!(
+        map_get_positions.iter().all(|pos| *pos < loop_pos),
+        "expected map.get calls to be hoisted before the loop in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn range_loop_keeps_map_get_inside_when_receiver_mutates() {
+    let source = r#"
+        import map;
+        let levels = {"admin": 10};
+        let total = 0;
+        for i in 1..=3 {
+            levels.set("admin", i);
+            total += map.get(levels, "admin");
+        }
+        return total;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(6));
+    let loop_pos = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::RangeLoopI { .. } | Op::ForRangeLoop { .. }))
+        .expect("expected range loop");
+    let step_pos = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::ForRangeStep { .. }))
+        .expect("expected range loop step");
+    assert!(
+        function.code[loop_pos..step_pos]
+            .iter()
+            .any(|op| matches!(op, Op::MapGetInterned(_, _, _))),
+        "mutated map receiver must keep map.get in the loop body in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn range_loop_hoists_string_predicate_with_stable_receiver() {
+    let source = r#"
+        let sku = "pro-plan";
+        let total = 0;
+        for i in 1..=5 {
+            if sku.starts_with("pro") {
+                total += i;
+            }
+        }
+        return total;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(15));
+    let loop_pos = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::RangeLoopI { .. } | Op::ForRangeLoop { .. }))
+        .expect("expected range loop");
+    let starts_pos = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::StartsWithK(_, _, _)))
+        .expect("expected starts_with lowering");
+    assert!(
+        starts_pos < loop_pos,
+        "expected stable string predicate to be hoisted before the loop in {:?}",
+        function.code
     );
 }

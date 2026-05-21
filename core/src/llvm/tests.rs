@@ -6,6 +6,7 @@ use crate::val::Val;
 use crate::vm::{Function, IntCmpKind, Op};
 
 mod aot;
+mod control_lowering;
 mod map_lowering;
 
 #[test]
@@ -1208,9 +1209,15 @@ fn lowers_index_and_len() {
         code: vec![
             Op::Len { dst: 0, src: 1 },
             Op::IndexK(1, 2, 0),
+            Op::ListIndex(3, 4, 5),
+            Op::StrIndex(6, 7, 8),
+            Op::StrLen { dst: 11, src: 6 },
+            Op::ListIndexI(9, 4, 2),
+            Op::StrIndexI(10, 7, 1),
+            Op::Len { dst: 12, src: 10 },
             Op::Ret { base: 0, retc: 1 },
         ],
-        n_regs: 3,
+        n_regs: 13,
         protos: Vec::new(),
         param_regs: Vec::new(),
         named_param_regs: Vec::new(),
@@ -1227,14 +1234,15 @@ fn lowers_index_and_len() {
     };
     let artifact = compile_function_to_llvm(&func, "index_len", options).expect("LLVM backend should succeed");
     let ir = artifact.module.ir;
-    assert!(
-        ir.contains("call i64 @lk_rt_len"),
-        "expected runtime len helper call in IR:\n{}",
+    assert_eq!(
+        ir.matches("= call i64 @lk_rt_index(").count(),
+        3,
+        "expected typed index feeding typed/generic len to defer materialization:\n{}",
         ir
     );
     assert!(
-        ir.contains("call i64 @lk_rt_index"),
-        "expected runtime index helper call in IR:\n{}",
+        ir.contains("call i64 @lk_rt_index_len"),
+        "expected deferred index-len helper:\n{}",
         ir
     );
 }

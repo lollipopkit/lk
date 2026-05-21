@@ -274,7 +274,10 @@ fn string_length_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpIntJmp { a, b, .. }
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
-        | Op::Index { base: a, idx: b, .. } => a == reg || b == reg,
+        | Op::Index { base: a, idx: b, .. }
+        | Op::ListIndex(_, a, b)
+        | Op::StrIndex(_, a, b) => a == reg || b == reg,
+        Op::CMoveInt { src, a, b, .. } => src == reg || a == reg || b == reg,
         Op::AddIntImm(_, src, _)
         | Op::CmpEqImm(_, src, _)
         | Op::CmpNeImm(_, src, _)
@@ -290,7 +293,9 @@ fn string_length_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpNeImmJmp { r: src, .. }
         | Op::AddIntImmJmp { r: src, .. }
         | Op::AccessK(_, src, _)
-        | Op::IndexK(_, src, _) => src == reg,
+        | Op::IndexK(_, src, _)
+        | Op::ListIndexI(_, src, _)
+        | Op::StrIndexI(_, src, _) => src == reg,
         Op::ListPush { list, val } | Op::ListPushMove { list, val } => list == reg || val == reg,
         Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => map == reg || key == reg || val == reg,
         Op::Ret { base, retc } => retc > 0 && base == reg,
@@ -335,6 +340,10 @@ fn string_length_op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::AccessK(dst, _, _)
         | Op::Index { dst, .. }
         | Op::IndexK(dst, _, _)
+        | Op::ListIndex(dst, _, _)
+        | Op::ListIndexI(dst, _, _)
+        | Op::StrIndex(dst, _, _)
+        | Op::StrIndexI(dst, _, _)
         | Op::Len { dst, .. }
         | Op::Floor { dst, .. }
         | Op::FloorDivImm { dst, .. }

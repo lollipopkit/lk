@@ -68,8 +68,13 @@ pub(crate) struct FunctionBuilder {
     /// Kept separate from int facts so generic numeric lowering can choose
     /// float typed opcodes without relying on full type inference.
     pub(crate) float_regs: HashSet<u16>,
+    /// Registers known to currently hold String values.
+    /// This feeds string-specific access and length lowering.
+    pub(crate) string_regs: HashSet<u16>,
     /// Loop-invariant pure expressions already materialized for the current loop body.
     pub(crate) loop_invariant_expr_regs: Vec<(Expr, u16)>,
+    /// Loop-local immutable literal bindings that may reuse hoisted expression registers.
+    pub(crate) loop_invariant_let_regs: Vec<(String, u16)>,
     pub(crate) inferred_function_param_types: HashMap<String, Vec<Option<Type>>>,
     pub(crate) inferred_function_return_types: HashMap<String, Option<Type>>,
     pub(crate) function_name_counts: HashMap<String, usize>,
@@ -118,7 +123,9 @@ impl FunctionBuilder {
             list_value_adoptable: HashSet::new(),
             int_regs: HashSet::new(),
             float_regs: HashSet::new(),
+            string_regs: HashSet::new(),
             loop_invariant_expr_regs: Vec::new(),
+            loop_invariant_let_regs: Vec::new(),
             inferred_function_param_types: HashMap::new(),
             inferred_function_return_types: HashMap::new(),
             function_name_counts: HashMap::new(),

@@ -112,7 +112,7 @@ impl FunctionBuilder {
         out
     }
 
-    fn lookup_loop_invariant_expr(&self, expr: &Expr) -> Option<u16> {
+    pub(super) fn lookup_loop_invariant_expr(&self, expr: &Expr) -> Option<u16> {
         self.loop_invariant_expr_regs
             .iter()
             .rev()
@@ -686,43 +686,7 @@ impl FunctionBuilder {
                 } else {
                     self.expr(base)
                 };
-                let out = self.alloc();
-                if let Expr::Val(field_val) = field.as_ref()
-                    && let Some(s) = field_val.as_str()
-                {
-                    let k = self.k(Val::from_str(s));
-                    if self.reg_known_map(b) {
-                        self.emit(Op::MapGetInterned(out, b, k));
-                        self.mark_map_lookup_result(out, b);
-                    } else {
-                        self.emit(Op::AccessK(out, b, k));
-                    }
-                } else if let Expr::Val(Val::Int(i)) = field.as_ref() {
-                    if self.reg_known_list(b)
-                        && let Ok(index) = i16::try_from(*i)
-                    {
-                        self.emit(Op::ListIndexI(out, b, index));
-                        self.mark_list_lookup_result(out, b);
-                    } else {
-                        let k = self.k(Val::Int(*i));
-                        self.emit(Op::IndexK(out, b, k));
-                        if self.reg_known_list(b) {
-                            self.mark_list_lookup_result(out, b);
-                        }
-                    }
-                } else {
-                    let f = self.expr(field);
-                    if self.reg_known_map(b) {
-                        self.emit(Op::MapGetDynamic(out, b, f));
-                        self.mark_map_lookup_result(out, b);
-                    } else {
-                        self.emit(Op::Access(out, b, f));
-                        if self.reg_known_list(b) && self.reg_known_int(f) {
-                            self.mark_list_lookup_result(out, b);
-                        }
-                    }
-                }
-                out
+                self.emit_field_access_for_reg(b, field)
             }
             Expr::OptionalAccess(base, field) => {
                 let b = self.expr(base);
@@ -855,6 +819,7 @@ impl FunctionBuilder {
                     }
                 }
                 self.emit(Op::BuildList { dst, base, len: count });
+                self.record_list_length(dst, items.len());
                 if items.is_empty() {
                     self.record_empty_list_value_type(dst);
                 } else {

@@ -53,6 +53,19 @@ fn map_set_consumes_temporary_key_value_registers() {
         "expected map set move opcode in {:?}",
         function.code
     );
+    let move_pc = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::MapSetMove { .. }))
+        .expect("MapSetMove pc");
+    let analysis = function.analysis.as_ref().expect("analysis available");
+    assert!(
+        analysis
+            .perf
+            .container_move(move_pc)
+            .is_some_and(|fact| fact.move_key && fact.move_value),
+        "MapSetMove must be explained by PerformanceFacts.container_moves"
+    );
 }
 
 #[test]
@@ -117,6 +130,19 @@ fn map_set_dead_const_string_key_value_lowers_to_interned_move_set() {
             .any(|op| matches!(op, Op::MapSetInternedMove(_, _, _))),
         "expected dead value with const-string key fact to lower to MapSetInternedMove in {:?}",
         function.code
+    );
+    let move_pc = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::MapSetInternedMove(_, _, _)))
+        .expect("MapSetInternedMove pc");
+    let analysis = function.analysis.as_ref().expect("analysis available");
+    assert!(
+        analysis
+            .perf
+            .container_move(move_pc)
+            .is_some_and(|fact| !fact.move_key && fact.move_value),
+        "MapSetInternedMove must be explained by PerformanceFacts.container_moves"
     );
 }
 

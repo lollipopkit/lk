@@ -116,6 +116,25 @@ pub(super) fn exec_cmp_int_jmp(
     Ok((!cmp_int_regs(regs, op, a, b)?).then_some(((pc as isize) + (ofs as isize)) as usize))
 }
 
+#[inline(always)]
+pub(super) fn exec_cmove_int(
+    regs: &mut [Val],
+    op: PackedCmpOp,
+    dst: u16,
+    src: u16,
+    a: u16,
+    b: u16,
+    collect_metrics: bool,
+) -> Result<()> {
+    if cmp_int_regs(regs, op, a, b)? {
+        let Val::Int(value) = regs[src as usize] else {
+            anyhow::bail!("CMoveInt expects integer registers");
+        };
+        assign_reg_with_metrics(regs, dst as usize, Val::Int(value), collect_metrics);
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 pub(super) fn exec_cmp_int_move(

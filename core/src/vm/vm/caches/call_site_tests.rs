@@ -21,9 +21,11 @@ fn empty_function() -> Function {
 #[test]
 fn call_site_plan_matches_arity_and_return_layout() {
     let fun = empty_function();
+    let runtime = FunctionRuntimePlan::from_function(&fun, None);
     let plan = CallSitePlan::positional(
         42,
         &fun,
+        runtime,
         2,
         CallReturnLayout::new(3, 1),
         None,
@@ -36,6 +38,8 @@ fn call_site_plan_matches_arity_and_return_layout() {
     assert!(!plan.matches_layout(1, 3, 1));
     assert!(!plan.matches_layout(2, 4, 1));
     assert!(!plan.matches_layout(2, 3, 0));
+    assert_eq!(plan.runtime.func_key, &fun as *const Function as usize);
+    assert_eq!(plan.runtime.reg_count, fun.n_regs as usize);
 }
 
 #[test]
@@ -44,6 +48,7 @@ fn closure_call_ic_clones_shared_call_site_plan() {
     let plan = Arc::new(CallSitePlan::positional(
         42,
         &fun,
+        FunctionRuntimePlan::from_function(&fun, None),
         2,
         CallReturnLayout::new(3, 1),
         None,

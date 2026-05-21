@@ -7,6 +7,7 @@ use crate::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
 use crate::val::Val;
 use crate::vm::RegionPlan;
 use crate::vm::alloc::{AllocationRegion, RegionAllocator};
+use crate::vm::analysis::PerfStringIntKeyFact;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{AccessIc, IndexIc};
 use crate::vm::vm::quickening::{self, QuickeningSite};
@@ -25,6 +26,20 @@ pub(super) use map_ops::{
     run_has as run_map_has, run_has_k as run_map_has_k, run_values_fold_add as run_map_values_fold_add,
 };
 pub(super) use scalar_ops::{run_floor, run_len, run_list_len, run_map_len, run_str_len};
+
+#[inline]
+pub(super) fn string_int_key_arcstr(
+    regs: &[Val],
+    consts: &[Val],
+    fact: Option<PerfStringIntKeyFact>,
+) -> Option<ArcStr> {
+    let fact = fact?;
+    let prefix = consts.get(fact.prefix_key as usize)?.as_str()?;
+    let Val::Int(suffix) = regs.get(fact.suffix_reg as usize)? else {
+        return None;
+    };
+    Some(Val::cached_str_int_key(prefix, *suffix))
+}
 
 #[inline]
 pub(super) fn run_access(
@@ -155,8 +170,25 @@ pub(super) fn run_map_get_interned(
 }
 
 #[inline]
-pub(super) fn run_map_get_dynamic(regs: &mut [Val], dst: u16, map: u16, key: u16, collect_metrics: bool) {
-    let result = match (&regs[map as usize], regs[key as usize].as_str()) {
+pub(super) fn run_map_get_dynamic(
+    regs: &mut [Val],
+    consts: &[Val],
+    key_fact: Option<PerfStringIntKeyFact>,
+    dst: u16,
+    map: u16,
+    key: u16,
+    collect_metrics: bool,
+) {
+    let key_arc = regs[key as usize]
+        .as_str()
+        .is_none()
+        .then(|| string_int_key_arcstr(regs, consts, key_fact))
+        .flatten();
+    let lookup_key = key_arc
+        .as_ref()
+        .map(|key| key.as_str())
+        .or_else(|| regs[key as usize].as_str());
+    let result = match (&regs[map as usize], lookup_key) {
         (Val::Map(map), Some(key)) => Val::map_get_str(map, key)
             .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
             .unwrap_or(Val::Nil),
@@ -263,9 +295,32 @@ pub(super) fn run_index_k(
 }
 
 #[inline]
+pub(super) fn run_list_index(regs: &mut [Val], dst: u16, base: u16, index: u16, collect_metrics: bool) {
+    let result = match (&regs[base as usize], &regs[index as usize]) {
+        (Val::List(list), Val::Int(index)) if *index >= 0 => list
+            .get(*index as usize)
+            .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
+            .unwrap_or(Val::Nil),
+        _ => Val::Nil,
+    };
+    assign_reg_with_metrics(regs, dst as usize, result, collect_metrics);
+}
+
+#[inline]
 pub(super) fn run_list_index_i(regs: &mut [Val], dst: u16, base: u16, index: i16, collect_metrics: bool) {
     let result = match &regs[base as usize] {
         Val::List(list) => list_ops::index_value(list, index as i64, collect_metrics).unwrap_or(Val::Nil),
+        _ => Val::Nil,
+    };
+    assign_reg_with_metrics(regs, dst as usize, result, collect_metrics);
+}
+
+#[inline]
+pub(super) fn run_str_index(regs: &mut [Val], dst: u16, base: u16, index: u16, collect_metrics: bool) {
+    let result = match (&regs[base as usize], &regs[index as usize]) {
+        (value, Val::Int(index)) if *index >= 0 && value.as_str().is_some() => {
+            string_ops::index_value(value.as_str().unwrap(), *index).unwrap_or(Val::Nil)
+        }
         _ => Val::Nil,
     };
     assign_reg_with_metrics(regs, dst as usize, result, collect_metrics);
@@ -529,9 +584,18 @@ pub(super) fn run_list_set_i(
 }
 
 #[inline]
-pub(super) fn run_map_set(regs: &mut [Val], map: u16, key: u16, val: u16, collect_metrics: bool) -> Result<()> {
+pub(super) fn run_map_set(
+    regs: &mut [Val],
+    consts: &[Val],
+    key_fact: Option<PerfStringIntKeyFact>,
+    map: u16,
+    key: u16,
+    val: u16,
+    collect_metrics: bool,
+) -> Result<()> {
     let key_arc = regs[key as usize]
-        .string_key_arcstr()
+        .dynamic_string_key_arcstr()
+        .or_else(|| string_int_key_arcstr(regs, consts, key_fact))
         .ok_or_else(|| anyhow!("MapSet key must be a String"))?;
     let pushed_val = copy_container_value_for_register_with_metrics(&regs[val as usize], collect_metrics);
     match &mut regs[map as usize] {
@@ -596,23 +660,37 @@ pub(super) fn run_map_set_interned_move(
 }
 
 #[inline]
-pub(super) fn run_map_set_move(regs: &mut [Val], map: u16, key: u16, val: u16, collect_metrics: bool) -> Result<()> {
+pub(super) fn run_map_set_move(
+    regs: &mut [Val],
+    consts: &[Val],
+    key_fact: Option<PerfStringIntKeyFact>,
+    map: u16,
+    key: u16,
+    val: u16,
+    collect_metrics: bool,
+) -> Result<()> {
     let map_idx = map as usize;
     let key_idx = key as usize;
     let val_idx = val as usize;
     if map_idx == key_idx || map_idx == val_idx || key_idx == val_idx {
-        return run_map_set(regs, map, key, val, collect_metrics);
+        return run_map_set(regs, consts, key_fact, map, key, val, collect_metrics);
     }
     if !matches!(regs[map_idx], Val::Map(_)) {
         return Err(anyhow!("MapSet target is not a Map"));
     }
+    let fact_key_arc = (!matches!(regs[key_idx], Val::Str(_) | Val::ShortStr(_)))
+        .then(|| string_int_key_arcstr(regs, consts, key_fact))
+        .flatten();
     let key_val = take_register_value(regs, key_idx);
-    let key_arc = match key_val.string_key_arcstr() {
+    let key_arc = match key_val.dynamic_string_key_arcstr() {
         Some(key_arc) => key_arc,
-        None => {
-            restore_register_value(regs, key_idx, key_val);
-            return Err(anyhow!("MapSet key must be a String"));
-        }
+        None => match fact_key_arc {
+            Some(key_arc) => key_arc,
+            None => {
+                restore_register_value(regs, key_idx, key_val);
+                return Err(anyhow!("MapSet key must be a String"));
+            }
+        },
     };
     let pushed_val = take_register_value(regs, val_idx);
     match &mut regs[map_idx] {

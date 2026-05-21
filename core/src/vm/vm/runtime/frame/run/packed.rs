@@ -35,11 +35,11 @@ use super::FrameRuntimeView;
 use super::helpers::{
     advance_for_range_tail, assign_local_from_reg_or_take_with_metrics,
     assign_pattern_bindings_for_context_with_metrics, assign_pattern_bindings_with_metrics,
-    assign_reg_const_copy_with_metrics, assign_reg_copy_with_metrics, assign_reg_from_local_load_with_metrics,
+    assign_reg_const_copy_with_metrics, assign_reg_copy_with_metrics, assign_reg_from_local_load_or_take_with_metrics,
     assign_reg_from_reg_or_take_with_metrics, assign_reg_from_reg_with_metrics, assign_reg_with_metrics,
     clear_pattern_bindings_with_metrics, fetch_for_range_state, fold_add_values_with_metrics, frame_return_common,
-    handle_return_common, insert_map_entry, load_global_for_register, local_store_may_take_source, push_list_entry,
-    register_move_may_take_source,
+    handle_return_common, insert_map_entry, load_global_for_register, local_load_may_take_source,
+    local_store_may_take_source, push_list_entry, register_move_may_take_source,
 };
 use super::invoke::{NativeCallable, invoke_native_callable_with_ic};
 use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, floor_div_i64, int_binop, int_binop_imm, rk_read};
@@ -67,8 +67,15 @@ fn packed_instr_pc(f: &Function, pc: usize) -> usize {
     f.bc32_decoded
         .as_deref()
         .and_then(|decoded| decoded.word_to_instr.get(pc).copied())
-        .map(|idx| idx as usize)
+        .and_then(|idx| decoded_source_pc(f, idx as usize))
         .unwrap_or(pc)
+}
+
+fn decoded_source_pc(f: &Function, instr_idx: usize) -> Option<usize> {
+    f.bc32_decoded
+        .as_deref()
+        .and_then(|decoded| decoded.instrs.get(instr_idx))
+        .map(|instr| instr.source_pc)
 }
 
 fn assign_move_call_args(regs: &mut [Val], f: &Function, pc: usize, moves: &[(u16, u16)], collect_metrics: bool) {
@@ -79,8 +86,10 @@ fn assign_move_call_args(regs: &mut [Val], f: &Function, pc: usize, moves: &[(u1
         .copied()
         .map(|idx| idx as usize);
     for (offset, (dst, src)) in moves.iter().enumerate() {
-        let pc = start_instr.map_or(pc + offset, |idx| idx + offset);
-        let may_take = register_move_may_take_source(f, pc, *src);
+        let source_pc = start_instr
+            .and_then(|idx| decoded_source_pc(f, idx + offset))
+            .unwrap_or(pc + offset);
+        let may_take = register_move_may_take_source(f, source_pc, *src);
         assign_reg_from_reg_or_take_with_metrics(regs, *dst as usize, *src as usize, may_take, collect_metrics);
     }
 }
@@ -104,8 +113,17 @@ fn assign_packed_const_with_metrics(regs: &mut [Val], func: &Function, dst: u16,
 }
 
 #[inline(always)]
-fn assign_packed_local_load_with_metrics(regs: &mut [Val], dst: u16, idx: u16, collect_metrics: bool) {
-    assign_reg_from_local_load_with_metrics(regs, dst as usize, idx as usize, collect_metrics);
+fn assign_packed_local_load_with_metrics(
+    regs: &mut [Val],
+    func: &Function,
+    pc: usize,
+    dst: u16,
+    idx: u16,
+    collect_metrics: bool,
+) {
+    let instr_pc = packed_instr_pc(func, pc);
+    let may_take = local_load_may_take_source(func, instr_pc);
+    assign_reg_from_local_load_or_take_with_metrics(regs, dst as usize, idx as usize, may_take, collect_metrics);
 }
 
 #[inline(always)]

@@ -224,40 +224,16 @@ impl Compiler {
             let Some(reg) = b.param_regs.get(idx).copied() else {
                 continue;
             };
-            match param_type {
-                Some(Type::Int) => {
-                    b.int_regs.insert(reg);
-                }
-                Some(Type::Float) => {
-                    b.float_regs.insert(reg);
-                }
-                Some(Type::List(_)) => {
-                    b.list_locals.insert(reg);
-                }
-                Some(Type::Map(_, _)) => {
-                    b.map_locals.insert(reg);
-                }
-                _ => {}
+            if let Some(param_type) = param_type {
+                b.apply_type_fact(reg, param_type);
             }
         }
         for decl in named_params {
             let idx = b.get_or_define(&decl.name);
             b.param_regs.push(idx);
             b.named_param_regs.push(idx);
-            match &decl.type_annotation {
-                Some(Type::Int) => {
-                    b.int_regs.insert(idx);
-                }
-                Some(Type::Float) => {
-                    b.float_regs.insert(idx);
-                }
-                Some(Type::List(_)) => {
-                    b.list_locals.insert(idx);
-                }
-                Some(Type::Map(_, _)) => {
-                    b.map_locals.insert(idx);
-                }
-                _ => {}
+            if let Some(param_type) = &decl.type_annotation {
+                b.apply_type_fact(idx, param_type);
             }
         }
         b.build_named_param_layout(named_params);

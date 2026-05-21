@@ -1,5 +1,6 @@
 use super::super::helpers::assign_reg_with_metrics;
 use super::*;
+use crate::vm::bytecode::RK_CONST_BIT;
 use crate::vm::{copy_const_value_for_register_with_metrics, copy_container_value_for_register_with_metrics};
 
 #[inline(always)]
@@ -78,6 +79,40 @@ pub(super) fn exec_access_hot(
 }
 
 #[inline(always)]
+pub(super) fn exec_list_index_hot(regs: &mut [Val], dst: u16, base: u16, index: u16, collect_metrics: bool) {
+    let out = match (&regs[base as usize], &regs[index as usize]) {
+        (Val::List(list), Val::Int(index)) if *index >= 0 => list
+            .get(*index as usize)
+            .map(|value| copy_container_value_for_register_with_metrics(value, collect_metrics))
+            .unwrap_or(Val::Nil),
+        _ => Val::Nil,
+    };
+    assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
+}
+
+#[inline(always)]
+pub(super) fn exec_str_index_hot(regs: &mut [Val], dst: u16, base: u16, index: u16, collect_metrics: bool) {
+    let out = match (&regs[base as usize], &regs[index as usize]) {
+        (base_val, Val::Int(index)) if *index >= 0 && base_val.as_str().is_some() => {
+            let text = base_val.as_str().unwrap();
+            if text.is_ascii() {
+                text.as_bytes()
+                    .get(*index as usize)
+                    .copied()
+                    .map_or(Val::Nil, Val::ascii_char_value)
+            } else {
+                text.chars()
+                    .nth(*index as usize)
+                    .map(|character| Val::from_str(&character.to_string()))
+                    .unwrap_or(Val::Nil)
+            }
+        }
+        _ => Val::Nil,
+    };
+    assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
+}
+
+#[inline(always)]
 fn access_int_value(regs: &[Val], base: u16, field: u16) -> Option<i64> {
     match (&regs[base as usize], &regs[field as usize]) {
         (Val::List(list), Val::Int(index)) if *index >= 0 => match list.get(*index as usize) {
@@ -108,6 +143,7 @@ pub(super) fn exec_access_int_arith_hot(
     access_dst: u16,
     base: u16,
     field: u16,
+    write_access_dst: bool,
     arith_op: PackedArithOp,
     arith_dst: u16,
     arith_a: u16,
@@ -119,7 +155,9 @@ pub(super) fn exec_access_int_arith_hot(
         return exec_int_arith(regs, func, arith_op, arith_dst, arith_a, arith_b, collect_metrics);
     };
 
-    assign_reg_with_metrics(regs, access_dst as usize, Val::Int(access_value), collect_metrics);
+    if write_access_dst {
+        assign_reg_with_metrics(regs, access_dst as usize, Val::Int(access_value), collect_metrics);
+    }
     let maybe_out = match (arith_a == access_dst, arith_b == access_dst) {
         (true, _) => match &regs[arith_b as usize] {
             Val::Int(rhs) => int_arith_value(arith_op, access_value, *rhs),
@@ -135,6 +173,9 @@ pub(super) fn exec_access_int_arith_hot(
         assign_reg_with_metrics(regs, arith_dst as usize, Val::Int(out), collect_metrics);
         Ok(())
     } else {
+        if !write_access_dst {
+            assign_reg_with_metrics(regs, access_dst as usize, Val::Int(access_value), collect_metrics);
+        }
         exec_int_arith(regs, func, arith_op, arith_dst, arith_a, arith_b, collect_metrics)
     }
 }
@@ -390,6 +431,14 @@ pub(super) fn exec_map_upsert_add(
 }
 
 #[inline(always)]
+fn read_packed_int(regs: &[Val], consts: &[Val], rk: u16) -> Option<i64> {
+    match rk_read(regs, consts, rk) {
+        Val::Int(value) => Some(*value),
+        _ => None,
+    }
+}
+
+#[inline(always)]
 pub(super) fn exec_int_arith(
     regs: &mut [Val],
     func: &Function,
@@ -399,7 +448,27 @@ pub(super) fn exec_int_arith(
     b: u16,
     collect_metrics: bool,
 ) -> Result<()> {
-    if let (Val::Int(lhs), Val::Int(rhs)) = (&regs[a as usize], &regs[b as usize]) {
+    if ((a | b) & RK_CONST_BIT) == 0
+        && let (Val::Int(lhs), Val::Int(rhs)) = (&regs[a as usize], &regs[b as usize])
+    {
+        let out = match op {
+            PackedArithOp::Add => lhs + rhs,
+            PackedArithOp::Sub => lhs - rhs,
+            PackedArithOp::Mul => lhs * rhs,
+            PackedArithOp::Mod => lhs % rhs,
+            PackedArithOp::Div => {
+                let out = BinOp::Div.eval_vals_with_metrics(&regs[a as usize], &regs[b as usize], collect_metrics)?;
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
+                return Ok(());
+            }
+        };
+        assign_reg_with_metrics(regs, dst as usize, Val::Int(out), collect_metrics);
+    } else if ((a | b) & RK_CONST_BIT) != 0
+        && let (Some(lhs), Some(rhs)) = (
+            read_packed_int(regs, &func.consts, a),
+            read_packed_int(regs, &func.consts, b),
+        )
+    {
         let out = match op {
             PackedArithOp::Add => lhs + rhs,
             PackedArithOp::Sub => lhs - rhs,
@@ -425,6 +494,63 @@ pub(super) fn exec_int_arith(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn exec_mul_add_mod_int_hot(
+    regs: &mut [Val],
+    func: &Function,
+    mul_dst: u16,
+    mul_a: u16,
+    mul_b: u16,
+    add_dst: u16,
+    add_a: u16,
+    add_b: u16,
+    mod_dst: u16,
+    mod_rhs: u16,
+    collect_metrics: bool,
+) -> Result<()> {
+    let mul_lhs = match rk_read(regs, &func.consts, mul_a) {
+        Val::Int(value) => Some(*value),
+        _ => None,
+    };
+    let mul_rhs = match rk_read(regs, &func.consts, mul_b) {
+        Val::Int(value) => Some(*value),
+        _ => None,
+    };
+    if let (Some(mul_lhs), Some(mul_rhs)) = (mul_lhs, mul_rhs) {
+        let mul_out = mul_lhs * mul_rhs;
+        let add_other = if add_a == mul_dst { add_b } else { add_a };
+        let add_rhs = match rk_read(regs, &func.consts, add_other) {
+            Val::Int(value) => Some(*value),
+            _ => None,
+        };
+        let mod_rhs = match rk_read(regs, &func.consts, mod_rhs) {
+            Val::Int(value) => Some(*value),
+            _ => None,
+        };
+        if let (Some(add_rhs), Some(mod_rhs)) = (add_rhs, mod_rhs) {
+            assign_reg_with_metrics(
+                regs,
+                mod_dst as usize,
+                Val::Int((mul_out + add_rhs) % mod_rhs),
+                collect_metrics,
+            );
+            return Ok(());
+        }
+    }
+
+    exec_int_arith(regs, func, PackedArithOp::Mul, mul_dst, mul_a, mul_b, collect_metrics)?;
+    exec_int_arith(regs, func, PackedArithOp::Add, add_dst, add_a, add_b, collect_metrics)?;
+    exec_int_arith(
+        regs,
+        func,
+        PackedArithOp::Mod,
+        mod_dst,
+        add_dst,
+        mod_rhs,
+        collect_metrics,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

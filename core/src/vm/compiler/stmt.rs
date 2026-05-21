@@ -25,7 +25,7 @@ use crate::{
     op::BinOp,
     stmt::{ForPattern, Stmt},
     val::Val,
-    vm::Op,
+    vm::{IntCmpKind, Op},
 };
 
 use super::FunctionBuilder;
@@ -199,6 +199,63 @@ impl FunctionBuilder {
             Stmt::Block { statements } if statements.len() == 1 => Some(statements[0].as_ref()),
             other => Some(other),
         }
+    }
+
+    fn int_cmp_kind_for_op(op: &BinOp) -> Option<IntCmpKind> {
+        match op {
+            BinOp::Eq => Some(IntCmpKind::Eq),
+            BinOp::Ne => Some(IntCmpKind::Ne),
+            BinOp::Lt => Some(IntCmpKind::Lt),
+            BinOp::Le => Some(IntCmpKind::Le),
+            BinOp::Gt => Some(IntCmpKind::Gt),
+            BinOp::Ge => Some(IntCmpKind::Ge),
+            _ => None,
+        }
+    }
+
+    fn try_emit_int_conditional_move(&mut self, condition: &Expr, then_stmt: &Stmt) -> bool {
+        let Some(then_stmt) = Self::single_expr_stmt(then_stmt) else {
+            return false;
+        };
+        let Stmt::Assign {
+            name: dst_name, value, ..
+        } = then_stmt
+        else {
+            return false;
+        };
+        if self.const_names.contains(dst_name) {
+            return false;
+        }
+        let Expr::Var(src_name) = value.as_ref() else {
+            return false;
+        };
+        let Expr::Bin(left, op, right) = condition else {
+            return false;
+        };
+        let Some(kind) = Self::int_cmp_kind_for_op(op) else {
+            return false;
+        };
+        let (Expr::Var(left_name), Expr::Var(right_name)) = (left.as_ref(), right.as_ref()) else {
+            return false;
+        };
+        let (Some(dst), Some(src), Some(a), Some(b)) = (
+            self.lookup(dst_name),
+            self.lookup(src_name),
+            self.lookup(left_name),
+            self.lookup(right_name),
+        ) else {
+            return false;
+        };
+        if !(self.reg_known_int(dst) && self.reg_known_int(src) && self.reg_known_int(a) && self.reg_known_int(b)) {
+            return false;
+        }
+        self.emit(Op::CMoveInt { dst, src, a, b, kind });
+        if self.should_export_global_write(dst_name) {
+            let kname = self.k(Val::from_str(dst_name.as_str()));
+            self.emit(Op::DefineGlobal(kname, dst));
+        }
+        self.forget_known_value(dst_name);
+        true
     }
 
     fn condition_is_var_eq_nil(expr: &Expr, name: &str) -> bool {
@@ -500,7 +557,11 @@ impl FunctionBuilder {
                     let saved_breaks = std::mem::take(&mut self.break_locations);
                     let saved_conts = std::mem::take(&mut self.continue_locations);
                     let r_idx = match start {
-                        Some(e) => self.expr(e),
+                        Some(e) => {
+                            let r = self.alloc();
+                            self.emit_expr_into(r, e);
+                            r
+                        }
                         None => {
                             let r = self.alloc();
                             let k0 = self.k(Val::Int(0));
@@ -567,10 +628,21 @@ impl FunctionBuilder {
                     } else {
                         Vec::new()
                     };
+                    let loop_invariant_lets = if cached_loop_call.is_none() && cached_loop_delta.is_none() {
+                        self.collect_loop_invariant_literal_lets(body)
+                    } else {
+                        Vec::new()
+                    };
                     let loop_invariant_start = self.loop_invariant_expr_regs.len();
+                    let loop_invariant_let_start = self.loop_invariant_let_regs.len();
                     for expr in loop_invariant_exprs {
                         let reg = self.expr(&expr);
                         self.loop_invariant_expr_regs.push((expr, reg));
+                    }
+                    for (name, expr) in loop_invariant_lets {
+                        if let Some(reg) = self.lookup_loop_invariant_expr(&expr) {
+                            self.loop_invariant_let_regs.push((name, reg));
+                        }
                     }
                     let direct_range_var = match pattern {
                         ForPattern::Variable(name) => !Self::stmt_assigns_name(body, name),
@@ -647,6 +719,7 @@ impl FunctionBuilder {
                         self.with_const_scope(|builder| builder.stmt(body));
                     }
                     self.loop_invariant_expr_regs.truncate(loop_invariant_start);
+                    self.loop_invariant_let_regs.truncate(loop_invariant_let_start);
 
                     let pending_continues = std::mem::take(&mut self.continue_locations);
                     let step_pos = self.code.len();
@@ -681,6 +754,9 @@ impl FunctionBuilder {
                     self.break_locations = saved_breaks;
                     self.continue_locations = saved_conts;
                 } else {
+                    if self.try_emit_typed_for_iter_loop(pattern, iterable, body) {
+                        return;
+                    }
                     self.loop_depth = self.loop_depth.saturating_add(1);
                     let saved_breaks = std::mem::take(&mut self.break_locations);
                     let saved_conts = std::mem::take(&mut self.continue_locations);
@@ -814,13 +890,17 @@ impl FunctionBuilder {
                         let rv = if let Some(v) = const_value.clone()
                             && !Self::const_value_is_mutable_container(&v)
                         {
-                            let dst = self.alloc();
-                            if matches!(v, Val::Map(_)) {
-                                self.map_locals.insert(dst);
+                            if let Some(reg) = self.lookup_loop_invariant_let(name) {
+                                reg
+                            } else {
+                                let dst = self.alloc();
+                                if matches!(v, Val::Map(_)) {
+                                    self.map_locals.insert(dst);
+                                }
+                                let k = self.k(v);
+                                self.emit(Op::LoadK(dst, k));
+                                dst
                             }
-                            let k = self.k(v);
-                            self.emit(Op::LoadK(dst, k));
-                            dst
                         } else {
                             self.expr(value)
                         };
@@ -910,6 +990,9 @@ impl FunctionBuilder {
                 then_stmt,
                 else_stmt,
             } => {
+                if else_stmt.is_none() && self.try_emit_int_conditional_move(condition, then_stmt) {
+                    return;
+                }
                 let mut branch_assigned_names = std::collections::HashSet::new();
                 Self::collect_stmt_assigned_names(then_stmt, &mut branch_assigned_names);
                 if let Some(es) = else_stmt {
@@ -1272,18 +1355,8 @@ impl FunctionBuilder {
                         } else {
                             self.expr(value)
                         };
-                        let int_operands = self.reg_known_int(idx) && self.reg_known_int(r_value);
-                        match op {
-                            BinOp::Add if int_operands => self.emit(Op::AddInt(idx, idx, r_value)),
-                            BinOp::Add => self.emit(Op::Add(idx, idx, r_value)),
-                            BinOp::Sub if int_operands => self.emit(Op::SubInt(idx, idx, r_value)),
-                            BinOp::Sub => self.emit(Op::Sub(idx, idx, r_value)),
-                            BinOp::Mul if int_operands => self.emit(Op::MulInt(idx, idx, r_value)),
-                            BinOp::Mul => self.emit(Op::Mul(idx, idx, r_value)),
-                            BinOp::Mod if int_operands => self.emit(Op::ModInt(idx, idx, r_value)),
-                            BinOp::Mod => self.emit(Op::Mod(idx, idx, r_value)),
-                            BinOp::Div => self.emit(Op::Div(idx, idx, r_value)),
-                            _ => return,
+                        if !self.emit_in_place_numeric_op(idx, idx, r_value, op) {
+                            return;
                         }
                         if self.should_export_global_write(name) {
                             let kname = self.k(Val::from_str(name.as_str()));
@@ -1301,20 +1374,8 @@ impl FunctionBuilder {
                         idx
                     };
                     let r_value = self.expr(value);
-                    let int_operands = self.reg_known_int(r_current) && self.reg_known_int(r_value);
-                    match op {
-                        BinOp::Add if int_operands => self.emit(Op::AddInt(idx, r_current, r_value)),
-                        BinOp::Add => self.emit(Op::Add(idx, r_current, r_value)),
-                        BinOp::Sub if int_operands => self.emit(Op::SubInt(idx, r_current, r_value)),
-                        BinOp::Sub => self.emit(Op::Sub(idx, r_current, r_value)),
-                        BinOp::Mul if int_operands => self.emit(Op::MulInt(idx, r_current, r_value)),
-                        BinOp::Mul => self.emit(Op::Mul(idx, r_current, r_value)),
-                        BinOp::Div => self.emit(Op::Div(idx, r_current, r_value)),
-                        BinOp::Mod if int_operands => self.emit(Op::ModInt(idx, r_current, r_value)),
-                        BinOp::Mod => self.emit(Op::Mod(idx, r_current, r_value)),
-                        _ => {
-                            return;
-                        }
+                    if !self.emit_in_place_numeric_op(idx, r_current, r_value, op) {
+                        return;
                     }
                     if self.should_export_global_write(name) {
                         let kname = self.k(Val::from_str(name.as_str()));

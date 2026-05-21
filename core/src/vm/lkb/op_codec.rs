@@ -109,6 +109,14 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_u16(out, b);
             write_i16(out, ofs);
         }
+        Op::CMoveInt { dst, src, a, b, kind } => {
+            write_u8(out, 109);
+            write_u16(out, dst);
+            write_u16(out, src);
+            write_u16(out, a);
+            write_u16(out, b);
+            write_u8(out, kind as u8);
+        }
         Op::CmpEqImm(dst, src, imm) => {
             write_u8(out, 51);
             write_u16(out, dst);
@@ -174,6 +182,7 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
         Op::Access(dst, base, field) => encode_op3(out, 26, dst, base, field),
         Op::AccessK(dst, base, kidx) => encode_op3(out, 27, dst, base, kidx),
         Op::IndexK(dst, base, kidx) => encode_op3(out, 28, dst, base, kidx),
+        Op::ListIndex(dst, base, index) => encode_op3(out, 107, dst, base, index),
         Op::ListSetI { dst, list, index, val } => {
             write_u8(out, 82);
             write_u16(out, dst);
@@ -181,6 +190,7 @@ pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
             write_i16(out, index);
             write_u16(out, val);
         }
+        Op::StrIndex(dst, base, index) => encode_op3(out, 108, dst, base, index),
         Op::ListIndexI(dst, base, index) => {
             write_u8(out, 76);
             write_u16(out, dst);
@@ -585,6 +595,14 @@ pub(super) fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
             b: read_u16(bytes, cursor)?,
             ofs: read_i16(bytes, cursor)?,
         },
+        109 => Op::CMoveInt {
+            dst: read_u16(bytes, cursor)?,
+            src: read_u16(bytes, cursor)?,
+            a: read_u16(bytes, cursor)?,
+            b: read_u16(bytes, cursor)?,
+            kind: crate::vm::bytecode::IntCmpKind::from_u8(read_u8(bytes, cursor)?)
+                .ok_or_else(|| anyhow::anyhow!("invalid CMoveInt kind"))?,
+        },
         20 => decode_op3(Op::In, bytes, cursor)?,
         21 => Op::LoadLocal(read_u16(bytes, cursor)?, read_u16(bytes, cursor)?),
         22 => Op::StoreLocal(read_u16(bytes, cursor)?, read_u16(bytes, cursor)?),
@@ -597,12 +615,14 @@ pub(super) fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
         26 => decode_op3(Op::Access, bytes, cursor)?,
         27 => decode_op3(Op::AccessK, bytes, cursor)?,
         28 => decode_op3(Op::IndexK, bytes, cursor)?,
+        107 => decode_op3(Op::ListIndex, bytes, cursor)?,
         82 => Op::ListSetI {
             dst: read_u16(bytes, cursor)?,
             list: read_u16(bytes, cursor)?,
             index: read_i16(bytes, cursor)?,
             val: read_u16(bytes, cursor)?,
         },
+        108 => decode_op3(Op::StrIndex, bytes, cursor)?,
         76 => Op::ListIndexI(
             read_u16(bytes, cursor)?,
             read_u16(bytes, cursor)?,

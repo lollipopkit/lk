@@ -10,6 +10,7 @@ pub struct Bc32Decoded {
 pub struct Bc32DecodedInstr {
     pub op: Op,
     pub next_pc: usize,
+    pub source_pc: usize,
 }
 
 impl Bc32Decoded {
@@ -31,7 +32,8 @@ impl Bc32Decoded {
                 let (op, next_pc) = decode_ext_op_at(code32, pc)?;
                 let instr_idx = instrs.len() as u32;
                 word_to_instr[pc] = instr_idx;
-                instrs.push(Bc32DecodedInstr { op, next_pc });
+                let source_pc = instrs.len();
+                instrs.push(Bc32DecodedInstr { op, next_pc, source_pc });
                 pc = next_pc;
                 continue;
             }
@@ -211,10 +213,26 @@ impl Bc32Decoded {
             if pc < word_to_instr.len() {
                 word_to_instr[pc] = instr_idx;
             }
-            instrs.push(Bc32DecodedInstr { op, next_pc: next });
+            let source_pc = instrs.len();
+            instrs.push(Bc32DecodedInstr {
+                op,
+                next_pc: next,
+                source_pc,
+            });
             pc = next;
         }
 
         Some(Self { instrs, word_to_instr })
+    }
+
+    pub fn from_words_with_source_pcs(code32: &[u32], source_pcs: &[usize]) -> Option<Self> {
+        let mut decoded = Self::from_words(code32)?;
+        if decoded.instrs.len() != source_pcs.len() {
+            return None;
+        }
+        for (instr, source_pc) in decoded.instrs.iter_mut().zip(source_pcs.iter().copied()) {
+            instr.source_pc = source_pc;
+        }
+        Some(decoded)
     }
 }

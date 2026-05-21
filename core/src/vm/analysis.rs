@@ -1269,6 +1269,7 @@ pub fn opcode_name(op: &Op) -> &'static str {
         Op::CmpGt(..) => "CmpGt",
         Op::CmpGe(..) => "CmpGe",
         Op::CmpI { .. } => "CmpI",
+        Op::CMoveInt { .. } => "CMoveInt",
         Op::CmpEqImm(..) => "CmpEqImm",
         Op::CmpNeImm(..) => "CmpNeImm",
         Op::CmpLtImm(..) => "CmpLtImm",
@@ -1284,8 +1285,10 @@ pub fn opcode_name(op: &Op) -> &'static str {
         Op::Access(..) => "Access",
         Op::AccessK(..) => "AccessK",
         Op::IndexK(..) => "IndexK",
+        Op::ListIndex(..) => "ListIndex",
         Op::ListIndexI(..) => "ListIndexI",
         Op::ListSetI { .. } => "ListSetI",
+        Op::StrIndex(..) => "StrIndex",
         Op::StrIndexI(..) => "StrIndexI",
         Op::Len { .. } => "Len",
         Op::ListLen { .. } => "ListLen",
@@ -1377,6 +1380,7 @@ pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
         | Op::CmpGt(..)
         | Op::CmpGe(..)
         | Op::CmpI { .. }
+        | Op::CMoveInt { .. }
         | Op::CmpEqImm(..)
         | Op::CmpNeImm(..)
         | Op::CmpLtImm(..)
@@ -1396,8 +1400,10 @@ pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
         Op::Access(..)
         | Op::AccessK(..)
         | Op::IndexK(..)
+        | Op::ListIndex(..)
         | Op::ListIndexI(..)
         | Op::ListSetI { .. }
+        | Op::StrIndex(..)
         | Op::StrIndexI(..)
         | Op::Index { .. }
         | Op::Len { .. }

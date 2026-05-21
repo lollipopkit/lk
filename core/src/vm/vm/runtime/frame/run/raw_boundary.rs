@@ -7,7 +7,7 @@ use crate::vm::alloc::RegionAllocator;
 use crate::vm::bytecode::{CaptureSpec, Function};
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::ClosureFastCache;
+use crate::vm::vm::caches::{ClosureFastCache, FunctionRuntimePlan};
 use crate::vm::vm::frame::{CallFrameMeta, FrameInfo, FrameState, RegisterSpan};
 
 #[inline]
@@ -75,6 +75,7 @@ pub(super) fn take_inline_return_meta(frame: *mut FrameState<'_, '_>) -> Option<
 pub(super) fn exec_positional_fast_span_unchecked(
     vm: *mut Vm,
     fun: &Function,
+    runtime: Option<&FunctionRuntimePlan>,
     args: RegisterSpan,
     ctx: &mut VmContext,
     frame_info: Option<&FrameInfo>,
@@ -87,6 +88,7 @@ pub(super) fn exec_positional_fast_span_unchecked(
     with_vm_mut(vm, |vm| {
         vm.exec_function_positional_fast_span_unchecked(
             fun,
+            runtime,
             args,
             ctx,
             frame_info,

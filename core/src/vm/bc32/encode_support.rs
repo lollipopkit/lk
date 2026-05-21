@@ -189,8 +189,10 @@ pub(super) fn opcode_name(op: &Op) -> &'static str {
         Op::Access(..) => "Access",
         Op::AccessK(..) => "AccessK",
         Op::IndexK(..) => "IndexK",
+        Op::ListIndex(..) => "ListIndex",
         Op::ListIndexI(..) => "ListIndexI",
         Op::ListSetI { .. } => "ListSetI",
+        Op::StrIndex(..) => "StrIndex",
         Op::StrIndexI(..) => "StrIndexI",
         Op::Len { .. } => "Len",
         Op::ListLen { .. } => "ListLen",
@@ -248,5 +250,6 @@ pub(super) fn opcode_name(op: &Op) -> &'static str {
         Op::CmpLeImmJmp { .. } => "CmpLeImmJmp",
         Op::AddIntImmJmp { .. } => "AddIntImmJmp",
         Op::CmpIntJmp { .. } => "CmpIntJmp",
+        Op::CMoveInt { .. } => "CMoveInt",
     }
 }

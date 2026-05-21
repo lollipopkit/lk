@@ -232,12 +232,7 @@ impl FunctionBuilder {
             && let Expr::Var(rhs_name) = right_arg
             && let Some(rhs) = self.lookup(rhs_name)
         {
-            if self.reg_known_int(dst) && self.reg_known_int(rhs) {
-                self.emit(Op::AddInt(dst, dst, rhs));
-            } else {
-                self.emit(Op::Add(dst, dst, rhs));
-            }
-            return true;
+            return self.emit_in_place_numeric_op(dst, dst, rhs, op);
         }
         if matches!(op, BinOp::Sub)
             && let Some(imm) = self
@@ -253,12 +248,7 @@ impl FunctionBuilder {
             && let Expr::Var(rhs_name) = right_arg
             && let Some(rhs) = self.lookup(rhs_name)
         {
-            if self.reg_known_int(dst) && self.reg_known_int(rhs) {
-                self.emit(Op::SubInt(dst, dst, rhs));
-            } else {
-                self.emit(Op::Sub(dst, dst, rhs));
-            }
-            return true;
+            return self.emit_in_place_numeric_op(dst, dst, rhs, op);
         }
 
         false
@@ -817,12 +807,7 @@ impl FunctionBuilder {
             *ofs = (add_pos as isize - j_add as isize) as i16;
         }
 
-        if self.reg_known_int(target_reg) && self.reg_known_int(cache_reg) {
-            self.emit(Op::AddInt(target_reg, target_reg, cache_reg));
-        } else {
-            self.emit(Op::Add(target_reg, target_reg, cache_reg));
-        }
-        true
+        self.emit_in_place_numeric_op(target_reg, target_reg, cache_reg, &BinOp::Add)
     }
 
     pub(super) fn try_emit_simple_self_assign(&mut self, name: &str, value: &Expr) -> bool {
@@ -871,24 +856,14 @@ impl FunctionBuilder {
             }
             (BinOp::Add, Expr::Var(rhs_name)) => {
                 if let Some(rhs) = self.lookup(rhs_name) {
-                    if self.reg_known_int(dst) && self.reg_known_int(rhs) {
-                        self.emit(Op::AddInt(dst, dst, rhs));
-                    } else {
-                        self.emit(Op::Add(dst, dst, rhs));
-                    }
-                    true
+                    self.emit_in_place_numeric_op(dst, dst, rhs, op)
                 } else {
                     false
                 }
             }
             (BinOp::Sub, Expr::Var(rhs_name)) => {
                 if let Some(rhs) = self.lookup(rhs_name) {
-                    if self.reg_known_int(dst) && self.reg_known_int(rhs) {
-                        self.emit(Op::SubInt(dst, dst, rhs));
-                    } else {
-                        self.emit(Op::Sub(dst, dst, rhs));
-                    }
-                    true
+                    self.emit_in_place_numeric_op(dst, dst, rhs, op)
                 } else {
                     false
                 }
@@ -898,30 +873,15 @@ impl FunctionBuilder {
             // Only add/sub/mul have dedicated Int opcodes; div/mod fall back.
             (BinOp::Add, _) => {
                 let rhs_reg = self.expr(right);
-                if self.reg_known_int(dst) && self.reg_known_int(rhs_reg) {
-                    self.emit(Op::AddInt(dst, dst, rhs_reg));
-                } else {
-                    self.emit(Op::Add(dst, dst, rhs_reg));
-                }
-                true
+                self.emit_in_place_numeric_op(dst, dst, rhs_reg, op)
             }
             (BinOp::Sub, _) => {
                 let rhs_reg = self.expr(right);
-                if self.reg_known_int(dst) && self.reg_known_int(rhs_reg) {
-                    self.emit(Op::SubInt(dst, dst, rhs_reg));
-                } else {
-                    self.emit(Op::Sub(dst, dst, rhs_reg));
-                }
-                true
+                self.emit_in_place_numeric_op(dst, dst, rhs_reg, op)
             }
             (BinOp::Mul, _) => {
                 let rhs_reg = self.expr(right);
-                if self.reg_known_int(dst) && self.reg_known_int(rhs_reg) {
-                    self.emit(Op::MulInt(dst, dst, rhs_reg));
-                } else {
-                    self.emit(Op::Mul(dst, dst, rhs_reg));
-                }
-                true
+                self.emit_in_place_numeric_op(dst, dst, rhs_reg, op)
             }
             _ => false,
         }

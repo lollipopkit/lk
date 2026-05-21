@@ -5,6 +5,7 @@
 
 mod alloc;
 mod analysis;
+mod analysis_queries;
 mod bc32;
 mod bytecode;
 mod compiler;

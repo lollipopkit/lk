@@ -155,6 +155,7 @@ impl Vm {
     pub(super) fn exec_function_positional_fast_span_unchecked(
         &mut self,
         fun: &Function,
+        runtime: Option<&FunctionRuntimePlan>,
         args: RegisterSpan,
         ctx: &mut VmContext,
         frame_info: Option<&FrameInfo>,
@@ -171,6 +172,7 @@ impl Vm {
         );
         self.exec_function_positional_fast_span_impl(
             fun,
+            runtime,
             args,
             ctx,
             frame_info,
@@ -186,6 +188,7 @@ impl Vm {
     fn exec_function_positional_fast_span_impl(
         &mut self,
         fun: &Function,
+        runtime: Option<&FunctionRuntimePlan>,
         args: RegisterSpan,
         ctx: &mut VmContext,
         frame_info: Option<&FrameInfo>,
@@ -195,7 +198,11 @@ impl Vm {
         return_meta: CallFrameMeta,
         collect_metrics: bool,
     ) -> Result<Val> {
-        let runtime = cache.prepare_function_runtime(fun);
+        let runtime = if let Some(runtime) = runtime {
+            cache.prepare_cached_function_runtime(runtime)
+        } else {
+            cache.prepare_function_runtime(fun)
+        };
         let self_ptr: *mut Vm = self;
         let activation =
             self.activate_runtime_frame(runtime, FrameStateSetup::inline_ephemeral(return_meta, collect_metrics));

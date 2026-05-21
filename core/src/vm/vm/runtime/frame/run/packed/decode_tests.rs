@@ -20,6 +20,31 @@ mod tests {
     }
 
     #[test]
+    fn packed_hot_slot_decodes_cmove_int() {
+        let function = function_with(vec![Op::CMoveInt {
+            dst: 0,
+            src: 1,
+            a: 1,
+            b: 0,
+            kind: crate::vm::IntCmpKind::Lt,
+        }]);
+        let bc = Bc32Function::try_from_function(&function).expect("CMoveInt must be BC32 encodable");
+        let word = bc.code32[0];
+        let slot = build_hot_slot(
+            &bc.code32,
+            bc.decoded.as_deref(),
+            &bc.consts,
+            0,
+            word,
+            bc32::tag_of(word),
+        )
+        .expect("CMoveInt hot slot");
+
+        assert!(matches!(slot.kind, PackedHotKind::CMoveInt { .. }));
+        assert_eq!(slot.next_pc, 4);
+    }
+
+    #[test]
     fn packed_hot_slot_fuses_dynamic_compare_followed_by_jmp_false() {
         let function = function_with(vec![
             Op::CmpLt(2, 0, 1),
@@ -52,22 +77,14 @@ mod tests {
     }
 
     #[test]
-    fn packed_hot_slot_decodes_nop() {
+    fn packed_hot_slot_uses_nop_elided_source_pc() {
         let function = function_with(vec![Op::Nop, Op::Ret { base: 0, retc: 1 }]);
         let bc = Bc32Function::try_from_function(&function).expect("nop must be BC32 encodable");
-        let word = bc.code32[0];
-        let slot = build_hot_slot(
-            &bc.code32,
-            bc.decoded.as_deref(),
-            &bc.consts,
-            0,
-            word,
-            bc32::tag_of(word),
-        )
-        .expect("nop hot slot");
+        let decoded = bc.decoded.as_deref().expect("decoded table");
 
-        assert!(matches!(slot.kind, PackedHotKind::Nop));
-        assert_eq!(slot.next_pc, 1);
+        assert_eq!(bc.code32.len(), 1);
+        assert!(matches!(decoded.instrs[0].op, Op::Ret { base: 0, retc: 1 }));
+        assert_eq!(decoded.instrs[0].source_pc, 1);
     }
 
     #[test]
@@ -832,6 +849,7 @@ mod tests {
                 access_dst: 2,
                 base: 0,
                 field: 1,
+                write_access_dst: false,
                 arith_op: PackedArithOp::Add,
                 arith_dst: 3,
                 arith_a: 3,
@@ -839,6 +857,48 @@ mod tests {
             }
         ));
         assert_eq!(slot.next_pc, bc.decoded.as_ref().unwrap().instrs[1].next_pc);
+    }
+
+    #[test]
+    fn packed_access_int_arith_keeps_access_temp_when_live_after_fusion() {
+        let function = Function {
+            consts: Vec::new(),
+            code: vec![
+                Op::ListIndex(2, 0, 1),
+                Op::AddInt(3, 3, 2),
+                Op::Move(4, 2),
+                Op::Ret { base: 3, retc: 1 },
+            ],
+            n_regs: 5,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: None,
+        };
+        let bc = Bc32Function::try_from_function(&function).expect("list index add chain must be BC32 encodable");
+        let word = bc.code32[0];
+        let slot = build_hot_slot(
+            &bc.code32,
+            bc.decoded.as_deref(),
+            &bc.consts,
+            0,
+            word,
+            bc32::tag_of(word),
+        )
+        .expect("list index add hot slot");
+
+        assert!(matches!(
+            slot.kind,
+            PackedHotKind::AccessIntArith {
+                access_dst: 2,
+                write_access_dst: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -992,6 +1052,54 @@ mod tests {
             }
         ));
         assert_eq!(slot.next_pc, bc.decoded.as_ref().unwrap().instrs[1].next_pc);
+    }
+
+    #[test]
+    fn packed_hot_slot_fuses_mul_add_mod_int_when_temps_are_dead() {
+        let function = Function {
+            consts: Vec::new(),
+            code: vec![
+                Op::MulInt(2, 0, 1),
+                Op::AddInt(3, 2, 4),
+                Op::ModInt(5, 3, 6),
+                Op::Ret { base: 5, retc: 1 },
+            ],
+            n_regs: 7,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: None,
+        };
+        let bc = Bc32Function::try_from_function(&function).expect("mul add mod chain must be BC32 encodable");
+        let word = bc.code32[0];
+        let slot = build_hot_slot(
+            &bc.code32,
+            bc.decoded.as_deref(),
+            &bc.consts,
+            0,
+            word,
+            bc32::tag_of(word),
+        )
+        .expect("mul add mod hot slot");
+
+        assert!(matches!(
+            slot.kind,
+            PackedHotKind::MulIntAddIntModInt {
+                mul_dst: 2,
+                mul_a: 0,
+                mul_b: 1,
+                add_dst: 3,
+                add_a: 2,
+                add_b: 4,
+                mod_dst: 5,
+                mod_rhs: 6,
+            }
+        ));
+        assert_eq!(slot.next_pc, bc.decoded.as_ref().unwrap().instrs[2].next_pc);
     }
 
     #[test]

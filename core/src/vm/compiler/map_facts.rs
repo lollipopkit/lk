@@ -1,8 +1,6 @@
 use crate::{
     expr::Expr,
-    op::BinOp,
     val::{Type, Val},
-    vm::PerfValueKind,
 };
 
 use super::FunctionBuilder;
@@ -146,7 +144,7 @@ impl FunctionBuilder {
         }
     }
 
-    fn val_value_fact(value: &Val) -> Option<Type> {
+    pub(crate) fn val_value_fact(value: &Val) -> Option<Type> {
         match value {
             Val::Int(_) => Some(Type::Int),
             Val::Float(_) => Some(Type::Float),
@@ -154,213 +152,6 @@ impl FunctionBuilder {
             Val::Map(_) => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
             _ => None,
         }
-    }
-
-    fn perf_kind_value_fact(kind: PerfValueKind) -> Option<Type> {
-        match kind {
-            PerfValueKind::Int => Some(Type::Int),
-            PerfValueKind::Float => Some(Type::Float),
-            PerfValueKind::Bool => Some(Type::Bool),
-            PerfValueKind::String => Some(Type::String),
-            PerfValueKind::List => Some(Type::List(Box::new(Type::Any))),
-            PerfValueKind::Map => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
-            PerfValueKind::Nil => Some(Type::Nil),
-            PerfValueKind::Unknown => None,
-        }
-    }
-
-    fn performance_reg_value_fact(&self, reg: u16) -> Option<Type> {
-        self.analysis
-            .as_ref()
-            .and_then(|analysis| analysis.perf.register(reg))
-            .and_then(|fact| Self::perf_kind_value_fact(fact.value.kind))
-    }
-
-    fn reg_value_fact(&self, reg: u16) -> Option<Type> {
-        if let Some(fact) = self.performance_reg_value_fact(reg) {
-            return Some(fact);
-        }
-        if self.int_regs.contains(&reg) {
-            return Some(Type::Int);
-        }
-        if self.float_regs.contains(&reg) {
-            return Some(Type::Float);
-        }
-        if self.list_locals.contains(&reg) {
-            return Some(Type::List(Box::new(Type::Any)));
-        }
-        if self.map_locals.contains(&reg) {
-            return Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any)));
-        }
-        None
-    }
-
-    pub(crate) fn reg_known_int(&self, reg: u16) -> bool {
-        self.reg_value_fact(reg) == Some(Type::Int)
-    }
-
-    pub(crate) fn reg_known_list(&self, reg: u16) -> bool {
-        matches!(self.reg_value_fact(reg), Some(Type::List(_)))
-    }
-
-    pub(crate) fn reg_known_map(&self, reg: u16) -> bool {
-        matches!(self.reg_value_fact(reg), Some(Type::Map(_, _)))
-    }
-
-    pub(crate) fn expr_value_fact(&self, expr: &Expr) -> Option<Type> {
-        if let Some(ty) = self.expr_type_hint(expr).and_then(Self::normalized_value_fact) {
-            return Some(ty);
-        }
-        match expr {
-            Expr::Val(value) => Self::val_value_fact(value),
-            Expr::Var(name) => {
-                if let Some(reg) = self.lookup(name) {
-                    if let Some(fact) = self.reg_value_fact(reg) {
-                        return Some(fact);
-                    }
-                }
-                self.lookup_const(name).and_then(Self::val_value_fact)
-            }
-            Expr::Paren(inner) => self.expr_value_fact(inner),
-            Expr::Bin(left, op, right) if !matches!(op, BinOp::Div) && op.is_arith() => {
-                let left = self.expr_value_fact(left);
-                let right = self.expr_value_fact(right);
-                match (left, right) {
-                    (Some(Type::Int), Some(Type::Int)) => Some(Type::Int),
-                    (Some(Type::Int | Type::Float), Some(Type::Int | Type::Float)) => Some(Type::Float),
-                    _ => None,
-                }
-            }
-            Expr::Access(base, field) => self
-                .list_value_fact_for_base(base.as_ref(), field.as_ref())
-                .or_else(|| self.map_value_fact_for_base(base.as_ref())),
-            Expr::Call(name, _) => self.direct_call_return_value_fact(name),
-            Expr::CallExpr(callee, args) => self.call_expr_value_fact(callee.as_ref(), args.as_slice()),
-            _ => None,
-        }
-    }
-
-    fn call_expr_value_fact(&self, callee: &Expr, args: &[Box<Expr>]) -> Option<Type> {
-        if let Expr::Var(name) = callee {
-            return self.direct_call_return_value_fact(name);
-        }
-        let Expr::Access(_, method) = callee else {
-            return None;
-        };
-        let Expr::Val(method_value) = method.as_ref() else {
-            return None;
-        };
-        if args.is_empty() && method_value.as_str() == Some("len") {
-            return Some(Type::Int);
-        }
-        self.list_get_value_fact(callee, args)
-            .or_else(|| self.map_get_value_fact(callee, args))
-    }
-
-    fn list_get_value_fact(&self, callee: &Expr, args: &[Box<Expr>]) -> Option<Type> {
-        let Expr::Access(receiver, method) = callee else {
-            return None;
-        };
-        let Expr::Val(method_value) = method.as_ref() else {
-            return None;
-        };
-        if method_value.as_str() != Some("get") {
-            return None;
-        }
-
-        if args.len() == 1 {
-            return self.list_get_value_fact_for_base(receiver.as_ref(), args[0].as_ref());
-        }
-        if args.len() == 2
-            && matches!(receiver.as_ref(), Expr::Var(name) if name == "list" && self.lookup(name).is_none())
-        {
-            return self.list_get_value_fact_for_base(args[0].as_ref(), args[1].as_ref());
-        }
-        None
-    }
-
-    fn map_get_value_fact(&self, callee: &Expr, args: &[Box<Expr>]) -> Option<Type> {
-        let Expr::Access(receiver, method) = callee else {
-            return None;
-        };
-        let Expr::Val(method_value) = method.as_ref() else {
-            return None;
-        };
-        if method_value.as_str() != Some("get") {
-            return None;
-        }
-
-        if args.len() == 1 {
-            return self.map_value_fact_for_base(receiver.as_ref());
-        }
-        if args.len() == 2
-            && matches!(receiver.as_ref(), Expr::Var(name) if name == "map" && self.lookup(name).is_none())
-        {
-            return self.map_value_fact_for_base(args[0].as_ref());
-        }
-        None
-    }
-
-    fn map_value_fact_for_base(&self, base: &Expr) -> Option<Type> {
-        let Expr::Var(name) = base else {
-            return None;
-        };
-        let reg = self.lookup(name)?;
-        if let Some(value_kind) = self
-            .analysis
-            .as_ref()
-            .and_then(|analysis| analysis.perf.register(reg))
-            .and_then(|fact| fact.map.map(|map| map.value_kind))
-            && let Some(value_fact) = Self::perf_kind_value_fact(value_kind)
-        {
-            return Some(value_fact);
-        }
-        self.map_value_types.get(&reg).cloned()
-    }
-
-    fn list_value_fact_for_base(&self, base: &Expr, index: &Expr) -> Option<Type> {
-        let Expr::Var(name) = base else {
-            return None;
-        };
-        let reg = self.lookup(name)?;
-        let Expr::Val(Val::Int(index)) = index else {
-            return None;
-        };
-        let perf_list = self
-            .analysis
-            .as_ref()
-            .and_then(|analysis| analysis.perf.register(reg))
-            .and_then(|fact| fact.list);
-        let len = perf_list
-            .and_then(|list| list.known_len)
-            .or_else(|| self.list_lengths.get(&reg).copied())?;
-        let index = normalize_list_index(*index, len)?;
-        if index >= len {
-            return None;
-        }
-        if let Some(value_kind) = perf_list.map(|list| list.value_kind)
-            && let Some(value_fact) = Self::perf_kind_value_fact(value_kind)
-        {
-            return Some(value_fact);
-        }
-        self.list_value_types.get(&reg).cloned()
-    }
-
-    fn list_get_value_fact_for_base(&self, base: &Expr, index: &Expr) -> Option<Type> {
-        let Expr::Val(Val::Int(value)) = index else {
-            return None;
-        };
-        if *value < 0 {
-            return None;
-        }
-        self.list_value_fact_for_base(base, index)
-    }
-
-    fn direct_call_return_value_fact(&self, name: &str) -> Option<Type> {
-        self.inferred_function_return_types
-            .get(name)
-            .and_then(|ty| ty.as_ref())
-            .and_then(Self::normalized_value_fact)
     }
 }
 
@@ -370,7 +161,7 @@ enum ContainerFactKind {
     Map,
 }
 
-fn normalize_list_index(index: i64, len: usize) -> Option<usize> {
+pub(super) fn normalize_list_index(index: i64, len: usize) -> Option<usize> {
     if index >= 0 {
         return usize::try_from(index).ok();
     }

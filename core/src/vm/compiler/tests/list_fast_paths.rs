@@ -110,6 +110,68 @@ fn homogeneous_float_list_index_feeds_typed_arithmetic() {
 }
 
 #[test]
+fn list_for_in_uses_typed_len_and_index() {
+    let source = r#"
+        let data = [2, 3, 5, 7];
+        let total = 0;
+        for value in data {
+            total += value * 2;
+        }
+        return total;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(34));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListLen { .. })),
+        "expected list for-in to use ListLen in {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListIndex(_, _, _))),
+        "expected list for-in to use ListIndex in {:?}",
+        function.code
+    );
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::MulInt(_, _, _) | Op::AddInt(_, _, _) | Op::AddIntImm(_, _, _))),
+        "expected list element fact to feed typed arithmetic in {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().all(|op| !matches!(op, Op::ToIter { .. })),
+        "facts-proven list for-in should avoid ToIter in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn mutating_list_for_in_avoids_typed_direct_iteration() {
+    let source = r#"
+        let data = [1, 2, 3];
+        let total = 0;
+        for value in data {
+            data.push(9);
+            total += value;
+        }
+        return total;
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(6));
+    assert!(
+        function
+            .code
+            .iter()
+            .all(|op| !matches!(op, Op::ListLen { .. } | Op::ListIndex(_, _, _))),
+        "mutating source list must not use typed direct iteration in {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn list_push_invalidates_homogeneous_value_fact() {
     let source = r#"
         let data = [1, 2];
@@ -152,6 +214,19 @@ fn list_push_temporary_value_lowers_to_move_push() {
         function.code.iter().any(|op| matches!(op, Op::ListPushMove { .. })),
         "expected temporary list.push argument to lower to ListPushMove in {:?}",
         function.code
+    );
+    let move_pc = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::ListPushMove { .. }))
+        .expect("ListPushMove pc");
+    let analysis = function.analysis.as_ref().expect("analysis available");
+    assert!(
+        analysis
+            .perf
+            .container_move(move_pc)
+            .is_some_and(|fact| fact.move_value && !fact.move_key),
+        "ListPushMove must be explained by PerformanceFacts.container_moves"
     );
 }
 
@@ -219,6 +294,19 @@ fn list_push_dead_variable_value_lowers_to_move_push() {
         function.code.iter().any(|op| matches!(op, Op::ListPushMove { .. })),
         "expected dead variable list.push argument to lower to ListPushMove in {:?}",
         function.code
+    );
+    let move_pc = function
+        .code
+        .iter()
+        .position(|op| matches!(op, Op::ListPushMove { .. }))
+        .expect("ListPushMove pc");
+    let analysis = function.analysis.as_ref().expect("analysis available");
+    assert!(
+        analysis
+            .perf
+            .container_move(move_pc)
+            .is_some_and(|fact| fact.move_value && !fact.move_key),
+        "ListPushMove must be explained by PerformanceFacts.container_moves"
     );
 }
 

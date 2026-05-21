@@ -1,4 +1,4 @@
-use super::{FunctionBuilder, expr_map::expr_result_is_temporary};
+use super::FunctionBuilder;
 use crate::{expr::Expr, op::BinOp, val::Val, vm::Op};
 
 pub(super) fn same_string_literal(lhs: &Expr, rhs: &Expr) -> bool {
@@ -34,70 +34,39 @@ impl FunctionBuilder {
             return self.expr(split_receiver);
         }
         if args.len() == 3
-            && let Expr::Var(module_name) = obj_expr
-            && module_name == "list"
-            && self.lookup(module_name).is_none()
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("set")
-            && let Expr::Var(list_name) = args[0].as_ref()
-            && let Some(list_reg) = self.lookup(list_name)
-            && self.reg_known_list(list_reg)
+            && self.unshadowed_module(obj_expr, "list")
+            && self.literal_method_name(field_expr) == Some("set")
+            && let Some(list_reg) = self.known_list_expr(args[0].as_ref())
             && let Some(dst) = self.emit_list_set_i(list_reg, &args[1], &args[2])
         {
             return dst;
         }
         if args.len() == 2
-            && let Expr::Var(module_name) = obj_expr
-            && module_name == "list"
-            && self.lookup(module_name).is_none()
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("get")
-            && let Expr::Var(list_name) = args[0].as_ref()
-            && let Some(list_reg) = self.lookup(list_name)
-            && self.reg_known_list(list_reg)
+            && self.unshadowed_module(obj_expr, "list")
+            && self.literal_method_name(field_expr) == Some("get")
+            && let Some(list_reg) = self.known_list_expr(args[0].as_ref())
         {
             return self.emit_list_get_access(list_reg, &args[1]);
         }
         if args.len() == 2
-            && let Expr::Var(module_name) = obj_expr
-            && module_name == "map"
-            && self.lookup(module_name).is_none()
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("get")
+            && self.unshadowed_module(obj_expr, "map")
+            && self.literal_method_name(field_expr) == Some("get")
         {
-            let map_reg = if let Expr::Var(map_name) = args[0].as_ref() {
-                self.lookup(map_name).unwrap_or_else(|| self.expr(&args[0]))
-            } else {
-                self.expr(&args[0])
-            };
+            let map_reg = self.expr_or_lookup(args[0].as_ref());
             return self.emit_map_access(map_reg, &args[1]);
         }
         if args.len() == 2
-            && let Expr::Var(module_name) = obj_expr
-            && module_name == "map"
-            && self.lookup(module_name).is_none()
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("has")
-            && let Expr::Var(map_name) = args[0].as_ref()
-            && let Some(map_reg) = self.lookup(map_name)
-            && self.reg_known_map(map_reg)
+            && self.unshadowed_module(obj_expr, "map")
+            && self.literal_method_name(field_expr) == Some("has")
+            && let Some(map_reg) = self.known_map_expr(args[0].as_ref())
         {
             return self.emit_map_has(map_reg, &args[1]);
         }
         if args.len() == 3
-            && let Expr::Var(module_name) = obj_expr
-            && module_name == "map"
-            && self.lookup(module_name).is_none()
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("set")
+            && self.unshadowed_module(obj_expr, "map")
+            && self.literal_method_name(field_expr) == Some("set")
             && let Expr::Var(map_name) = args[0].as_ref()
         {
-            if let Some(map_reg) = self.lookup(map_name)
-                && self.reg_known_map(map_reg)
-            {
-                self.emit_map_set(map_reg, &args[1], &args[2]);
-                return map_reg;
-            }
             if let Some(map_reg) = self.lookup(map_name) {
                 self.emit_map_set(map_reg, &args[1], &args[2]);
                 return map_reg;
@@ -107,12 +76,18 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("len")
         {
+            if let Some(len) = self.constant_len_expr(obj_expr) {
+                return self.emit_const_int(len);
+            }
             if let Expr::CallExpr(join_callee, join_args) = obj_expr
                 && let Expr::Access(join_receiver, join_field) = join_callee.as_ref()
                 && let Expr::Val(join_method) = join_field.as_ref()
                 && join_method.as_str() == Some("join")
                 && let Some(split_receiver) = split_join_same_separator_receiver(join_receiver, join_args)
             {
+                if let Some(len) = self.constant_len_expr(split_receiver) {
+                    return self.emit_const_int(len);
+                }
                 let obj_reg = self.expr(split_receiver);
                 let out = self.alloc();
                 if matches!(split_receiver, Expr::Val(value) if value.as_str().is_some()) {
@@ -124,86 +99,53 @@ impl FunctionBuilder {
             }
             let obj_reg = self.expr(obj_expr);
             let out = self.alloc();
-            if self.reg_known_list(obj_reg) {
-                self.emit(Op::ListLen { dst: out, src: obj_reg });
-            } else if self.reg_known_map(obj_reg) {
-                self.emit(Op::MapLen { dst: out, src: obj_reg });
-            } else if matches!(obj_expr, Expr::Val(value) if value.as_str().is_some()) {
-                self.emit(Op::StrLen { dst: out, src: obj_reg });
-            } else {
-                self.emit(Op::Len { dst: out, src: obj_reg });
-            }
+            self.emit_len_for_value(out, obj_reg, obj_expr);
             return out;
         }
         if args.len() == 1
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("push")
-            && let Some(list_reg) = self.lookup(var_name)
-            && self.reg_known_list(list_reg)
+            && self.literal_method_name(field_expr) == Some("push")
+            && let Some(list_reg) = self.known_list_expr(obj_expr)
         {
             let val_reg = if let Expr::Var(arg_name) = args[0].as_ref() {
                 self.lookup(arg_name).unwrap_or_else(|| self.expr(&args[0]))
             } else {
                 self.expr(&args[0])
             };
-            if val_reg != list_reg && expr_result_is_temporary(&args[0]) {
-                self.emit(Op::ListPushMove {
-                    list: list_reg,
-                    val: val_reg,
-                });
-            } else {
-                self.emit(Op::ListPush {
-                    list: list_reg,
-                    val: val_reg,
-                });
-            }
+            self.emit(Op::ListPush {
+                list: list_reg,
+                val: val_reg,
+            });
             return list_reg;
         }
         if args.len() == 2
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("set")
-            && let Some(list_reg) = self.lookup(var_name)
-            && self.reg_known_list(list_reg)
+            && self.literal_method_name(field_expr) == Some("set")
+            && let Some(list_reg) = self.known_list_expr(obj_expr)
             && let Some(out) = self.emit_list_set_i(list_reg, &args[0], &args[1])
         {
             return out;
         }
         if args.len() == 1
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("get")
-            && let Some(list_reg) = self.lookup(var_name)
-            && self.reg_known_list(list_reg)
+            && self.literal_method_name(field_expr) == Some("get")
+            && let Some(list_reg) = self.known_list_expr(obj_expr)
         {
             return self.emit_list_get_access(list_reg, &args[0]);
         }
         if args.len() == 2
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("set")
-            && let Some(map_reg) = self.lookup(var_name)
-            && self.reg_known_map(map_reg)
+            && self.literal_method_name(field_expr) == Some("set")
+            && let Some(map_reg) = self.known_map_expr(obj_expr)
         {
             self.emit_map_set(map_reg, &args[0], &args[1]);
             return map_reg;
         }
         if args.len() == 1
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("get")
-            && let Some(map_reg) = self.lookup(var_name)
-            && self.reg_known_map(map_reg)
+            && self.literal_method_name(field_expr) == Some("get")
+            && let Some(map_reg) = self.known_map_expr(obj_expr)
         {
             return self.emit_map_access(map_reg, &args[0]);
         }
         if args.len() == 1
-            && let Expr::Var(var_name) = obj_expr
-            && let Expr::Val(method_val) = field_expr
-            && method_val.as_str() == Some("has")
-            && let Some(map_reg) = self.lookup(var_name)
-            && self.reg_known_map(map_reg)
+            && self.literal_method_name(field_expr) == Some("has")
+            && let Some(map_reg) = self.known_map_expr(obj_expr)
         {
             return self.emit_map_has(map_reg, &args[0]);
         }
@@ -214,7 +156,7 @@ impl FunctionBuilder {
             && method_val.as_str() == Some("floor")
         {
             if let Expr::Bin(lhs, BinOp::Div, rhs) = args[0].as_ref()
-                && (self.expr_known_int(lhs.as_ref()) || self.expr_known_float(lhs.as_ref()))
+                && self.expr_numeric_fact(lhs.as_ref())
                 && let Expr::Val(Val::Int(imm)) = rhs.as_ref()
                 && *imm != 0
                 && let Ok(imm) = i16::try_from(*imm)

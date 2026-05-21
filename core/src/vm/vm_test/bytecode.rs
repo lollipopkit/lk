@@ -1,7 +1,99 @@
 use super::*;
-use crate::vm::analysis::{FunctionAnalysis, PerfLocalCopyFact, PerfRegisterCopyFact};
+use crate::vm::analysis::{
+    FunctionAnalysis, PerfKeyFact, PerfLocalCopyFact, PerfRegisterCopyFact, PerfStringIntKeyFact,
+};
 use crate::vm::bc32::{self, DecodedTag, Tag};
 use crate::vm::{vm_runtime_metrics_reset, vm_runtime_metrics_snapshot};
+
+fn string_int_key_fact_function() -> vm::bytecode::Function {
+    let mut analysis = FunctionAnalysis::default();
+    let key_fact = PerfKeyFact {
+        const_key: None,
+        string_int: Some(PerfStringIntKeyFact {
+            prefix_key: 0,
+            suffix_reg: 1,
+        }),
+    };
+    analysis.perf.key_ops.resize(5, None);
+    analysis.perf.key_ops[3] = Some(key_fact);
+    analysis.perf.key_ops[4] = Some(key_fact);
+
+    vm::bytecode::Function {
+        consts: vec![Val::from_str("b"), Val::Int(7), Val::Int(42)],
+        code: vec![
+            Op::BuildMap {
+                dst: 0,
+                base: 0,
+                len: 0,
+            },
+            Op::LoadK(1, 1),
+            Op::LoadK(2, 2),
+            Op::MapSet { map: 0, key: 3, val: 2 },
+            Op::MapGetDynamic(4, 0, 3),
+            Op::Ret { base: 4, retc: 1 },
+        ],
+        n_regs: 5,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: Some(analysis),
+    }
+}
+
+#[test]
+fn test_vm_map_dynamic_uses_string_int_key_fact() {
+    let fun = string_int_key_fact_function();
+
+    let out = exec_with_new_vm(&fun);
+
+    assert_eq!(out, Val::Int(42));
+}
+
+#[test]
+fn test_vm_packed_map_dynamic_uses_string_int_key_fact() {
+    let mut fun = string_int_key_fact_function();
+    let packed = vm::Bc32Function::try_from_function(&fun).expect("map dynamic function should pack");
+    fun.code32 = Some(packed.code32);
+    fun.bc32_decoded = packed.decoded;
+
+    let out = exec_with_new_vm(&fun);
+
+    assert_eq!(out, Val::Int(42));
+}
+
+#[test]
+fn test_vm_packed_int_arith_reads_rk_constants_on_fast_path() {
+    let const_rhs = vm::bytecode::rk_make_const(0);
+    let mut fun = vm::bytecode::Function {
+        consts: vec![Val::Int(97)],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::MulInt(1, 0, const_rhs),
+            Op::ModInt(2, 1, const_rhs),
+            Op::Ret { base: 2, retc: 1 },
+        ],
+        n_regs: 3,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+    let packed = vm::Bc32Function::try_from_function(&fun).expect("typed int arithmetic function should pack");
+    fun.code32 = Some(packed.code32);
+    fun.bc32_decoded = packed.decoded;
+
+    let out = exec_with_new_vm(&fun);
+
+    assert_eq!(out, Val::Int(0));
+}
 
 #[test]
 fn test_vm_move_takes_dead_heap_source_without_extra_clone() {
@@ -105,6 +197,50 @@ fn test_vm_packed_move_uses_analysis_fact_instead_of_runtime_scan() {
 }
 
 #[test]
+fn test_vm_packed_move_uses_source_pc_after_elided_nop() {
+    let mut analysis = FunctionAnalysis::default();
+    analysis
+        .perf
+        .set_register_copy_fact(2, PerfRegisterCopyFact { move_source: true });
+    let mut fun = vm::bytecode::Function {
+        consts: vec![Val::from_str("longer-than-short")],
+        code: vec![Op::LoadK(0, 0), Op::Nop, Op::Move(1, 0), Op::Ret { base: 1, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: Some(analysis),
+    };
+    let packed = vm::Bc32Function::try_from_function(&fun).expect("move function should pack");
+    assert_eq!(
+        packed
+            .decoded
+            .as_ref()
+            .expect("decoded table")
+            .instrs
+            .iter()
+            .map(|instr| instr.source_pc)
+            .collect::<Vec<_>>(),
+        vec![0, 2, 3]
+    );
+    fun.code32 = Some(packed.code32);
+    fun.bc32_decoded = packed.decoded;
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 1);
+    assert_eq!(metrics.register_copy_heap_clones, 0);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+}
+
+#[test]
 fn test_vm_load_local_classifies_heap_copy() {
     let fun = vm::bytecode::Function {
         consts: vec![Val::from_str("longer-than-short")],
@@ -130,6 +266,87 @@ fn test_vm_load_local_classifies_heap_copy() {
     assert_eq!(metrics.local_copy_heap_clones, 1);
     assert_eq!(metrics.local_load_heap_clones, 1);
     assert_eq!(metrics.local_store_heap_clones, 0);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+}
+
+#[test]
+fn test_vm_load_local_takes_fact_approved_dead_local_without_extra_clone() {
+    let mut analysis = FunctionAnalysis::default();
+    analysis.perf.mark_local_slot(0);
+    analysis
+        .perf
+        .set_local_copy_fact(1, PerfLocalCopyFact { move_source: true });
+    let fun = vm::bytecode::Function {
+        consts: vec![Val::from_str("longer-than-short")],
+        code: vec![Op::LoadK(0, 0), Op::LoadLocal(1, 0), Op::Ret { base: 1, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: Some(analysis),
+    };
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 1);
+    assert_eq!(metrics.local_copy_heap_clones, 0);
+    assert_eq!(metrics.local_load_heap_clones, 0);
+    assert_eq!(metrics.local_store_heap_clones, 0);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+}
+
+#[test]
+fn test_vm_packed_load_local_uses_analysis_fact_instead_of_copying() {
+    let mut analysis = FunctionAnalysis::default();
+    analysis.perf.mark_local_slot(0);
+    let mut fun = vm::bytecode::Function {
+        consts: vec![Val::from_str("longer-than-short")],
+        code: vec![Op::LoadK(0, 0), Op::LoadLocal(1, 0), Op::Ret { base: 1, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: Some(analysis.clone()),
+    };
+    let packed = vm::Bc32Function::try_from_function(&fun).expect("load local function should pack");
+    fun.code32 = Some(packed.code32.clone());
+    fun.bc32_decoded = packed.decoded.clone();
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 2);
+    assert_eq!(metrics.local_load_heap_clones, 1);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+
+    analysis
+        .perf
+        .set_local_copy_fact(1, PerfLocalCopyFact { move_source: true });
+    fun.analysis = Some(analysis);
+    fun.code32 = Some(packed.code32);
+    fun.bc32_decoded = packed.decoded;
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 1);
+    assert_eq!(metrics.local_copy_heap_clones, 0);
+    assert_eq!(metrics.local_load_heap_clones, 0);
     assert_eq!(metrics.const_load_heap_clones, 1);
 }
 

@@ -341,97 +341,7 @@ pub(super) fn build_hot_slot(
                 a: b,
                 b: c,
             },
-            bc32::EXT_OP_MUL_INT => {
-                if let Some((add_dst, add_src, add_imm, fused_next_pc)) = decode_following_add_int_imm(code32, next_pc)
-                    && add_src == f
-                {
-                    return Some(PackedHotSlot {
-                        word,
-                        next_pc: fused_next_pc,
-                        kind: PackedHotKind::IntArithAddIntImm {
-                            arith_op: PackedArithOp::Mul,
-                            arith_dst: f,
-                            arith_a: b,
-                            arith_b: c,
-                            add_dst,
-                            add_imm,
-                        },
-                    });
-                }
-                if let Some((cmp_op, cmp_a, cmp_b, ofs, fused_next_pc)) = decode_following_cmp_int_jmp(code32, next_pc)
-                    && (cmp_a == f || cmp_b == f)
-                {
-                    let jump_pc = ((next_pc as isize) + (ofs as isize)) as usize;
-                    return Some(PackedHotSlot {
-                        word,
-                        next_pc: fused_next_pc,
-                        kind: PackedHotKind::IntArithCmpIntJmp {
-                            arith_op: PackedArithOp::Mul,
-                            arith_dst: f,
-                            arith_a: b,
-                            arith_b: c,
-                            cmp_op,
-                            cmp_a,
-                            cmp_b,
-                            jump_pc,
-                        },
-                    });
-                }
-                if let Some((div_dst, imm, fused_next_pc)) = decode_following_floor_div_imm(code32, next_pc, f) {
-                    return Some(PackedHotSlot {
-                        word,
-                        next_pc: fused_next_pc,
-                        kind: PackedHotKind::MulIntFloorDivImm {
-                            mul_dst: f,
-                            a: b,
-                            b: c,
-                            div_dst,
-                            imm,
-                        },
-                    });
-                }
-                if let Some((second_dst, second_a, second_b, add_dst, add_a, add_b, fused_next_pc)) =
-                    decode_following_mul_int_mul_int_add_int(decoded, code32, next_pc, f)
-                {
-                    return Some(PackedHotSlot {
-                        word,
-                        next_pc: fused_next_pc,
-                        kind: PackedHotKind::MulIntMulIntAddInt {
-                            first_dst: f,
-                            first_a: b,
-                            first_b: c,
-                            second_dst,
-                            second_a,
-                            second_b,
-                            add_dst,
-                            add_a,
-                            add_b,
-                        },
-                    });
-                }
-                if let Some((add_dst, add_a, add_b, fused_next_pc)) =
-                    decode_following_add_int_consuming(decoded, code32, next_pc, f)
-                {
-                    return Some(PackedHotSlot {
-                        word,
-                        next_pc: fused_next_pc,
-                        kind: PackedHotKind::MulIntAddInt {
-                            mul_dst: f,
-                            mul_a: b,
-                            mul_b: c,
-                            add_dst,
-                            add_a,
-                            add_b,
-                        },
-                    });
-                }
-                PackedHotKind::IntArith {
-                    op: PackedArithOp::Mul,
-                    dst: f,
-                    a: b,
-                    b: c,
-                }
-            }
+            bc32::EXT_OP_MUL_INT => return Some(decode_mul_int_hot_slot(decoded, code32, word, next_pc, f, b, c)),
             bc32::EXT_OP_MUL_FLOAT => PackedHotKind::FloatArith {
                 op: PackedArithOp::Mul,
                 dst: f,
@@ -543,6 +453,8 @@ pub(super) fn build_hot_slot(
             bc32::EXT_OP_LIST_LEN => PackedHotKind::ListLen { dst: f, src: b },
             bc32::EXT_OP_MAP_LEN => PackedHotKind::MapLen { dst: f, src: b },
             bc32::EXT_OP_STR_LEN => PackedHotKind::StrLen { dst: f, src: b },
+            bc32::EXT_OP_LIST_INDEX => decode_list_index_hot_kind(decoded, code32, &mut next_pc, f, b, c),
+            bc32::EXT_OP_STR_INDEX => decode_str_index_hot_kind(f, b, c),
             bc32::EXT_OP_FLOOR_DIV_IMM => PackedHotKind::FloorDivImm {
                 dst: f,
                 src: b,
@@ -667,14 +579,7 @@ pub(super) fn build_hot_slot(
                 let dst = bc32::combine_reg(((ext2 >> 16) & 0xFF) as u16, ((word >> 8) & 0xFF) as u16);
                 let a = bc32::combine_reg(((ext2 >> 8) & 0xFF) as u16, (word & 0xFF) as u16);
                 let b = bc32::combine_reg((ext2 & 0xFF) as u16, (ext & 0xFF) as u16);
-                let op = match crate::vm::IntCmpKind::from_u8(((ext >> 16) & 0xFF) as u8)? {
-                    crate::vm::IntCmpKind::Eq => PackedCmpOp::Eq,
-                    crate::vm::IntCmpKind::Ne => PackedCmpOp::Ne,
-                    crate::vm::IntCmpKind::Lt => PackedCmpOp::Lt,
-                    crate::vm::IntCmpKind::Le => PackedCmpOp::Le,
-                    crate::vm::IntCmpKind::Gt => PackedCmpOp::Gt,
-                    crate::vm::IntCmpKind::Ge => PackedCmpOp::Ge,
-                };
+                let op = packed_cmp_op_from_int_kind(crate::vm::IntCmpKind::from_u8(((ext >> 16) & 0xFF) as u8)?);
                 if let Some((ofs, fused_next_pc)) = decode_cmp_jmp(code32, pc, pc + 3, dst) {
                     return Some(PackedHotSlot {
                         word,
@@ -696,19 +601,13 @@ pub(super) fn build_hot_slot(
                 let a = bc32::combine_reg(((ext2 >> 16) & 0xFF) as u16, ((word >> 8) & 0xFF) as u16);
                 let b = bc32::combine_reg(((ext2 >> 8) & 0xFF) as u16, (word & 0xFF) as u16);
                 let ofs = (((((ext >> 8) & 0xFF) as u16) << 8) | ((ext & 0xFF) as u16)) as i16;
-                let op = match crate::vm::IntCmpKind::from_u8(((ext >> 16) & 0xFF) as u8)? {
-                    crate::vm::IntCmpKind::Eq => PackedCmpOp::Eq,
-                    crate::vm::IntCmpKind::Ne => PackedCmpOp::Ne,
-                    crate::vm::IntCmpKind::Lt => PackedCmpOp::Lt,
-                    crate::vm::IntCmpKind::Le => PackedCmpOp::Le,
-                    crate::vm::IntCmpKind::Gt => PackedCmpOp::Gt,
-                    crate::vm::IntCmpKind::Ge => PackedCmpOp::Ge,
-                };
+                let op = packed_cmp_op_from_int_kind(crate::vm::IntCmpKind::from_u8(((ext >> 16) & 0xFF) as u8)?);
                 let next_pc = pc + 3;
                 return Some(decode_cmp_int_jmp_hot_slot(
                     decoded, code32, pc, word, op, a, b, ofs, next_pc,
                 ));
             }
+            bc32::EXT_OP_CMOVE_INT => return decode_cmove_int_hot_slot(code32, pc, word, ext),
             bc32::EXT_OP_CMP_EQ_IMM_JMP
             | bc32::EXT_OP_CMP_NE_IMM_JMP
             | bc32::EXT_OP_CMP_GT_IMM_JMP
@@ -871,11 +770,15 @@ pub(super) fn build_hot_slot(
                 if let Some((arith_op, arith_dst, arith_a, arith_b, fused_next_pc)) =
                     decode_following_int_arith(decoded, code32, next_pc, dst)
                 {
+                    let write_access_dst = decoded
+                        .map(|decoded| !regs_dead_after_pc(decoded, fused_next_pc, &[dst]))
+                        .unwrap_or(true);
                     next_pc = fused_next_pc;
                     PackedHotKind::AccessIntArith {
                         access_dst: dst,
                         base,
                         field,
+                        write_access_dst,
                         arith_op,
                         arith_dst,
                         arith_a,

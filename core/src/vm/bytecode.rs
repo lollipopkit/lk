@@ -284,6 +284,13 @@ pub enum Op {
         b: u16,
         kind: IntCmpKind,
     },
+    CMoveInt {
+        dst: u16,
+        src: u16,
+        a: u16,
+        b: u16,
+        kind: IntCmpKind,
+    },
     CmpEqImm(u16, u16, i16),
     CmpNeImm(u16, u16, i16),
     CmpLtImm(u16, u16, i16),
@@ -308,6 +315,7 @@ pub enum Op {
     AccessK(u16 /*dst*/, u16 /*base*/, u16 /*kidx*/),
     // Index with constant integer (avoids temp registers)
     IndexK(u16 /*dst*/, u16 /*base*/, u16 /*kidx*/),
+    ListIndex(u16 /*dst*/, u16 /*base*/, u16 /*index*/),
     ListIndexI(u16 /*dst*/, u16 /*base*/, i16 /*index*/),
     ListSetI {
         dst: u16,
@@ -315,6 +323,7 @@ pub enum Op {
         index: i16,
         val: u16,
     },
+    StrIndex(u16 /*dst*/, u16 /*base*/, u16 /*index*/),
     StrIndexI(u16 /*dst*/, u16 /*base*/, i16 /*index*/),
     // Length and index helpers
     Len {
@@ -627,11 +636,14 @@ impl Op {
             Op::CmpGtImm(..) => Some("CmpGtImm"),
             Op::CmpGeImm(..) => Some("CmpGeImm"),
             Op::CmpI { .. } => Some("CmpI"),
+            Op::CMoveInt { .. } => Some("CMoveInt"),
             Op::BoolBranch(..) => Some("BoolBranch"),
             Op::AccessK(..) => Some("AccessK"),
             Op::IndexK(..) => Some("IndexK"),
+            Op::ListIndex(..) => Some("ListIndex"),
             Op::ListIndexI(..) => Some("ListIndexI"),
             Op::ListSetI { .. } => Some("ListSetI"),
+            Op::StrIndex(..) => Some("StrIndex"),
             Op::StrIndexI(..) => Some("StrIndexI"),
             Op::ListLen { .. } => Some("ListLen"),
             Op::MapLen { .. } => Some("MapLen"),
@@ -760,6 +772,9 @@ impl fmt::Debug for Op {
             Op::CmpGt(d, a, b) => write!(f, "CmpGt r{}, r{}, r{}", d, a, b),
             Op::CmpGe(d, a, b) => write!(f, "CmpGe r{}, r{}, r{}", d, a, b),
             Op::CmpI { dst, a, b, kind } => write!(f, "CmpI.{:?} r{}, r{}, r{}", kind, dst, a, b),
+            Op::CMoveInt { dst, src, a, b, kind } => {
+                write!(f, "CMoveInt.{:?} r{}, r{}, r{}, r{}", kind, dst, src, a, b)
+            }
             Op::CmpEqImm(d, a, imm) => write!(f, "CmpEqImm r{}, r{}, {}", d, a, imm),
             Op::CmpNeImm(d, a, imm) => write!(f, "CmpNeImm r{}, r{}, {}", d, a, imm),
             Op::CmpLtImm(d, a, imm) => write!(f, "CmpLtImm r{}, r{}, {}", d, a, imm),
@@ -775,10 +790,12 @@ impl fmt::Debug for Op {
             Op::Access(d, b, fld) => write!(f, "Access r{}, r{}, r{}", d, b, fld),
             Op::AccessK(d, b, k) => write!(f, "AccessK r{}, r{}, k{}", d, b, k),
             Op::IndexK(d, b, k) => write!(f, "IndexK r{}, r{}, k{}", d, b, k),
+            Op::ListIndex(d, b, i) => write!(f, "ListIndex r{}, r{}, r{}", d, b, i),
             Op::ListIndexI(d, b, i) => write!(f, "ListIndexI r{}, r{}, {}", d, b, i),
             Op::ListSetI { dst, list, index, val } => {
                 write!(f, "ListSetI r{}, r{}, {}, r{}", dst, list, index, val)
             }
+            Op::StrIndex(d, b, i) => write!(f, "StrIndex r{}, r{}, r{}", d, b, i),
             Op::StrIndexI(d, b, i) => write!(f, "StrIndexI r{}, r{}, {}", d, b, i),
             Op::Len { dst, src } => write!(f, "Len r{}, r{}", dst, src),
             Op::ListLen { dst, src } => write!(f, "ListLen r{}, r{}", dst, src),

@@ -72,6 +72,56 @@ impl<'a> FunctionTranslator<'a> {
         Ok(())
     }
 
+    pub(super) fn emit_cmove_int(
+        &mut self,
+        dst: u16,
+        src: u16,
+        a: u16,
+        b: u16,
+        kind: crate::vm::IntCmpKind,
+    ) -> Result<()> {
+        let old = self.load_reg(dst)?;
+        let value = self.load_reg(src)?;
+        let lhs = self.load_reg(a)?;
+        let rhs = self.load_reg(b)?;
+        let lhs_is_sentinel = self.fresh("cmove_lhs_sentinel");
+        self.writer.line(format!(
+            "{lhs_is_sentinel} = icmp sle i64 {lhs}, {sentinel_max}",
+            sentinel_max = encoding::BOOL_TRUE_VALUE
+        ));
+        let rhs_is_sentinel = self.fresh("cmove_rhs_sentinel");
+        self.writer.line(format!(
+            "{rhs_is_sentinel} = icmp sle i64 {rhs}, {sentinel_max}",
+            sentinel_max = encoding::BOOL_TRUE_VALUE
+        ));
+        let src_is_sentinel = self.fresh("cmove_src_sentinel");
+        self.writer.line(format!(
+            "{src_is_sentinel} = icmp sle i64 {value}, {sentinel_max}",
+            sentinel_max = encoding::BOOL_TRUE_VALUE
+        ));
+        let cmp_sentinel = self.fresh("cmove_cmp_sentinel");
+        self.writer
+            .line(format!("{cmp_sentinel} = or i1 {lhs_is_sentinel}, {rhs_is_sentinel}"));
+        let any_sentinel = self.fresh("cmove_any_sentinel");
+        self.writer
+            .line(format!("{any_sentinel} = or i1 {cmp_sentinel}, {src_is_sentinel}"));
+        let cmp = self.fresh("cmove_cmp");
+        self.writer
+            .line(format!("{cmp} = icmp {} i64 {lhs}, {rhs}", Self::int_cmp_op(kind)));
+        let not_sentinel = self.fresh("cmove_not_sentinel");
+        self.writer
+            .line(format!("{not_sentinel} = xor i1 {any_sentinel}, true"));
+        let should_move = self.fresh("cmove_match");
+        self.writer
+            .line(format!("{should_move} = and i1 {cmp}, {not_sentinel}"));
+        let selected = self.fresh("cmove_value");
+        self.writer
+            .line(format!("{selected} = select i1 {should_move}, i64 {value}, i64 {old}"));
+        self.store_reg(dst, &selected)?;
+        self.set_known(dst, Some(KnownReg::Int));
+        Ok(())
+    }
+
     pub(super) fn emit_compare(&mut self, dst: u16, a: u16, b: u16, op: &str) -> Result<()> {
         if matches!(op, "eq" | "ne") {
             if self.compare_operand_is_nil(a) {

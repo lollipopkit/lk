@@ -2,6 +2,35 @@ use super::*;
 
 type MoveCallDecode = (Vec<(u16, u16)>, u16, u16, u8, u8, PackedHotCallKind, usize);
 
+pub(super) fn packed_cmp_op_from_int_kind(kind: crate::vm::IntCmpKind) -> PackedCmpOp {
+    match kind {
+        crate::vm::IntCmpKind::Eq => PackedCmpOp::Eq,
+        crate::vm::IntCmpKind::Ne => PackedCmpOp::Ne,
+        crate::vm::IntCmpKind::Lt => PackedCmpOp::Lt,
+        crate::vm::IntCmpKind::Le => PackedCmpOp::Le,
+        crate::vm::IntCmpKind::Gt => PackedCmpOp::Gt,
+        crate::vm::IntCmpKind::Ge => PackedCmpOp::Ge,
+    }
+}
+
+pub(super) fn decode_cmove_int_hot_slot(code32: &[u32], pc: usize, word: u32, ext: u32) -> Option<PackedHotSlot> {
+    let ext2 = *code32.get(pc + 2)?;
+    let ext3 = *code32.get(pc + 3)?;
+    if bc32::tag_of(ext2) != bc32::TAG_EXT || bc32::tag_of(ext3) != bc32::TAG_EXT {
+        return None;
+    }
+    let dst = bc32::combine_reg(((ext2 >> 16) & 0xFF) as u16, ((word >> 8) & 0xFF) as u16);
+    let src = bc32::combine_reg(((ext2 >> 8) & 0xFF) as u16, (word & 0xFF) as u16);
+    let a = bc32::combine_reg((ext2 & 0xFF) as u16, ((ext >> 8) & 0xFF) as u16);
+    let b = bc32::combine_reg(((ext3 >> 16) & 0xFF) as u16, (ext & 0xFF) as u16);
+    let op = packed_cmp_op_from_int_kind(crate::vm::IntCmpKind::from_u8(((ext >> 16) & 0xFF) as u8)?);
+    Some(PackedHotSlot {
+        word,
+        next_pc: pc + 4,
+        kind: PackedHotKind::CMoveInt { op, dst, src, a, b },
+    })
+}
+
 pub(super) fn decode_move_call(decoded: Option<&Bc32Decoded>, pc: usize) -> Option<MoveCallDecode> {
     let decoded = decoded?;
     let mut instr_idx = decoded.word_to_instr.get(pc).copied()? as usize;
@@ -242,6 +271,127 @@ pub(super) fn decode_following_mul_int_add_int(
     Some((mul_dst, mul_a, mul_b, add_dst, add_a, add_b, next_pc))
 }
 
+pub(super) fn decode_mul_int_hot_slot(
+    decoded: Option<&Bc32Decoded>,
+    code32: &[u32],
+    word: u32,
+    next_pc: usize,
+    dst: u16,
+    a: u16,
+    b: u16,
+) -> PackedHotSlot {
+    if let Some((add_dst, add_a, add_b, mod_dst, mod_rhs, fused_next_pc)) =
+        decode_following_add_int_mod_int(decoded, code32, next_pc, dst)
+    {
+        return PackedHotSlot {
+            word,
+            next_pc: fused_next_pc,
+            kind: PackedHotKind::MulIntAddIntModInt {
+                mul_dst: dst,
+                mul_a: a,
+                mul_b: b,
+                add_dst,
+                add_a,
+                add_b,
+                mod_dst,
+                mod_rhs,
+            },
+        };
+    }
+    if let Some((add_dst, add_src, add_imm, fused_next_pc)) = decode_following_add_int_imm(code32, next_pc)
+        && add_src == dst
+    {
+        return PackedHotSlot {
+            word,
+            next_pc: fused_next_pc,
+            kind: PackedHotKind::IntArithAddIntImm {
+                arith_op: PackedArithOp::Mul,
+                arith_dst: dst,
+                arith_a: a,
+                arith_b: b,
+                add_dst,
+                add_imm,
+            },
+        };
+    }
+    if let Some((cmp_op, cmp_a, cmp_b, ofs, fused_next_pc)) = decode_following_cmp_int_jmp(code32, next_pc)
+        && (cmp_a == dst || cmp_b == dst)
+    {
+        return PackedHotSlot {
+            word,
+            next_pc: fused_next_pc,
+            kind: PackedHotKind::IntArithCmpIntJmp {
+                arith_op: PackedArithOp::Mul,
+                arith_dst: dst,
+                arith_a: a,
+                arith_b: b,
+                cmp_op,
+                cmp_a,
+                cmp_b,
+                jump_pc: ((next_pc as isize) + (ofs as isize)) as usize,
+            },
+        };
+    }
+    if let Some((div_dst, imm, fused_next_pc)) = decode_following_floor_div_imm(code32, next_pc, dst) {
+        return PackedHotSlot {
+            word,
+            next_pc: fused_next_pc,
+            kind: PackedHotKind::MulIntFloorDivImm {
+                mul_dst: dst,
+                a,
+                b,
+                div_dst,
+                imm,
+            },
+        };
+    }
+    if let Some((second_dst, second_a, second_b, add_dst, add_a, add_b, fused_next_pc)) =
+        decode_following_mul_int_mul_int_add_int(decoded, code32, next_pc, dst)
+    {
+        return PackedHotSlot {
+            word,
+            next_pc: fused_next_pc,
+            kind: PackedHotKind::MulIntMulIntAddInt {
+                first_dst: dst,
+                first_a: a,
+                first_b: b,
+                second_dst,
+                second_a,
+                second_b,
+                add_dst,
+                add_a,
+                add_b,
+            },
+        };
+    }
+    if let Some((add_dst, add_a, add_b, fused_next_pc)) =
+        decode_following_add_int_consuming(decoded, code32, next_pc, dst)
+    {
+        return PackedHotSlot {
+            word,
+            next_pc: fused_next_pc,
+            kind: PackedHotKind::MulIntAddInt {
+                mul_dst: dst,
+                mul_a: a,
+                mul_b: b,
+                add_dst,
+                add_a,
+                add_b,
+            },
+        };
+    }
+    PackedHotSlot {
+        word,
+        next_pc,
+        kind: PackedHotKind::IntArith {
+            op: PackedArithOp::Mul,
+            dst,
+            a,
+            b,
+        },
+    }
+}
+
 #[allow(clippy::type_complexity)]
 pub(super) fn decode_following_mul_int_mul_int_add_int(
     decoded: Option<&Bc32Decoded>,
@@ -280,6 +430,36 @@ pub(super) fn decode_following_add_int_consuming(
     } else {
         None
     }
+}
+
+#[allow(clippy::type_complexity)]
+pub(super) fn decode_following_add_int_mod_int(
+    decoded: Option<&Bc32Decoded>,
+    code32: &[u32],
+    pc: usize,
+    mul_dst: u16,
+) -> Option<(u16, u16, u16, u16, u16, usize)> {
+    let decoded = decoded?;
+    let (add_op, mod_pc) = fetch_packed_op(Some(decoded), code32, pc).ok()?;
+    let Op::AddInt(add_dst, add_a, add_b) = add_op else {
+        return None;
+    };
+    if add_a != mul_dst && add_b != mul_dst {
+        return None;
+    }
+
+    let (mod_op, next_pc) = fetch_packed_op(Some(decoded), code32, mod_pc).ok()?;
+    let Op::ModInt(mod_dst, mod_a, mod_b) = mod_op else {
+        return None;
+    };
+    if mod_a != add_dst || mod_dst == mul_dst || mod_dst == add_dst {
+        return None;
+    }
+    if !regs_dead_after_pc(decoded, next_pc, &[mul_dst, add_dst]) {
+        return None;
+    }
+
+    Some((add_dst, add_a, add_b, mod_dst, mod_b, next_pc))
 }
 
 pub(super) fn decode_following_floor_div_imm(
@@ -343,8 +523,9 @@ pub(super) fn decode_following_sub_access_sub(
     };
 
     let (access_op, final_pc) = fetch_packed_op(decoded, code32, access_pc).ok()?;
-    let Op::Access(access_dst, access_base, access_field) = access_op else {
-        return None;
+    let (access_dst, access_base, access_field) = match access_op {
+        Op::Access(dst, base, field) | Op::ListIndex(dst, base, field) => (dst, base, field),
+        _ => return None,
     };
     if access_field != first_dst {
         return None;
@@ -371,6 +552,40 @@ pub(super) fn decode_following_sub_access_sub(
         final_b,
         next_pc,
     ))
+}
+
+pub(super) fn decode_list_index_hot_kind(
+    decoded: Option<&Bc32Decoded>,
+    code32: &[u32],
+    next_pc: &mut usize,
+    dst: u16,
+    base: u16,
+    index: u16,
+) -> PackedHotKind {
+    if let Some((arith_op, arith_dst, arith_a, arith_b, fused_next_pc)) =
+        decode_following_int_arith(decoded, code32, *next_pc, dst)
+    {
+        let write_access_dst = decoded
+            .map(|decoded| !regs_dead_after_pc(decoded, fused_next_pc, &[dst]))
+            .unwrap_or(true);
+        *next_pc = fused_next_pc;
+        PackedHotKind::AccessIntArith {
+            access_dst: dst,
+            base,
+            field: index,
+            write_access_dst,
+            arith_op,
+            arith_dst,
+            arith_a,
+            arith_b,
+        }
+    } else {
+        PackedHotKind::ListIndex { dst, base, index }
+    }
+}
+
+pub(super) fn decode_str_index_hot_kind(dst: u16, base: u16, index: u16) -> PackedHotKind {
+    PackedHotKind::StrIndex { dst, base, index }
 }
 
 pub(super) fn decode_cmp_int_jmp_hot_slot(

@@ -1,6 +1,22 @@
 use super::super::helpers::assign_reg_with_metrics;
 use super::*;
 use crate::vm::{self, VmCallMetric, VmContainerMetric};
+
+#[inline]
+fn packed_string_int_key_arcstr(func: &Function, regs: &[Val], pc: usize) -> Option<ArcStr> {
+    let source_pc = packed_instr_pc(func, pc);
+    let fact = func
+        .analysis
+        .as_ref()
+        .and_then(|analysis| analysis.perf.known_key(source_pc))
+        .and_then(|fact| fact.string_int)?;
+    let prefix = func.consts.get(fact.prefix_key as usize)?.as_str()?;
+    let Val::Int(suffix) = regs.get(fact.suffix_reg as usize)? else {
+        return None;
+    };
+    Some(Val::cached_str_int_key(prefix, *suffix))
+}
+
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn exec_hot_slot(
@@ -35,7 +51,7 @@ pub(super) fn exec_hot_slot(
             None
         }
         PackedHotKind::LoadLocal { dst, idx } => {
-            assign_packed_local_load_with_metrics(regs, *dst, *idx, collect_metrics);
+            assign_packed_local_load_with_metrics(regs, func, pc, *dst, *idx, collect_metrics);
             None
         }
         PackedHotKind::StoreLocal { idx, src } => {
@@ -73,10 +89,21 @@ pub(super) fn exec_hot_slot(
             exec_access_hot(regs, access_ic, pc, *dst, *base, *field, collect_metrics);
             None
         }
+        PackedHotKind::ListIndex { dst, base, index } => {
+            record_container(VmContainerMetric::List);
+            exec_list_index_hot(regs, *dst, *base, *index, collect_metrics);
+            None
+        }
+        PackedHotKind::StrIndex { dst, base, index } => {
+            record_container(VmContainerMetric::String);
+            exec_str_index_hot(regs, *dst, *base, *index, collect_metrics);
+            None
+        }
         PackedHotKind::AccessIntArith {
             access_dst,
             base,
             field,
+            write_access_dst,
             arith_op,
             arith_dst,
             arith_a,
@@ -90,6 +117,7 @@ pub(super) fn exec_hot_slot(
                 *access_dst,
                 *base,
                 *field,
+                *write_access_dst,
                 *arith_op,
                 *arith_dst,
                 *arith_a,
@@ -255,7 +283,16 @@ pub(super) fn exec_hot_slot(
         }
         PackedHotKind::MapGetDynamic { dst, map, key } => {
             record_container(VmContainerMetric::Map);
-            let out = match (&regs[*map as usize], regs[*key as usize].as_str()) {
+            let key_arc = regs[*key as usize]
+                .as_str()
+                .is_none()
+                .then(|| packed_string_int_key_arcstr(func, regs, pc))
+                .flatten();
+            let lookup_key = key_arc
+                .as_ref()
+                .map(|key| key.as_str())
+                .or_else(|| regs[*key as usize].as_str());
+            let out = match (&regs[*map as usize], lookup_key) {
                 (Val::Map(map), Some(key)) => Val::map_get_str(map, key)
                     .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
                     .unwrap_or(Val::Nil),
@@ -274,7 +311,16 @@ pub(super) fn exec_hot_slot(
         } => {
             record_container(VmContainerMetric::Map);
             record_branch(false);
-            let out = match (&regs[*map as usize], regs[*key as usize].as_str()) {
+            let key_arc = regs[*key as usize]
+                .as_str()
+                .is_none()
+                .then(|| packed_string_int_key_arcstr(func, regs, pc))
+                .flatten();
+            let lookup_key = key_arc
+                .as_ref()
+                .map(|key| key.as_str())
+                .or_else(|| regs[*key as usize].as_str());
+            let out = match (&regs[*map as usize], lookup_key) {
                 (Val::Map(map), Some(key)) => Val::map_get_str(map, key)
                     .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
                     .unwrap_or(Val::Nil),
@@ -305,9 +351,18 @@ pub(super) fn exec_hot_slot(
             record_container(VmContainerMetric::Map);
             record_branch(false);
             let key_reg = *key;
-            let lookup_key = regs[key_reg as usize].as_str().map(ArcStr::from);
+            let key_arc = regs[key_reg as usize]
+                .primitive_key_arcstr()
+                .is_none()
+                .then(|| packed_string_int_key_arcstr(func, regs, pc))
+                .flatten();
+            let lookup_key = regs[key_reg as usize]
+                .as_str()
+                .map(ArcStr::from)
+                .or_else(|| key_arc.clone());
             let key = regs[key_reg as usize]
                 .primitive_key_arcstr()
+                .or(key_arc)
                 .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", regs[key_reg as usize]))?;
             exec_map_upsert_add(
                 regs,
@@ -328,7 +383,16 @@ pub(super) fn exec_hot_slot(
         }
         PackedHotKind::MapHas { dst, map, key } => {
             record_container(VmContainerMetric::Map);
-            let out = match (&regs[*map as usize], regs[*key as usize].as_str()) {
+            let key_arc = regs[*key as usize]
+                .as_str()
+                .is_none()
+                .then(|| packed_string_int_key_arcstr(func, regs, pc))
+                .flatten();
+            let lookup_key = key_arc
+                .as_ref()
+                .map(|key| key.as_str())
+                .or_else(|| regs[*key as usize].as_str());
+            let out = match (&regs[*map as usize], lookup_key) {
                 (Val::Map(map), Some(key)) => Val::Bool(Val::map_contains_str(map, key)),
                 (Val::Map(_), None) => Val::Bool(false),
                 _ => return Err(anyhow!("has() first argument must be a map")),
@@ -347,7 +411,16 @@ pub(super) fn exec_hot_slot(
         } => {
             record_container(VmContainerMetric::Map);
             record_branch(false);
-            let contains = match (&regs[*map as usize], regs[*key as usize].as_str()) {
+            let key_arc = regs[*key as usize]
+                .as_str()
+                .is_none()
+                .then(|| packed_string_int_key_arcstr(func, regs, pc))
+                .flatten();
+            let lookup_key = key_arc
+                .as_ref()
+                .map(|key| key.as_str())
+                .or_else(|| regs[*key as usize].as_str());
+            let contains = match (&regs[*map as usize], lookup_key) {
                 (Val::Map(map), Some(key)) => Val::map_contains_str(map, key),
                 (Val::Map(_), None) => false,
                 _ => return Err(anyhow!("has() first argument must be a map")),
@@ -433,16 +506,25 @@ pub(super) fn exec_hot_slot(
         }
         PackedHotKind::StrConcatToStr { dst, lhs, src } => {
             record_container(VmContainerMetric::String);
-            let lhs_val = &regs[*lhs as usize];
-            let out = if let Some(lhs_str) = lhs_val.as_str()
-                && let Some(value) = Val::concat_str_tostr_rhs(lhs_str, &regs[*src as usize])
+            let source_pc = packed_instr_pc(func, pc);
+            if !func
+                .analysis
+                .as_ref()
+                .is_some_and(|analysis| analysis.perf.is_dead_write(source_pc))
             {
-                value
+                let lhs_val = &regs[*lhs as usize];
+                let out = if let Some(lhs_str) = lhs_val.as_str()
+                    && let Some(value) = Val::concat_str_tostr_rhs(lhs_str, &regs[*src as usize])
+                {
+                    value
+                } else {
+                    let rhs = Val::to_str_value(&regs[*src as usize]);
+                    BinOp::Add.eval_vals_with_metrics(lhs_val, &rhs, collect_metrics)?
+                };
+                assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
             } else {
-                let rhs = Val::to_str_value(&regs[*src as usize]);
-                BinOp::Add.eval_vals_with_metrics(lhs_val, &rhs, collect_metrics)?
-            };
-            assign_reg_with_metrics(regs, *dst as usize, out, collect_metrics);
+                assign_reg_with_metrics(regs, *dst as usize, Val::Nil, collect_metrics);
+            }
             None
         }
         PackedHotKind::IntArith { op, dst, a, b } => {
@@ -623,6 +705,31 @@ pub(super) fn exec_hot_slot(
                 *add_dst,
                 *add_a,
                 *add_b,
+                collect_metrics,
+            )?;
+            None
+        }
+        PackedHotKind::MulIntAddIntModInt {
+            mul_dst,
+            mul_a,
+            mul_b,
+            add_dst,
+            add_a,
+            add_b,
+            mod_dst,
+            mod_rhs,
+        } => {
+            exec_mul_add_mod_int_hot(
+                regs,
+                func,
+                *mul_dst,
+                *mul_a,
+                *mul_b,
+                *add_dst,
+                *add_a,
+                *add_b,
+                *mod_dst,
+                *mod_rhs,
                 collect_metrics,
             )?;
             None
@@ -932,6 +1039,10 @@ pub(super) fn exec_hot_slot(
             record_branch(true);
             hot_compare::exec_cmp_int_jmp(regs, *op, *a, *b, pc, *ofs)?
         }
+        PackedHotKind::CMoveInt { op, dst, src, a, b } => {
+            hot_compare::exec_cmove_int(regs, *op, *dst, *src, *a, *b, collect_metrics)?;
+            None
+        }
         PackedHotKind::CmpIntMove {
             op,
             a,
@@ -1069,7 +1180,8 @@ pub(super) fn exec_hot_slot(
         PackedHotKind::MapSet { map, key, val } => {
             record_container(VmContainerMetric::Map);
             let key_arc = regs[*key as usize]
-                .string_key_arcstr()
+                .dynamic_string_key_arcstr()
+                .or_else(|| packed_string_int_key_arcstr(func, regs, pc))
                 .ok_or_else(|| anyhow!("MapSet key must be a String"))?;
             let pushed_val = copy_value_for_register_with_metrics(&regs[*val as usize], collect_metrics);
             match &mut regs[*map as usize] {
@@ -1087,7 +1199,8 @@ pub(super) fn exec_hot_slot(
             let val_idx = *val as usize;
             if map_idx == key_idx || map_idx == val_idx || key_idx == val_idx {
                 let key_arc = regs[key_idx]
-                    .string_key_arcstr()
+                    .dynamic_string_key_arcstr()
+                    .or_else(|| packed_string_int_key_arcstr(func, regs, pc))
                     .ok_or_else(|| anyhow!("MapSet key must be a String"))?;
                 let pushed_val = copy_value_for_register_with_metrics(&regs[val_idx], collect_metrics);
                 match &mut regs[map_idx] {
@@ -1101,13 +1214,19 @@ pub(super) fn exec_hot_slot(
             if !matches!(regs[map_idx], Val::Map(_)) {
                 return Err(anyhow!("MapSet target is not a Map"));
             }
+            let fact_key_arc = (!matches!(regs[key_idx], Val::Str(_) | Val::ShortStr(_)))
+                .then(|| packed_string_int_key_arcstr(func, regs, pc))
+                .flatten();
             let key_val = take_register_value(regs, key_idx);
-            let key_arc = match key_val.string_key_arcstr() {
+            let key_arc = match key_val.dynamic_string_key_arcstr() {
                 Some(key_arc) => key_arc,
-                None => {
-                    restore_register_value(regs, key_idx, key_val);
-                    return Err(anyhow!("MapSet key must be a String"));
-                }
+                None => match fact_key_arc {
+                    Some(key_arc) => key_arc,
+                    None => {
+                        restore_register_value(regs, key_idx, key_val);
+                        return Err(anyhow!("MapSet key must be a String"));
+                    }
+                },
             };
             let pushed_val = take_register_value(regs, val_idx);
             match &mut regs[map_idx] {

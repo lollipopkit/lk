@@ -109,6 +109,11 @@ pub(super) fn infer_integer_parameter_indices(function: &Function) -> BTreeSet<u
                     mark_required_sources(&sources, &mut required, a);
                     mark_required_sources(&sources, &mut required, b);
                 }
+                Op::CMoveInt { src, a, b, .. } => {
+                    mark_required_sources(&sources, &mut required, src);
+                    mark_required_sources(&sources, &mut required, a);
+                    mark_required_sources(&sources, &mut required, b);
+                }
                 Op::Len { dst, .. } | Op::Floor { dst, .. } => {
                     changed |= integers.insert(dst);
                 }
@@ -305,6 +310,7 @@ fn op_assigned_regs(op: &Op) -> Vec<u16> {
         | Op::CmpGt(dst, _, _)
         | Op::CmpGe(dst, _, _)
         | Op::CmpI { dst, .. }
+        | Op::CMoveInt { dst, .. }
         | Op::CmpEqImm(dst, _, _)
         | Op::CmpNeImm(dst, _, _)
         | Op::CmpLtImm(dst, _, _)
@@ -319,6 +325,10 @@ fn op_assigned_regs(op: &Op) -> Vec<u16> {
         | Op::Access(dst, _, _)
         | Op::AccessK(dst, _, _)
         | Op::IndexK(dst, _, _)
+        | Op::ListIndex(dst, _, _)
+        | Op::ListIndexI(dst, _, _)
+        | Op::StrIndex(dst, _, _)
+        | Op::StrIndexI(dst, _, _)
         | Op::Len { dst, .. }
         | Op::ListLen { dst, .. }
         | Op::MapLen { dst, .. }

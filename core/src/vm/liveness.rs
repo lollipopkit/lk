@@ -29,16 +29,29 @@ pub(crate) fn annotate_register_liveness(facts: &mut PerformanceFacts, code: &[O
 
 pub(crate) fn annotate_local_copy_facts(facts: &mut PerformanceFacts, code: &[Op], register_count: u16) {
     facts.local_copies.clear();
+    let live_out = compute_live_out_sets(code, register_count);
     for (pc, op) in code.iter().enumerate() {
-        let Op::StoreLocal(_, src) = *op else {
-            continue;
-        };
-        if src >= register_count || facts.is_local_slot(src) {
-            continue;
-        }
-        let move_source = register_dead_for_move_take(code[pc + 1..].iter(), src);
-        if move_source {
-            facts.set_local_copy_fact(pc, PerfLocalCopyFact { move_source });
+        match *op {
+            Op::LoadLocal(dst, src) => {
+                if src >= register_count || dst == src || !facts.is_local_slot(src) {
+                    continue;
+                }
+                if register_dead_in_live_out(&live_out, pc, src)
+                    && !register_may_be_captured_before_kill(&code[pc + 1..], src)
+                {
+                    facts.set_local_copy_fact(pc, PerfLocalCopyFact { move_source: true });
+                }
+            }
+            Op::StoreLocal(_, src) => {
+                if src >= register_count || facts.is_local_slot(src) {
+                    continue;
+                }
+                let move_source = register_dead_for_move_take(code[pc + 1..].iter(), src);
+                if move_source {
+                    facts.set_local_copy_fact(pc, PerfLocalCopyFact { move_source });
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -69,6 +82,7 @@ pub(crate) fn annotate_key_facts(facts: &mut PerformanceFacts, code: &[Op], cons
             && let Some(fact) = key_fact_for_reg(key_reg, &const_string_regs, &string_int_regs)
         {
             set_key_fact(facts, pc, fact);
+            propagate_upsert_key_facts(facts, code, pc, key_reg, fact);
         }
         visit_op_written_registers(op, |reg| {
             if let Some(slot) = const_string_regs.get_mut(reg as usize) {
@@ -98,12 +112,7 @@ pub(crate) fn annotate_key_facts(facts: &mut PerformanceFacts, code: &[Op], cons
 pub(crate) fn apply_key_facts(code: &mut [Op], facts: &PerformanceFacts) -> bool {
     let mut changed = false;
     for (pc, op) in code.iter_mut().enumerate() {
-        let Some(key) = facts
-            .key_ops
-            .get(pc)
-            .and_then(Option::as_ref)
-            .and_then(|fact| fact.const_key)
-        else {
+        let Some(key) = facts.known_key(pc).and_then(|fact| fact.const_key) else {
             continue;
         };
         match *op {
@@ -149,6 +158,17 @@ pub(crate) fn annotate_dead_write_facts(facts: &mut PerformanceFacts, code: &[Op
     facts.dead_writes.clear();
     let live_out = compute_live_out_sets(code, register_count);
     for (pc, op) in code.iter().enumerate() {
+        if let Op::StrConcatToStr(dst, _, _) = *op
+            && dst < register_count
+            && facts
+                .known_key(pc)
+                .and_then(|fact| fact.string_int)
+                .is_some_and(|fact| fact.suffix_reg != dst)
+            && string_int_key_materialization_elidable(code, facts, &live_out, pc, dst)
+        {
+            facts.set_dead_write_fact(pc);
+            continue;
+        }
         let Some(dst) = elidable_dead_write_dst(op) else {
             continue;
         };
@@ -158,6 +178,104 @@ pub(crate) fn annotate_dead_write_facts(facts: &mut PerformanceFacts, code: &[Op
         {
             facts.set_dead_write_fact(pc);
         }
+    }
+}
+
+fn string_int_key_materialization_elidable(
+    code: &[Op],
+    facts: &PerformanceFacts,
+    live_out: &[Vec<bool>],
+    pc: usize,
+    dst: u16,
+) -> bool {
+    let Some(source_fact) = facts.known_key(pc).and_then(|fact| fact.string_int) else {
+        return false;
+    };
+    if string_int_key_materialization_elidable_for_upsert(code, facts, live_out, pc, dst, source_fact) {
+        return true;
+    }
+    let mut saw_key_consumer = false;
+    for (consumer_pc, op) in code.iter().enumerate().skip(pc + 1) {
+        if op_reads_register(op, dst) {
+            let is_fact_key_consumer = map_key_operand(op) == Some(dst)
+                && facts.known_key(consumer_pc).and_then(|fact| fact.string_int) == Some(source_fact);
+            if !is_fact_key_consumer {
+                return false;
+            }
+            saw_key_consumer = true;
+            if register_dead_in_live_out(live_out, consumer_pc, dst) {
+                return true;
+            }
+        }
+        let mut written = false;
+        visit_op_written_registers(op, |reg| {
+            written |= reg == dst;
+        });
+        if written {
+            return saw_key_consumer;
+        }
+        if op_is_control_boundary(op) && !matches!(op, Op::Ret { .. }) {
+            return false;
+        }
+    }
+    saw_key_consumer
+}
+
+fn string_int_key_materialization_elidable_for_upsert(
+    code: &[Op],
+    facts: &PerformanceFacts,
+    live_out: &[Vec<bool>],
+    pc: usize,
+    dst: u16,
+    source_fact: PerfStringIntKeyFact,
+) -> bool {
+    let Some((first_set_pc, second_set_pc)) = map_get_upsert_set_pcs(code, pc + 1, dst) else {
+        return false;
+    };
+    facts.known_key(pc + 1).and_then(|fact| fact.string_int) == Some(source_fact)
+        && facts.known_key(first_set_pc).and_then(|fact| fact.string_int) == Some(source_fact)
+        && facts.known_key(second_set_pc).and_then(|fact| fact.string_int) == Some(source_fact)
+        && register_dead_in_live_out(live_out, second_set_pc, dst)
+}
+
+fn map_get_upsert_set_pcs(code: &[Op], get_pc: usize, key_reg: u16) -> Option<(usize, usize)> {
+    let [
+        Op::MapGetDynamic(get_dst, map, key),
+        cmp,
+        Op::BoolBranch(cmp_reg, _),
+        first_set,
+        Op::Jmp(_),
+        add,
+        second_set,
+        ..,
+    ] = code.get(get_pc..)?
+    else {
+        return None;
+    };
+    if *key != key_reg || !cmp_reads_get_dst(cmp, *cmp_reg, *get_dst) || !add_reads_get_dst(add, *get_dst) {
+        return None;
+    }
+    (map_set_key(first_set) == Some((*map, key_reg)) && map_set_key(second_set) == Some((*map, key_reg)))
+        .then_some((get_pc + 3, get_pc + 6))
+}
+
+fn cmp_reads_get_dst(op: &Op, cmp_reg: u16, get_dst: u16) -> bool {
+    matches!(
+        *op,
+        Op::CmpEq(dst, a, b) | Op::CmpNe(dst, a, b) if dst == cmp_reg && (a == get_dst || b == get_dst)
+    )
+}
+
+fn add_reads_get_dst(op: &Op, get_dst: u16) -> bool {
+    matches!(*op, Op::AddIntImm(_, src, _) if src == get_dst)
+        || matches!(*op, Op::AddInt(_, a, b) if a == get_dst || b == get_dst)
+        || matches!(*op, Op::Add(_, a, b) if a == get_dst || b == get_dst)
+}
+
+fn map_set_key(op: &Op) -> Option<(u16, u16)> {
+    match *op {
+        Op::MapSet { map, key, .. } | Op::MapSetMove { map, key, .. } => Some((map, key)),
+        _ => None,
     }
 }
 
@@ -207,6 +325,14 @@ fn set_key_fact(facts: &mut PerformanceFacts, pc: usize, fact: PerfKeyFact) {
         facts.key_ops.resize_with(pc + 1, Option::default);
     }
     facts.key_ops[pc] = Some(fact);
+}
+
+fn propagate_upsert_key_facts(facts: &mut PerformanceFacts, code: &[Op], pc: usize, key_reg: u16, fact: PerfKeyFact) {
+    let Some((first_set_pc, second_set_pc)) = map_get_upsert_set_pcs(code, pc, key_reg) else {
+        return;
+    };
+    set_key_fact(facts, first_set_pc, fact);
+    set_key_fact(facts, second_set_pc, fact);
 }
 
 fn key_fact_for_reg(
@@ -346,6 +472,7 @@ fn op_writes_int(op: &Op) -> bool {
             | Op::MulInt(..)
             | Op::ModInt(..)
             | Op::AddIntImm(..)
+            | Op::CMoveInt { .. }
             | Op::Floor { .. }
             | Op::Len { .. }
             | Op::ListLen { .. }
@@ -359,7 +486,25 @@ pub(crate) fn annotate_container_move_facts(facts: &mut PerformanceFacts, code: 
     let live_out = compute_live_out_sets(code, register_count);
     for (pc, op) in code.iter().enumerate() {
         match *op {
+            Op::ListPushMove { .. } => {
+                facts.set_container_move_fact(
+                    pc,
+                    PerfContainerMoveFact {
+                        move_key: false,
+                        move_value: true,
+                    },
+                );
+            }
             Op::ListPush { list, val } if val != list && register_dead_in_live_out(&live_out, pc, val) => {
+                facts.set_container_move_fact(
+                    pc,
+                    PerfContainerMoveFact {
+                        move_key: false,
+                        move_value: true,
+                    },
+                );
+            }
+            Op::MapSetInternedMove(_, _, _) => {
                 facts.set_container_move_fact(
                     pc,
                     PerfContainerMoveFact {
@@ -373,6 +518,15 @@ pub(crate) fn annotate_container_move_facts(facts: &mut PerformanceFacts, code: 
                     pc,
                     PerfContainerMoveFact {
                         move_key: false,
+                        move_value: true,
+                    },
+                );
+            }
+            Op::MapSetMove { .. } => {
+                facts.set_container_move_fact(
+                    pc,
+                    PerfContainerMoveFact {
+                        move_key: true,
                         move_value: true,
                     },
                 );
@@ -808,6 +962,8 @@ pub(crate) fn visit_op_read_registers(op: &Op, mut visit: impl FnMut(u16)) {
         | Op::CmpGe(_, a, b)
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
+        | Op::ListIndex(_, a, b)
+        | Op::StrIndex(_, a, b)
         | Op::MapHas(_, a, b)
         | Op::MapGetDynamic(_, a, b)
         | Op::Index { base: a, idx: b, .. }
@@ -816,6 +972,11 @@ pub(crate) fn visit_op_read_registers(op: &Op, mut visit: impl FnMut(u16)) {
             visit(b);
         }
         Op::CmpI { a, b, .. } | Op::CmpIntJmp { a, b, .. } => {
+            visit(a);
+            visit(b);
+        }
+        Op::CMoveInt { src, a, b, .. } => {
+            visit(src);
             visit(a);
             visit(b);
         }
@@ -957,7 +1118,9 @@ pub(crate) fn visit_op_written_registers(op: &Op, mut f: impl FnMut(u16)) {
         | Op::Access(dst, _, _)
         | Op::AccessK(dst, _, _)
         | Op::IndexK(dst, _, _)
+        | Op::ListIndex(dst, _, _)
         | Op::ListIndexI(dst, _, _)
+        | Op::StrIndex(dst, _, _)
         | Op::StrIndexI(dst, _, _)
         | Op::StartsWithK(dst, _, _)
         | Op::ContainsK(dst, _, _)
@@ -982,6 +1145,7 @@ pub(crate) fn visit_op_written_registers(op: &Op, mut f: impl FnMut(u16)) {
         | Op::FloorDivImm { dst, .. }
         | Op::LoadCapture { dst, .. }
         | Op::CmpI { dst, .. }
+        | Op::CMoveInt { dst, .. }
         | Op::ListSetI { dst, .. }
         | Op::CallMethod0 { dst, .. }
         | Op::CallGlobalMethod0 { dst, .. } => f(dst),
@@ -1015,9 +1179,12 @@ pub(crate) fn visit_op_written_registers(op: &Op, mut f: impl FnMut(u16)) {
 }
 
 #[cfg(test)]
+mod key_elision_tests;
+
+#[cfg(test)]
 mod tests {
     use crate::val::Val;
-    use crate::vm::analysis::{PerfStringIntKeyFact, PerfValueKind, PerformanceFacts};
+    use crate::vm::analysis::{PerfValueKind, PerformanceFacts};
     use crate::vm::bytecode::{IntCmpKind, Op};
 
     use super::{
@@ -1146,6 +1313,33 @@ mod tests {
     }
 
     #[test]
+    fn local_copy_facts_mark_dead_local_load_source_movable() {
+        let mut facts = PerformanceFacts::default();
+        facts.mark_local_slot(0);
+        let code = vec![Op::LoadK(0, 0), Op::LoadLocal(1, 0), Op::Ret { base: 1, retc: 1 }];
+
+        annotate_local_copy_facts(&mut facts, &code, 2);
+
+        assert!(facts.local_copy(1).is_some_and(|fact| fact.move_source));
+    }
+
+    #[test]
+    fn local_copy_facts_keep_live_local_load_source_copying() {
+        let mut facts = PerformanceFacts::default();
+        facts.mark_local_slot(0);
+        let code = vec![
+            Op::LoadK(0, 0),
+            Op::LoadLocal(1, 0),
+            Op::Add(2, 0, 1),
+            Op::Ret { base: 2, retc: 1 },
+        ];
+
+        annotate_local_copy_facts(&mut facts, &code, 3);
+
+        assert!(facts.local_copy(1).is_none());
+    }
+
+    #[test]
     fn local_copy_facts_do_not_move_local_slot_source() {
         let mut facts = PerformanceFacts::default();
         facts.mark_local_slot(0);
@@ -1180,72 +1374,6 @@ mod tests {
         );
         assert!(apply_key_facts(&mut code, &facts));
         assert!(matches!(code[1], Op::MapGetInterned(2, 0, 0)));
-    }
-
-    #[test]
-    fn key_facts_track_string_int_key_registers() {
-        let consts = vec![Val::from_str("sku-"), Val::Int(42)];
-        let mut facts = PerformanceFacts::default();
-        let code = vec![
-            Op::LoadK(0, 0),
-            Op::LoadK(1, 1),
-            Op::StrConcatToStr(2, 0, 1),
-            Op::MapGetDynamic(3, 4, 2),
-            Op::Ret { base: 3, retc: 1 },
-        ];
-
-        annotate_control_flow_facts(&mut facts, &code);
-        annotate_key_facts(&mut facts, &code, &consts, 5);
-
-        let expected = PerfStringIntKeyFact {
-            prefix_key: 0,
-            suffix_reg: 1,
-        };
-        assert_eq!(
-            facts
-                .key_ops
-                .get(2)
-                .and_then(Option::as_ref)
-                .and_then(|fact| fact.string_int),
-            Some(expected)
-        );
-        assert_eq!(
-            facts
-                .key_ops
-                .get(3)
-                .and_then(Option::as_ref)
-                .and_then(|fact| fact.string_int),
-            Some(expected)
-        );
-    }
-
-    #[test]
-    fn key_facts_track_string_int_key_when_concat_overwrites_prefix() {
-        let consts = vec![Val::from_str("sku-"), Val::Int(42)];
-        let mut facts = PerformanceFacts::default();
-        let code = vec![
-            Op::LoadK(0, 0),
-            Op::LoadK(1, 1),
-            Op::StrConcatToStr(0, 0, 1),
-            Op::MapGetDynamic(2, 3, 0),
-            Op::Ret { base: 2, retc: 1 },
-        ];
-
-        annotate_control_flow_facts(&mut facts, &code);
-        annotate_key_facts(&mut facts, &code, &consts, 4);
-
-        let expected = PerfStringIntKeyFact {
-            prefix_key: 0,
-            suffix_reg: 1,
-        };
-        assert_eq!(
-            facts
-                .key_ops
-                .get(3)
-                .and_then(Option::as_ref)
-                .and_then(|fact| fact.string_int),
-            Some(expected)
-        );
     }
 
     #[test]

@@ -51,16 +51,25 @@ pub(super) fn try_exec_math_op(
             pc = next_pc_default;
         }
         Op::StrConcatToStr(dst, lhs, src) => {
-            let lhs_val = rk_read(regs, &f.consts, lhs);
-            let out = if let Some(lhs_str) = lhs_val.as_str()
-                && let Some(value) = Val::concat_str_tostr_rhs(lhs_str, &regs[src as usize])
+            let source_pc = next_pc_default.saturating_sub(1);
+            if !f
+                .analysis
+                .as_ref()
+                .is_some_and(|analysis| analysis.perf.is_dead_write(source_pc))
             {
-                value
+                let lhs_val = rk_read(regs, &f.consts, lhs);
+                let out = if let Some(lhs_str) = lhs_val.as_str()
+                    && let Some(value) = Val::concat_str_tostr_rhs(lhs_str, &regs[src as usize])
+                {
+                    value
+                } else {
+                    let rhs = Val::to_str_value(&regs[src as usize]);
+                    BinOp::Add.eval_vals_with_metrics(lhs_val, &rhs, collect_metrics)?
+                };
+                assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
             } else {
-                let rhs = Val::to_str_value(&regs[src as usize]);
-                BinOp::Add.eval_vals_with_metrics(lhs_val, &rhs, collect_metrics)?
-            };
-            assign_reg_with_metrics(regs, dst as usize, out, collect_metrics);
+                assign_reg_with_metrics(regs, dst as usize, Val::Nil, collect_metrics);
+            }
             pc = next_pc_default;
         }
         Op::Sub(dst, a, b) => {
@@ -335,6 +344,17 @@ pub(super) fn try_exec_math_op(
                 anyhow::bail!("CmpI expects integer registers");
             };
             assign_reg_with_metrics(regs, dst as usize, Val::Bool(kind.eval(*lhs, *rhs)), collect_metrics);
+            pc = next_pc_default;
+        }
+        Op::CMoveInt { dst, src, a, b, kind } => {
+            let (Val::Int(lhs), Val::Int(rhs), Val::Int(value)) =
+                (&regs[a as usize], &regs[b as usize], &regs[src as usize])
+            else {
+                anyhow::bail!("CMoveInt expects integer registers");
+            };
+            if kind.eval(*lhs, *rhs) {
+                assign_reg_with_metrics(regs, dst as usize, Val::Int(*value), collect_metrics);
+            }
             pc = next_pc_default;
         }
         Op::Len { dst, src } => {

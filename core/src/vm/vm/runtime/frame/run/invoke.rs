@@ -8,7 +8,7 @@ use crate::val::{
 use crate::vm::bytecode::{CaptureSpec, Function};
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::{CallIc, CallReturnLayout, ClosureFastCache};
+use crate::vm::vm::caches::{CallIc, CallReturnLayout, ClosureFastCache, FunctionRuntimePlan};
 use crate::vm::vm::frame::{CallFrameMeta, FrameInfo, RegisterSpan};
 use crate::vm::write_register_value_with_metrics;
 
@@ -144,6 +144,7 @@ pub(super) fn invoke_native_callable_with_ic(
 pub(super) fn invoke_vm_closure_fast_unchecked(
     self_ptr: *mut Vm,
     fun: &Function,
+    runtime: Option<&FunctionRuntimePlan>,
     args: RegisterSpan,
     ctx: &mut VmContext,
     frame_info: Option<&FrameInfo>,
@@ -156,6 +157,7 @@ pub(super) fn invoke_vm_closure_fast_unchecked(
     exec_positional_fast_span_unchecked(
         self_ptr,
         fun,
+        runtime,
         args,
         ctx,
         frame_info,

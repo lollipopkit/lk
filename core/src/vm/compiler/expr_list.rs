@@ -22,34 +22,7 @@ impl FunctionBuilder {
     }
 
     pub(crate) fn emit_list_get_access(&mut self, list_reg: u16, index_expr: &Expr) -> u16 {
-        let dst = self.alloc();
-        if let Expr::Val(Val::Int(index)) = index_expr {
-            if *index < 0 {
-                let nil = self.k(Val::Nil);
-                self.emit(Op::LoadK(dst, nil));
-                return dst;
-            }
-            if let Some(len) = self.list_lengths.get(&list_reg).copied()
-                && usize::try_from(*index).ok().is_none_or(|index| index >= len)
-            {
-                let nil = self.k(Val::Nil);
-                self.emit(Op::LoadK(dst, nil));
-                return dst;
-            }
-            if let Ok(index_i16) = i16::try_from(*index) {
-                self.emit(Op::ListIndexI(dst, list_reg, index_i16));
-                self.mark_list_lookup_result_if_in_bounds(dst, list_reg, *index);
-                return dst;
-            }
-        }
-
-        let index_reg = if let Expr::Var(arg_name) = index_expr {
-            self.lookup(arg_name).unwrap_or_else(|| self.expr(index_expr))
-        } else {
-            self.expr(index_expr)
-        };
-        self.emit(Op::Access(dst, list_reg, index_reg));
-        dst
+        self.emit_typed_list_access(list_reg, index_expr)
     }
 
     pub(crate) fn emit_list_set_i(&mut self, list_reg: u16, index_expr: &Expr, value_expr: &Expr) -> Option<u16> {

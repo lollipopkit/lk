@@ -125,6 +125,7 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
         }
         Op::CmpI { dst, a, b, kind } => Ok(pack_cmp_i(dst, a, b, kind)),
         Op::CmpIntJmp { kind, a, b, ofs } => Ok(pack_cmp_i_jmp(a, b, kind, ofs)),
+        Op::CMoveInt { dst, src, a, b, kind } => Ok(pack_cmove_int(dst, src, a, b, kind)),
         Op::Jmp(ofs) => Ok(EncodedOp::new(
             ((encode_tag_with_flags(Tag::Jmp, 0) as u32) << 24) | (ofs as i32 as u32 & 0x00FF_FFFF),
             None,
@@ -227,7 +228,9 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
             let reg_ext = pack_reg_ext_bits(d, b, k);
             Ok(EncodedOp::new(word, reg_ext))
         }
+        Op::ListIndex(dst, base, index) => pack_ext_op(EXT_OP_LIST_INDEX, dst, base, index),
         Op::ListIndexI(dst, base, index) => pack_ext_op_i8(EXT_OP_LIST_INDEX_I, "ListIndexI", dst, base, index),
+        Op::StrIndex(dst, base, index) => pack_ext_op(EXT_OP_STR_INDEX, dst, base, index),
         Op::StrIndexI(dst, base, index) => pack_ext_op_i8(EXT_OP_STR_INDEX_I, "StrIndexI", dst, base, index),
         Op::LoadLocal(d, i) => {
             let word = pack(Tag::LoadLocal, 0, d as u8, i as u8, 0);
@@ -524,6 +527,7 @@ impl Bc32Function {
         let mut words_per_op: Vec<usize> = vec![1; n];
         for (i, op) in f.code.iter().enumerate() {
             words_per_op[i] = match op {
+                Op::Nop => 0,
                 Op::ForRangePrep { idx, limit, step, .. } => {
                     let extra = pack_reg_ext_bits(*idx, *limit, *step).is_some() as usize;
                     2 + extra
@@ -559,6 +563,7 @@ impl Bc32Function {
                     2 + pack_reg_ext_bits(*r, 0, 0).is_some() as usize
                 }
                 Op::CmpIntJmp { .. } => 3,
+                Op::CMoveInt { .. } => 4,
                 Op::JmpFalseSet { .. } => 1,
                 Op::JmpTrueSet { .. } => 1,
                 Op::NullishPick { .. } => 1,
@@ -747,8 +752,11 @@ impl Bc32Function {
         }
         let total_words = acc;
         let mut out: Vec<u32> = Vec::with_capacity(total_words);
+        let mut source_pcs: Vec<usize> = Vec::with_capacity(n);
         for (i, op) in f.code.iter().enumerate() {
+            let start_len = out.len();
             match op {
+                Op::Nop => {}
                 Op::Jmp(ofs) => {
                     let tgt = ((i as isize) + *ofs as isize) as usize;
                     let wofs = (op_to_word[tgt] as isize - op_to_word[i] as isize) as i32;
@@ -980,8 +988,11 @@ impl Bc32Function {
                     encoded.emit(&mut out);
                 }
             }
+            if out.len() > start_len {
+                source_pcs.push(i);
+            }
         }
-        let decoded = Bc32Decoded::from_words(&out).map(Arc::new);
+        let decoded = Bc32Decoded::from_words_with_source_pcs(&out, &source_pcs).map(Arc::new);
 
         Ok(Self {
             consts: f.consts.clone(),

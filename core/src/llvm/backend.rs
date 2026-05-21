@@ -132,6 +132,7 @@ fn op_written_regs(op: &Op) -> Vec<u16> {
         | Op::CmpGt(dst, _, _)
         | Op::CmpGe(dst, _, _)
         | Op::CmpI { dst, .. }
+        | Op::CMoveInt { dst, .. }
         | Op::CmpEqImm(dst, _, _)
         | Op::CmpNeImm(dst, _, _)
         | Op::CmpLtImm(dst, _, _)
@@ -149,6 +150,10 @@ fn op_written_regs(op: &Op) -> Vec<u16> {
         | Op::AccessK(dst, _, _)
         | Op::Index { dst, .. }
         | Op::IndexK(dst, _, _)
+        | Op::ListIndex(dst, _, _)
+        | Op::ListIndexI(dst, _, _)
+        | Op::StrIndex(dst, _, _)
+        | Op::StrIndexI(dst, _, _)
         | Op::Len { dst, .. }
         | Op::ListLen { dst, .. }
         | Op::MapLen { dst, .. }
@@ -631,6 +636,7 @@ impl<'a> FunctionTranslator<'a> {
                 Op::CmpGt(dst, a, b) => self.emit_compare(*dst, *a, *b, "sgt")?,
                 Op::CmpGe(dst, a, b) => self.emit_compare(*dst, *a, *b, "sge")?,
                 Op::CmpI { dst, a, b, kind } => self.emit_int_compare_kind(*dst, *a, *b, *kind)?,
+                Op::CMoveInt { dst, src, a, b, kind } => self.emit_cmove_int(*dst, *src, *a, *b, *kind)?,
                 Op::CmpEqImm(dst, a, imm) => self.emit_cmp_int_imm(*dst, *a, *imm, "eq")?,
                 Op::CmpNeImm(dst, a, imm) => self.emit_cmp_int_imm(*dst, *a, *imm, "ne")?,
                 Op::CmpLtImm(dst, a, imm) => self.emit_cmp_int_imm(*dst, *a, *imm, "slt")?,
@@ -662,6 +668,12 @@ impl<'a> FunctionTranslator<'a> {
                     self.emit_index_or_defer_len(instr_idx, block_end, *dst, *base, *idx)?
                 }
                 Op::IndexK(dst, base, kidx) => self.emit_index_const(*dst, *base, *kidx)?,
+                Op::ListIndex(dst, base, idx) | Op::StrIndex(dst, base, idx) => {
+                    self.emit_typed_index_or_defer_len(instr_idx, block_end, *dst, *base, *idx)?
+                }
+                Op::ListIndexI(dst, base, idx) | Op::StrIndexI(dst, base, idx) => {
+                    self.emit_typed_index_imm_or_defer_len(instr_idx, block_end, *dst, *base, *idx)?
+                }
                 Op::Len { dst, src } | Op::ListLen { dst, src } | Op::MapLen { dst, src } | Op::StrLen { dst, src } => {
                     self.emit_len(*dst, *src)?
                 }

@@ -96,6 +96,7 @@ impl CallReturnLayout {
 pub(super) struct CallSitePlan {
     pub(super) closure_ptr: usize,
     pub(super) fun_ptr: *const Function,
+    pub(super) runtime: FunctionRuntimePlan,
     pub(super) argc: u8,
     pub(super) ret: CallReturnLayout,
     pub(super) tiny: Option<TinyCallPlan>,
@@ -138,7 +139,8 @@ impl CallSitePlan {
     #[inline]
     pub(super) fn positional(
         closure_ptr: usize,
-        fun_ptr: *const Function,
+        fun: &Function,
+        runtime: FunctionRuntimePlan,
         argc: u8,
         ret: CallReturnLayout,
         tiny: Option<TinyCallPlan>,
@@ -148,7 +150,8 @@ impl CallSitePlan {
     ) -> Self {
         Self {
             closure_ptr,
-            fun_ptr,
+            fun_ptr: fun as *const Function,
+            runtime,
             argc,
             ret,
             tiny,

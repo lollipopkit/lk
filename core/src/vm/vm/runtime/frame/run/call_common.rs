@@ -9,7 +9,9 @@ use crate::vm::compiler::Compiler;
 use crate::vm::context::VmContext;
 use crate::vm::copy_call_arg_value_for_register_with_metrics;
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::{CallIc, CallReturnLayout, CallSitePlan, ClosureFastCache, TinyCallPlan};
+use crate::vm::vm::caches::{
+    CallIc, CallReturnLayout, CallSitePlan, ClosureFastCache, FunctionRuntimePlan, TinyCallPlan,
+};
 use crate::vm::vm::frame::{
     CallArgs, CallFrameMeta, CallFrameStackGuard, FrameInfo, FrameState, RegisterSpan, RegisterWindowRef,
 };
@@ -75,6 +77,14 @@ pub(crate) struct PreparedExactClosureCall {
     plan: CallSitePlan,
 }
 
+#[inline]
+fn call_runtime_plan(fun: &Function) -> FunctionRuntimePlan {
+    FunctionRuntimePlan::from_function(
+        fun,
+        fun.analysis.as_ref().map(|analysis| Arc::clone(&analysis.region_plan)),
+    )
+}
+
 pub(crate) fn prepare_exact_closure_call(regs: &[Val], rf: u16, argc: u8) -> Result<PreparedExactClosureCall> {
     let Val::Closure(closure_arc) = &regs[rf as usize] else {
         return Err(anyhow!("{} is not an exact closure", regs[rf as usize].type_name()));
@@ -105,7 +115,8 @@ pub(crate) fn prepare_exact_closure_call(regs: &[Val], rf: u16, argc: u8) -> Res
     Ok(PreparedExactClosureCall {
         plan: CallSitePlan::positional(
             Arc::as_ptr(closure_arc) as usize,
-            fun.as_ref() as *const Function,
+            fun.as_ref(),
+            call_runtime_plan(fun.as_ref()),
             argc,
             CallReturnLayout::new(0, 0),
             TinyCallPlan::analyze(fun.as_ref()),
@@ -125,6 +136,7 @@ fn plan_with_return_layout(mut plan: CallSitePlan, base: u16, retc: u8) -> CallS
 fn new_positional_call_site_plan(
     closure_ptr: usize,
     fun: &Function,
+    runtime: FunctionRuntimePlan,
     argc: u8,
     ret: CallReturnLayout,
     captures: Option<Arc<ClosureCapture>>,
@@ -133,7 +145,8 @@ fn new_positional_call_site_plan(
 ) -> Arc<CallSitePlan> {
     Arc::new(CallSitePlan::positional(
         closure_ptr,
-        fun as *const Function,
+        fun,
+        runtime,
         argc,
         ret,
         TinyCallPlan::analyze(fun),
@@ -169,6 +182,7 @@ pub(crate) fn run_prepared_exact_closure_call(
     match invoke_vm_closure_fast_unchecked(
         self_ptr,
         fun,
+        Some(&plan.runtime),
         RegisterSpan::new(start, n, RegisterWindowRef::Base(frame_base)),
         ctx,
         Some(&plan.frame_info),
@@ -253,6 +267,7 @@ pub(crate) fn try_run_closure_ic_hot(
         let val = invoke_vm_closure_fast_unchecked(
             self_ptr,
             fun,
+            Some(&plan.runtime),
             RegisterSpan::new(start, n, RegisterWindowRef::Base(frame_base)),
             ctx,
             Some(&plan.frame_info),
@@ -355,6 +370,7 @@ pub(crate) fn try_run_positional_closure_call(
         match invoke_vm_closure_fast_unchecked(
             self_ptr,
             fun,
+            Some(&plan.runtime),
             RegisterSpan::new(start, n, RegisterWindowRef::Base(frame_base)),
             ctx,
             Some(&plan.frame_info),
@@ -375,9 +391,11 @@ pub(crate) fn try_run_positional_closure_call(
         let (captures, capture_specs) = closure.frame_captures();
         let mut cache = ClosureFastCache::new();
         let frame_info = closure.frame_info_ref();
+        let runtime = call_runtime_plan(fun);
         match invoke_vm_closure_fast_unchecked(
             self_ptr,
             fun,
+            Some(&runtime),
             RegisterSpan::new(start, n, RegisterWindowRef::Base(frame_base)),
             ctx,
             Some(frame_info),
@@ -395,6 +413,7 @@ pub(crate) fn try_run_positional_closure_call(
                     plan: new_positional_call_site_plan(
                         closure_ptr,
                         fun,
+                        runtime,
                         argc,
                         ret_layout,
                         captures,

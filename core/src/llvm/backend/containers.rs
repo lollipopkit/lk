@@ -890,29 +890,7 @@ impl<'a> FunctionTranslator<'a> {
     ) -> Result<()> {
         let base_val = self.load_reg(base)?;
         let index_val = self.load_reg(idx)?;
-        if let Some(KnownReg::StringLength { len, ascii: true }) = self.known(base).cloned()
-            && self.index_result_feeds_only_len(instr_idx, block_end, dst)
-        {
-            self.set_known(
-                dst,
-                Some(KnownReg::IndexedAsciiCharLength {
-                    base_len: len,
-                    index: index_val,
-                }),
-            );
-            return Ok(());
-        }
-        if self.index_result_feeds_only_len(instr_idx, block_end, dst) {
-            self.set_known(
-                dst,
-                Some(KnownReg::IndexedValue {
-                    base: base_val,
-                    index: index_val,
-                }),
-            );
-            return Ok(());
-        }
-        self.emit_index_with_values(dst, base_val, index_val)
+        self.emit_index_values_or_defer_len(instr_idx, block_end, dst, base, base_val, index_val)
     }
 
     fn emit_index_with_values(&mut self, dst: u16, base_val: String, index_val: String) -> Result<()> {
@@ -940,7 +918,11 @@ impl<'a> FunctionTranslator<'a> {
         let scan_end = block_end.min(instr_idx + 8);
         for op in &self.function.code[instr_idx + 1..scan_end] {
             match *op {
-                Op::Len { src, .. } if src == alias => return true,
+                Op::Len { src, .. } | Op::ListLen { src, .. } | Op::MapLen { src, .. } | Op::StrLen { src, .. }
+                    if src == alias =>
+                {
+                    return true;
+                }
                 Op::Move(new_alias, src) | Op::LoadLocal(new_alias, src) | Op::StoreLocal(new_alias, src)
                     if src == alias =>
                 {
@@ -977,6 +959,65 @@ impl<'a> FunctionTranslator<'a> {
         ));
         self.store_reg(dst, &result)?;
         Ok(())
+    }
+
+    pub(super) fn emit_typed_index_or_defer_len(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+        base: u16,
+        index: u16,
+    ) -> Result<()> {
+        let base_val = self.load_reg(base)?;
+        let index_val = self.load_reg(index)?;
+        self.emit_index_values_or_defer_len(instr_idx, block_end, dst, base, base_val, index_val)
+    }
+
+    pub(super) fn emit_typed_index_imm_or_defer_len(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+        base: u16,
+        index: i16,
+    ) -> Result<()> {
+        let base_val = self.load_reg(base)?;
+        self.emit_index_values_or_defer_len(instr_idx, block_end, dst, base, base_val, (index as i64).to_string())
+    }
+
+    fn emit_index_values_or_defer_len(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+        base: u16,
+        base_val: String,
+        index_val: String,
+    ) -> Result<()> {
+        if let Some(KnownReg::StringLength { len, ascii: true }) = self.known(base).cloned()
+            && self.index_result_feeds_only_len(instr_idx, block_end, dst)
+        {
+            self.set_known(
+                dst,
+                Some(KnownReg::IndexedAsciiCharLength {
+                    base_len: len,
+                    index: index_val,
+                }),
+            );
+            return Ok(());
+        }
+        if self.index_result_feeds_only_len(instr_idx, block_end, dst) {
+            self.set_known(
+                dst,
+                Some(KnownReg::IndexedValue {
+                    base: base_val,
+                    index: index_val,
+                }),
+            );
+            return Ok(());
+        }
+        self.emit_index_with_values(dst, base_val, index_val)
     }
 
     pub(super) fn emit_in(&mut self, dst: u16, needle: u16, haystack: u16) -> Result<()> {
@@ -1038,7 +1079,10 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpIntJmp { a, b, .. }
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
-        | Op::Index { base: a, idx: b, .. } => a == reg || b == reg,
+        | Op::Index { base: a, idx: b, .. }
+        | Op::ListIndex(_, a, b)
+        | Op::StrIndex(_, a, b) => a == reg || b == reg,
+        Op::CMoveInt { src, a, b, .. } => src == reg || a == reg || b == reg,
         Op::AddIntImm(_, src, _)
         | Op::CmpEqImm(_, src, _)
         | Op::CmpNeImm(_, src, _)
@@ -1054,7 +1098,9 @@ fn op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::CmpNeImmJmp { r: src, .. }
         | Op::AddIntImmJmp { r: src, .. }
         | Op::AccessK(_, src, _)
-        | Op::IndexK(_, src, _) => src == reg,
+        | Op::IndexK(_, src, _)
+        | Op::ListIndexI(_, src, _)
+        | Op::StrIndexI(_, src, _) => src == reg,
         Op::ListPush { list, val } | Op::ListPushMove { list, val } => list == reg || val == reg,
         Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => map == reg || key == reg || val == reg,
         Op::Ret { base, retc } => retc > 0 && base == reg,
@@ -1099,6 +1145,10 @@ fn op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::AccessK(dst, _, _)
         | Op::Index { dst, .. }
         | Op::IndexK(dst, _, _)
+        | Op::ListIndex(dst, _, _)
+        | Op::ListIndexI(dst, _, _)
+        | Op::StrIndex(dst, _, _)
+        | Op::StrIndexI(dst, _, _)
         | Op::Len { dst, .. }
         | Op::Floor { dst, .. }
         | Op::FloorDivImm { dst, .. }

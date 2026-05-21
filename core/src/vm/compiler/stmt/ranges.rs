@@ -461,15 +461,9 @@ impl FunctionBuilder {
         let ForPattern::Variable(item_name) = pattern else {
             return false;
         };
-        let Expr::Var(list_name) = iterable else {
+        let Some(list_reg) = self.known_list_expr(iterable) else {
             return false;
         };
-        let Some(list_reg) = self.lookup(list_name) else {
-            return false;
-        };
-        if !self.reg_known_list(list_reg) {
-            return false;
-        }
 
         let folded_body = match body {
             Stmt::CompoundAssign {
@@ -519,18 +513,15 @@ impl FunctionBuilder {
         let Expr::Access(obj_expr, field_expr) = callee.as_ref() else {
             return false;
         };
-        let (Expr::Var(map_name), Expr::Val(method_val)) = (obj_expr.as_ref(), field_expr.as_ref()) else {
+        let Expr::Val(method_val) = field_expr.as_ref() else {
             return false;
         };
         if method_val.as_str() != Some("values") {
             return false;
         }
-        let Some(map_reg) = self.lookup(map_name) else {
+        let Some(map_reg) = self.known_map_expr(obj_expr.as_ref()) else {
             return false;
         };
-        if !self.reg_known_map(map_reg) {
-            return false;
-        }
 
         let folded_body = match body {
             Stmt::CompoundAssign {

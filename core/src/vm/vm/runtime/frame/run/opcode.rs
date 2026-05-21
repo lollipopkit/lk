@@ -39,9 +39,9 @@ use crate::vm::{
 use super::FrameRuntimeView;
 use super::helpers::{
     advance_for_range_tail, assign_local_from_reg_or_take_with_metrics, assign_reg_const_copy_with_metrics,
-    assign_reg_from_local_load_with_metrics, assign_reg_from_reg_or_take_with_metrics,
+    assign_reg_from_local_load_or_take_with_metrics, assign_reg_from_reg_or_take_with_metrics,
     assign_reg_from_reg_with_metrics, assign_reg_with_metrics, copy_capture_spec_value, frame_return_common,
-    handle_return_common, local_store_may_take_source, register_move_may_take_source,
+    handle_return_common, local_load_may_take_source, local_store_may_take_source, register_move_may_take_source,
 };
 use super::math::floor_div_i64;
 use super::method_ops;
@@ -115,7 +115,15 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 pc += 1;
             }
             Op::StrConcatToStr(dst, lhs, src) => {
-                arithmetic_ops::run_str_concat_to_str(regs, &f.consts, *dst, *lhs, *src, collect_metrics)?;
+                if !f
+                    .analysis
+                    .as_ref()
+                    .is_some_and(|analysis| analysis.perf.is_dead_write(pc))
+                {
+                    arithmetic_ops::run_str_concat_to_str(regs, &f.consts, *dst, *lhs, *src, collect_metrics)?;
+                } else {
+                    assign_reg_with_metrics(regs, *dst as usize, Val::Nil, collect_metrics);
+                }
                 pc += 1;
             }
             Op::Sub(dst, a, b) => {
@@ -264,12 +272,31 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
                 }
             }
+            Op::CMoveInt { dst, src, a, b, kind } => {
+                let (Val::Int(lhs), Val::Int(rhs), Val::Int(value)) =
+                    (&regs[*a as usize], &regs[*b as usize], &regs[*src as usize])
+                else {
+                    return frame_return_common(frame_raw, pc, Err(anyhow!("CMoveInt expects integer registers")))
+                        .map(Some);
+                };
+                if kind.eval(*lhs, *rhs) {
+                    assign_reg_with_metrics(regs, *dst as usize, Val::Int(*value), collect_metrics);
+                }
+                pc += 1;
+            }
             Op::In(dst, a, b) => {
                 compare_ops::run_in(regs, &f.consts, *dst, *a, *b, collect_metrics)?;
                 pc += 1;
             }
             Op::LoadLocal(dst, idx) => {
-                assign_reg_from_local_load_with_metrics(regs, *dst as usize, *idx as usize, collect_metrics);
+                let may_take = local_load_may_take_source(f, pc);
+                assign_reg_from_local_load_or_take_with_metrics(
+                    regs,
+                    *dst as usize,
+                    *idx as usize,
+                    may_take,
+                    collect_metrics,
+                );
                 pc += 1;
             }
             Op::StoreLocal(idx, src) => {
@@ -370,7 +397,12 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             }
             Op::MapGetDynamic(dst, map, key) => {
                 record_container(VmContainerMetric::Map);
-                container_ops::run_map_get_dynamic(regs, *dst, *map, *key, collect_metrics);
+                let key_fact = f
+                    .analysis
+                    .as_ref()
+                    .and_then(|analysis| analysis.perf.known_key(pc))
+                    .and_then(|fact| fact.string_int);
+                container_ops::run_map_get_dynamic(regs, &f.consts, key_fact, *dst, *map, *key, collect_metrics);
                 pc += 1;
             }
             Op::MapHasK(dst, map, kidx) => {
@@ -400,9 +432,19 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
                 container_ops::run_index_k(regs, &f.consts, *dst, *base, *kidx, collect_metrics);
                 pc += 1;
             }
+            Op::ListIndex(dst, base, index) => {
+                record_container(VmContainerMetric::List);
+                container_ops::run_list_index(regs, *dst, *base, *index, collect_metrics);
+                pc += 1;
+            }
             Op::ListIndexI(dst, base, index) => {
                 record_container(VmContainerMetric::List);
                 container_ops::run_list_index_i(regs, *dst, *base, *index, collect_metrics);
+                pc += 1;
+            }
+            Op::StrIndex(dst, base, index) => {
+                record_container(VmContainerMetric::String);
+                container_ops::run_str_index(regs, *dst, *base, *index, collect_metrics);
                 pc += 1;
             }
             Op::StrIndexI(dst, base, index) => {
@@ -508,7 +550,14 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             }
             Op::MapSet { map, key, val } => {
                 record_container(VmContainerMetric::Map);
-                if let Err(err) = container_ops::run_map_set(regs, *map, *key, *val, collect_metrics) {
+                let key_fact = f
+                    .analysis
+                    .as_ref()
+                    .and_then(|analysis| analysis.perf.known_key(pc))
+                    .and_then(|fact| fact.string_int);
+                if let Err(err) =
+                    container_ops::run_map_set(regs, &f.consts, key_fact, *map, *key, *val, collect_metrics)
+                {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;
@@ -533,7 +582,14 @@ pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<
             }
             Op::MapSetMove { map, key, val } => {
                 record_container(VmContainerMetric::Map);
-                if let Err(err) = container_ops::run_map_set_move(regs, *map, *key, *val, collect_metrics) {
+                let key_fact = f
+                    .analysis
+                    .as_ref()
+                    .and_then(|analysis| analysis.perf.known_key(pc))
+                    .and_then(|fact| fact.string_int);
+                if let Err(err) =
+                    container_ops::run_map_set_move(regs, &f.consts, key_fact, *map, *key, *val, collect_metrics)
+                {
                     return frame_return_common(frame_raw, pc, Err(err)).map(Some);
                 }
                 pc += 1;

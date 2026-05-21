@@ -15,6 +15,7 @@ mod param_infer;
 mod peephole;
 mod ssa;
 mod stmt;
+mod typed_lowering;
 
 pub(crate) use builder::FunctionBuilder;
 pub(crate) use builder_support::ArithFlavor;

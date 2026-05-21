@@ -83,10 +83,21 @@ pub(in crate::vm::vm) enum PackedHotKind {
         base: u16,
         field: u16,
     },
+    ListIndex {
+        dst: u16,
+        base: u16,
+        index: u16,
+    },
+    StrIndex {
+        dst: u16,
+        base: u16,
+        index: u16,
+    },
     AccessIntArith {
         access_dst: u16,
         base: u16,
         field: u16,
+        write_access_dst: bool,
         arith_op: PackedArithOp,
         arith_dst: u16,
         arith_a: u16,
@@ -261,6 +272,16 @@ pub(in crate::vm::vm) enum PackedHotKind {
         add_a: u16,
         add_b: u16,
     },
+    MulIntAddIntModInt {
+        mul_dst: u16,
+        mul_a: u16,
+        mul_b: u16,
+        add_dst: u16,
+        add_a: u16,
+        add_b: u16,
+        mod_dst: u16,
+        mod_rhs: u16,
+    },
     MulIntMulIntAddInt {
         first_dst: u16,
         first_a: u16,
@@ -430,6 +451,13 @@ pub(in crate::vm::vm) enum PackedHotKind {
         a: u16,
         b: u16,
         ofs: i16,
+    },
+    CMoveInt {
+        op: PackedCmpOp,
+        dst: u16,
+        src: u16,
+        a: u16,
+        b: u16,
     },
     CmpIntMove {
         op: PackedCmpOp,

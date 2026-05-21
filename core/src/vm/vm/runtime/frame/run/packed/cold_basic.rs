@@ -54,8 +54,10 @@ pub(super) fn handles_basic_op(op: &Op) -> bool {
             | Op::Access(_, _, _)
             | Op::AccessK(_, _, _)
             | Op::IndexK(_, _, _)
+            | Op::ListIndex(_, _, _)
             | Op::ListIndexI(_, _, _)
             | Op::ListSetI { .. }
+            | Op::StrIndex(_, _, _)
             | Op::StrIndexI(_, _, _)
             | Op::MapGetInterned(_, _, _)
             | Op::MapGetDynamic(_, _, _)
@@ -507,6 +509,26 @@ pub(super) fn exec_basic_op(
             assign_reg_with_metrics(regs, dst as usize, res, collect_metrics);
             pc = next_pc_default;
         }
+        Op::ListIndex(dst, base, index) => {
+            let res = match (&regs[base as usize], &regs[index as usize]) {
+                (Val::List(_), Val::Int(index)) if *index >= 0 => regs[base as usize]
+                    .access_with_metrics(&Val::Int(*index), collect_metrics)
+                    .unwrap_or(Val::Nil),
+                _ => Val::Nil,
+            };
+            assign_reg_with_metrics(regs, dst as usize, res, collect_metrics);
+            pc = next_pc_default;
+        }
+        Op::StrIndex(dst, base, index) => {
+            let res = match (&regs[base as usize], &regs[index as usize]) {
+                (value, Val::Int(index)) if *index >= 0 && value.as_str().is_some() => value
+                    .access_with_metrics(&Val::Int(*index), collect_metrics)
+                    .unwrap_or(Val::Nil),
+                _ => Val::Nil,
+            };
+            assign_reg_with_metrics(regs, dst as usize, res, collect_metrics);
+            pc = next_pc_default;
+        }
         Op::StrIndexI(dst, base, index) => {
             let res = match &regs[base as usize] {
                 value if value.as_str().is_some() => value
@@ -859,7 +881,15 @@ pub(super) fn exec_basic_op(
             pc = next_pc_default;
         }
         Op::LoadLocal(dst, idx) => {
-            assign_reg_from_local_load_with_metrics(regs, dst as usize, idx as usize, collect_metrics);
+            let instr_pc = packed_instr_pc(f, pc);
+            let may_take = local_load_may_take_source(f, instr_pc);
+            assign_reg_from_local_load_or_take_with_metrics(
+                regs,
+                dst as usize,
+                idx as usize,
+                may_take,
+                collect_metrics,
+            );
             pc = next_pc_default;
         }
         Op::StoreLocal(idx, src) => {

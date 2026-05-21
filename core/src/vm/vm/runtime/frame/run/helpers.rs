@@ -269,6 +269,21 @@ pub(super) fn assign_reg_from_local_load_with_metrics(
 }
 
 #[inline(always)]
+pub(super) fn assign_reg_from_local_load_or_take_with_metrics(
+    regs: &mut [Val],
+    dst_idx: usize,
+    src_idx: usize,
+    may_take: bool,
+    collect_metrics: bool,
+) {
+    if may_take {
+        assign_reg_from_reg_or_take_with_metrics(regs, dst_idx, src_idx, true, collect_metrics);
+    } else {
+        assign_reg_from_local_load_with_metrics(regs, dst_idx, src_idx, collect_metrics);
+    }
+}
+
+#[inline(always)]
 #[cfg(test)]
 #[allow(dead_code)]
 pub(super) fn assign_reg_from_local_store(
@@ -364,6 +379,14 @@ pub(super) fn assign_local_from_reg_or_take_with_metrics(
 
 #[inline(always)]
 pub(super) fn local_store_may_take_source(func: &Function, pc: usize) -> bool {
+    func.analysis
+        .as_ref()
+        .and_then(|analysis| analysis.perf.local_copy(pc))
+        .is_some_and(|fact| fact.move_source)
+}
+
+#[inline(always)]
+pub(super) fn local_load_may_take_source(func: &Function, pc: usize) -> bool {
     func.analysis
         .as_ref()
         .and_then(|analysis| analysis.perf.local_copy(pc))

@@ -133,6 +133,27 @@ fn access_int_arith_function() -> Function {
     }
 }
 
+fn mul_add_mod_function() -> Function {
+    Function {
+        consts: Vec::new(),
+        code: vec![
+            Op::MulInt(3, 0, 1),
+            Op::AddInt(4, 3, 2),
+            Op::ModInt(5, 4, 6),
+            Op::Ret { base: 5, retc: 1 },
+        ],
+        n_regs: 7,
+        protos: Vec::new(),
+        param_regs: vec![0, 1, 2, 6],
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    }
+}
+
 #[test]
 fn generic_add_quickens_int_site_and_reuses_it() {
     let _guard = METRICS_LOCK.lock().expect("metrics lock");
@@ -375,6 +396,49 @@ fn packed_access_int_arith_reads_list_int_without_value_cache() {
         metrics.heap_val_clones, 6,
         "only the list arguments should require heap clones across repeated packed executions"
     );
+}
+
+#[test]
+fn packed_access_int_arith_writes_temp_before_generic_fallback() {
+    let function = pack_bc32(access_int_arith_function());
+    let mut vm = Vm::new();
+    let mut ctx = VmContext::new();
+
+    let out = vm
+        .exec_with(
+            &function,
+            &mut ctx,
+            Some(&[
+                Val::List(vec![Val::Int(10), Val::Int(32), Val::Int(99)].into()),
+                Val::Int(1),
+                Val::Float(10.0),
+            ]),
+        )
+        .expect("execute packed access+generic arith fallback");
+    assert_eq!(out, Val::Float(42.0));
+}
+
+#[test]
+fn packed_mul_add_mod_int_fuses_linear_congruential_arithmetic() {
+    let _guard = METRICS_LOCK.lock().expect("metrics lock");
+    vm_runtime_metrics_reset();
+    let function = pack_bc32(mul_add_mod_function());
+    let mut vm = Vm::new();
+    let mut ctx = VmContext::new();
+
+    for i in 0..6 {
+        let out = vm
+            .exec_with(
+                &function,
+                &mut ctx,
+                Some(&[Val::Int(17 + i), Val::Int(97), Val::Int(39), Val::Int(1009)]),
+            )
+            .expect("execute packed mul-add-mod arithmetic");
+        assert_eq!(out, Val::Int((((17 + i) * 97) + 39) % 1009));
+    }
+
+    let metrics = vm_runtime_metrics_snapshot();
+    assert!(metrics.quickening_hits > 0);
 }
 
 #[test]

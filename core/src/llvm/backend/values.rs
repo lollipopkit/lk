@@ -1186,8 +1186,11 @@ fn value_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::In(_, a, b)
         | Op::Access(_, a, b)
         | Op::Index { base: a, idx: b, .. }
+        | Op::ListIndex(_, a, b)
+        | Op::StrIndex(_, a, b)
         | Op::MapHas(_, a, b)
         | Op::MapGetDynamic(_, a, b) => a == reg || b == reg,
+        Op::CMoveInt { src, a, b, .. } => src == reg || a == reg || b == reg,
         Op::AddIntImm(_, src, _)
         | Op::CmpEqImm(_, src, _)
         | Op::CmpNeImm(_, src, _)
@@ -1204,6 +1207,8 @@ fn value_op_reads_reg(op: &Op, reg: u16) -> bool {
         | Op::AddIntImmJmp { r: src, .. }
         | Op::AccessK(_, src, _)
         | Op::IndexK(_, src, _)
+        | Op::ListIndexI(_, src, _)
+        | Op::StrIndexI(_, src, _)
         | Op::MapHasK(_, src, _)
         | Op::MapGetInterned(_, src, _) => src == reg,
         Op::ListPush { list, val } | Op::ListPushMove { list, val } => list == reg || val == reg,
@@ -1251,6 +1256,10 @@ fn value_op_writes_reg(op: &Op, reg: u16) -> bool {
         | Op::AccessK(dst, _, _)
         | Op::Index { dst, .. }
         | Op::IndexK(dst, _, _)
+        | Op::ListIndex(dst, _, _)
+        | Op::ListIndexI(dst, _, _)
+        | Op::StrIndex(dst, _, _)
+        | Op::StrIndexI(dst, _, _)
         | Op::Len { dst, .. }
         | Op::Floor { dst, .. }
         | Op::FloorDivImm { dst, .. }

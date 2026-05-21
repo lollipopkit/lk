@@ -58,6 +58,9 @@ pub(crate) const EXT_OP_CMP_EQ_IMM16_JMP: u8 = 47;
 pub(crate) const EXT_OP_CMP_NE_IMM16_JMP: u8 = 48;
 pub(crate) const EXT_OP_CMP_GT_IMM16_JMP: u8 = 49;
 pub(crate) const EXT_OP_CMP_GE_IMM16_JMP: u8 = 50;
+pub(crate) const EXT_OP_LIST_INDEX: u8 = 51;
+pub(crate) const EXT_OP_STR_INDEX: u8 = 52;
+pub(crate) const EXT_OP_CMOVE_INT: u8 = 53;
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -304,6 +307,22 @@ pub(super) fn pack_cmp_i_jmp(a: u16, b: u16, kind: IntCmpKind, ofs: i16) -> Enco
 }
 
 #[inline]
+pub(super) fn pack_cmove_int(dst: u16, src: u16, a: u16, b: u16, kind: IntCmpKind) -> EncodedOp {
+    let word = ((RAW_TAG_EXT as u32) << 24)
+        | ((EXT_OP_CMOVE_INT as u32) << 16)
+        | (((dst as u8) as u32) << 8)
+        | (src as u8 as u32);
+    EncodedOp::with_extra3(
+        word,
+        [
+            pack_ext_word(kind as u8, a as u8, b as u8),
+            pack_ext_word((dst >> 8) as u8, (src >> 8) as u8, (a >> 8) as u8),
+            pack_ext_word((b >> 8) as u8, 0, 0),
+        ],
+    )
+}
+
+#[inline]
 pub(super) fn pack_call_ext(
     ext_op: u8,
     opcode: &'static str,
@@ -391,7 +410,9 @@ pub(crate) fn decode_ext_op(word: u32, ext: u32, c_hi: u16) -> Option<Op> {
         EXT_OP_LIST_LEN => Some(Op::ListLen { dst: a, src: b }),
         EXT_OP_MAP_LEN => Some(Op::MapLen { dst: a, src: b }),
         EXT_OP_STR_LEN => Some(Op::StrLen { dst: a, src: b }),
+        EXT_OP_LIST_INDEX => Some(Op::ListIndex(a, b, c)),
         EXT_OP_LIST_INDEX_I => Some(Op::ListIndexI(a, b, c as u8 as i8 as i16)),
+        EXT_OP_STR_INDEX => Some(Op::StrIndex(a, b, c)),
         EXT_OP_STR_INDEX_I => Some(Op::StrIndexI(a, b, c as u8 as i8 as i16)),
         EXT_OP_MAP_GET_INTERNED => Some(Op::MapGetInterned(a, b, c)),
         EXT_OP_MAP_SET_INTERNED => Some(Op::MapSetInterned(a, b, c)),
@@ -499,7 +520,12 @@ pub(crate) fn decode_ext_op_at(code32: &[u32], pc: usize) -> Option<(Op, usize)>
         };
         return Some((op, next_pc));
     }
-    if op != EXT_OP_LIST_SET_I && op != EXT_OP_CMP_I && op != EXT_OP_CMP_I_JMP && op != EXT_OP_CALL_NAMED_FALLBACK {
+    if op != EXT_OP_LIST_SET_I
+        && op != EXT_OP_CMP_I
+        && op != EXT_OP_CMP_I_JMP
+        && op != EXT_OP_CMOVE_INT
+        && op != EXT_OP_CALL_NAMED_FALLBACK
+    {
         let reg_ext = code32
             .get(pc + 2)
             .copied()
@@ -525,6 +551,18 @@ pub(crate) fn decode_ext_op_at(code32: &[u32], pc: usize) -> Option<(Op, usize)>
         let kind = IntCmpKind::from_u8(((ext >> 16) & 0xFF) as u8)?;
         let ofs = (((((ext >> 8) & 0xFF) as u16) << 8) | ((ext & 0xFF) as u16)) as i16;
         return Some((Op::CmpIntJmp { kind, a, b, ofs }, pc + 3));
+    }
+    if op == EXT_OP_CMOVE_INT {
+        let ext3 = *code32.get(pc + 3)?;
+        if ((ext3 >> 24) & 0xFF) as u8 != RAW_TAG_EXT {
+            return None;
+        }
+        let dst = combine_reg(((ext2 >> 16) & 0xFF) as u16, ((word >> 8) & 0xFF) as u16);
+        let src = combine_reg(((ext2 >> 8) & 0xFF) as u16, (word & 0xFF) as u16);
+        let a = combine_reg((ext2 & 0xFF) as u16, ((ext >> 8) & 0xFF) as u16);
+        let b = combine_reg(((ext3 >> 16) & 0xFF) as u16, (ext & 0xFF) as u16);
+        let kind = IntCmpKind::from_u8(((ext >> 16) & 0xFF) as u8)?;
+        return Some((Op::CMoveInt { dst, src, a, b, kind }, pc + 4));
     }
     if op == EXT_OP_CALL_NAMED_FALLBACK {
         let ext3 = *code32.get(pc + 3)?;

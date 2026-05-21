@@ -111,38 +111,38 @@ Geometric mean ratio for this run: **3.727x**.
 
 This table records the latest per-iteration validation run after the current
 implementation round. It is useful for spotting large direction changes, but it
-is not a replacement for the documented baseline above because it uses only one
-sample per engine.
+is not a replacement for the documented baseline above.
 
 Command:
 
 ```bash
-RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh
+RUNS=10 EXTRA_RUNS=20 PROFILE_WORKLOADS=1 bench/run_workload_bench.sh
 ```
 
-Date: 2026-05-21
+Date: 2026-05-22
 
 | Workload | LK VM (ms) | LK AOT (ms) | Lua (ms) | VM/Lua | AOT/Lua | AOT/VM | Conf. | Status |
 |----------|------------|-------------|----------|--------|---------|--------|-------|--------|
-| gcd_batch | 8.044 | 7.846 | 8.108 | 0.992x | 0.968x | 0.975x | high | close |
-| prime_trial_division | 0.413 | 1.794 | 0.539 | 0.766x | 3.328x | 4.344x | high | ahead |
-| binary_search | 13.914 | 10.846 | 50.464 | 0.276x | 0.215x | 0.780x | high | ahead |
-| two_sum_map | 61.061 | 115.144 | 41.891 | 1.458x | 2.749x | 1.886x | high | behind |
-| sliding_window_sum | 54.439 | 71.670 | 22.108 | 2.462x | 3.242x | 1.317x | high | behind |
-| matrix_3x3_multiply | 6.109 | 2.262 | 1.467 | 4.164x | 1.542x | 0.370x | high | behind |
-| stock_max_profit | 32.279 | 34.253 | 9.934 | 3.249x | 3.448x | 1.061x | high | behind |
-| histogram_group_count | 93.568 | 107.289 | 44.218 | 2.116x | 2.426x | 1.147x | high | behind |
-| string_key_hash | 24.111 | 28.266 | 7.232 | 3.334x | 3.908x | 1.172x | high | behind |
-| order_score_pipeline | 8.497 | 7.561 | 3.345 | 2.540x | 2.260x | 0.890x | high | behind |
-| log_parse_filter | 68.583 | 100.385 | 210.904 | 0.325x | 0.476x | 1.464x | high | ahead |
-| cart_pricing_rules | 4.777 | 5.583 | 2.354 | 2.029x | 2.372x | 1.169x | high | behind |
-| route_permission_check | 13.913 | 15.176 | 3.431 | 4.055x | 4.423x | 1.091x | high | behind |
-| inventory_reorder | 67.513 | 81.054 | 29.956 | 2.254x | 2.706x | 1.201x | high | behind |
-| fraud_rule_scoring | 26.855 | 32.576 | 11.547 | 2.326x | 2.821x | 1.213x | high | behind |
+| gcd_batch | 8.912 | 8.280 | 8.380 | 1.063x | 0.988x | 0.929x | low | close |
+| prime_trial_division | 0.427 | 2.005 | 0.586 | 0.729x | 3.422x | 4.696x | low | ahead |
+| binary_search | 14.195 | 11.827 | 54.009 | 0.263x | 0.219x | 0.833x | low | ahead |
+| two_sum_map | 54.648 | 124.643 | 47.089 | 1.161x | 2.647x | 2.281x | low | behind |
+| sliding_window_sum | 56.300 | 97.006 | 24.190 | 2.327x | 4.010x | 1.723x | low | behind |
+| matrix_3x3_multiply | 4.064 | 5.755 | 1.544 | 2.632x | 3.727x | 1.416x | low | behind |
+| stock_max_profit | 36.575 | 23.449 | 9.946 | 3.677x | 2.358x | 0.641x | low | behind |
+| histogram_group_count | 69.632 | 116.644 | 48.280 | 1.442x | 2.416x | 1.675x | low | behind |
+| string_key_hash | 19.291 | 31.004 | 7.833 | 2.463x | 3.958x | 1.607x | low | behind |
+| order_score_pipeline | 9.368 | 8.558 | 3.606 | 2.598x | 2.373x | 0.914x | low | behind |
+| log_parse_filter | 77.747 | 101.803 | 230.651 | 0.337x | 0.441x | 1.309x | low | ahead |
+| cart_pricing_rules | 5.396 | 5.810 | 2.289 | 2.357x | 2.538x | 1.077x | low | behind |
+| route_permission_check | 10.545 | 11.880 | 3.334 | 3.163x | 3.563x | 1.127x | low | behind |
+| inventory_reorder | 70.204 | 86.894 | 30.482 | 2.303x | 2.851x | 1.238x | low | behind |
+| fraud_rule_scoring | 29.222 | 34.193 | 12.524 | 2.333x | 2.730x | 1.170x | low | behind |
 
-Geometric mean VM/Lua ratio: **1.687x**.
-AOT geometric mean ratio: **1.973x** vs Lua.
-AOT/VM geometric mean ratio: **1.170x**.
+Samples reported: 30 per engine.
+Geometric mean VM/Lua ratio: **1.542x**.
+AOT geometric mean ratio: **2.053x** vs Lua.
+AOT/VM geometric mean ratio: **1.332x**.
 
 ## Current Bottlenecks
 

@@ -1,4 +1,8 @@
+use std::cell::RefCell;
+
 use arcstr::ArcStr;
+
+use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
 
 use super::{
     Val,
@@ -6,6 +10,12 @@ use super::{
     map_key_cache::cache_fresh_str_hash,
     types::ShortStr,
 };
+
+thread_local! {
+    static STR_INT_KEY_CACHE: RefCell<FastHashMap<(usize, usize, i64), ArcStr>> = RefCell::new(fast_hash_map_new());
+}
+
+const STR_INT_KEY_CACHE_LIMIT: usize = 4096;
 
 impl Val {
     /// 从 &str 构造 Val，≤7 字节走 ShortStr（零分配），更长走 Str(ArcStr)。
@@ -49,10 +59,41 @@ impl Val {
     }
 
     #[inline]
+    pub(crate) fn cached_str_int_key(prefix: &str, suffix: i64) -> ArcStr {
+        let cache_key = (prefix.as_ptr() as usize, prefix.len(), suffix);
+        if let Some(key) = STR_INT_KEY_CACHE.with(|cache| cache.borrow().get(&cache_key).cloned()) {
+            return key;
+        }
+        let mut buf = itoa::Buffer::new();
+        let suffix = buf.format(suffix);
+        let mut key = String::with_capacity(prefix.len() + suffix.len());
+        key.push_str(prefix);
+        key.push_str(suffix);
+        let key = ArcStr::from(key);
+        STR_INT_KEY_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= STR_INT_KEY_CACHE_LIMIT {
+                cache.clear();
+            }
+            cache.insert(cache_key, key.clone());
+        });
+        key
+    }
+
+    #[inline]
     pub fn string_key_arcstr(&self) -> Option<ArcStr> {
         match self {
             Val::Str(s) => Some(s.clone()),
             Val::ShortStr(s) => Some(intern(s.as_str())),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn dynamic_string_key_arcstr(&self) -> Option<ArcStr> {
+        match self {
+            Val::Str(s) => Some(s.clone()),
+            Val::ShortStr(s) => Some(ArcStr::from(s.as_str())),
             _ => None,
         }
     }
