@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 
 use crate::val::{ClosureValue, Type, Val};
-use crate::vm::vm::caches::NamedCallPlan;
+use crate::vm::vm::caches::{CallIc, CallReturnLayout, NamedCallPlan, NamedCallSitePlan};
 
 pub(super) fn build_named_call_plan(closure: &ClosureValue, named_slice: &[Val]) -> Result<Arc<NamedCallPlan>> {
     if !named_slice.len().is_multiple_of(2) {
@@ -58,4 +58,34 @@ pub(super) fn build_named_call_plan(closure: &ClosureValue, named_slice: &[Val])
         defaults_to_eval: Arc::from(defaults_to_eval.into_boxed_slice()),
         optional_nil: Arc::from(optional_nil.into_boxed_slice()),
     }))
+}
+
+pub(super) fn get_or_build_named_call_site_plan(
+    call_ic: &mut [Option<CallIc>],
+    pc: usize,
+    closure_ptr: usize,
+    named_len: usize,
+    ret_layout: CallReturnLayout,
+    closure: &ClosureValue,
+    named_slice: &[Val],
+) -> Result<Arc<NamedCallSitePlan>> {
+    if let Some(CallIc::ClosureNamed { plan }) = call_ic.get(pc).and_then(|slot| slot.as_ref())
+        && plan.matches_closure_layout(closure_ptr, named_len, ret_layout.base, ret_layout.retc)
+    {
+        return Ok(Arc::clone(plan));
+    }
+
+    let named = build_named_call_plan(closure, named_slice)?;
+    let plan = Arc::new(NamedCallSitePlan::closure_named(
+        closure_ptr,
+        named_len as u8,
+        ret_layout,
+        named,
+    ));
+    if let Some(slot) = call_ic.get_mut(pc) {
+        *slot = Some(CallIc::ClosureNamed {
+            plan: Arc::clone(&plan),
+        });
+    }
+    Ok(plan)
 }

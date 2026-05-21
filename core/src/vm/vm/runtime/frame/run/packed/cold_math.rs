@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn try_exec_math_op(
     op: &Op,
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     f: &Function,
     next_pc_default: usize,

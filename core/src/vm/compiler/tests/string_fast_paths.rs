@@ -1,5 +1,6 @@
 use super::parse_compile_and_run;
-use crate::{val::Val, vm::Op};
+use crate::val::Val;
+use crate::vm::{Op, rk_is_const};
 
 #[test]
 fn template_literal_chunks_use_str_concat_known_cap() {
@@ -14,8 +15,8 @@ fn template_literal_chunks_use_str_concat_known_cap() {
         function
             .code
             .iter()
-            .any(|op| matches!(op, Op::StrConcatKnownCap(_, _, _))),
-        "expected template literal chunks to lower to StrConcatKnownCap in {:?}",
+            .any(|op| matches!(op, Op::Add(_, _, rhs) if rk_is_const(*rhs))),
+        "expected template literal chunks to use RK const Add in {:?}",
         function.code
     );
 }

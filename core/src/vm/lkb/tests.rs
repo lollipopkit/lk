@@ -81,6 +81,21 @@ fn function_analysis_survives_round_trip() {
         decoded_analysis.region_plan.values.len(),
         original_analysis.region_plan.values.len()
     );
+    assert_eq!(decoded_analysis.perf.values, original_analysis.perf.values);
+    assert_eq!(decoded_analysis.perf.registers, original_analysis.perf.registers);
+    assert_eq!(decoded_analysis.perf.local_slots, original_analysis.perf.local_slots);
+    assert_eq!(decoded_analysis.perf.key_ops, original_analysis.perf.key_ops);
+    assert_eq!(decoded_analysis.perf.dead_writes, original_analysis.perf.dead_writes);
+    assert_eq!(
+        decoded_analysis.perf.register_copies,
+        original_analysis.perf.register_copies
+    );
+    assert_eq!(decoded_analysis.perf.local_copies, original_analysis.perf.local_copies);
+    assert_eq!(
+        decoded_analysis.perf.container_moves,
+        original_analysis.perf.container_moves
+    );
+    assert_eq!(decoded_analysis.perf.control_flow, original_analysis.perf.control_flow);
 }
 
 #[test]

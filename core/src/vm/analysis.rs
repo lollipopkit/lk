@@ -3,6 +3,7 @@ use std::sync::Arc;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use crate::val::{Type, Val};
 use crate::vm::RegionPlan;
 use crate::vm::bc32::{Bc32PackStatus, bc32_pack_status};
 use crate::vm::bytecode::{Function, Op};
@@ -51,12 +52,274 @@ impl EscapeSummary {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PerfValueKind {
+    #[default]
+    Unknown,
+    Nil,
+    Bool,
+    Int,
+    Float,
+    String,
+    List,
+    Map,
+}
+
+impl PerfValueKind {
+    pub fn join(self, other: Self) -> Self {
+        if self == other { self } else { Self::Unknown }
+    }
+
+    pub fn from_type(ty: &Type) -> Self {
+        match ty {
+            Type::Nil => Self::Nil,
+            Type::Bool => Self::Bool,
+            Type::Int => Self::Int,
+            Type::Float => Self::Float,
+            Type::String => Self::String,
+            Type::List(_) => Self::List,
+            Type::Map(_, _) => Self::Map,
+            Type::Optional(inner) => Self::from_type(inner).join(Self::Nil),
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn from_val(value: &Val) -> Self {
+        match value {
+            Val::Nil => Self::Nil,
+            Val::Bool(_) => Self::Bool,
+            Val::Int(_) => Self::Int,
+            Val::Float(_) => Self::Float,
+            Val::ShortStr(_) | Val::Str(_) => Self::String,
+            Val::List(_) => Self::List,
+            Val::Map(_) => Self::Map,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfContainerFact {
+    pub value_kind: PerfValueKind,
+    pub known_len: Option<usize>,
+    pub adoptable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PerfValueFact {
+    pub kind: PerfValueKind,
+    pub escape: EscapeClass,
+    pub move_preferred: bool,
+    pub must_clone: bool,
+}
+
+impl Default for PerfValueFact {
+    fn default() -> Self {
+        Self {
+            kind: PerfValueKind::Unknown,
+            escape: EscapeClass::Trivial,
+            move_preferred: false,
+            must_clone: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfRegisterFact {
+    pub value: PerfValueFact,
+    pub list: Option<PerfContainerFact>,
+    pub map: Option<PerfContainerFact>,
+    pub live_after: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PerformanceFacts {
+    pub values: Vec<PerfValueFact>,
+    pub registers: Vec<Option<PerfRegisterFact>>,
+    pub local_slots: Vec<bool>,
+    pub key_ops: Vec<Option<PerfKeyFact>>,
+    pub dead_writes: Vec<bool>,
+    pub register_copies: Vec<Option<PerfRegisterCopyFact>>,
+    pub local_copies: Vec<Option<PerfLocalCopyFact>>,
+    pub container_moves: Vec<Option<PerfContainerMoveFact>>,
+    pub control_flow: PerfControlFlowFacts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfLocalCopyFact {
+    pub move_source: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfKeyFact {
+    pub const_key: Option<u16>,
+    pub string_int: Option<PerfStringIntKeyFact>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfStringIntKeyFact {
+    pub prefix_key: u16,
+    pub suffix_reg: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfRegisterCopyFact {
+    pub move_source: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfContainerMoveFact {
+    pub move_key: bool,
+    pub move_value: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PerfControlFlowFacts {
+    pub block_ids: Vec<u32>,
+    pub branch_targets: Vec<bool>,
+}
+
+impl PerformanceFacts {
+    pub fn value(&self, value_id: usize) -> Option<&PerfValueFact> {
+        self.values.get(value_id)
+    }
+
+    pub fn register(&self, reg: u16) -> Option<&PerfRegisterFact> {
+        self.registers.get(reg as usize).and_then(Option::as_ref)
+    }
+
+    pub fn is_local_slot(&self, reg: u16) -> bool {
+        self.local_slots.get(reg as usize).copied().unwrap_or(false)
+    }
+
+    pub fn local_copy(&self, pc: usize) -> Option<&PerfLocalCopyFact> {
+        self.local_copies.get(pc).and_then(Option::as_ref)
+    }
+
+    pub fn register_copy(&self, pc: usize) -> Option<&PerfRegisterCopyFact> {
+        self.register_copies.get(pc).and_then(Option::as_ref)
+    }
+
+    pub fn is_dead_write(&self, pc: usize) -> bool {
+        self.dead_writes.get(pc).copied().unwrap_or(false)
+    }
+
+    pub fn container_move(&self, pc: usize) -> Option<&PerfContainerMoveFact> {
+        self.container_moves.get(pc).and_then(Option::as_ref)
+    }
+
+    pub fn block_id(&self, pc: usize) -> Option<u32> {
+        self.control_flow.block_ids.get(pc).copied()
+    }
+
+    pub fn is_branch_target(&self, pc: usize) -> bool {
+        self.control_flow.branch_targets.get(pc).copied().unwrap_or(false)
+    }
+
+    pub fn same_block(&self, a: usize, b: usize) -> bool {
+        self.block_id(a).is_some_and(|block| self.block_id(b) == Some(block))
+    }
+
+    pub fn mark_local_slot(&mut self, reg: u16) {
+        let idx = reg as usize;
+        if self.local_slots.len() <= idx {
+            self.local_slots.resize(idx + 1, false);
+        }
+        self.local_slots[idx] = true;
+    }
+
+    pub fn set_local_copy_fact(&mut self, pc: usize, fact: PerfLocalCopyFact) {
+        if self.local_copies.len() <= pc {
+            self.local_copies.resize_with(pc + 1, Option::default);
+        }
+        self.local_copies[pc] = Some(fact);
+    }
+
+    pub fn set_register_copy_fact(&mut self, pc: usize, fact: PerfRegisterCopyFact) {
+        if self.register_copies.len() <= pc {
+            self.register_copies.resize_with(pc + 1, Option::default);
+        }
+        self.register_copies[pc] = Some(fact);
+    }
+
+    pub fn set_dead_write_fact(&mut self, pc: usize) {
+        if self.dead_writes.len() <= pc {
+            self.dead_writes.resize(pc + 1, false);
+        }
+        self.dead_writes[pc] = true;
+    }
+
+    pub fn set_container_move_fact(&mut self, pc: usize, fact: PerfContainerMoveFact) {
+        if self.container_moves.len() <= pc {
+            self.container_moves.resize_with(pc + 1, Option::default);
+        }
+        self.container_moves[pc] = Some(fact);
+    }
+
+    pub fn set_control_flow_facts(&mut self, control_flow: PerfControlFlowFacts) {
+        self.control_flow = control_flow;
+    }
+
+    pub fn set_value_kind(&mut self, value_id: usize, kind: PerfValueKind) {
+        self.ensure_value(value_id);
+        self.values[value_id].kind = kind;
+    }
+
+    pub fn set_register_kind(&mut self, reg: u16, kind: PerfValueKind) {
+        let fact = self.ensure_register(reg);
+        fact.value.kind = kind;
+    }
+
+    pub fn set_register_fact(&mut self, reg: u16, fact: PerfRegisterFact) {
+        let idx = reg as usize;
+        self.ensure_register_len(idx);
+        self.registers[idx] = Some(fact);
+    }
+
+    pub fn clear_register(&mut self, reg: u16) {
+        let idx = reg as usize;
+        if let Some(slot) = self.registers.get_mut(idx) {
+            *slot = None;
+        }
+    }
+
+    pub fn set_register_live_after(&mut self, reg: u16, live_after: bool) {
+        if live_after {
+            self.ensure_register(reg).live_after = true;
+        } else if let Some(Some(fact)) = self.registers.get_mut(reg as usize) {
+            fact.live_after = false;
+        }
+    }
+
+    pub fn ensure_value(&mut self, value_id: usize) {
+        if self.values.len() <= value_id {
+            self.values.resize_with(value_id + 1, PerfValueFact::default);
+        }
+    }
+
+    fn ensure_register(&mut self, reg: u16) -> &mut PerfRegisterFact {
+        let idx = reg as usize;
+        self.ensure_register_len(idx);
+        if self.registers[idx].is_none() {
+            self.registers[idx] = Some(PerfRegisterFact::default());
+        }
+        self.registers[idx].as_mut().expect("register fact just initialized")
+    }
+
+    fn ensure_register_len(&mut self, idx: usize) {
+        if self.registers.len() <= idx {
+            self.registers.resize_with(idx + 1, Option::default);
+        }
+    }
+}
+
 /// Aggregated analysis artifacts produced by the SSA pipeline.
 #[derive(Debug, Clone, Default)]
 pub struct FunctionAnalysis {
     pub ssa: Option<SsaFunction>,
     pub escape: EscapeSummary,
     pub region_plan: Arc<RegionPlan>,
+    pub perf: PerformanceFacts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -150,6 +413,14 @@ pub struct VmRuntimeMetrics {
     pub val_clones: u64,
     pub immediate_val_clones: u64,
     pub heap_val_clones: u64,
+    pub copy_policy_heap_clones: u64,
+    pub register_copy_heap_clones: u64,
+    pub local_copy_heap_clones: u64,
+    pub local_load_heap_clones: u64,
+    pub local_store_heap_clones: u64,
+    pub const_load_heap_clones: u64,
+    pub call_arg_heap_clones: u64,
+    pub container_copy_heap_clones: u64,
     pub register_writes: u64,
     pub return_value_moves: u64,
     pub branch_ops: u64,
@@ -184,6 +455,14 @@ impl VmRuntimeMetrics {
         val_clones: 0,
         immediate_val_clones: 0,
         heap_val_clones: 0,
+        copy_policy_heap_clones: 0,
+        register_copy_heap_clones: 0,
+        local_copy_heap_clones: 0,
+        local_load_heap_clones: 0,
+        local_store_heap_clones: 0,
+        const_load_heap_clones: 0,
+        call_arg_heap_clones: 0,
+        container_copy_heap_clones: 0,
         register_writes: 0,
         return_value_moves: 0,
         branch_ops: 0,
@@ -234,6 +513,22 @@ static VAL_CLONES: AtomicU64 = AtomicU64::new(0);
 static IMMEDIATE_VAL_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(not(test))]
 static HEAP_VAL_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static COPY_POLICY_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static REGISTER_COPY_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static LOCAL_COPY_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static LOCAL_LOAD_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static LOCAL_STORE_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static CONST_LOAD_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static CALL_ARG_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static CONTAINER_COPY_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(not(test))]
 static REGISTER_WRITES: AtomicU64 = AtomicU64::new(0);
 #[cfg(not(test))]
@@ -333,6 +628,17 @@ pub(crate) enum VmBc32FallbackMetric {
     SentinelSkip,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum VmValueCopyMetric {
+    Generic,
+    Register,
+    LocalLoad,
+    LocalStore,
+    ConstLoad,
+    CallArg,
+    Container,
+}
+
 #[cfg(not(test))]
 #[inline]
 fn increment(counter: &AtomicU64) {
@@ -349,13 +655,13 @@ fn increment_thread(update: impl FnOnce(&mut VmRuntimeMetrics)) {
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_opcode_step() {
-    increment(&OPCODE_STEPS);
+pub(crate) fn record_opcode_step_known_enabled() {
+    OPCODE_STEPS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_opcode_step() {
+pub(crate) fn record_opcode_step_known_enabled() {
     increment_thread(|metrics| metrics.opcode_steps += 1);
 }
 
@@ -388,6 +694,64 @@ pub(crate) fn record_val_clone(heap_backed: bool) {
 
 #[cfg(not(test))]
 #[inline]
+pub(crate) fn record_copy_policy_clone(kind: VmValueCopyMetric, heap_backed: bool) {
+    if !heap_backed || !runtime_metrics_enabled() {
+        return;
+    }
+    COPY_POLICY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
+    match kind {
+        VmValueCopyMetric::Generic => {}
+        VmValueCopyMetric::Register => {
+            REGISTER_COPY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
+        }
+        VmValueCopyMetric::LocalLoad => {
+            LOCAL_COPY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
+            LOCAL_LOAD_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
+        }
+        VmValueCopyMetric::LocalStore => {
+            LOCAL_COPY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
+            LOCAL_STORE_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
+        }
+        VmValueCopyMetric::ConstLoad => {
+            CONST_LOAD_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
+        }
+        VmValueCopyMetric::CallArg => {
+            CALL_ARG_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
+        }
+        VmValueCopyMetric::Container => {
+            CONTAINER_COPY_HEAP_CLONES.fetch_add(1, Ordering::Relaxed);
+        }
+    };
+}
+
+#[cfg(test)]
+#[inline]
+pub(crate) fn record_copy_policy_clone(kind: VmValueCopyMetric, heap_backed: bool) {
+    if !heap_backed {
+        return;
+    }
+    update_thread_runtime_metrics(|metrics| {
+        metrics.copy_policy_heap_clones += 1;
+        match kind {
+            VmValueCopyMetric::Generic => {}
+            VmValueCopyMetric::Register => metrics.register_copy_heap_clones += 1,
+            VmValueCopyMetric::LocalLoad => {
+                metrics.local_copy_heap_clones += 1;
+                metrics.local_load_heap_clones += 1;
+            }
+            VmValueCopyMetric::LocalStore => {
+                metrics.local_copy_heap_clones += 1;
+                metrics.local_store_heap_clones += 1;
+            }
+            VmValueCopyMetric::ConstLoad => metrics.const_load_heap_clones += 1,
+            VmValueCopyMetric::CallArg => metrics.call_arg_heap_clones += 1,
+            VmValueCopyMetric::Container => metrics.container_copy_heap_clones += 1,
+        }
+    });
+}
+
+#[cfg(not(test))]
+#[inline]
 pub(crate) fn record_register_write() {
     increment(&REGISTER_WRITES);
 }
@@ -412,10 +776,7 @@ pub(crate) fn record_return_value_move() {
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_branch_op(typed: bool) {
-    if !runtime_metrics_enabled() {
-        return;
-    }
+pub(crate) fn record_branch_op_known_enabled(typed: bool) {
     BRANCH_OPS.fetch_add(1, Ordering::Relaxed);
     if typed {
         TYPED_BRANCH_OPS.fetch_add(1, Ordering::Relaxed);
@@ -424,7 +785,7 @@ pub(crate) fn record_branch_op(typed: bool) {
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_branch_op(typed: bool) {
+pub(crate) fn record_branch_op_known_enabled(typed: bool) {
     update_thread_runtime_metrics(|metrics| {
         metrics.branch_ops += 1;
         if typed {
@@ -435,10 +796,7 @@ pub(crate) fn record_branch_op(typed: bool) {
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_call_op(kind: VmCallMetric) {
-    if !runtime_metrics_enabled() {
-        return;
-    }
+pub(crate) fn record_call_op_known_enabled(kind: VmCallMetric) {
     CALL_OPS.fetch_add(1, Ordering::Relaxed);
     match kind {
         VmCallMetric::Generic => {}
@@ -462,7 +820,7 @@ pub(crate) fn record_call_op(kind: VmCallMetric) {
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_call_op(kind: VmCallMetric) {
+pub(crate) fn record_call_op_known_enabled(kind: VmCallMetric) {
     update_thread_runtime_metrics(|metrics| {
         metrics.call_ops += 1;
         match kind {
@@ -478,10 +836,7 @@ pub(crate) fn record_call_op(kind: VmCallMetric) {
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_container_op(kind: VmContainerMetric) {
-    if !runtime_metrics_enabled() {
-        return;
-    }
+pub(crate) fn record_container_op_known_enabled(kind: VmContainerMetric) {
     CONTAINER_OPS.fetch_add(1, Ordering::Relaxed);
     match kind {
         VmContainerMetric::Generic => {}
@@ -499,7 +854,7 @@ pub(crate) fn record_container_op(kind: VmContainerMetric) {
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_container_op(kind: VmContainerMetric) {
+pub(crate) fn record_container_op_known_enabled(kind: VmContainerMetric) {
     update_thread_runtime_metrics(|metrics| {
         metrics.container_ops += 1;
         match kind {
@@ -513,30 +868,38 @@ pub(crate) fn record_container_op(kind: VmContainerMetric) {
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_bc32_fallback_op() {
-    increment(&BC32_FALLBACK_OPS);
+pub(crate) fn record_bc32_fallback_op_known_enabled() {
+    BC32_FALLBACK_OPS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_bc32_fallback_op() {
+pub(crate) fn record_bc32_fallback_op_known_enabled() {
     update_thread_runtime_metrics(|metrics| metrics.bc32_fallback_ops += 1);
 }
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_bc32_fallback_reason(reason: VmBc32FallbackMetric) {
+pub(crate) fn record_bc32_fallback_reason_known_enabled(reason: VmBc32FallbackMetric) {
     match reason {
-        VmBc32FallbackMetric::BuildMiss => increment(&BC32_FALLBACK_BUILD_MISSES),
-        VmBc32FallbackMetric::StaleSlot => increment(&BC32_HOT_STALE_SLOTS),
-        VmBc32FallbackMetric::StaleMiss => increment(&BC32_HOT_STALE_MISSES),
-        VmBc32FallbackMetric::SentinelSkip => increment(&BC32_HOT_SENTINEL_SKIPS),
+        VmBc32FallbackMetric::BuildMiss => {
+            BC32_FALLBACK_BUILD_MISSES.fetch_add(1, Ordering::Relaxed);
+        }
+        VmBc32FallbackMetric::StaleSlot => {
+            BC32_HOT_STALE_SLOTS.fetch_add(1, Ordering::Relaxed);
+        }
+        VmBc32FallbackMetric::StaleMiss => {
+            BC32_HOT_STALE_MISSES.fetch_add(1, Ordering::Relaxed);
+        }
+        VmBc32FallbackMetric::SentinelSkip => {
+            BC32_HOT_SENTINEL_SKIPS.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_bc32_fallback_reason(reason: VmBc32FallbackMetric) {
+pub(crate) fn record_bc32_fallback_reason_known_enabled(reason: VmBc32FallbackMetric) {
     update_thread_runtime_metrics(|metrics| match reason {
         VmBc32FallbackMetric::BuildMiss => metrics.bc32_fallback_build_misses += 1,
         VmBc32FallbackMetric::StaleSlot => metrics.bc32_hot_stale_slots += 1,
@@ -547,73 +910,73 @@ pub(crate) fn record_bc32_fallback_reason(reason: VmBc32FallbackMetric) {
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_quickening_hit() {
-    increment(&QUICKENING_HITS);
+pub(crate) fn record_quickening_hit_known_enabled() {
+    QUICKENING_HITS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_quickening_hit() {
+pub(crate) fn record_quickening_hit_known_enabled() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_hits += 1);
 }
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_quickening_build_attempt() {
-    increment(&QUICKENING_BUILD_ATTEMPTS);
+pub(crate) fn record_quickening_build_attempt_known_enabled() {
+    QUICKENING_BUILD_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_quickening_build_attempt() {
+pub(crate) fn record_quickening_build_attempt_known_enabled() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_build_attempts += 1);
 }
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_quickening_build_success() {
-    increment(&QUICKENING_BUILD_SUCCESSES);
+pub(crate) fn record_quickening_build_success_known_enabled() {
+    QUICKENING_BUILD_SUCCESSES.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_quickening_build_success() {
+pub(crate) fn record_quickening_build_success_known_enabled() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_build_successes += 1);
 }
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_quickening_miss() {
-    increment(&QUICKENING_MISSES);
+pub(crate) fn record_quickening_miss_known_enabled() {
+    QUICKENING_MISSES.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_quickening_miss() {
+pub(crate) fn record_quickening_miss_known_enabled() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_misses += 1);
 }
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_quickening_deopt() {
-    increment(&QUICKENING_DEOPTS);
+pub(crate) fn record_quickening_deopt_known_enabled() {
+    QUICKENING_DEOPTS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_quickening_deopt() {
+pub(crate) fn record_quickening_deopt_known_enabled() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_deopts += 1);
 }
 
 #[cfg(not(test))]
 #[inline]
-pub(crate) fn record_quickening_sentinel_skip() {
-    increment(&QUICKENING_SENTINEL_SKIPS);
+pub(crate) fn record_quickening_sentinel_skip_known_enabled() {
+    QUICKENING_SENTINEL_SKIPS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 #[inline]
-pub(crate) fn record_quickening_sentinel_skip() {
+pub(crate) fn record_quickening_sentinel_skip_known_enabled() {
     update_thread_runtime_metrics(|metrics| metrics.quickening_sentinel_skips += 1);
 }
 
@@ -624,6 +987,14 @@ pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
         val_clones: VAL_CLONES.load(Ordering::Relaxed),
         immediate_val_clones: IMMEDIATE_VAL_CLONES.load(Ordering::Relaxed),
         heap_val_clones: HEAP_VAL_CLONES.load(Ordering::Relaxed),
+        copy_policy_heap_clones: COPY_POLICY_HEAP_CLONES.load(Ordering::Relaxed),
+        register_copy_heap_clones: REGISTER_COPY_HEAP_CLONES.load(Ordering::Relaxed),
+        local_copy_heap_clones: LOCAL_COPY_HEAP_CLONES.load(Ordering::Relaxed),
+        local_load_heap_clones: LOCAL_LOAD_HEAP_CLONES.load(Ordering::Relaxed),
+        local_store_heap_clones: LOCAL_STORE_HEAP_CLONES.load(Ordering::Relaxed),
+        const_load_heap_clones: CONST_LOAD_HEAP_CLONES.load(Ordering::Relaxed),
+        call_arg_heap_clones: CALL_ARG_HEAP_CLONES.load(Ordering::Relaxed),
+        container_copy_heap_clones: CONTAINER_COPY_HEAP_CLONES.load(Ordering::Relaxed),
         register_writes: REGISTER_WRITES.load(Ordering::Relaxed),
         return_value_moves: RETURN_VALUE_MOVES.load(Ordering::Relaxed),
         branch_ops: BRANCH_OPS.load(Ordering::Relaxed),
@@ -664,6 +1035,14 @@ pub fn vm_runtime_metrics_reset() {
     VAL_CLONES.store(0, Ordering::Relaxed);
     IMMEDIATE_VAL_CLONES.store(0, Ordering::Relaxed);
     HEAP_VAL_CLONES.store(0, Ordering::Relaxed);
+    COPY_POLICY_HEAP_CLONES.store(0, Ordering::Relaxed);
+    REGISTER_COPY_HEAP_CLONES.store(0, Ordering::Relaxed);
+    LOCAL_COPY_HEAP_CLONES.store(0, Ordering::Relaxed);
+    LOCAL_LOAD_HEAP_CLONES.store(0, Ordering::Relaxed);
+    LOCAL_STORE_HEAP_CLONES.store(0, Ordering::Relaxed);
+    CONST_LOAD_HEAP_CLONES.store(0, Ordering::Relaxed);
+    CALL_ARG_HEAP_CLONES.store(0, Ordering::Relaxed);
+    CONTAINER_COPY_HEAP_CLONES.store(0, Ordering::Relaxed);
     REGISTER_WRITES.store(0, Ordering::Relaxed);
     RETURN_VALUE_MOVES.store(0, Ordering::Relaxed);
     BRANCH_OPS.store(0, Ordering::Relaxed);
@@ -844,6 +1223,7 @@ fn aggregate_coverage(functions: &[VmFunctionCoverage]) -> VmCoverageTotals {
 
 pub fn opcode_name(op: &Op) -> &'static str {
     match op {
+        Op::Nop => "Nop",
         Op::LoadK(..) => "LoadK",
         Op::Move(..) => "Move",
         Op::Not(..) => "Not",
@@ -958,7 +1338,7 @@ pub fn opcode_name(op: &Op) -> &'static str {
 
 pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
     match op {
-        Op::LoadK(..) | Op::Move(..) | Op::Not(..) | Op::ToStr(..) | Op::ToBool(..) => VmOpcodeCategory::Data,
+        Op::Nop | Op::LoadK(..) | Op::Move(..) | Op::Not(..) | Op::ToStr(..) | Op::ToBool(..) => VmOpcodeCategory::Data,
         Op::Add(..)
         | Op::StrConcatKnownCap(..)
         | Op::StrConcatToStr(..)
@@ -1063,82 +1443,5 @@ pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::val::Val;
-    use crate::vm::bytecode::Function;
-
-    fn test_function(code: Vec<Op>) -> Function {
-        Function {
-            consts: Vec::new(),
-            code,
-            n_regs: 4,
-            protos: Vec::new(),
-            param_regs: Vec::new(),
-            named_param_regs: Vec::new(),
-            named_param_layout: Vec::new(),
-            pattern_plans: Vec::new(),
-            code32: None,
-            bc32_decoded: None,
-            analysis: None,
-        }
-    }
-
-    #[test]
-    fn vm_coverage_report_counts_opcodes_categories_and_call_sites() {
-        let function = test_function(vec![
-            Op::LoadK(0, 0),
-            Op::AddInt(1, 0, 0),
-            Op::Call {
-                f: 1,
-                base: 0,
-                argc: 1,
-                retc: 1,
-            },
-            Op::Ret { base: 0, retc: 1 },
-        ]);
-
-        let report = vm_coverage_report(&function);
-
-        assert_eq!(report.totals.functions, 1);
-        assert_eq!(report.totals.instructions, 4);
-        assert_eq!(report.totals.call_sites, 1);
-        assert_eq!(
-            report
-                .totals
-                .category_counts
-                .iter()
-                .find(|(category, _)| *category == VmOpcodeCategory::Numeric)
-                .map(|(_, count)| *count),
-            Some(1)
-        );
-        assert!(
-            report
-                .totals
-                .opcode_counts
-                .iter()
-                .any(|entry| entry.opcode == "Call" && entry.count == 1)
-        );
-        assert!(
-            report
-                .totals
-                .bc32_typed_gate_counts
-                .iter()
-                .any(|entry| entry.opcode == "AddInt" && entry.count == 1)
-        );
-    }
-
-    #[test]
-    fn runtime_metrics_count_immediate_and_heap_val_clones() {
-        vm_runtime_metrics_reset();
-
-        let _ = Val::Int(1).clone();
-        let _ = Val::from_str("longer-than-short").clone();
-
-        let metrics = vm_runtime_metrics_snapshot();
-        assert_eq!(metrics.val_clones, 2);
-        assert_eq!(metrics.immediate_val_clones, 1);
-        assert_eq!(metrics.heap_val_clones, 1);
-    }
-}
+#[path = "analysis_tests.rs"]
+mod analysis_tests;

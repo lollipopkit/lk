@@ -138,6 +138,7 @@ impl EncodedOp {
 
 pub(super) fn opcode_name(op: &Op) -> &'static str {
     match op {
+        Op::Nop => "Nop",
         Op::LoadK(..) => "LoadK",
         Op::Move(..) => "Move",
         Op::Not(..) => "Not",

@@ -16,14 +16,18 @@ use crate::{
 };
 
 use super::alloc::{AllocationRegion, RegionPlan};
-use super::analysis::{EscapeClass, EscapeSummary, FunctionAnalysis};
+use super::analysis::{
+    EscapeClass, EscapeSummary, FunctionAnalysis, PerfContainerFact, PerfContainerMoveFact, PerfControlFlowFacts,
+    PerfKeyFact, PerfLocalCopyFact, PerfRegisterCopyFact, PerfRegisterFact, PerfStringIntKeyFact, PerfValueFact,
+    PerfValueKind, PerformanceFacts,
+};
 use super::bytecode::{CaptureSpec, ClosureProto, Function, NamedParamLayoutEntry, PatternPlan};
 use op_codec::{decode_op, encode_op};
 
 mod op_codec;
 
 const MAGIC: [u8; 3] = *b"LKB";
-pub const CURRENT_VERSION: u16 = 9;
+pub const CURRENT_VERSION: u16 = 16;
 
 /// Flags describing optimisation passes that were applied when emitting the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -462,7 +466,7 @@ fn decode_function(bytes: &[u8], version: u16) -> Result<Function> {
     if version >= 7 {
         let has_analysis = read_u8(bytes, &mut cursor)? != 0;
         if has_analysis {
-            analysis = Some(decode_analysis(bytes, &mut cursor)?);
+            analysis = Some(decode_analysis(bytes, &mut cursor, version)?);
         }
     }
 
@@ -579,12 +583,7 @@ fn decode_function(bytes: &[u8], version: u16) -> Result<Function> {
 }
 
 fn encode_analysis(out: &mut Vec<u8>, analysis: &FunctionAnalysis) -> Result<()> {
-    let class_tag = match analysis.escape.return_class {
-        EscapeClass::Trivial => 0u8,
-        EscapeClass::Local => 1u8,
-        EscapeClass::Escapes => 2u8,
-    };
-    write_u8(out, class_tag);
+    write_u8(out, encode_escape_class(analysis.escape.return_class));
 
     ensure!(
         analysis.escape.escaping_values.len() <= u32::MAX as usize,
@@ -609,10 +608,12 @@ fn encode_analysis(out: &mut Vec<u8>, analysis: &FunctionAnalysis) -> Result<()>
     let return_region_tag = encode_region_tag(analysis.region_plan.return_region);
     write_u8(out, return_region_tag);
 
+    encode_performance_facts(out, &analysis.perf)?;
+
     Ok(())
 }
 
-fn decode_analysis(bytes: &[u8], cursor: &mut usize) -> Result<FunctionAnalysis> {
+fn decode_analysis(bytes: &[u8], cursor: &mut usize, version: u16) -> Result<FunctionAnalysis> {
     let class_tag = read_u8(bytes, cursor)?;
     let return_class = decode_escape_class(class_tag)?;
 
@@ -631,6 +632,11 @@ fn decode_analysis(bytes: &[u8], cursor: &mut usize) -> Result<FunctionAnalysis>
 
     let return_region_tag = read_u8(bytes, cursor)?;
     let return_region = decode_region_tag(return_region_tag)?;
+    let perf = if version >= 10 {
+        decode_performance_facts(bytes, cursor, version)?
+    } else {
+        PerformanceFacts::default()
+    };
 
     Ok(FunctionAnalysis {
         ssa: None,
@@ -642,7 +648,364 @@ fn decode_analysis(bytes: &[u8], cursor: &mut usize) -> Result<FunctionAnalysis>
             values: regions,
             return_region,
         }),
+        perf,
     })
+}
+
+fn encode_performance_facts(out: &mut Vec<u8>, facts: &PerformanceFacts) -> Result<()> {
+    ensure!(
+        facts.values.len() <= u32::MAX as usize,
+        "performance value facts too large"
+    );
+    write_u32(out, facts.values.len() as u32);
+    for fact in &facts.values {
+        encode_perf_value_fact(out, fact);
+    }
+
+    ensure!(
+        facts.registers.len() <= u32::MAX as usize,
+        "performance register facts too large"
+    );
+    write_u32(out, facts.registers.len() as u32);
+    for fact in &facts.registers {
+        if let Some(fact) = fact {
+            write_u8(out, 1);
+            encode_perf_register_fact(out, fact);
+        } else {
+            write_u8(out, 0);
+        }
+    }
+
+    ensure!(
+        facts.local_slots.len() <= u32::MAX as usize,
+        "performance local slot facts too large"
+    );
+    write_u32(out, facts.local_slots.len() as u32);
+    for is_local in &facts.local_slots {
+        write_u8(out, u8::from(*is_local));
+    }
+
+    ensure!(
+        facts.key_ops.len() <= u32::MAX as usize,
+        "performance key facts too large"
+    );
+    write_u32(out, facts.key_ops.len() as u32);
+    for fact in &facts.key_ops {
+        if let Some(fact) = fact {
+            write_u8(out, 1);
+            write_optional_u16(out, fact.const_key);
+            if let Some(string_int) = fact.string_int {
+                write_u8(out, 1);
+                write_u16(out, string_int.prefix_key);
+                write_u16(out, string_int.suffix_reg);
+            } else {
+                write_u8(out, 0);
+            }
+        } else {
+            write_u8(out, 0);
+        }
+    }
+
+    ensure!(
+        facts.dead_writes.len() <= u32::MAX as usize,
+        "performance dead-write facts too large"
+    );
+    write_u32(out, facts.dead_writes.len() as u32);
+    for is_dead in &facts.dead_writes {
+        write_u8(out, u8::from(*is_dead));
+    }
+
+    ensure!(
+        facts.register_copies.len() <= u32::MAX as usize,
+        "performance register copy facts too large"
+    );
+    write_u32(out, facts.register_copies.len() as u32);
+    for fact in &facts.register_copies {
+        if let Some(fact) = fact {
+            write_u8(out, 1);
+            write_u8(out, u8::from(fact.move_source));
+        } else {
+            write_u8(out, 0);
+        }
+    }
+
+    ensure!(
+        facts.local_copies.len() <= u32::MAX as usize,
+        "performance local copy facts too large"
+    );
+    write_u32(out, facts.local_copies.len() as u32);
+    for fact in &facts.local_copies {
+        if let Some(fact) = fact {
+            write_u8(out, 1);
+            write_u8(out, u8::from(fact.move_source));
+        } else {
+            write_u8(out, 0);
+        }
+    }
+
+    ensure!(
+        facts.container_moves.len() <= u32::MAX as usize,
+        "performance container move facts too large"
+    );
+    write_u32(out, facts.container_moves.len() as u32);
+    for fact in &facts.container_moves {
+        if let Some(fact) = fact {
+            write_u8(out, 1);
+            write_u8(out, u8::from(fact.move_key));
+            write_u8(out, u8::from(fact.move_value));
+        } else {
+            write_u8(out, 0);
+        }
+    }
+
+    ensure!(
+        facts.control_flow.block_ids.len() <= u32::MAX as usize,
+        "performance control-flow block facts too large"
+    );
+    write_u32(out, facts.control_flow.block_ids.len() as u32);
+    for block_id in &facts.control_flow.block_ids {
+        write_u32(out, *block_id);
+    }
+
+    ensure!(
+        facts.control_flow.branch_targets.len() <= u32::MAX as usize,
+        "performance control-flow branch target facts too large"
+    );
+    write_u32(out, facts.control_flow.branch_targets.len() as u32);
+    for is_target in &facts.control_flow.branch_targets {
+        write_u8(out, u8::from(*is_target));
+    }
+
+    Ok(())
+}
+
+fn decode_performance_facts(bytes: &[u8], cursor: &mut usize, version: u16) -> Result<PerformanceFacts> {
+    let value_len = read_u32(bytes, cursor)? as usize;
+    let mut values = Vec::with_capacity(value_len);
+    for _ in 0..value_len {
+        values.push(decode_perf_value_fact(bytes, cursor)?);
+    }
+
+    let register_len = read_u32(bytes, cursor)? as usize;
+    let mut registers = Vec::with_capacity(register_len);
+    for _ in 0..register_len {
+        let has_fact = read_u8(bytes, cursor)? != 0;
+        registers.push(if has_fact {
+            Some(decode_perf_register_fact(bytes, cursor)?)
+        } else {
+            None
+        });
+    }
+
+    let local_slots = if version >= 11 {
+        let local_slot_len = read_u32(bytes, cursor)? as usize;
+        let mut local_slots = Vec::with_capacity(local_slot_len);
+        for _ in 0..local_slot_len {
+            local_slots.push(read_u8(bytes, cursor)? != 0);
+        }
+        local_slots
+    } else {
+        Vec::new()
+    };
+
+    let key_ops = if version >= 15 {
+        let key_len = read_u32(bytes, cursor)? as usize;
+        let mut key_ops = Vec::with_capacity(key_len);
+        for _ in 0..key_len {
+            let has_fact = read_u8(bytes, cursor)? != 0;
+            key_ops.push(if has_fact {
+                let const_key = read_optional_u16(bytes, cursor)?;
+                let string_int = if read_u8(bytes, cursor)? != 0 {
+                    Some(PerfStringIntKeyFact {
+                        prefix_key: read_u16(bytes, cursor)?,
+                        suffix_reg: read_u16(bytes, cursor)?,
+                    })
+                } else {
+                    None
+                };
+                Some(PerfKeyFact { const_key, string_int })
+            } else {
+                None
+            });
+        }
+        key_ops
+    } else {
+        Vec::new()
+    };
+
+    let dead_writes = if version >= 16 {
+        let dead_write_len = read_u32(bytes, cursor)? as usize;
+        let mut dead_writes = Vec::with_capacity(dead_write_len);
+        for _ in 0..dead_write_len {
+            dead_writes.push(read_u8(bytes, cursor)? != 0);
+        }
+        dead_writes
+    } else {
+        Vec::new()
+    };
+
+    let local_copies = if version >= 11 {
+        let register_copies = if version >= 14 {
+            let register_copy_len = read_u32(bytes, cursor)? as usize;
+            let mut register_copies = Vec::with_capacity(register_copy_len);
+            for _ in 0..register_copy_len {
+                let has_fact = read_u8(bytes, cursor)? != 0;
+                register_copies.push(if has_fact {
+                    Some(PerfRegisterCopyFact {
+                        move_source: read_u8(bytes, cursor)? != 0,
+                    })
+                } else {
+                    None
+                });
+            }
+            register_copies
+        } else {
+            Vec::new()
+        };
+
+        let local_copy_len = read_u32(bytes, cursor)? as usize;
+        let mut local_copies = Vec::with_capacity(local_copy_len);
+        for _ in 0..local_copy_len {
+            let has_fact = read_u8(bytes, cursor)? != 0;
+            local_copies.push(if has_fact {
+                Some(PerfLocalCopyFact {
+                    move_source: read_u8(bytes, cursor)? != 0,
+                })
+            } else {
+                None
+            });
+        }
+        (register_copies, local_copies)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let container_moves = if version >= 13 {
+        let container_move_len = read_u32(bytes, cursor)? as usize;
+        let mut container_moves = Vec::with_capacity(container_move_len);
+        for _ in 0..container_move_len {
+            let has_fact = read_u8(bytes, cursor)? != 0;
+            container_moves.push(if has_fact {
+                Some(PerfContainerMoveFact {
+                    move_key: read_u8(bytes, cursor)? != 0,
+                    move_value: read_u8(bytes, cursor)? != 0,
+                })
+            } else {
+                None
+            });
+        }
+        container_moves
+    } else {
+        Vec::new()
+    };
+
+    let control_flow = if version >= 12 {
+        let block_len = read_u32(bytes, cursor)? as usize;
+        let mut block_ids = Vec::with_capacity(block_len);
+        for _ in 0..block_len {
+            block_ids.push(read_u32(bytes, cursor)?);
+        }
+
+        let target_len = read_u32(bytes, cursor)? as usize;
+        let mut branch_targets = Vec::with_capacity(target_len);
+        for _ in 0..target_len {
+            branch_targets.push(read_u8(bytes, cursor)? != 0);
+        }
+
+        PerfControlFlowFacts {
+            block_ids,
+            branch_targets,
+        }
+    } else {
+        PerfControlFlowFacts::default()
+    };
+
+    Ok(PerformanceFacts {
+        values,
+        registers,
+        local_slots,
+        key_ops,
+        dead_writes,
+        register_copies: local_copies.0,
+        local_copies: local_copies.1,
+        container_moves,
+        control_flow,
+    })
+}
+
+fn encode_perf_register_fact(out: &mut Vec<u8>, fact: &PerfRegisterFact) {
+    encode_perf_value_fact(out, &fact.value);
+    encode_perf_container_fact(out, fact.list);
+    encode_perf_container_fact(out, fact.map);
+    write_u8(out, u8::from(fact.live_after));
+}
+
+fn decode_perf_register_fact(bytes: &[u8], cursor: &mut usize) -> Result<PerfRegisterFact> {
+    let value = decode_perf_value_fact(bytes, cursor)?;
+    let list = decode_perf_container_fact(bytes, cursor)?;
+    let map = decode_perf_container_fact(bytes, cursor)?;
+    let live_after = read_u8(bytes, cursor)? != 0;
+    Ok(PerfRegisterFact {
+        value,
+        list,
+        map,
+        live_after,
+    })
+}
+
+fn encode_perf_value_fact(out: &mut Vec<u8>, fact: &PerfValueFact) {
+    write_u8(out, encode_perf_value_kind(fact.kind));
+    write_u8(out, encode_escape_class(fact.escape));
+    write_u8(out, u8::from(fact.move_preferred));
+    write_u8(out, u8::from(fact.must_clone));
+}
+
+fn decode_perf_value_fact(bytes: &[u8], cursor: &mut usize) -> Result<PerfValueFact> {
+    let kind = decode_perf_value_kind(read_u8(bytes, cursor)?)?;
+    let escape = decode_escape_class(read_u8(bytes, cursor)?)?;
+    let move_preferred = read_u8(bytes, cursor)? != 0;
+    let must_clone = read_u8(bytes, cursor)? != 0;
+    Ok(PerfValueFact {
+        kind,
+        escape,
+        move_preferred,
+        must_clone,
+    })
+}
+
+fn encode_perf_container_fact(out: &mut Vec<u8>, fact: Option<PerfContainerFact>) {
+    if let Some(fact) = fact {
+        write_u8(out, 1);
+        write_u8(out, encode_perf_value_kind(fact.value_kind));
+        match fact.known_len {
+            Some(len) => {
+                write_u8(out, 1);
+                write_u32(out, len as u32);
+            }
+            None => write_u8(out, 0),
+        }
+        write_u8(out, u8::from(fact.adoptable));
+    } else {
+        write_u8(out, 0);
+    }
+}
+
+fn decode_perf_container_fact(bytes: &[u8], cursor: &mut usize) -> Result<Option<PerfContainerFact>> {
+    if read_u8(bytes, cursor)? == 0 {
+        return Ok(None);
+    }
+    let value_kind = decode_perf_value_kind(read_u8(bytes, cursor)?)?;
+    let known_len = if read_u8(bytes, cursor)? != 0 {
+        Some(read_u32(bytes, cursor)? as usize)
+    } else {
+        None
+    };
+    let adoptable = read_u8(bytes, cursor)? != 0;
+    Ok(Some(PerfContainerFact {
+        value_kind,
+        known_len,
+        adoptable,
+    }))
 }
 
 #[inline]
@@ -651,6 +1014,43 @@ fn encode_region_tag(region: AllocationRegion) -> u8 {
         AllocationRegion::ThreadLocal => 0,
         AllocationRegion::Heap => 1,
     }
+}
+
+#[inline]
+fn encode_escape_class(class: EscapeClass) -> u8 {
+    match class {
+        EscapeClass::Trivial => 0,
+        EscapeClass::Local => 1,
+        EscapeClass::Escapes => 2,
+    }
+}
+
+#[inline]
+fn encode_perf_value_kind(kind: PerfValueKind) -> u8 {
+    match kind {
+        PerfValueKind::Unknown => 0,
+        PerfValueKind::Nil => 1,
+        PerfValueKind::Bool => 2,
+        PerfValueKind::Int => 3,
+        PerfValueKind::Float => 4,
+        PerfValueKind::String => 5,
+        PerfValueKind::List => 6,
+        PerfValueKind::Map => 7,
+    }
+}
+
+fn decode_perf_value_kind(tag: u8) -> Result<PerfValueKind> {
+    Ok(match tag {
+        0 => PerfValueKind::Unknown,
+        1 => PerfValueKind::Nil,
+        2 => PerfValueKind::Bool,
+        3 => PerfValueKind::Int,
+        4 => PerfValueKind::Float,
+        5 => PerfValueKind::String,
+        6 => PerfValueKind::List,
+        7 => PerfValueKind::Map,
+        other => bail!("unknown performance value kind tag {}", other),
+    })
 }
 
 fn decode_region_tag(tag: u8) -> Result<AllocationRegion> {
@@ -765,6 +1165,15 @@ pub(super) fn write_u16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
+fn write_optional_u16(out: &mut Vec<u8>, value: Option<u16>) {
+    if let Some(value) = value {
+        write_u8(out, 1);
+        write_u16(out, value);
+    } else {
+        write_u8(out, 0);
+    }
+}
+
 pub(super) fn write_i16(out: &mut Vec<u8>, value: i16) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -803,6 +1212,14 @@ pub(super) fn read_u16(bytes: &[u8], cursor: &mut usize) -> Result<u16> {
     buf.copy_from_slice(&bytes[*cursor..*cursor + 2]);
     *cursor += 2;
     Ok(u16::from_le_bytes(buf))
+}
+
+fn read_optional_u16(bytes: &[u8], cursor: &mut usize) -> Result<Option<u16>> {
+    if read_u8(bytes, cursor)? != 0 {
+        read_u16(bytes, cursor).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 pub(super) fn read_i16(bytes: &[u8], cursor: &mut usize) -> Result<i16> {

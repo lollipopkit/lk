@@ -103,6 +103,7 @@ pub fn compile_function_to_llvm(
 
 fn op_written_regs(op: &Op) -> Vec<u16> {
     match *op {
+        Op::Nop => Vec::new(),
         Op::LoadK(dst, _)
         | Op::Move(dst, _)
         | Op::StoreLocal(dst, _)
@@ -599,6 +600,7 @@ impl<'a> FunctionTranslator<'a> {
                     terminated = true;
                     break;
                 }
+                Op::Nop => {}
                 Op::LoadK(dst, kidx) => self.emit_load_const(instr_idx, block_end, *dst, *kidx)?,
                 Op::Move(dst, src) => self.emit_copy(*dst, *src)?,
                 Op::StoreLocal(idx, src) => self.emit_store_local(*idx, *src)?,

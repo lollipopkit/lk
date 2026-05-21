@@ -1,4 +1,5 @@
 use super::*;
+use crate::vm::{FunctionAnalysis, PerfKeyFact, PerfStringIntKeyFact, PerformanceFacts};
 
 #[test]
 fn lowers_const_string_map_get_feeding_add_to_single_helper() {
@@ -208,6 +209,59 @@ fn lowers_string_int_map_get_feeding_mul_to_single_helper() {
     assert!(
         !ir.contains("call i64 @lk_rt_map_get_str_int"),
         "deferred string-int map.get should not materialize intermediate get:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn lowers_string_int_key_from_performance_facts() {
+    let mut perf = PerformanceFacts::default();
+    perf.key_ops.resize_with(4, Option::default);
+    perf.key_ops[2] = Some(PerfKeyFact {
+        const_key: None,
+        string_int: Some(PerfStringIntKeyFact {
+            prefix_key: 0,
+            suffix_reg: 1,
+        }),
+    });
+    perf.key_ops[3] = perf.key_ops[2];
+    let func = Function {
+        consts: vec![Val::from_str("tax"), Val::Int(7)],
+        code: vec![
+            Op::LoadK(0, 0),
+            Op::LoadK(1, 1),
+            Op::StrConcatToStr(2, 0, 1),
+            Op::MapGetDynamic(3, 4, 2),
+            Op::Ret { base: 3, retc: 1 },
+        ],
+        n_regs: 5,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: Some(FunctionAnalysis {
+            perf,
+            ..FunctionAnalysis::default()
+        }),
+    };
+
+    let options = LlvmBackendOptions {
+        run_optimizations: false,
+        ..LlvmBackendOptions::default()
+    };
+    let artifact = compile_function_to_llvm(&func, "str_int_key_fact", options).expect("LLVM backend should succeed");
+    let ir = artifact.module.ir;
+    assert!(
+        ir.contains("call i64 @lk_rt_map_get_str_int"),
+        "expected PerformanceFacts string-int key to lower dynamic map.get:\n{}",
+        ir
+    );
+    assert!(
+        !ir.contains("call i64 @lk_rt_to_string") && !ir.contains("call i64 @lk_rt_add("),
+        "facts-backed string-int key should not materialize concat:\n{}",
         ir
     );
 }

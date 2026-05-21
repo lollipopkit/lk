@@ -72,6 +72,13 @@ pub fn peephole_fuse_cmp_jmp_with_consts(code: &mut Vec<Op>, consts: &[Val]) {
             && kidx <= RK_INDEX_MASK
             && !has_branch_target_to(code, i + 1)
         {
+            if let Some(next) = remap_const_string_concat(code, consts, i, dst, kidx) {
+                code[i + 1] = next;
+                removals.push(i);
+                i += 2;
+                continue;
+            }
+
             let mut next = code[i + 1].clone();
             if remap_rk_read_operand(&mut next, dst, rk_make_const(kidx))
                 && reg_dead_after_single_consumer(code, i + 2, dst)
@@ -83,17 +90,13 @@ pub fn peephole_fuse_cmp_jmp_with_consts(code: &mut Vec<Op>, consts: &[Val]) {
             }
         }
 
-        if let Op::LoadLocal(dst, idx) = code[i] {
-            let mut next = code[i + 1].clone();
-            if !has_branch_target_to(code, i + 1)
-                && remap_single_read_operand(&mut next, dst, idx)
-                && reg_dead_after_single_consumer(code, i + 2, dst)
-            {
-                code[i + 1] = next;
-                removals.push(i);
-                i += 2;
-                continue;
-            }
+        if let Op::LoadLocal(dst, idx) = code[i]
+            && let Some((consumer_idx, consumer)) = remap_deferred_loadlocal_consumer(code, i, dst, idx)
+        {
+            code[consumer_idx] = consumer;
+            removals.push(i);
+            i += 1;
+            continue;
         }
 
         if let (
@@ -234,8 +237,10 @@ pub fn peephole_fuse_cmp_jmp_with_consts(code: &mut Vec<Op>, consts: &[Val]) {
         fixup_offsets(code, &removals);
     }
 
+    remap_deferred_loadlocals_to_fixpoint(code);
+    remap_multi_read_loadlocals_to_fixpoint(code);
+    remap_identity_toiters_to_fixpoint(code, consts);
     fuse_map_presence_after_rk_remap(code, consts);
-
     for op in code.iter_mut() {
         match *op {
             Op::JmpFalse(r, ofs) => *op = Op::BoolBranch(r, ofs),
@@ -282,6 +287,160 @@ fn fuse_map_presence_after_rk_remap(code: &mut Vec<Op>, consts: &[Val]) {
         code.remove(idx);
     }
     fixup_offsets(code, &removals);
+}
+
+fn remap_deferred_loadlocals_to_fixpoint(code: &mut Vec<Op>) {
+    loop {
+        let mut changed = false;
+        let mut i = 0;
+        while i < code.len() {
+            if let Op::LoadLocal(dst, idx) = code[i]
+                && let Some((consumer_idx, consumer)) = remap_deferred_loadlocal_consumer(code, i, dst, idx)
+            {
+                code[consumer_idx] = consumer;
+                code.remove(i);
+                fixup_offsets(code, &[i]);
+                changed = true;
+                continue;
+            }
+            i += 1;
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
+fn remap_multi_read_loadlocals_to_fixpoint(code: &mut Vec<Op>) {
+    loop {
+        let mut changed = false;
+        let mut i = 0;
+        while i < code.len() {
+            if let Op::LoadLocal(dst, src) = code[i]
+                && let Some(remap) = collect_multi_read_temp_remap(code, i, dst, src, false)
+            {
+                for (idx, op) in remap.consumers {
+                    code[idx] = op;
+                }
+                code.remove(i);
+                fixup_offsets(code, &[i]);
+                changed = true;
+                continue;
+            }
+            i += 1;
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
+struct MultiReadLoadLocalRemap {
+    consumers: Vec<(usize, Op)>,
+}
+
+fn has_external_branch_target_into_range(
+    code: &[Op],
+    load_idx: usize,
+    last_read_idx: usize,
+    allow_loop_back_edges: bool,
+) -> bool {
+    code.iter().enumerate().any(|(pc, op)| {
+        let Some(target) = crate::vm::op_branch_target(pc, op) else {
+            return false;
+        };
+        target > load_idx
+            && target <= last_read_idx
+            && (pc <= load_idx || (!allow_loop_back_edges && pc > last_read_idx))
+    })
+}
+
+fn remap_identity_toiters_to_fixpoint(code: &mut Vec<Op>, consts: &[Val]) {
+    loop {
+        let mut changed = false;
+        let mut i = 0;
+        while i < code.len() {
+            if let Op::ToIter { dst, src } = code[i]
+                && to_iter_source_is_identity_value(code, consts, i, src)
+                && let Some(remap) = collect_multi_read_temp_remap(code, i, dst, src, true)
+            {
+                for (idx, op) in remap.consumers {
+                    code[idx] = op;
+                }
+                code.remove(i);
+                fixup_offsets(code, &[i]);
+                changed = true;
+                continue;
+            }
+            i += 1;
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
+fn collect_multi_read_temp_remap(
+    code: &[Op],
+    producer_idx: usize,
+    dst: u16,
+    src: u16,
+    allow_loop_back_edges: bool,
+) -> Option<MultiReadLoadLocalRemap> {
+    const LOOKAHEAD_LIMIT: usize = 32;
+    let end = code.len().min(producer_idx + 1 + LOOKAHEAD_LIMIT);
+    let mut consumers = Vec::new();
+
+    for idx in producer_idx + 1..end {
+        let op = &code[idx];
+        if crate::vm::op_writes_register(op, src) || crate::vm::op_writes_register(op, dst) {
+            return None;
+        }
+
+        if crate::vm::op_reads_register(op, dst) {
+            let mut remapped = op.clone();
+            if !remap_single_read_operand(&mut remapped, dst, src) {
+                return None;
+            }
+            consumers.push((idx, remapped));
+            if reg_dead_after_single_consumer(code, idx + 1, dst) {
+                if has_external_branch_target_into_range(code, producer_idx, idx, allow_loop_back_edges) {
+                    return None;
+                }
+                return Some(MultiReadLoadLocalRemap { consumers });
+            }
+        }
+    }
+
+    None
+}
+
+fn to_iter_source_is_identity_value(code: &[Op], consts: &[Val], to_iter_idx: usize, src: u16) -> bool {
+    for idx in (0..to_iter_idx).rev() {
+        let op = &code[idx];
+        if crate::vm::op_writes_register(op, src) {
+            return op_writes_string_or_list_value(op, consts);
+        }
+        if crate::vm::op_is_control_boundary(op) || has_branch_target_to(code, idx) {
+            return false;
+        }
+    }
+    false
+}
+
+fn op_writes_string_or_list_value(op: &Op, consts: &[Val]) -> bool {
+    match *op {
+        Op::LoadK(_, kidx) => matches!(
+            consts.get(kidx as usize),
+            Some(Val::ShortStr(_) | Val::Str(_) | Val::List(_))
+        ),
+        Op::ToStr(_, _)
+        | Op::StrConcatKnownCap(_, _, _)
+        | Op::StrConcatToStr(_, _, _)
+        | Op::BuildList { .. }
+        | Op::ListSlice { .. } => true,
+        _ => false,
+    }
 }
 
 struct FusedMapPresence {
@@ -385,31 +544,14 @@ fn is_nil_operand(code: &[Op], pos: usize, operand: u16, nil_reg: Option<u16>, c
 
 fn reg_last_write_is_nil_load(code: &[Op], pos: usize, reg: u16, consts: &[Val]) -> bool {
     for op in code[..pos].iter().rev() {
-        if op_writes_reg(op, reg) {
+        if crate::vm::op_writes_register(op, reg) {
             return matches!(op, Op::LoadK(dst, kidx) if *dst == reg && matches!(consts.get(*kidx as usize), Some(Val::Nil)));
         }
-        if op_reads_reg(op, reg) || is_control_boundary(op) {
+        if crate::vm::op_reads_register(op, reg) || crate::vm::op_is_control_boundary(op) {
             return false;
         }
     }
     false
-}
-
-fn is_control_boundary(op: &Op) -> bool {
-    matches!(
-        op,
-        Op::Jmp(_)
-            | Op::JmpFalse(_, _)
-            | Op::BoolBranch(_, _)
-            | Op::JmpIfNil(_, _)
-            | Op::JmpIfNotNil(_, _)
-            | Op::JmpFalseSet { .. }
-            | Op::JmpTrueSet { .. }
-            | Op::NullishPick { .. }
-            | Op::Break(_)
-            | Op::Continue(_)
-            | Op::Ret { .. }
-    )
 }
 
 fn branch_reads(op: &Op, reg: u16) -> Option<()> {
@@ -420,36 +562,7 @@ fn branch_reads(op: &Op, reg: u16) -> Option<()> {
 }
 
 fn has_branch_target_to(code: &[Op], target: usize) -> bool {
-    code.iter()
-        .enumerate()
-        .any(|(pc, op)| branch_target(pc, op) == Some(target))
-}
-
-fn branch_target(pc: usize, op: &Op) -> Option<usize> {
-    let ofs = match op {
-        Op::Jmp(ofs)
-        | Op::JmpFalse(_, ofs)
-        | Op::JmpIfNil(_, ofs)
-        | Op::JmpIfNotNil(_, ofs)
-        | Op::BoolBranch(_, ofs)
-        | Op::Break(ofs)
-        | Op::Continue(ofs)
-        | Op::AddIntImmJmp { ofs, .. }
-        | Op::CmpIntJmp { ofs, .. }
-        | Op::CmpLtImmJmp { ofs, .. }
-        | Op::CmpLeImmJmp { ofs, .. }
-        | Op::CmpEqImmJmp { ofs, .. }
-        | Op::CmpGtImmJmp { ofs, .. }
-        | Op::CmpGeImmJmp { ofs, .. }
-        | Op::CmpNeImmJmp { ofs, .. }
-        | Op::RangeLoopI { ofs, .. }
-        | Op::ForRangeLoop { ofs, .. } => *ofs,
-        Op::JmpFalseSet { ofs, .. } | Op::JmpTrueSet { ofs, .. } | Op::NullishPick { ofs, .. } => *ofs,
-        Op::ForRangeStep { back_ofs, .. } => *back_ofs,
-        _ => return None,
-    };
-    let target = pc as isize + ofs as isize;
-    (target >= 0).then_some(target as usize)
+    crate::vm::has_branch_target_to(code, target)
 }
 
 fn remap_rk_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
@@ -482,6 +595,70 @@ fn remap_rk_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
     changed
 }
 
+fn remap_const_string_concat(code: &[Op], consts: &[Val], load_idx: usize, dst: u16, kidx: u16) -> Option<Op> {
+    if !matches!(consts.get(kidx as usize), Some(Val::ShortStr(_) | Val::Str(_))) {
+        return None;
+    }
+    let rk = rk_make_const(kidx);
+    let next = code.get(load_idx + 1)?;
+    let (out, remapped) = match *next {
+        Op::StrConcatKnownCap(out, a, b) if a == dst => (out, Op::Add(out, rk, b)),
+        Op::StrConcatKnownCap(out, a, b) if b == dst => (out, Op::Add(out, a, rk)),
+        Op::StrConcatToStr(out, lhs, src)
+            if lhs == dst && to_str_source_is_add_equivalent(code, consts, load_idx + 1, src) =>
+        {
+            (out, Op::Add(out, rk, src))
+        }
+        _ => return None,
+    };
+    (out == dst || reg_dead_after_single_consumer(code, load_idx + 2, dst)).then_some(remapped)
+}
+
+fn to_str_source_is_add_equivalent(code: &[Op], consts: &[Val], pos: usize, src: u16) -> bool {
+    for idx in (0..pos).rev() {
+        let op = &code[idx];
+        if crate::vm::op_writes_register(op, src) {
+            return op_writes_string_or_number_value(op, consts, src);
+        }
+        if crate::vm::op_is_control_boundary(op) || has_branch_target_to(code, idx) {
+            return false;
+        }
+    }
+    false
+}
+
+fn op_writes_string_or_number_value(op: &Op, consts: &[Val], reg: u16) -> bool {
+    match *op {
+        Op::LoadK(dst, kidx) if dst == reg => matches!(
+            consts.get(kidx as usize),
+            Some(Val::ShortStr(_) | Val::Str(_) | Val::Int(_) | Val::Float(_))
+        ),
+        Op::ToStr(dst, _)
+        | Op::StrConcatKnownCap(dst, _, _)
+        | Op::StrConcatToStr(dst, _, _)
+        | Op::AddInt(dst, _, _)
+        | Op::AddFloat(dst, _, _)
+        | Op::AddIntImm(dst, _, _)
+        | Op::SubInt(dst, _, _)
+        | Op::SubFloat(dst, _, _)
+        | Op::MulInt(dst, _, _)
+        | Op::MulFloat(dst, _, _)
+        | Op::DivFloat(dst, _, _)
+        | Op::ModInt(dst, _, _)
+        | Op::ModFloat(dst, _, _)
+        | Op::Floor { dst, .. }
+        | Op::FloorDivImm { dst, .. }
+            if dst == reg =>
+        {
+            true
+        }
+        Op::RangeLoopI {
+            idx, write_idx: true, ..
+        } if idx == reg => true,
+        _ => false,
+    }
+}
+
 fn remap_single_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
     let mut changed = false;
     let mut remap = |reg: &mut u16| {
@@ -512,7 +689,8 @@ fn remap_single_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
         | Op::MapLen { src, .. }
         | Op::StrLen { src, .. }
         | Op::Floor { src, .. }
-        | Op::FloorDivImm { src, .. } => remap(src),
+        | Op::FloorDivImm { src, .. }
+        | Op::ToIter { src, .. } => remap(src),
         Op::Add(_, a, b)
         | Op::StrConcatKnownCap(_, a, b)
         | Op::StrConcatToStr(_, a, b)
@@ -565,6 +743,7 @@ fn remap_single_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
             remap(b);
         }
         Op::NullishPick { l, .. } | Op::JmpFalseSet { r: l, .. } | Op::JmpTrueSet { r: l, .. } => remap(l),
+        Op::ForRangePrep { limit, .. } => remap(limit),
         Op::PatternMatch { src, .. } => remap(src),
         _ => {}
     }
@@ -572,227 +751,98 @@ fn remap_single_read_operand(op: &mut Op, from: u16, to: u16) -> bool {
     changed
 }
 
+fn remap_deferred_loadlocal_consumer(code: &[Op], load_idx: usize, dst: u16, src: u16) -> Option<(usize, Op)> {
+    const LOOKAHEAD_LIMIT: usize = 8;
+    let end = code.len().min(load_idx + 1 + LOOKAHEAD_LIMIT);
+    for consumer_idx in load_idx + 1..end {
+        if has_branch_target_to(code, consumer_idx) {
+            return None;
+        }
+        let op = &code[consumer_idx];
+        if crate::vm::op_reads_register(op, dst) {
+            let mut remapped = op.clone();
+            if remap_single_read_operand(&mut remapped, dst, src)
+                && reg_dead_after_single_consumer(code, consumer_idx + 1, dst)
+            {
+                return Some((consumer_idx, remapped));
+            }
+            return None;
+        }
+        if !can_defer_loadlocal_across(op, dst, src) {
+            return None;
+        }
+    }
+    None
+}
+
+fn can_defer_loadlocal_across(op: &Op, dst: u16, src: u16) -> bool {
+    if crate::vm::op_is_control_boundary(op)
+        || crate::vm::op_reads_register(op, dst)
+        || crate::vm::op_writes_register(op, dst)
+        || crate::vm::op_writes_register(op, src)
+    {
+        return false;
+    }
+    matches!(
+        op,
+        Op::LoadK(_, _)
+            | Op::LoadLocal(_, _)
+            | Op::Move(_, _)
+            | Op::Not(_, _)
+            | Op::ToStr(_, _)
+            | Op::ToBool(_, _)
+            | Op::Add(_, _, _)
+            | Op::StrConcatKnownCap(_, _, _)
+            | Op::StrConcatToStr(_, _, _)
+            | Op::Sub(_, _, _)
+            | Op::Mul(_, _, _)
+            | Op::Div(_, _, _)
+            | Op::Mod(_, _, _)
+            | Op::AddInt(_, _, _)
+            | Op::AddFloat(_, _, _)
+            | Op::AddIntImm(_, _, _)
+            | Op::SubInt(_, _, _)
+            | Op::SubFloat(_, _, _)
+            | Op::MulInt(_, _, _)
+            | Op::MulFloat(_, _, _)
+            | Op::DivFloat(_, _, _)
+            | Op::ModInt(_, _, _)
+            | Op::ModFloat(_, _, _)
+            | Op::CmpEq(_, _, _)
+            | Op::CmpNe(_, _, _)
+            | Op::CmpLt(_, _, _)
+            | Op::CmpLe(_, _, _)
+            | Op::CmpGt(_, _, _)
+            | Op::CmpGe(_, _, _)
+            | Op::CmpEqImm(_, _, _)
+            | Op::CmpNeImm(_, _, _)
+            | Op::CmpLtImm(_, _, _)
+            | Op::CmpLeImm(_, _, _)
+            | Op::CmpGtImm(_, _, _)
+            | Op::CmpGeImm(_, _, _)
+            | Op::In(_, _, _)
+            | Op::Access(_, _, _)
+            | Op::AccessK(_, _, _)
+            | Op::IndexK(_, _, _)
+            | Op::ListIndexI(_, _, _)
+            | Op::StrIndexI(_, _, _)
+            | Op::Len { .. }
+            | Op::ListLen { .. }
+            | Op::MapLen { .. }
+            | Op::StrLen { .. }
+            | Op::StartsWithK(_, _, _)
+            | Op::ContainsK(_, _, _)
+            | Op::MapHas(_, _, _)
+            | Op::MapGetInterned(_, _, _)
+            | Op::MapGetDynamic(_, _, _)
+            | Op::MapHasK(_, _, _)
+            | Op::Floor { .. }
+            | Op::FloorDivImm { .. }
+    )
+}
+
 fn reg_dead_after_single_consumer(code: &[Op], start: usize, reg: u16) -> bool {
-    for op in &code[start..] {
-        if op_reads_reg(op, reg) {
-            return false;
-        }
-        if op_writes_reg(op, reg) {
-            return true;
-        }
-    }
-    true
-}
-
-fn op_reads_reg(op: &Op, reg: u16) -> bool {
-    let is = |value: &u16| *value == reg;
-    match op {
-        Op::Move(_, src)
-        | Op::Not(_, src)
-        | Op::ToStr(_, src)
-        | Op::ToBool(_, src)
-        | Op::StoreLocal(_, src)
-        | Op::DefineGlobal(_, src)
-        | Op::LoadLocal(_, src)
-        | Op::JmpIfNil(src, _)
-        | Op::JmpIfNotNil(src, _)
-        | Op::JmpFalse(src, _)
-        | Op::BoolBranch(src, _)
-        | Op::CmpLtImmJmp { r: src, .. }
-        | Op::JmpNilOrFalseJmp { r: src, .. }
-        | Op::CmpLeImmJmp { r: src, .. }
-        | Op::CmpEqImmJmp { r: src, .. }
-        | Op::CmpGtImmJmp { r: src, .. }
-        | Op::CmpGeImmJmp { r: src, .. }
-        | Op::CmpNeImmJmp { r: src, .. }
-        | Op::Ret { base: src, retc: 1 }
-        | Op::AddIntImm(_, src, _)
-        | Op::CmpEqImm(_, src, _)
-        | Op::CmpNeImm(_, src, _)
-        | Op::CmpLtImm(_, src, _)
-        | Op::CmpLeImm(_, src, _)
-        | Op::CmpGtImm(_, src, _)
-        | Op::CmpGeImm(_, src, _)
-        | Op::AccessK(_, src, _)
-        | Op::IndexK(_, src, _)
-        | Op::ListIndexI(_, src, _)
-        | Op::StrIndexI(_, src, _)
-        | Op::Len { src, .. }
-        | Op::ListLen { src, .. }
-        | Op::MapLen { src, .. }
-        | Op::StrLen { src, .. }
-        | Op::Floor { src, .. }
-        | Op::FloorDivImm { src, .. }
-        | Op::StartsWithK(_, src, _)
-        | Op::ContainsK(_, src, _)
-        | Op::MapGetInterned(_, src, _)
-        | Op::MapHasK(_, src, _)
-        | Op::PatternMatch { src, .. }
-        | Op::PatternMatchOrFail { src, .. }
-        | Op::ToIter { src, .. } => is(src),
-        Op::Add(_, a, b)
-        | Op::StrConcatKnownCap(_, a, b)
-        | Op::StrConcatToStr(_, a, b)
-        | Op::Sub(_, a, b)
-        | Op::Mul(_, a, b)
-        | Op::Div(_, a, b)
-        | Op::Mod(_, a, b)
-        | Op::AddInt(_, a, b)
-        | Op::AddFloat(_, a, b)
-        | Op::SubInt(_, a, b)
-        | Op::SubFloat(_, a, b)
-        | Op::MulInt(_, a, b)
-        | Op::MulFloat(_, a, b)
-        | Op::DivFloat(_, a, b)
-        | Op::ModInt(_, a, b)
-        | Op::ModFloat(_, a, b)
-        | Op::CmpEq(_, a, b)
-        | Op::CmpNe(_, a, b)
-        | Op::CmpLt(_, a, b)
-        | Op::CmpLe(_, a, b)
-        | Op::CmpGt(_, a, b)
-        | Op::CmpGe(_, a, b)
-        | Op::In(_, a, b)
-        | Op::Access(_, a, b)
-        | Op::MapHas(_, a, b)
-        | Op::MapGetDynamic(_, a, b)
-        | Op::Index { base: a, idx: b, .. }
-        | Op::ListSlice { src: a, start: b, .. } => is(a) || is(b),
-        Op::CmpI { a, b, .. } | Op::CmpIntJmp { a, b, .. } => is(a) || is(b),
-        Op::NullishPick { l, .. } | Op::JmpFalseSet { r: l, .. } | Op::JmpTrueSet { r: l, .. } => is(l),
-        Op::AddRangeCountImm { idx, limit, step, .. } => is(idx) || is(limit) || is(step),
-        Op::ListSetI { list, val, .. } => is(list) || is(val),
-        Op::BuildList { base, len, .. } | Op::BuildMap { base, len, .. } => {
-            let end = base.saturating_add(len.saturating_mul(2));
-            reg >= *base && reg < end
-        }
-        Op::ListPush { list, val }
-        | Op::ListPushMove { list, val }
-        | Op::MapSetInterned(list, _, val)
-        | Op::MapSetInternedMove(list, _, val) => is(list) || is(val),
-        Op::MapSet { map, key, val } | Op::MapSetMove { map, key, val } => is(map) || is(key) || is(val),
-        Op::ListFoldAdd { acc, list } => is(acc) || is(list),
-        Op::MapValuesFoldAdd { acc, map } => is(acc) || is(map),
-        Op::Call { f, base, argc, .. }
-        | Op::CallExact { f, base, argc, .. }
-        | Op::CallClosureExact { f, base, argc, .. }
-        | Op::CallNativeFast { f, base, argc, .. } => {
-            is(f) || (reg >= *base && reg < base.saturating_add(*argc as u16))
-        }
-        Op::CallMethod0 { receiver, .. } => is(receiver),
-        Op::CallGlobalMethod0 { .. } => false,
-        Op::CallNamed {
-            f,
-            base_pos,
-            posc,
-            base_named,
-            namedc,
-            ..
-        }
-        | Op::CallNamedFallback {
-            f,
-            base_pos,
-            posc,
-            base_named,
-            namedc,
-            ..
-        } => {
-            is(f)
-                || (reg >= *base_pos && reg < base_pos.saturating_add(*posc as u16))
-                || (reg >= *base_named && reg < base_named.saturating_add((*namedc as u16).saturating_mul(2)))
-        }
-        _ => false,
-    }
-}
-
-pub(super) fn op_writes_reg(op: &Op, reg: u16) -> bool {
-    let is = |value: &u16| *value == reg;
-    match op {
-        Op::LoadK(dst, _)
-        | Op::Move(dst, _)
-        | Op::Not(dst, _)
-        | Op::ToStr(dst, _)
-        | Op::ToBool(dst, _)
-        | Op::Add(dst, _, _)
-        | Op::StrConcatKnownCap(dst, _, _)
-        | Op::StrConcatToStr(dst, _, _)
-        | Op::Sub(dst, _, _)
-        | Op::Mul(dst, _, _)
-        | Op::Div(dst, _, _)
-        | Op::Mod(dst, _, _)
-        | Op::AddInt(dst, _, _)
-        | Op::AddFloat(dst, _, _)
-        | Op::AddIntImm(dst, _, _)
-        | Op::SubInt(dst, _, _)
-        | Op::SubFloat(dst, _, _)
-        | Op::MulInt(dst, _, _)
-        | Op::MulFloat(dst, _, _)
-        | Op::DivFloat(dst, _, _)
-        | Op::ModInt(dst, _, _)
-        | Op::ModFloat(dst, _, _)
-        | Op::CmpEq(dst, _, _)
-        | Op::CmpNe(dst, _, _)
-        | Op::CmpLt(dst, _, _)
-        | Op::CmpLe(dst, _, _)
-        | Op::CmpGt(dst, _, _)
-        | Op::CmpGe(dst, _, _)
-        | Op::CmpEqImm(dst, _, _)
-        | Op::CmpNeImm(dst, _, _)
-        | Op::CmpLtImm(dst, _, _)
-        | Op::CmpLeImm(dst, _, _)
-        | Op::CmpGtImm(dst, _, _)
-        | Op::CmpGeImm(dst, _, _)
-        | Op::In(dst, _, _)
-        | Op::LoadLocal(dst, _)
-        | Op::LoadGlobal(dst, _)
-        | Op::Access(dst, _, _)
-        | Op::AccessK(dst, _, _)
-        | Op::IndexK(dst, _, _)
-        | Op::ListIndexI(dst, _, _)
-        | Op::StrIndexI(dst, _, _)
-        | Op::StartsWithK(dst, _, _)
-        | Op::ContainsK(dst, _, _)
-        | Op::MapHas(dst, _, _)
-        | Op::MapGetInterned(dst, _, _)
-        | Op::MapGetDynamic(dst, _, _)
-        | Op::MapHasK(dst, _, _)
-        | Op::MakeClosure { dst, .. }
-        | Op::PatternMatch { dst, .. }
-        | Op::ToIter { dst, .. }
-        | Op::BuildList { dst, .. }
-        | Op::BuildMap { dst, .. }
-        | Op::ListSlice { dst, .. }
-        | Op::NullishPick { dst, .. }
-        | Op::JmpFalseSet { dst, .. }
-        | Op::JmpTrueSet { dst, .. }
-        | Op::Len { dst, .. }
-        | Op::ListLen { dst, .. }
-        | Op::MapLen { dst, .. }
-        | Op::StrLen { dst, .. }
-        | Op::Floor { dst, .. }
-        | Op::FloorDivImm { dst, .. } => is(dst),
-        Op::LoadCapture { dst, .. } | Op::CmpI { dst, .. } | Op::ListSetI { dst, .. } => is(dst),
-        Op::StoreLocal(idx, _) => is(idx),
-        Op::AddIntImmJmp { r, .. } => is(r),
-        Op::AddRangeCountImm { target, .. } => is(target),
-        Op::ListPush { list, .. }
-        | Op::ListPushMove { list, .. }
-        | Op::MapSetInterned(list, _, _)
-        | Op::MapSetInternedMove(list, _, _)
-        | Op::ListFoldAdd { acc: list, .. }
-        | Op::MapValuesFoldAdd { acc: list, .. } => is(list),
-        Op::MapSet { map, .. } | Op::MapSetMove { map, .. } => is(map),
-        Op::Call { base, retc, .. }
-        | Op::CallExact { base, retc, .. }
-        | Op::CallClosureExact { base, retc, .. }
-        | Op::CallNativeFast { base, retc, .. } => reg >= *base && reg < base.saturating_add(*retc as u16),
-        Op::CallMethod0 { dst, .. } => is(dst),
-        Op::CallGlobalMethod0 { dst, .. } => is(dst),
-        Op::CallNamed { base_pos, retc, .. } | Op::CallNamedFallback { base_pos, retc, .. } => {
-            reg >= *base_pos && reg < base_pos.saturating_add(*retc as u16)
-        }
-        _ => false,
-    }
+    crate::vm::register_dead_after_ops(code[start..].iter(), reg)
 }
 
 fn fixup_offsets(code: &mut [Op], removals: &[usize]) {
@@ -1086,7 +1136,274 @@ mod tests {
 
         assert_eq!(code.len(), 2);
         assert!(matches!(code[0], Op::Add(5, 1, 2)));
-        assert!(matches!(code[1], Op::Ret { base: 5, retc: 1 }));
+    }
+
+    #[test]
+    fn delayed_loadlocal_single_read_operand_is_remapped() {
+        let mut code = vec![
+            Op::LoadLocal(4, 1),
+            Op::LoadK(5, 2),
+            Op::LoadLocal(6, 3),
+            Op::MapGetDynamic(7, 6, 4),
+            Op::Ret { base: 7, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 3);
+        assert!(matches!(code[0], Op::LoadK(5, 2)));
+        assert!(matches!(code[1], Op::MapGetDynamic(7, 3, 1)));
+    }
+
+    #[test]
+    fn delayed_loadlocal_crosses_readonly_access_op() {
+        let mut code = vec![
+            Op::LoadLocal(4, 1),
+            Op::LoadLocal(6, 3),
+            Op::MapGetDynamic(7, 10, 11),
+            Op::MapGetDynamic(8, 6, 4),
+            Op::Ret { base: 8, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 3);
+        assert!(matches!(code[0], Op::MapGetDynamic(7, 10, 11)));
+        assert!(matches!(code[1], Op::MapGetDynamic(8, 3, 1)));
+    }
+
+    #[test]
+    fn delayed_loadlocal_reaches_fixpoint_after_neighbor_removal() {
+        let mut code = vec![
+            Op::LoadLocal(4, 1),
+            Op::LoadLocal(6, 3),
+            Op::MapGetDynamic(7, 6, 4),
+            Op::Ret { base: 7, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 2);
+        assert!(matches!(code[0], Op::MapGetDynamic(7, 3, 1)));
+    }
+
+    #[test]
+    fn delayed_loadlocal_stops_when_readonly_op_writes_temp() {
+        let mut code = vec![
+            Op::LoadLocal(4, 1),
+            Op::MapGetDynamic(4, 10, 11),
+            Op::MapGetDynamic(8, 6, 4),
+            Op::Ret { base: 8, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(code[0], Op::LoadLocal(4, 1)));
+        assert!(matches!(code[1], Op::MapGetDynamic(4, 10, 11)));
+    }
+
+    #[test]
+    fn multi_read_loadlocal_remaps_across_internal_branches() {
+        let mut code = vec![
+            Op::LoadLocal(4, 1),
+            Op::CmpGtImmJmp { r: 4, imm: 10, ofs: 2 },
+            Op::AddIntImmJmp { r: 9, imm: 1, ofs: 2 },
+            Op::CmpGtImmJmp { r: 4, imm: 3, ofs: 2 },
+            Op::AddIntImm(9, 9, 1),
+            Op::Ret { base: 9, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 5);
+        assert!(matches!(code[0], Op::CmpGtImmJmp { r: 1, imm: 10, .. }));
+        assert!(matches!(code[2], Op::CmpGtImmJmp { r: 1, imm: 3, .. }));
+    }
+
+    #[test]
+    fn multi_read_loadlocal_stops_when_source_is_written_before_last_read() {
+        let mut code = vec![
+            Op::LoadLocal(4, 1),
+            Op::CmpGtImmJmp { r: 4, imm: 10, ofs: 2 },
+            Op::StoreLocal(1, 8),
+            Op::CmpGtImmJmp { r: 4, imm: 3, ofs: 2 },
+            Op::Ret { base: 4, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert!(matches!(code[0], Op::LoadLocal(4, 1)));
+    }
+
+    #[test]
+    fn multi_read_loadlocal_rejects_external_jump_into_candidate_region() {
+        let mut code = vec![
+            Op::CmpEqImmJmp { r: 0, imm: 0, ofs: 3 },
+            Op::LoadLocal(4, 1),
+            Op::CmpGtImmJmp { r: 4, imm: 10, ofs: 2 },
+            Op::CmpGtImmJmp { r: 4, imm: 3, ofs: 2 },
+            Op::Ret { base: 4, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert!(matches!(code[1], Op::LoadLocal(4, 1)));
+    }
+
+    #[test]
+    fn delayed_loadlocal_for_range_limit_is_remapped() {
+        let mut code = vec![
+            Op::LoadK(0, 0),
+            Op::LoadLocal(4, 1),
+            Op::LoadK(5, 2),
+            Op::ForRangePrep {
+                idx: 0,
+                limit: 4,
+                step: 6,
+                inclusive: true,
+                explicit: false,
+            },
+            Op::RangeLoopI {
+                idx: 0,
+                limit: 1,
+                step: 6,
+                inclusive: true,
+                write_idx: true,
+                ofs: 2,
+            },
+            Op::Ret { base: 0, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 5);
+        assert!(matches!(code[2], Op::ForRangePrep { limit: 1, .. }));
+    }
+
+    #[test]
+    fn delayed_loadlocal_to_iter_source_is_remapped() {
+        let mut code = vec![
+            Op::LoadLocal(4, 1),
+            Op::ToIter { dst: 5, src: 4 },
+            Op::Ret { base: 5, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 2);
+        assert!(matches!(code[0], Op::ToIter { dst: 5, src: 1 }));
+    }
+
+    #[test]
+    fn identity_to_iter_on_string_source_is_removed() {
+        let consts = vec![Val::from_str("tenant")];
+        let mut code = vec![
+            Op::LoadK(1, 0),
+            Op::ToIter { dst: 2, src: 1 },
+            Op::Len { dst: 3, src: 2 },
+            Op::Index {
+                dst: 4,
+                base: 2,
+                idx: 5,
+            },
+            Op::Ret { base: 4, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp_with_consts(&mut code, &consts);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(code[1], Op::Len { dst: 3, src: 1 }));
+        assert!(matches!(
+            code[2],
+            Op::Index {
+                dst: 4,
+                base: 1,
+                idx: 5
+            }
+        ));
+    }
+
+    #[test]
+    fn identity_to_iter_is_preserved_for_unknown_source() {
+        let mut code = vec![
+            Op::LoadGlobal(1, 0),
+            Op::ToIter { dst: 2, src: 1 },
+            Op::Len { dst: 3, src: 2 },
+            Op::Ret { base: 3, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 4);
+        assert!(matches!(code[1], Op::ToIter { dst: 2, src: 1 }));
+    }
+
+    #[test]
+    fn identity_to_iter_rejects_external_jump_into_candidate_region() {
+        let consts = vec![Val::from_str("tenant")];
+        let mut code = vec![
+            Op::CmpEqImmJmp { r: 0, imm: 0, ofs: 3 },
+            Op::LoadK(1, 0),
+            Op::ToIter { dst: 2, src: 1 },
+            Op::Len { dst: 3, src: 2 },
+            Op::Ret { base: 3, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp_with_consts(&mut code, &consts);
+
+        assert!(matches!(code[2], Op::ToIter { dst: 2, src: 1 }));
+    }
+
+    #[test]
+    fn const_string_known_cap_concat_uses_rk_add() {
+        let consts = vec![Val::from_str("tenant-")];
+        let mut code = vec![
+            Op::LoadK(4, 0),
+            Op::StrConcatKnownCap(5, 1, 4),
+            Op::Ret { base: 5, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp_with_consts(&mut code, &consts);
+
+        assert_eq!(code.len(), 2);
+        assert!(matches!(code[0], Op::Add(5, 1, rhs) if rhs == rk_make_const(0)));
+    }
+
+    #[test]
+    fn const_string_to_str_concat_uses_rk_add_for_known_number_source() {
+        let consts = vec![Val::from_str("tenant-")];
+        let mut code = vec![
+            Op::ModInt(3, 1, 2),
+            Op::LoadK(4, 0),
+            Op::StrConcatToStr(5, 4, 3),
+            Op::Ret { base: 5, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp_with_consts(&mut code, &consts);
+
+        assert_eq!(code.len(), 3);
+        assert!(matches!(code[1], Op::Add(5, lhs, 3) if lhs == rk_make_const(0)));
+    }
+
+    #[test]
+    fn delayed_loadlocal_for_range_idx_is_preserved() {
+        let mut code = vec![
+            Op::LoadLocal(4, 1),
+            Op::ForRangePrep {
+                idx: 4,
+                limit: 2,
+                step: 3,
+                inclusive: true,
+                explicit: false,
+            },
+            Op::Ret { base: 4, retc: 1 },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
+        assert_eq!(code.len(), 3);
+        assert!(matches!(code[0], Op::LoadLocal(4, 1)));
     }
 
     #[test]
@@ -1108,7 +1425,7 @@ mod tests {
     }
 
     #[test]
-    fn loadlocal_with_second_consumer_is_preserved() {
+    fn loadlocal_with_remappable_second_consumer_is_rewritten() {
         let mut code = vec![
             Op::LoadLocal(4, 1),
             Op::JmpIfNil(4, 2),
@@ -1121,15 +1438,41 @@ mod tests {
 
         peephole_fuse_cmp_jmp(&mut code);
 
+        assert_eq!(code.len(), 2);
+        assert!(matches!(code[0], Op::JmpIfNil(1, 2)));
+        assert!(matches!(
+            code[1],
+            Op::PatternMatch {
+                dst: 5,
+                src: 1,
+                plan: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn loadlocal_with_unremappable_second_consumer_is_preserved() {
+        let mut code = vec![
+            Op::LoadLocal(4, 1),
+            Op::JmpIfNil(4, 2),
+            Op::BuildList {
+                dst: 5,
+                base: 4,
+                len: 1,
+            },
+        ];
+
+        peephole_fuse_cmp_jmp(&mut code);
+
         assert_eq!(code.len(), 3);
         assert!(matches!(code[0], Op::LoadLocal(4, 1)));
         assert!(matches!(code[1], Op::JmpIfNil(4, 2)));
         assert!(matches!(
             code[2],
-            Op::PatternMatch {
+            Op::BuildList {
                 dst: 5,
-                src: 4,
-                plan: 0
+                base: 4,
+                len: 1
             }
         ));
     }
@@ -1142,7 +1485,6 @@ mod tests {
 
         assert_eq!(code.len(), 2);
         assert!(matches!(code[0], Op::Add(5, 1, rhs) if rhs == rk_make_const(3)));
-        assert!(matches!(code[1], Op::Ret { base: 5, retc: 1 }));
     }
 
     #[test]

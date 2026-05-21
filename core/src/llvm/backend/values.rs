@@ -124,6 +124,9 @@ impl<'a> FunctionTranslator<'a> {
         a: u16,
         b: u16,
     ) -> Result<()> {
+        if self.try_defer_string_int_key_fact(instr_idx, block_end, dst)? {
+            return Ok(());
+        }
         if self.try_defer_string_int_key(instr_idx, block_end, dst, a, b)? {
             return Ok(());
         }
@@ -192,6 +195,9 @@ impl<'a> FunctionTranslator<'a> {
         lhs: u16,
         src: u16,
     ) -> Result<()> {
+        if self.try_defer_string_int_key_fact(instr_idx, block_end, dst)? {
+            return Ok(());
+        }
         if self.try_defer_str_concat_to_str_key(instr_idx, block_end, dst, lhs, src)? {
             return Ok(());
         }

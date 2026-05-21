@@ -1,8 +1,9 @@
 use super::*;
+use crate::vm::bytecode::Function;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_make_closure_opcode(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     pc_ref: &mut usize,

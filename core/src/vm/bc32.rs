@@ -52,6 +52,7 @@ fn encode_op(op: &Op) -> Result<EncodedOp, Bc32Reject> {
         return encoded;
     }
     match *op {
+        Op::Nop => Ok(EncodedOp::new(pack(Tag::Move, 1, 0, 0, 0), None)),
         Op::AddRangeCountImm { .. } => Err(Bc32Reject::UnsupportedOpcode {
             opcode: "AddRangeCountImm",
             detail: "runtime range aggregate is currently opcode-only",
@@ -378,6 +379,7 @@ pub(crate) fn decode_word_with_hi(tag: Tag, flags: u8, w: u32, hi: (u16, u16, u1
     let b_rk = combine_rk(hi_b, lo_b, (flags & RK_FLAG_B) != 0);
     let c_rk = combine_rk(hi_c, lo_c, (flags & RK_FLAG_C) != 0);
     match tag {
+        Tag::Move if (flags & TAG_FLAG_MASK) == 1 => Op::Nop,
         Tag::Move => Op::Move(a, b_reg),
         Tag::LoadK => Op::LoadK(a, b_reg),
         Tag::Add => Op::Add(a, b_rk, c_rk),

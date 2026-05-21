@@ -13,8 +13,9 @@ use crate::{
     val::{ClosureCapture, ClosureInit, ClosureValue, Type, Val},
     vm::{
         Bc32Function, CaptureSpec, ClosureProto, Function, FunctionAnalysis, NamedParamLayoutEntry, Op, PatternBinding,
-        PatternPlan, capture_names_from_specs, closure_code_cell, closure_empty_captures, closure_empty_closure_cell,
-        closure_empty_env, closure_empty_upvalues, context::VmContext,
+        PatternPlan, PerfContainerFact, PerfRegisterFact, PerfValueFact, PerfValueKind, capture_names_from_specs,
+        closure_code_cell, closure_empty_captures, closure_empty_closure_cell, closure_empty_env,
+        closure_empty_upvalues, context::VmContext,
     },
 };
 
@@ -26,6 +27,7 @@ pub(crate) struct FunctionBuilder {
     pub protos: Vec<ClosureProto>,
     pub param_regs: Vec<u16>,
     pub named_param_regs: Vec<u16>,
+    pub local_slots: HashSet<u16>,
     pub named_param_layout: Vec<NamedParamLayoutEntry>,
     pub pattern_plans: Vec<PatternPlan>,
     pub const_bindings: HashMap<String, Val>,
@@ -91,6 +93,7 @@ impl FunctionBuilder {
             protos: Vec::new(),
             param_regs: Vec::new(),
             named_param_regs: Vec::new(),
+            local_slots: HashSet::new(),
             named_param_layout: Vec::new(),
             pattern_plans: Vec::new(),
             const_bindings: HashMap::new(),
@@ -151,6 +154,10 @@ impl FunctionBuilder {
         self.n_regs = self.n_regs.max(layout.total_locals);
         for decl in &layout.decls {
             self.vars.insert(decl.name.clone(), decl.index);
+            self.local_slots.insert(decl.index);
+            if let Some(analysis) = self.analysis.as_mut() {
+                analysis.perf.mark_local_slot(decl.index);
+            }
         }
     }
 
@@ -171,7 +178,16 @@ impl FunctionBuilder {
         }
     }
 
-    pub fn finish(self) -> Function {
+    pub fn finish(mut self) -> Function {
+        if self.analysis.is_none() {
+            self.analysis = Some(FunctionAnalysis::default());
+        }
+        if let Some(analysis) = self.analysis.as_mut() {
+            for reg in &self.local_slots {
+                analysis.perf.mark_local_slot(*reg);
+            }
+        }
+        self.sync_performance_register_facts();
         let mut f = Function {
             consts: self.consts,
             code: self.code,
@@ -188,6 +204,42 @@ impl FunctionBuilder {
 
         // Peephole: fuse common compare/branch and presence-check patterns.
         super::peephole::peephole_fuse_cmp_jmp_with_consts(&mut f.code, &f.consts);
+        if let Some(analysis) = f.analysis.as_mut() {
+            crate::vm::annotate_control_flow_facts(&mut analysis.perf, &f.code);
+            crate::vm::annotate_register_liveness(&mut analysis.perf, &f.code, f.n_regs);
+            crate::vm::annotate_key_facts(&mut analysis.perf, &f.code, &f.consts, f.n_regs);
+            crate::vm::annotate_register_copy_facts(&mut analysis.perf, &f.code, f.n_regs);
+            crate::vm::annotate_local_copy_facts(&mut analysis.perf, &f.code, f.n_regs);
+            crate::vm::annotate_container_move_facts(&mut analysis.perf, &f.code, f.n_regs);
+            crate::vm::annotate_dead_write_facts(&mut analysis.perf, &f.code, f.n_regs);
+            if crate::vm::apply_key_facts(&mut f.code, &analysis.perf) {
+                crate::vm::annotate_control_flow_facts(&mut analysis.perf, &f.code);
+                crate::vm::annotate_register_liveness(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_key_facts(&mut analysis.perf, &f.code, &f.consts, f.n_regs);
+                crate::vm::annotate_register_copy_facts(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_local_copy_facts(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_container_move_facts(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_dead_write_facts(&mut analysis.perf, &f.code, f.n_regs);
+            }
+            if crate::vm::apply_container_move_facts(&mut f.code, &analysis.perf) {
+                crate::vm::annotate_control_flow_facts(&mut analysis.perf, &f.code);
+                crate::vm::annotate_register_liveness(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_key_facts(&mut analysis.perf, &f.code, &f.consts, f.n_regs);
+                crate::vm::annotate_register_copy_facts(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_local_copy_facts(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_container_move_facts(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_dead_write_facts(&mut analysis.perf, &f.code, f.n_regs);
+            }
+            if crate::vm::apply_dead_write_facts(&mut f.code, &analysis.perf) {
+                crate::vm::annotate_control_flow_facts(&mut analysis.perf, &f.code);
+                crate::vm::annotate_register_liveness(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_key_facts(&mut analysis.perf, &f.code, &f.consts, f.n_regs);
+                crate::vm::annotate_register_copy_facts(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_local_copy_facts(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_container_move_facts(&mut analysis.perf, &f.code, f.n_regs);
+                crate::vm::annotate_dead_write_facts(&mut analysis.perf, &f.code, f.n_regs);
+            }
+        }
 
         if let Some(packed) = Bc32Function::try_from_function(&f) {
             let decoded = packed.decoded;
@@ -198,8 +250,78 @@ impl FunctionBuilder {
         f
     }
 
+    fn sync_performance_register_facts(&mut self) {
+        let Some(existing_perf) = self.analysis.as_ref().map(|analysis| analysis.perf.clone()) else {
+            return;
+        };
+        let mut perf = existing_perf;
+        for reg in 0..self.n_regs {
+            let kind = self.register_perf_kind(reg);
+            let list = self.list_locals.contains(&reg).then(|| PerfContainerFact {
+                value_kind: self
+                    .list_value_types
+                    .get(&reg)
+                    .map(PerfValueKind::from_type)
+                    .unwrap_or(PerfValueKind::Unknown),
+                known_len: self.list_lengths.get(&reg).copied(),
+                adoptable: self.list_value_adoptable.contains(&reg),
+            });
+            let map = self.map_locals.contains(&reg).then(|| PerfContainerFact {
+                value_kind: self
+                    .map_value_types
+                    .get(&reg)
+                    .map(PerfValueKind::from_type)
+                    .unwrap_or(PerfValueKind::Unknown),
+                known_len: None,
+                adoptable: self.map_value_adoptable.contains(&reg),
+            });
+            if kind == PerfValueKind::Unknown && list.is_none() && map.is_none() {
+                perf.clear_register(reg);
+                continue;
+            }
+            perf.set_register_fact(
+                reg,
+                PerfRegisterFact {
+                    value: PerfValueFact {
+                        kind,
+                        escape: crate::vm::analysis::EscapeClass::Local,
+                        move_preferred: true,
+                        must_clone: false,
+                    },
+                    list,
+                    map,
+                    live_after: false,
+                },
+            );
+        }
+        if let Some(analysis) = self.analysis.as_mut() {
+            analysis.perf = perf;
+        }
+    }
+
+    fn register_perf_kind(&self, reg: u16) -> PerfValueKind {
+        let mut kind = PerfValueKind::Unknown;
+        for candidate in [
+            self.int_regs.contains(&reg).then_some(PerfValueKind::Int),
+            self.float_regs.contains(&reg).then_some(PerfValueKind::Float),
+            self.list_locals.contains(&reg).then_some(PerfValueKind::List),
+            self.map_locals.contains(&reg).then_some(PerfValueKind::Map),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            kind = if kind == PerfValueKind::Unknown {
+                candidate
+            } else {
+                kind.join(candidate)
+            };
+        }
+        kind
+    }
+
     pub fn emit(&mut self, op: Op) {
         self.update_int_reg_facts(&op);
+        self.sync_performance_register_facts();
         self.code.push(op);
     }
 
@@ -256,6 +378,10 @@ impl FunctionBuilder {
         } else {
             let idx = self.alloc();
             self.vars.insert(name.to_string(), idx);
+            self.local_slots.insert(idx);
+            if let Some(analysis) = self.analysis.as_mut() {
+                analysis.perf.mark_local_slot(idx);
+            }
             idx
         }
     }
@@ -328,6 +454,10 @@ impl FunctionBuilder {
         );
         let reg = self.alloc();
         let prev = self.vars.insert(name.to_string(), reg);
+        self.local_slots.insert(reg);
+        if let Some(analysis) = self.analysis.as_mut() {
+            analysis.perf.mark_local_slot(reg);
+        }
         if let Some(scope) = self.var_scope_stack.last_mut() {
             scope.push((name.to_string(), prev));
         }
@@ -338,6 +468,10 @@ impl FunctionBuilder {
     /// Records the scope stack entry so the variable is properly unwound.
     pub fn define_var_as(&mut self, name: &str, reg: u16) {
         let prev = self.vars.insert(name.to_string(), reg);
+        self.local_slots.insert(reg);
+        if let Some(analysis) = self.analysis.as_mut() {
+            analysis.perf.mark_local_slot(reg);
+        }
         if let Some(scope) = self.var_scope_stack.last_mut() {
             scope.push((name.to_string(), prev));
         }

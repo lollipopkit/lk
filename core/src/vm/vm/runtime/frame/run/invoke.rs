@@ -7,10 +7,10 @@ use crate::val::{
 };
 use crate::vm::bytecode::{CaptureSpec, Function};
 use crate::vm::context::VmContext;
-use crate::vm::record_register_write;
 use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{CallIc, CallReturnLayout, ClosureFastCache};
 use crate::vm::vm::frame::{CallFrameMeta, FrameInfo, RegisterSpan};
+use crate::vm::write_register_value;
 
 use super::raw_boundary::{exec_positional_fast_span, with_vm_mut};
 
@@ -67,8 +67,7 @@ impl ReturnSlot {
     #[inline]
     pub(super) fn write(self, regs: &mut [Val], value: Val) {
         if self.retc > 0 {
-            record_register_write();
-            regs[self.base] = value;
+            write_register_value(regs, self.base, value);
         }
     }
 }

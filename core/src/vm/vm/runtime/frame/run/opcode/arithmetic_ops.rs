@@ -11,7 +11,7 @@ use crate::vm::vm::frame::FrameState;
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_add(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -19,8 +19,9 @@ pub(super) fn run_add(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
-    if quickening::execute_add_site(quickening, pc, regs, consts, dst, a, b)? {
+    if quickening::execute_add_site(quickening, pc, regs, consts, dst, a, b, collect_metrics)? {
         return Ok(());
     }
 
@@ -43,7 +44,7 @@ pub(super) fn run_add(
 
 #[inline]
 pub(super) fn run_str_concat_known_cap(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -62,7 +63,7 @@ pub(super) fn run_str_concat_known_cap(
 
 #[inline]
 pub(super) fn run_str_concat_to_str(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -85,7 +86,7 @@ pub(super) fn run_str_concat_to_str(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_sub(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -93,8 +94,9 @@ pub(super) fn run_sub(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
-    if quickening::execute_sub_site(quickening, pc, regs, consts, dst, a, b)? {
+    if quickening::execute_sub_site(quickening, pc, regs, consts, dst, a, b, collect_metrics)? {
         return Ok(());
     }
     if !crate::vm::Vm::arith2_try_numeric(frame_raw, regs, consts, dst, a, b, "sub", |x, y| x - y, |x, y| x - y) {
@@ -107,7 +109,7 @@ pub(super) fn run_sub(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_mul(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -115,8 +117,9 @@ pub(super) fn run_mul(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
-    if quickening::execute_mul_site(quickening, pc, regs, consts, dst, a, b)? {
+    if quickening::execute_mul_site(quickening, pc, regs, consts, dst, a, b, collect_metrics)? {
         return Ok(());
     }
     if !crate::vm::Vm::arith2_try_numeric(frame_raw, regs, consts, dst, a, b, "mul", |x, y| x * y, |x, y| x * y) {
@@ -128,7 +131,7 @@ pub(super) fn run_mul(
 
 #[inline]
 pub(super) fn run_div(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -167,7 +170,7 @@ pub(super) fn run_div(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_mod(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -175,8 +178,9 @@ pub(super) fn run_mod(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
-    if quickening::execute_mod_site(quickening, pc, regs, consts, dst, a, b)? {
+    if quickening::execute_mod_site(quickening, pc, regs, consts, dst, a, b, collect_metrics)? {
         return Ok(());
     }
     match (rk_read(regs, consts, a), rk_read(regs, consts, b)) {
@@ -200,7 +204,7 @@ pub(super) fn run_mod(
 
 #[inline]
 pub(super) fn run_add_int(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -219,7 +223,7 @@ pub(super) fn run_add_int(
 
 #[inline]
 pub(super) fn run_add_float(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -231,7 +235,7 @@ pub(super) fn run_add_float(
 
 #[inline]
 pub(super) fn run_add_int_imm(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -250,7 +254,7 @@ pub(super) fn run_add_int_imm(
 
 #[inline]
 pub(super) fn run_sub_int(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -262,7 +266,7 @@ pub(super) fn run_sub_int(
 
 #[inline]
 pub(super) fn run_sub_float(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -274,7 +278,7 @@ pub(super) fn run_sub_float(
 
 #[inline]
 pub(super) fn run_mul_int(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -286,7 +290,7 @@ pub(super) fn run_mul_int(
 
 #[inline]
 pub(super) fn run_mul_float(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -298,7 +302,7 @@ pub(super) fn run_mul_float(
 
 #[inline]
 pub(super) fn run_div_float(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -310,7 +314,7 @@ pub(super) fn run_div_float(
 
 #[inline]
 pub(super) fn run_mod_int(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -322,7 +326,7 @@ pub(super) fn run_mod_int(
 
 #[inline]
 pub(super) fn run_mod_float(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,

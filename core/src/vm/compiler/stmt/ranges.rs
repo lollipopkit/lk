@@ -467,7 +467,7 @@ impl FunctionBuilder {
         let Some(list_reg) = self.lookup(list_name) else {
             return false;
         };
-        if !self.list_locals.contains(&list_reg) {
+        if !self.reg_known_list(list_reg) {
             return false;
         }
 
@@ -528,7 +528,7 @@ impl FunctionBuilder {
         let Some(map_reg) = self.lookup(map_name) else {
             return false;
         };
-        if !self.map_locals.contains(&map_reg) {
+        if !self.reg_known_map(map_reg) {
             return false;
         }
 

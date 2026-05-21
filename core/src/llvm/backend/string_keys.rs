@@ -1,6 +1,41 @@
 use super::*;
 
 impl<'a> FunctionTranslator<'a> {
+    pub(super) fn try_defer_string_int_key_fact(
+        &mut self,
+        instr_idx: usize,
+        block_end: usize,
+        dst: u16,
+    ) -> Result<bool> {
+        let Some(fact) = self
+            .function
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.perf.key_ops.get(instr_idx))
+            .and_then(Option::as_ref)
+            .and_then(|fact| fact.string_int)
+        else {
+            return Ok(false);
+        };
+        if !self.string_int_key_can_defer(instr_idx, block_end, dst) {
+            return Ok(false);
+        }
+        let Some(prefix) = self
+            .function
+            .consts
+            .get(fact.prefix_key as usize)
+            .and_then(|value| value.as_str())
+            .map(str::to_owned)
+        else {
+            return Ok(false);
+        };
+        let suffix = self.load_reg(fact.suffix_reg)?;
+        self.writer
+            .line(format!("store i64 {}, i64* %r{dst}, align 8", encoding::NIL_VALUE));
+        self.set_known(dst, Some(KnownReg::StringIntKey { prefix, suffix }));
+        Ok(true)
+    }
+
     pub(super) fn try_defer_string_int_key(
         &mut self,
         instr_idx: usize,

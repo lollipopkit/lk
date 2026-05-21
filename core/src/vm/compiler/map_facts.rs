@@ -2,6 +2,7 @@ use crate::{
     expr::Expr,
     op::BinOp,
     val::{Type, Val},
+    vm::PerfValueKind,
 };
 
 use super::FunctionBuilder;
@@ -155,7 +156,30 @@ impl FunctionBuilder {
         }
     }
 
+    fn perf_kind_value_fact(kind: PerfValueKind) -> Option<Type> {
+        match kind {
+            PerfValueKind::Int => Some(Type::Int),
+            PerfValueKind::Float => Some(Type::Float),
+            PerfValueKind::Bool => Some(Type::Bool),
+            PerfValueKind::String => Some(Type::String),
+            PerfValueKind::List => Some(Type::List(Box::new(Type::Any))),
+            PerfValueKind::Map => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
+            PerfValueKind::Nil => Some(Type::Nil),
+            PerfValueKind::Unknown => None,
+        }
+    }
+
+    fn performance_reg_value_fact(&self, reg: u16) -> Option<Type> {
+        self.analysis
+            .as_ref()
+            .and_then(|analysis| analysis.perf.register(reg))
+            .and_then(|fact| Self::perf_kind_value_fact(fact.value.kind))
+    }
+
     fn reg_value_fact(&self, reg: u16) -> Option<Type> {
+        if let Some(fact) = self.performance_reg_value_fact(reg) {
+            return Some(fact);
+        }
         if self.int_regs.contains(&reg) {
             return Some(Type::Int);
         }
@@ -171,6 +195,18 @@ impl FunctionBuilder {
         None
     }
 
+    pub(crate) fn reg_known_int(&self, reg: u16) -> bool {
+        self.reg_value_fact(reg) == Some(Type::Int)
+    }
+
+    pub(crate) fn reg_known_list(&self, reg: u16) -> bool {
+        matches!(self.reg_value_fact(reg), Some(Type::List(_)))
+    }
+
+    pub(crate) fn reg_known_map(&self, reg: u16) -> bool {
+        matches!(self.reg_value_fact(reg), Some(Type::Map(_, _)))
+    }
+
     pub(crate) fn expr_value_fact(&self, expr: &Expr) -> Option<Type> {
         if let Some(ty) = self.expr_type_hint(expr).and_then(Self::normalized_value_fact) {
             return Some(ty);
@@ -179,17 +215,8 @@ impl FunctionBuilder {
             Expr::Val(value) => Self::val_value_fact(value),
             Expr::Var(name) => {
                 if let Some(reg) = self.lookup(name) {
-                    if self.int_regs.contains(&reg) {
-                        return Some(Type::Int);
-                    }
-                    if self.float_regs.contains(&reg) {
-                        return Some(Type::Float);
-                    }
-                    if self.list_locals.contains(&reg) {
-                        return Some(Type::List(Box::new(Type::Any)));
-                    }
-                    if self.map_locals.contains(&reg) {
-                        return Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any)));
+                    if let Some(fact) = self.reg_value_fact(reg) {
+                        return Some(fact);
                     }
                 }
                 self.lookup_const(name).and_then(Self::val_value_fact)
@@ -279,6 +306,15 @@ impl FunctionBuilder {
             return None;
         };
         let reg = self.lookup(name)?;
+        if let Some(value_kind) = self
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.perf.register(reg))
+            .and_then(|fact| fact.map.map(|map| map.value_kind))
+            && let Some(value_fact) = Self::perf_kind_value_fact(value_kind)
+        {
+            return Some(value_fact);
+        }
         self.map_value_types.get(&reg).cloned()
     }
 
@@ -290,10 +326,22 @@ impl FunctionBuilder {
         let Expr::Val(Val::Int(index)) = index else {
             return None;
         };
-        let len = self.list_lengths.get(&reg).copied()?;
+        let perf_list = self
+            .analysis
+            .as_ref()
+            .and_then(|analysis| analysis.perf.register(reg))
+            .and_then(|fact| fact.list);
+        let len = perf_list
+            .and_then(|list| list.known_len)
+            .or_else(|| self.list_lengths.get(&reg).copied())?;
         let index = normalize_list_index(*index, len)?;
         if index >= len {
             return None;
+        }
+        if let Some(value_kind) = perf_list.map(|list| list.value_kind)
+            && let Some(value_fact) = Self::perf_kind_value_fact(value_kind)
+        {
+            return Some(value_fact);
         }
         self.list_value_types.get(&reg).cloned()
     }

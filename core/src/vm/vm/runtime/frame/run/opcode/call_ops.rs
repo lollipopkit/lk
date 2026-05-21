@@ -1,6 +1,6 @@
 use super::super::call_common::{
-    CallHotPath, prepare_exact_closure_call, run_closure_slow_call, run_prepared_exact_closure_call,
-    try_run_closure_ic_hot, try_run_positional_closure_call,
+    CallHotPath, CallTarget, call_target_from_register, run_closure_exact_call_common, run_exact_call_common,
+    run_positional_call_common,
 };
 use super::super::invoke::{
     ArgWindow, NativeCallable, ReturnSlot, clear_pending_resume_pc, invoke_native_callable_with_ic,
@@ -8,10 +8,11 @@ use super::super::invoke::{
 };
 use super::super::raw_boundary::{pop_vm_frame, push_vm_frame, region_allocator};
 use super::*;
+use crate::vm::copy_call_arg_value_for_register_with_metrics;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_call_opcode(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     call_ic: &mut Vec<Option<CallIc>>,
@@ -23,83 +24,31 @@ pub(super) fn run_call_opcode(
     base: &u16,
     argc: &u8,
     retc: &u8,
+    collect_metrics: bool,
 ) -> Result<Option<Val>> {
     let mut pc = *pc_ref;
     let resume_pc = pc + 1;
     let allocator = region_allocator(region_allocator_ptr);
     let next_pc = resume_pc;
-    let ret_layout = CallReturnLayout::new(*base, *retc);
-    match try_run_closure_ic_hot(
-        frame_raw, regs, ctx, call_ic, pc, resume_pc, frame_base, self_ptr, *rf, *base, *argc, *retc,
+    match run_positional_call_common(
+        frame_raw,
+        regs,
+        ctx,
+        call_ic,
+        pc,
+        resume_pc,
+        frame_base,
+        self_ptr,
+        *rf,
+        *base,
+        *argc,
+        *retc,
+        allocator,
+        collect_metrics,
     )? {
-        CallHotPath::Done => {
-            pc = take_pending_resume_pc(self_ptr, next_pc);
-            *pc_ref = pc;
-            return Ok(None);
-        }
+        CallHotPath::Done => {}
         CallHotPath::Return(value) => return Ok(Some(value)),
-        CallHotPath::Miss => {}
-    }
-    if let Some(callable) = NativeCallable::from_val(&regs[*rf as usize]) {
-        let call_result: Result<()> =
-            invoke_native_callable_with_ic(ctx, regs, &mut call_ic[pc], callable, *argc, ret_layout)
-                .map(|handled| debug_assert!(handled));
-        match call_result {
-            Ok(()) => {}
-            Err(err) => {
-                return frame_return_common(frame_raw, pc, Err(err)).map(Some);
-            }
-        }
-        pc = take_pending_resume_pc(self_ptr, next_pc);
-        *pc_ref = pc;
-        return Ok(None);
-    }
-
-    // Slow path: clone only heap-backed VM closures and diagnostics inputs.
-    let func = regs[*rf as usize].clone();
-    match &func {
-        Val::Closure(closure_arc) => {
-            match try_run_positional_closure_call(
-                frame_raw,
-                regs,
-                ctx,
-                call_ic,
-                pc,
-                resume_pc,
-                frame_base,
-                self_ptr,
-                *base,
-                *argc,
-                *retc,
-                ret_layout,
-                closure_arc,
-            )? {
-                CallHotPath::Done => {}
-                CallHotPath::Return(value) => return Ok(Some(value)),
-                CallHotPath::Miss => match run_closure_slow_call(
-                    frame_raw,
-                    regs,
-                    ctx,
-                    pc,
-                    resume_pc,
-                    frame_base,
-                    self_ptr,
-                    *base,
-                    *argc,
-                    *retc,
-                    allocator,
-                    closure_arc,
-                )? {
-                    CallHotPath::Done => {}
-                    CallHotPath::Return(value) => return Ok(Some(value)),
-                    CallHotPath::Miss => unreachable!("closure slow call cannot miss"),
-                },
-            }
-        }
-        _ => {
-            return frame_return_common(frame_raw, pc, Err(anyhow!("{} is not a function", func.type_name())))
-                .map(Some);
-        }
+        CallHotPath::Miss => unreachable!("positional call common cannot miss"),
     }
     pc = take_pending_resume_pc(self_ptr, next_pc);
     *pc_ref = pc;
@@ -108,7 +57,7 @@ pub(super) fn run_call_opcode(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_call_native_fast_opcode(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     call_ic: &mut Vec<Option<CallIc>>,
@@ -120,6 +69,7 @@ pub(super) fn run_call_native_fast_opcode(
     base: &u16,
     argc: &u8,
     retc: &u8,
+    collect_metrics: bool,
 ) -> Result<Option<Val>> {
     let pc = *pc_ref;
     if let Some(callable @ (NativeCallable::Rust(_) | NativeCallable::RustFast(_))) =
@@ -145,12 +95,13 @@ pub(super) fn run_call_native_fast_opcode(
         base,
         argc,
         retc,
+        collect_metrics,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_call_closure_exact_opcode(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     call_ic: &mut Vec<Option<CallIc>>,
@@ -164,7 +115,7 @@ pub(super) fn run_call_closure_exact_opcode(
     retc: &u8,
 ) -> Result<Option<Val>> {
     let pc = *pc_ref;
-    match try_run_closure_ic_hot(
+    match run_closure_exact_call_common(
         frame_raw,
         regs,
         ctx,
@@ -180,17 +131,30 @@ pub(super) fn run_call_closure_exact_opcode(
     )? {
         CallHotPath::Done => {
             *pc_ref = take_pending_resume_pc(self_ptr, pc + 1);
-            return Ok(None);
+            Ok(None)
         }
         CallHotPath::Return(value) => return Ok(Some(value)),
-        CallHotPath::Miss => {}
+        CallHotPath::Miss => unreachable!("closure exact call common cannot miss"),
     }
+}
 
-    let prepared = match prepare_exact_closure_call(regs, *rf, *argc) {
-        Ok(prepared) => prepared,
-        Err(err) => return frame_return_common(frame_raw, pc, Err(err)).map(Some),
-    };
-    match run_prepared_exact_closure_call(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_call_exact_opcode(
+    frame_raw: *mut FrameState<'_, '_>,
+    regs: &mut [Val],
+    ctx: &mut VmContext,
+    call_ic: &mut Vec<Option<CallIc>>,
+    pc_ref: &mut usize,
+    frame_base: usize,
+    _region_allocator_ptr: *const RegionAllocator,
+    self_ptr: *mut Vm,
+    rf: &u16,
+    base: &u16,
+    argc: &u8,
+    retc: &u8,
+) -> Result<Option<Val>> {
+    let pc = *pc_ref;
+    match run_exact_call_common(
         frame_raw,
         regs,
         ctx,
@@ -199,125 +163,23 @@ pub(super) fn run_call_closure_exact_opcode(
         pc + 1,
         frame_base,
         self_ptr,
+        *rf,
         *base,
         *argc,
         *retc,
-        prepared,
     )? {
         CallHotPath::Done => {
             *pc_ref = take_pending_resume_pc(self_ptr, pc + 1);
             Ok(None)
         }
         CallHotPath::Return(value) => Ok(Some(value)),
-        CallHotPath::Miss => unreachable!("prepared exact closure call cannot miss"),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn run_call_exact_opcode(
-    frame_raw: *mut FrameState<'_>,
-    regs: &mut [Val],
-    ctx: &mut VmContext,
-    call_ic: &mut Vec<Option<CallIc>>,
-    pc_ref: &mut usize,
-    frame_base: usize,
-    _region_allocator_ptr: *const RegionAllocator,
-    self_ptr: *mut Vm,
-    rf: &u16,
-    base: &u16,
-    argc: &u8,
-    retc: &u8,
-) -> Result<Option<Val>> {
-    let pc = *pc_ref;
-    match try_run_closure_ic_hot(
-        frame_raw,
-        regs,
-        ctx,
-        call_ic,
-        pc,
-        pc + 1,
-        frame_base,
-        self_ptr,
-        *rf,
-        *base,
-        *argc,
-        *retc,
-    )? {
-        CallHotPath::Done => {
-            *pc_ref = take_pending_resume_pc(self_ptr, pc + 1);
-            return Ok(None);
-        }
-        CallHotPath::Return(value) => return Ok(Some(value)),
-        CallHotPath::Miss => {}
-    }
-
-    match &regs[*rf as usize] {
-        Val::Closure(closure) if closure.named_params.is_empty() && closure.params.len() == *argc as usize => {
-            let prepared = match prepare_exact_closure_call(regs, *rf, *argc) {
-                Ok(prepared) => prepared,
-                Err(err) => return frame_return_common(frame_raw, pc, Err(err)).map(Some),
-            };
-            return match run_prepared_exact_closure_call(
-                frame_raw,
-                regs,
-                ctx,
-                call_ic,
-                pc,
-                pc + 1,
-                frame_base,
-                self_ptr,
-                *base,
-                *argc,
-                *retc,
-                prepared,
-            )? {
-                CallHotPath::Done => {
-                    *pc_ref = take_pending_resume_pc(self_ptr, pc + 1);
-                    Ok(None)
-                }
-                CallHotPath::Return(value) => Ok(Some(value)),
-                CallHotPath::Miss => unreachable!("prepared exact closure call cannot miss"),
-            };
-        }
-        Val::RustFunction(_) | Val::RustFastFunction(_) => {
-            let callable =
-                NativeCallable::from_val(&regs[*rf as usize]).expect("native function match should produce callable");
-            let ret_layout = CallReturnLayout::new(*base, *retc);
-            let handled = invoke_native_callable_with_ic(ctx, regs, &mut call_ic[pc], callable, *argc, ret_layout)?;
-            debug_assert!(handled);
-            *pc_ref = pc + 1;
-            return Ok(None);
-        }
-        Val::Closure(closure) if !closure.named_params.is_empty() => {
-            return frame_return_common(frame_raw, pc, Err(anyhow!("exact call does not accept named fallback")))
-                .map(Some);
-        }
-        Val::Closure(closure) => {
-            return frame_return_common(
-                frame_raw,
-                pc,
-                Err(anyhow!(
-                    "Function expects {} positional arguments, got {}",
-                    closure.params.len(),
-                    argc
-                )),
-            )
-            .map(Some);
-        }
-        other => {
-            return frame_return_common(
-                frame_raw,
-                pc,
-                Err(anyhow!("{} is not an exact positional callable", other.type_name())),
-            )
-            .map(Some);
-        }
+        CallHotPath::Miss => unreachable!("exact call common cannot miss"),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_call_named_opcode(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     call_ic: &mut Vec<Option<CallIc>>,
@@ -331,6 +193,7 @@ pub(super) fn run_call_named_opcode(
     base_named: &u16,
     namedc: &u8,
     retc: &u8,
+    collect_metrics: bool,
 ) -> Result<Option<Val>> {
     let mut pc = *pc_ref;
     let resume_pc = pc + 1;
@@ -338,7 +201,6 @@ pub(super) fn run_call_named_opcode(
         self_ptr,
         CallFrameMeta::inline_return(resume_pc, *base_pos, *retc, frame_base),
     );
-    let func = regs[*rf as usize].clone();
     let start_pos = *base_pos as usize;
     let npos = *posc as usize;
     let start_named = *base_named as usize;
@@ -347,8 +209,8 @@ pub(super) fn run_call_named_opcode(
     let allocator = region_allocator(region_allocator_ptr);
     let pos_slice = &regs[start_pos..start_pos + npos];
     let ret_layout = CallReturnLayout::new(*base_pos, *retc);
-    let call_result: Result<()> = match &func {
-        Val::Closure(closure_arc) => {
+    let call_result: Result<()> = match call_target_from_register(regs, *rf) {
+        CallTarget::Closure(closure_arc) => {
             let closure = closure_arc.as_ref();
             let frame_info = closure.frame_info();
             if npos != closure.params.len() {
@@ -380,45 +242,20 @@ pub(super) fn run_call_named_opcode(
             let positional_span = RegisterSpan::current(start_pos, npos);
             let call_args = CallArgs::registers(positional_span);
             let named_slice = &regs[start_named..start_named + nnamed * 2];
-            let closure_ptr = Arc::as_ptr(closure_arc) as usize;
-            let cached_plan = if let Some(CallIc::ClosureNamed {
-                closure_ptr: cached_ptr,
-                named_len,
-                ret,
-                plan,
-            }) = call_ic[pc].as_ref()
-            {
-                if *cached_ptr == closure_ptr && *named_len as usize == nnamed && ret.matches(*base_pos, *retc) {
-                    Some(plan.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let plan = if let Some(plan) = cached_plan {
-                plan
-            } else {
-                match build_named_call_plan(closure, named_slice) {
-                    Ok(plan) => {
-                        call_ic[pc] = Some(CallIc::ClosureNamed {
-                            closure_ptr,
-                            named_len: nnamed as u8,
-                            ret: ret_layout,
-                            plan: plan.clone(),
-                        });
-                        plan
-                    }
-                    Err(err) => return Err(err),
-                }
-            };
+            let closure_ptr = Arc::as_ptr(&closure_arc) as usize;
+            let site_plan =
+                get_or_build_named_call_site_plan(call_ic, pc, closure_ptr, nnamed, ret_layout, closure, named_slice)?;
+            let plan = &site_plan.named;
             allocator.with_indexed_vals(
                 plan.provided_indices.len() + plan.defaults_to_eval.len() + plan.optional_nil.len(),
                 |seed_pairs| {
                     seed_pairs.clear();
                     for (arg_idx, param_idx) in plan.provided_indices.iter().enumerate() {
                         let val_reg = start_named + 2 * arg_idx + 1;
-                        seed_pairs.push((*param_idx, regs[val_reg].clone()));
+                        seed_pairs.push((
+                            *param_idx,
+                            copy_call_arg_value_for_register_with_metrics(&regs[val_reg], collect_metrics),
+                        ));
                     }
                     for &default_idx in plan.defaults_to_eval.iter() {
                         let default_fun = closure
@@ -439,12 +276,15 @@ pub(super) fn run_call_named_opcode(
                                     .get(*seed_idx)
                                     .copied()
                                     .expect("default seed layout must cover parent index");
-                                seed_regs.push((reg, seed_val.clone()));
+                                seed_regs.push((
+                                    reg,
+                                    copy_call_arg_value_for_register_with_metrics(seed_val, collect_metrics),
+                                ));
                             }
                             Vm::exec_function_with_args(
                                 default_fun,
                                 call_args,
-                                seed_regs.as_slice(),
+                                seed_regs.as_mut_slice(),
                                 Some(Arc::clone(&closure.captures)),
                                 Some(Arc::clone(&closure.capture_specs)),
                                 ctx,
@@ -464,20 +304,20 @@ pub(super) fn run_call_named_opcode(
                     }
 
                     allocator.with_reg_val_pairs(seed_pairs.len(), |seed_regs| {
-                        for (seed_idx, seed_val) in seed_pairs.iter() {
+                        for (seed_idx, seed_val) in seed_pairs.iter_mut() {
                             let reg = fun
                                 .named_param_regs
                                 .get(*seed_idx)
                                 .copied()
                                 .ok_or_else(|| anyhow!("Named parameter index {} out of range", seed_idx))?;
-                            seed_regs.push((reg, seed_val.clone()));
+                            seed_regs.push((reg, std::mem::replace(seed_val, Val::Nil)));
                         }
                         let captures = Some(Arc::clone(&closure.captures));
                         let capture_specs = Some(Arc::clone(&closure.capture_specs));
                         let result = Vm::exec_function_with_args(
                             fun.as_ref(),
                             call_args,
-                            seed_regs.as_slice(),
+                            seed_regs.as_mut_slice(),
                             captures,
                             capture_specs,
                             ctx,
@@ -497,11 +337,10 @@ pub(super) fn run_call_named_opcode(
                 },
             )
         }
-        Val::RustFunction(_) | Val::RustFastFunction(_) => {
+        CallTarget::Native(callable @ (NativeCallable::Rust(_) | NativeCallable::RustFast(_))) => {
             if nnamed > 0 {
                 return Err(anyhow!("Named arguments are not supported for native functions"));
             }
-            let callable = NativeCallable::from_val(&func).expect("native function match should produce callable");
             let call_result = invoke_native_callable_with_ic(ctx, regs, &mut call_ic[pc], callable, *posc, ret_layout)
                 .map(|handled| debug_assert!(handled));
             match call_result {
@@ -509,11 +348,12 @@ pub(super) fn run_call_named_opcode(
                 Err(err) => Err(err),
             }
         }
-        Val::RustFastFunctionNamed(_) | Val::RustFunctionNamed(_) => {
+        CallTarget::Native(NativeCallable::RustFastNamed(ptr)) => {
             let call_output = allocator.with_named_pairs(nnamed, |named_vec| {
                 for i in 0..nnamed {
                     let key_val = &regs[start_named + 2 * i];
-                    let val = regs[start_named + 2 * i + 1].clone();
+                    let val =
+                        copy_call_arg_value_for_register_with_metrics(&regs[start_named + 2 * i + 1], collect_metrics);
                     let key = match key_val {
                         Val::Str(s) => s.to_string(),
                         Val::ShortStr(s) => s.as_str().to_string(),
@@ -526,15 +366,7 @@ pub(super) fn run_call_named_opcode(
                     };
                     named_vec.push((key, val));
                 }
-                match func.clone() {
-                    Val::RustFastFunctionNamed(ptr) => {
-                        invoke_rust_fast_function_named(ctx, ptr, ArgWindow::new(pos_slice), named_vec.as_slice())
-                    }
-                    Val::RustFunctionNamed(ptr) => {
-                        invoke_rust_function_named_fast(ctx, ptr, ArgWindow::new(pos_slice), named_vec.as_slice())
-                    }
-                    _ => unreachable!(),
-                }
+                invoke_rust_fast_function_named(ctx, ptr, ArgWindow::new(pos_slice), named_vec.as_slice())
             });
             match call_output {
                 Ok(value) => {
@@ -544,7 +376,35 @@ pub(super) fn run_call_named_opcode(
                 Err(err) => Err(err),
             }
         }
-        _ => Err(anyhow!("{} is not a function", func.type_name())),
+        CallTarget::Native(NativeCallable::RustNamed(ptr)) => {
+            let call_output = allocator.with_named_pairs(nnamed, |named_vec| {
+                for i in 0..nnamed {
+                    let key_val = &regs[start_named + 2 * i];
+                    let val =
+                        copy_call_arg_value_for_register_with_metrics(&regs[start_named + 2 * i + 1], collect_metrics);
+                    let key = match key_val {
+                        Val::Str(s) => s.to_string(),
+                        Val::ShortStr(s) => s.as_str().to_string(),
+                        Val::Int(i) => i.to_string(),
+                        Val::Float(f) => f.to_string(),
+                        Val::Bool(b) => b.to_string(),
+                        _ => {
+                            return Err(anyhow!("Named argument key must be primitive, got {:?}", key_val));
+                        }
+                    };
+                    named_vec.push((key, val));
+                }
+                invoke_rust_function_named_fast(ctx, ptr, ArgWindow::new(pos_slice), named_vec.as_slice())
+            });
+            match call_output {
+                Ok(value) => {
+                    ReturnSlot::new(*base_pos as usize, *retc).write(regs, value);
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        }
+        CallTarget::NotFunction(type_name) => Err(anyhow!("{} is not a function", type_name)),
     };
     if let Err(err) = call_result {
         return frame_return_common(frame_raw, pc, Err(err)).map(Some);

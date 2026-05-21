@@ -5,6 +5,9 @@ use crate::vm::bytecode::Op;
 
 pub(super) fn encode_op(out: &mut Vec<u8>, op: &Op) -> Result<()> {
     match *op {
+        Op::Nop => {
+            write_u8(out, 106);
+        }
         Op::LoadK(dst, kidx) => {
             write_u8(out, 0);
             write_u16(out, dst);
@@ -518,6 +521,7 @@ fn encode_op3(out: &mut Vec<u8>, tag: u8, a: u16, b: u16, c: u16) {
 pub(super) fn decode_op(bytes: &[u8], cursor: &mut usize) -> Result<Op> {
     let tag = read_u8(bytes, cursor)?;
     let op = match tag {
+        106 => Op::Nop,
         0 => Op::LoadK(read_u16(bytes, cursor)?, read_u16(bytes, cursor)?),
         1 => Op::Move(read_u16(bytes, cursor)?, read_u16(bytes, cursor)?),
         2 => Op::Not(read_u16(bytes, cursor)?, read_u16(bytes, cursor)?),

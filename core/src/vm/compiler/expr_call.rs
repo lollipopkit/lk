@@ -41,7 +41,7 @@ impl FunctionBuilder {
             && method_val.as_str() == Some("set")
             && let Expr::Var(list_name) = args[0].as_ref()
             && let Some(list_reg) = self.lookup(list_name)
-            && self.list_locals.contains(&list_reg)
+            && self.reg_known_list(list_reg)
             && let Some(dst) = self.emit_list_set_i(list_reg, &args[1], &args[2])
         {
             return dst;
@@ -54,7 +54,7 @@ impl FunctionBuilder {
             && method_val.as_str() == Some("get")
             && let Expr::Var(list_name) = args[0].as_ref()
             && let Some(list_reg) = self.lookup(list_name)
-            && self.list_locals.contains(&list_reg)
+            && self.reg_known_list(list_reg)
         {
             return self.emit_list_get_access(list_reg, &args[1]);
         }
@@ -80,7 +80,7 @@ impl FunctionBuilder {
             && method_val.as_str() == Some("has")
             && let Expr::Var(map_name) = args[0].as_ref()
             && let Some(map_reg) = self.lookup(map_name)
-            && self.map_locals.contains(&map_reg)
+            && self.reg_known_map(map_reg)
         {
             return self.emit_map_has(map_reg, &args[1]);
         }
@@ -93,7 +93,7 @@ impl FunctionBuilder {
             && let Expr::Var(map_name) = args[0].as_ref()
         {
             if let Some(map_reg) = self.lookup(map_name)
-                && self.map_locals.contains(&map_reg)
+                && self.reg_known_map(map_reg)
             {
                 self.emit_map_set(map_reg, &args[1], &args[2]);
                 return map_reg;
@@ -124,9 +124,9 @@ impl FunctionBuilder {
             }
             let obj_reg = self.expr(obj_expr);
             let out = self.alloc();
-            if self.list_locals.contains(&obj_reg) {
+            if self.reg_known_list(obj_reg) {
                 self.emit(Op::ListLen { dst: out, src: obj_reg });
-            } else if self.map_locals.contains(&obj_reg) {
+            } else if self.reg_known_map(obj_reg) {
                 self.emit(Op::MapLen { dst: out, src: obj_reg });
             } else if matches!(obj_expr, Expr::Val(value) if value.as_str().is_some()) {
                 self.emit(Op::StrLen { dst: out, src: obj_reg });
@@ -140,7 +140,7 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("push")
             && let Some(list_reg) = self.lookup(var_name)
-            && self.list_locals.contains(&list_reg)
+            && self.reg_known_list(list_reg)
         {
             let val_reg = if let Expr::Var(arg_name) = args[0].as_ref() {
                 self.lookup(arg_name).unwrap_or_else(|| self.expr(&args[0]))
@@ -165,7 +165,7 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("set")
             && let Some(list_reg) = self.lookup(var_name)
-            && self.list_locals.contains(&list_reg)
+            && self.reg_known_list(list_reg)
             && let Some(out) = self.emit_list_set_i(list_reg, &args[0], &args[1])
         {
             return out;
@@ -175,7 +175,7 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("get")
             && let Some(list_reg) = self.lookup(var_name)
-            && self.list_locals.contains(&list_reg)
+            && self.reg_known_list(list_reg)
         {
             return self.emit_list_get_access(list_reg, &args[0]);
         }
@@ -184,7 +184,7 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("set")
             && let Some(map_reg) = self.lookup(var_name)
-            && self.map_locals.contains(&map_reg)
+            && self.reg_known_map(map_reg)
         {
             self.emit_map_set(map_reg, &args[0], &args[1]);
             return map_reg;
@@ -194,7 +194,7 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("get")
             && let Some(map_reg) = self.lookup(var_name)
-            && self.map_locals.contains(&map_reg)
+            && self.reg_known_map(map_reg)
         {
             return self.emit_map_access(map_reg, &args[0]);
         }
@@ -203,7 +203,7 @@ impl FunctionBuilder {
             && let Expr::Val(method_val) = field_expr
             && method_val.as_str() == Some("has")
             && let Some(map_reg) = self.lookup(var_name)
-            && self.map_locals.contains(&map_reg)
+            && self.reg_known_map(map_reg)
         {
             return self.emit_map_has(map_reg, &args[0]);
         }

@@ -263,6 +263,50 @@ fn test_vm_named_call_order_independent() {
 }
 
 #[test]
+fn test_vm_named_call_seed_moves_into_callee_frame() {
+    use crate::vm::{vm_runtime_metrics_reset, vm_runtime_metrics_snapshot};
+
+    let heap_value = Val::from_str("longer-than-short-named-arg");
+    let program = Stmt::Block {
+        statements: vec![
+            Box::new(Stmt::Function {
+                name: "id".into(),
+                params: vec![],
+                param_types: vec![],
+                named_params: vec![NamedParamDecl {
+                    name: "value".into(),
+                    type_annotation: Some(Type::String),
+                    default: None,
+                }],
+                return_type: None,
+                body: Box::new(Stmt::Block {
+                    statements: vec![Box::new(Stmt::Return {
+                        value: Some(Box::new(Expr::Var("value".into()))),
+                    })],
+                }),
+            }),
+            Box::new(Stmt::Return {
+                value: Some(Box::new(Expr::CallNamed(
+                    Box::new(Expr::Var("id".into())),
+                    vec![],
+                    vec![("value".into(), Box::new(Expr::Val(heap_value.clone())))],
+                ))),
+            }),
+        ],
+    };
+
+    let fun = Compiler::new().compile_stmt(&program);
+    let mut env = VmContext::new();
+
+    vm_runtime_metrics_reset();
+    let out = Vm::new().exec_with(&fun, &mut env, None).unwrap();
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, heap_value);
+    assert_eq!(metrics.call_arg_heap_clones, 1);
+}
+
+#[test]
 fn test_vm_named_call_optional_and_default() {
     let g_body = Stmt::Block {
         statements: vec![Box::new(Stmt::Return {

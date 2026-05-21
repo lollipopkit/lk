@@ -9,22 +9,56 @@ use crate::{
 
 use crate::vm::bytecode::{CaptureSpec, Function};
 use crate::vm::context::VmContext;
+use crate::vm::copy_call_arg_value_for_register;
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::{ClosureFastCache, VmCaches};
+use crate::vm::vm::caches::{ClosureFastCache, FunctionRuntimePlan};
 use crate::vm::vm::frame::{
-    CallArgs, CallFrame, CallFrameMeta, FrameInfo, FrameState, RegisterSpan, RegisterWindowRef,
+    CallArgs, CallFrameMeta, FrameActivation, FrameInfo, FrameStateSetup, RegisterSpan, RegisterWindowRef, StackWindow,
 };
 use crate::vm::vm::guards::VmCurrentGuard;
 use crate::vm::vm::runtime::frame::run_frame;
 
+fn push_optional_call_frame(ctx: &mut VmContext, frame_info: Option<&FrameInfo>) -> bool {
+    if let Some(info) = frame_info {
+        ctx.push_call_frame(Arc::clone(&info.name), info.location.as_ref().map(Arc::clone));
+        true
+    } else {
+        false
+    }
+}
+
+fn finish_optional_call_frame(ctx: &mut VmContext, pushed_frame: bool, exec_result: Result<Val>) -> Result<Val> {
+    if !pushed_frame {
+        return exec_result;
+    }
+    match exec_result {
+        Ok(val) => {
+            ctx.pop_call_frame();
+            Ok(val)
+        }
+        Err(err) => {
+            let report = ctx.call_stack_report();
+            ctx.pop_call_frame();
+            if let Some(report) = report {
+                Err(err.context(report))
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
 impl Vm {
     fn allocate_stack_window(&mut self, reg_count: usize) -> usize {
         let base = self.stack_top;
-        self.stack_top += reg_count;
-        if self.stack.len() < self.stack_top {
-            self.stack.resize(self.stack_top, Val::Nil);
+        let new_top = base + reg_count;
+        let old_len = self.stack.len();
+        self.stack_top = new_top;
+        if old_len < new_top {
+            self.stack.resize(new_top, Val::Nil);
         }
-        for slot in &mut self.stack[base..base + reg_count] {
+        let reused_end = old_len.min(new_top);
+        for slot in &mut self.stack[base..reused_end] {
             *slot = Val::Nil;
         }
         base
@@ -32,6 +66,16 @@ impl Vm {
 
     fn release_stack_window(&mut self, base: usize) {
         self.stack_top = base;
+    }
+
+    fn allocate_runtime_stack_window(&mut self, runtime: &FunctionRuntimePlan) -> StackWindow {
+        let base = self.allocate_stack_window(runtime.reg_count);
+        StackWindow::from_runtime(base, runtime)
+    }
+
+    fn activate_runtime_frame(&mut self, runtime: FunctionRuntimePlan, setup: FrameStateSetup) -> FrameActivation {
+        let window = self.allocate_runtime_stack_window(&runtime);
+        FrameActivation::new(window, runtime, setup)
     }
 
     pub fn exec(&mut self, f: &Function, ctx: &mut VmContext) -> Result<Val> {
@@ -72,90 +116,24 @@ impl Vm {
         let _current_vm_guard = VmCurrentGuard::new(self_ptr, ctx as *mut VmContext);
         let initial_stack_top = self.stack_top;
         let initial_frame_depth = self.frames.len();
-        let region_plan = f.analysis.as_ref().map(|analysis| analysis.region_plan.clone());
-        let reg_count = f.n_regs as usize;
-        let reg_base = self.allocate_stack_window(reg_count);
+        let runtime = self.prepare_top_level_runtime(f);
+        let activation = self.activate_runtime_frame(runtime, FrameStateSetup::synchronized());
         let exec_result = {
-            // Aliases to reusable instruction-site caches
-            let access_ic = &mut self.access_ic;
-            let index_ic = &mut self.index_ic;
-            let global_ic = &mut self.global_ic;
-            let call_ic = &mut self.call_ic;
-            let for_range_ic = &mut self.for_range_ic;
-            let packed_hot_ic = &mut self.packed_hot_ic;
-            let quickening_ic = &mut self.quickening_ic;
-            let func_key = f as *const Function as usize;
-            if self.packed_hot_ic_key != func_key {
-                packed_hot_ic.clear();
-                self.packed_hot_ic_key = func_key;
-            }
-            if self.quickening_ic_key != func_key {
-                quickening_ic.clear();
-                self.quickening_ic_key = func_key;
-            }
-            let mut call_frame = CallFrame::new(f, reg_base, reg_count, captures, capture_specs, region_plan);
-            let reg_count = call_frame.reg_count;
+            let runtime_caches = &mut self.runtime_caches;
+            let mut activation_parts = activation.into_parts(f, captures, capture_specs);
 
             let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
-            let regs = &mut self.stack[reg_base..reg_base + reg_count];
-            let mut frame = FrameState::new(&mut call_frame, regs, region_alloc_ptr);
-            if let Some(a) = args
-                && !f.param_regs.is_empty()
-            {
-                let n = a.len().min(f.param_regs.len());
-                for (i, val) in a.iter().enumerate().take(n) {
-                    let r = f.param_regs[i] as usize;
-                    frame.write_reg(r, val.clone());
-                }
+            let mut frame = activation_parts.frame_state(&mut self.stack, region_alloc_ptr);
+            if let Some(args) = args {
+                frame.seed_positional_from_values(&f.param_regs, args);
             }
             if !named.is_empty() {
-                for (reg_idx, val) in named {
-                    let r = *reg_idx as usize;
-                    if r < reg_count {
-                        frame.write_reg(r, val.clone());
-                    }
-                }
+                frame.seed_named_call_arg_values(named);
             }
-            let mut pushed_frame = false;
-            if let Some(ref info) = frame_info {
-                ctx.push_call_frame(Arc::clone(&info.name), info.location.as_ref().map(Arc::clone));
-                pushed_frame = true;
-            }
+            let pushed_frame = push_optional_call_frame(ctx, frame_info.as_ref());
 
-            let exec_raw = run_frame(
-                &mut frame,
-                ctx,
-                VmCaches {
-                    access_ic,
-                    index_ic,
-                    global_ic,
-                    call_ic,
-                    for_range: for_range_ic,
-                    packed_hot: packed_hot_ic,
-                    quickening: quickening_ic,
-                },
-                self_ptr,
-            );
-            let exec_result = exec_raw;
-            if pushed_frame {
-                match exec_result {
-                    Ok(val) => {
-                        ctx.pop_call_frame();
-                        Ok(val)
-                    }
-                    Err(err) => {
-                        let report = ctx.call_stack_report();
-                        ctx.pop_call_frame();
-                        if let Some(report) = report {
-                            Err(err.context(report))
-                        } else {
-                            Err(err)
-                        }
-                    }
-                }
-            } else {
-                exec_result
-            }
+            let exec_result = run_frame(&mut frame, ctx, runtime_caches.vm_caches(), self_ptr);
+            finish_optional_call_frame(ctx, pushed_frame, exec_result)
         };
         // Since we've removed apply_to_environment, the snapshot already contains the right state
         // No additional synchronization needed
@@ -215,69 +193,17 @@ impl Vm {
         cache: &mut ClosureFastCache,
         return_meta: CallFrameMeta,
     ) -> Result<Val> {
-        let reg_count = fun.n_regs as usize;
+        let runtime = cache.prepare_function_runtime(fun);
         let self_ptr: *mut Vm = self;
-        let stack_base = self.allocate_stack_window(reg_count);
+        let activation = self.activate_runtime_frame(runtime, FrameStateSetup::inline_ephemeral(return_meta));
+        activation.seed_positional_from_stack(&mut self.stack, args, &fun.param_regs);
 
-        for (idx, param_reg) in fun.param_regs.iter().enumerate() {
-            let src_idx = args.base + idx;
-            let value = self.read_reg(args.window, src_idx).cloned().unwrap_or(Val::Nil);
-            self.stack[stack_base + *param_reg as usize] = value;
-        }
-
-        let region_plan = if let Some(ref rp) = cache.region_plan {
-            Some(Arc::clone(rp))
-        } else {
-            let rp = fun.analysis.as_ref().map(|analysis| analysis.region_plan.clone());
-            cache.region_plan = rp.clone();
-            rp
-        };
-        let mut call_frame = CallFrame::new(fun, stack_base, reg_count, captures, capture_specs, region_plan);
+        let mut activation_parts = activation.into_parts(fun, captures, capture_specs);
+        let stack_base = activation_parts.stack_base();
         let region_alloc_ptr: *const RegionAllocator = &self.region_alloc;
-        let regs = &mut self.stack[stack_base..stack_base + reg_count];
-        let mut callee_state = FrameState::new_ephemeral(&mut call_frame, regs, region_alloc_ptr);
-        callee_state.set_inline_return_meta(return_meta);
+        let mut callee_state = activation_parts.frame_state(&mut self.stack, region_alloc_ptr);
 
-        let func_key = fun as *const Function as usize;
-        if cache.packed_hot_key != func_key {
-            cache.packed_hot.clear();
-            cache.packed_hot_key = func_key;
-        }
-        let code_len = fun.code.len();
-        if cache.prepared_func_key != func_key || cache.prepared_code_len < code_len {
-            if cache.access_ic.len() < code_len {
-                cache.access_ic.resize(code_len, None);
-            }
-            if cache.index_ic.len() < code_len {
-                cache.index_ic.resize(code_len, None);
-            }
-            if cache.global_ic.len() < code_len {
-                cache.global_ic.resize(code_len, None);
-            }
-            if cache.call_ic.len() < code_len {
-                cache.call_ic.resize(code_len, None);
-            }
-            if cache.for_range.len() < code_len {
-                cache.for_range.resize(code_len, None);
-            }
-            cache.prepared_func_key = func_key;
-            cache.prepared_code_len = code_len;
-        }
-
-        let exec_raw = run_frame(
-            &mut callee_state,
-            ctx,
-            VmCaches {
-                access_ic: &mut cache.access_ic,
-                index_ic: &mut cache.index_ic,
-                global_ic: &mut cache.global_ic,
-                call_ic: &mut cache.call_ic,
-                for_range: &mut cache.for_range,
-                packed_hot: &mut cache.packed_hot,
-                quickening: &mut cache.quickening,
-            },
-            self_ptr,
-        );
+        let exec_raw = run_frame(&mut callee_state, ctx, cache.vm_caches(), self_ptr);
 
         let exec_result = match exec_raw {
             Ok(val) => Ok(val),
@@ -336,7 +262,30 @@ impl Vm {
                 .get(*idx)
                 .copied()
                 .ok_or_else(|| anyhow!("Named parameter index {} out of range", idx))?;
-            out.push((reg, value.clone()));
+            out.push((reg, copy_call_arg_value_for_register(value)));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn map_named_seed_take(
+        fun: &Function,
+        named_bindings: &mut [(usize, Val)],
+        out: &mut Vec<(u16, Val)>,
+    ) -> Result<()> {
+        out.clear();
+        if named_bindings.is_empty() {
+            return Ok(());
+        }
+        if out.capacity() < named_bindings.len() {
+            out.reserve(named_bindings.len() - out.capacity());
+        }
+        for (idx, value) in named_bindings.iter_mut() {
+            let reg = fun
+                .named_param_regs
+                .get(*idx)
+                .copied()
+                .ok_or_else(|| anyhow!("Named parameter index {} out of range", idx))?;
+            out.push((reg, std::mem::replace(value, Val::Nil)));
         }
         Ok(())
     }
@@ -345,7 +294,7 @@ impl Vm {
     pub(crate) fn exec_function_with_args(
         fun: &Function,
         positional: CallArgs,
-        named_seed: &[(u16, Val)],
+        named_seed: &mut [(u16, Val)],
         captures: Option<Arc<ClosureCapture>>,
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
         ctx: &mut VmContext,
@@ -359,7 +308,6 @@ impl Vm {
             .map(|frame| frame.caller_window)
             .unwrap_or(RegisterWindowRef::Base(0));
         let positional_span = positional.span().relocate(parent_window);
-        let reg_count = fun.n_regs as usize;
         if fun.param_regs.len() < positional_span.len {
             return Err(anyhow!(
                 "Function expects {} positional arguments, got {}",
@@ -367,80 +315,58 @@ impl Vm {
                 positional_span.len
             ));
         }
-        let reg_base = vm.allocate_stack_window(reg_count);
-        for (idx, param_reg) in fun.param_regs.iter().take(positional_span.len).enumerate() {
-            let src_idx = positional_span.base + idx;
-            let value = vm
-                .read_reg(positional_span.window, src_idx)
-                .cloned()
-                .unwrap_or(Val::Nil);
-            vm.stack[reg_base + *param_reg as usize] = value;
-        }
-        let region_plan = fun.analysis.as_ref().map(|analysis| analysis.region_plan.clone());
-        let mut call_frame = CallFrame::new(fun, reg_base, reg_count, captures, capture_specs, region_plan);
-        let region_alloc_ptr: *const RegionAllocator = &vm.region_alloc;
-        let regs = &mut vm.stack[reg_base..reg_base + reg_count];
-        let mut callee_state = FrameState::new(&mut call_frame, regs, region_alloc_ptr);
-        for (reg_idx, value) in named_seed {
-            let slot = *reg_idx as usize;
-            callee_state.write_reg(slot, value.clone());
-        }
         let mut nested_cache = vm.nested_cache_pool.pop().unwrap_or_else(ClosureFastCache::new);
-        let func_key = fun as *const Function as usize;
-        if nested_cache.prepared_func_key != func_key {
-            nested_cache.access_ic.clear();
-            nested_cache.index_ic.clear();
-            nested_cache.global_ic.clear();
-            nested_cache.call_ic.clear();
-            nested_cache.for_range.clear();
-            nested_cache.packed_hot.clear();
-            nested_cache.packed_hot_key = 0;
-            nested_cache.quickening.clear();
-            nested_cache.prepared_func_key = func_key;
-            nested_cache.prepared_code_len = 0;
+        let runtime = nested_cache.prepare_function_runtime(fun);
+        let activation = vm.activate_runtime_frame(runtime, FrameStateSetup::synchronized());
+        activation.seed_positional_from_stack(&mut vm.stack, positional_span, &fun.param_regs);
+        let mut activation_parts = activation.into_parts(fun, captures, capture_specs);
+        let reg_base = activation_parts.stack_base();
+        let region_alloc_ptr: *const RegionAllocator = &vm.region_alloc;
+        let mut callee_state = activation_parts.frame_state(&mut vm.stack, region_alloc_ptr);
+        for (reg_idx, value) in named_seed.iter_mut() {
+            let slot = *reg_idx as usize;
+            callee_state.write_reg(slot, std::mem::replace(value, Val::Nil));
         }
-        let mut pushed_frame = false;
-        if let Some(ref info) = frame_info {
-            ctx.push_call_frame(Arc::clone(&info.name), info.location.as_ref().map(Arc::clone));
-            pushed_frame = true;
-        }
+        let pushed_frame = push_optional_call_frame(ctx, frame_info.as_ref());
 
-        let exec_raw = run_frame(
-            &mut callee_state,
-            ctx,
-            VmCaches {
-                access_ic: &mut nested_cache.access_ic,
-                index_ic: &mut nested_cache.index_ic,
-                global_ic: &mut nested_cache.global_ic,
-                call_ic: &mut nested_cache.call_ic,
-                for_range: &mut nested_cache.for_range,
-                packed_hot: &mut nested_cache.packed_hot,
-                quickening: &mut nested_cache.quickening,
-            },
-            self_ptr,
-        );
-        let exec_result = exec_raw;
+        let exec_result = run_frame(&mut callee_state, ctx, nested_cache.vm_caches(), self_ptr);
         drop(callee_state);
         vm.nested_cache_pool.push(nested_cache);
         vm.release_stack_window(reg_base);
-        if pushed_frame {
-            match exec_result {
-                Ok(val) => {
-                    ctx.pop_call_frame();
-                    Ok(val)
-                }
-                Err(err) => {
-                    let report = ctx.call_stack_report();
-                    ctx.pop_call_frame();
-                    if let Some(report) = report {
-                        Err(err.context(report))
-                    } else {
-                        Err(err)
-                    }
-                }
-            }
-        } else {
-            exec_result
-        }
+        finish_optional_call_frame(ctx, pushed_frame, exec_result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stack_window_allocation_clears_reused_slots_and_keeps_new_slots_nil() {
+        let mut vm = Vm::new();
+
+        let base = vm.allocate_stack_window(3);
+        assert_eq!(base, 0);
+        assert_eq!(vm.stack_top, 3);
+        assert!(vm.stack[..3].iter().all(|slot| matches!(slot, Val::Nil)));
+
+        vm.stack[1] = Val::Int(7);
+        vm.release_stack_window(0);
+
+        let base = vm.allocate_stack_window(2);
+        assert_eq!(base, 0);
+        assert_eq!(vm.stack_top, 2);
+        assert!(vm.stack[..2].iter().all(|slot| matches!(slot, Val::Nil)));
+
+        let old_len = vm.stack.len();
+        vm.release_stack_window(old_len);
+        let base = vm.allocate_stack_window(2);
+        assert_eq!(base, old_len);
+        assert_eq!(vm.stack_top, old_len + 2);
+        assert!(
+            vm.stack[old_len..old_len + 2]
+                .iter()
+                .all(|slot| matches!(slot, Val::Nil))
+        );
     }
 }

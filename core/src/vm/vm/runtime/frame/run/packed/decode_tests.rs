@@ -52,6 +52,25 @@ mod tests {
     }
 
     #[test]
+    fn packed_hot_slot_decodes_nop() {
+        let function = function_with(vec![Op::Nop, Op::Ret { base: 0, retc: 1 }]);
+        let bc = Bc32Function::try_from_function(&function).expect("nop must be BC32 encodable");
+        let word = bc.code32[0];
+        let slot = build_hot_slot(
+            &bc.code32,
+            bc.decoded.as_deref(),
+            &bc.consts,
+            0,
+            word,
+            bc32::tag_of(word),
+        )
+        .expect("nop hot slot");
+
+        assert!(matches!(slot.kind, PackedHotKind::Nop));
+        assert_eq!(slot.next_pc, 1);
+    }
+
+    #[test]
     fn packed_hot_slot_fuses_cmp_int_jmp_followed_by_move() {
         let function = function_with(vec![
             Op::CmpIntJmp {
@@ -427,6 +446,51 @@ mod tests {
             _ => panic!("expected MoveCall hot slot"),
         }
         assert_eq!(slot.next_pc, 4, "fused slot must skip argument moves and call words");
+    }
+
+    #[test]
+    fn packed_hot_slot_fuses_moves_into_native_fast_call_window() {
+        let function = function_with(vec![
+            Op::Move(2, 0),
+            Op::Move(3, 1),
+            Op::CallNativeFast {
+                f: 4,
+                base: 2,
+                argc: 2,
+                retc: 1,
+            },
+            Op::Ret { base: 2, retc: 1 },
+        ]);
+        let bc = Bc32Function::try_from_function(&function).expect("move+native call must be BC32 encodable");
+        let word = bc.code32[0];
+        let slot = build_hot_slot(
+            &bc.code32,
+            bc.decoded.as_deref(),
+            &bc.consts,
+            0,
+            word,
+            bc32::tag_of(word),
+        )
+        .expect("move+native call hot slot");
+
+        match slot.kind {
+            PackedHotKind::MoveCall {
+                moves,
+                f: 4,
+                base: 2,
+                argc: 2,
+                retc: 1,
+                call_kind,
+            } => {
+                assert_eq!(moves, vec![(2, 0), (3, 1)]);
+                assert!(matches!(call_kind, PackedHotCallKind::NativeFast));
+            }
+            _ => panic!("expected native MoveCall hot slot"),
+        }
+        assert_eq!(
+            slot.next_pc, 4,
+            "fused slot must skip argument moves and native call words"
+        );
     }
 
     #[test]

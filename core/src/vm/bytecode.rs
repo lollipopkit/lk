@@ -217,6 +217,7 @@ impl IntCmpKind {
 
 #[derive(Copy, Clone)]
 pub enum Op {
+    Nop,
     LoadK(u16 /*dst*/, u16 /*kidx*/),
     Move(u16 /*dst*/, u16 /*src*/),
     // Boolean/logic
@@ -665,7 +666,8 @@ impl Op {
             Op::ForRangePrep { .. } => Some("ForRangePrep"),
             Op::RangeLoopI { .. } => Some("RangeLoopI"),
             Op::ForRangeStep { .. } => Some("ForRangeStep"),
-            Op::LoadK(..)
+            Op::Nop
+            | Op::LoadK(..)
             | Op::Move(..)
             | Op::Not(..)
             | Op::ToStr(..)
@@ -722,6 +724,7 @@ impl Op {
 impl fmt::Debug for Op {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Op::Nop => write!(f, "Nop"),
             Op::LoadK(d, k) => write!(f, "LoadK r{}, k{}", d, k),
             Op::Move(d, s) => write!(f, "Move r{}, r{}", d, s),
             Op::Not(d, s) => write!(f, "Not r{}, r{}", d, s),

@@ -9,7 +9,7 @@ use super::super::helpers::assign_reg;
 
 #[inline]
 pub(super) fn run_pattern_match(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &VmContext,
     function: &Function,
@@ -43,7 +43,7 @@ pub(super) fn run_pattern_match(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_pattern_match_or_fail(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     function: &Function,

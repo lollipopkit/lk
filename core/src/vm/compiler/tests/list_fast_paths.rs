@@ -156,6 +156,33 @@ fn list_push_temporary_value_lowers_to_move_push() {
 }
 
 #[test]
+fn empty_list_let_uses_build_list_not_const_load() {
+    let source = r#"
+        let data = [];
+        data.push("x");
+        return data[0];
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::from_str("x"));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::BuildList { len: 0, .. })),
+        "expected mutable empty list literal to build a fresh list in {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().all(
+            |op| !matches!(op, Op::LoadK(_, kidx) if matches!(function.consts.get(*kidx as usize), Some(Val::List(_))))
+        ),
+        "mutable empty list literal should not load a shared const list in {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn list_push_variable_value_keeps_non_move_push() {
     let source = r#"
         let data = [];
@@ -173,6 +200,24 @@ fn list_push_variable_value_keeps_non_move_push() {
     assert!(
         function.code.iter().any(|op| matches!(op, Op::ListPush { .. })),
         "expected variable list.push argument to keep ListPush in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn list_push_dead_variable_value_lowers_to_move_push() {
+    let source = r#"
+        let data = [];
+        let value = "sku-${1}";
+        data.push(value);
+        return data[0];
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::from_str("sku-1"));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListPushMove { .. })),
+        "expected dead variable list.push argument to lower to ListPushMove in {:?}",
         function.code
     );
 }

@@ -818,6 +818,13 @@ pub(super) fn build_hot_slot(
         }
         let kind = match tag {
             Tag::Move => {
+                if (flags & bc32::TAG_FLAG_MASK) == 1 {
+                    return Some(PackedHotSlot {
+                        word,
+                        next_pc,
+                        kind: PackedHotKind::Nop,
+                    });
+                }
                 let (dst, src, _) = decode_abc(word, reg_ext);
                 if let Some((moves, f, base, argc, retc, call_kind, next_pc)) = decode_move_call(decoded, pc) {
                     return Some(PackedHotSlot {

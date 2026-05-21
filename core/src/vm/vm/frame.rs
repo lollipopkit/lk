@@ -3,10 +3,14 @@ use std::sync::Arc;
 use crate::val::{ClosureCapture, Val};
 use crate::vm::RegionPlan;
 use crate::vm::alloc::RegionAllocator;
-use crate::vm::record_register_write;
+use crate::vm::{
+    copy_call_arg_value_for_register, copy_value_for_register, take_register_value, write_register_copy,
+    write_register_value,
+};
 
 use super::super::bytecode::{CaptureSpec, Function};
 use super::Vm;
+use super::caches::{FrameDispatchPlan, FunctionRuntimePlan, RuntimeDispatchSites};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CallFrameMeta {
@@ -60,6 +64,14 @@ impl RegisterSpan {
             ..self
         }
     }
+
+    #[inline]
+    pub(super) const fn stack_base(self) -> usize {
+        match self.window {
+            RegisterWindowRef::Current => self.base,
+            RegisterWindowRef::Base(base) => base + self.base,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -81,16 +93,123 @@ impl CallArgs {
     }
 }
 
+pub(super) struct FrameExecutionParts<'frame, 'func> {
+    pub(super) frame: *mut (),
+    pub(super) pc: usize,
+    pub(super) dispatch_plan: FrameDispatchPlan<'func>,
+    pub(super) base: usize,
+    pub(super) regs: &'frame mut [Val],
+    pub(super) captures: &'frame Option<Arc<ClosureCapture>>,
+    pub(super) capture_specs: &'frame Option<Arc<Vec<CaptureSpec>>>,
+    pub(super) region_plan: Option<&'frame RegionPlan>,
+    pub(super) region_allocator: *const RegionAllocator,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct StackWindow {
+    pub(super) base: usize,
+    pub(super) reg_count: usize,
+}
+
+impl StackWindow {
+    #[inline]
+    pub(super) const fn new(base: usize, reg_count: usize) -> Self {
+        Self { base, reg_count }
+    }
+
+    #[inline]
+    pub(super) const fn base(self) -> usize {
+        self.base
+    }
+
+    #[inline]
+    pub(super) fn from_runtime(base: usize, runtime: &FunctionRuntimePlan) -> Self {
+        Self::new(base, runtime.reg_count)
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct CallFrame<'func> {
     pub(super) func: &'func Function,
     pub(super) pc: usize,
     pub(super) reg_base: usize,
     pub(super) reg_count: usize,
+    pub(super) dispatch_sites: RuntimeDispatchSites,
     pub(super) captures: Option<Arc<ClosureCapture>>,
     pub(super) capture_specs: Option<Arc<Vec<CaptureSpec>>>,
     #[allow(dead_code)]
     pub(super) region_plan: Option<Arc<RegionPlan>>,
+}
+
+pub(super) struct FrameActivation {
+    window: StackWindow,
+    runtime: FunctionRuntimePlan,
+    setup: FrameStateSetup,
+}
+
+pub(super) struct FrameActivationParts<'func> {
+    pub(super) window: StackWindow,
+    pub(super) call_frame: CallFrame<'func>,
+    pub(super) setup: FrameStateSetup,
+}
+
+impl<'func> FrameActivationParts<'func> {
+    #[inline]
+    pub(super) const fn stack_base(&self) -> usize {
+        self.window.base()
+    }
+
+    #[inline]
+    pub(super) fn frame_state<'state>(
+        &'state mut self,
+        stack: &'state mut [Val],
+        region_allocator: *const RegionAllocator,
+    ) -> FrameState<'state, 'func>
+    where
+        'func: 'state,
+    {
+        let reg_base = self.stack_base();
+        let reg_count = self.call_frame.reg_count;
+        let regs = &mut stack[reg_base..reg_base + reg_count];
+        FrameState::from_frame(&mut self.call_frame, regs, region_allocator, self.setup)
+    }
+}
+
+impl FrameActivation {
+    #[inline]
+    pub(super) fn new(window: StackWindow, runtime: FunctionRuntimePlan, setup: FrameStateSetup) -> Self {
+        Self { window, runtime, setup }
+    }
+
+    #[inline]
+    pub(super) fn into_parts<'func>(
+        self,
+        func: &'func Function,
+        captures: Option<Arc<ClosureCapture>>,
+        capture_specs: Option<Arc<Vec<CaptureSpec>>>,
+    ) -> FrameActivationParts<'func> {
+        let window = self.window;
+        let setup = self.setup;
+        let call_frame = CallFrame::from_runtime(func, window, self.runtime, captures, capture_specs);
+        FrameActivationParts {
+            window,
+            call_frame,
+            setup,
+        }
+    }
+
+    #[inline]
+    pub(super) fn seed_positional_from_stack(&self, stack: &mut [Val], args: RegisterSpan, param_regs: &[u16]) {
+        let src_base = args.stack_base();
+        let count = args.len.min(param_regs.len());
+        for (idx, param_reg) in param_regs.iter().take(count).enumerate() {
+            let value = stack
+                .get(src_base + idx)
+                .map(copy_call_arg_value_for_register)
+                .unwrap_or(Val::Nil);
+            write_register_value(stack, self.window.base() + *param_reg as usize, value);
+        }
+    }
 }
 
 impl<'func> CallFrame<'func> {
@@ -98,6 +217,7 @@ impl<'func> CallFrame<'func> {
         func: &'func Function,
         reg_base: usize,
         reg_count: usize,
+        dispatch_sites: RuntimeDispatchSites,
         captures: Option<Arc<ClosureCapture>>,
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
         region_plan: Option<Arc<RegionPlan>>,
@@ -107,10 +227,30 @@ impl<'func> CallFrame<'func> {
             pc: 0,
             reg_base,
             reg_count,
+            dispatch_sites,
             captures,
             capture_specs,
             region_plan,
         }
+    }
+
+    #[inline]
+    pub(super) fn from_runtime(
+        func: &'func Function,
+        window: StackWindow,
+        runtime: FunctionRuntimePlan,
+        captures: Option<Arc<ClosureCapture>>,
+        capture_specs: Option<Arc<Vec<CaptureSpec>>>,
+    ) -> Self {
+        Self::new(
+            func,
+            window.base,
+            window.reg_count,
+            runtime.dispatch_sites,
+            captures,
+            capture_specs,
+            runtime.region_plan,
+        )
     }
 }
 
@@ -155,12 +295,13 @@ impl Drop for CallFrameStackGuard {
     }
 }
 
-pub(super) struct FrameState<'func> {
+pub(super) struct FrameState<'frame, 'func> {
     pub(super) func: &'func Function,
     pub(super) pc: usize,
-    pub(super) regs: &'func mut [Val],
+    pub(super) regs: &'frame mut [Val],
     pub(super) reg_base: usize,
     pub(super) reg_count: usize,
+    pub(super) dispatch_sites: RuntimeDispatchSites,
     pub(super) frame_ptr: *mut CallFrame<'func>,
     pub(super) captures: Option<Arc<ClosureCapture>>,
     pub(super) capture_specs: Option<Arc<Vec<CaptureSpec>>>,
@@ -170,11 +311,36 @@ pub(super) struct FrameState<'func> {
     sync_on_drop: bool,
 }
 
-impl<'func> FrameState<'func> {
-    pub(super) fn new(
-        frame: &mut CallFrame<'func>,
-        regs: &'func mut [Val],
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FrameStateSetup {
+    sync_on_drop: bool,
+    inline_return_meta: Option<CallFrameMeta>,
+}
+
+impl FrameStateSetup {
+    #[inline]
+    pub(super) const fn synchronized() -> Self {
+        Self {
+            sync_on_drop: true,
+            inline_return_meta: None,
+        }
+    }
+
+    #[inline]
+    pub(super) const fn inline_ephemeral(meta: CallFrameMeta) -> Self {
+        Self {
+            sync_on_drop: false,
+            inline_return_meta: Some(meta),
+        }
+    }
+}
+
+impl<'frame, 'func> FrameState<'frame, 'func> {
+    pub(super) fn from_frame(
+        frame: &'frame mut CallFrame<'func>,
+        regs: &'frame mut [Val],
         region_allocator: *const RegionAllocator,
+        setup: FrameStateSetup,
     ) -> Self {
         Self {
             func: frame.func,
@@ -182,29 +348,15 @@ impl<'func> FrameState<'func> {
             regs,
             reg_base: frame.reg_base,
             reg_count: frame.reg_count,
+            dispatch_sites: frame.dispatch_sites,
             frame_ptr: frame as *mut _,
             captures: frame.captures.take(),
             capture_specs: frame.capture_specs.take(),
             region_plan: frame.region_plan.take(),
             region_allocator,
-            inline_return_meta: None,
-            sync_on_drop: true,
+            inline_return_meta: setup.inline_return_meta,
+            sync_on_drop: setup.sync_on_drop,
         }
-    }
-
-    pub(super) fn new_ephemeral(
-        frame: &mut CallFrame<'func>,
-        regs: &'func mut [Val],
-        region_allocator: *const RegionAllocator,
-    ) -> Self {
-        let mut state = Self::new(frame, regs, region_allocator);
-        state.sync_on_drop = false;
-        state
-    }
-
-    #[inline]
-    pub(super) fn func(&self) -> &'func Function {
-        self.func
     }
 
     #[inline]
@@ -232,11 +384,6 @@ impl<'func> FrameState<'func> {
     }
 
     #[inline]
-    pub(super) fn set_inline_return_meta(&mut self, meta: CallFrameMeta) {
-        self.inline_return_meta = Some(meta);
-    }
-
-    #[inline]
     pub(super) fn take_inline_return_meta(&mut self) -> Option<CallFrameMeta> {
         self.inline_return_meta.take()
     }
@@ -250,9 +397,37 @@ impl<'func> FrameState<'func> {
     #[inline]
     pub(super) fn write_reg(&mut self, idx: usize, value: Val) {
         self.record_reg_write(idx);
-        record_register_write();
-        debug_assert!(idx < self.regs.len(), "register write out of frame window");
-        self.regs[idx] = value;
+        write_register_value(&mut self.regs, idx, value);
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(super) fn write_reg_copy(&mut self, idx: usize, value: &Val) {
+        self.record_reg_write(idx);
+        write_register_copy(&mut self.regs, idx, value);
+    }
+
+    #[inline]
+    pub(super) fn write_reg_call_arg_copy(&mut self, idx: usize, value: &Val) {
+        self.record_reg_write(idx);
+        write_register_value(&mut self.regs, idx, copy_call_arg_value_for_register(value));
+    }
+
+    #[inline]
+    pub(super) fn seed_positional_from_values(&mut self, param_regs: &[u16], args: &[Val]) {
+        for (idx, value) in args.iter().take(param_regs.len()).enumerate() {
+            self.write_reg_call_arg_copy(param_regs[idx] as usize, value);
+        }
+    }
+
+    #[inline]
+    pub(super) fn seed_named_call_arg_values(&mut self, named: &[(u16, Val)]) {
+        for (reg_idx, value) in named {
+            let slot = *reg_idx as usize;
+            if slot < self.reg_count {
+                self.write_reg_call_arg_copy(slot, value);
+            }
+        }
     }
 
     #[inline]
@@ -266,9 +441,9 @@ impl<'func> FrameState<'func> {
     pub(super) fn take_or_clone_reg(&mut self, idx: usize, may_take: bool) -> Val {
         debug_assert!(idx < self.regs.len(), "register read out of frame window");
         if may_take {
-            std::mem::replace(&mut self.regs[idx], Val::Nil)
+            take_register_value(&mut self.regs, idx)
         } else {
-            self.regs[idx].clone()
+            copy_value_for_register(&self.regs[idx])
         }
     }
 
@@ -280,31 +455,28 @@ impl<'func> FrameState<'func> {
         if src == dst {
             return;
         }
-        let value = std::mem::replace(&mut self.regs[src], Val::Nil);
+        let value = take_register_value(&mut self.regs, src);
         self.write_reg(dst, value);
     }
 
     #[inline]
-    pub(super) fn execution_parts(
-        &mut self,
-    ) -> (
-        &mut [Val],
-        &Option<Arc<ClosureCapture>>,
-        &Option<Arc<Vec<CaptureSpec>>>,
-        Option<&RegionPlan>,
-        *const RegionAllocator,
-    ) {
-        (
-            self.regs,
-            &self.captures,
-            &self.capture_specs,
-            self.region_plan.as_deref(),
-            self.region_allocator,
-        )
+    pub(super) fn execution_parts(&mut self) -> FrameExecutionParts<'_, 'func> {
+        let frame = self as *mut _ as *mut ();
+        FrameExecutionParts {
+            frame,
+            pc: self.pc,
+            dispatch_plan: self.dispatch_sites.frame_dispatch_plan(self.func),
+            base: self.reg_base,
+            regs: self.regs,
+            captures: &self.captures,
+            capture_specs: &self.capture_specs,
+            region_plan: self.region_plan.as_deref(),
+            region_allocator: self.region_allocator,
+        }
     }
 }
 
-impl<'func> Drop for FrameState<'func> {
+impl<'frame, 'func> Drop for FrameState<'frame, 'func> {
     fn drop(&mut self) {
         if !self.sync_on_drop {
             return;
@@ -342,6 +514,7 @@ mod tests {
                 escaping_values: vec![0],
             },
             region_plan: Arc::new(plan.clone()),
+            ..FunctionAnalysis::default()
         };
 
         let function = Function {
@@ -364,19 +537,197 @@ mod tests {
             &function,
             0,
             function.n_regs as usize,
+            RuntimeDispatchSites::new(function.code.len(), function.code32.as_ref().map(Vec::len)),
             None,
             None,
             Some(Arc::clone(&plan_arc)),
         );
         let allocator = RegionAllocator::new();
         let alloc_ptr: *const RegionAllocator = &allocator;
-        let state = FrameState::new(&mut frame, &mut regs, alloc_ptr);
+        let state = FrameState::from_frame(&mut frame, &mut regs, alloc_ptr, FrameStateSetup::synchronized());
 
         let plan = state.region_plan.as_ref().expect("region plan available");
         assert_eq!(plan.region_for(0), AllocationRegion::Heap);
         assert_eq!(plan.region_for(1), AllocationRegion::ThreadLocal);
         let ptr = state.region_allocator;
         assert_eq!(ptr, alloc_ptr);
+    }
+
+    #[test]
+    fn call_frame_from_runtime_uses_plan_layout_and_region_plan() {
+        let plan = RegionPlan {
+            values: vec![AllocationRegion::ThreadLocal, AllocationRegion::Heap],
+            ..Default::default()
+        };
+        let function = Function {
+            consts: Vec::new(),
+            code: Vec::new(),
+            n_regs: 2,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: Some(FunctionAnalysis {
+                region_plan: Arc::new(plan),
+                ..FunctionAnalysis::default()
+            }),
+        };
+        let mut vm = Vm::new();
+        let runtime = vm.prepare_top_level_runtime(&function);
+        let window = StackWindow::from_runtime(4, &runtime);
+
+        let frame = CallFrame::from_runtime(&function, window, runtime, None, None);
+
+        assert_eq!(frame.reg_base, 4);
+        assert_eq!(frame.reg_count, 2);
+        assert_eq!(
+            frame.region_plan.expect("region plan").region_for(1),
+            AllocationRegion::Heap
+        );
+    }
+
+    #[test]
+    fn frame_activation_carries_window_setup_and_runtime_into_parts() {
+        let plan = RegionPlan {
+            values: vec![AllocationRegion::Heap],
+            ..Default::default()
+        };
+        let function = Function {
+            consts: Vec::new(),
+            code: Vec::new(),
+            n_regs: 1,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: Some(FunctionAnalysis {
+                region_plan: Arc::new(plan),
+                ..FunctionAnalysis::default()
+            }),
+        };
+        let mut vm = Vm::new();
+        let runtime = vm.prepare_top_level_runtime(&function);
+        let window = StackWindow::from_runtime(8, &runtime);
+        let setup = FrameStateSetup::synchronized();
+        let activation = FrameActivation::new(window, runtime, setup);
+
+        let parts = activation.into_parts(&function, None, None);
+
+        assert_eq!(parts.window, window);
+        assert_eq!(parts.stack_base(), 8);
+        assert_eq!(parts.setup.sync_on_drop, setup.sync_on_drop);
+        assert_eq!(parts.call_frame.reg_base, 8);
+        assert_eq!(parts.call_frame.reg_count, 1);
+        assert_eq!(
+            parts.call_frame.region_plan.expect("region plan").region_for(0),
+            AllocationRegion::Heap
+        );
+    }
+
+    #[test]
+    fn frame_activation_parts_preserve_window_frame_and_setup() {
+        let plan = RegionPlan {
+            values: vec![AllocationRegion::ThreadLocal],
+            ..Default::default()
+        };
+        let function = Function {
+            consts: Vec::new(),
+            code: Vec::new(),
+            n_regs: 1,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: Some(FunctionAnalysis {
+                region_plan: Arc::new(plan),
+                ..FunctionAnalysis::default()
+            }),
+        };
+        let mut vm = Vm::new();
+        let runtime = vm.prepare_top_level_runtime(&function);
+        let window = StackWindow::from_runtime(12, &runtime);
+        let setup = FrameStateSetup::synchronized();
+        let activation = FrameActivation::new(window, runtime, setup);
+
+        let parts = activation.into_parts(&function, None, None);
+
+        assert_eq!(parts.window, window);
+        assert_eq!(parts.setup.sync_on_drop, setup.sync_on_drop);
+        assert_eq!(parts.call_frame.reg_base, 12);
+        assert_eq!(parts.call_frame.reg_count, 1);
+        assert_eq!(
+            parts.call_frame.region_plan.expect("region plan").region_for(0),
+            AllocationRegion::ThreadLocal
+        );
+    }
+
+    #[test]
+    fn frame_activation_parts_create_frame_state_from_stack_window() {
+        let function = Function {
+            consts: Vec::new(),
+            code: Vec::new(),
+            n_regs: 2,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: None,
+        };
+        let mut vm = Vm::new();
+        let runtime = vm.prepare_top_level_runtime(&function);
+        let window = StackWindow::from_runtime(2, &runtime);
+        let activation = FrameActivation::new(window, runtime, FrameStateSetup::synchronized());
+        let mut parts = activation.into_parts(&function, None, None);
+        let mut stack = vec![Val::Int(99), Val::Int(88), Val::Nil, Val::Nil];
+        let allocator = RegionAllocator::new();
+        let alloc_ptr: *const RegionAllocator = &allocator;
+
+        let mut state = parts.frame_state(&mut stack, alloc_ptr);
+        state.write_reg(1, Val::Int(42));
+
+        assert_eq!(state.reg_base(), 2);
+        assert_eq!(state.reg_count(), 2);
+        assert_eq!(state.borrow_reg(1), Some(&Val::Int(42)));
+    }
+
+    #[test]
+    fn frame_activation_seeds_positional_args_from_stack_window() {
+        let function = Function {
+            consts: Vec::new(),
+            code: Vec::new(),
+            n_regs: 3,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: None,
+        };
+        let mut vm = Vm::new();
+        let runtime = vm.prepare_top_level_runtime(&function);
+        let window = StackWindow::from_runtime(3, &runtime);
+        let activation = FrameActivation::new(window, runtime, FrameStateSetup::synchronized());
+        let mut stack = vec![Val::Int(11), Val::Int(22), Val::Nil, Val::Nil, Val::Nil, Val::Nil];
+
+        activation.seed_positional_from_stack(&mut stack, RegisterSpan::new(0, 2, RegisterWindowRef::Base(0)), &[1, 0]);
+
+        assert_eq!(stack[3], Val::Int(22));
+        assert_eq!(stack[4], Val::Int(11));
+        assert_eq!(stack[5], Val::Nil);
     }
 
     #[test]
@@ -395,10 +746,10 @@ mod tests {
             analysis: None,
         };
         let mut regs = vec![Val::Nil; 3];
-        let mut frame = CallFrame::new(&function, 0, 3, None, None, None);
+        let mut frame = CallFrame::new(&function, 0, 3, RuntimeDispatchSites::new(0, None), None, None, None);
         let allocator = RegionAllocator::new();
         let alloc_ptr: *const RegionAllocator = &allocator;
-        let mut state = FrameState::new(&mut frame, &mut regs, alloc_ptr);
+        let mut state = FrameState::from_frame(&mut frame, &mut regs, alloc_ptr, FrameStateSetup::synchronized());
 
         state.write_reg(1, Val::Int(42));
         assert_eq!(state.borrow_reg(1), Some(&Val::Int(42)));
@@ -411,5 +762,69 @@ mod tests {
         state.move_reg(0, 2);
         assert_eq!(state.borrow_reg(0), Some(&Val::Nil));
         assert_eq!(state.borrow_reg(2), Some(&Val::Int(7)));
+    }
+
+    #[test]
+    fn frame_state_seeds_positional_and_named_args_with_bounds_check() {
+        let function = Function {
+            consts: Vec::new(),
+            code: Vec::new(),
+            n_regs: 3,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: None,
+        };
+        let mut regs = vec![Val::Nil; 3];
+        let mut frame = CallFrame::new(&function, 0, 3, RuntimeDispatchSites::new(0, None), None, None, None);
+        let allocator = RegionAllocator::new();
+        let alloc_ptr: *const RegionAllocator = &allocator;
+        let mut state = FrameState::from_frame(&mut frame, &mut regs, alloc_ptr, FrameStateSetup::synchronized());
+
+        state.seed_positional_from_values(&[2, 0], &[Val::Int(5), Val::Int(9), Val::Int(99)]);
+        state.seed_named_call_arg_values(&[(1, Val::Int(7)), (9, Val::Int(100))]);
+
+        assert_eq!(state.borrow_reg(0), Some(&Val::Int(9)));
+        assert_eq!(state.borrow_reg(1), Some(&Val::Int(7)));
+        assert_eq!(state.borrow_reg(2), Some(&Val::Int(5)));
+    }
+
+    #[test]
+    fn frame_state_setup_inline_ephemeral_sets_return_meta_without_syncing_drop() {
+        let function = Function {
+            consts: Vec::new(),
+            code: Vec::new(),
+            n_regs: 1,
+            protos: Vec::new(),
+            param_regs: Vec::new(),
+            named_param_regs: Vec::new(),
+            named_param_layout: Vec::new(),
+            pattern_plans: Vec::new(),
+            code32: None,
+            bc32_decoded: None,
+            analysis: None,
+        };
+        let mut regs = vec![Val::Nil; 1];
+        let mut frame = CallFrame::new(&function, 0, 1, RuntimeDispatchSites::new(0, None), None, None, None);
+        let allocator = RegionAllocator::new();
+        let alloc_ptr: *const RegionAllocator = &allocator;
+        let meta = CallFrameMeta::inline_return(9, 2, 1, 4);
+
+        {
+            let mut state = FrameState::from_frame(
+                &mut frame,
+                &mut regs,
+                alloc_ptr,
+                FrameStateSetup::inline_ephemeral(meta),
+            );
+            assert_eq!(state.take_inline_return_meta().map(|meta| meta.resume_pc), Some(9));
+            state.set_pc(7);
+        }
+
+        assert_eq!(frame.pc, 0);
     }
 }

@@ -24,88 +24,93 @@ mod string_ops;
 use anyhow::{Result, anyhow};
 
 use crate::val::{ClosureCapture, ClosureInit, ClosureValue, Val};
-use crate::vm::RegionPlan;
 use crate::vm::alloc::RegionAllocator;
-use crate::vm::bytecode::{CaptureSpec, Function, Op};
+use crate::vm::bytecode::{CaptureSpec, Op};
 use crate::vm::compiler::Compiler;
 use crate::vm::context::VmContext;
 use crate::vm::vm::Vm;
-use crate::vm::vm::caches::{CallIc, CallReturnLayout, ForRangeState, VmCaches};
+use crate::vm::vm::caches::{CallIc, CallReturnLayout, ForRangeState};
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan};
 use crate::vm::{
-    VmCallMetric, VmContainerMetric, record_branch_op, record_call_op, record_container_op, record_opcode_step,
-    vm_runtime_metrics_enabled,
+    VmCallMetric, VmContainerMetric, record_branch_op_known_enabled, record_call_op_known_enabled,
+    record_container_op_known_enabled, record_opcode_step_known_enabled, take_register_value,
 };
 
-use super::helpers::{advance_for_range_tail, assign_reg, frame_return_common, handle_return_common};
+use super::FrameRuntimeView;
+use super::helpers::{
+    advance_for_range_tail, assign_local_from_reg_or_take_with_metrics, assign_reg, assign_reg_const_copy_with_metrics,
+    assign_reg_from_local_load_with_metrics, assign_reg_from_reg_or_take_with_metrics,
+    assign_reg_from_reg_with_metrics, frame_return_common, handle_return_common, local_store_may_take_source,
+    register_move_may_take_source,
+};
 use super::math::floor_div_i64;
 use super::method_ops;
-use super::plan::build_named_call_plan;
+use super::plan::get_or_build_named_call_site_plan;
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_opcode_code(
-    frame_raw: *mut FrameState<'_>,
-    regs: &mut [Val],
-    ctx: &mut VmContext,
-    caches: &mut VmCaches<'_>,
-    func: &Function,
-    pc_ref: &mut usize,
-    frame_base: usize,
-    frame_captures: &Option<Arc<ClosureCapture>>,
-    frame_capture_specs: &Option<Arc<Vec<CaptureSpec>>>,
-    region_plan: Option<&RegionPlan>,
-    region_allocator_ptr: *const RegionAllocator,
-    self_ptr: *mut Vm,
-) -> Result<Option<Val>> {
-    let access_ic = &mut *caches.access_ic;
-    let index_ic = &mut *caches.index_ic;
-    let global_ic = &mut *caches.global_ic;
-    let call_ic = &mut *caches.call_ic;
-    let for_range_ic = &mut *caches.for_range;
-    let mut pc = *pc_ref;
+pub(super) fn run_opcode_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<Option<Val>> {
+    let frame_raw = runtime.frame_raw;
+    let regs = &mut *runtime.regs;
+    let ctx = &mut *runtime.ctx;
+    let func = runtime.dispatch_plan.function();
+    let frame_base = runtime.base;
+    let frame_captures = runtime.captures;
+    let frame_capture_specs = runtime.capture_specs;
+    let region_plan = runtime.region_plan;
+    let region_allocator_ptr = runtime.region_allocator;
+    let self_ptr = runtime.self_ptr;
+    let access_ic = &mut *runtime.caches.access_ic;
+    let index_ic = &mut *runtime.caches.index_ic;
+    let global_ic = &mut *runtime.caches.global_ic;
+    let call_ic = &mut *runtime.caches.call_ic;
+    let for_range_ic = &mut *runtime.caches.for_range;
+    let quickening = &mut *runtime.caches.quickening;
+    let mut pc = runtime.pc;
     let f = func;
-    if access_ic.len() < f.code.len() {
-        access_ic.resize(f.code.len(), None);
-    }
-    if index_ic.len() < f.code.len() {
-        index_ic.resize(f.code.len(), None);
-    }
-    if global_ic.len() < f.code.len() {
-        global_ic.resize(f.code.len(), None);
-    }
-    if call_ic.len() < f.code.len() {
-        call_ic.resize(f.code.len(), None);
-    }
-    if for_range_ic.len() < f.code.len() {
-        for_range_ic.resize(f.code.len(), None);
-    }
-    let collect_metrics = vm_runtime_metrics_enabled();
+    let collect_metrics = runtime.collect_metrics;
     let record_branch = |typed| {
         if collect_metrics {
-            record_branch_op(typed);
+            record_branch_op_known_enabled(typed);
         }
     };
     let record_call = |kind| {
         if collect_metrics {
-            record_call_op(kind);
+            record_call_op_known_enabled(kind);
         }
     };
     let record_container = |kind| {
         if collect_metrics {
-            record_container_op(kind);
+            record_container_op_known_enabled(kind);
         }
     };
     while pc < f.code.len() {
         if collect_metrics {
-            record_opcode_step();
+            record_opcode_step_known_enabled();
         }
         match &f.code[pc] {
+            Op::Nop => {
+                pc += 1;
+            }
             Op::LoadK(dst, k) => {
-                assign_reg(frame_raw, regs, *dst as usize, f.consts[*k as usize].clone());
+                assign_reg_const_copy_with_metrics(
+                    frame_raw,
+                    regs,
+                    *dst as usize,
+                    &f.consts[*k as usize],
+                    collect_metrics,
+                );
                 pc += 1;
             }
             Op::Move(dst, src) => {
-                assign_reg(frame_raw, regs, *dst as usize, regs[*src as usize].clone());
+                let may_take = register_move_may_take_source(f, pc, *src);
+                assign_reg_from_reg_or_take_with_metrics(
+                    frame_raw,
+                    regs,
+                    *dst as usize,
+                    *src as usize,
+                    may_take,
+                    collect_metrics,
+                );
                 pc += 1;
             }
             Op::ToStr(dst, src) => {
@@ -116,7 +121,17 @@ pub(super) fn run_opcode_code(
                 }
             }
             Op::Add(dst, a, b) => {
-                arithmetic_ops::run_add(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                arithmetic_ops::run_add(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::StrConcatKnownCap(dst, a, b) => {
@@ -128,11 +143,31 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::Sub(dst, a, b) => {
-                arithmetic_ops::run_sub(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                arithmetic_ops::run_sub(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::Mul(dst, a, b) => {
-                arithmetic_ops::run_mul(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                arithmetic_ops::run_mul(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::Div(dst, a, b) => {
@@ -140,7 +175,17 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::Mod(dst, a, b) => {
-                arithmetic_ops::run_mod(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                arithmetic_ops::run_mod(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::AddInt(dst, a, b) => {
@@ -198,7 +243,17 @@ pub(super) fn run_opcode_code(
                     pc = compare_ops::run_cmp_eq_jmp_false(regs, &f.consts, pc, *ofs, *a, *b);
                     continue;
                 }
-                compare_ops::run_cmp_eq(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                compare_ops::run_cmp_eq(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::CmpNe(dst, a, b) => {
@@ -208,7 +263,17 @@ pub(super) fn run_opcode_code(
                     pc = compare_ops::run_cmp_ne_jmp_false(regs, &f.consts, pc, *ofs, *a, *b);
                     continue;
                 }
-                compare_ops::run_cmp_ne(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                compare_ops::run_cmp_ne(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::CmpLt(dst, a, b) => {
@@ -218,7 +283,17 @@ pub(super) fn run_opcode_code(
                     pc = compare_ops::run_cmp_lt_jmp_false(regs, &f.consts, pc, *ofs, *a, *b)?;
                     continue;
                 }
-                compare_ops::run_cmp_lt(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                compare_ops::run_cmp_lt(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::CmpLe(dst, a, b) => {
@@ -228,7 +303,17 @@ pub(super) fn run_opcode_code(
                     pc = compare_ops::run_cmp_le_jmp_false(regs, &f.consts, pc, *ofs, *a, *b)?;
                     continue;
                 }
-                compare_ops::run_cmp_le(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                compare_ops::run_cmp_le(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::CmpGt(dst, a, b) => {
@@ -238,7 +323,17 @@ pub(super) fn run_opcode_code(
                     pc = compare_ops::run_cmp_gt_jmp_false(regs, &f.consts, pc, *ofs, *a, *b)?;
                     continue;
                 }
-                compare_ops::run_cmp_gt(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                compare_ops::run_cmp_gt(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::CmpGe(dst, a, b) => {
@@ -248,7 +343,17 @@ pub(super) fn run_opcode_code(
                     pc = compare_ops::run_cmp_ge_jmp_false(regs, &f.consts, pc, *ofs, *a, *b)?;
                     continue;
                 }
-                compare_ops::run_cmp_ge(frame_raw, regs, &f.consts, caches.quickening, pc, *dst, *a, *b)?;
+                compare_ops::run_cmp_ge(
+                    frame_raw,
+                    regs,
+                    &f.consts,
+                    quickening,
+                    pc,
+                    *dst,
+                    *a,
+                    *b,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::CmpI { dst, a, b, kind } => {
@@ -278,12 +383,19 @@ pub(super) fn run_opcode_code(
                 pc += 1;
             }
             Op::LoadLocal(dst, idx) => {
-                assign_reg(frame_raw, regs, *dst as usize, regs[*idx as usize].clone());
+                assign_reg_from_local_load_with_metrics(frame_raw, regs, *dst as usize, *idx as usize, collect_metrics);
                 pc += 1;
             }
             Op::StoreLocal(idx, src) => {
-                let v = regs[*src as usize].clone();
-                assign_reg(frame_raw, regs, *idx as usize, v);
+                let may_take = local_store_may_take_source(f, pc);
+                assign_local_from_reg_or_take_with_metrics(
+                    frame_raw,
+                    regs,
+                    *idx as usize,
+                    *src as usize,
+                    may_take,
+                    collect_metrics,
+                );
                 pc += 1;
             }
             Op::LoadGlobal(dst, name_k) => {
@@ -387,7 +499,17 @@ pub(super) fn run_opcode_code(
             }
             Op::Index { dst, base, idx } => {
                 record_container(VmContainerMetric::Generic);
-                container_ops::run_index(frame_raw, regs, index_ic, caches.quickening, pc, *dst, *base, *idx)?;
+                container_ops::run_index(
+                    frame_raw,
+                    regs,
+                    index_ic,
+                    quickening,
+                    pc,
+                    *dst,
+                    *base,
+                    *idx,
+                    collect_metrics,
+                )?;
                 pc += 1;
             }
             Op::IndexK(dst, base, kidx) => {
@@ -707,7 +829,7 @@ pub(super) fn run_opcode_code(
                 if let Val::Int(x) = regs[*r as usize] {
                     // Check for overflow and wrap to avoid panics
                     let result = x.wrapping_add(*imm as i64);
-                    regs[*r as usize] = Val::Int(result);
+                    assign_reg(frame_raw, regs, *r as usize, Val::Int(result));
                 }
                 pc = ((pc as isize) + (*ofs as isize)) as usize;
             }
@@ -869,7 +991,7 @@ pub(super) fn run_opcode_code(
             Op::NullishPick { l, dst, ofs } => {
                 record_branch(false);
                 if !matches!(regs[*l as usize], Val::Nil) {
-                    assign_reg(frame_raw, regs, *dst as usize, regs[*l as usize].clone());
+                    assign_reg_from_reg_with_metrics(frame_raw, regs, *dst as usize, *l as usize, collect_metrics);
                     pc = ((pc as isize) + (*ofs as isize)) as usize;
                 } else {
                     pc += 1;
@@ -905,6 +1027,7 @@ pub(super) fn run_opcode_code(
                     base,
                     argc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
@@ -929,6 +1052,7 @@ pub(super) fn run_opcode_code(
                     base,
                     argc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
@@ -1015,6 +1139,7 @@ pub(super) fn run_opcode_code(
                     base_named,
                     namedc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
@@ -1043,6 +1168,7 @@ pub(super) fn run_opcode_code(
                     base_named,
                     namedc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
@@ -1052,7 +1178,7 @@ pub(super) fn run_opcode_code(
                 let retc = *retc as usize;
                 let base_idx = *base as usize;
                 let ret_val = if retc > 0 {
-                    std::mem::replace(&mut regs[base_idx], Val::Nil)
+                    take_register_value(regs, base_idx)
                 } else {
                     Val::Nil
                 };
@@ -1068,6 +1194,6 @@ pub(super) fn run_opcode_code(
             }
         }
     }
-    *pc_ref = pc;
+    runtime.pc = pc;
     Ok(None)
 }

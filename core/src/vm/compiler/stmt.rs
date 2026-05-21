@@ -56,6 +56,10 @@ struct MapSetExpr<'a> {
 }
 
 impl FunctionBuilder {
+    fn const_value_is_mutable_container(value: &Val) -> bool {
+        matches!(value, Val::List(_) | Val::Map(_))
+    }
+
     fn template_split_join_len_pair<'a>(
         first: &'a Stmt,
         second: &'a Stmt,
@@ -795,7 +799,9 @@ impl FunctionBuilder {
                         self.const_env.define(name.clone(), specialized.clone());
                         const_value = Some(specialized);
                     }
-                    if let (false, Some(v)) = (*is_const, const_value.as_ref()) {
+                    if let (false, Some(v)) = (*is_const, const_value.as_ref())
+                        && !Self::const_value_is_mutable_container(v)
+                    {
                         self.bind_known_value(name.clone(), v.clone());
                     }
                     if !*is_const
@@ -805,7 +811,9 @@ impl FunctionBuilder {
                         self.register_closure_const_env(name, params, body);
                     }
                     if !*is_const {
-                        let rv = if let Some(v) = const_value.clone() {
+                        let rv = if let Some(v) = const_value.clone()
+                            && !Self::const_value_is_mutable_container(&v)
+                        {
                             let dst = self.alloc();
                             if matches!(v, Val::Map(_)) {
                                 self.map_locals.insert(dst);
@@ -840,12 +848,16 @@ impl FunctionBuilder {
                             self.bind_const(name.clone(), v.clone());
                             return;
                         }
-                    } else if let Some(v) = const_value.as_ref() {
+                    } else if let Some(v) = const_value.as_ref()
+                        && !Self::const_value_is_mutable_container(v)
+                    {
                         self.const_env.define(name.clone(), v.clone());
                     }
                 }
 
-                let rv = if let Some(v) = const_value {
+                let rv = if let Some(v) = const_value
+                    && (*is_const || !Self::const_value_is_mutable_container(&v))
+                {
                     let dst = self.alloc();
                     let k = self.k(v);
                     self.emit(Op::LoadK(dst, k));
@@ -1260,7 +1272,7 @@ impl FunctionBuilder {
                         } else {
                             self.expr(value)
                         };
-                        let int_operands = self.int_regs.contains(&idx) && self.int_regs.contains(&r_value);
+                        let int_operands = self.reg_known_int(idx) && self.reg_known_int(r_value);
                         match op {
                             BinOp::Add if int_operands => self.emit(Op::AddInt(idx, idx, r_value)),
                             BinOp::Add => self.emit(Op::Add(idx, idx, r_value)),
@@ -1289,7 +1301,7 @@ impl FunctionBuilder {
                         idx
                     };
                     let r_value = self.expr(value);
-                    let int_operands = self.int_regs.contains(&r_current) && self.int_regs.contains(&r_value);
+                    let int_operands = self.reg_known_int(r_current) && self.reg_known_int(r_value);
                     match op {
                         BinOp::Add if int_operands => self.emit(Op::AddInt(idx, r_current, r_value)),
                         BinOp::Add => self.emit(Op::Add(idx, r_current, r_value)),

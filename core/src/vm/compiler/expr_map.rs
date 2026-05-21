@@ -41,7 +41,7 @@ impl FunctionBuilder {
         let dst = self.alloc();
         if let Some(key_idx) = self.map_literal_key_const(key_expr) {
             self.emit(Op::MapGetInterned(dst, map_reg, key_idx));
-        } else if self.map_locals.contains(&map_reg) {
+        } else if self.reg_known_map(map_reg) {
             let key_reg = self.expr(key_expr);
             self.emit(Op::MapGetDynamic(dst, map_reg, key_reg));
         } else {

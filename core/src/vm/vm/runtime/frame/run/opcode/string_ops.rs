@@ -7,7 +7,7 @@ use super::super::math::rk_read;
 
 #[inline]
 pub(super) fn run_to_str(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     code: &[Op],
@@ -37,7 +37,7 @@ pub(super) fn run_to_str(
 
 #[inline]
 pub(super) fn run_starts_with_k(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -55,7 +55,7 @@ pub(super) fn run_starts_with_k(
 
 #[inline]
 pub(super) fn run_contains_k(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,

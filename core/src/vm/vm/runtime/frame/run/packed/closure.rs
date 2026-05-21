@@ -135,7 +135,7 @@ pub(super) fn make_closure_value(
 
 #[inline]
 pub(super) fn run_load_capture(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &VmContext,
     frame_captures: &Option<Arc<ClosureCapture>>,

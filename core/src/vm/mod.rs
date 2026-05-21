@@ -9,7 +9,9 @@ mod bc32;
 mod bytecode;
 mod compiler;
 mod context;
+mod liveness;
 mod lkb;
+mod registers;
 #[allow(clippy::module_inception)]
 mod vm;
 
@@ -19,7 +21,9 @@ pub use bc32::*;
 pub use bytecode::*;
 pub use compiler::*;
 pub use context::VmContext;
+pub(crate) use liveness::*;
 pub use lkb::*;
+pub(crate) use registers::*;
 pub(crate) use vm::with_current_vm;
 pub use vm::*;
 

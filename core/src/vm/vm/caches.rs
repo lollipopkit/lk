@@ -1,14 +1,22 @@
 use std::sync::Arc;
 
-use crate::val::{ClosureCapture, RustFastFunction, RustFastFunctionNamed, RustFunction, RustFunctionNamed, Val};
+use crate::val::{
+    ClosureCapture, ClosureValue, RustFastFunction, RustFastFunctionNamed, RustFunction, RustFunctionNamed, Val,
+};
+use crate::vm::CaptureSpec;
 use crate::vm::bytecode::{Function, IntCmpKind, Op, rk_index, rk_is_const};
 use crate::vm::vm::frame::FrameInfo;
-use crate::vm::vm::quickening::QuickeningSite;
-use crate::vm::{CaptureSpec, RegionPlan};
 
 mod packed;
 pub(super) use packed::*;
+mod runtime_sites;
+pub(in crate::vm::vm) use runtime_sites::{
+    FrameDispatchPlan, FunctionRuntimePlan, RuntimeCacheStore, RuntimeDispatchMode, RuntimeDispatchSites, VmCaches,
+};
+use runtime_sites::{FunctionMetadataCache, InstructionSiteCaches};
 
+#[cfg(test)]
+mod call_site_tests;
 #[cfg(test)]
 mod tiny_call_tests;
 
@@ -84,13 +92,51 @@ impl CallReturnLayout {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
-pub(super) enum CallIc {
-    Rust(RustFunction, u8 /*argc*/, CallReturnLayout),
-    RustFast(RustFastFunction, u8 /*argc*/, CallReturnLayout),
-    RustFastNamed(RustFastFunctionNamed, u8 /*argc*/, CallReturnLayout),
-    RustNamed(RustFunctionNamed, u8 /*argc*/, CallReturnLayout),
-    ClosurePositional {
+#[derive(Clone)]
+pub(super) struct CallSitePlan {
+    pub(super) closure_ptr: usize,
+    pub(super) fun_ptr: *const Function,
+    pub(super) argc: u8,
+    pub(super) ret: CallReturnLayout,
+    pub(super) tiny: Option<TinyCallPlan>,
+    pub(super) captures: Option<Arc<ClosureCapture>>,
+    pub(super) capture_specs: Option<Arc<Vec<CaptureSpec>>>,
+    pub(super) frame_info: FrameInfo,
+}
+
+#[derive(Clone)]
+pub(super) struct NamedCallSitePlan {
+    pub(super) closure_ptr: usize,
+    pub(super) named_len: u8,
+    pub(super) ret: CallReturnLayout,
+    pub(super) named: Arc<NamedCallPlan>,
+}
+
+impl NamedCallSitePlan {
+    #[inline]
+    pub(super) fn closure_named(
+        closure_ptr: usize,
+        named_len: u8,
+        ret: CallReturnLayout,
+        named: Arc<NamedCallPlan>,
+    ) -> Self {
+        Self {
+            closure_ptr,
+            named_len,
+            ret,
+            named,
+        }
+    }
+
+    #[inline]
+    pub(super) fn matches_closure_layout(&self, closure_ptr: usize, named_len: usize, base: u16, retc: u8) -> bool {
+        self.closure_ptr == closure_ptr && self.named_len as usize == named_len && self.ret.matches(base, retc)
+    }
+}
+
+impl CallSitePlan {
+    #[inline]
+    pub(super) fn positional(
         closure_ptr: usize,
         fun_ptr: *const Function,
         argc: u8,
@@ -98,14 +144,53 @@ pub(super) enum CallIc {
         tiny: Option<TinyCallPlan>,
         captures: Option<Arc<ClosureCapture>>,
         capture_specs: Option<Arc<Vec<CaptureSpec>>>,
-        cache: ClosureFastCache,
         frame_info: FrameInfo,
+    ) -> Self {
+        Self {
+            closure_ptr,
+            fun_ptr,
+            argc,
+            ret,
+            tiny,
+            captures,
+            capture_specs,
+            frame_info,
+        }
+    }
+
+    #[inline]
+    pub(super) fn matches_layout(&self, argc: u8, base: u16, retc: u8) -> bool {
+        self.argc == argc && self.ret.matches(base, retc)
+    }
+
+    #[inline]
+    pub(super) fn closure_ptr_matches(&self, closure: &Arc<ClosureValue>) -> bool {
+        Arc::as_ptr(closure) as usize == self.closure_ptr
+    }
+
+    #[inline]
+    pub(super) fn matches_closure(&self, closure: &Arc<ClosureValue>) -> bool {
+        self.closure_ptr_matches(closure)
+            || closure
+                .code
+                .get()
+                .map(|fun| std::ptr::eq(Arc::as_ptr(fun), self.fun_ptr))
+                .unwrap_or(false)
+    }
+}
+
+#[allow(clippy::large_enum_variant)]
+pub(super) enum CallIc {
+    Rust(RustFunction, u8 /*argc*/, CallReturnLayout),
+    RustFast(RustFastFunction, u8 /*argc*/, CallReturnLayout),
+    RustFastNamed(RustFastFunctionNamed, u8 /*argc*/, CallReturnLayout),
+    RustNamed(RustFunctionNamed, u8 /*argc*/, CallReturnLayout),
+    ClosurePositional {
+        plan: Arc<CallSitePlan>,
+        cache: ClosureFastCache,
     },
     ClosureNamed {
-        closure_ptr: usize,
-        named_len: u8,
-        ret: CallReturnLayout,
-        plan: Arc<NamedCallPlan>,
+        plan: Arc<NamedCallSitePlan>,
     },
 }
 
@@ -116,38 +201,11 @@ impl Clone for CallIc {
             CallIc::RustFast(f, argc, ret) => CallIc::RustFast(*f, *argc, *ret),
             CallIc::RustFastNamed(f, argc, ret) => CallIc::RustFastNamed(*f, *argc, *ret),
             CallIc::RustNamed(f, argc, ret) => CallIc::RustNamed(*f, *argc, *ret),
-            CallIc::ClosurePositional {
-                closure_ptr,
-                fun_ptr,
-                argc,
-                ret,
-                tiny,
-                captures,
-                capture_specs,
-                cache,
-                frame_info,
-            } => CallIc::ClosurePositional {
-                closure_ptr: *closure_ptr,
-                fun_ptr: *fun_ptr,
-                argc: *argc,
-                ret: *ret,
-                tiny: tiny.clone(),
-                captures: captures.clone(),
-                capture_specs: capture_specs.clone(),
-                cache: cache.clone(),
-                frame_info: frame_info.clone(),
-            },
-            CallIc::ClosureNamed {
-                closure_ptr,
-                named_len,
-                ret,
-                plan,
-            } => CallIc::ClosureNamed {
-                closure_ptr: *closure_ptr,
-                named_len: *named_len,
-                ret: *ret,
+            CallIc::ClosurePositional { plan, cache } => CallIc::ClosurePositional {
                 plan: Arc::clone(plan),
+                cache: cache.clone(),
             },
+            CallIc::ClosureNamed { plan } => CallIc::ClosureNamed { plan: Arc::clone(plan) },
         }
     }
 }
@@ -1261,36 +1319,28 @@ impl TinyExpr {
 
 #[derive(Clone)]
 pub(super) struct ClosureFastCache {
-    pub(super) access_ic: Vec<Option<AccessIc>>,
-    pub(super) index_ic: Vec<Option<IndexIc>>,
-    pub(super) global_ic: Vec<Option<GlobalEntry>>,
-    pub(super) call_ic: Vec<Option<CallIc>>,
-    pub(super) for_range: Vec<Option<ForRangeState>>,
-    pub(super) packed_hot: Vec<Option<PackedHotEntry>>,
+    sites: InstructionSiteCaches,
     pub(super) packed_hot_key: usize,
-    pub(super) quickening: Vec<QuickeningSite>,
     pub(super) prepared_func_key: usize,
-    pub(super) prepared_code_len: usize,
-    /// Cached region plan — avoids Arc clone per call for closure calls.
-    pub(super) region_plan: Option<Arc<RegionPlan>>,
+    pub(super) prepared_opcode_len: usize,
+    pub(super) metadata: FunctionMetadataCache,
 }
 
 impl ClosureFastCache {
     #[inline]
     pub(super) fn new() -> Self {
         Self {
-            access_ic: Vec::new(),
-            index_ic: Vec::new(),
-            global_ic: Vec::new(),
-            call_ic: Vec::new(),
-            for_range: Vec::new(),
-            packed_hot: Vec::new(),
+            sites: InstructionSiteCaches::new(),
             packed_hot_key: 0,
-            quickening: Vec::new(),
             prepared_func_key: 0,
-            prepared_code_len: 0,
-            region_plan: None,
+            prepared_opcode_len: 0,
+            metadata: FunctionMetadataCache::new(),
         }
+    }
+
+    #[inline]
+    pub(super) fn vm_caches(&mut self) -> VmCaches<'_> {
+        self.sites.vm_caches()
     }
 }
 
@@ -1336,14 +1386,4 @@ impl ForRangeState {
             self.current > self.limit
         }
     }
-}
-
-pub(super) struct VmCaches<'a> {
-    pub(super) access_ic: &'a mut Vec<Option<AccessIc>>,
-    pub(super) index_ic: &'a mut Vec<Option<IndexIc>>,
-    pub(super) global_ic: &'a mut Vec<Option<GlobalEntry>>,
-    pub(super) call_ic: &'a mut Vec<Option<CallIc>>,
-    pub(super) for_range: &'a mut Vec<Option<ForRangeState>>,
-    pub(super) packed_hot: &'a mut Vec<Option<PackedHotEntry>>,
-    pub(super) quickening: &'a mut Vec<QuickeningSite>,
 }

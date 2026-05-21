@@ -1,8 +1,10 @@
 use super::*;
+use crate::vm::copy_const_value_for_register;
+use crate::vm::copy_container_value_for_register as copy_value_for_register;
 
 #[inline(always)]
 pub(super) fn exec_access_hot(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     access_ic: &mut [Option<AccessIc>],
     pc: usize,
@@ -15,7 +17,11 @@ pub(super) fn exec_access_hot(
             if *index < 0 {
                 Some(Val::Nil)
             } else {
-                Some(list.get(*index as usize).cloned().unwrap_or(Val::Nil))
+                Some(
+                    list.get(*index as usize)
+                        .map(copy_value_for_register)
+                        .unwrap_or(Val::Nil),
+                )
             }
         }
         (base_val, Val::Int(index)) if base_val.as_str().is_some() => {
@@ -37,7 +43,9 @@ pub(super) fn exec_access_hot(
                 )
             }
         }
-        (Val::Map(map), key) if key.as_str().is_some() => Val::map_get_str(map, key.as_str().unwrap()).cloned(),
+        (Val::Map(map), key) if key.as_str().is_some() => {
+            Val::map_get_str(map, key.as_str().unwrap()).map(copy_value_for_register)
+        }
         (Val::Object(object), key) if key.as_str().is_some() => {
             let fields = &object.fields;
             let object_ptr = Arc::as_ptr(fields) as usize;
@@ -45,7 +53,7 @@ pub(super) fn exec_access_hot(
             match access_ic[pc].as_mut() {
                 Some(AccessIc::ObjectStr(slots)) => {
                     Vm::lookup_promote(slots, |entry| entry.obj_ptr == object_ptr && entry.key.as_str() == key)
-                        .map(|entry| entry.value.clone())
+                        .map(|entry| copy_value_for_register(&entry.value))
                 }
                 _ => None,
             }
@@ -92,7 +100,7 @@ fn int_arith_value(op: PackedArithOp, lhs: i64, rhs: i64) -> Option<i64> {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn exec_access_int_arith_hot(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     access_ic: &mut [Option<AccessIc>],
@@ -131,7 +139,7 @@ pub(super) fn exec_access_int_arith_hot(
 }
 
 #[inline(always)]
-pub(super) fn exec_len(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: u16, src: u16) {
+pub(super) fn exec_len(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst: u16, src: u16) {
     let out = match &regs[src as usize] {
         Val::List(value) => Val::Int(value.len() as i64),
         Val::ShortStr(value) => Val::Int(value.as_str().len() as i64),
@@ -144,7 +152,7 @@ pub(super) fn exec_len(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: u1
 
 #[inline(always)]
 pub(super) fn exec_index(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     index_ic: &mut [Option<IndexIc>],
     pc: usize,
@@ -157,21 +165,24 @@ pub(super) fn exec_index(
             if *index < 0 {
                 list.len()
                     .checked_sub(index.unsigned_abs() as usize)
-                    .and_then(|idx| list.get(idx).cloned())
+                    .and_then(|idx| list.get(idx).map(copy_value_for_register))
                     .unwrap_or(Val::Nil)
             } else {
                 let list_ptr = Arc::as_ptr(list) as *const Val as usize;
                 let hit = match index_ic[pc].as_mut() {
                     Some(IndexIc::List(slots)) => {
                         Vm::lookup_promote(slots, |entry| entry.base_ptr == list_ptr && entry.idx == *index)
-                            .map(|entry| entry.value.clone())
+                            .map(|entry| copy_value_for_register(&entry.value))
                     }
                     _ => None,
                 };
                 if let Some(value) = hit {
                     value
                 } else {
-                    let value = list.get(*index as usize).cloned().unwrap_or(Val::Nil);
+                    let value = list
+                        .get(*index as usize)
+                        .map(copy_value_for_register)
+                        .unwrap_or(Val::Nil);
                     Vm::update_list_ic(index_ic, pc, list_ptr, *index, &value);
                     value
                 }
@@ -186,7 +197,7 @@ pub(super) fn exec_index(
                 let hit = match index_ic[pc].as_mut() {
                     Some(IndexIc::Str(slots)) => {
                         Vm::lookup_promote(slots, |entry| entry.base_ptr == text_ptr && entry.idx == *index)
-                            .map(|entry| entry.value.clone())
+                            .map(|entry| copy_value_for_register(&entry.value))
                     }
                     _ => None,
                 };
@@ -246,7 +257,7 @@ pub(super) fn exec_map_set_interned(func: &Function, regs: &mut [Val], map: u16,
     let key = func.consts[key as usize]
         .string_key_arcstr()
         .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
-    let value = regs[val as usize].clone();
+    let value = copy_value_for_register(&regs[val as usize]);
     match &mut regs[map as usize] {
         Val::Map(map) => insert_map_entry(map, key, value),
         _ => return Err(anyhow!("MapSet target is not a Map")),
@@ -273,7 +284,7 @@ pub(super) fn exec_map_set_interned_move(
     if !matches!(regs[map_idx], Val::Map(_)) {
         return Err(anyhow!("MapSet target is not a Map"));
     }
-    let value = std::mem::replace(&mut regs[val_idx], Val::Nil);
+    let value = take_register_value(regs, val_idx);
     match &mut regs[map_idx] {
         Val::Map(map) => insert_map_entry(map, key, value),
         _ => unreachable!("MapSet target was checked before moving value"),
@@ -284,22 +295,22 @@ pub(super) fn exec_map_set_interned_move(
 #[inline(always)]
 pub(super) fn packed_value_operand(regs: &[Val], func: &Function, operand: PackedValueOperand) -> Val {
     match operand {
-        PackedValueOperand::Reg(reg) => regs[reg as usize].clone(),
-        PackedValueOperand::Const(kidx) => func.consts[kidx as usize].clone(),
+        PackedValueOperand::Reg(reg) => copy_value_for_register(&regs[reg as usize]),
+        PackedValueOperand::Const(kidx) => copy_const_value_for_register(&func.consts[kidx as usize]),
     }
 }
 
 #[inline(always)]
 pub(super) fn packed_add_operand_value(regs: &[Val], operand: PackedAddOperand) -> Val {
     match operand {
-        PackedAddOperand::Reg(reg) => regs[reg as usize].clone(),
+        PackedAddOperand::Reg(reg) => copy_value_for_register(&regs[reg as usize]),
         PackedAddOperand::Imm(value) => Val::Int(value as i64),
     }
 }
 
 #[inline(always)]
 pub(super) fn exec_map_upsert_add(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     get_dst: u16,
@@ -320,7 +331,7 @@ pub(super) fn exec_map_upsert_add(
             _ => None,
         };
         let is_nil = current_ref.is_none();
-        let get_temp = write_temps.then(|| current_ref.cloned().unwrap_or(Val::Nil));
+        let get_temp = write_temps.then(|| current_ref.map(copy_value_for_register).unwrap_or(Val::Nil));
         let value = if is_nil {
             packed_value_operand(regs, func, default)
         } else {
@@ -338,10 +349,10 @@ pub(super) fn exec_map_upsert_add(
     }
     if is_nil {
         if write_temps && let Some((reg, kidx)) = default_load {
-            assign_reg(frame_raw, regs, reg as usize, func.consts[kidx as usize].clone());
+            assign_reg_const_copy(frame_raw, regs, reg as usize, &func.consts[kidx as usize]);
         }
     } else if write_temps {
-        assign_reg(frame_raw, regs, add_dst as usize, value.clone());
+        assign_reg_copy(frame_raw, regs, add_dst as usize, &value);
     }
 
     match &mut regs[map as usize] {
@@ -353,7 +364,7 @@ pub(super) fn exec_map_upsert_add(
 
 #[inline(always)]
 pub(super) fn exec_int_arith(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     op: PackedArithOp,
@@ -391,7 +402,7 @@ pub(super) fn exec_int_arith(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn exec_sub_access_sub_hot(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     access_ic: &mut [Option<AccessIc>],
@@ -442,7 +453,7 @@ pub(super) fn exec_sub_access_sub_hot(
 
 #[inline(always)]
 pub(super) fn exec_arith_add_int_imm(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     op: PackedArithOp,
@@ -495,7 +506,7 @@ pub(super) fn exec_arith_add_int_imm(
 
 #[inline(always)]
 pub(super) fn exec_arith_hot(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     op: PackedArithOp,
@@ -611,7 +622,7 @@ pub(super) fn exec_arith_hot(
 
 #[inline(always)]
 pub(super) fn exec_float_arith(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     op: PackedArithOp,
@@ -650,7 +661,7 @@ pub(super) fn exec_float_arith(
 }
 
 #[inline(always)]
-pub(super) fn exec_floor(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: u16, src: u16) {
+pub(super) fn exec_floor(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst: u16, src: u16) {
     let out = match &regs[src as usize] {
         Val::Float(value) => Val::Int(value.floor() as i64),
         Val::Int(value) => Val::Int(*value),
@@ -660,7 +671,7 @@ pub(super) fn exec_floor(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: 
 }
 
 #[inline(always)]
-pub(super) fn exec_floor_div_imm(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: u16, src: u16, imm: i16) {
+pub(super) fn exec_floor_div_imm(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst: u16, src: u16, imm: i16) {
     let divisor = imm as i64;
     let out = match &regs[src as usize] {
         Val::Int(value) => Val::Int(floor_div_i64(*value, divisor)),
@@ -672,7 +683,7 @@ pub(super) fn exec_floor_div_imm(frame_raw: *mut FrameState<'_>, regs: &mut [Val
 
 #[inline(always)]
 pub(super) fn exec_starts_with_k(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     dst: u16,
@@ -689,7 +700,7 @@ pub(super) fn exec_starts_with_k(
 
 #[inline(always)]
 pub(super) fn exec_contains_k(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     dst: u16,
@@ -726,7 +737,7 @@ pub(super) fn contains_k_bool(regs: &[Val], func: &Function, src: u16, key: u16)
 
 #[inline(always)]
 pub(super) fn exec_to_iter(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     src: u16,
@@ -738,7 +749,7 @@ pub(super) fn exec_to_iter(
         .map(|plan| plan.region_for(dst as usize) == AllocationRegion::ThreadLocal)
         .unwrap_or(false);
     let out = match &regs[src as usize] {
-        value if matches!(value, Val::List(_)) || value.as_str().is_some() => regs[src as usize].clone(),
+        value if matches!(value, Val::List(_)) || value.as_str().is_some() => copy_value_for_register(value),
         Val::Map(map) => {
             let mut entries: Vec<_> = map.iter().collect();
             entries.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
@@ -746,7 +757,9 @@ pub(super) fn exec_to_iter(
                 let allocator = region_allocator(region_allocator_ptr);
                 allocator.with_val_buffer(entries.len(), |scratch| {
                     for (key, value) in entries.iter() {
-                        scratch.push(Val::List(vec![Val::from_str(key.as_str()), (*value).clone()].into()));
+                        scratch.push(Val::List(
+                            vec![Val::from_str(key.as_str()), copy_value_for_register(value)].into(),
+                        ));
                     }
                     let data = scratch.split_off(0);
                     Val::List(data.into())
@@ -754,7 +767,9 @@ pub(super) fn exec_to_iter(
             } else {
                 let mut pairs = Vec::with_capacity(entries.len());
                 for (key, value) in entries {
-                    pairs.push(Val::List(vec![Val::from_str(key.as_str()), value.clone()].into()));
+                    pairs.push(Val::List(
+                        vec![Val::from_str(key.as_str()), copy_value_for_register(value)].into(),
+                    ));
                 }
                 Val::List(pairs.into())
             }

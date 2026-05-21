@@ -232,7 +232,7 @@ impl FunctionBuilder {
             && let Expr::Var(rhs_name) = right_arg
             && let Some(rhs) = self.lookup(rhs_name)
         {
-            if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs) {
+            if self.reg_known_int(dst) && self.reg_known_int(rhs) {
                 self.emit(Op::AddInt(dst, dst, rhs));
             } else {
                 self.emit(Op::Add(dst, dst, rhs));
@@ -253,7 +253,7 @@ impl FunctionBuilder {
             && let Expr::Var(rhs_name) = right_arg
             && let Some(rhs) = self.lookup(rhs_name)
         {
-            if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs) {
+            if self.reg_known_int(dst) && self.reg_known_int(rhs) {
                 self.emit(Op::SubInt(dst, dst, rhs));
             } else {
                 self.emit(Op::Sub(dst, dst, rhs));
@@ -817,7 +817,7 @@ impl FunctionBuilder {
             *ofs = (add_pos as isize - j_add as isize) as i16;
         }
 
-        if self.int_regs.contains(&target_reg) && self.int_regs.contains(&cache_reg) {
+        if self.reg_known_int(target_reg) && self.reg_known_int(cache_reg) {
             self.emit(Op::AddInt(target_reg, target_reg, cache_reg));
         } else {
             self.emit(Op::Add(target_reg, target_reg, cache_reg));
@@ -871,7 +871,7 @@ impl FunctionBuilder {
             }
             (BinOp::Add, Expr::Var(rhs_name)) => {
                 if let Some(rhs) = self.lookup(rhs_name) {
-                    if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs) {
+                    if self.reg_known_int(dst) && self.reg_known_int(rhs) {
                         self.emit(Op::AddInt(dst, dst, rhs));
                     } else {
                         self.emit(Op::Add(dst, dst, rhs));
@@ -883,7 +883,7 @@ impl FunctionBuilder {
             }
             (BinOp::Sub, Expr::Var(rhs_name)) => {
                 if let Some(rhs) = self.lookup(rhs_name) {
-                    if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs) {
+                    if self.reg_known_int(dst) && self.reg_known_int(rhs) {
                         self.emit(Op::SubInt(dst, dst, rhs));
                     } else {
                         self.emit(Op::Sub(dst, dst, rhs));
@@ -898,7 +898,7 @@ impl FunctionBuilder {
             // Only add/sub/mul have dedicated Int opcodes; div/mod fall back.
             (BinOp::Add, _) => {
                 let rhs_reg = self.expr(right);
-                if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs_reg) {
+                if self.reg_known_int(dst) && self.reg_known_int(rhs_reg) {
                     self.emit(Op::AddInt(dst, dst, rhs_reg));
                 } else {
                     self.emit(Op::Add(dst, dst, rhs_reg));
@@ -907,7 +907,7 @@ impl FunctionBuilder {
             }
             (BinOp::Sub, _) => {
                 let rhs_reg = self.expr(right);
-                if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs_reg) {
+                if self.reg_known_int(dst) && self.reg_known_int(rhs_reg) {
                     self.emit(Op::SubInt(dst, dst, rhs_reg));
                 } else {
                     self.emit(Op::Sub(dst, dst, rhs_reg));
@@ -916,7 +916,7 @@ impl FunctionBuilder {
             }
             (BinOp::Mul, _) => {
                 let rhs_reg = self.expr(right);
-                if self.int_regs.contains(&dst) && self.int_regs.contains(&rhs_reg) {
+                if self.reg_known_int(dst) && self.reg_known_int(rhs_reg) {
                     self.emit(Op::MulInt(dst, dst, rhs_reg));
                 } else {
                     self.emit(Op::Mul(dst, dst, rhs_reg));

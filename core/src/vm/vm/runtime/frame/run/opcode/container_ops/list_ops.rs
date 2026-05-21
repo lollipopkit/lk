@@ -8,7 +8,7 @@ use super::super::super::helpers::assign_reg;
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_fold_add(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     acc: u16,
     list: u16,

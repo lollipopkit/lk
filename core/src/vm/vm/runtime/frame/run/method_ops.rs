@@ -9,7 +9,7 @@ use crate::vm::vm::frame::FrameState;
 use super::helpers::assign_reg;
 
 pub(super) fn run_call_method0(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     func: &Function,
@@ -28,7 +28,7 @@ pub(super) fn run_call_method0(
 }
 
 pub(super) fn run_call_global_method0(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     func: &Function,

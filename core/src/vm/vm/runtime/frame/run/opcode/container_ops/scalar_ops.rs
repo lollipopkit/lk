@@ -5,7 +5,7 @@ use super::super::super::helpers::assign_reg;
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_len(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     src: u16,
@@ -22,7 +22,7 @@ pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_len(
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_list_len(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     src: u16,
@@ -36,7 +36,7 @@ pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_list_len(
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_map_len(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     src: u16,
@@ -50,7 +50,7 @@ pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_map_len(
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_str_len(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     src: u16,
@@ -65,7 +65,7 @@ pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_str_len(
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_floor(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     src: u16,

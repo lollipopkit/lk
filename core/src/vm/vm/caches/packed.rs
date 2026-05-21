@@ -42,12 +42,14 @@ pub(in crate::vm::vm) enum PackedAddOperand {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(in crate::vm::vm) enum PackedHotCallKind {
     Generic,
+    NativeFast,
     ClosureExact,
     Exact,
 }
 
 #[derive(Clone, Debug)]
 pub(in crate::vm::vm) enum PackedHotKind {
+    Nop,
     Move {
         dst: u16,
         src: u16,

@@ -1,5 +1,199 @@
 use super::*;
+use crate::vm::analysis::{FunctionAnalysis, PerfLocalCopyFact, PerfRegisterCopyFact};
 use crate::vm::bc32::{self, DecodedTag, Tag};
+use crate::vm::{vm_runtime_metrics_reset, vm_runtime_metrics_snapshot};
+
+#[test]
+fn test_vm_move_takes_dead_heap_source_without_extra_clone() {
+    let fun = vm::bytecode::Function {
+        consts: vec![Val::from_str("longer-than-short")],
+        code: vec![Op::LoadK(0, 0), Op::Move(1, 0), Op::Ret { base: 1, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 1);
+    assert_eq!(metrics.register_copy_heap_clones, 0);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+}
+
+#[test]
+fn test_vm_packed_move_takes_dead_heap_source_without_extra_clone() {
+    let mut fun = vm::bytecode::Function {
+        consts: vec![Val::from_str("longer-than-short")],
+        code: vec![Op::LoadK(0, 0), Op::Move(1, 0), Op::Ret { base: 1, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+    let packed = vm::Bc32Function::try_from_function(&fun).expect("move function should pack");
+    fun.code32 = Some(packed.code32);
+    fun.bc32_decoded = packed.decoded;
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 1);
+    assert_eq!(metrics.register_copy_heap_clones, 0);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+}
+
+#[test]
+fn test_vm_packed_move_uses_analysis_fact_instead_of_runtime_scan() {
+    let mut analysis = FunctionAnalysis::default();
+    let mut fun = vm::bytecode::Function {
+        consts: vec![Val::from_str("longer-than-short")],
+        code: vec![Op::LoadK(0, 0), Op::Move(1, 0), Op::Ret { base: 1, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: Some(analysis.clone()),
+    };
+    let packed = vm::Bc32Function::try_from_function(&fun).expect("move function should pack");
+    fun.code32 = Some(packed.code32.clone());
+    fun.bc32_decoded = packed.decoded.clone();
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 2);
+    assert_eq!(metrics.register_copy_heap_clones, 1);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+
+    analysis
+        .perf
+        .set_register_copy_fact(1, PerfRegisterCopyFact { move_source: true });
+    fun.analysis = Some(analysis);
+    fun.code32 = Some(packed.code32);
+    fun.bc32_decoded = packed.decoded;
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 1);
+    assert_eq!(metrics.register_copy_heap_clones, 0);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+}
+
+#[test]
+fn test_vm_load_local_classifies_heap_copy() {
+    let fun = vm::bytecode::Function {
+        consts: vec![Val::from_str("longer-than-short")],
+        code: vec![Op::LoadK(0, 0), Op::LoadLocal(1, 0), Op::Ret { base: 1, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 2);
+    assert_eq!(metrics.register_copy_heap_clones, 0);
+    assert_eq!(metrics.local_copy_heap_clones, 1);
+    assert_eq!(metrics.local_load_heap_clones, 1);
+    assert_eq!(metrics.local_store_heap_clones, 0);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+}
+
+#[test]
+fn test_vm_store_local_classifies_heap_copy() {
+    let fun = vm::bytecode::Function {
+        consts: vec![Val::from_str("longer-than-short")],
+        code: vec![Op::LoadK(0, 0), Op::StoreLocal(1, 0), Op::Ret { base: 1, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: None,
+    };
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 2);
+    assert_eq!(metrics.register_copy_heap_clones, 0);
+    assert_eq!(metrics.local_copy_heap_clones, 1);
+    assert_eq!(metrics.local_load_heap_clones, 0);
+    assert_eq!(metrics.local_store_heap_clones, 1);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+}
+
+#[test]
+fn test_vm_store_local_takes_fact_approved_dead_temp_without_extra_clone() {
+    let mut analysis = FunctionAnalysis::default();
+    analysis.perf.mark_local_slot(1);
+    analysis
+        .perf
+        .set_local_copy_fact(1, PerfLocalCopyFact { move_source: true });
+    let fun = vm::bytecode::Function {
+        consts: vec![Val::from_str("longer-than-short")],
+        code: vec![Op::LoadK(0, 0), Op::StoreLocal(1, 0), Op::Ret { base: 1, retc: 1 }],
+        n_regs: 2,
+        protos: Vec::new(),
+        param_regs: Vec::new(),
+        named_param_regs: Vec::new(),
+        named_param_layout: Vec::new(),
+        pattern_plans: Vec::new(),
+        code32: None,
+        bc32_decoded: None,
+        analysis: Some(analysis),
+    };
+
+    vm_runtime_metrics_reset();
+    let out = exec_with_new_vm(&fun);
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(out, Val::from_str("longer-than-short"));
+    assert_eq!(metrics.heap_val_clones, 1);
+    assert_eq!(metrics.local_copy_heap_clones, 0);
+    assert_eq!(metrics.local_load_heap_clones, 0);
+    assert_eq!(metrics.local_store_heap_clones, 0);
+    assert_eq!(metrics.const_load_heap_clones, 1);
+}
 
 #[test]
 fn test_compile_time_const_binding() {

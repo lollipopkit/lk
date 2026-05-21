@@ -20,18 +20,25 @@ use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{
     AccessIc, CallIc, CallReturnLayout, ForRangeState, GlobalEntry, IndexIc, PackedAddOperand, PackedArithOp,
     PackedCmpImmOp, PackedCmpOp, PackedHotCallKind, PackedHotEntry, PackedHotKind, PackedHotSlot, PackedRangeTail,
-    PackedValueOperand, VmCaches,
+    PackedValueOperand, RuntimeDispatchMode,
 };
 use crate::vm::vm::frame::{CallArgs, CallFrameMeta, CallFrameStackGuard, FrameState, RegisterSpan};
 use crate::vm::{
-    VmBc32FallbackMetric, VmCallMetric, record_bc32_fallback_op, record_bc32_fallback_reason, record_call_op,
-    record_opcode_step, record_quickening_build_attempt, record_quickening_build_success, record_quickening_hit,
-    record_quickening_miss, record_quickening_sentinel_skip, vm_runtime_metrics_enabled,
+    VmBc32FallbackMetric, VmCallMetric, copy_value_for_register, copy_value_for_register_with_metrics,
+    record_bc32_fallback_op_known_enabled, record_bc32_fallback_reason_known_enabled, record_call_op_known_enabled,
+    record_opcode_step_known_enabled, record_quickening_build_attempt_known_enabled,
+    record_quickening_build_success_known_enabled, record_quickening_hit_known_enabled,
+    record_quickening_miss_known_enabled, record_quickening_sentinel_skip_known_enabled, restore_register_value,
+    take_register_value,
 };
 
+use super::FrameRuntimeView;
 use super::helpers::{
-    advance_for_range_tail, assign_reg, fetch_for_range_state, frame_return_common, handle_return_common,
-    insert_map_entry, push_list_entry,
+    advance_for_range_tail, assign_local_from_reg_or_take, assign_local_from_reg_or_take_with_metrics, assign_reg,
+    assign_reg_const_copy, assign_reg_const_copy_with_metrics, assign_reg_copy, assign_reg_from_local_load,
+    assign_reg_from_local_load_with_metrics, assign_reg_from_reg, assign_reg_from_reg_or_take_with_metrics,
+    assign_reg_from_reg_with_metrics, fetch_for_range_state, frame_return_common, handle_return_common,
+    insert_map_entry, local_store_may_take_source, push_list_entry, register_move_may_take_source,
 };
 use super::invoke::{
     ArgWindow, NativeCallable, ReturnSlot, clear_pending_resume_pc, invoke_native_callable_with_ic,
@@ -39,7 +46,7 @@ use super::invoke::{
 };
 use super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, float_binop, floor_div_i64, int_binop, int_binop_imm, rk_read};
 use super::method_ops;
-use super::plan::build_named_call_plan;
+use super::plan::get_or_build_named_call_site_plan;
 use super::raw_boundary::region_allocator;
 
 mod call;
@@ -51,6 +58,106 @@ mod fetch;
 mod hot_exec;
 mod hot_values;
 mod named_args;
+
+#[inline]
+fn packed_move_may_take_source(f: &Function, pc: usize, src: u16) -> bool {
+    let instr_pc = packed_instr_pc(f, pc);
+    register_move_may_take_source(f, instr_pc, src)
+}
+
+#[inline]
+fn packed_instr_pc(f: &Function, pc: usize) -> usize {
+    f.bc32_decoded
+        .as_deref()
+        .and_then(|decoded| decoded.word_to_instr.get(pc).copied())
+        .map(|idx| idx as usize)
+        .unwrap_or(pc)
+}
+
+fn assign_move_call_args(
+    frame_raw: *mut FrameState<'_, '_>,
+    regs: &mut [Val],
+    f: &Function,
+    pc: usize,
+    moves: &[(u16, u16)],
+    collect_metrics: bool,
+) {
+    let start_instr = f
+        .bc32_decoded
+        .as_deref()
+        .and_then(|decoded| decoded.word_to_instr.get(pc))
+        .copied()
+        .map(|idx| idx as usize);
+    for (offset, (dst, src)) in moves.iter().enumerate() {
+        let pc = start_instr.map_or(pc + offset, |idx| idx + offset);
+        let may_take = register_move_may_take_source(f, pc, *src);
+        assign_reg_from_reg_or_take_with_metrics(
+            frame_raw,
+            regs,
+            *dst as usize,
+            *src as usize,
+            may_take,
+            collect_metrics,
+        );
+    }
+}
+
+#[inline(always)]
+fn assign_packed_move_with_metrics(
+    frame_raw: *mut FrameState<'_, '_>,
+    regs: &mut [Val],
+    func: &Function,
+    pc: usize,
+    dst: u16,
+    src: u16,
+    collect_metrics: bool,
+) {
+    let may_take = packed_move_may_take_source(func, pc, src);
+    assign_reg_from_reg_or_take_with_metrics(frame_raw, regs, dst as usize, src as usize, may_take, collect_metrics);
+}
+
+#[inline(always)]
+fn assign_packed_const_with_metrics(
+    frame_raw: *mut FrameState<'_, '_>,
+    regs: &mut [Val],
+    func: &Function,
+    dst: u16,
+    kidx: u16,
+    collect_metrics: bool,
+) {
+    assign_reg_const_copy_with_metrics(
+        frame_raw,
+        regs,
+        dst as usize,
+        &func.consts[kidx as usize],
+        collect_metrics,
+    );
+}
+
+#[inline(always)]
+fn assign_packed_local_load_with_metrics(
+    frame_raw: *mut FrameState<'_, '_>,
+    regs: &mut [Val],
+    dst: u16,
+    idx: u16,
+    collect_metrics: bool,
+) {
+    assign_reg_from_local_load_with_metrics(frame_raw, regs, dst as usize, idx as usize, collect_metrics);
+}
+
+#[inline(always)]
+fn assign_packed_local_store_with_metrics(
+    frame_raw: *mut FrameState<'_, '_>,
+    regs: &mut [Val],
+    func: &Function,
+    pc: usize,
+    idx: u16,
+    src: u16,
+    collect_metrics: bool,
+) {
+    let may_take = local_store_may_take_source(func, pc);
+    assign_local_from_reg_or_take_with_metrics(frame_raw, regs, idx as usize, src as usize, may_take, collect_metrics);
+}
 mod stats;
 use closure::make_closure_value;
 use cold_basic::*;
@@ -65,6 +172,9 @@ use stats::*;
 fn hot_call_operands(kind: &PackedHotKind) -> Option<(u16, u16, u8, u8, PackedHotCallKind)> {
     match kind {
         PackedHotKind::Call { f, base, argc, retc } => Some((*f, *base, *argc, *retc, PackedHotCallKind::Generic)),
+        PackedHotKind::CallNativeFast { f, base, argc, retc } => {
+            Some((*f, *base, *argc, *retc, PackedHotCallKind::NativeFast))
+        }
         PackedHotKind::CallClosureExact { f, base, argc, retc } => {
             Some((*f, *base, *argc, *retc, PackedHotCallKind::ClosureExact))
         }
@@ -85,15 +195,16 @@ fn hot_call_operands(kind: &PackedHotKind) -> Option<(u16, u16, u8, u8, PackedHo
 fn record_packed_call_metric(kind: PackedHotCallKind) {
     let metric = match kind {
         PackedHotCallKind::Generic => VmCallMetric::Generic,
+        PackedHotCallKind::NativeFast => VmCallMetric::Native,
         PackedHotCallKind::ClosureExact => VmCallMetric::Closure,
         PackedHotCallKind::Exact => VmCallMetric::Exact,
     };
-    record_call_op(metric);
+    record_call_op_known_enabled(metric);
 }
 
 #[allow(clippy::too_many_arguments)]
 fn run_packed_call_kind(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     call_ic: &mut [Option<CallIc>],
@@ -107,6 +218,7 @@ fn run_packed_call_kind(
     argc: u8,
     retc: u8,
     call_kind: PackedHotCallKind,
+    collect_metrics: bool,
 ) -> Result<Option<Val>> {
     match call_kind {
         PackedHotCallKind::Generic => call::run_call_packed(
@@ -123,6 +235,23 @@ fn run_packed_call_kind(
             base,
             argc,
             retc,
+            collect_metrics,
+        ),
+        PackedHotCallKind::NativeFast => call::run_call_native_fast_packed(
+            frame_raw,
+            regs,
+            ctx,
+            call_ic,
+            pc,
+            next_pc,
+            frame_base,
+            region_allocator_ptr,
+            self_ptr,
+            f,
+            base,
+            argc,
+            retc,
+            collect_metrics,
         ),
         PackedHotCallKind::ClosureExact => call::run_call_closure_exact_packed(
             frame_raw,
@@ -158,62 +287,37 @@ fn run_packed_call_kind(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_packed_code(
-    frame_raw: *mut FrameState<'_>,
-    regs: &mut [Val],
-    ctx: &mut VmContext,
-    caches: &mut VmCaches<'_>,
-    func: &Function,
-    pc_ref: &mut usize,
-    frame_base: usize,
-    code32: &[u32],
-    decoded: Option<&Bc32Decoded>,
-    frame_captures: &Option<Arc<ClosureCapture>>,
-    frame_capture_specs: &Option<Arc<Vec<CaptureSpec>>>,
-    region_plan: Option<&RegionPlan>,
-    region_allocator_ptr: *const RegionAllocator,
-    self_ptr: *mut Vm,
-) -> Result<Option<Val>> {
-    let access_ic = &mut *caches.access_ic;
-    let index_ic = &mut *caches.index_ic;
-    let global_ic = &mut *caches.global_ic;
-    let call_ic = &mut *caches.call_ic;
-    let for_range_ic = &mut *caches.for_range;
-    let packed_hot = &mut *caches.packed_hot;
+pub(super) fn run_packed_code(runtime: &mut FrameRuntimeView<'_, '_>) -> Result<Option<Val>> {
+    let frame_raw = runtime.frame_raw;
+    let regs = &mut *runtime.regs;
+    let ctx = &mut *runtime.ctx;
+    let func = runtime.dispatch_plan.function();
+    let RuntimeDispatchMode::Packed(packed_code) = runtime.dispatch_plan.mode() else {
+        unreachable!("packed executor requires packed dispatch mode");
+    };
+    let code32 = packed_code.words;
+    let decoded = packed_code.decoded;
+    let frame_base = runtime.base;
+    let frame_captures = runtime.captures;
+    let frame_capture_specs = runtime.capture_specs;
+    let region_plan = runtime.region_plan;
+    let region_allocator_ptr = runtime.region_allocator;
+    let self_ptr = runtime.self_ptr;
+    let access_ic = &mut *runtime.caches.access_ic;
+    let index_ic = &mut *runtime.caches.index_ic;
+    let global_ic = &mut *runtime.caches.global_ic;
+    let call_ic = &mut *runtime.caches.call_ic;
+    let for_range_ic = &mut *runtime.caches.for_range;
+    let packed_hot = &mut *runtime.caches.packed_hot;
     #[cfg(debug_assertions)]
     let _stats_guard = PackedHotStatsGuard::new();
-    let mut pc = *pc_ref;
+    let mut pc = runtime.pc;
     let f = func;
-    let collect_metrics = vm_runtime_metrics_enabled();
-    if access_ic.len() < f.code.len() {
-        access_ic.resize(f.code.len(), None);
-    }
-    // Persist instruction-site caches across executions; only grow when needed.
-    if access_ic.len() < code32.len() {
-        access_ic.resize(code32.len(), None);
-    }
-    if index_ic.len() < code32.len() {
-        index_ic.resize(code32.len(), None);
-    }
-    if global_ic.len() < code32.len() {
-        global_ic.resize(code32.len(), None);
-    }
-    if call_ic.len() < code32.len() {
-        call_ic.resize(code32.len(), None);
-    }
-    if for_range_ic.len() < f.code.len() {
-        for_range_ic.resize(f.code.len(), None);
-    }
-    if for_range_ic.len() < code32.len() {
-        for_range_ic.resize(code32.len(), None);
-    }
-    if packed_hot.len() < code32.len() {
-        packed_hot.resize(code32.len(), None);
-    }
+    let collect_metrics = runtime.collect_metrics;
 
     while pc < code32.len() {
         if collect_metrics {
-            record_opcode_step();
+            record_opcode_step_known_enabled();
         }
         let word = code32[pc];
         let raw_tag = bc32::tag_of(word);
@@ -246,27 +350,27 @@ pub(super) fn run_packed_code(
             match entry {
                 PackedHotEntry::Slot(slot) => {
                     if slot.word == word {
-                        record_quickening_hit();
+                        if collect_metrics {
+                            record_quickening_hit_known_enabled();
+                        }
                         record_hot_hit();
                         if let PackedHotKind::Ret { base, retc } = &slot.kind {
                             let retc = *retc as usize;
                             let base_idx = *base as usize;
                             let ret_val = if retc > 0 {
-                                std::mem::replace(&mut regs[base_idx], Val::Nil)
+                                take_register_value(regs, base_idx)
                             } else {
                                 Val::Nil
                             };
                             return handle_return_common(frame_raw, regs, pc, base_idx, retc, ret_val, self_ptr)
                                 .map(Some);
                         }
-                        if let Some((f, base, argc, retc, call_kind)) = hot_call_operands(&slot.kind) {
+                        if let Some((f_reg, base, argc, retc, call_kind)) = hot_call_operands(&slot.kind) {
                             if collect_metrics {
                                 record_packed_call_metric(call_kind);
                             }
                             if let PackedHotKind::MoveCall { moves, .. } = &slot.kind {
-                                for (dst, src) in moves {
-                                    assign_reg(frame_raw, regs, *dst as usize, regs[*src as usize].clone());
-                                }
+                                assign_move_call_args(frame_raw, regs, f, pc, moves, collect_metrics);
                             }
                             if let Some(value) = run_packed_call_kind(
                                 frame_raw,
@@ -278,11 +382,12 @@ pub(super) fn run_packed_code(
                                 frame_base,
                                 region_allocator_ptr,
                                 self_ptr,
-                                f,
+                                f_reg,
                                 base,
                                 argc,
                                 retc,
                                 call_kind,
+                                collect_metrics,
                             )? {
                                 return Ok(Some(value));
                             }
@@ -313,9 +418,9 @@ pub(super) fn run_packed_code(
                 }
                 PackedHotEntry::Miss(last_word) => {
                     if *last_word == word {
-                        record_quickening_sentinel_skip();
                         if collect_metrics {
-                            record_bc32_fallback_reason(VmBc32FallbackMetric::SentinelSkip);
+                            record_quickening_sentinel_skip_known_enabled();
+                            record_bc32_fallback_reason_known_enabled(VmBc32FallbackMetric::SentinelSkip);
                         }
                         record_sentinel_skip(word);
                         skip_build = true;
@@ -330,13 +435,13 @@ pub(super) fn run_packed_code(
                 match existing {
                     PackedHotEntry::Slot(slot) if slot.word != word => {
                         if collect_metrics {
-                            record_bc32_fallback_reason(VmBc32FallbackMetric::StaleSlot);
+                            record_bc32_fallback_reason_known_enabled(VmBc32FallbackMetric::StaleSlot);
                         }
                         *entry = None;
                     }
                     PackedHotEntry::Miss(last_word) if *last_word != word => {
                         if collect_metrics {
-                            record_bc32_fallback_reason(VmBc32FallbackMetric::StaleMiss);
+                            record_bc32_fallback_reason_known_enabled(VmBc32FallbackMetric::StaleMiss);
                         }
                         *entry = None;
                     }
@@ -344,16 +449,20 @@ pub(super) fn run_packed_code(
                 }
             }
             record_build_attempt();
-            record_quickening_build_attempt();
+            if collect_metrics {
+                record_quickening_build_attempt_known_enabled();
+            }
             if let Some(entry) = build_hot_slot(code32, decoded, &func.consts, pc, word, raw_tag) {
-                record_quickening_build_success();
+                if collect_metrics {
+                    record_quickening_build_success_known_enabled();
+                }
                 record_build_success();
                 let next_pc = entry.next_pc;
                 if let PackedHotKind::Ret { base, retc } = &entry.kind {
                     let retc = *retc as usize;
                     let base_idx = *base as usize;
                     let ret_val = if retc > 0 {
-                        std::mem::replace(&mut regs[base_idx], Val::Nil)
+                        take_register_value(regs, base_idx)
                     } else {
                         Val::Nil
                     };
@@ -369,9 +478,7 @@ pub(super) fn run_packed_code(
                         record_packed_call_metric(call_kind);
                     }
                     if let PackedHotKind::MoveCall { moves, .. } = &entry.kind {
-                        for (dst, src) in moves {
-                            assign_reg(frame_raw, regs, *dst as usize, regs[*src as usize].clone());
-                        }
+                        assign_move_call_args(frame_raw, regs, f, pc, moves, collect_metrics);
                     }
                     if packed_hot.len() <= pc {
                         packed_hot.resize(pc + 1, None);
@@ -392,6 +499,7 @@ pub(super) fn run_packed_code(
                         argc_count,
                         retc_count,
                         call_kind,
+                        collect_metrics,
                     )? {
                         return Ok(Some(value));
                     }
@@ -424,10 +532,10 @@ pub(super) fn run_packed_code(
                 continue;
             } else {
                 if collect_metrics {
-                    record_bc32_fallback_op();
-                    record_bc32_fallback_reason(VmBc32FallbackMetric::BuildMiss);
+                    record_bc32_fallback_op_known_enabled();
+                    record_bc32_fallback_reason_known_enabled(VmBc32FallbackMetric::BuildMiss);
+                    record_quickening_miss_known_enabled();
                 }
-                record_quickening_miss();
                 record_build_miss(word);
                 if packed_hot.len() <= pc {
                     packed_hot.resize(pc + 1, None);
@@ -468,12 +576,29 @@ pub(super) fn run_packed_code(
             continue;
         }
         match op {
+            Op::Nop => {
+                pc = next_pc_default;
+            }
             Op::LoadK(dst, k) => {
-                assign_reg(frame_raw, regs, dst as usize, f.consts[k as usize].clone());
+                assign_reg_const_copy_with_metrics(
+                    frame_raw,
+                    regs,
+                    dst as usize,
+                    &f.consts[k as usize],
+                    collect_metrics,
+                );
                 pc = next_pc_default;
             }
             Op::Move(dst, src) => {
-                assign_reg(frame_raw, regs, dst as usize, regs[src as usize].clone());
+                let may_take = packed_move_may_take_source(f, pc, src);
+                assign_reg_from_reg_or_take_with_metrics(
+                    frame_raw,
+                    regs,
+                    dst as usize,
+                    src as usize,
+                    may_take,
+                    collect_metrics,
+                );
                 pc = next_pc_default;
             }
             Op::ToStr(dst, src) => {
@@ -488,7 +613,7 @@ pub(super) fn run_packed_code(
                 retc,
             } => {
                 if collect_metrics {
-                    record_call_op(VmCallMetric::Generic);
+                    record_call_op_known_enabled(VmCallMetric::Generic);
                 }
                 if let Some(value) = call::run_call_packed(
                     frame_raw,
@@ -504,6 +629,7 @@ pub(super) fn run_packed_code(
                     base,
                     argc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
@@ -515,7 +641,7 @@ pub(super) fn run_packed_code(
                 retc,
             } => {
                 if collect_metrics {
-                    record_call_op(VmCallMetric::Native);
+                    record_call_op_known_enabled(VmCallMetric::Native);
                 }
                 if let Some(value) = call::run_call_native_fast_packed(
                     frame_raw,
@@ -531,20 +657,21 @@ pub(super) fn run_packed_code(
                     base,
                     argc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
             }
             Op::CallMethod0 { dst, receiver, method } => {
                 if collect_metrics {
-                    record_call_op(VmCallMetric::Method);
+                    record_call_op_known_enabled(VmCallMetric::Method);
                 }
                 method_ops::run_call_method0(frame_raw, regs, ctx, f, dst, receiver, method)?;
                 pc = next_pc_default;
             }
             Op::CallGlobalMethod0 { dst, receiver, method } => {
                 if collect_metrics {
-                    record_call_op(VmCallMetric::Method);
+                    record_call_op_known_enabled(VmCallMetric::Method);
                 }
                 method_ops::run_call_global_method0(frame_raw, regs, ctx, f, global_ic, pc, dst, receiver, method)?;
                 pc = next_pc_default;
@@ -556,7 +683,7 @@ pub(super) fn run_packed_code(
                 retc,
             } => {
                 if collect_metrics {
-                    record_call_op(VmCallMetric::Exact);
+                    record_call_op_known_enabled(VmCallMetric::Exact);
                 }
                 if let Some(value) = call::run_call_exact_packed(
                     frame_raw,
@@ -583,7 +710,7 @@ pub(super) fn run_packed_code(
                 retc,
             } => {
                 if collect_metrics {
-                    record_call_op(VmCallMetric::Closure);
+                    record_call_op_known_enabled(VmCallMetric::Closure);
                 }
                 if let Some(value) = call::run_call_closure_exact_packed(
                     frame_raw,
@@ -612,7 +739,7 @@ pub(super) fn run_packed_code(
                 retc,
             } => {
                 if collect_metrics {
-                    record_call_op(VmCallMetric::Named);
+                    record_call_op_known_enabled(VmCallMetric::Named);
                 }
                 if let Some(value) = call::run_call_named_packed(
                     frame_raw,
@@ -630,6 +757,7 @@ pub(super) fn run_packed_code(
                     base_named,
                     namedc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
@@ -643,7 +771,7 @@ pub(super) fn run_packed_code(
                 retc,
             } => {
                 if collect_metrics {
-                    record_call_op(VmCallMetric::Named);
+                    record_call_op_known_enabled(VmCallMetric::Named);
                 }
                 if let Some(value) = call::run_call_named_packed(
                     frame_raw,
@@ -661,6 +789,7 @@ pub(super) fn run_packed_code(
                     base_named,
                     namedc,
                     retc,
+                    collect_metrics,
                 )? {
                     return Ok(Some(value));
                 }
@@ -713,7 +842,11 @@ pub(super) fn run_packed_code(
                         if use_thread_local {
                             let allocator = region_allocator(region_allocator_ptr);
                             let slice_val = allocator.with_val_buffer(list.len() - s, |scratch| {
-                                scratch.extend(list[s..].iter().cloned());
+                                scratch.extend(
+                                    list[s..]
+                                        .iter()
+                                        .map(|value| copy_value_for_register_with_metrics(value, collect_metrics)),
+                                );
                                 let data = scratch.split_off(0);
                                 Val::List(data.into())
                             });
@@ -726,7 +859,7 @@ pub(super) fn run_packed_code(
                 pc = next_pc_default;
             }
             Op::ListPush { list, val } => {
-                let pushed_val = regs[val as usize].clone();
+                let pushed_val = copy_value_for_register_with_metrics(&regs[val as usize], collect_metrics);
                 match &mut regs[list as usize] {
                     Val::List(arc) => {
                         Arc::make_mut(arc).push(pushed_val);
@@ -742,7 +875,7 @@ pub(super) fn run_packed_code(
                 let list_idx = list as usize;
                 let val_idx = val as usize;
                 if list_idx == val_idx {
-                    let pushed_val = regs[val_idx].clone();
+                    let pushed_val = copy_value_for_register_with_metrics(&regs[val_idx], collect_metrics);
                     match &mut regs[list_idx] {
                         Val::List(arc) => {
                             Arc::make_mut(arc).push(pushed_val);
@@ -757,7 +890,7 @@ pub(super) fn run_packed_code(
                         return frame_return_common(frame_raw, pc, Err(anyhow!("ListPush target is not a List")))
                             .map(Some);
                     }
-                    let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+                    let pushed_val = take_register_value(regs, val_idx);
                     match &mut regs[list_idx] {
                         Val::List(arc) => {
                             Arc::make_mut(arc).push(pushed_val);
@@ -778,6 +911,6 @@ pub(super) fn run_packed_code(
             }
         }
     }
-    *pc_ref = pc;
+    runtime.pc = pc;
     Ok(None)
 }

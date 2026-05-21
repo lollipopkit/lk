@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::resolve::slots::SlotResolver;
 use crate::util::fast_map::fast_hash_map_with_capacity;
-use crate::vm::{AllocationRegion, EscapeClass};
+use crate::vm::{AllocationRegion, EscapeClass, PerfValueKind};
 
 use super::{
     BinOp, Compiler, Expr, ForPattern, Op, Stmt, Val, compile_and_run, compile_and_run_with_ctx, make_assign,
@@ -245,6 +245,111 @@ fn ssa_pipeline_smoke_test() {
         analysis.region_plan.return_region,
         AllocationRegion::Heap,
         "escaping return should reserve heap allocation"
+    );
+}
+
+#[test]
+fn performance_facts_record_constant_and_binary_kinds() {
+    let compiler = Compiler::new();
+    let expr = Expr::Bin(
+        Box::new(Expr::Val(Val::Int(2))),
+        BinOp::Add,
+        Box::new(Expr::Val(Val::Int(3))),
+    );
+    let func = compiler.compile_expr(&expr);
+    let analysis = func.analysis.as_ref().expect("analysis available");
+    let facts = &analysis.perf.values;
+
+    assert!(
+        facts.iter().any(|fact| fact.kind == PerfValueKind::Int),
+        "expected int value facts in {:?}",
+        facts
+    );
+    assert_eq!(
+        facts.last().map(|fact| fact.kind),
+        Some(PerfValueKind::Int),
+        "int + int should produce an int performance fact"
+    );
+}
+
+#[test]
+fn performance_facts_join_mismatched_phi_to_unknown() {
+    let compiler = Compiler::new();
+    let expr = Expr::Conditional(
+        Box::new(Expr::Var("flag".to_string())),
+        Box::new(Expr::Val(Val::Int(1))),
+        Box::new(Expr::Val(Val::from_str("no"))),
+    );
+    let func = compiler.compile_expr(&expr);
+    let analysis = func.analysis.as_ref().expect("analysis available");
+
+    assert_eq!(
+        analysis.perf.values.last().map(|fact| fact.kind),
+        Some(PerfValueKind::Unknown),
+        "int/string phi should be conservative"
+    );
+}
+
+#[test]
+fn function_builder_exports_register_performance_facts() {
+    let compiler = Compiler::new();
+    let func = compiler.compile_expr(&Expr::Val(Val::Int(5)));
+    let analysis = func.analysis.as_ref().expect("analysis available");
+
+    assert_eq!(
+        analysis.perf.register(0).map(|fact| fact.value.kind),
+        Some(PerfValueKind::Int),
+        "LoadK int destination should be exported as a register fact"
+    );
+}
+
+#[test]
+fn function_builder_exports_register_liveness_facts() {
+    let compiler = Compiler::new();
+    let func = compiler.compile_expr(&Expr::Val(Val::Int(5)));
+    let analysis = func.analysis.as_ref().expect("analysis available");
+
+    assert_eq!(
+        analysis.perf.register(0).map(|fact| fact.live_after),
+        Some(true),
+        "returned expression register should be live after its defining write"
+    );
+}
+
+#[test]
+fn typed_lowering_keeps_container_performance_facts_available() {
+    let expr = Expr::List(vec![
+        Box::new(Expr::Val(Val::Int(1))),
+        Box::new(Expr::Val(Val::Int(2))),
+        Box::new(Expr::Val(Val::Int(3))),
+    ]);
+    let function = Compiler::new().compile_expr(&expr);
+    let analysis = function.analysis.as_ref().expect("analysis available");
+    assert!(
+        analysis
+            .perf
+            .registers
+            .iter()
+            .flatten()
+            .any(|fact| fact.list.is_some_and(|list| list.value_kind == PerfValueKind::Int)),
+        "expected homogeneous int list performance fact in {:?}",
+        analysis.perf.registers
+    );
+}
+
+#[test]
+fn method_call_container_checks_use_performance_facts() {
+    let source = r#"
+        let xs = [1, 2, 3];
+        return xs.len();
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(3));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::ListLen { .. })),
+        "list len should lower through the unified container fact query in {:?}",
+        function.code
     );
 }
 

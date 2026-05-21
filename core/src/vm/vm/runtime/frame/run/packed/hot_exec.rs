@@ -1,11 +1,10 @@
 use super::*;
-use crate::vm::{VmCallMetric, VmContainerMetric, record_branch_op, record_call_op, record_container_op};
-
+use crate::vm::{self, VmCallMetric, VmContainerMetric};
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn exec_hot_slot(
     entry: &PackedHotSlot,
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     func: &Function,
     ctx: &mut VmContext,
@@ -22,38 +21,25 @@ pub(super) fn exec_hot_slot(
     region_allocator_ptr: *const RegionAllocator,
     collect_metrics: bool,
 ) -> Result<Option<usize>> {
-    let record_branch = |typed| {
-        if collect_metrics {
-            record_branch_op(typed);
-        }
-    };
-    let record_call = |kind| {
-        if collect_metrics {
-            record_call_op(kind);
-        }
-    };
-    let record_container = |kind| {
-        if collect_metrics {
-            record_container_op(kind);
-        }
-    };
-
+    let record_branch = |typed| collect_metrics.then(|| vm::record_branch_op_known_enabled(typed));
+    let record_call = |kind| collect_metrics.then(|| vm::record_call_op_known_enabled(kind));
+    let record_container = |kind| collect_metrics.then(|| vm::record_container_op_known_enabled(kind));
     let result = match &entry.kind {
+        PackedHotKind::Nop => None,
         PackedHotKind::Move { dst, src } => {
-            assign_reg(frame_raw, regs, *dst as usize, regs[*src as usize].clone());
+            assign_packed_move_with_metrics(frame_raw, regs, func, pc, *dst, *src, collect_metrics);
             None
         }
         PackedHotKind::LoadK { dst, kidx } => {
-            assign_reg(frame_raw, regs, *dst as usize, func.consts[*kidx as usize].clone());
+            assign_packed_const_with_metrics(frame_raw, regs, func, *dst, *kidx, collect_metrics);
             None
         }
         PackedHotKind::LoadLocal { dst, idx } => {
-            assign_reg(frame_raw, regs, *dst as usize, regs[*idx as usize].clone());
+            assign_packed_local_load_with_metrics(frame_raw, regs, *dst, *idx, collect_metrics);
             None
         }
         PackedHotKind::StoreLocal { idx, src } => {
-            let value = regs[*src as usize].clone();
-            assign_reg(frame_raw, regs, *idx as usize, value);
+            assign_packed_local_store_with_metrics(frame_raw, regs, func, pc, *idx, *src, collect_metrics);
             None
         }
         PackedHotKind::LoadGlobal { dst, name_k } => {
@@ -93,7 +79,7 @@ pub(super) fn exec_hot_slot(
             } else {
                 let fallback_name = format!("{}", name_val);
                 if let Some(v) = ctx.get(fallback_name.as_str()) {
-                    out = v.clone();
+                    out = copy_value_for_register_with_metrics(v, collect_metrics);
                 }
             }
             assign_reg(frame_raw, regs, *dst as usize, out);
@@ -101,7 +87,10 @@ pub(super) fn exec_hot_slot(
         }
         PackedHotKind::DefineGlobal { name_k, src } => {
             if let Some(s) = func.consts[*name_k as usize].as_str() {
-                ctx.set(s.to_string(), regs[*src as usize].clone());
+                ctx.set(
+                    s.to_string(),
+                    copy_value_for_register_with_metrics(&regs[*src as usize], collect_metrics),
+                );
             }
             None
         }
@@ -142,7 +131,14 @@ pub(super) fn exec_hot_slot(
             let key_val = &func.consts[*key as usize];
             let result = if let Some(key_str) = key_val.as_str() {
                 let (hit_value, object_ptr) = match &regs[*base as usize] {
-                    Val::Map(map) => (Some(Val::map_get_str(map, key_str).cloned().unwrap_or(Val::Nil)), None),
+                    Val::Map(map) => (
+                        Some(
+                            Val::map_get_str(map, key_str)
+                                .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
+                                .unwrap_or(Val::Nil),
+                        ),
+                        None,
+                    ),
                     Val::Object(object) => {
                         let fields = &object.fields;
                         let object_ptr = Arc::as_ptr(fields) as usize;
@@ -150,7 +146,7 @@ pub(super) fn exec_hot_slot(
                             Some(AccessIc::ObjectStr(slots)) => Vm::lookup_promote(slots, |entry| {
                                 entry.obj_ptr == object_ptr && entry.key.as_str() == key_str
                             })
-                            .map(|entry| entry.value.clone()),
+                            .map(|entry| copy_value_for_register_with_metrics(&entry.value, collect_metrics)),
                             _ => None,
                         };
                         (hit, Some(object_ptr))
@@ -214,7 +210,9 @@ pub(super) fn exec_hot_slot(
             record_container(VmContainerMetric::Map);
             let key = func.consts[*key as usize].as_str().unwrap_or("");
             let out = match &regs[*map as usize] {
-                Val::Map(map) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+                Val::Map(map) => Val::map_get_str(map, key)
+                    .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
+                    .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
             assign_reg(frame_raw, regs, *dst as usize, out);
@@ -232,7 +230,9 @@ pub(super) fn exec_hot_slot(
             record_branch(false);
             let key = func.consts[*key as usize].as_str().unwrap_or("");
             let out = match &regs[*map as usize] {
-                Val::Map(map) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+                Val::Map(map) => Val::map_get_str(map, key)
+                    .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
+                    .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
             assign_reg(frame_raw, regs, *dst as usize, out);
@@ -283,7 +283,9 @@ pub(super) fn exec_hot_slot(
         PackedHotKind::MapGetDynamic { dst, map, key } => {
             record_container(VmContainerMetric::Map);
             let out = match (&regs[*map as usize], regs[*key as usize].as_str()) {
-                (Val::Map(map), Some(key)) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+                (Val::Map(map), Some(key)) => Val::map_get_str(map, key)
+                    .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
+                    .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
             assign_reg(frame_raw, regs, *dst as usize, out);
@@ -300,7 +302,9 @@ pub(super) fn exec_hot_slot(
             record_container(VmContainerMetric::Map);
             record_branch(false);
             let out = match (&regs[*map as usize], regs[*key as usize].as_str()) {
-                (Val::Map(map), Some(key)) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+                (Val::Map(map), Some(key)) => Val::map_get_str(map, key)
+                    .map(|value| copy_value_for_register_with_metrics(value, collect_metrics))
+                    .unwrap_or(Val::Nil),
                 _ => Val::Nil,
             };
             assign_reg(frame_raw, regs, *dst as usize, out);
@@ -567,8 +571,13 @@ pub(super) fn exec_hot_slot(
                 PackedCmpOp::Ge => lhs >= rhs,
             };
             if cmp {
-                let value = regs[*move_src as usize].clone();
-                assign_reg(frame_raw, regs, *move_dst as usize, value);
+                assign_reg_from_reg_with_metrics(
+                    frame_raw,
+                    regs,
+                    *move_dst as usize,
+                    *move_src as usize,
+                    collect_metrics,
+                );
             }
             None
         }
@@ -691,7 +700,9 @@ pub(super) fn exec_hot_slot(
             if use_thread_local {
                 let allocator = region_allocator(region_allocator_ptr);
                 let list_val = allocator.with_val_buffer(len, |scratch| {
-                    scratch.extend((0..len).map(|i| regs[start + i].clone()));
+                    scratch.extend(
+                        (0..len).map(|i| copy_value_for_register_with_metrics(&regs[start + i], collect_metrics)),
+                    );
                     let data = scratch.split_off(0);
                     Val::List(data.into())
                 });
@@ -699,7 +710,7 @@ pub(super) fn exec_hot_slot(
             } else {
                 let mut values = Vec::with_capacity(len);
                 for i in 0..len {
-                    values.push(regs[start + i].clone());
+                    values.push(copy_value_for_register_with_metrics(&regs[start + i], collect_metrics));
                 }
                 assign_reg(frame_raw, regs, *dst as usize, Val::List(values.into()));
             }
@@ -718,7 +729,7 @@ pub(super) fn exec_hot_slot(
                 let map_val = allocator.with_map_entries(len, |entries| {
                     for i in 0..len {
                         let key_val = &regs[start + 2 * i];
-                        let value = regs[start + 2 * i + 1].clone();
+                        let value = copy_value_for_register_with_metrics(&regs[start + 2 * i + 1], collect_metrics);
                         let key_arc = key_val
                             .primitive_key_arcstr()
                             .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", key_val))?;
@@ -735,7 +746,7 @@ pub(super) fn exec_hot_slot(
                 let mut map: FastHashMap<ArcStr, Val> = fast_hash_map_with_capacity(len);
                 for i in 0..len {
                     let key_val = &regs[start + 2 * i];
-                    let value = regs[start + 2 * i + 1].clone();
+                    let value = copy_value_for_register_with_metrics(&regs[start + 2 * i + 1], collect_metrics);
                     let key_arc = key_val
                         .primitive_key_arcstr()
                         .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", key_val))?;
@@ -1011,8 +1022,7 @@ pub(super) fn exec_hot_slot(
             if !cmp {
                 Some(((pc as isize) + (*ofs as isize)) as usize)
             } else {
-                let value = regs[*src as usize].clone();
-                assign_reg(frame_raw, regs, *dst as usize, value);
+                assign_reg_from_reg_with_metrics(frame_raw, regs, *dst as usize, *src as usize, collect_metrics);
                 None
             }
         }
@@ -1164,7 +1174,7 @@ pub(super) fn exec_hot_slot(
         PackedHotKind::Ret { .. } => unreachable!("Ret is handled directly by run_packed_code"),
         PackedHotKind::ListPush { list, val } => {
             record_container(VmContainerMetric::List);
-            let pushed_val = regs[*val as usize].clone();
+            let pushed_val = copy_value_for_register_with_metrics(&regs[*val as usize], collect_metrics);
             match &mut regs[*list as usize] {
                 Val::List(arc) => {
                     push_list_entry(arc, pushed_val);
@@ -1178,7 +1188,7 @@ pub(super) fn exec_hot_slot(
             let list_idx = *list as usize;
             let val_idx = *val as usize;
             if list_idx == val_idx {
-                let pushed_val = regs[val_idx].clone();
+                let pushed_val = copy_value_for_register_with_metrics(&regs[val_idx], collect_metrics);
                 match &mut regs[list_idx] {
                     Val::List(arc) => {
                         push_list_entry(arc, pushed_val);
@@ -1190,7 +1200,7 @@ pub(super) fn exec_hot_slot(
             if !matches!(regs[list_idx], Val::List(_)) {
                 return Err(anyhow!("ListPush target is not a List"));
             }
-            let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+            let pushed_val = take_register_value(regs, val_idx);
             match &mut regs[list_idx] {
                 Val::List(arc) => {
                     push_list_entry(arc, pushed_val);
@@ -1204,7 +1214,7 @@ pub(super) fn exec_hot_slot(
             let key_arc = regs[*key as usize]
                 .string_key_arcstr()
                 .ok_or_else(|| anyhow!("MapSet key must be a String"))?;
-            let pushed_val = regs[*val as usize].clone();
+            let pushed_val = copy_value_for_register_with_metrics(&regs[*val as usize], collect_metrics);
             match &mut regs[*map as usize] {
                 Val::Map(arc) => {
                     insert_map_entry(arc, key_arc, pushed_val);
@@ -1222,7 +1232,7 @@ pub(super) fn exec_hot_slot(
                 let key_arc = regs[key_idx]
                     .string_key_arcstr()
                     .ok_or_else(|| anyhow!("MapSet key must be a String"))?;
-                let pushed_val = regs[val_idx].clone();
+                let pushed_val = copy_value_for_register_with_metrics(&regs[val_idx], collect_metrics);
                 match &mut regs[map_idx] {
                     Val::Map(arc) => {
                         insert_map_entry(arc, key_arc, pushed_val);
@@ -1234,15 +1244,15 @@ pub(super) fn exec_hot_slot(
             if !matches!(regs[map_idx], Val::Map(_)) {
                 return Err(anyhow!("MapSet target is not a Map"));
             }
-            let key_val = std::mem::replace(&mut regs[key_idx], Val::Nil);
+            let key_val = take_register_value(regs, key_idx);
             let key_arc = match key_val.string_key_arcstr() {
                 Some(key_arc) => key_arc,
                 None => {
-                    regs[key_idx] = key_val;
+                    restore_register_value(regs, key_idx, key_val);
                     return Err(anyhow!("MapSet key must be a String"));
                 }
             };
-            let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+            let pushed_val = take_register_value(regs, val_idx);
             match &mut regs[map_idx] {
                 Val::Map(arc) => {
                     insert_map_entry(arc, key_arc, pushed_val);

@@ -11,6 +11,9 @@ use crate::vm::vm::Vm;
 use crate::vm::vm::caches::{AccessIc, IndexIc};
 use crate::vm::vm::frame::FrameState;
 use crate::vm::vm::quickening::{self, QuickeningSite};
+use crate::vm::{
+    copy_container_value_for_register as copy_value_for_register, restore_register_value, take_register_value,
+};
 
 use super::super::helpers::{assign_reg, insert_map_entry, push_list_entry};
 use super::super::raw_boundary::region_allocator;
@@ -28,7 +31,7 @@ pub(super) use scalar_ops::{run_floor, run_len, run_list_len, run_map_len, run_s
 
 #[inline]
 pub(super) fn run_access(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     access_ic: &mut Vec<Option<AccessIc>>,
     pc: usize,
@@ -41,7 +44,9 @@ pub(super) fn run_access(
         (base_val, Val::Int(index)) if base_val.as_str().is_some() => {
             string_ops::index_value(base_val.as_str().unwrap(), *index)
         }
-        (Val::Map(map), key) if key.as_str().is_some() => Val::map_get_str(map, key.as_str().unwrap()).cloned(),
+        (Val::Map(map), key) if key.as_str().is_some() => {
+            Val::map_get_str(map, key.as_str().unwrap()).map(copy_value_for_register)
+        }
         (Val::Object(object), key) if key.as_str().is_some() => {
             let fields = &object.fields;
             let object_ptr = Arc::as_ptr(fields) as usize;
@@ -49,7 +54,7 @@ pub(super) fn run_access(
             match access_ic[pc].as_mut() {
                 Some(AccessIc::ObjectStr(slots)) => {
                     Vm::lookup_promote(slots, |entry| entry.obj_ptr == object_ptr && entry.key.as_str() == key)
-                        .map(|entry| entry.value.clone())
+                        .map(|entry| copy_value_for_register(&entry.value))
                 }
                 _ => None,
             }
@@ -74,7 +79,7 @@ pub(super) fn run_access(
 
 #[inline]
 pub(super) fn run_access_k(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     access_ic: &mut Vec<Option<AccessIc>>,
@@ -86,7 +91,14 @@ pub(super) fn run_access_k(
     let key = &consts[key_index as usize];
     let result = if let Some(key_str) = key.as_str() {
         let (hit_value, object_ptr) = match &regs[base as usize] {
-            Val::Map(map) => (Some(Val::map_get_str(map, key_str).cloned().unwrap_or(Val::Nil)), None),
+            Val::Map(map) => (
+                Some(
+                    Val::map_get_str(map, key_str)
+                        .map(copy_value_for_register)
+                        .unwrap_or(Val::Nil),
+                ),
+                None,
+            ),
             Val::Object(object) => {
                 let fields = &object.fields;
                 let object_ptr = Arc::as_ptr(fields) as usize;
@@ -94,7 +106,7 @@ pub(super) fn run_access_k(
                     Some(AccessIc::ObjectStr(slots)) => Vm::lookup_promote(slots, |entry| {
                         entry.obj_ptr == object_ptr && entry.key.as_str() == key_str
                     })
-                    .map(|entry| entry.value.clone()),
+                    .map(|entry| copy_value_for_register(&entry.value)),
                     _ => None,
                 };
                 (hit, Some(object_ptr))
@@ -118,7 +130,7 @@ pub(super) fn run_access_k(
 
 #[inline]
 pub(super) fn run_map_get_interned(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -127,16 +139,20 @@ pub(super) fn run_map_get_interned(
 ) {
     let key = consts[key_index as usize].as_str().unwrap_or("");
     let result = match &regs[map as usize] {
-        Val::Map(map) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+        Val::Map(map) => Val::map_get_str(map, key)
+            .map(copy_value_for_register)
+            .unwrap_or(Val::Nil),
         _ => Val::Nil,
     };
     assign_reg(frame_raw, regs, dst as usize, result);
 }
 
 #[inline]
-pub(super) fn run_map_get_dynamic(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: u16, map: u16, key: u16) {
+pub(super) fn run_map_get_dynamic(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst: u16, map: u16, key: u16) {
     let result = match (&regs[map as usize], regs[key as usize].as_str()) {
-        (Val::Map(map), Some(key)) => Val::map_get_str(map, key).cloned().unwrap_or(Val::Nil),
+        (Val::Map(map), Some(key)) => Val::map_get_str(map, key)
+            .map(copy_value_for_register)
+            .unwrap_or(Val::Nil),
         _ => Val::Nil,
     };
     assign_reg(frame_raw, regs, dst as usize, result);
@@ -144,7 +160,7 @@ pub(super) fn run_map_get_dynamic(frame_raw: *mut FrameState<'_>, regs: &mut [Va
 
 #[inline]
 pub(super) fn run_index(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     index_ic: &mut Vec<Option<IndexIc>>,
     quickening: &mut Vec<QuickeningSite>,
@@ -152,8 +168,9 @@ pub(super) fn run_index(
     dst: u16,
     base: u16,
     index: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
-    if quickening::execute_index_site(quickening, pc, regs, dst, base, index)? {
+    if quickening::execute_index_site(quickening, pc, regs, dst, base, index, collect_metrics)? {
         return Ok(());
     }
     let result = match (&regs[base as usize], &regs[index as usize]) {
@@ -165,14 +182,17 @@ pub(super) fn run_index(
                 let hit = match index_ic[pc].as_mut() {
                     Some(IndexIc::List(slots)) => {
                         Vm::lookup_promote(slots, |entry| entry.base_ptr == list_ptr && entry.idx == *index)
-                            .map(|entry| entry.value.clone())
+                            .map(|entry| copy_value_for_register(&entry.value))
                     }
                     _ => None,
                 };
                 if let Some(value) = hit {
                     value
                 } else {
-                    let value = list.get(*index as usize).cloned().unwrap_or(Val::Nil);
+                    let value = list
+                        .get(*index as usize)
+                        .map(copy_value_for_register)
+                        .unwrap_or(Val::Nil);
                     Vm::update_list_ic(index_ic.as_mut_slice(), pc, list_ptr, *index, &value);
                     value
                 }
@@ -187,7 +207,7 @@ pub(super) fn run_index(
                 let hit = match index_ic[pc].as_mut() {
                     Some(IndexIc::Str(slots)) => {
                         Vm::lookup_promote(slots, |entry| entry.base_ptr == string_ptr && entry.idx == *index)
-                            .map(|entry| entry.value.clone())
+                            .map(|entry| copy_value_for_register(&entry.value))
                     }
                     _ => None,
                 };
@@ -212,7 +232,7 @@ pub(super) fn run_index(
 
 #[inline]
 pub(super) fn run_index_k(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -235,7 +255,7 @@ pub(super) fn run_index_k(
 }
 
 #[inline]
-pub(super) fn run_list_index_i(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: u16, base: u16, index: i16) {
+pub(super) fn run_list_index_i(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst: u16, base: u16, index: i16) {
     let result = match &regs[base as usize] {
         Val::List(list) => list_ops::index_value(list, index as i64).unwrap_or(Val::Nil),
         _ => Val::Nil,
@@ -244,7 +264,7 @@ pub(super) fn run_list_index_i(frame_raw: *mut FrameState<'_>, regs: &mut [Val],
 }
 
 #[inline]
-pub(super) fn run_str_index_i(frame_raw: *mut FrameState<'_>, regs: &mut [Val], dst: u16, base: u16, index: i16) {
+pub(super) fn run_str_index_i(frame_raw: *mut FrameState<'_, '_>, regs: &mut [Val], dst: u16, base: u16, index: i16) {
     let result = match &regs[base as usize] {
         value if value.as_str().is_some() => {
             string_ops::index_value(value.as_str().unwrap(), index as i64).unwrap_or(Val::Nil)
@@ -263,7 +283,7 @@ fn use_thread_local(region_plan: Option<&RegionPlan>, dst: u16) -> bool {
 
 #[inline]
 pub(super) fn run_to_iter(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     src: u16,
@@ -271,7 +291,7 @@ pub(super) fn run_to_iter(
     region_allocator_ptr: *const RegionAllocator,
 ) {
     let out = match &regs[src as usize] {
-        v if matches!(v, Val::List(_)) || v.as_str().is_some() => regs[src as usize].clone(),
+        v if matches!(v, Val::List(_)) || v.as_str().is_some() => copy_value_for_register(v),
         Val::Map(m) => {
             let mut entries: Vec<_> = m.iter().collect();
             entries.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
@@ -279,7 +299,9 @@ pub(super) fn run_to_iter(
                 let allocator = region_allocator(region_allocator_ptr);
                 allocator.with_val_buffer(entries.len(), |scratch| {
                     for (key, value) in entries.iter() {
-                        scratch.push(Val::List(vec![Val::from_str(key.as_str()), (*value).clone()].into()));
+                        scratch.push(Val::List(
+                            vec![Val::from_str(key.as_str()), copy_value_for_register(value)].into(),
+                        ));
                     }
                     let data = scratch.split_off(0);
                     Val::List(data.into())
@@ -287,7 +309,9 @@ pub(super) fn run_to_iter(
             } else {
                 let mut pairs = Vec::with_capacity(entries.len());
                 for (key, value) in entries {
-                    pairs.push(Val::List(vec![Val::from_str(key.as_str()), value.clone()].into()));
+                    pairs.push(Val::List(
+                        vec![Val::from_str(key.as_str()), copy_value_for_register(value)].into(),
+                    ));
                 }
                 Val::List(pairs.into())
             }
@@ -299,7 +323,7 @@ pub(super) fn run_to_iter(
 
 #[inline]
 pub(super) fn run_build_list(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     base: u16,
@@ -312,7 +336,7 @@ pub(super) fn run_build_list(
     if use_thread_local(region_plan, dst) {
         let allocator = region_allocator(region_allocator_ptr);
         let list_val = allocator.with_val_buffer(n, |scratch| {
-            scratch.extend((0..n).map(|i| regs[start + i].clone()));
+            scratch.extend((0..n).map(|i| copy_value_for_register(&regs[start + i])));
             let data = scratch.split_off(0);
             Val::List(data.into())
         });
@@ -320,7 +344,7 @@ pub(super) fn run_build_list(
     } else {
         let mut values = Vec::with_capacity(n);
         for i in 0..n {
-            values.push(regs[start + i].clone());
+            values.push(copy_value_for_register(&regs[start + i]));
         }
         assign_reg(frame_raw, regs, dst as usize, Val::List(values.into()));
     }
@@ -328,7 +352,7 @@ pub(super) fn run_build_list(
 
 #[inline]
 pub(super) fn run_build_map(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     base: u16,
@@ -343,7 +367,7 @@ pub(super) fn run_build_map(
         let map_val = allocator.with_map_entries(n, |entries| {
             for i in 0..n {
                 let key_val = &regs[start + 2 * i];
-                let value = regs[start + 2 * i + 1].clone();
+                let value = copy_value_for_register(&regs[start + 2 * i + 1]);
                 let key_arc: ArcStr = key_val
                     .primitive_key_arcstr()
                     .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", key_val))?;
@@ -360,7 +384,7 @@ pub(super) fn run_build_map(
         let mut map: FastHashMap<ArcStr, Val> = fast_hash_map_with_capacity(n);
         for i in 0..n {
             let key = &regs[start + 2 * i];
-            let value = regs[start + 2 * i + 1].clone();
+            let value = copy_value_for_register(&regs[start + 2 * i + 1]);
             let key_arc: ArcStr = key
                 .primitive_key_arcstr()
                 .ok_or_else(|| anyhow!("Map key must be a primitive type, got: {:?}", key))?;
@@ -373,7 +397,7 @@ pub(super) fn run_build_map(
 
 #[inline]
 pub(super) fn run_list_slice(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     src: u16,
@@ -394,7 +418,7 @@ pub(super) fn run_list_slice(
         } else if use_thread_local(region_plan, dst) {
             let allocator = region_allocator(region_allocator_ptr);
             let slice_val = allocator.with_val_buffer(list.len() - start, |scratch| {
-                scratch.extend(list[start..].iter().cloned());
+                scratch.extend(list[start..].iter().map(copy_value_for_register));
                 let data = scratch.split_off(0);
                 Val::List(data.into())
             });
@@ -413,7 +437,7 @@ pub(super) fn run_list_slice(
 
 #[inline]
 pub(super) fn run_list_push(regs: &mut [Val], list: u16, val: u16) -> Result<()> {
-    let pushed_val = regs[val as usize].clone();
+    let pushed_val = copy_value_for_register(&regs[val as usize]);
     match &mut regs[list as usize] {
         Val::List(arc) => {
             push_list_entry(arc, pushed_val);
@@ -433,7 +457,7 @@ pub(super) fn run_list_push_move(regs: &mut [Val], list: u16, val: u16) -> Resul
     if !matches!(regs[list_idx], Val::List(_)) {
         return Err(anyhow!("ListPush target is not a List"));
     }
-    let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+    let pushed_val = take_register_value(regs, val_idx);
     match &mut regs[list_idx] {
         Val::List(arc) => {
             push_list_entry(arc, pushed_val);
@@ -445,7 +469,7 @@ pub(super) fn run_list_push_move(regs: &mut [Val], list: u16, val: u16) -> Resul
 
 #[inline]
 pub(super) fn run_list_set_i(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     list: u16,
@@ -459,12 +483,12 @@ pub(super) fn run_list_set_i(
         return Err(anyhow!("set() first argument must be a list"));
     };
     let index = index as usize;
-    let Some(old) = items.get(index).cloned() else {
+    let Some(old) = items.get(index).map(copy_value_for_register) else {
         return Err(anyhow!("index {} out of bounds for len {}", index, items.len()));
     };
     let mut updated = Vec::with_capacity(items.len());
-    updated.extend(items.iter().cloned());
-    updated[index] = regs[val as usize].clone();
+    updated.extend(items.iter().map(copy_value_for_register));
+    updated[index] = copy_value_for_register(&regs[val as usize]);
     let out = Val::List(vec![Val::List(Arc::new(updated)), old].into());
     assign_reg(frame_raw, regs, dst as usize, out);
     Ok(())
@@ -475,7 +499,7 @@ pub(super) fn run_map_set(regs: &mut [Val], map: u16, key: u16, val: u16) -> Res
     let key_arc = regs[key as usize]
         .string_key_arcstr()
         .ok_or_else(|| anyhow!("MapSet key must be a String"))?;
-    let pushed_val = regs[val as usize].clone();
+    let pushed_val = copy_value_for_register(&regs[val as usize]);
     match &mut regs[map as usize] {
         Val::Map(arc) => {
             insert_map_entry(arc, key_arc, pushed_val);
@@ -490,7 +514,7 @@ pub(super) fn run_map_set_interned(regs: &mut [Val], consts: &[Val], map: u16, k
     let key_arc = consts[kidx as usize]
         .string_key_arcstr()
         .ok_or_else(|| anyhow!("MapSetInterned key must be a String"))?;
-    let pushed_val = regs[val as usize].clone();
+    let pushed_val = copy_value_for_register(&regs[val as usize]);
     match &mut regs[map as usize] {
         Val::Map(arc) => {
             insert_map_entry(arc, key_arc, pushed_val);
@@ -513,7 +537,7 @@ pub(super) fn run_map_set_interned_move(regs: &mut [Val], consts: &[Val], map: u
     if !matches!(regs[map_idx], Val::Map(_)) {
         return Err(anyhow!("MapSet target is not a Map"));
     }
-    let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+    let pushed_val = take_register_value(regs, val_idx);
     match &mut regs[map_idx] {
         Val::Map(arc) => {
             insert_map_entry(arc, key_arc, pushed_val);
@@ -534,15 +558,15 @@ pub(super) fn run_map_set_move(regs: &mut [Val], map: u16, key: u16, val: u16) -
     if !matches!(regs[map_idx], Val::Map(_)) {
         return Err(anyhow!("MapSet target is not a Map"));
     }
-    let key_val = std::mem::replace(&mut regs[key_idx], Val::Nil);
+    let key_val = take_register_value(regs, key_idx);
     let key_arc = match key_val.string_key_arcstr() {
         Some(key_arc) => key_arc,
         None => {
-            regs[key_idx] = key_val;
+            restore_register_value(regs, key_idx, key_val);
             return Err(anyhow!("MapSet key must be a String"));
         }
     };
-    let pushed_val = std::mem::replace(&mut regs[val_idx], Val::Nil);
+    let pushed_val = take_register_value(regs, val_idx);
     match &mut regs[map_idx] {
         Val::Map(arc) => {
             insert_map_entry(arc, key_arc, pushed_val);

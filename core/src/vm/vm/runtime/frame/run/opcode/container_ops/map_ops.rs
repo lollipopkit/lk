@@ -8,7 +8,7 @@ use super::list_ops::fold_add_values;
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_has(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     map: u16,
@@ -27,7 +27,7 @@ pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_has(
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_has_k(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -45,7 +45,7 @@ pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_has_k(
 
 #[inline]
 pub(in crate::vm::vm::runtime::frame::run::opcode) fn run_values_fold_add(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     acc: u16,
     map: u16,

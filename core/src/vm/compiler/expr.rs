@@ -36,6 +36,57 @@ use super::FunctionBuilder;
 use super::driver::Compiler;
 
 impl FunctionBuilder {
+    pub(crate) fn emit_const_value_into(&mut self, dst: u16, value: &Val) {
+        match value {
+            Val::List(items) => {
+                let base = self.n_regs;
+                for _ in 0..items.len() {
+                    let _ = self.alloc();
+                }
+                for (index, item) in items.iter().enumerate() {
+                    self.emit_const_value_into(base + index as u16, item);
+                }
+                self.emit(Op::BuildList {
+                    dst,
+                    base,
+                    len: items.len() as u16,
+                });
+                self.record_list_length(dst, items.len());
+                if items.is_empty() {
+                    self.record_empty_list_value_type(dst);
+                } else {
+                    self.record_list_value_type(dst, Self::homogeneous_list_value_fact(items.iter()));
+                }
+            }
+            Val::Map(map) => {
+                let base = self.n_regs;
+                for _ in 0..(map.len() * 2) {
+                    let _ = self.alloc();
+                }
+                for (index, (key, item)) in map.iter().enumerate() {
+                    let key_reg = base + (index as u16 * 2);
+                    self.emit_const_value_into(key_reg, &Val::from_str(key.as_str()));
+                    self.emit_const_value_into(key_reg + 1, item);
+                }
+                self.emit(Op::BuildMap {
+                    dst,
+                    base,
+                    len: map.len() as u16,
+                });
+                self.map_locals.insert(dst);
+                if map.is_empty() {
+                    self.record_empty_map_value_type(dst);
+                } else {
+                    self.record_map_value_type(dst, Self::homogeneous_map_value_fact(map.values()));
+                }
+            }
+            _ => {
+                let kidx = self.k(value.clone());
+                self.emit(Op::LoadK(dst, kidx));
+            }
+        }
+    }
+
     pub(crate) fn compile_template_string_len(&mut self, parts: &[TemplateStringPart]) -> u16 {
         let literal_len = parts
             .iter()
@@ -275,7 +326,7 @@ impl FunctionBuilder {
         self.code
             .iter()
             .rev()
-            .find(|op| super::peephole::op_writes_reg(op, reg))
+            .find(|op| crate::vm::op_writes_register(op, reg))
             .is_some_and(|op| matches!(op, Op::MakeClosure { dst, .. } if *dst == reg))
     }
 
@@ -370,8 +421,7 @@ impl FunctionBuilder {
     pub(crate) fn emit_expr_into(&mut self, dst: u16, expr: &Expr) {
         match expr {
             Expr::Val(value) => {
-                let kidx = self.k(value.clone());
-                self.emit(Op::LoadK(dst, kidx));
+                self.emit_const_value_into(dst, value);
             }
             Expr::Var(name) => {
                 if let Some(src) = self.lookup(name) {
@@ -543,8 +593,7 @@ impl FunctionBuilder {
             }
             Expr::Val(v) => {
                 let dst = self.alloc();
-                let k = self.k(v.clone());
-                self.emit(Op::LoadK(dst, k));
+                self.emit_const_value_into(dst, v);
                 dst
             }
             Expr::Var(name) => {
@@ -642,14 +691,14 @@ impl FunctionBuilder {
                     && let Some(s) = field_val.as_str()
                 {
                     let k = self.k(Val::from_str(s));
-                    if self.map_locals.contains(&b) {
+                    if self.reg_known_map(b) {
                         self.emit(Op::MapGetInterned(out, b, k));
                         self.mark_map_lookup_result(out, b);
                     } else {
                         self.emit(Op::AccessK(out, b, k));
                     }
                 } else if let Expr::Val(Val::Int(i)) = field.as_ref() {
-                    if self.list_locals.contains(&b)
+                    if self.reg_known_list(b)
                         && let Ok(index) = i16::try_from(*i)
                     {
                         self.emit(Op::ListIndexI(out, b, index));
@@ -657,18 +706,18 @@ impl FunctionBuilder {
                     } else {
                         let k = self.k(Val::Int(*i));
                         self.emit(Op::IndexK(out, b, k));
-                        if self.list_locals.contains(&b) {
+                        if self.reg_known_list(b) {
                             self.mark_list_lookup_result(out, b);
                         }
                     }
                 } else {
                     let f = self.expr(field);
-                    if self.map_locals.contains(&b) {
+                    if self.reg_known_map(b) {
                         self.emit(Op::MapGetDynamic(out, b, f));
                         self.mark_map_lookup_result(out, b);
                     } else {
                         self.emit(Op::Access(out, b, f));
-                        if self.list_locals.contains(&b) && self.int_regs.contains(&f) {
+                        if self.reg_known_list(b) && self.reg_known_int(f) {
                             self.mark_list_lookup_result(out, b);
                         }
                     }

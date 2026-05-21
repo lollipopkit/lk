@@ -56,7 +56,31 @@ fn map_set_consumes_temporary_key_value_registers() {
 }
 
 #[test]
-fn map_set_preserves_variable_key_value_registers() {
+fn empty_map_let_uses_build_map_not_const_load() {
+    let source = r#"
+        let map = {};
+        map.set("answer", 42);
+        return map.get("answer");
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::Int(42));
+    assert!(
+        function.code.iter().any(|op| matches!(op, Op::BuildMap { len: 0, .. })),
+        "expected mutable empty map literal to build a fresh map in {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().all(
+            |op| !matches!(op, Op::LoadK(_, kidx) if matches!(function.consts.get(*kidx as usize), Some(Val::Map(_))))
+        ),
+        "mutable empty map literal should not load a shared const map in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn map_set_const_string_key_register_preserves_live_value_register() {
     let source = r#"
         let map = {};
         let key = "key";
@@ -68,14 +92,36 @@ fn map_set_preserves_variable_key_value_registers() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(14));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::MapSet { .. })),
-        "expected preserving map set opcode in {:?}",
+        function.code.iter().any(|op| matches!(op, Op::MapSetInterned(_, _, _))),
+        "expected const-string key fact to lower to preserving MapSetInterned in {:?}",
         function.code
     );
 }
 
 #[test]
-fn stdlib_map_get_on_known_local_map_lowers_to_map_get_dynamic() {
+fn map_set_dead_const_string_key_value_lowers_to_interned_move_set() {
+    let source = r#"
+        let map = {};
+        let key = "key${2}";
+        let value = "value${3}";
+        map.set(key, value);
+        return map.get("key2");
+    "#;
+    let (function, _ctx, result) = parse_compile_and_run(source);
+
+    assert_eq!(result.expect("vm exec"), Val::from_str("value3"));
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::MapSetInternedMove(_, _, _))),
+        "expected dead value with const-string key fact to lower to MapSetInternedMove in {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn stdlib_map_get_const_string_key_register_lowers_to_map_get_interned() {
     let source = r#"
         import map;
         let data = {};
@@ -87,8 +133,8 @@ fn stdlib_map_get_on_known_local_map_lowers_to_map_get_dynamic() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(42));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::MapGetDynamic(_, _, _))),
-        "expected stdlib map.get(data, key) to lower to MapGetDynamic in {:?}",
+        function.code.iter().any(|op| matches!(op, Op::MapGetInterned(_, _, _))),
+        "expected stdlib map.get(data, key) with const-string key fact to lower to MapGetInterned in {:?}",
         function.code
     );
 }
@@ -785,7 +831,7 @@ fn stdlib_map_has_literal_key_lowers_to_maphask() {
 }
 
 #[test]
-fn map_method_has_dynamic_key_lowers_to_maphas() {
+fn map_method_has_const_string_key_register_lowers_to_maphask() {
     let source = r#"
         let data = {};
         data.set("answer", 42);
@@ -796,14 +842,14 @@ fn map_method_has_dynamic_key_lowers_to_maphas() {
 
     assert_eq!(result.expect("vm exec"), Val::Bool(true));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::MapHas(_, _, _))),
-        "expected data.has(key) to lower to MapHas in {:?}",
+        function.code.iter().any(|op| matches!(op, Op::MapHasK(_, _, _))),
+        "expected data.has(key) with const-string key fact to lower to MapHasK in {:?}",
         function.code
     );
 }
 
 #[test]
-fn map_method_get_dynamic_key_lowers_to_map_get_dynamic() {
+fn map_method_get_const_string_key_register_lowers_to_map_get_interned() {
     let source = r#"
         let data = {};
         data.set("answer", 42);
@@ -814,14 +860,14 @@ fn map_method_get_dynamic_key_lowers_to_map_get_dynamic() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(42));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::MapGetDynamic(_, _, _))),
-        "expected data.get(key) to lower to MapGetDynamic in {:?}",
+        function.code.iter().any(|op| matches!(op, Op::MapGetInterned(_, _, _))),
+        "expected data.get(key) with const-string key fact to lower to MapGetInterned in {:?}",
         function.code
     );
 }
 
 #[test]
-fn map_index_dynamic_key_lowers_to_map_get_dynamic() {
+fn map_index_const_string_key_register_lowers_to_map_get_interned() {
     let source = r#"
         let data = {};
         data.set("answer", 42);
@@ -832,8 +878,8 @@ fn map_index_dynamic_key_lowers_to_map_get_dynamic() {
 
     assert_eq!(result.expect("vm exec"), Val::Int(42));
     assert!(
-        function.code.iter().any(|op| matches!(op, Op::MapGetDynamic(_, _, _))),
-        "expected data[key] to lower to MapGetDynamic in {:?}",
+        function.code.iter().any(|op| matches!(op, Op::MapGetInterned(_, _, _))),
+        "expected data[key] with const-string key fact to lower to MapGetInterned in {:?}",
         function.code
     );
 }

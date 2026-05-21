@@ -12,7 +12,7 @@ use super::super::helpers::assign_reg;
 
 #[inline]
 pub(super) fn run_load_global(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     ctx: &mut VmContext,
@@ -64,7 +64,7 @@ pub(super) fn run_define_global(regs: &[Val], consts: &[Val], ctx: &mut VmContex
 
 #[inline]
 pub(super) fn run_load_capture(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     ctx: &mut VmContext,
     frame_captures: &Option<Arc<ClosureCapture>>,

@@ -328,7 +328,7 @@ fn vm_profile_begin() -> bool {
 fn print_vm_profile_metrics() {
     let metrics = vm_runtime_metrics_snapshot();
     eprintln!(
-        "VM profile: opcode_steps={} branches={} typed_branches={} calls={} native_calls={} closure_calls={} exact_calls={} named_calls={} method_calls={} containers={} list_ops={} map_ops={} string_ops={} bc32_fallbacks={} bc32_build_misses={} bc32_stale_slots={} bc32_stale_misses={} bc32_sentinel_skips={} val_clones={} immediate_clones={} heap_clones={} register_writes={} return_value_moves={} quickening_hits={} quickening_build_attempts={} quickening_build_successes={} quickening_misses={} quickening_deopts={} quickening_sentinel_skips={}",
+        "VM profile: opcode_steps={} branches={} typed_branches={} calls={} native_calls={} closure_calls={} exact_calls={} named_calls={} method_calls={} containers={} list_ops={} map_ops={} string_ops={} bc32_fallbacks={} bc32_build_misses={} bc32_stale_slots={} bc32_stale_misses={} bc32_sentinel_skips={} val_clones={} immediate_clones={} heap_clones={} copy_policy_heap_clones={} register_copy_heap_clones={} local_copy_heap_clones={} local_load_heap_clones={} local_store_heap_clones={} const_load_heap_clones={} call_arg_heap_clones={} container_copy_heap_clones={} register_writes={} return_value_moves={} quickening_hits={} quickening_build_attempts={} quickening_build_successes={} quickening_misses={} quickening_deopts={} quickening_sentinel_skips={}",
         metrics.opcode_steps,
         metrics.branch_ops,
         metrics.typed_branch_ops,
@@ -350,6 +350,14 @@ fn print_vm_profile_metrics() {
         metrics.val_clones,
         metrics.immediate_val_clones,
         metrics.heap_val_clones,
+        metrics.copy_policy_heap_clones,
+        metrics.register_copy_heap_clones,
+        metrics.local_copy_heap_clones,
+        metrics.local_load_heap_clones,
+        metrics.local_store_heap_clones,
+        metrics.const_load_heap_clones,
+        metrics.call_arg_heap_clones,
+        metrics.container_copy_heap_clones,
         metrics.register_writes,
         metrics.return_value_moves,
         metrics.quickening_hits,

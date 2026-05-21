@@ -43,7 +43,7 @@ pub(super) fn floor_div_i64(lhs: i64, rhs: i64) -> i64 {
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn int_binop<F>(
-    frame_raw: *mut super::FrameState<'_>,
+    frame_raw: *mut super::FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -78,7 +78,7 @@ where
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn float_binop<F>(
-    frame_raw: *mut super::FrameState<'_>,
+    frame_raw: *mut super::FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -113,7 +113,7 @@ where
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn int_binop_imm<F>(
-    frame_raw: *mut super::FrameState<'_>,
+    frame_raw: *mut super::FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -149,7 +149,7 @@ where
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn cmp_ord_imm(
-    frame_raw: *mut super::FrameState<'_>,
+    frame_raw: *mut super::FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -190,7 +190,7 @@ pub(super) fn cmp_ord_imm(
 
 #[inline]
 pub(super) fn cmp_eq_imm(
-    frame_raw: *mut super::FrameState<'_>,
+    frame_raw: *mut super::FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,
@@ -229,7 +229,7 @@ pub(super) fn cmp_eq_imm(
 
 #[inline]
 pub(super) fn cmp_ne_imm(
-    frame_raw: *mut super::FrameState<'_>,
+    frame_raw: *mut super::FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,

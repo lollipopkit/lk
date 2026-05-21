@@ -152,7 +152,7 @@ impl Vm {
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn arith2_try_numeric(
-        frame_raw: *mut super::FrameState<'_>,
+        frame_raw: *mut super::FrameState<'_, '_>,
         regs: &mut [Val],
         consts: &[Val],
         dst: u16,
@@ -206,7 +206,7 @@ impl Vm {
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn cmp2_try_numeric(
-        frame_raw: *mut super::FrameState<'_>,
+        frame_raw: *mut super::FrameState<'_, '_>,
         regs: &mut [Val],
         consts: &[Val],
         dst: u16,

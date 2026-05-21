@@ -12,7 +12,7 @@ use super::super::math::{cmp_eq_imm, cmp_ne_imm, cmp_ord_imm, rk_read};
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_cmp_eq(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -20,8 +20,9 @@ pub(super) fn run_cmp_eq(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
-    if quickening::execute_cmp_eq_site(quickening, pc, regs, consts, dst, a, b)? {
+    if quickening::execute_cmp_eq_site(quickening, pc, regs, consts, dst, a, b, collect_metrics)? {
         return Ok(());
     }
     let result = rk_read(regs, consts, a) == rk_read(regs, consts, b);
@@ -37,7 +38,7 @@ pub(super) fn run_cmp_eq_jmp_false(regs: &[Val], consts: &[Val], pc: usize, ofs:
 
 #[inline]
 pub(super) fn run_cmp_i(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     dst: u16,
     a: u16,
@@ -69,7 +70,7 @@ pub(super) fn run_cmp_i_jmp_false(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_cmp_ne(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -77,8 +78,9 @@ pub(super) fn run_cmp_ne(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
-    if quickening::execute_cmp_ne_site(quickening, pc, regs, consts, dst, a, b)? {
+    if quickening::execute_cmp_ne_site(quickening, pc, regs, consts, dst, a, b, collect_metrics)? {
         return Ok(());
     }
     let result = rk_read(regs, consts, a) != rk_read(regs, consts, b);
@@ -95,7 +97,7 @@ pub(super) fn run_cmp_ne_jmp_false(regs: &[Val], consts: &[Val], pc: usize, ofs:
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn run_cmp_numeric(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -103,12 +105,13 @@ fn run_cmp_numeric(
     dst: u16,
     a: u16,
     b: u16,
-    quicken: fn(&mut Vec<QuickeningSite>, usize, &mut [Val], &[Val], u16, u16, u16) -> Result<bool>,
+    collect_metrics: bool,
+    quicken: fn(&mut Vec<QuickeningSite>, usize, &mut [Val], &[Val], u16, u16, u16, bool) -> Result<bool>,
     int_cmp: impl FnOnce(i64, i64) -> bool,
     float_cmp: impl FnOnce(f64, f64) -> bool,
     fallback: BinOp,
 ) -> Result<()> {
-    if quicken(quickening, pc, regs, consts, dst, a, b)? {
+    if quicken(quickening, pc, regs, consts, dst, a, b, collect_metrics)? {
         return Ok(());
     }
     if !crate::vm::Vm::cmp2_try_numeric(frame_raw, regs, consts, dst, a, b, int_cmp, float_cmp) {
@@ -209,7 +212,7 @@ pub(super) fn run_cmp_ord_imm_jmp_false(
 }
 
 pub(super) fn run_cmp_imm_or_branch(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     code: &[Op],
@@ -300,7 +303,7 @@ pub(super) fn run_cmp_imm_or_branch(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_cmp_lt(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -308,6 +311,7 @@ pub(super) fn run_cmp_lt(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     run_cmp_numeric(
         frame_raw,
@@ -318,6 +322,7 @@ pub(super) fn run_cmp_lt(
         dst,
         a,
         b,
+        collect_metrics,
         quickening::execute_cmp_lt_site,
         |x, y| x < y,
         |x, y| x < y,
@@ -333,7 +338,7 @@ pub(super) fn run_cmp_lt_jmp_false(regs: &[Val], consts: &[Val], pc: usize, ofs:
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_cmp_le(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -341,6 +346,7 @@ pub(super) fn run_cmp_le(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     run_cmp_numeric(
         frame_raw,
@@ -351,6 +357,7 @@ pub(super) fn run_cmp_le(
         dst,
         a,
         b,
+        collect_metrics,
         quickening::execute_cmp_le_site,
         |x, y| x <= y,
         |x, y| x <= y,
@@ -366,7 +373,7 @@ pub(super) fn run_cmp_le_jmp_false(regs: &[Val], consts: &[Val], pc: usize, ofs:
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_cmp_gt(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -374,6 +381,7 @@ pub(super) fn run_cmp_gt(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     run_cmp_numeric(
         frame_raw,
@@ -384,6 +392,7 @@ pub(super) fn run_cmp_gt(
         dst,
         a,
         b,
+        collect_metrics,
         quickening::execute_cmp_gt_site,
         |x, y| x > y,
         |x, y| x > y,
@@ -399,7 +408,7 @@ pub(super) fn run_cmp_gt_jmp_false(regs: &[Val], consts: &[Val], pc: usize, ofs:
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_cmp_ge(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     quickening: &mut Vec<QuickeningSite>,
@@ -407,6 +416,7 @@ pub(super) fn run_cmp_ge(
     dst: u16,
     a: u16,
     b: u16,
+    collect_metrics: bool,
 ) -> Result<()> {
     run_cmp_numeric(
         frame_raw,
@@ -417,6 +427,7 @@ pub(super) fn run_cmp_ge(
         dst,
         a,
         b,
+        collect_metrics,
         quickening::execute_cmp_ge_site,
         |x, y| x >= y,
         |x, y| x >= y,
@@ -431,7 +442,7 @@ pub(super) fn run_cmp_ge_jmp_false(regs: &[Val], consts: &[Val], pc: usize, ofs:
 
 #[inline]
 pub(super) fn run_in(
-    frame_raw: *mut FrameState<'_>,
+    frame_raw: *mut FrameState<'_, '_>,
     regs: &mut [Val],
     consts: &[Val],
     dst: u16,

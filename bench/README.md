@@ -30,8 +30,8 @@ RUNS=10 EXTRA_RUNS=20 bench/run_workload_bench.sh
 ```
 
 For VM-side diagnostics, enable one extra filtered LK run per workload. This
-prints opcode, call, branch, container, BC32 fallback-reason, and clone counters
-after the timing table:
+prints opcode, call, branch, container, BC32 fallback-reason, clone counters,
+and copy-policy heap-clone source counters after the timing table:
 
 ```bash
 PROFILE_WORKLOADS=1 bench/run_workload_bench.sh
@@ -120,29 +120,29 @@ Command:
 RUNS=1 EXTRA_RUNS=0 bench/run_workload_bench.sh
 ```
 
-Date: 2026-05-20
+Date: 2026-05-21
 
 | Workload | LK VM (ms) | LK AOT (ms) | Lua (ms) | VM/Lua | AOT/Lua | AOT/VM | Conf. | Status |
 |----------|------------|-------------|----------|--------|---------|--------|-------|--------|
-| gcd_batch | 8.070 | 7.752 | 8.515 | 0.948x | 0.910x | 0.961x | high | ahead |
-| prime_trial_division | 0.358 | 1.792 | 0.595 | 0.602x | 3.012x | 5.006x | high | ahead |
-| binary_search | 14.409 | 10.845 | 49.411 | 0.292x | 0.219x | 0.753x | high | ahead |
-| two_sum_map | 61.851 | 113.220 | 42.519 | 1.455x | 2.663x | 1.831x | high | behind |
-| sliding_window_sum | 58.470 | 71.607 | 21.680 | 2.697x | 3.303x | 1.225x | high | behind |
-| matrix_3x3_multiply | 7.370 | 2.313 | 1.567 | 4.703x | 1.476x | 0.314x | high | behind |
-| stock_max_profit | 39.055 | 34.690 | 9.875 | 3.955x | 3.513x | 0.888x | high | behind |
-| histogram_group_count | 100.645 | 106.338 | 44.453 | 2.264x | 2.392x | 1.057x | high | behind |
-| string_key_hash | 26.341 | 28.921 | 7.253 | 3.632x | 3.987x | 1.098x | high | behind |
-| order_score_pipeline | 10.831 | 7.570 | 3.419 | 3.168x | 2.214x | 0.699x | high | behind |
-| log_parse_filter | 77.342 | 100.691 | 211.214 | 0.366x | 0.477x | 1.302x | high | ahead |
-| cart_pricing_rules | 6.215 | 5.846 | 2.383 | 2.608x | 2.453x | 0.941x | high | behind |
-| route_permission_check | 16.816 | 15.313 | 3.207 | 5.244x | 4.775x | 0.911x | high | behind |
-| inventory_reorder | 72.791 | 80.687 | 28.575 | 2.547x | 2.824x | 1.108x | high | behind |
-| fraud_rule_scoring | 38.174 | 32.235 | 12.088 | 3.158x | 2.667x | 0.844x | high | behind |
+| gcd_batch | 8.282 | 6.359 | 7.956 | 1.041x | 0.799x | 0.768x | high | close |
+| prime_trial_division | 0.396 | 1.579 | 0.546 | 0.725x | 2.892x | 3.987x | high | ahead |
+| binary_search | 13.818 | 11.327 | 50.063 | 0.276x | 0.226x | 0.820x | high | ahead |
+| two_sum_map | 59.220 | 112.249 | 42.965 | 1.378x | 2.613x | 1.895x | high | behind |
+| sliding_window_sum | 56.389 | 71.623 | 21.916 | 2.573x | 3.268x | 1.270x | high | behind |
+| matrix_3x3_multiply | 6.260 | 2.264 | 1.502 | 4.168x | 1.507x | 0.362x | high | behind |
+| stock_max_profit | 32.757 | 34.905 | 10.026 | 3.267x | 3.481x | 1.066x | high | behind |
+| histogram_group_count | 96.289 | 107.933 | 45.330 | 2.124x | 2.381x | 1.121x | high | behind |
+| string_key_hash | 24.422 | 28.269 | 7.213 | 3.386x | 3.919x | 1.158x | high | behind |
+| order_score_pipeline | 9.187 | 7.677 | 3.359 | 2.735x | 2.286x | 0.836x | high | behind |
+| log_parse_filter | 68.165 | 99.357 | 212.876 | 0.320x | 0.467x | 1.458x | high | ahead |
+| cart_pricing_rules | 4.957 | 5.778 | 2.380 | 2.083x | 2.428x | 1.166x | high | behind |
+| route_permission_check | 15.580 | 15.276 | 3.366 | 4.629x | 4.538x | 0.980x | high | behind |
+| inventory_reorder | 71.106 | 81.000 | 29.597 | 2.402x | 2.737x | 1.139x | high | behind |
+| fraud_rule_scoring | 28.181 | 32.064 | 12.197 | 2.310x | 2.629x | 1.138x | high | behind |
 
-Geometric mean VM/Lua ratio: **1.878x**.
-AOT geometric mean ratio: **1.961x** vs Lua.
-AOT/VM geometric mean ratio: **1.044x**.
+Geometric mean VM/Lua ratio: **1.719x**.
+AOT geometric mean ratio: **1.925x** vs Lua.
+AOT/VM geometric mean ratio: **1.120x**.
 
 ## Current Bottlenecks
 
@@ -154,6 +154,9 @@ Primary bottlenecks:
 - General VM overhead in realistic while loops and function calls
 - Integer comparison/modulo dispatch in branch-heavy loops
 - `Val` clone/refcount overhead in list/map mutation and iteration
+- Local-slot copies are now measured separately (`LocalHeap`) so alias-safe
+  ownership work can target them without hiding them inside generic register
+  copies
 - String conversion and string-key construction
 - Map/list memory layout and cache locality
 

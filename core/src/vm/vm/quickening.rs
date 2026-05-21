@@ -4,8 +4,9 @@ use crate::op::BinOp;
 use crate::val::Val;
 use crate::vm::bytecode::{rk_index, rk_is_const};
 use crate::vm::{
-    record_quickening_build_attempt, record_quickening_build_success, record_quickening_deopt, record_quickening_hit,
-    record_quickening_miss, record_register_write,
+    record_quickening_build_attempt_known_enabled, record_quickening_build_success_known_enabled,
+    record_quickening_deopt_known_enabled, record_quickening_hit_known_enabled, record_quickening_miss_known_enabled,
+    write_register_value,
 };
 
 const WARMUP_THRESHOLD: u8 = 4;
@@ -42,7 +43,15 @@ pub(super) struct QuickeningSite {
 
 impl QuickeningSite {
     #[inline]
-    fn execute_add(&mut self, regs: &mut [Val], consts: &[Val], dst: u16, lhs: u16, rhs: u16) -> Result<bool> {
+    fn execute_add(
+        &mut self,
+        regs: &mut [Val],
+        consts: &[Val],
+        dst: u16,
+        lhs: u16,
+        rhs: u16,
+        collect_metrics: bool,
+    ) -> Result<bool> {
         if let Some(
             kind @ (QuickenedKind::AddInt
             | QuickenedKind::AddFloat
@@ -51,21 +60,21 @@ impl QuickeningSite {
         ) = self.kind
         {
             if let Some(out) = eval_add_kind(kind, regs, consts, lhs, rhs) {
-                record_quickening_hit();
+                record_hit(collect_metrics);
                 assign_reg(regs, dst as usize, out);
                 return Ok(true);
             }
-            self.deopt();
+            self.deopt(collect_metrics);
             return Ok(false);
         }
 
         if self.backoff > 0 {
             self.backoff -= 1;
-            record_quickening_miss();
+            record_miss(collect_metrics);
             return Ok(false);
         }
 
-        record_quickening_build_attempt();
+        record_build_attempt(collect_metrics);
         let observed = observe_add_kind(regs, consts, lhs, rhs);
         if let Some(kind) = observed
             && let Some(out) = eval_add_kind(kind, regs, consts, lhs, rhs)
@@ -73,13 +82,13 @@ impl QuickeningSite {
             self.hits = self.hits.saturating_add(1);
             if self.hits >= WARMUP_THRESHOLD {
                 self.kind = Some(kind);
-                record_quickening_build_success();
+                record_build_success(collect_metrics);
             }
             assign_reg(regs, dst as usize, out);
             Ok(true)
         } else {
             self.hits = 0;
-            record_quickening_miss();
+            record_miss(collect_metrics);
             Ok(false)
         }
     }
@@ -94,38 +103,39 @@ impl QuickeningSite {
         dst: u16,
         lhs: u16,
         rhs: u16,
+        collect_metrics: bool,
     ) -> Result<bool> {
         if self.kind == Some(int_kind) || self.kind == Some(float_kind) {
             let kind = self.kind.expect("numeric quickening kind");
             if let Some(value) = eval_numeric_kind(kind, regs, consts, lhs, rhs) {
-                record_quickening_hit();
+                record_hit(collect_metrics);
                 assign_reg(regs, dst as usize, value);
                 return Ok(true);
             }
-            self.deopt();
+            self.deopt(collect_metrics);
             return Ok(false);
         }
 
         if self.backoff > 0 {
             self.backoff -= 1;
-            record_quickening_miss();
+            record_miss(collect_metrics);
             return Ok(false);
         }
 
-        record_quickening_build_attempt();
+        record_build_attempt(collect_metrics);
         if let Some(kind) = observe_numeric_kind(regs, consts, lhs, rhs, int_kind, float_kind)
             && let Some(value) = eval_numeric_kind(kind, regs, consts, lhs, rhs)
         {
             self.hits = self.hits.saturating_add(1);
             if self.hits >= WARMUP_THRESHOLD {
                 self.kind = Some(kind);
-                record_quickening_build_success();
+                record_build_success(collect_metrics);
             }
             assign_reg(regs, dst as usize, value);
             Ok(true)
         } else {
             self.hits = 0;
-            record_quickening_miss();
+            record_miss(collect_metrics);
             Ok(false)
         }
     }
@@ -139,45 +149,81 @@ impl QuickeningSite {
         dst: u16,
         lhs: u16,
         rhs: u16,
+        collect_metrics: bool,
     ) -> Result<bool> {
         if self.kind == Some(expected) {
             if let (Val::Int(a), Val::Int(b)) = (rk_read(regs, consts, lhs), rk_read(regs, consts, rhs)) {
-                record_quickening_hit();
+                record_hit(collect_metrics);
                 assign_reg(regs, dst as usize, Val::Bool(expected.eval_int_cmp(a, b)));
                 return Ok(true);
             }
-            self.deopt();
+            self.deopt(collect_metrics);
             return Ok(false);
         }
 
         if self.backoff > 0 {
             self.backoff -= 1;
-            record_quickening_miss();
+            record_miss(collect_metrics);
             return Ok(false);
         }
 
-        record_quickening_build_attempt();
+        record_build_attempt(collect_metrics);
         if let (Val::Int(a), Val::Int(b)) = (rk_read(regs, consts, lhs), rk_read(regs, consts, rhs)) {
             self.hits = self.hits.saturating_add(1);
             if self.hits >= WARMUP_THRESHOLD {
                 self.kind = Some(expected);
-                record_quickening_build_success();
+                record_build_success(collect_metrics);
             }
             assign_reg(regs, dst as usize, Val::Bool(expected.eval_int_cmp(a, b)));
             Ok(true)
         } else {
             self.hits = 0;
-            record_quickening_miss();
+            record_miss(collect_metrics);
             Ok(false)
         }
     }
 
     #[inline]
-    fn deopt(&mut self) {
+    fn deopt(&mut self, collect_metrics: bool) {
         self.kind = None;
         self.hits = 0;
         self.backoff = BACKOFF_TICKS;
-        record_quickening_deopt();
+        record_deopt(collect_metrics);
+    }
+}
+
+#[inline]
+fn record_hit(collect_metrics: bool) {
+    if collect_metrics {
+        record_quickening_hit_known_enabled();
+    }
+}
+
+#[inline]
+fn record_miss(collect_metrics: bool) {
+    if collect_metrics {
+        record_quickening_miss_known_enabled();
+    }
+}
+
+#[inline]
+fn record_build_attempt(collect_metrics: bool) {
+    if collect_metrics {
+        record_quickening_build_attempt_known_enabled();
+    }
+}
+
+#[inline]
+fn record_build_success(collect_metrics: bool) {
+    if collect_metrics {
+        record_quickening_build_success_known_enabled();
+    }
+}
+
+#[inline]
+fn record_deopt(collect_metrics: bool) {
+    if collect_metrics {
+        record_quickening_deopt_known_enabled();
     }
 }
 
@@ -344,11 +390,12 @@ fn execute_numeric_binary_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
     if sites.len() <= pc {
         sites.resize(pc + 1, QuickeningSite::default());
     }
-    sites[pc].execute_numeric_binary(int_kind, float_kind, regs, consts, dst, lhs, rhs)
+    sites[pc].execute_numeric_binary(int_kind, float_kind, regs, consts, dst, lhs, rhs, collect_metrics)
 }
 
 #[inline]
@@ -360,11 +407,12 @@ pub(in crate::vm::vm) fn execute_add_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
     if sites.len() <= pc {
         sites.resize(pc + 1, QuickeningSite::default());
     }
-    sites[pc].execute_add(regs, consts, dst, lhs, rhs)
+    sites[pc].execute_add(regs, consts, dst, lhs, rhs, collect_metrics)
 }
 
 #[inline]
@@ -376,6 +424,7 @@ pub(in crate::vm::vm) fn execute_sub_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
     execute_numeric_binary_site(
         sites,
@@ -387,6 +436,7 @@ pub(in crate::vm::vm) fn execute_sub_site(
         dst,
         lhs,
         rhs,
+        collect_metrics,
     )
 }
 
@@ -399,6 +449,7 @@ pub(in crate::vm::vm) fn execute_mul_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
     execute_numeric_binary_site(
         sites,
@@ -410,6 +461,7 @@ pub(in crate::vm::vm) fn execute_mul_site(
         dst,
         lhs,
         rhs,
+        collect_metrics,
     )
 }
 
@@ -422,6 +474,7 @@ pub(in crate::vm::vm) fn execute_mod_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
     execute_numeric_binary_site(
         sites,
@@ -433,6 +486,7 @@ pub(in crate::vm::vm) fn execute_mod_site(
         dst,
         lhs,
         rhs,
+        collect_metrics,
     )
 }
 
@@ -446,11 +500,12 @@ fn execute_int_compare_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
     if sites.len() <= pc {
         sites.resize(pc + 1, QuickeningSite::default());
     }
-    sites[pc].execute_int_compare(kind, regs, consts, dst, lhs, rhs)
+    sites[pc].execute_int_compare(kind, regs, consts, dst, lhs, rhs, collect_metrics)
 }
 
 #[inline]
@@ -462,8 +517,19 @@ pub(in crate::vm::vm) fn execute_cmp_lt_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
-    execute_int_compare_site(sites, pc, QuickenedKind::CmpLtInt, regs, consts, dst, lhs, rhs)
+    execute_int_compare_site(
+        sites,
+        pc,
+        QuickenedKind::CmpLtInt,
+        regs,
+        consts,
+        dst,
+        lhs,
+        rhs,
+        collect_metrics,
+    )
 }
 
 #[inline]
@@ -475,8 +541,19 @@ pub(in crate::vm::vm) fn execute_cmp_eq_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
-    execute_int_compare_site(sites, pc, QuickenedKind::CmpEqInt, regs, consts, dst, lhs, rhs)
+    execute_int_compare_site(
+        sites,
+        pc,
+        QuickenedKind::CmpEqInt,
+        regs,
+        consts,
+        dst,
+        lhs,
+        rhs,
+        collect_metrics,
+    )
 }
 
 #[inline]
@@ -488,8 +565,19 @@ pub(in crate::vm::vm) fn execute_cmp_ne_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
-    execute_int_compare_site(sites, pc, QuickenedKind::CmpNeInt, regs, consts, dst, lhs, rhs)
+    execute_int_compare_site(
+        sites,
+        pc,
+        QuickenedKind::CmpNeInt,
+        regs,
+        consts,
+        dst,
+        lhs,
+        rhs,
+        collect_metrics,
+    )
 }
 
 #[inline]
@@ -501,8 +589,19 @@ pub(in crate::vm::vm) fn execute_cmp_le_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
-    execute_int_compare_site(sites, pc, QuickenedKind::CmpLeInt, regs, consts, dst, lhs, rhs)
+    execute_int_compare_site(
+        sites,
+        pc,
+        QuickenedKind::CmpLeInt,
+        regs,
+        consts,
+        dst,
+        lhs,
+        rhs,
+        collect_metrics,
+    )
 }
 
 #[inline]
@@ -514,8 +613,19 @@ pub(in crate::vm::vm) fn execute_cmp_gt_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
-    execute_int_compare_site(sites, pc, QuickenedKind::CmpGtInt, regs, consts, dst, lhs, rhs)
+    execute_int_compare_site(
+        sites,
+        pc,
+        QuickenedKind::CmpGtInt,
+        regs,
+        consts,
+        dst,
+        lhs,
+        rhs,
+        collect_metrics,
+    )
 }
 
 #[inline]
@@ -527,8 +637,19 @@ pub(in crate::vm::vm) fn execute_cmp_ge_site(
     dst: u16,
     lhs: u16,
     rhs: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
-    execute_int_compare_site(sites, pc, QuickenedKind::CmpGeInt, regs, consts, dst, lhs, rhs)
+    execute_int_compare_site(
+        sites,
+        pc,
+        QuickenedKind::CmpGeInt,
+        regs,
+        consts,
+        dst,
+        lhs,
+        rhs,
+        collect_metrics,
+    )
 }
 
 #[inline]
@@ -539,6 +660,7 @@ pub(in crate::vm::vm) fn execute_index_site(
     dst: u16,
     base: u16,
     index: u16,
+    collect_metrics: bool,
 ) -> Result<bool> {
     if sites.len() <= pc {
         sites.resize(pc + 1, QuickeningSite::default());
@@ -546,21 +668,21 @@ pub(in crate::vm::vm) fn execute_index_site(
     let site = &mut sites[pc];
     if let Some(kind @ (QuickenedKind::IndexListInt | QuickenedKind::IndexStrInt)) = site.kind {
         if let Some(out) = eval_index_kind(kind, regs, base, index) {
-            record_quickening_hit();
+            record_hit(collect_metrics);
             assign_reg(regs, dst as usize, out);
             return Ok(true);
         }
-        site.deopt();
+        site.deopt(collect_metrics);
         return Ok(false);
     }
 
     if site.backoff > 0 {
         site.backoff -= 1;
-        record_quickening_miss();
+        record_miss(collect_metrics);
         return Ok(false);
     }
 
-    record_quickening_build_attempt();
+    record_build_attempt(collect_metrics);
     let observed = observe_index_kind(regs, base, index);
     if let Some(kind) = observed
         && let Some(out) = eval_index_kind(kind, regs, base, index)
@@ -568,13 +690,13 @@ pub(in crate::vm::vm) fn execute_index_site(
         site.hits = site.hits.saturating_add(1);
         if site.hits >= WARMUP_THRESHOLD {
             site.kind = Some(kind);
-            record_quickening_build_success();
+            record_build_success(collect_metrics);
         }
         assign_reg(regs, dst as usize, out);
         Ok(true)
     } else {
         site.hits = 0;
-        record_quickening_miss();
+        record_miss(collect_metrics);
         Ok(false)
     }
 }
@@ -661,8 +783,7 @@ fn rk_read<'a>(regs: &'a [Val], consts: &'a [Val], rk: u16) -> &'a Val {
 
 #[inline]
 fn assign_reg(regs: &mut [Val], idx: usize, value: Val) {
-    record_register_write();
-    regs[idx] = value;
+    write_register_value(regs, idx, value);
 }
 
 #[cfg(test)]

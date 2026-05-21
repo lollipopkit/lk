@@ -51,7 +51,7 @@ pub(super) fn with_vm_mut<R>(vm: *mut Vm, f: impl FnOnce(&mut Vm) -> R) -> R {
 }
 
 #[inline]
-pub(super) fn set_frame_pc(frame: *mut FrameState<'_>, pc: usize) {
+pub(super) fn set_frame_pc(frame: *mut FrameState<'_, '_>, pc: usize) {
     debug_assert!(!frame.is_null(), "frame pointer must be non-null");
     // SAFETY: frame_raw is derived from the active &mut FrameState in run_frame
     // and remains valid until that frame returns.
@@ -64,7 +64,7 @@ pub(super) fn set_frame_pc(frame: *mut FrameState<'_>, pc: usize) {
 }
 
 #[inline]
-pub(super) fn take_inline_return_meta(frame: *mut FrameState<'_>) -> Option<CallFrameMeta> {
+pub(super) fn take_inline_return_meta(frame: *mut FrameState<'_, '_>) -> Option<CallFrameMeta> {
     debug_assert!(!frame.is_null(), "frame pointer must be non-null");
     // SAFETY: see set_frame_pc; this consumes metadata from the same active frame.
     unsafe { (&mut *frame).take_inline_return_meta() }

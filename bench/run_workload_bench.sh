@@ -71,15 +71,15 @@ profile_value() {
 }
 
 collect_profile_once() {
-  local widths=(28 12 10 10 8 10 10 10 10 10 10 10 10)
+  local exec_widths=(28 12 10 10 8 10 10 10 10 10 10)
+  local copy_widths=(28 10 10 10 10 10 10 10 10 10 10)
+  local exec_rows=()
+  local copy_rows=()
   echo ""
   echo "VM Profile by Workload"
-  printf "%-28s %12s %10s %10s %8s %10s %10s %10s %10s %10s %10s %10s %10s\n" \
-    "Workload" "Opcodes" "Calls" "Branches" "Typed" "Containers" "List" "Map" "String" "Bc32Miss" "Bc32Sent" "Clones" "HeapClone"
-  print_separator "${widths[@]}"
 
   for name in "${WORKLOADS[@]}"; do
-    local err_file opcodes calls branches typed containers list_ops map_ops string_ops bc32_misses bc32_sentinel clones heap_clones
+    local err_file opcodes calls branches typed containers list_ops map_ops string_ops bc32_misses bc32_sentinel clones heap_clones copy_heap reg_heap local_heap load_heap store_heap const_heap arg_heap cont_heap
     err_file="$TMPDIR/profile_${name}.err"
     LK_VM_PROFILE=1 LK_WORKLOAD_FILTER="$name" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk" >/dev/null 2>"$err_file"
     opcodes=$(profile_value "$err_file" opcode_steps)
@@ -94,8 +94,36 @@ collect_profile_once() {
     bc32_sentinel=$(profile_value "$err_file" bc32_sentinel_skips)
     clones=$(profile_value "$err_file" val_clones)
     heap_clones=$(profile_value "$err_file" heap_clones)
-    printf "%-28s %12s %10s %10s %8s %10s %10s %10s %10s %10s %10s %10s %10s\n" \
-      "$name" "$opcodes" "$calls" "$branches" "$typed" "$containers" "$list_ops" "$map_ops" "$string_ops" "$bc32_misses" "$bc32_sentinel" "$clones" "$heap_clones"
+    copy_heap=$(profile_value "$err_file" copy_policy_heap_clones)
+    reg_heap=$(profile_value "$err_file" register_copy_heap_clones)
+    local_heap=$(profile_value "$err_file" local_copy_heap_clones)
+    load_heap=$(profile_value "$err_file" local_load_heap_clones)
+    store_heap=$(profile_value "$err_file" local_store_heap_clones)
+    const_heap=$(profile_value "$err_file" const_load_heap_clones)
+    arg_heap=$(profile_value "$err_file" call_arg_heap_clones)
+    cont_heap=$(profile_value "$err_file" container_copy_heap_clones)
+    exec_rows+=("$name|$opcodes|$calls|$branches|$typed|$containers|$list_ops|$map_ops|$string_ops|$bc32_misses|$bc32_sentinel")
+    copy_rows+=("$name|$clones|$heap_clones|$copy_heap|$reg_heap|$local_heap|$load_heap|$store_heap|$const_heap|$arg_heap|$cont_heap")
+  done
+
+  printf "%-28s %12s %10s %10s %8s %10s %10s %10s %10s %10s %10s\n" \
+    "Workload" "Opcodes" "Calls" "Branches" "Typed" "Containers" "List" "Map" "String" "Bc32Miss" "Bc32Sent"
+  print_separator "${exec_widths[@]}"
+  for row in "${exec_rows[@]}"; do
+    IFS='|' read -r name opcodes calls branches typed containers list_ops map_ops string_ops bc32_misses bc32_sentinel <<< "$row"
+    printf "%-28s %12s %10s %10s %8s %10s %10s %10s %10s %10s %10s\n" \
+      "$name" "$opcodes" "$calls" "$branches" "$typed" "$containers" "$list_ops" "$map_ops" "$string_ops" "$bc32_misses" "$bc32_sentinel"
+  done
+
+  echo ""
+  echo "VM Copy Profile by Workload"
+  printf "%-28s %10s %10s %10s %10s %10s %10s %10s %10s %10s %10s\n" \
+    "Workload" "Clones" "HeapClone" "CopyHeap" "RegHeap" "LocalHeap" "LoadHeap" "StoreHeap" "ConstHeap" "ArgHeap" "ContHeap"
+  print_separator "${copy_widths[@]}"
+  for row in "${copy_rows[@]}"; do
+    IFS='|' read -r name clones heap_clones copy_heap reg_heap local_heap load_heap store_heap const_heap arg_heap cont_heap <<< "$row"
+    printf "%-28s %10s %10s %10s %10s %10s %10s %10s %10s %10s %10s\n" \
+      "$name" "$clones" "$heap_clones" "$copy_heap" "$reg_heap" "$local_heap" "$load_heap" "$store_heap" "$const_heap" "$arg_heap" "$cont_heap"
   done
 }
 

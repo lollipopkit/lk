@@ -23,6 +23,7 @@ fn test_bc32_roundtrip_simple() {
     let f = Function {
         consts: vec![Val::Int(42)],
         code: vec![
+            Op::Nop,
             Op::LoadK(0, 0),
             Op::Move(1, 0),
             Op::ToStr(2, 1),
@@ -43,6 +44,7 @@ fn test_bc32_roundtrip_simple() {
     let bc = Bc32Function::try_from_function(&f).expect("encodable");
     let f2 = bc.decode();
     let expected = vec![
+        Op::Nop,
         Op::LoadK(0, 0),
         Op::Move(1, 0),
         Op::ToStr(2, 1),
