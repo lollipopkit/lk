@@ -26,13 +26,38 @@ impl FunctionBuilder {
     }
 
     pub(crate) fn flush_loop_global_writes(&mut self, body: &Stmt) {
+        let names = self.loop_global_write_names(body);
+        if self.loop_depth > 1 {
+            self.pending_loop_global_writes.extend(names);
+            return;
+        }
+        self.flush_global_write_names(names);
+    }
+
+    pub(crate) fn flush_pending_loop_global_writes(&mut self) {
+        if self.pending_loop_global_writes.is_empty() {
+            return;
+        }
+        let names = std::mem::take(&mut self.pending_loop_global_writes);
+        self.flush_global_write_names(names);
+    }
+
+    fn loop_global_write_names(&self, body: &Stmt) -> std::collections::HashSet<String> {
         let mut assigned = std::collections::HashSet::new();
         Self::collect_stmt_assigned_names(body, &mut assigned);
-        let mut names: Vec<_> = assigned
+        assigned
             .into_iter()
             .filter(|name| self.global_defs.contains(name))
+            .collect()
+    }
+
+    fn flush_global_write_names(&mut self, names: std::collections::HashSet<String>) {
+        let mut names: Vec<_> = names
+            .into_iter()
+            .chain(std::mem::take(&mut self.pending_loop_global_writes))
             .collect();
         names.sort();
+        names.dedup();
         for name in names {
             if let Some(idx) = self.lookup(&name) {
                 let kname = self.k(Val::from_str(name.as_str()));

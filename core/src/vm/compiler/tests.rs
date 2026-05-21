@@ -10,6 +10,7 @@ mod binding_slot_tests;
 mod call_fast_paths;
 mod control_fast_paths;
 mod general_optimizations;
+mod global_flush;
 mod list_fast_paths;
 mod map_fast_paths;
 mod stdlib_return_facts;

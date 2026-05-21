@@ -966,6 +966,9 @@ impl FunctionBuilder {
                 self.stmt_assign(name, value);
             }
             Stmt::Expr(e) => {
+                if Self::expr_contains_call(e) {
+                    self.flush_pending_loop_global_writes();
+                }
                 let globals_to_reload = self.called_closure_global_captures(e);
                 let reg = self.expr(e);
                 if let Some(var_name) = detect_mutating_receiver(e)
@@ -1073,6 +1076,9 @@ impl FunctionBuilder {
             }
             Stmt::Return { value } => {
                 let base = if let Some(v) = value {
+                    if Self::expr_contains_call(v) {
+                        self.flush_pending_loop_global_writes();
+                    }
                     self.expr(v)
                 } else {
                     let k = self.k(Val::Nil);
