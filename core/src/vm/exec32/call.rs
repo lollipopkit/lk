@@ -34,9 +34,6 @@ impl Executor32 {
         };
 
         match callable {
-            CallableValue::ParsedClosure(_) => {
-                bail!("legacy native callable must be imported into a Module32 native slot before execution")
-            }
             CallableValue::Closure {
                 function_index,
                 captures,
@@ -75,7 +72,7 @@ impl Executor32 {
                     ctx.as_deref_mut(),
                 )
             }
-            CallableValue::Aot(_) | CallableValue::AotHandle { .. } => {
+            CallableValue::Aot(_) => {
                 bail!("AOT callable is not implemented in Executor32 yet")
             }
         }

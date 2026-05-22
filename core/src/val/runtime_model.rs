@@ -10,9 +10,7 @@ use arcstr::ArcStr;
 
 use crate::util::fast_map::FastHashMap;
 
-use super::values::{
-    AotFunction, ChannelValue, ClosureValue, ShortStr, StreamCursorValue, StreamValue, TaskValue, Val,
-};
+use super::values::{AotFunction, ChannelValue, ShortStr, StreamCursorValue, StreamValue, TaskValue, Val};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HeapRef(u32);
@@ -168,7 +166,6 @@ pub enum CallableValue {
         function_index: u32,
         captures: Vec<RuntimeVal>,
     },
-    ParsedClosure(Arc<ClosureValue>),
     RuntimeNative32 {
         arity: u16,
         function: crate::vm::NativeFunction32,
@@ -179,10 +176,6 @@ pub enum CallableValue {
     },
     Runtime32(Arc<crate::vm::RuntimeCallable32>),
     Aot(AotFunction),
-    AotHandle {
-        handle: u32,
-        arity: u16,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -440,6 +433,23 @@ impl TypedMap {
             Self::StringBool(values) => key
                 .as_str()
                 .and_then(|key| values.get(key).copied().map(RuntimeVal::Bool)),
+        }
+    }
+
+    pub fn get_str(&self, key: &str) -> Option<RuntimeVal> {
+        match self {
+            Self::Mixed(values) => {
+                if let Some(value) =
+                    ShortStr::new(key).and_then(|key| values.get(&RuntimeMapKey::ShortStr(key)).cloned())
+                {
+                    return Some(value);
+                }
+                values.get(&RuntimeMapKey::String(Arc::<str>::from(key))).cloned()
+            }
+            Self::StringMixed(values) => values.get(key).cloned(),
+            Self::StringInt(values) => values.get(key).copied().map(RuntimeVal::Int),
+            Self::StringFloat(values) => values.get(key).copied().map(RuntimeVal::Float),
+            Self::StringBool(values) => values.get(key).copied().map(RuntimeVal::Bool),
         }
     }
 
@@ -702,6 +712,7 @@ mod tests {
 
         map.set(RuntimeMapKey::String(Arc::<str>::from("answer")), RuntimeVal::Int(42));
         assert!(matches!(map, TypedMap::StringInt(_)));
+        assert_eq!(map.get_str("answer"), Some(RuntimeVal::Int(42)));
         assert_eq!(
             map.get(&RuntimeMapKey::String(Arc::<str>::from("answer"))),
             Some(RuntimeVal::Int(42))
@@ -725,6 +736,7 @@ mod tests {
         map.set(RuntimeMapKey::Int(7), RuntimeVal::Bool(false));
 
         assert!(matches!(map, TypedMap::Mixed(_)));
+        assert_eq!(map.get_str("ok"), Some(RuntimeVal::Bool(true)));
         assert_eq!(map.get(&RuntimeMapKey::Int(7)), Some(RuntimeVal::Bool(false)));
         assert_eq!(
             map.get(&RuntimeMapKey::String(Arc::<str>::from("ok"))),

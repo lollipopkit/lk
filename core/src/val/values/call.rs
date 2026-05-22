@@ -58,9 +58,6 @@ fn call_callable(
         return Err(anyhow!("{} is not a function", value.type_name()));
     };
     match function {
-        CallableValue::ParsedClosure(_) => Err(anyhow!(
-            "parsed Closure direct call is disabled during the Instr32 VM migration; use RuntimeCallable32"
-        )),
         CallableValue::Runtime32(function) => {
             if named.is_empty() {
                 crate::vm::call_runtime_callable32(function.as_ref(), pos, ctx)
@@ -71,9 +68,7 @@ fn call_callable(
         CallableValue::RuntimeNative32 { .. } => Err(anyhow!(
             "RuntimeNative32 callable cannot be called through legacy Val::call; execute it in Executor32"
         )),
-        CallableValue::Aot(_) | CallableValue::AotHandle { .. } => {
-            Err(anyhow!("AOT callable is disabled during the Instr32 VM migration"))
-        }
+        CallableValue::Aot(_) => Err(anyhow!("AOT callable is disabled during the Instr32 VM migration")),
         CallableValue::Closure { .. } | CallableValue::Native { .. } => Err(anyhow!(
             "Instr32 callable cannot be called through legacy Val::call; execute it in Executor32"
         )),

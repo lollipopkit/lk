@@ -5,14 +5,58 @@ mod tests {
         stmt::{Program, Stmt, stmt_parser::StmtParser},
         token::Tokenizer,
         typ::TypeChecker,
-        val::Val,
-        vm::VmContext,
+        val::{HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        vm::{VmContext, execute_program32_raw_with_ctx},
     };
 
     fn parse_program(source: &str) -> Program {
         let tokens = Tokenizer::tokenize(source).expect("Failed to tokenize");
         let mut parser = StmtParser::new(&tokens);
         parser.parse_program().expect("Failed to parse program")
+    }
+
+    fn execute_program_raw(source: &str) -> (RuntimeVal, HeapStore) {
+        let program = parse_program(source);
+        let mut ctx = VmContext::new();
+        let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("Failed to execute");
+        (result.first_return().clone(), result.state.heap)
+    }
+
+    fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("Expected list object, got {:?}", value.kind());
+        };
+        let Some(HeapValue::List(list)) = heap.get(*handle) else {
+            panic!("Expected list heap value");
+        };
+        match list {
+            TypedList::Mixed(values) => values.clone(),
+            TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            TypedList::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            TypedList::String(values) => values
+                .iter()
+                .map(|value| {
+                    crate::val::ShortStr::new(value)
+                        .map(RuntimeVal::ShortStr)
+                        .unwrap_or_else(|| panic!("test helper only supports short strings"))
+                })
+                .collect(),
+        }
+    }
+
+    fn expect_int(value: &RuntimeVal) -> i64 {
+        let RuntimeVal::Int(value) = value else {
+            panic!("Expected int, got {:?}", value.kind());
+        };
+        *value
+    }
+
+    fn expect_str(value: &RuntimeVal, expected: &str) {
+        match value {
+            RuntimeVal::ShortStr(value) => assert_eq!(value.as_str(), expected),
+            other => panic!("Expected short string, got {:?}", other.kind()),
+        }
     }
 
     #[test]
@@ -508,7 +552,7 @@ mod tests {
 
     #[test]
     fn test_for_loop_tuple_destructure() {
-        let program = parse_program(
+        let (result, heap) = execute_program_raw(
             r#"
             let keys = [];
             let values = [];
@@ -519,27 +563,15 @@ mod tests {
             return [keys, values];
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        // Should return [["a", "b"], [1, 2]]
-        if let Some(outer) = result.as_list() {
-            assert_eq!(outer.len(), 2);
-            if let Some(keys) = outer[0].as_list() {
-                assert_eq!(keys.len(), 2);
-                assert_eq!(keys[0], Val::from_str("a"));
-                assert_eq!(keys[1], Val::from_str("b"));
-            } else {
-                panic!("Expected keys to be a list");
-            }
-            if let Some(values) = outer[1].as_list() {
-                assert_eq!(values.len(), 2);
-                assert_eq!(values[0], Val::Int(1));
-                assert_eq!(values[1], Val::Int(2));
-            } else {
-                panic!("Expected values to be a list");
-            }
-        } else {
-            panic!("Expected result to be a list");
-        }
+        let outer = expect_list(&result, &heap);
+        assert_eq!(outer.len(), 2);
+        let keys = expect_list(&outer[0], &heap);
+        let values = expect_list(&outer[1], &heap);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(values.len(), 2);
+        expect_str(&keys[0], "a");
+        expect_str(&keys[1], "b");
+        assert_eq!(values.iter().map(expect_int).collect::<Vec<_>>(), vec![1, 2]);
     }
 
     #[test]
@@ -641,7 +673,7 @@ mod tests {
 
     #[test]
     fn test_for_loop_map_iteration() {
-        let program = parse_program(
+        let (result, heap) = execute_program_raw(
             r#"
             let keys = [];
             let values = [];
@@ -653,40 +685,27 @@ mod tests {
             return [keys, values];
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        if let Some(outer) = result.as_list() {
-            assert_eq!(outer.len(), 2);
-            if let Some(keys) = outer[0].as_list() {
-                if let Some(values) = outer[1].as_list() {
-                    assert_eq!(keys.len(), 2);
-                    assert_eq!(values.len(), 2);
-                    // Check that we have the expected key-value pairs
-                    let mut found_a = false;
-                    let mut found_b = false;
-                    for i in 0..keys.len() {
-                        if let Some(key_str) = keys[i].as_str() {
-                            if key_str == "a" && values[i] == Val::Int(1) {
-                                found_a = true;
-                            } else if key_str == "b" && values[i] == Val::Int(2) {
-                                found_b = true;
-                            }
-                        }
-                    }
-                    assert!(found_a && found_b);
-                } else {
-                    panic!("Expected values to be a list");
-                }
-            } else {
-                panic!("Expected keys to be a list");
+        let outer = expect_list(&result, &heap);
+        assert_eq!(outer.len(), 2);
+        let keys = expect_list(&outer[0], &heap);
+        let values = expect_list(&outer[1], &heap);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(values.len(), 2);
+        let mut found_a = false;
+        let mut found_b = false;
+        for (key, value) in keys.iter().zip(values.iter()) {
+            match key {
+                RuntimeVal::ShortStr(key) if key.as_str() == "a" && expect_int(value) == 1 => found_a = true,
+                RuntimeVal::ShortStr(key) if key.as_str() == "b" && expect_int(value) == 2 => found_b = true,
+                _ => {}
             }
-        } else {
-            panic!("Expected result to be a list");
         }
+        assert!(found_a && found_b);
     }
 
     #[test]
     fn test_for_loop_nested_loops() {
-        let program = parse_program(
+        let (result, heap) = execute_program_raw(
             r#"
             let result = [];
             for i in [1, 2] {
@@ -697,19 +716,15 @@ mod tests {
             return result;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        if let Some(outer) = result.as_list() {
-            assert_eq!(outer.len(), 4);
-            let expected = vec![
-                Val::list(vec![Val::Int(1), Val::Int(3)].into()),
-                Val::list(vec![Val::Int(1), Val::Int(4)].into()),
-                Val::list(vec![Val::Int(2), Val::Int(3)].into()),
-                Val::list(vec![Val::Int(2), Val::Int(4)].into()),
-            ];
-            assert_eq!(outer.as_ref(), &expected);
-        } else {
-            panic!("Expected result to be a list");
-        }
+        let outer = expect_list(&result, &heap);
+        let pairs = outer
+            .iter()
+            .map(|pair| {
+                let pair = expect_list(pair, &heap);
+                vec![expect_int(&pair[0]), expect_int(&pair[1])]
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pairs, vec![vec![1, 3], vec![1, 4], vec![2, 3], vec![2, 4]]);
     }
 
     #[test]
@@ -767,7 +782,7 @@ mod tests {
 
     #[test]
     fn test_for_loop_complex_pattern() {
-        let program = parse_program(
+        let (result, heap) = execute_program_raw(
             r#"
             let first = [];
             let rest = [];
@@ -778,20 +793,18 @@ mod tests {
             return [first, rest];
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        if let Some(outer) = result.as_list() {
-            assert_eq!(outer.len(), 2);
-            // Check first elements
-            if let Some(first) = outer[0].as_list() {
-                assert_eq!(first.len(), 2);
-                assert_eq!(first[0], Val::list(vec![Val::Int(1), Val::Int(2)].into()));
-                assert_eq!(first[1], Val::list(vec![Val::Int(5), Val::Int(6)].into()));
-            } else {
-                panic!("Expected first to be a list");
-            }
-        } else {
-            panic!("Expected result to be a list");
-        }
+        let outer = expect_list(&result, &heap);
+        assert_eq!(outer.len(), 2);
+        let first = expect_list(&outer[0], &heap);
+        assert_eq!(first.len(), 2);
+        let first_pairs = first
+            .iter()
+            .map(|pair| {
+                let pair = expect_list(pair, &heap);
+                vec![expect_int(&pair[0]), expect_int(&pair[1])]
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(first_pairs, vec![vec![1, 2], vec![5, 6]]);
     }
 
     #[test]

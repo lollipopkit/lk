@@ -1,10 +1,10 @@
-use crate::rt::{SelectOperation, with_runtime};
+use crate::rt::{RuntimePayload, SelectOperation, with_runtime};
 use crate::{
     ast::Parser,
     op::{BinOp, UnaryOp},
     token::Tokenizer,
     typ::TypeChecker,
-    val::{ClosureInit, ClosureValue, Type, Val},
+    val::{HeapStore, Type, Val, runtime_val_to_val, val_to_runtime_val},
     vm::VmContext,
 };
 use anyhow::{Result, anyhow};
@@ -503,7 +503,10 @@ impl Expr {
             Expr::List(exprs) => {
                 // List constant folding: if all elements are constants then fold to one list value.
                 let folded_elems: Vec<Expr> = exprs.into_iter().map(|e| e.fold_constants()).collect();
-                if folded_elems.iter().all(|e| matches!(e, Expr::Val(_))) {
+                if folded_elems
+                    .iter()
+                    .all(|e| matches!(e, Expr::Val(value) if value_can_fold_into_legacy_container(value)))
+                {
                     // Extract all constant values as new list elements
                     let const_vals: Vec<Val> = folded_elems
                         .into_iter()
@@ -526,6 +529,9 @@ impl Expr {
                     let mut const_map = HashMap::with_capacity(folded_pairs.len());
                     for (k_expr, v_expr) in &folded_pairs {
                         if let (Expr::Val(k_val), Expr::Val(v_val)) = (&**k_expr, &**v_expr) {
+                            if !value_can_fold_into_legacy_container(v_val) {
+                                return Expr::Map(folded_pairs);
+                            }
                             // Convert key to string (only allow basic type keys)
                             let key_str = match k_val {
                                 val if val.as_str().is_some() => val.as_str().unwrap().to_string(),
@@ -703,6 +709,13 @@ impl Expr {
                 }
             }
         }
+    }
+}
+
+fn value_can_fold_into_legacy_container(value: &Val) -> bool {
+    match value {
+        Val::Nil | Val::Bool(_) | Val::Int(_) | Val::Float(_) | Val::ShortStr(_) => true,
+        Val::Obj(value) => matches!(value.as_ref(), crate::val::HeapValue::String(_)),
     }
 }
 impl TryInto<Val> for &Expr {
@@ -1232,7 +1245,9 @@ impl Expr {
                                 return Err(anyhow!("send() target is not a channel"));
                             };
                             let channel_id = channel.id;
-                            select_op.add_send(idx, channel_id, value_val);
+                            let mut heap = HeapStore::new();
+                            let value = val_to_runtime_val(&value_val, &mut heap)?;
+                            select_op.add_send(idx, channel_id, RuntimePayload::new(value, heap));
                             bindings.push(None);
                         }
                     }
@@ -1257,8 +1272,9 @@ impl Expr {
                 if let Some(name) = bindings.get(case_index).cloned().flatten()
                     && let Some((_ok, payload)) = select_result.recv_payload
                 {
+                    let value = runtime_val_to_val(&payload.value, &payload.heap)?;
                     ctx.push_scope();
-                    ctx.set(name, payload);
+                    ctx.set(name, value);
                     let result = selected_case.body.eval_with_ctx(ctx);
                     ctx.pop_scope();
                     return result;
@@ -1297,13 +1313,10 @@ impl Expr {
             }
             // 闭包表达式
             Expr::Closure { params, body } => {
-                let _ = body;
-                Ok(Val::closure(Arc::new(ClosureValue::new(ClosureInit {
-                    params: Arc::new(params.clone()),
-                    named_params: Arc::new(Vec::new()),
-                    debug_name: None,
-                    debug_location: None,
-                }))))
+                let _ = (params, body);
+                Err(anyhow!(
+                    "legacy closure evaluation is disabled during the Instr32 VM migration; use compiler32"
+                ))
             }
             Expr::Block(_) => Err(anyhow!("Block expression can only be used as a closure body")),
             // 字面量值

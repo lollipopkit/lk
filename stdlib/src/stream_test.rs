@@ -5,12 +5,12 @@ mod tests {
         module::Module,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapValue, Val},
-        vm::VmContext,
+        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        vm::{Program32Result, VmContext},
     };
     use std::sync::Arc;
 
-    fn run(source: &str) -> Result<Val> {
+    fn run(source: &str) -> Result<Program32Result> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -23,12 +23,34 @@ mod tests {
         program.execute32_with_ctx(&mut env)
     }
 
+    fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected runtime list object");
+        };
+        let Some(HeapValue::List(list)) = heap.get(*handle) else {
+            panic!("expected runtime list heap value");
+        };
+        match list {
+            TypedList::Mixed(values) => values.clone(),
+            TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            TypedList::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            TypedList::String(values) => values
+                .iter()
+                .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
+                .collect(),
+        }
+    }
+
     #[test]
     fn test_stream_range_map_take_collect() -> Result<()> {
         let v = run(
             "import stream; let s = stream.take(stream.map(stream.range(0, 10), fn(x) => x * 2), 3); let c = stream.subscribe(s); return stream.collect(c);",
         )?;
-        assert_eq!(v, Val::list(Arc::from(vec![Val::Int(0), Val::Int(2), Val::Int(4)])));
+        assert_eq!(
+            expect_list(v.first_return(), &v.state.heap),
+            vec![RuntimeVal::Int(0), RuntimeVal::Int(2), RuntimeVal::Int(4)]
+        );
         Ok(())
     }
 
@@ -37,14 +59,14 @@ mod tests {
         let v =
             run("import stream; let s = stream.take(stream.iterate(1, fn(x) => x + 1), 5); return stream.collect(s);")?;
         assert_eq!(
-            v,
-            Val::list(Arc::from(vec![
-                Val::Int(1),
-                Val::Int(2),
-                Val::Int(3),
-                Val::Int(4),
-                Val::Int(5)
-            ]))
+            expect_list(v.first_return(), &v.state.heap),
+            vec![
+                RuntimeVal::Int(1),
+                RuntimeVal::Int(2),
+                RuntimeVal::Int(3),
+                RuntimeVal::Int(4),
+                RuntimeVal::Int(5)
+            ]
         );
         Ok(())
     }
@@ -52,7 +74,10 @@ mod tests {
     #[test]
     fn test_list_to_stream_collect() -> Result<()> {
         let v = run("import stream; return stream.collect(stream.from_list([1,2,3]));")?;
-        assert_eq!(v, Val::list(Arc::from(vec![Val::Int(1), Val::Int(2), Val::Int(3)])));
+        assert_eq!(
+            expect_list(v.first_return(), &v.state.heap),
+            vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
+        );
         Ok(())
     }
 
@@ -61,15 +86,10 @@ mod tests {
         let v = run(
             "import stream; let ch = chan(8); send(ch, 42); let s = stream.from_channel(ch); let c = stream.subscribe(s); return stream.next(c);",
         )?;
-        match v {
-            value if value.as_list().is_some() => {
-                let l = value.as_list().expect("checked list");
-                assert_eq!(l.len(), 2);
-                assert_eq!(l[0], Val::Bool(true));
-                assert_eq!(l[1], Val::Int(42));
-            }
-            _ => panic!("expected tuple [ok, value]"),
-        }
+        let values = expect_list(v.first_return(), &v.state.heap);
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], RuntimeVal::Bool(true));
+        assert_eq!(values[1], RuntimeVal::Int(42));
         Ok(())
     }
 

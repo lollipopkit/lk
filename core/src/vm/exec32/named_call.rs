@@ -95,9 +95,6 @@ impl Executor32 {
             _ => bail!("CallNamed callee is not callable"),
         };
         match callable {
-            CallableValue::ParsedClosure(_) => {
-                bail!("legacy native callable must be imported into a Module32 native slot before execution")
-            }
             CallableValue::Native { function_index, arity } => {
                 self.call_native_named(module, function_index, arity, window, named_count, ctx)
             }
@@ -146,7 +143,7 @@ impl Executor32 {
                     ctx.as_deref_mut(),
                 )
             }
-            CallableValue::Aot(_) | CallableValue::AotHandle { .. } => {
+            CallableValue::Aot(_) => {
                 bail!("AOT callable is not implemented in Executor32 yet")
             }
         }

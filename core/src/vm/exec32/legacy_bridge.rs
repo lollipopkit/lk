@@ -42,13 +42,10 @@ pub(super) fn legacy_val_to_runtime_val(
             ))
         }
         Val::Obj(value) => match value.as_ref() {
-            HeapValue::Callable(CallableValue::ParsedClosure(_)) => {
-                bail!("parsed closure stub cannot be imported into Instr32")
-            }
             HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
                 runtime_native(name, *arity, function.clone(), heap, natives)
             }
-            HeapValue::Callable(CallableValue::Aot(_)) | HeapValue::Callable(CallableValue::AotHandle { .. }) => {
+            HeapValue::Callable(CallableValue::Aot(_)) => {
                 bail!("AOT callable cannot be imported into Instr32 yet")
             }
             HeapValue::Callable(CallableValue::Closure {

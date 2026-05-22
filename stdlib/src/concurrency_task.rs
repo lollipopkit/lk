@@ -7,8 +7,9 @@ use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{self, Module},
     rt,
-    val::{HeapStore, HeapValue, RuntimeVal, TaskValue, Val, val_to_runtime_val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    rt::RuntimePayload,
+    val::{HeapStore, HeapValue, RuntimeVal, TaskValue, Val},
+    vm::{NativeArgs32, NativeFunction32, NativeRuntime32, copy_runtime_value},
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -121,7 +122,7 @@ fn task_await32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Re
     let task = task_arg(args.get(0).expect("checked arity"), &runtime.state.heap, "task.await()")?;
     let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
         .map_err(|err| anyhow!("Failed to await task: {err}"))?;
-    val_to_runtime_val(&value, runtime.heap_mut())
+    runtime_payload_into_value(value, runtime.heap_mut())
 }
 
 fn task_try_await32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -132,7 +133,7 @@ fn task_try_await32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -
         "task.try_await()",
     )?;
     let value = match &task.value {
-        Some(value) => val_to_runtime_val(value, runtime.heap_mut())?,
+        Some(value) => runtime_payload_ref_to_value(value, runtime.heap_mut())?,
         None => RuntimeVal::Nil,
     };
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(
@@ -146,10 +147,20 @@ fn task_join_all32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
         let task = task_arg(arg, &runtime.state.heap, "task.join_all()")?;
         let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
             .map_err(|err| anyhow!("Failed to await task: {err}"))?;
-        values.push(val_to_runtime_val(&value, runtime.heap_mut())?);
+        values.push(runtime_payload_into_value(value, runtime.heap_mut())?);
     }
     let list = lk_core::val::TypedList::from_runtime_values(values, &runtime.state.heap);
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
+}
+
+fn runtime_payload_into_value(payload: RuntimePayload, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    let mut payload_heap = payload.heap;
+    copy_runtime_value(&payload.value, &mut payload_heap, heap)
+}
+
+fn runtime_payload_ref_to_value(payload: &RuntimePayload, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    let mut payload_heap = payload.heap.clone();
+    copy_runtime_value(&payload.value, &mut payload_heap, heap)
 }
 
 fn task_sleep32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -186,11 +197,7 @@ fn task_spawn_blocking32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::{
-        module::Module,
-        val::{CallableValue, runtime_val_to_val},
-        vm::RuntimeModuleState32,
-    };
+    use lk_core::{module::Module, val::CallableValue, vm::RuntimeModuleState32};
 
     fn task_native(name: &str) -> Result<(u16, NativeFunction32)> {
         let exports = TaskModule::new().exports();
@@ -218,10 +225,31 @@ mod tests {
     }
 
     fn resolved_task(value: Val, heap: &mut HeapStore) -> RuntimeVal {
+        let value = lk_core::val::val_to_runtime_val(&value, heap).expect("test value converts to runtime");
+        let payload = RuntimePayload::new(value, heap.clone());
         RuntimeVal::Obj(heap.alloc(HeapValue::Task(Arc::new(TaskValue {
             id: 0,
-            value: Some(value),
+            value: Some(payload),
         }))))
+    }
+
+    fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected runtime list object");
+        };
+        let Some(HeapValue::List(list)) = heap.get(*handle) else {
+            panic!("expected runtime list heap value");
+        };
+        match list {
+            lk_core::val::TypedList::Mixed(values) => values.clone(),
+            lk_core::val::TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            lk_core::val::TypedList::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            lk_core::val::TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            lk_core::val::TypedList::String(values) => values
+                .iter()
+                .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
+                .collect(),
+        }
     }
 
     #[test]
@@ -243,8 +271,8 @@ mod tests {
         let task = resolved_task(Val::Int(42), &mut state.heap);
         let result = call("try_await", &[task], &mut state)?;
         assert_eq!(
-            runtime_val_to_val(&result, &state.heap)?,
-            Val::list(vec![Val::Bool(true), Val::Int(42)].into())
+            expect_list(&result, &state.heap),
+            vec![RuntimeVal::Bool(true), RuntimeVal::Int(42)]
         );
         Ok(())
     }
@@ -256,7 +284,7 @@ mod tests {
             globals: Vec::new(),
         };
         let result = call("join_all", &[], &mut state)?;
-        assert_eq!(runtime_val_to_val(&result, &state.heap)?, Val::list(Vec::new().into()));
+        assert_eq!(expect_list(&result, &state.heap), Vec::<RuntimeVal>::new());
         Ok(())
     }
 
@@ -292,8 +320,8 @@ mod tests {
         }))));
         let result = call("try_await", &[task], &mut state)?;
         assert_eq!(
-            runtime_val_to_val(&result, &state.heap)?,
-            Val::list(vec![Val::Bool(false), Val::Nil].into())
+            expect_list(&result, &state.heap),
+            vec![RuntimeVal::Bool(false), RuntimeVal::Nil]
         );
         Ok(())
     }

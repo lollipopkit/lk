@@ -233,8 +233,8 @@ Import as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`,
 
 ### Meta‑methods (usable as `value.method()` without importing)
 - String: `len`, `lower`, `upper`, `trim`, `starts_with`, `ends_with`, `contains`, `replace`, `substring`, `split`, `join`, `reverse`, `repeat`, `chars`, `char_at`, `byte_at`, `find`, `is_empty`
-- List: `len`, `push`, `set`, `concat`, `join`, `get`, `first`, `last`, `map`, `filter`, `reduce`, `take`, `skip`, `chain`, `flatten`, `unique`, `chunk`, `enumerate`, `zip`, `to_stream`, `mutate` (guard: `push`, `pop`, `replace`, `remove`, `reserve`, `commit`, `as_list`)
-- Map: `len`, `keys`, `values`, `has`, `get`, `set`, `delete`, `mutate` (guard: `len`, `has`/`contains`, `set`/`insert`, `delete`/`remove`, `commit`, `as_map`)
+- List: `len`, `push`, `set`, `concat`, `join`, `get`, `first`, `last`, `map`, `filter`, `reduce`, `take`, `skip`, `chain`, `flatten`, `unique`, `chunk`, `enumerate`, `zip`, `to_stream`
+- Map: `len`, `keys`, `values`, `has`, `get`, `set`, `delete`
 - Stream: `map`, `filter`, `take`, `skip`, `chain`, `subscribe`, `collect`, `collect_block`
 - StreamCursor: `next`, `collect`, `next_block`, `collect_block`
 - Channel: `to_stream`
@@ -362,7 +362,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ## Notes for CLI Usage
 - Run REPL: `lk`
 - Execute a file (statements): `lk FILE`
-- Compile to bytecode: `lk compile [FILE]` → `FILE.lkb`; when `FILE` is omitted, the CLI uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry.
+- Compile output is disabled during the Instr32 module migration; source execution and REPL remain the supported CLI paths for now.
 - Only relative, sanitized paths are allowed
 - CLI prints a result only when it is not `nil`
 
@@ -380,4 +380,3 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - `Channel` — Concurrency channel (feature‑gated)
 - `Stream` — Lazy stream pipeline (feature‑gated)
 - `StreamCursor` — Stream cursor for consuming stream elements
-- `MutationGuard` — Guard for batch mutations (lists and maps)

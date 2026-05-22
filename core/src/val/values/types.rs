@@ -201,7 +201,7 @@ impl Type {
             (Type::Task(inner_type), value) if value.as_task().is_some() => {
                 let task = value.as_task().expect("checked task");
                 if let Some(value) = &task.value {
-                    inner_type.validate(value)?;
+                    inner_type.validate(&crate::val::runtime_val_to_val(&value.value, &value.heap)?)?;
                 }
                 Ok(())
             }

@@ -6,8 +6,6 @@ use crate::util::fast_map::FastHashMap;
 
 // Using standard HashMap for maps and environments
 
-use crate::stmt::NamedParamDecl;
-
 use super::runtime_model::{CallableValue, HeapValue, RuntimeObject, RuntimeVal, TypedList, TypedMap};
 
 use crate::vm::{
@@ -36,78 +34,10 @@ pub struct AotFunction {
     pub arity: u8,
 }
 
-/// Legacy display/type stub for closures parsed outside the Instr32 compiler.
-/// Executable closures are represented by `RuntimeCallable32`.
-pub struct ClosureValue {
-    pub params: Arc<Vec<String>>,
-    pub named_params: Arc<Vec<NamedParamDecl>>,
-    debug_name: Option<String>,
-    debug_location: Option<String>,
-}
-
-pub struct ClosureInit {
-    pub params: Arc<Vec<String>>,
-    pub named_params: Arc<Vec<NamedParamDecl>>,
-    pub debug_name: Option<String>,
-    pub debug_location: Option<String>,
-}
-
-// Implement a non-recursive Debug for closures to avoid printing their captured
-// environment, which can contain self-referential cycles via globals and lead
-// to stack overflows when formatting with `{:?}`.
-impl core::fmt::Debug for ClosureValue {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let name = self.debug_name.as_deref().unwrap_or("<closure>");
-        let params = self.params.join(", ");
-        let named: Vec<String> = self.named_params.iter().map(|p| p.name.clone()).collect();
-        f.debug_struct("ClosureValue")
-            .field("name", &name)
-            .field("params", &params)
-            .field("named_params", &named)
-            .field("body", &"<body>")
-            // Intentionally omit env/upvalues/captures to avoid recursive prints
-            .finish()
-    }
-}
-
-impl ClosureValue {
-    pub fn new(init: ClosureInit) -> Self {
-        let ClosureInit {
-            params,
-            named_params,
-            debug_name,
-            debug_location,
-        } = init;
-        Self {
-            params,
-            named_params,
-            debug_name,
-            debug_location,
-        }
-    }
-}
-
-impl ClosureValue {
-    #[inline]
-    pub fn debug_name(&self) -> Option<&str> {
-        self.debug_name.as_deref()
-    }
-
-    #[inline]
-    pub fn debug_location(&self) -> Option<&str> {
-        self.debug_location.as_deref()
-    }
-
-    #[inline]
-    pub fn frame_display_name(&self) -> String {
-        self.debug_name.clone().unwrap_or_else(|| "<closure>".to_string())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct TaskValue {
     pub id: u64,
-    pub value: Option<Val>,
+    pub value: Option<crate::rt::RuntimePayload>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,11 +120,6 @@ impl Val {
             },
             _ => None,
         }
-    }
-
-    #[inline]
-    pub fn closure(function: Arc<ClosureValue>) -> Self {
-        Self::Obj(Arc::new(HeapValue::Callable(CallableValue::ParsedClosure(function))))
     }
 
     #[inline]
@@ -288,17 +213,6 @@ impl Val {
     #[inline]
     pub fn aot_function(function: AotFunction) -> Self {
         Self::Obj(Arc::new(HeapValue::Callable(CallableValue::Aot(function))))
-    }
-
-    #[inline]
-    pub fn as_closure(&self) -> Option<&Arc<ClosureValue>> {
-        match self {
-            Self::Obj(value) => match value.as_ref() {
-                HeapValue::Callable(CallableValue::ParsedClosure(function)) => Some(function),
-                _ => None,
-            },
-            _ => None,
-        }
     }
 
     #[inline]
@@ -507,7 +421,9 @@ impl Val {
             }
             (value, key) if value.as_task().is_some() && key.as_str() == Some("value") => {
                 match &value.as_task().expect("checked task").value {
-                    Some(v) => Some(Self::access_copy_value(v, collect_metrics)),
+                    Some(v) => crate::val::runtime_val_to_val(&v.value, &v.heap)
+                        .ok()
+                        .map(|value| Self::access_copy_value(&value, collect_metrics)),
                     None => Some(Val::Nil),
                 }
             }
@@ -753,7 +669,7 @@ fn heap_values_eq(left: &HeapValue, right: &HeapValue) -> bool {
         (HeapValue::String(left), HeapValue::String(right)) => left == right,
         (HeapValue::List(left), HeapValue::List(right)) => left == right,
         (HeapValue::Map(left), HeapValue::Map(right)) => left == right,
-        (HeapValue::Task(left), HeapValue::Task(right)) => left.id == right.id && left.value == right.value,
+        (HeapValue::Task(left), HeapValue::Task(right)) => left.id == right.id,
         (HeapValue::Channel(left), HeapValue::Channel(right)) => {
             left.id == right.id && left.capacity == right.capacity && left.inner_type == right.inner_type
         }
@@ -782,7 +698,7 @@ fn display_heap_value(value: &HeapValue, f: &mut core::fmt::Formatter<'_>) -> co
             Err(_) => write!(f, "{:?}", values),
         },
         HeapValue::Task(task) => match &task.value {
-            Some(v) => write!(f, "Task(id={}, value={})", task.id, v),
+            Some(v) => write!(f, "Task(id={}, value={:?})", task.id, v.value),
             None => write!(f, "Task(id={}, pending)", task.id),
         },
         HeapValue::Channel(channel) => {
@@ -800,7 +716,6 @@ fn display_heap_value(value: &HeapValue, f: &mut core::fmt::Formatter<'_>) -> co
         HeapValue::StreamCursor(cur) => {
             write!(f, "StreamCursor(id={}, stream={})", cur.id, cur.stream_id)
         }
-        HeapValue::Callable(CallableValue::ParsedClosure(closure)) => write!(f, "fn({})", closure.params.join(", ")),
         HeapValue::Callable(_) => write!(f, "<function>"),
         HeapValue::Object(object) => write!(f, "Object(type={}, fields={:?})", object.type_name, object.fields),
     }

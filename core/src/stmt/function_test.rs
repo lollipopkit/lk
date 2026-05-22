@@ -5,11 +5,25 @@ mod tests {
         stmt::{Program, Stmt, run_program, run_program_default, stmt_parser::StmtParser},
         token::Tokenizer,
         typ::TypeChecker,
-        val::{ClosureInit, ClosureValue, HeapValue, Val},
-        vm::{VmContext, call_runtime_callable32, call_runtime_callable32_raw},
+        val::{HeapStore, HeapValue, RuntimeVal, ShortStr, Val},
+        vm::{NativeArgs32, Program32Result, VmContext, call_runtime_callable32_raw, call_runtime_callable32_runtime},
     };
     use anyhow::Result;
-    use std::sync::Arc;
+
+    fn expect_return_int(result: &Program32Result, expected: i64) {
+        assert_eq!(result.first_return(), &RuntimeVal::Int(expected));
+    }
+
+    fn expect_return_nil(result: &Program32Result) {
+        assert_eq!(result.first_return(), &RuntimeVal::Nil);
+    }
+
+    fn expect_return_str(result: &Program32Result, expected: &str) {
+        assert_eq!(
+            result.first_return(),
+            &RuntimeVal::ShortStr(ShortStr::new(expected).expect("short test string"))
+        );
+    }
 
     #[test]
     fn test_function_definition_parsing() -> Result<()> {
@@ -96,7 +110,7 @@ mod tests {
         let program = parser.parse_program()?;
 
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::Int(7));
+        expect_return_int(&result, 7);
 
         Ok(())
     }
@@ -109,7 +123,7 @@ mod tests {
         let program = parser.parse_program()?;
 
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::from_str("Hello!"));
+        expect_return_str(&result, "Hello!");
 
         Ok(())
     }
@@ -130,7 +144,7 @@ mod tests {
         let program = parser.parse_program()?;
 
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::Int(30));
+        expect_return_int(&result, 30);
 
         Ok(())
     }
@@ -150,7 +164,7 @@ mod tests {
 
         let result = run_program_default(&program)?;
         // Should return 6 (5 + 1), not 11 (10 + 1)
-        assert_eq!(result, Val::Int(6));
+        expect_return_int(&result, 6);
 
         Ok(())
     }
@@ -163,7 +177,7 @@ mod tests {
         let program = parser.parse_program()?;
 
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::Nil);
+        expect_return_nil(&result);
 
         Ok(())
     }
@@ -185,7 +199,7 @@ mod tests {
         let program = parser.parse_program()?;
 
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::Int(120));
+        expect_return_int(&result, 120);
 
         Ok(())
     }
@@ -208,7 +222,7 @@ mod tests {
         env.define("user".to_string(), Val::from(user_map));
 
         let result = run_program(&program, &mut env)?;
-        assert_eq!(result, Val::Int(25));
+        expect_return_int(&result, 25);
 
         Ok(())
     }
@@ -257,18 +271,6 @@ mod tests {
     }
 
     #[test]
-    fn test_function_display_formatting() {
-        let func_val = Val::closure(Arc::new(ClosureValue::new(ClosureInit {
-            params: Arc::new(vec!["x".to_string(), "y".to_string()]),
-            named_params: Arc::new(Vec::new()),
-            debug_name: Some("<test-fn>".to_string()),
-            debug_location: None,
-        })));
-
-        assert_eq!(func_val.to_string(), "fn(x, y)");
-    }
-
-    #[test]
     fn test_nested_function_calls() -> Result<()> {
         let source = r#"
             fn add(a, b) { return a + b; }
@@ -281,7 +283,7 @@ mod tests {
         let program = parser.parse_program()?;
 
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::Int(10)); // multiply(2, 3) = 6, add(6, 4) = 10
+        expect_return_int(&result, 10); // multiply(2, 3) = 6, add(6, 4) = 10
 
         Ok(())
     }
@@ -298,7 +300,7 @@ mod tests {
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::Int(6));
+        expect_return_int(&result, 6);
         Ok(())
     }
 
@@ -403,7 +405,7 @@ mod tests {
         let mut capture_parser = StmtParser::new(&capture_tokens);
         let capture_program = capture_parser.parse_program()?;
         let capture_result = run_program_default(&capture_program)?;
-        assert_eq!(capture_result, Val::Int(42));
+        expect_return_int(&capture_result, 42);
 
         let lexical_source = r#"
             fn outer() {
@@ -420,7 +422,7 @@ mod tests {
         let mut lexical_parser = StmtParser::new(&lexical_tokens);
         let lexical_program = lexical_parser.parse_program()?;
         let lexical_result = run_program_default(&lexical_program)?;
-        assert_eq!(lexical_result, Val::Int(103));
+        expect_return_int(&lexical_result, 103);
 
         Ok(())
     }
@@ -460,8 +462,14 @@ mod tests {
             result.module.clone(),
         )
         .expect("outer returned runtime closure");
-        let value = call_runtime_callable32(&captured, &[Val::Int(0)], &mut env)?;
-        assert_eq!(value, Val::Int(2));
+        let mut heap = HeapStore::new();
+        let value = call_runtime_callable32_runtime(
+            &captured,
+            NativeArgs32::new(&[RuntimeVal::Int(0)]),
+            &mut heap,
+            Some(&mut env),
+        )?;
+        assert_eq!(value, RuntimeVal::Int(2));
 
         Ok(())
     }
@@ -565,7 +573,7 @@ mod tests {
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::Int(11));
+        expect_return_int(&result, 11);
         Ok(())
     }
 
@@ -580,7 +588,7 @@ mod tests {
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
         let result = run_program_default(&program)?;
-        assert_eq!(result, Val::Int(5));
+        expect_return_int(&result, 5);
         Ok(())
     }
 

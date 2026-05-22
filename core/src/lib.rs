@@ -12,7 +12,7 @@ pub mod typ;
 pub mod util;
 pub mod val;
 
-// Register bytecode VM is always available now
+// Canonical Instr32 VM.
 pub mod vm;
 
 // Name resolution to slot indices

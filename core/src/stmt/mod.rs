@@ -23,14 +23,14 @@ pub use test_support::*;
 #[cfg(test)]
 pub mod test_support {
     use super::*;
-    use crate::{val::Val, vm::VmContext};
+    use crate::vm::{Program32Result, VmContext};
     use anyhow::Result;
 
-    pub fn run_program(program: &Program, ctx: &mut VmContext) -> Result<Val> {
+    pub fn run_program(program: &Program, ctx: &mut VmContext) -> Result<Program32Result> {
         program.execute32_with_ctx(ctx)
     }
 
-    pub fn run_program_default(program: &Program) -> Result<Val> {
+    pub fn run_program_default(program: &Program) -> Result<Program32Result> {
         let mut ctx = VmContext::new();
         run_program(program, &mut ctx)
     }

@@ -2,7 +2,7 @@ use super::*;
 use std::sync::Arc;
 
 use crate::{
-    val::{CallableValue, HeapStore, HeapValue, RuntimeVal},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal},
     vm::{
         ConstHeapValue32, ConstPool32, Instr32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32,
         Opcode32, RuntimeCallable32, VmContext,
@@ -1008,8 +1008,8 @@ fn runtime32_callable_error_keeps_shared_module_state() {
 }
 
 #[test]
-fn execute_source32_to_val_runs_public_source_entry_on_new_vm() {
-    let result = execute_source32_to_val(
+fn execute_source32_runs_public_source_entry_on_new_vm() {
+    let result = execute_source32(
         r#"
         let data = {"a": 40, "b": 2};
         let y = match data {
@@ -1020,7 +1020,7 @@ fn execute_source32_to_val_runs_public_source_entry_on_new_vm() {
     )
     .expect("execute source");
 
-    assert_eq!(result, Val::Int(42));
+    assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
 }
 
 #[test]
@@ -1070,9 +1070,9 @@ fn execute_program32_with_ctx_reads_external_slots_without_exporting_top_level_l
     let mut ctx = crate::vm::VmContext::new_without_core_vm_builtins();
     ctx.set("seed", Val::Int(39));
 
-    let result = execute_program32_with_ctx(&program, &mut ctx).expect("execute");
+    let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("execute");
 
-    assert_eq!(result, Val::Int(42));
+    assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
     assert_eq!(ctx.get("seed"), Some(&Val::Int(42)));
     assert_eq!(ctx.get("total"), None);
 }
@@ -1092,7 +1092,7 @@ fn program_execute32_with_ctx_uses_new_vm_context_path() {
 
     let result = program.execute32_with_ctx(&mut ctx).expect("execute32");
 
-    assert_eq!(result, Val::Int(42));
+    assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
 }
 
 #[test]
@@ -1106,9 +1106,9 @@ fn execute_program32_imports_core_bit_builtins_as_runtime_native32() {
     let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
     let mut ctx = crate::vm::VmContext::new();
 
-    let result = execute_program32_with_ctx(&program, &mut ctx).expect("execute");
+    let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("execute");
 
-    assert_eq!(result, Val::Int(6));
+    assert_eq!(result.returns, vec![RuntimeVal::Int(6)]);
 }
 
 #[test]
@@ -1124,12 +1124,21 @@ fn execute_program32_imports_core_object_builtins_as_runtime_native32() {
     let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
     let mut ctx = crate::vm::VmContext::new();
 
-    let result = execute_program32_with_ctx(&program, &mut ctx).expect("execute");
-    let map = result.as_map().expect("result map");
+    let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("execute");
+    let map = result.first_return_map().expect("result map");
 
-    assert_eq!(map.get("x"), Some(&Val::Int(1)));
-    assert_eq!(map.get("y"), Some(&Val::Int(2)));
-    assert_eq!(map.get("z"), Some(&Val::Int(3)));
+    assert_eq!(
+        map.get(&RuntimeMapKey::String(Arc::from("x"))),
+        Some(RuntimeVal::Int(1))
+    );
+    assert_eq!(
+        map.get(&RuntimeMapKey::String(Arc::from("y"))),
+        Some(RuntimeVal::Int(2))
+    );
+    assert_eq!(
+        map.get(&RuntimeMapKey::String(Arc::from("z"))),
+        Some(RuntimeVal::Int(3))
+    );
 }
 
 #[test]
@@ -1143,7 +1152,7 @@ fn execute_program32_imports_typeof_as_runtime_native32() {
     let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
     let mut ctx = crate::vm::VmContext::new();
 
-    let result = execute_program32_with_ctx(&program, &mut ctx).expect("execute");
+    let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("execute");
 
-    assert_eq!(result.as_str(), Some("Object"));
+    assert!(matches!(result.first_return(), RuntimeVal::ShortStr(value) if value.as_str() == "Object"));
 }

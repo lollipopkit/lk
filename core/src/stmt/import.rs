@@ -671,6 +671,20 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn parse_program(source: &str) -> Result<Program> {
+        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(source).map_err(|e| anyhow!(e.to_string()))?;
+        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
+        parser
+            .parse_program_with_enhanced_errors(source)
+            .map_err(|e| anyhow!(e.to_string()))
+    }
+
+    fn execute_import_source(source: &str, resolver: Arc<ModuleResolver>) -> Result<RuntimeVal> {
+        let program = parse_program(source)?;
+        let mut ctx = VmContext::new().with_resolver(resolver);
+        Ok(program.execute32_with_ctx(&mut ctx)?.first_return().clone())
+    }
+
     #[test]
     fn test_import_stmt_variants() {
         let import = ImportStmt::Module {
@@ -813,16 +827,9 @@ mod tests {
             return fib.iterative(10);
         "#;
 
-        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(src).map_err(|e| anyhow!(e.to_string()))?;
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        let program = parser
-            .parse_program_with_enhanced_errors(src)
-            .map_err(|e| anyhow!(e.to_string()))?;
+        let result = execute_import_source(src, Arc::clone(&resolver))?;
 
-        let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
-        let result = program.execute32_with_ctx(&mut ctx)?;
-
-        assert_eq!(result, Val::Int(55));
+        assert_eq!(result, RuntimeVal::Int(55));
         Ok(())
     }
 
@@ -837,16 +844,9 @@ mod tests {
             return fib_iter(10);
         "#;
 
-        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(src).map_err(|e| anyhow!(e.to_string()))?;
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        let program = parser
-            .parse_program_with_enhanced_errors(src)
-            .map_err(|e| anyhow!(e.to_string()))?;
+        let result = execute_import_source(src, Arc::clone(&resolver))?;
 
-        let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
-        let result = program.execute32_with_ctx(&mut ctx)?;
-
-        assert_eq!(result, Val::Int(55));
+        assert_eq!(result, RuntimeVal::Int(55));
         Ok(())
     }
 
@@ -861,16 +861,9 @@ mod tests {
             return fibs.iterative(10);
         "#;
 
-        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(src).map_err(|e| anyhow!(e.to_string()))?;
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        let program = parser
-            .parse_program_with_enhanced_errors(src)
-            .map_err(|e| anyhow!(e.to_string()))?;
+        let result = execute_import_source(src, Arc::clone(&resolver))?;
 
-        let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
-        let result = program.execute32_with_ctx(&mut ctx)?;
-
-        assert_eq!(result, Val::Int(55));
+        assert_eq!(result, RuntimeVal::Int(55));
         Ok(())
     }
 
@@ -897,17 +890,10 @@ mod tests {
             return calc.add(y: 2, x: 40);
         "#;
 
-        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(src).map_err(|e| anyhow!(e.to_string()))?;
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        let program = parser
-            .parse_program_with_enhanced_errors(src)
-            .map_err(|e| anyhow!(e.to_string()))?;
-
-        let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
-        let result = program.execute32_with_ctx(&mut ctx);
+        let result = execute_import_source(src, Arc::clone(&resolver));
 
         let _ = std::fs::remove_dir_all(base);
-        assert_eq!(result?, Val::Int(42));
+        assert_eq!(result?, RuntimeVal::Int(42));
         Ok(())
     }
 
@@ -938,17 +924,10 @@ mod tests {
             return second * 10 + first;
         "#;
 
-        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(src).map_err(|e| anyhow!(e.to_string()))?;
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        let program = parser
-            .parse_program_with_enhanced_errors(src)
-            .map_err(|e| anyhow!(e.to_string()))?;
-
-        let mut ctx = VmContext::new().with_resolver(Arc::clone(&resolver));
-        let result = program.execute32_with_ctx(&mut ctx);
+        let result = execute_import_source(src, Arc::clone(&resolver));
 
         let _ = std::fs::remove_dir_all(base);
-        assert_eq!(result?, Val::Int(21));
+        assert_eq!(result?, RuntimeVal::Int(21));
         Ok(())
     }
 }

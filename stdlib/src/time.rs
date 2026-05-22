@@ -6,7 +6,7 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{self, Module},
-    rt::with_runtime,
+    rt::{RuntimePayload, with_runtime},
     val::{ChannelValue, HeapValue, RuntimeVal, Type, Val},
     vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
 };
@@ -147,13 +147,15 @@ fn spawn_timer(duration_ms: i64, payload: RuntimeVal) -> Result<u64> {
         let future = async move {
             tokio::time::sleep(Duration::from_millis(duration_ms as u64)).await;
             let value = match payload {
-                RuntimeVal::Nil => Val::Nil,
-                RuntimeVal::Int(_) => Val::Int(epoch_millis()),
+                RuntimeVal::Nil => RuntimePayload::nil(),
+                RuntimeVal::Int(_) => {
+                    RuntimePayload::new(RuntimeVal::Int(epoch_millis()), lk_core::val::HeapStore::new())
+                }
                 other => return Err(anyhow!("unsupported timer payload {:?}", other.kind())),
             };
             with_runtime(|runtime| runtime.try_send(channel_id, value))
                 .map_err(|err| anyhow!("Failed to send timer signal: {err}"))?;
-            Ok(Val::Nil)
+            Ok(RuntimePayload::nil())
         };
         runtime.spawn(future)?;
         Ok(channel_id)

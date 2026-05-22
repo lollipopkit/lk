@@ -184,14 +184,14 @@ mod tests {
         module::ModuleRegistry,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, runtime_val_to_val},
-        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32, VmContext},
+        val::CallableValue,
+        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32, VmContext},
     };
     use std::sync::Arc;
 
     use crate::runtime_native::runtime_string_value;
 
-    fn run32(source: &str) -> Result<Val> {
+    fn run32(source: &str) -> Result<Program32Result> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -201,6 +201,23 @@ mod tests {
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
         program.execute32_with_ctx(&mut env)
+    }
+
+    fn run32_return(source: &str) -> Result<RuntimeVal> {
+        Ok(run32(source)?.first_return().clone())
+    }
+
+    fn expect_list(result: &Program32Result) -> Vec<RuntimeVal> {
+        match result.first_return_list().expect("expected list") {
+            TypedList::Mixed(values) => values.clone(),
+            TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            TypedList::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            TypedList::String(values) => values
+                .iter()
+                .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
+                .collect(),
+        }
     }
 
     fn map_native(name: &str) -> Result<(u16, NativeFunction32)> {
@@ -217,28 +234,41 @@ mod tests {
 
     #[test]
     fn test_map_len_keys_values_has_get() -> Result<()> {
-        assert_eq!(run32("import map; return map.len({\"a\":1, \"b\":2});")?, Val::Int(2));
+        assert_eq!(
+            run32_return("import map; return map.len({\"a\":1, \"b\":2});")?,
+            RuntimeVal::Int(2)
+        );
 
-        let keys =
-            run32("import map; import string; let m={\"a\":1, \"b\":2}; return string.join(map.keys(m), \",\");")?;
+        let keys = run32_return(
+            "import map; import string; let m={\"a\":1, \"b\":2}; return string.join(map.keys(m), \",\");",
+        )?;
         match keys {
-            v if v.as_str() == Some("a,b") || v.as_str() == Some("b,a") => {}
-            _ => panic!("unexpected keys output: {}", keys),
+            RuntimeVal::ShortStr(v) if v.as_str() == "a,b" || v.as_str() == "b,a" => {}
+            _ => panic!("unexpected keys output: {:?}", keys),
         }
 
-        assert_eq!(run32("import map; return map.has({\"a\":1}, \"a\");")?, Val::Bool(true));
         assert_eq!(
-            run32("import map; return map.has({\"a\":1}, \"b\");")?,
-            Val::Bool(false)
+            run32_return("import map; return map.has({\"a\":1}, \"a\");")?,
+            RuntimeVal::Bool(true)
         );
-        assert_eq!(run32("import map; return map.get({\"a\":1}, \"a\");")?, Val::Int(1));
-        assert_eq!(run32("import map; return map.get({\"a\":1}, \"b\");")?, Val::Nil);
+        assert_eq!(
+            run32_return("import map; return map.has({\"a\":1}, \"b\");")?,
+            RuntimeVal::Bool(false)
+        );
+        assert_eq!(
+            run32_return("import map; return map.get({\"a\":1}, \"a\");")?,
+            RuntimeVal::Int(1)
+        );
+        assert_eq!(
+            run32_return("import map; return map.get({\"a\":1}, \"b\");")?,
+            RuntimeVal::Nil
+        );
 
         let values = run32("import map; return map.values({\"a\":1, \"b\":2});")?;
-        let values = values.as_list().expect("values list");
+        let values = expect_list(&values);
         assert_eq!(values.len(), 2);
-        assert!(values.contains(&Val::Int(1)));
-        assert!(values.contains(&Val::Int(2)));
+        assert!(values.contains(&RuntimeVal::Int(1)));
+        assert!(values.contains(&RuntimeVal::Int(2)));
         Ok(())
     }
 
@@ -254,10 +284,10 @@ mod tests {
             return [removed, map.has(without, "a")];
         "#,
         )?;
-        let values = result.as_list().expect("expected list");
+        let values = expect_list(&result);
         assert_eq!(values.len(), 2);
-        assert_eq!(values[0], Val::Int(7));
-        assert_eq!(values[1], Val::Bool(false));
+        assert_eq!(values[0], RuntimeVal::Int(7));
+        assert_eq!(values[1], RuntimeVal::Bool(false));
         Ok(())
     }
 
@@ -296,10 +326,14 @@ mod tests {
             module: None,
         };
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
-        let value = runtime_val_to_val(&result, &runtime.state.heap)?;
-        let map = value.as_map().expect("map result");
-        assert_eq!(map.get("a"), Some(&Val::Int(1)));
-        assert_eq!(map.get("b"), Some(&Val::Int(2)));
+        let RuntimeVal::Obj(handle) = result else {
+            panic!("set should return map object");
+        };
+        let Some(HeapValue::Map(map)) = runtime.state.heap.get(handle) else {
+            panic!("set should preserve map in runtime heap");
+        };
+        assert_eq!(map.get_str("a"), Some(RuntimeVal::Int(1)));
+        assert_eq!(map.get_str("b"), Some(RuntimeVal::Int(2)));
         Ok(())
     }
 }

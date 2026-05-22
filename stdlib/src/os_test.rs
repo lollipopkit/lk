@@ -8,11 +8,14 @@ mod tests {
         module::{Module, ModuleRegistry},
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, Val, runtime_val_to_val},
-        vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeModuleState32, VmContext},
+        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        vm::{
+            NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32,
+            VmContext,
+        },
     };
 
-    fn run32(source: &str) -> Result<Val> {
+    fn run32(source: &str) -> Result<Program32Result> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -39,12 +42,12 @@ mod tests {
         Ok((*arity, function.clone()))
     }
 
-    fn call_os(name: &str, args: &[RuntimeVal]) -> Result<Val> {
+    fn call_os(name: &str, args: &[RuntimeVal]) -> Result<(RuntimeVal, HeapStore)> {
         let (_, function) = os_native(name)?;
         call_plain(function, args)
     }
 
-    fn call_plain(function: NativeFunction32, args: &[RuntimeVal]) -> Result<Val> {
+    fn call_plain(function: NativeFunction32, args: &[RuntimeVal]) -> Result<(RuntimeVal, HeapStore)> {
         let NativeFunction32::Plain(function) = function else {
             return Err(anyhow!("os function must use plain RuntimeNative32"));
         };
@@ -52,16 +55,18 @@ mod tests {
             heap: HeapStore::new(),
             globals: Vec::new(),
         };
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
+        let result = {
+            let mut runtime = NativeRuntime32 {
+                state: &mut state,
+                ctx: None,
+                module: None,
+            };
+            function(NativeArgs32::new(args), &mut runtime)?
         };
-        let result = function(NativeArgs32::new(args), &mut runtime)?;
-        runtime_val_to_val(&result, &runtime.state.heap)
+        Ok((result, state.heap))
     }
 
-    fn call_with_strings(name: &str, strings: &[&str]) -> Result<Val> {
+    fn call_with_strings(name: &str, strings: &[&str]) -> Result<(RuntimeVal, HeapStore)> {
         let (_, function) = os_native(name)?;
         let NativeFunction32::Plain(function) = function else {
             return Err(anyhow!("{name} must use plain RuntimeNative32"));
@@ -74,23 +79,48 @@ mod tests {
             .iter()
             .map(|value| runtime_string_value(value, &mut state.heap))
             .collect::<Vec<_>>();
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
+        let result = {
+            let mut runtime = NativeRuntime32 {
+                state: &mut state,
+                ctx: None,
+                module: None,
+            };
+            function(NativeArgs32::new(&args), &mut runtime)?
         };
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
-        runtime_val_to_val(&result, &runtime.state.heap)
+        Ok((result, state.heap))
+    }
+
+    fn runtime_str<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<&'a str> {
+        match value {
+            RuntimeVal::ShortStr(value) => Some(value.as_str()),
+            RuntimeVal::Obj(handle) => match heap.get(*handle) {
+                Some(HeapValue::String(value)) => Some(value.as_ref()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn runtime_list<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> &'a TypedList {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected list object");
+        };
+        let Some(HeapValue::List(values)) = heap.get(*handle) else {
+            panic!("expected list heap value");
+        };
+        values
     }
 
     #[test]
     fn test_os_arch_and_os_execute32() -> Result<()> {
+        let arch = run32("import os; return os.arch();")?;
         assert_eq!(
-            run32("import os; return os.arch();")?.as_str(),
+            runtime_str(arch.first_return(), &arch.state.heap),
             Some(std::env::consts::ARCH)
         );
+        let os = run32("import os; return os.os();")?;
         assert_eq!(
-            run32("import os; return os.os();")?.as_str(),
+            runtime_str(os.first_return(), &os.state.heap),
             Some(std::env::consts::OS)
         );
         Ok(())
@@ -115,7 +145,8 @@ mod tests {
     fn test_os_env_get_default_and_mutation_errors() -> Result<()> {
         let var = "LK_TEST_ENV_SHOULD_NOT_EXIST_42";
         let src_default = format!("import os; return os.env_get(\"{}\", \"dflt\");", var);
-        assert_eq!(run32(&src_default)?, Val::from_str("dflt"));
+        let default = run32(&src_default)?;
+        assert_eq!(runtime_str(default.first_return(), &default.state.heap), Some("dflt"));
 
         let src_set = format!("import os; return os.env_set(\"{}\", \"X\");", var);
         let err = run32(&src_set).expect_err("env.set should be disabled");
@@ -145,20 +176,29 @@ mod tests {
         writeln!(File::create(&f2)?, "world")?;
 
         let out = run32("import os; return os.dir_temp();")?;
-        if !matches!(out, Val::Nil) {
-            assert!(out.as_str().is_some(), "expected string or nil, got {out:?}");
+        if !matches!(out.first_return(), RuntimeVal::Nil) {
+            assert!(
+                runtime_str(out.first_return(), &out.state.heap).is_some(),
+                "expected string or nil, got {:?}",
+                out.first_return()
+            );
         }
         let out = run32("import os; return os.dir_current();")?;
-        if !matches!(out, Val::Nil) {
-            assert!(out.as_str().is_some(), "expected string or nil, got {out:?}");
+        if !matches!(out.first_return(), RuntimeVal::Nil) {
+            assert!(
+                runtime_str(out.first_return(), &out.state.heap).is_some(),
+                "expected string or nil, got {:?}",
+                out.first_return()
+            );
         }
 
         let src = format!("import os; return os.dir_list(\"{}\");", td.to_string_lossy());
         let out = run32(&src)?;
-        let list = out.as_list().expect("expected List");
-        let names = list.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>();
-        assert!(names.contains(&"a.txt"));
-        assert!(names.contains(&"b.txt"));
+        let TypedList::String(names) = runtime_list(out.first_return(), &out.state.heap) else {
+            panic!("expected typed string list");
+        };
+        assert!(names.iter().any(|name| name.as_ref() == "a.txt"));
+        assert!(names.iter().any(|name| name.as_ref() == "b.txt"));
 
         let _ = std::fs::remove_file(f1);
         let _ = std::fs::remove_file(f2);
@@ -170,7 +210,10 @@ mod tests {
     #[cfg(unix)]
     fn test_os_exec_capture_unix() -> Result<()> {
         let out = run32("import os; return os.exec(\"/bin/echo\", [\"hello\"]);")?;
-        assert_eq!(out.as_str().map(str::trim_end), Some("hello"));
+        assert_eq!(
+            runtime_str(out.first_return(), &out.state.heap).map(str::trim_end),
+            Some("hello")
+        );
         Ok(())
     }
 
@@ -178,20 +221,21 @@ mod tests {
     #[cfg(unix)]
     fn test_os_exec_stream_mode_returns_line_list_unix() -> Result<()> {
         let out = run32("import os; return os.exec(\"/bin/echo\", [\"a\", \"b\"], true);")?;
-        let list = out.as_list().expect("stream mode currently returns line list");
-        assert_eq!(list.as_slice(), &[Val::from_str("a b")]);
+        let TypedList::String(list) = runtime_list(out.first_return(), &out.state.heap) else {
+            panic!("stream mode should return typed string list");
+        };
+        assert_eq!(list.as_slice(), &[Arc::<str>::from("a b")]);
         Ok(())
     }
 
     #[test]
     #[cfg(unix)]
     fn test_os_direct_runtime_calls() -> Result<()> {
-        assert_eq!(call_os("arch", &[])?.as_str(), Some(std::env::consts::ARCH));
-        assert!(matches!(call_os("time", &[])?, Val::Int(_)));
-        assert_eq!(
-            call_with_strings("exec", &["/bin/echo"])?.as_str().map(str::trim_end),
-            Some("")
-        );
+        let (arch, heap) = call_os("arch", &[])?;
+        assert_eq!(runtime_str(&arch, &heap), Some(std::env::consts::ARCH));
+        assert!(matches!(call_os("time", &[])?.0, RuntimeVal::Int(_)));
+        let (output, heap) = call_with_strings("exec", &["/bin/echo"])?;
+        assert_eq!(runtime_str(&output, &heap).map(str::trim_end), Some(""));
         Ok(())
     }
 }

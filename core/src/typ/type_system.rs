@@ -200,10 +200,9 @@ impl TypeRegistry {
             // Only function values are valid implementations
             let mut actual_ty = match val {
                 value if value.is_callable() => {
-                    // Native function type info not carried; accept for now as Function Any
-                    let params = value.as_closure().map_or(0, |closure| closure.params.len());
+                    // Runtime callable type info is validated elsewhere during the Instr32 migration.
                     Type::Function {
-                        params: vec![Type::Any; params],
+                        params: Vec::new(),
                         named_params: Vec::new(),
                         return_type: Box::new(Type::Any),
                     }

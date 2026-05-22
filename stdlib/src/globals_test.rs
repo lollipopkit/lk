@@ -7,7 +7,7 @@ mod tests {
         module, stmt,
         stmt::stmt_parser::StmtParser,
         token::Tokenizer,
-        val::{CallableValue, HeapValue, Val},
+        val::{CallableValue, HeapValue, RuntimeVal, TypedList, Val},
         vm::{self, NativeFunction32},
     };
 
@@ -28,8 +28,8 @@ mod tests {
         let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
-        let result = program.execute_with_ctx(&mut env)?;
-        assert_eq!(result, Val::Int(42));
+        let result = program.execute32_with_ctx(&mut env)?;
+        assert_eq!(result.first_return(), &RuntimeVal::Int(42));
         Ok(())
     }
 
@@ -48,7 +48,7 @@ mod tests {
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = program.execute_with_ctx(&mut env);
+            let _ = program.execute32_with_ctx(&mut env);
         }));
 
         assert!(result.is_err(), "expected panic, but code did not panic");
@@ -101,8 +101,14 @@ mod tests {
         let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
-        let result = program.execute_with_ctx(&mut env)?;
-        assert_eq!(result, Val::list(vec![Val::Bool(true), Val::Int(7)].into()));
+        let result = program.execute32_with_ctx(&mut env)?;
+        let RuntimeVal::Obj(handle) = result.first_return() else {
+            panic!("expected list object");
+        };
+        let Some(HeapValue::List(TypedList::Mixed(values))) = result.state.heap.get(*handle) else {
+            panic!("expected mixed list return");
+        };
+        assert_eq!(values, &vec![RuntimeVal::Bool(true), RuntimeVal::Int(7)]);
         Ok(())
     }
 }

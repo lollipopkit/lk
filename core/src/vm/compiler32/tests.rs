@@ -1,5 +1,12 @@
 use super::*;
 use crate::vm::{NativeArgs32, NativeFunction32, execute_module32, execute32};
+use crate::{stmt::stmt_parser::StmtParser, token::Tokenizer};
+
+fn parse_program32(source: &str) -> crate::stmt::Program {
+    let tokens = Tokenizer::tokenize(source).expect("tokenize");
+    let mut parser = StmtParser::new(&tokens);
+    parser.parse_program().expect("parse program")
+}
 
 #[test]
 fn compiler32_lowers_int_arithmetic_to_executable_function32() {
@@ -351,6 +358,39 @@ fn compiler32_accepts_type_only_declarations_as_noop() {
     .expect("compile source");
 
     let result = execute32(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler32_dynamic_method_helper_reads_runtime_properties() {
+    let program = parse_program32(
+        r#"
+        let user = {"score": 40};
+        return user.score() + [1, 2].len() + "ok".len();
+        "#,
+    );
+    let mut ctx = crate::vm::VmContext::new();
+
+    let result = program.execute32_with_ctx(&mut ctx).expect("execute program");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(44)]);
+}
+
+#[test]
+fn compiler32_dynamic_method_helper_calls_runtime_callable_property() {
+    let program = parse_program32(
+        r#"
+        fn add(a, b) {
+            return a + b;
+        }
+        let table = {"add": add};
+        return table.add(40, 2);
+        "#,
+    );
+    let mut ctx = crate::vm::VmContext::new();
+
+    let result = program.execute32_with_ctx(&mut ctx).expect("execute program");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }

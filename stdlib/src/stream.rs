@@ -10,14 +10,11 @@ use anyhow::{Result, anyhow, bail};
 use dashmap::DashMap;
 use lk_core::{
     module::{Module, ModuleRegistry},
-    rt,
-    val::{
-        CallableValue, HeapStore, HeapValue, RuntimeVal, StreamCursorValue, StreamValue, Type, TypedList, Val,
-        val_to_runtime_val,
-    },
+    rt::{self, RuntimePayload},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, StreamCursorValue, StreamValue, Type, TypedList, Val},
     vm::{
         NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
-        runtime_value_to_callable32,
+        copy_runtime_value, runtime_value_to_callable32,
     },
 };
 use once_cell::sync::Lazy;
@@ -298,7 +295,7 @@ struct ChannelCursor {
 impl StreamCursor for ChannelCursor {
     fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         match rt::with_runtime(|runtime| runtime.try_recv(self.channel_id))? {
-            Some((true, value)) => Ok(Some(val_to_runtime_val(&value, runtime.heap_mut())?)),
+            Some((true, value)) => Ok(Some(runtime_payload_into_value(value, runtime.heap_mut())?)),
             Some((false, _)) | None => Ok(None),
         }
     }
@@ -586,7 +583,7 @@ fn next_block_cursor(cursor_id: u64, timeout_ms: Option<i64>, runtime: &mut Nati
         return next_cursor(cursor_id, runtime);
     };
     let (ok, value) = recv_channel_blocking(channel_id, timeout_ms)?;
-    let value = val_to_runtime_val(&value, runtime.heap_mut())?;
+    let value = runtime_payload_into_value(value, runtime.heap_mut())?;
     runtime_list(vec![RuntimeVal::Bool(ok), value], runtime.heap_mut())
 }
 
@@ -617,17 +614,17 @@ fn collect_block_cursor(
         if !ok {
             break;
         }
-        out.push(val_to_runtime_val(&value, runtime.heap_mut())?);
+        out.push(runtime_payload_into_value(value, runtime.heap_mut())?);
         taken += 1;
     }
     runtime_list(out, runtime.heap_mut())
 }
 
-fn recv_channel_blocking(channel_id: u64, timeout_ms: Option<i64>) -> Result<(bool, Val)> {
-    Ok(recv_channel_blocking_optional(channel_id, timeout_ms)?.unwrap_or((false, Val::Nil)))
+fn recv_channel_blocking(channel_id: u64, timeout_ms: Option<i64>) -> Result<(bool, RuntimePayload)> {
+    Ok(recv_channel_blocking_optional(channel_id, timeout_ms)?.unwrap_or((false, RuntimePayload::nil())))
 }
 
-fn recv_channel_blocking_optional(channel_id: u64, timeout_ms: Option<i64>) -> Result<Option<(bool, Val)>> {
+fn recv_channel_blocking_optional(channel_id: u64, timeout_ms: Option<i64>) -> Result<Option<(bool, RuntimePayload)>> {
     use std::time::Duration;
     let value = rt::with_runtime(|runtime| match timeout_ms {
         Some(ms) if ms > 0 => {
@@ -641,6 +638,11 @@ fn recv_channel_blocking_optional(channel_id: u64, timeout_ms: Option<i64>) -> R
         _ => runtime.block_on(runtime.recv_async(channel_id)).map(Some),
     })?;
     Ok(value)
+}
+
+fn runtime_payload_into_value(payload: RuntimePayload, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    let mut payload_heap = payload.heap;
+    copy_runtime_value(&payload.value, &mut payload_heap, heap)
 }
 
 fn cursor_handle(cursor_id: u64) -> Result<CursorHandle> {

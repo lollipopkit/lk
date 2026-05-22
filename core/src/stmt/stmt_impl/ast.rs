@@ -166,27 +166,33 @@ impl Program {
     }
 
     pub fn execute(&self) -> Result<Val> {
-        self.execute32()
+        self.execute32_value()
     }
 
     pub fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<Val> {
-        self.execute32_with_ctx(ctx)
+        self.execute32_value_with_ctx(ctx)
     }
 
-    pub fn execute32(&self) -> Result<Val> {
+    pub fn execute32(&self) -> Result<crate::vm::Program32Result> {
         let mut ctx = VmContext::new_without_core_vm_builtins();
         self.execute32_with_ctx(&mut ctx)
     }
 
-    pub fn execute32_with_ctx(&self, ctx: &mut VmContext) -> Result<Val> {
-        let mut type_checker = TypeChecker::new();
-        self.type_check(&mut type_checker)?;
-        crate::vm::execute_program32_with_ctx(self, ctx)
-    }
-
-    pub fn execute32_raw_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::Program32Result> {
+    pub fn execute32_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::Program32Result> {
         let mut type_checker = TypeChecker::new();
         self.type_check(&mut type_checker)?;
         crate::vm::execute_program32_raw_with_ctx(self, ctx)
+    }
+
+    pub fn execute32_value(&self) -> Result<Val> {
+        self.execute32()?.first_return_to_val()
+    }
+
+    pub fn execute32_value_with_ctx(&self, ctx: &mut VmContext) -> Result<Val> {
+        self.execute32_with_ctx(ctx)?.first_return_to_val()
+    }
+
+    pub fn execute32_raw_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::Program32Result> {
+        self.execute32_with_ctx(ctx)
     }
 }

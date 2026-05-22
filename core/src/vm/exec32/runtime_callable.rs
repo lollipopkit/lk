@@ -7,10 +7,10 @@ use crate::{
         CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, TypedList, TypedMap, Val,
         runtime_val_to_val, val_to_runtime_val,
     },
-    vm::{Module32, NativeArgs32, RuntimeCallable32, RuntimeModuleState32},
+    vm::{Module32, NativeArgs32, NativeEntry32, RuntimeCallable32, RuntimeModuleState32, VmContext},
 };
 
-use super::{Exec32Result, Executor32, named_call::order_named_args32};
+use super::{Exec32Result, Executor32, named_call::order_named_args32, support::call_native_entry};
 
 pub fn call_runtime_callable32(
     function: &RuntimeCallable32,
@@ -224,6 +224,125 @@ pub fn call_runtime_callable32_runtime(
     Ok(value)
 }
 
+pub fn call_runtime_value32_runtime(
+    callee: RuntimeVal,
+    args: &[RuntimeVal],
+    state: &mut RuntimeModuleState32,
+    module: Option<&Module32>,
+    ctx: Option<&mut VmContext>,
+) -> Result<RuntimeVal> {
+    call_runtime_value32_runtime_named(callee, args, &[], state, module, ctx)
+}
+
+pub fn call_runtime_value32_runtime_named(
+    callee: RuntimeVal,
+    pos: &[RuntimeVal],
+    named: &[(String, RuntimeVal)],
+    state: &mut RuntimeModuleState32,
+    module: Option<&Module32>,
+    ctx: Option<&mut VmContext>,
+) -> Result<RuntimeVal> {
+    let RuntimeVal::Obj(handle) = callee else {
+        bail!("runtime callee is not callable");
+    };
+    let callable = match state
+        .heap
+        .get(handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+    {
+        HeapValue::Callable(callable) => callable.clone(),
+        _ => bail!("runtime callee is not callable"),
+    };
+    match callable {
+        CallableValue::Closure {
+            function_index,
+            captures,
+        } => call_closure_value32(function_index, captures, pos, named, state, module, ctx),
+        CallableValue::Native { function_index, arity } => {
+            let module = module.ok_or_else(|| anyhow!("native callable requires Module32 context"))?;
+            let native = module
+                .natives
+                .get(function_index as usize)
+                .ok_or_else(|| anyhow!("native index {} out of bounds", function_index))?;
+            if arity != NativeEntry32::VARIADIC && arity != pos.len() as u16 {
+                bail!("Function expects {} positional arguments, got {}", arity, pos.len());
+            }
+            call_native_entry(native, pos, named, state, Some(module), ctx)
+        }
+        CallableValue::RuntimeNative32 { arity, function } => {
+            if arity != NativeEntry32::VARIADIC && arity != pos.len() as u16 {
+                bail!("Native expects {} positional arguments, got {}", arity, pos.len());
+            }
+            let native = NativeEntry32 {
+                name: "<runtime-native32>".to_string(),
+                arity,
+                function,
+            };
+            call_native_entry(&native, pos, named, state, module, ctx)
+        }
+        CallableValue::Runtime32(function) => {
+            if named.is_empty() {
+                call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(pos), &mut state.heap, ctx)
+            } else {
+                call_runtime_callable32_runtime_named(
+                    function.as_ref(),
+                    NativeArgs32::new(pos),
+                    named,
+                    &mut state.heap,
+                    ctx,
+                )
+            }
+        }
+        CallableValue::Aot(_) => bail!("AOT callable is not implemented in Executor32 yet"),
+    }
+}
+
+fn call_closure_value32(
+    function_index: u32,
+    captures: Vec<RuntimeVal>,
+    pos: &[RuntimeVal],
+    named: &[(String, RuntimeVal)],
+    state: &mut RuntimeModuleState32,
+    module: Option<&Module32>,
+    ctx: Option<&mut VmContext>,
+) -> Result<RuntimeVal> {
+    let module = module.ok_or_else(|| anyhow!("closure callable requires Module32 context"))?;
+    let function = module
+        .functions
+        .get(function_index as usize)
+        .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
+    let args = if named.is_empty() {
+        if function.param_count != pos.len() as u16 {
+            bail!(
+                "Function expects {} positional arguments, got {}",
+                function.param_count,
+                pos.len()
+            );
+        }
+        pos.to_vec()
+    } else {
+        order_named_args32(function, pos.to_vec(), named.to_vec())?
+    };
+    let mut ctx = ctx;
+    let mut callee = Executor32::new(function.register_count);
+    callee.state = std::mem::take(state);
+    callee.captures = captures;
+    for (index, value) in args.into_iter().enumerate() {
+        callee.seed_param_arg(index, value)?;
+    }
+    match callee.run_function_inner(function, Some(module), &mut ctx) {
+        Ok(returns) => {
+            let result = callee.finish(returns);
+            *state = result.state;
+            Ok(result.returns.into_iter().next().unwrap_or(RuntimeVal::Nil))
+        }
+        Err(error) => {
+            *state = callee.state;
+            Err(error)
+        }
+    }
+}
+
 fn commit_runtime_callable32_state(function: &RuntimeCallable32, next_state: &RuntimeModuleState32) -> Result<()> {
     let mut state = function
         .state
@@ -306,9 +425,6 @@ fn copy_heap_value(value: HeapValue, source_heap: &mut HeapStore, dest_heap: &mu
                 fields,
             })
         }
-        HeapValue::Callable(CallableValue::ParsedClosure(value)) => {
-            HeapValue::Callable(CallableValue::ParsedClosure(value))
-        }
         HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
             HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })
         }
@@ -319,9 +435,6 @@ fn copy_heap_value(value: HeapValue, source_heap: &mut HeapStore, dest_heap: &mu
             HeapValue::Callable(CallableValue::Runtime32(function))
         }
         HeapValue::Callable(CallableValue::Aot(value)) => HeapValue::Callable(CallableValue::Aot(value)),
-        HeapValue::Callable(CallableValue::AotHandle { handle, arity }) => {
-            HeapValue::Callable(CallableValue::AotHandle { handle, arity })
-        }
         HeapValue::Callable(CallableValue::Closure { .. }) => {
             bail!("cannot copy raw closure without module context")
         }

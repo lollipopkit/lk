@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry},
-    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val, runtime_val_to_val},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
     vm::{
         NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
         runtime_value_to_callable32,
@@ -400,9 +400,54 @@ fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore)
     if left == right {
         return true;
     }
-    match (runtime_val_to_val(left, heap), runtime_val_to_val(right, heap)) {
-        (Ok(left), Ok(right)) => left == right,
+    let (RuntimeVal::Obj(left), RuntimeVal::Obj(right)) = (left, right) else {
+        return false;
+    };
+    let (Some(left), Some(right)) = (heap.get(*left), heap.get(*right)) else {
+        return false;
+    };
+    match (left, right) {
+        (HeapValue::String(left), HeapValue::String(right)) => left == right,
+        (HeapValue::List(left), HeapValue::List(right)) => runtime_lists_equal(left, right, heap),
+        (HeapValue::Map(left), HeapValue::Map(right)) => {
+            let left = left.entries();
+            let right = right.entries();
+            left.len() == right.len()
+                && left.iter().all(|(key, left)| {
+                    right
+                        .iter()
+                        .find(|(candidate, _)| candidate == key)
+                        .is_some_and(|(_, right)| runtime_values_equal(left, right, heap))
+                })
+        }
         _ => false,
+    }
+}
+
+fn runtime_lists_equal(left: &TypedList, right: &TypedList, heap: &HeapStore) -> bool {
+    if let (TypedList::String(left), TypedList::String(right)) = (left, right) {
+        return left == right;
+    }
+    let (Some(left), Some(right)) = (runtime_list_items(left), runtime_list_items(right)) else {
+        return false;
+    };
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(left, right)| runtime_values_equal(left, right, heap))
+}
+
+fn runtime_list_items(list: &TypedList) -> Option<Vec<RuntimeVal>> {
+    match list {
+        TypedList::Mixed(values) => Some(values.clone()),
+        TypedList::Int(values) => Some(values.iter().copied().map(RuntimeVal::Int).collect()),
+        TypedList::Float(values) => Some(values.iter().copied().map(RuntimeVal::Float).collect()),
+        TypedList::Bool(values) => Some(values.iter().copied().map(RuntimeVal::Bool).collect()),
+        TypedList::String(values) => values
+            .iter()
+            .map(|value| lk_core::val::ShortStr::new(value).map(RuntimeVal::ShortStr))
+            .collect(),
     }
 }
 
@@ -414,11 +459,11 @@ mod tests {
         module::Module,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, runtime_val_to_val},
-        vm::{NativeFunction32, RuntimeModuleState32, VmContext},
+        val::CallableValue,
+        vm::{NativeFunction32, Program32Result, RuntimeModuleState32, VmContext},
     };
 
-    fn run32(source: &str) -> Result<Val> {
+    fn run32(source: &str) -> Result<Program32Result> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -428,6 +473,33 @@ mod tests {
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
         program.execute32_with_ctx(&mut env)
+    }
+
+    fn run32_value(source: &str) -> Result<RuntimeVal> {
+        Ok(run32(source)?.first_return().clone())
+    }
+
+    fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected runtime list object");
+        };
+        let Some(HeapValue::List(list)) = heap.get(*handle) else {
+            panic!("expected runtime list heap value");
+        };
+        match list {
+            TypedList::Mixed(values) => values.clone(),
+            TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            TypedList::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            TypedList::String(values) => values
+                .iter()
+                .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
+                .collect(),
+        }
+    }
+
+    fn expect_return_list(result: &Program32Result) -> Vec<RuntimeVal> {
+        expect_list(result.first_return(), &result.state.heap)
     }
 
     fn iter_native(name: &str) -> Result<(u16, NativeFunction32)> {
@@ -469,22 +541,36 @@ mod tests {
     #[test]
     fn iter_sequence_ops_run_on_exec32() -> Result<()> {
         assert_eq!(
-            run32("import iter; return iter.range(0, 6, 2);")?,
-            Val::list(vec![Val::Int(0), Val::Int(2), Val::Int(4)].into())
+            expect_return_list(&run32("import iter; return iter.range(0, 6, 2);")?),
+            vec![RuntimeVal::Int(0), RuntimeVal::Int(2), RuntimeVal::Int(4)]
+        );
+        let result = run32("import iter; return iter.zip([1,2], [\"a\",\"b\",\"c\"]);")?;
+        let zipped = expect_return_list(&result);
+        assert_eq!(zipped.len(), 2);
+        assert_eq!(
+            expect_list(&zipped[0], &result.state.heap),
+            vec![
+                RuntimeVal::Int(1),
+                RuntimeVal::ShortStr(lk_core::val::ShortStr::new("a").expect("short"))
+            ]
         );
         assert_eq!(
-            run32("import iter; return iter.zip([1,2], [\"a\",\"b\",\"c\"]);")?,
-            Val::list(
-                vec![
-                    Val::list(vec![Val::Int(1), Val::from_str("a")].into()),
-                    Val::list(vec![Val::Int(2), Val::from_str("b")].into()),
-                ]
-                .into()
-            )
+            expect_list(&zipped[1], &result.state.heap),
+            vec![
+                RuntimeVal::Int(2),
+                RuntimeVal::ShortStr(lk_core::val::ShortStr::new("b").expect("short"))
+            ]
         );
         assert_eq!(
-            run32("import iter; return iter.chain(iter.take([1,2,3], 2), iter.skip([4,5,6], 1));")?,
-            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(5), Val::Int(6)].into())
+            expect_return_list(&run32(
+                "import iter; return iter.chain(iter.take([1,2,3], 2), iter.skip([4,5,6], 1));"
+            )?),
+            vec![
+                RuntimeVal::Int(1),
+                RuntimeVal::Int(2),
+                RuntimeVal::Int(5),
+                RuntimeVal::Int(6)
+            ]
         );
         Ok(())
     }
@@ -492,40 +578,50 @@ mod tests {
     #[test]
     fn iter_list_shape_ops_run_on_exec32() -> Result<()> {
         assert_eq!(
-            run32("import iter; let a = [1,2]; let b = [3]; let c = [4]; return iter.flatten([a,b,c]);")?,
-            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3), Val::Int(4)].into())
+            expect_return_list(&run32(
+                "import iter; let a = [1,2]; let b = [3]; let c = [4]; return iter.flatten([a,b,c]);"
+            )?),
+            vec![
+                RuntimeVal::Int(1),
+                RuntimeVal::Int(2),
+                RuntimeVal::Int(3),
+                RuntimeVal::Int(4)
+            ]
         );
         assert_eq!(
-            run32("import iter; return iter.unique([1,1,2,2,3]);")?,
-            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into())
+            expect_return_list(&run32("import iter; return iter.unique([1,1,2,2,3]);")?),
+            vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
+        );
+        let result = run32("import iter; return iter.chunk([1,2,3,4,5], 2);")?;
+        let chunks = expect_return_list(&result);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(
+            expect_list(&chunks[0], &result.state.heap),
+            vec![RuntimeVal::Int(1), RuntimeVal::Int(2)]
         );
         assert_eq!(
-            run32("import iter; return iter.chunk([1,2,3,4,5], 2);")?,
-            Val::list(
-                vec![
-                    Val::list(vec![Val::Int(1), Val::Int(2)].into()),
-                    Val::list(vec![Val::Int(3), Val::Int(4)].into()),
-                    Val::list(vec![Val::Int(5)].into()),
-                ]
-                .into()
-            )
+            expect_list(&chunks[1], &result.state.heap),
+            vec![RuntimeVal::Int(3), RuntimeVal::Int(4)]
         );
+        assert_eq!(expect_list(&chunks[2], &result.state.heap), vec![RuntimeVal::Int(5)]);
         Ok(())
     }
 
     #[test]
     fn iter_higher_order_ops_call_runtime_closures() -> Result<()> {
         assert_eq!(
-            run32("import iter; return iter.map([1,2,3], fn(x) => x * 2);")?,
-            Val::list(vec![Val::Int(2), Val::Int(4), Val::Int(6)].into())
+            expect_return_list(&run32("import iter; return iter.map([1,2,3], fn(x) => x * 2);")?),
+            vec![RuntimeVal::Int(2), RuntimeVal::Int(4), RuntimeVal::Int(6)]
         );
         assert_eq!(
-            run32("import iter; return iter.filter([1,2,3,4], fn(x) => x % 2 == 0);")?,
-            Val::list(vec![Val::Int(2), Val::Int(4)].into())
+            expect_return_list(&run32(
+                "import iter; return iter.filter([1,2,3,4], fn(x) => x % 2 == 0);"
+            )?),
+            vec![RuntimeVal::Int(2), RuntimeVal::Int(4)]
         );
         assert_eq!(
-            run32("import iter; return iter.reduce([1,2,3], 0, fn(acc, x) => acc + x);")?,
-            Val::Int(6)
+            run32_value("import iter; return iter.reduce([1,2,3], 0, fn(acc, x) => acc + x);")?,
+            RuntimeVal::Int(6)
         );
         Ok(())
     }
@@ -548,19 +644,22 @@ mod tests {
         };
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
         assert_eq!(
-            runtime_val_to_val(&result, &runtime.state.heap)?,
-            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into())
+            expect_list(&result, &runtime.state.heap),
+            vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
         );
         Ok(())
     }
 
     #[test]
     fn iter_collect_and_next_accept_lists_only() -> Result<()> {
-        assert_eq!(run32("import iter; return iter.next([7,8]);")?, Val::Int(7));
-        assert_eq!(run32("import iter; return iter.next([]);")?, Val::Nil);
         assert_eq!(
-            run32("import iter; return iter.collect([1,2]);")?,
-            Val::list(vec![Val::Int(1), Val::Int(2)].into())
+            run32_value("import iter; return iter.next([7,8]);")?,
+            RuntimeVal::Int(7)
+        );
+        assert_eq!(run32_value("import iter; return iter.next([]);")?, RuntimeVal::Nil);
+        assert_eq!(
+            expect_return_list(&run32("import iter; return iter.collect([1,2]);")?),
+            vec![RuntimeVal::Int(1), RuntimeVal::Int(2)]
         );
         Ok(())
     }

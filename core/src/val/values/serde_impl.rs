@@ -33,7 +33,7 @@ where
         HeapValue::Task(task) => {
             let mut map = serializer.serialize_map(Some(2))?;
             map.serialize_entry("type", "task")?;
-            map.serialize_entry("value", &task.value)?;
+            map.serialize_entry("value", &format!("{:?}", task.value))?;
             map.end()
         }
         HeapValue::Channel(channel) => {

@@ -111,7 +111,12 @@ impl From<()> for Val {
 
 impl From<(u64, Val)> for Val {
     fn from((id, value): (u64, Val)) -> Self {
-        Val::task(Arc::new(TaskValue { id, value: Some(value) }))
+        let mut heap = crate::val::HeapStore::new();
+        let value = crate::val::val_to_runtime_val(&value, &mut heap).ok();
+        Val::task(Arc::new(TaskValue {
+            id,
+            value: value.map(|value| crate::rt::RuntimePayload::new(value, heap)),
+        }))
     }
 }
 

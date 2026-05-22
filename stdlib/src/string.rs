@@ -4,11 +4,11 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry},
-    val::{HeapStore, HeapValue, RuntimeVal, TypedList, Val, runtime_val_to_val},
-    vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, VmContext},
+    val::{HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+    vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32},
 };
 
-use crate::runtime_native::{runtime_string_arg, runtime_string_value};
+use crate::runtime_native::{runtime_display_value, runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
 pub struct StringModule {
@@ -281,11 +281,7 @@ impl StringModule {
         while i < chars.len() {
             if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '}' {
                 if arg_index < rest.len() {
-                    out.push_str(&display_runtime_value(
-                        &rest[arg_index],
-                        &runtime.state.heap,
-                        runtime.ctx.as_deref(),
-                    ));
+                    out.push_str(&runtime_display_value(&rest[arg_index], &runtime.state.heap)?);
                     arg_index += 1;
                 } else {
                     out.push_str("{}");
@@ -304,11 +300,7 @@ impl StringModule {
                 if index > 0 {
                     out.push(' ');
                 }
-                out.push_str(&display_runtime_value(
-                    value,
-                    &runtime.state.heap,
-                    runtime.ctx.as_deref(),
-                ));
+                out.push_str(&runtime_display_value(value, &runtime.state.heap)?);
             }
         }
         Ok(runtime_string_value(&out, runtime.heap_mut()))
@@ -411,10 +403,4 @@ fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Resul
             .collect(),
         _ => Err(anyhow!("join() list must contain only strings")),
     }
-}
-
-fn display_runtime_value(value: &RuntimeVal, heap: &HeapStore, ctx: Option<&VmContext>) -> String {
-    runtime_val_to_val(value, heap)
-        .map(|value| value.display_string(ctx))
-        .unwrap_or_else(|_| format!("{:?}", value.kind()))
 }

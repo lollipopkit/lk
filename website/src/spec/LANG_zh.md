@@ -234,8 +234,8 @@ import "d/d1";    // c/d/d1.lk，导出名为 d1
 
 ### 元方法（可直接通过 `value.method()` 使用，无需导入）
 - String：`len`、`lower`、`upper`、`trim`、`starts_with`、`ends_with`、`contains`、`replace`、`substring`、`split`、`join`、`reverse`、`repeat`、`chars`、`char_at`、`byte_at`、`find`、`is_empty`
-- List：`len`、`push`、`set`、`concat`、`join`、`get`、`first`、`last`、`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`flatten`、`unique`、`chunk`、`enumerate`、`zip`、`to_stream`、`mutate`（guard：`push`、`pop`、`replace`、`remove`、`reserve`、`commit`、`as_list`）
-- Map：`len`、`keys`、`values`、`has`、`get`、`set`、`delete`、`mutate`（guard：`len`、`has`/`contains`、`set`/`insert`、`delete`/`remove`、`commit`、`as_map`）
+- List：`len`、`push`、`set`、`concat`、`join`、`get`、`first`、`last`、`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`flatten`、`unique`、`chunk`、`enumerate`、`zip`、`to_stream`
+- Map：`len`、`keys`、`values`、`has`、`get`、`set`、`delete`
 - Stream：`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`subscribe`、`collect`、`collect_block`
 - StreamCursor：`next`、`collect`、`next_block`、`collect_block`
 - Channel：`to_stream`
@@ -363,7 +363,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ## CLI 使用说明
 - 运行 REPL：`lk`
 - 执行文件（语句）：`lk FILE`
-- 编译到字节码：`lk compile [FILE]` → `FILE.lkb`；若未指定 `FILE`，CLI 使用 `./main.lk`、`./src/main.lk` 或单一 workspace 入口。
+- Instr32 模块格式迁移期间暂时禁用编译输出；当前 CLI 支持源码执行与 REPL。
 - 只允许相对且经过清洗的路径。
 - CLI 只在结果非 `nil` 时打印。
 
@@ -381,4 +381,3 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - `Channel` —— 并发通道（功能开关）
 - `Stream` —— 懒执行流管线（功能开关）
 - `StreamCursor` —— 流元素消费器
-- `MutationGuard` —— 列表和映射的批量变更 guard

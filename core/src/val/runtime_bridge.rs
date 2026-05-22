@@ -41,9 +41,7 @@ pub fn val_to_runtime_val(value: &Val, heap: &mut HeapStore) -> Result<RuntimeVa
                     function: function.clone(),
                 }),
             ))),
-            HeapValue::Callable(
-                CallableValue::ParsedClosure(_) | CallableValue::Aot(_) | CallableValue::AotHandle { .. },
-            ) => {
+            HeapValue::Callable(CallableValue::Aot(_)) => {
                 bail!("cannot convert native legacy callable to RuntimeVal without a native table")
             }
             value => Ok(RuntimeVal::Obj(heap.alloc(value.clone()))),
@@ -79,7 +77,6 @@ fn heap_value_to_val(value: &HeapValue, heap: &HeapStore) -> Result<Val> {
             }
             Ok(Val::object(object.type_name.as_ref(), fields))
         }
-        HeapValue::Callable(CallableValue::ParsedClosure(value)) => Ok(Val::closure(value.clone())),
         HeapValue::Callable(CallableValue::Aot(function)) => Ok(Val::aot_function(*function)),
         HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
             Ok(Val::runtime_native32(function.clone(), *arity))

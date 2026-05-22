@@ -9,11 +9,11 @@ mod tests {
         module::{Module, ModuleRegistry},
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, Val, runtime_val_to_val},
-        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32, VmContext},
+        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, Val},
+        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32, VmContext},
     };
 
-    fn run32(source: &str) -> Result<Val> {
+    fn run32(source: &str) -> Result<Program32Result> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -37,7 +37,7 @@ mod tests {
         Ok((*arity, function.clone()))
     }
 
-    fn call_datetime(name: &str, args: &[RuntimeVal]) -> Result<Val> {
+    fn call_datetime(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {
         let (_, function) = datetime_native(name)?;
         let NativeFunction32::Plain(function) = function else {
             return Err(anyhow!("{name} must use plain RuntimeNative32"));
@@ -51,11 +51,10 @@ mod tests {
             ctx: None,
             module: None,
         };
-        let result = function(NativeArgs32::new(args), &mut runtime)?;
-        runtime_val_to_val(&result, &runtime.state.heap)
+        function(NativeArgs32::new(args), &mut runtime)
     }
 
-    fn call_datetime_strings(name: &str, left: &str, right: &str) -> Result<Val> {
+    fn call_datetime_strings(name: &str, left: &str, right: &str) -> Result<RuntimeVal> {
         let (_, function) = datetime_native(name)?;
         let NativeFunction32::Plain(function) = function else {
             return Err(anyhow!("{name} must use plain RuntimeNative32"));
@@ -72,21 +71,32 @@ mod tests {
             ctx: None,
             module: None,
         };
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
-        runtime_val_to_val(&result, &runtime.state.heap)
+        function(NativeArgs32::new(&args), &mut runtime)
+    }
+
+    fn runtime_str<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<&'a str> {
+        match value {
+            RuntimeVal::ShortStr(value) => Some(value.as_str()),
+            RuntimeVal::Obj(handle) => match heap.get(*handle) {
+                Some(HeapValue::String(value)) => Some(value.as_ref()),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     #[test]
     fn test_format_and_parse_roundtrip() -> Result<()> {
         let ts = Utc.with_ymd_and_hms(2024, 1, 6, 12, 30, 0).unwrap().timestamp();
 
+        let formatted = run32("import datetime; return datetime.format(1704544200, \"%Y-%m-%d %H:%M\");")?;
         assert_eq!(
-            run32("import datetime; return datetime.format(1704544200, \"%Y-%m-%d %H:%M\");")?,
-            Val::from_str("2024-01-06 12:30")
+            runtime_str(formatted.first_return(), &formatted.state.heap),
+            Some("2024-01-06 12:30")
         );
         assert_eq!(
             call_datetime_strings("parse", "2024-01-06 12:30", "%Y-%m-%d %H:%M")?,
-            Val::Int(ts)
+            RuntimeVal::Int(ts)
         );
         Ok(())
     }
@@ -96,15 +106,21 @@ mod tests {
         let saturday = Utc.with_ymd_and_hms(2024, 1, 6, 0, 0, 0).unwrap().timestamp();
         let monday = Utc.with_ymd_and_hms(2024, 1, 8, 0, 0, 0).unwrap().timestamp();
 
-        assert_eq!(call_datetime("day_of_week", &[RuntimeVal::Int(saturday)])?, Val::Int(6));
-        assert_eq!(call_datetime("day_of_week", &[RuntimeVal::Int(monday)])?, Val::Int(1));
+        assert_eq!(
+            call_datetime("day_of_week", &[RuntimeVal::Int(saturday)])?,
+            RuntimeVal::Int(6)
+        );
+        assert_eq!(
+            call_datetime("day_of_week", &[RuntimeVal::Int(monday)])?,
+            RuntimeVal::Int(1)
+        );
         assert_eq!(
             call_datetime("is_weekend", &[RuntimeVal::Int(saturday)])?,
-            Val::Bool(true)
+            RuntimeVal::Bool(true)
         );
         assert_eq!(
             call_datetime("is_weekend", &[RuntimeVal::Int(monday)])?,
-            Val::Bool(false)
+            RuntimeVal::Bool(false)
         );
         Ok(())
     }
@@ -113,16 +129,16 @@ mod tests {
     fn test_add_sub_and_day_of_year() -> Result<()> {
         let base = 1_700_000_000i64;
         assert_eq!(
-            run32("import datetime; return datetime.add(1700000000, 30);")?,
-            Val::Int(base + 30)
+            run32("import datetime; return datetime.add(1700000000, 30);")?.first_return(),
+            &RuntimeVal::Int(base + 30)
         );
         assert_eq!(
-            run32("import datetime; return datetime.sub(1700000000, 45);")?,
-            Val::Int(base - 45)
+            run32("import datetime; return datetime.sub(1700000000, 45);")?.first_return(),
+            &RuntimeVal::Int(base - 45)
         );
         assert_eq!(
             call_datetime("day_of_year", &[RuntimeVal::Int(1704544200)])?,
-            Val::Int(6)
+            RuntimeVal::Int(6)
         );
         Ok(())
     }
@@ -166,18 +182,19 @@ mod tests {
     #[test]
     fn test_datetime_now() -> Result<()> {
         let result = run32("import datetime; return datetime.now();")?;
-        let Val::Int(timestamp) = result else {
+        let RuntimeVal::Int(timestamp) = result.first_return() else {
             panic!("Expected integer timestamp");
         };
-        assert!(timestamp > 0, "Timestamp should be positive");
+        assert!(*timestamp > 0, "Timestamp should be positive");
         Ok(())
     }
 
     #[test]
     fn test_datetime_format() -> Result<()> {
+        let formatted = run32("import datetime; return datetime.format(1672531200, \"%Y-%m-%d\");")?;
         assert_eq!(
-            run32("import datetime; return datetime.format(1672531200, \"%Y-%m-%d\");")?,
-            Val::from_str("2023-01-01")
+            runtime_str(formatted.first_return(), &formatted.state.heap),
+            Some("2023-01-01")
         );
         Ok(())
     }

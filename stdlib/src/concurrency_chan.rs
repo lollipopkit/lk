@@ -8,8 +8,9 @@ use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{self, Module},
     rt,
-    val::{ChannelValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val, runtime_val_to_val, val_to_runtime_val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    rt::RuntimePayload,
+    val::{ChannelValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+    vm::{NativeArgs32, NativeFunction32, NativeRuntime32, copy_runtime_value},
 };
 use std::{collections::HashMap, sync::Arc};
 
@@ -141,7 +142,7 @@ fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
     expect_arity(args, 2, "chan.try_send()")?;
     let values = args.as_slice();
     let channel = channel_arg(&values[0], &runtime.state.heap, "chan.try_send()")?;
-    let value = runtime_val_to_val(&values[1], &runtime.state.heap)?;
+    let value = runtime_payload_from_value(&values[1], &runtime.state.heap)?;
     let sent = rt::with_runtime(|runtime| runtime.try_send(channel.id, value))
         .map_err(|err| anyhow!("Failed to send to channel: {err}"))?;
     Ok(RuntimeVal::Bool(sent))
@@ -157,12 +158,25 @@ fn chan_try_recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
     match rt::with_runtime(|rt| rt.try_recv(channel.id))
         .map_err(|err| anyhow!("Failed to receive from channel: {err}"))?
     {
-        Some((ok, value)) => {
-            let value = val_to_runtime_val(&value, runtime.heap_mut())?;
-            Ok(pair(ok, value, runtime))
-        }
+        Some((ok, value)) => Ok(pair(
+            ok,
+            runtime_payload_into_value(value, runtime.heap_mut())?,
+            runtime,
+        )),
         None => Ok(pair(false, RuntimeVal::Nil, runtime)),
     }
+}
+
+fn runtime_payload_from_value(value: &RuntimeVal, heap: &HeapStore) -> Result<RuntimePayload> {
+    let mut source_heap = heap.clone();
+    let mut payload_heap = HeapStore::new();
+    let value = copy_runtime_value(value, &mut source_heap, &mut payload_heap)?;
+    Ok(RuntimePayload::new(value, payload_heap))
+}
+
+fn runtime_payload_into_value(payload: RuntimePayload, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    let mut payload_heap = payload.heap;
+    copy_runtime_value(&payload.value, &mut payload_heap, heap)
 }
 
 #[cfg(test)]
@@ -170,7 +184,7 @@ mod tests {
     use super::*;
     use lk_core::{
         module::Module,
-        val::{CallableValue, ShortStr, Type, runtime_val_to_val},
+        val::{CallableValue, ShortStr, Type},
         vm::{NativeFunction32, RuntimeModuleState32},
     };
 
@@ -208,6 +222,25 @@ mod tests {
             module: None,
         };
         function(NativeArgs32::new(args), &mut runtime)
+    }
+
+    fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected runtime list object");
+        };
+        let Some(HeapValue::List(list)) = heap.get(*handle) else {
+            panic!("expected runtime list heap value");
+        };
+        match list {
+            TypedList::Mixed(values) => values.clone(),
+            TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            TypedList::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            TypedList::String(values) => values
+                .iter()
+                .map(|value| RuntimeVal::ShortStr(ShortStr::new(value).expect("short test string")))
+                .collect(),
+        }
     }
 
     #[test]
@@ -256,10 +289,12 @@ mod tests {
         );
 
         let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
-        let legacy = runtime_val_to_val(&received, &state.heap)?;
+        let received = expect_list(&received, &state.heap);
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0], RuntimeVal::Bool(true));
         assert_eq!(
-            legacy,
-            Val::list(vec![Val::Bool(true), Val::from_str("payload")].into())
+            received[1],
+            RuntimeVal::ShortStr(ShortStr::new("payload").expect("short string"))
         );
         Ok(())
     }
@@ -272,8 +307,10 @@ mod tests {
         };
         let channel = runtime_channel(1, &mut state.heap)?;
         let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
-        let legacy = runtime_val_to_val(&received, &state.heap)?;
-        assert_eq!(legacy, Val::list(vec![Val::Bool(false), Val::Nil].into()));
+        assert_eq!(
+            expect_list(&received, &state.heap),
+            vec![RuntimeVal::Bool(false), RuntimeVal::Nil]
+        );
         Ok(())
     }
 }

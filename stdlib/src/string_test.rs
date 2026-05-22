@@ -8,11 +8,14 @@ mod tests {
         module::{Module, ModuleRegistry},
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, Val},
-        vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeModuleState32, VmContext},
+        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        vm::{
+            NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32,
+            VmContext,
+        },
     };
 
-    fn execute_string32(source: &str) -> Result<Val> {
+    fn execute_string32(source: &str) -> Result<Program32Result> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -36,10 +39,31 @@ mod tests {
         Ok((*arity, function.clone()))
     }
 
+    fn runtime_str<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<&'a str> {
+        match value {
+            RuntimeVal::ShortStr(value) => Some(value.as_str()),
+            RuntimeVal::Obj(handle) => match heap.get(*handle) {
+                Some(HeapValue::String(value)) => Some(value.as_ref()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn runtime_list<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> &'a TypedList {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected runtime list object");
+        };
+        let Some(HeapValue::List(list)) = heap.get(*handle) else {
+            panic!("expected runtime list heap value");
+        };
+        list
+    }
+
     #[test]
     fn test_string_len() -> Result<()> {
         let result = execute_string32("import string; return string.len(\"hello\");")?;
-        assert_eq!(result, Val::Int(5));
+        assert_eq!(result.first_return(), &RuntimeVal::Int(5));
 
         Ok(())
     }
@@ -47,7 +71,7 @@ mod tests {
     #[test]
     fn test_string_lower() -> Result<()> {
         let result = execute_string32("import string; return string.lower(\"HELLO\");")?;
-        assert_eq!(result, Val::from_str("hello"));
+        assert_eq!(runtime_str(result.first_return(), &result.state.heap), Some("hello"));
 
         Ok(())
     }
@@ -55,7 +79,7 @@ mod tests {
     #[test]
     fn test_string_method_sugar() -> Result<()> {
         let result = execute_string32("return \"hello\".len();")?;
-        assert_eq!(result, Val::Int(5));
+        assert_eq!(result.first_return(), &RuntimeVal::Int(5));
         Ok(())
     }
 
@@ -108,15 +132,17 @@ mod tests {
             return [named, named_all, legacy];
         "#;
         let result = execute_string32(source)?;
-        let expected = Val::list(
-            vec![
-                Val::from_str("xollipop"),
-                Val::from_str("xoxxipop"),
-                Val::from_str("xoxxipop"),
+        let TypedList::String(values) = runtime_list(result.first_return(), &result.state.heap) else {
+            panic!("expected typed string list");
+        };
+        assert_eq!(
+            values.as_slice(),
+            &[
+                Arc::<str>::from("xollipop"),
+                Arc::<str>::from("xoxxipop"),
+                Arc::<str>::from("xoxxipop")
             ]
-            .into(),
         );
-        assert_eq!(result, expected);
         Ok(())
     }
 

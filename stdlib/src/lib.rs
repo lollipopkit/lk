@@ -36,17 +36,17 @@ mod tcp_test;
 use anyhow::{Result, anyhow};
 use lk_core::{
     module::ModuleRegistry,
-    rt, val,
-    val::{
-        CallableValue, ChannelValue, HeapStore, HeapValue, RuntimeVal, TaskValue, TypedList, Val, runtime_val_to_val,
-        val_to_runtime_val,
-    },
+    rt::{self, RuntimePayload},
+    val,
+    val::{CallableValue, ChannelValue, HeapStore, HeapValue, RuntimeVal, TaskValue, TypedList, Val},
     vm::{
         NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
-        runtime_value_to_callable32,
+        copy_runtime_value, runtime_value_to_callable32,
     },
 };
 use std::sync::Arc;
+
+use runtime_native::runtime_display_value;
 
 /// Register all stdlib modules with the given registry
 pub fn register_stdlib_modules(registry: &mut ModuleRegistry) -> Result<()> {
@@ -215,11 +215,12 @@ fn spawn32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
         .cloned()
         .unwrap_or_else(lk_core::vm::VmContext::new_without_core_vm_builtins);
 
-    let fut: core::pin::Pin<Box<dyn core::future::Future<Output = Result<Val>> + Send>> = Box::pin(async move {
-        let mut heap = HeapStore::new();
-        let result = call_runtime_callable32_runtime(&function, NativeArgs32::new(&[]), &mut heap, Some(&mut ctx))?;
-        runtime_val_to_val(&result, &heap)
-    });
+    let fut: core::pin::Pin<Box<dyn core::future::Future<Output = Result<RuntimePayload>> + Send>> =
+        Box::pin(async move {
+            let mut heap = HeapStore::new();
+            let result = call_runtime_callable32_runtime(&function, NativeArgs32::new(&[]), &mut heap, Some(&mut ctx))?;
+            Ok(RuntimePayload::new(result, heap))
+        });
 
     let task_id =
         rt::with_runtime(|runtime| runtime.spawn(fut)).map_err(|error| anyhow!("Failed to spawn task: {}", error))?;
@@ -273,7 +274,7 @@ fn send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     expect_runtime_arity(args, 2, "send")?;
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], &runtime.state.heap, "send first argument")?;
-    let value = runtime_val_to_val(&values[1], &runtime.state.heap)?;
+    let value = runtime_payload_from_value(&values[1], &runtime.state.heap)?;
     let sent = rt::with_runtime(|runtime| runtime.block_on(runtime.send_async(channel_id, value)))
         .map_err(|error| anyhow!("Send operation failed: {}", error))?;
     Ok(RuntimeVal::Bool(sent))
@@ -288,17 +289,15 @@ fn recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     )?;
     let (ok, value) = rt::with_runtime(|runtime| runtime.block_on(runtime.recv_async(channel_id)))
         .map_err(|error| anyhow!("Receive operation failed: {}", error))?;
-    runtime_list(
-        vec![RuntimeVal::Bool(ok), val_to_runtime_val(&value, runtime.heap_mut())?],
-        runtime.heap_mut(),
-    )
+    let value = runtime_payload_into_value(value, runtime.heap_mut())?;
+    runtime_list(vec![RuntimeVal::Bool(ok), value], runtime.heap_mut())
 }
 
 fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "chan::try_send")?;
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], &runtime.state.heap, "chan::try_send first argument")?;
-    let value = runtime_val_to_val(&values[1], &runtime.state.heap)?;
+    let value = runtime_payload_from_value(&values[1], &runtime.state.heap)?;
     let sent = rt::with_runtime(|runtime| runtime.try_send(channel_id, value))
         .map_err(|error| anyhow!("Failed to send to channel: {}", error))?;
     Ok(RuntimeVal::Bool(sent))
@@ -312,7 +311,10 @@ fn chan_try_recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
         "chan::try_recv first argument",
     )?;
     let payload = match rt::with_runtime(|runtime| runtime.try_recv(channel_id))? {
-        Some((ok, value)) => vec![RuntimeVal::Bool(ok), val_to_runtime_val(&value, runtime.heap_mut())?],
+        Some((ok, value)) => vec![
+            RuntimeVal::Bool(ok),
+            runtime_payload_into_value(value, runtime.heap_mut())?,
+        ],
         None => vec![RuntimeVal::Bool(false), RuntimeVal::Nil],
     };
     runtime_list(payload, runtime.heap_mut())
@@ -347,7 +349,7 @@ fn select_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
         match kind {
             0 => select.add_recv(index, channel_id),
             1 => {
-                let value = runtime_val_to_val(&values[index], &runtime.state.heap)?;
+                let value = runtime_payload_from_value(&values[index], &runtime.state.heap)?;
                 select.add_send(index, channel_id, value);
             }
             _ => return Err(anyhow!("select$block: invalid arm entry types")),
@@ -367,7 +369,10 @@ fn select_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
         .ok_or_else(|| anyhow!("select returned no case index"))? as i64;
     let payload = match result.recv_payload {
         Some((ok, value)) => runtime_list(
-            vec![RuntimeVal::Bool(ok), val_to_runtime_val(&value, runtime.heap_mut())?],
+            vec![
+                RuntimeVal::Bool(ok),
+                runtime_payload_into_value(value, runtime.heap_mut())?,
+            ],
             runtime.heap_mut(),
         )?,
         None => RuntimeVal::Nil,
@@ -425,7 +430,19 @@ fn join_runtime_display(args: &[RuntimeVal], heap: &HeapStore) -> Result<String>
 }
 
 fn runtime_display(value: &RuntimeVal, heap: &HeapStore) -> Result<String> {
-    Ok(runtime_val_to_val(value, heap)?.to_string())
+    runtime_display_value(value, heap)
+}
+
+fn runtime_payload_from_value(value: &RuntimeVal, heap: &HeapStore) -> Result<RuntimePayload> {
+    let mut source_heap = heap.clone();
+    let mut payload_heap = HeapStore::new();
+    let value = copy_runtime_value(value, &mut source_heap, &mut payload_heap)?;
+    Ok(RuntimePayload::new(value, payload_heap))
+}
+
+fn runtime_payload_into_value(payload: RuntimePayload, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    let mut payload_heap = payload.heap;
+    copy_runtime_value(&payload.value, &mut payload_heap, heap)
 }
 
 fn runtime_string(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Arc<str>> {

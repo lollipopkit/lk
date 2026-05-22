@@ -8,11 +8,11 @@ mod tests {
         module::{self, Module},
         stmt::{self, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val, runtime_val_to_val},
-        vm::{self, NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
+        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        vm::{self, NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32},
     };
 
-    fn run32(source: &str) -> Result<Val> {
+    fn run32(source: &str) -> Result<Program32Result> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -36,34 +36,79 @@ mod tests {
         Ok((*arity, function.clone()))
     }
 
+    fn expect_runtime_list(value: RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected runtime list object");
+        };
+        let Some(HeapValue::List(list)) = heap.get(handle) else {
+            panic!("expected runtime list heap value");
+        };
+        match list {
+            TypedList::Mixed(values) => values.clone(),
+            TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            TypedList::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            TypedList::String(values) => values
+                .iter()
+                .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
+                .collect(),
+        }
+    }
+
     #[test]
     fn test_list_len_push_join() -> Result<()> {
-        assert_eq!(run32("import list; return list.len([1,2,3]);")?, Val::Int(3));
         assert_eq!(
-            run32("import list; return list.join(list.push([\"a\", \"b\"], \"c\"), \",\");")?,
-            Val::from_str("a,b,c")
+            run32("import list; return list.len([1,2,3]);")?.first_return(),
+            &RuntimeVal::Int(3)
+        );
+        assert_eq!(
+            run32("import list; return list.join(list.push([\"a\", \"b\"], \"c\"), \",\");")?.first_return(),
+            &RuntimeVal::ShortStr(lk_core::val::ShortStr::new("a,b,c").expect("short string"))
         );
         Ok(())
     }
 
     #[test]
     fn test_list_get_first_last() -> Result<()> {
-        assert_eq!(run32("import list; return list.get([10,20,30], 1);")?, Val::Int(20));
-        assert_eq!(run32("import list; return list.get([10,20,30], 5);")?, Val::Nil);
-        assert_eq!(run32("import list; return list.get([10,20,30], -1);")?, Val::Nil);
-        assert_eq!(run32("import list; return list.first([10,20,30]);")?, Val::Int(10));
-        assert_eq!(run32("import list; return list.last([10,20,30]);")?, Val::Int(30));
-        assert_eq!(run32("import list; return [list.first([]), list.last([])];")?, {
-            Val::list(vec![Val::Nil, Val::Nil].into())
-        });
+        assert_eq!(
+            run32("import list; return list.get([10,20,30], 1);")?.first_return(),
+            &RuntimeVal::Int(20)
+        );
+        assert_eq!(
+            run32("import list; return list.get([10,20,30], 5);")?.first_return(),
+            &RuntimeVal::Nil
+        );
+        assert_eq!(
+            run32("import list; return list.get([10,20,30], -1);")?.first_return(),
+            &RuntimeVal::Nil
+        );
+        assert_eq!(
+            run32("import list; return list.first([10,20,30]);")?.first_return(),
+            &RuntimeVal::Int(10)
+        );
+        assert_eq!(
+            run32("import list; return list.last([10,20,30]);")?.first_return(),
+            &RuntimeVal::Int(30)
+        );
+        let result = run32("import list; return [list.first([]), list.last([])];")?;
+        assert_eq!(
+            expect_runtime_list(result.first_return().clone(), &result.state.heap),
+            vec![RuntimeVal::Nil, RuntimeVal::Nil]
+        );
         Ok(())
     }
 
     #[test]
     fn test_list_concat_and_set_returns_pair() -> Result<()> {
+        let concat = run32("import list; return list.concat([1,2], [3,4]);")?;
         assert_eq!(
-            run32("import list; return list.concat([1,2], [3,4]);")?,
-            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3), Val::Int(4)].into())
+            expect_runtime_list(concat.first_return().clone(), &concat.state.heap),
+            vec![
+                RuntimeVal::Int(1),
+                RuntimeVal::Int(2),
+                RuntimeVal::Int(3),
+                RuntimeVal::Int(4)
+            ]
         );
         let result = run32(
             "import list; let pair = list.set([1, 2, 3], 1, 42); \
@@ -71,7 +116,10 @@ mod tests {
              let old = pair[1]; \
              return [updated[1], old];",
         )?;
-        assert_eq!(result, Val::list(vec![Val::Int(42), Val::Int(2)].into()));
+        assert_eq!(
+            expect_runtime_list(result.first_return().clone(), &result.state.heap),
+            vec![RuntimeVal::Int(42), RuntimeVal::Int(2)]
+        );
         Ok(())
     }
 
@@ -116,8 +164,10 @@ mod tests {
             module: None,
         };
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
-        let value = runtime_val_to_val(&result, &runtime.state.heap)?;
-        assert_eq!(value, Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into()));
+        assert_eq!(
+            expect_runtime_list(result, &runtime.state.heap),
+            vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
+        );
         Ok(())
     }
 
@@ -143,8 +193,7 @@ mod tests {
             module: None,
         };
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
-        let value = runtime_val_to_val(&result, &runtime.state.heap)?;
-        assert_eq!(value.as_str(), Some("a,b"));
+        assert!(matches!(result, RuntimeVal::ShortStr(value) if value.as_str() == "a,b"));
         Ok(())
     }
 }

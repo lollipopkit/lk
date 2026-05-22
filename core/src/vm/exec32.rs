@@ -12,7 +12,8 @@ mod value_ops;
 pub use super::RuntimeCallable32;
 pub use runtime_callable::{
     call_runtime_callable32, call_runtime_callable32_named, call_runtime_callable32_named_raw,
-    call_runtime_callable32_raw, call_runtime_callable32_runtime, runtime_value_to_callable32,
+    call_runtime_callable32_raw, call_runtime_callable32_runtime, call_runtime_value32_runtime,
+    call_runtime_value32_runtime_named, copy_runtime_value, runtime_value_to_callable32,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,6 +66,28 @@ impl Program32Result {
 
     pub fn first_return_to_val(&self) -> Result<Val> {
         runtime_val_to_val(self.first_return(), &self.state.heap)
+    }
+
+    pub fn first_return_list(&self) -> Result<&TypedList> {
+        let RuntimeVal::Obj(handle) = self.first_return() else {
+            bail!("first return is {:?}, expected list object", self.first_return().kind());
+        };
+        match self.state.heap.get(*handle) {
+            Some(HeapValue::List(values)) => Ok(values),
+            Some(other) => bail!("first return heap object is {:?}, expected list", other),
+            None => bail!("first return heap object {} out of bounds", handle.index()),
+        }
+    }
+
+    pub fn first_return_map(&self) -> Result<&TypedMap> {
+        let RuntimeVal::Obj(handle) = self.first_return() else {
+            bail!("first return is {:?}, expected map object", self.first_return().kind());
+        };
+        match self.state.heap.get(*handle) {
+            Some(HeapValue::Map(values)) => Ok(values),
+            Some(other) => bail!("first return heap object is {:?}, expected map", other),
+            None => bail!("first return heap object {} out of bounds", handle.index()),
+        }
     }
 
     pub fn first_return_function(&self) -> Option<RuntimeCallable32> {
@@ -1254,7 +1277,12 @@ pub fn execute_module32_with_globals_heap_and_ctx(
     Executor32::new(register_count).run_module_with_globals_and_ctx(module, globals, heap, ctx)
 }
 
-pub fn execute_program32_to_val(program: &Program) -> Result<Val> {
+pub fn execute_program32(program: &Program) -> Result<Program32Result> {
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+    execute_program32_raw_with_ctx(program, &mut ctx)
+}
+
+pub fn execute_program32_value(program: &Program) -> Result<Val> {
     let module = Compiler32::compile_module(program)?;
     let result = execute_module32(&module)?;
     let value = result.returns.first().unwrap_or(&RuntimeVal::Nil);
@@ -1299,15 +1327,22 @@ pub fn execute_program32_raw_with_ctx(program: &Program, ctx: &mut super::VmCont
     })
 }
 
-pub fn execute_program32_with_ctx(program: &Program, ctx: &mut super::VmContext) -> Result<Val> {
+pub fn execute_program32_value_with_ctx(program: &Program, ctx: &mut super::VmContext) -> Result<Val> {
     execute_program32_raw_with_ctx(program, ctx)?.first_return_to_val()
 }
 
-pub fn execute_source32_to_val(source: &str) -> Result<Val> {
+pub fn execute_source32(source: &str) -> Result<Program32Result> {
     let module = Compiler32::compile_source_module(source)?;
     let result = execute_module32(&module)?;
-    let value = result.returns.first().unwrap_or(&RuntimeVal::Nil);
-    runtime_val_to_val(value, &result.state.heap)
+    Ok(Program32Result {
+        returns: result.returns,
+        state: result.state,
+        module: Arc::new(module),
+    })
+}
+
+pub fn execute_source32_value(source: &str) -> Result<Val> {
+    execute_source32(source)?.first_return_to_val()
 }
 
 fn seed_module_globals(slots: &[GlobalSlot32], values: BTreeMap<String, RuntimeVal>) -> Vec<RuntimeVal> {

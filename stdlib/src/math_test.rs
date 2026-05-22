@@ -8,11 +8,14 @@ mod tests {
         module::{Module, ModuleRegistry},
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, Val, runtime_val_to_val},
-        vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeModuleState32, VmContext},
+        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        vm::{
+            NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32,
+            VmContext,
+        },
     };
 
-    fn execute_math32(source: &str) -> Result<Val> {
+    fn execute_math32(source: &str) -> Result<Program32Result> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -53,31 +56,50 @@ mod tests {
         function(NativeArgs32::new_with_named(args, named), &mut runtime)
     }
 
+    fn runtime_list<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> &'a TypedList {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected runtime list object");
+        };
+        let Some(HeapValue::List(list)) = heap.get(*handle) else {
+            panic!("expected runtime list heap value");
+        };
+        list
+    }
+
     #[test]
     fn test_math_abs_positive() -> Result<()> {
-        assert_eq!(execute_math32("import math; return math.abs(42);")?, Val::Int(42));
+        assert_eq!(
+            execute_math32("import math; return math.abs(42);")?.first_return(),
+            &RuntimeVal::Int(42)
+        );
         Ok(())
     }
 
     #[test]
     fn test_math_abs_negative() -> Result<()> {
-        assert_eq!(execute_math32("import math; return math.abs(-42);")?, Val::Int(42));
+        assert_eq!(
+            execute_math32("import math; return math.abs(-42);")?.first_return(),
+            &RuntimeVal::Int(42)
+        );
         Ok(())
     }
 
     #[test]
     fn test_math_sqrt() -> Result<()> {
-        assert_eq!(execute_math32("import math; return math.sqrt(16);")?, Val::Float(4.0));
+        assert_eq!(
+            execute_math32("import math; return math.sqrt(16);")?.first_return(),
+            &RuntimeVal::Float(4.0)
+        );
         Ok(())
     }
 
     #[test]
     fn test_math_constants() -> Result<()> {
         let result = execute_math32("import math; return math.pi;")?;
-        let Val::Float(value) = result else {
+        let RuntimeVal::Float(value) = result.first_return() else {
             panic!("Expected float result");
         };
-        assert!((value - std::f64::consts::PI).abs() < 1e-10);
+        assert!((*value - std::f64::consts::PI).abs() < 1e-10);
         Ok(())
     }
 
@@ -92,8 +114,10 @@ mod tests {
             return [a, b, c, d];
         "#;
         let result = execute_math32(source)?;
-        let expected = Val::list(vec![Val::Int(100), Val::Int(0), Val::Int(4), Val::Int(3)].into());
-        assert_eq!(result, expected);
+        let TypedList::Int(values) = runtime_list(result.first_return(), &result.state.heap) else {
+            panic!("expected typed int list");
+        };
+        assert_eq!(values, &vec![100, 0, 4, 3]);
         Ok(())
     }
 
@@ -155,11 +179,9 @@ mod tests {
     }
 
     #[test]
-    fn test_math_runtime_result_converts_to_legacy_val_for_boundary() -> Result<()> {
+    fn test_math_runtime_result_preserves_runtime_value() -> Result<()> {
         let result = call_math("min", &[RuntimeVal::Float(2.5), RuntimeVal::Int(3)], &[])?;
-        let heap = HeapStore::new();
-        let value = runtime_val_to_val(&result, &heap)?;
-        assert_eq!(value, Val::Float(2.5));
+        assert_eq!(result, RuntimeVal::Float(2.5));
         Ok(())
     }
 }

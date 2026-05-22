@@ -1,13 +1,13 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry},
-    val::{HeapStore, RuntimeVal, Val, runtime_val_to_val},
+    val::{HeapStore, RuntimeVal, Val},
     vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
 };
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
-use crate::runtime_native::{runtime_string_arg, runtime_string_value};
+use crate::runtime_native::{runtime_display_value, runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
 pub struct IoModule {
@@ -82,7 +82,7 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
 fn runtime_display_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<String> {
     match runtime_string_arg(value, heap, name) {
         Ok(value) => Ok(value.to_string()),
-        Err(_) => Ok(runtime_val_to_val(value, heap)?.to_string()),
+        Err(_) => runtime_display_value(value, heap),
     }
 }
 
