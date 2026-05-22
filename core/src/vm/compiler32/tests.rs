@@ -370,7 +370,7 @@ fn compiler32_dynamic_method_helper_reads_runtime_properties() {
         return user.score() + [1, 2].len() + "ok".len();
         "#,
     );
-    let mut ctx = crate::vm::VmContext::new();
+    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
 
     let result = program.execute32_with_ctx(&mut ctx).expect("execute program");
 
@@ -388,7 +388,28 @@ fn compiler32_dynamic_method_helper_calls_runtime_callable_property() {
         return table.add(40, 2);
         "#,
     );
-    let mut ctx = crate::vm::VmContext::new();
+    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
+
+    let result = program.execute32_with_ctx(&mut ctx).expect("execute program");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler32_trait_method_dispatch_uses_runtime_callable() {
+    let program = parse_program32(
+        r#"
+        struct Rect { w: Int, h: Int }
+        fn area(self) {
+            return self.w * self.h;
+        }
+        __lk_register_trait("Area", [["area", "Function"]]);
+        __lk_register_trait_impl("Area", "Rect", [["area", area, nil]]);
+        let rect = Rect { w: 6, h: 7 };
+        return rect.area();
+        "#,
+    );
+    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
 
     let result = program.execute32_with_ctx(&mut ctx).expect("execute program");
 

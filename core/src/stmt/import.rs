@@ -62,8 +62,6 @@ pub struct ImportItem {
 pub struct ModuleResolver {
     /// Standard library registry
     stdlib_registry: Arc<ModuleRegistry>,
-    /// Standard library modules cache
-    stdlib_modules: Arc<DashMap<String, Val>>,
     /// Loaded file modules as new VM runtime exports.
     runtime_file_modules: Arc<DashMap<PathBuf, RuntimeExport32>>,
     /// Search paths for module resolution
@@ -88,7 +86,6 @@ impl ModuleResolver {
     pub fn with_registry(registry: ModuleRegistry) -> Self {
         Self {
             stdlib_registry: Arc::new(registry),
-            stdlib_modules: Arc::new(DashMap::new()),
             runtime_file_modules: Arc::new(DashMap::new()),
             // Prefer current directory; also allow `core/` for workspace runs.
             search_paths: vec![PathBuf::from("."), PathBuf::from("core")],
@@ -141,50 +138,14 @@ impl ModuleResolver {
         }
     }
 
-    /// Resolve a module by name (stdlib modules)
-    pub fn resolve_module(&self, name: &str) -> Result<Val> {
-        // Check cache first to avoid cloning exports repeatedly
-        if let Some(value) = self.stdlib_modules.get(name) {
-            return Ok(value.value().clone());
-        }
-
-        // Try to get from stdlib registry and populate cache
-        if let Ok(module) = self.stdlib_registry.get_module(name) {
-            let exports = module.exports();
-            let module_val = Val::from(exports);
-
-            self.stdlib_modules.insert(name.to_string(), module_val.clone());
-
-            return Ok(module_val);
-        }
-
-        if let Some(root) = self.package_modules.get(name) {
-            return self.resolve_resolved_file(root.value());
-        }
-
-        Err(anyhow!("Module '{}' not found", name))
-    }
-
     /// Resolve only modules already present in the registry.
     ///
     /// This is used by native AOT import replay, where falling back to package
     /// or file execution would pull the VM into otherwise native executables.
     pub fn resolve_registered_module(&self, name: &str) -> Result<Val> {
-        if let Some(value) = self.stdlib_modules.get(name) {
-            return Ok(value.value().clone());
-        }
-
         let module = self.stdlib_registry.get_module(name)?;
         let exports = module.exports();
-        let module_val = Val::from(exports);
-        self.stdlib_modules.insert(name.to_string(), module_val.clone());
-        Ok(module_val)
-    }
-
-    /// Resolve a file module - loads if not already cached
-    pub fn resolve_file(&self, path: &str) -> Result<Val> {
-        let resolved_path = self.resolve_file_path(path)?;
-        self.resolve_resolved_file(&resolved_path)
+        Ok(Val::from(exports))
     }
 
     pub fn resolve_runtime_file(&self, path: &str) -> Result<RuntimeExport32> {
@@ -202,12 +163,6 @@ impl ModuleResolver {
         self.resolve_resolved_runtime_file(root.value())
     }
 
-    fn resolve_resolved_file(&self, resolved_path: &Path) -> Result<Val> {
-        let resolved_path = Self::normalize_path(resolved_path.to_path_buf());
-        let runtime = self.resolve_resolved_runtime_file(&resolved_path)?;
-        runtime_export_to_legacy_map(&runtime)
-    }
-
     fn resolve_resolved_runtime_file(&self, resolved_path: &Path) -> Result<RuntimeExport32> {
         let resolved_path = Self::normalize_path(resolved_path.to_path_buf());
         if let Some(module) = self.runtime_file_modules.get(&resolved_path) {
@@ -216,14 +171,6 @@ impl ModuleResolver {
         let module = self.load_file_runtime_module(&resolved_path)?;
         self.runtime_file_modules.insert(resolved_path.clone(), module.clone());
         Ok(module)
-    }
-
-    /// Resolve a module directly from source code string.
-    /// Parses, compiles, then executes the source in a fresh VmContext that shares this resolver,
-    /// and returns the map of top-level definitions as the module exports.
-    pub fn resolve_source(&self, src: &str) -> Result<Val> {
-        let runtime = self.resolve_source_runtime(src)?;
-        runtime_export_to_legacy_map(&runtime)
     }
 
     pub fn resolve_source_runtime(&self, src: &str) -> Result<RuntimeExport32> {
@@ -350,124 +297,12 @@ impl Default for ModuleResolver {
     }
 }
 
-/// Import context - manages imported symbols in current scope
-#[derive(Debug, Clone, PartialEq)]
-pub struct ImportContext {
-    /// Imported symbols: name -> value
-    symbols: HashMap<String, Val>,
-}
-
-impl ImportContext {
-    pub fn new() -> Self {
-        Self {
-            symbols: HashMap::new(),
-        }
-    }
-
-    /// Execute an import statement
-    pub fn execute_import(&mut self, import: &ImportStmt, resolver: &ModuleResolver) -> Result<()> {
-        match import {
-            ImportStmt::Module { module } => {
-                let mod_def = resolver.resolve_module(module)?;
-                // Import module as namespace - don't pollute global scope
-                self.symbols.insert(module.clone(), mod_def);
-            }
-            ImportStmt::File { path } => {
-                let mod_def = resolver.resolve_file(path)?;
-                // Import file module as namespace using filename (without extension)
-                let module_name = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("module");
-                self.symbols.insert(module_name.to_string(), mod_def);
-            }
-            ImportStmt::Items { items, source } => {
-                let mod_def = match source {
-                    ImportSource::Module(name) => resolver.resolve_module(name)?,
-                    ImportSource::File(path) => resolver.resolve_file(path)?,
-                };
-
-                if let Some(exports) = mod_def.as_map() {
-                    for item in items {
-                        let export_value = exports
-                            .get(item.name.as_str())
-                            .ok_or_else(|| anyhow!("Export '{}' not found in module", item.name))?;
-
-                        let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
-                        self.symbols.insert(symbol_name.clone(), export_value.clone());
-                    }
-                }
-            }
-            ImportStmt::Namespace { alias, source } => {
-                let mod_def = match source {
-                    ImportSource::Module(name) => resolver.resolve_module(name)?,
-                    ImportSource::File(path) => resolver.resolve_file(path)?,
-                };
-
-                // The module is already a map, so we can use it directly
-                self.symbols.insert(alias.clone(), mod_def);
-            }
-            ImportStmt::ModuleAlias { module, alias } => {
-                let mod_def = resolver.resolve_module(module)?;
-                // The module is already a map, so we can use it directly
-                self.symbols.insert(alias.clone(), mod_def);
-            }
-        }
-        Ok(())
-    }
-
-    /// Get imported symbol
-    pub fn get_symbol(&self, name: &str) -> Option<&Val> {
-        self.symbols.get(name)
-    }
-
-    /// Check if symbol exists
-    pub fn has_symbol(&self, name: &str) -> bool {
-        self.symbols.contains_key(name)
-    }
-
-    /// Get all symbols
-    pub fn get_all_symbols(&self) -> &HashMap<String, Val> {
-        &self.symbols
-    }
-}
-
-impl Default for ImportContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 pub fn serialize_imports(imports: &[ImportStmt]) -> serde_json::Result<String> {
     serde_json::to_string(imports)
 }
 
 pub fn deserialize_imports(json: &str) -> serde_json::Result<Vec<ImportStmt>> {
     serde_json::from_str(json)
-}
-
-fn runtime_export_to_legacy_map(module: &RuntimeExport32) -> Result<Val> {
-    let state = module
-        .state
-        .lock()
-        .map_err(|_| anyhow!("RuntimeExport32 state lock poisoned"))?
-        .clone();
-    let RuntimeVal::Obj(handle) = module.value else {
-        return crate::val::runtime_val_to_val(&module.value, &state.heap);
-    };
-    let Some(value) = state.heap.get(handle) else {
-        return Err(anyhow!("heap object {} out of bounds", handle.index()));
-    };
-    let HeapValue::Map(map) = value else {
-        return crate::val::runtime_val_to_val(&module.value, &state.heap);
-    };
-    let mut exports = HashMap::new();
-    for (key, value) in runtime_map_entries(map) {
-        let Some(key) = runtime_key_to_string(&key) else {
-            continue;
-        };
-        if let Ok(value) = crate::val::runtime_val_to_val(&value, &state.heap) {
-            exports.insert(key, value);
-        }
-    }
-    Ok(Val::from(exports))
 }
 
 fn runtime_export_field(module: &RuntimeExport32, name: &str) -> Result<RuntimeExport32> {
@@ -530,41 +365,19 @@ fn runtime_key_to_string(key: &RuntimeMapKey) -> Option<String> {
 pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &mut VmContext) -> Result<()> {
     for import in imports {
         if let ImportStmt::Items { items, source } = import {
-            match resolve_runtime_import_source(source, resolver) {
-                Ok(module) => {
-                    for item in items {
-                        let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
-                        let export = runtime_export_field(&module, &item.name)?;
-                        env.define_runtime_global(symbol_name.clone(), export);
-                    }
-                }
-                Err(runtime_err) => {
-                    let legacy_module = resolve_legacy_import_source(source, resolver)?;
-                    let Some(exports) = legacy_module.as_map() else {
-                        return Err(runtime_err);
-                    };
-                    for item in items {
-                        let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
-                        let value = exports
-                            .get(item.name.as_str())
-                            .ok_or_else(|| anyhow!("{}: {}", runtime_err, item.name))?;
-                        env.define(symbol_name.clone(), value.clone());
-                    }
-                }
+            let module = resolve_runtime_import_source(source, resolver)?;
+            for item in items {
+                let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
+                let export = runtime_export_field(&module, &item.name)?;
+                env.define_runtime_global(symbol_name.clone(), export);
             }
             continue;
         }
 
         match import {
             ImportStmt::Module { module } => {
-                if let Ok(module_export) = resolver.resolve_runtime_module(module) {
-                    env.define_runtime_global(module.clone(), module_export);
-                } else {
-                    env.import_context_mut().execute_import(import, resolver)?;
-                    if let Some(val) = env.import_context().get_symbol(module) {
-                        env.define(module.clone(), val.clone());
-                    }
-                }
+                let module_export = resolver.resolve_runtime_module(module)?;
+                env.define_runtime_global(module.clone(), module_export);
             }
             ImportStmt::File { path } => {
                 let module_name = Path::new(path)
@@ -572,35 +385,17 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
                     .and_then(|s| s.to_str())
                     .unwrap_or("module")
                     .to_string();
-                if let Ok(module) = resolver.resolve_runtime_file(path) {
-                    env.define_runtime_global(module_name, module);
-                } else {
-                    env.import_context_mut().execute_import(import, resolver)?;
-                    if let Some(val) = env.import_context().get_symbol(&module_name) {
-                        env.define(module_name.clone(), val.clone());
-                    }
-                }
+                let module = resolver.resolve_runtime_file(path)?;
+                env.define_runtime_global(module_name, module);
             }
             ImportStmt::Items { .. } => unreachable!("items imports are handled before legacy import context"),
             ImportStmt::Namespace { alias, source } => {
-                if let Ok(module) = resolve_runtime_import_source(source, resolver) {
-                    env.define_runtime_global(alias.clone(), module);
-                } else {
-                    env.import_context_mut().execute_import(import, resolver)?;
-                    if let Some(val) = env.import_context().get_symbol(alias) {
-                        env.define(alias.clone(), val.clone());
-                    }
-                }
+                let module = resolve_runtime_import_source(source, resolver)?;
+                env.define_runtime_global(alias.clone(), module);
             }
             ImportStmt::ModuleAlias { module, alias } => {
-                if let Ok(module_export) = resolver.resolve_runtime_module(module) {
-                    env.define_runtime_global(alias.clone(), module_export);
-                } else {
-                    env.import_context_mut().execute_import(import, resolver)?;
-                    if let Some(val) = env.import_context().get_symbol(alias) {
-                        env.define(alias.clone(), val.clone());
-                    }
-                }
+                let module_export = resolver.resolve_runtime_module(module)?;
+                env.define_runtime_global(alias.clone(), module_export);
             }
         }
     }
@@ -611,13 +406,6 @@ fn resolve_runtime_import_source(source: &ImportSource, resolver: &ModuleResolve
     match source {
         ImportSource::File(path) => resolver.resolve_runtime_file(path),
         ImportSource::Module(name) => resolver.resolve_runtime_module(name),
-    }
-}
-
-fn resolve_legacy_import_source(source: &ImportSource, resolver: &ModuleResolver) -> Result<Val> {
-    match source {
-        ImportSource::File(path) => resolver.resolve_file(path),
-        ImportSource::Module(name) => resolver.resolve_module(name),
     }
 }
 
@@ -707,24 +495,10 @@ mod tests {
         let resolver = ModuleResolver::new();
 
         // Test that nonexistent modules fail
-        assert!(resolver.resolve_module("nonexistent").is_err());
+        assert!(resolver.resolve_runtime_module("nonexistent").is_err());
 
         // Note: stdlib modules are now registered externally
         // The resolver starts with an empty registry
-    }
-
-    #[test]
-    fn test_import_context() {
-        let mut ctx = ImportContext::new();
-        let resolver = ModuleResolver::new();
-
-        let import = ImportStmt::Module {
-            module: "nonexistent".to_string(),
-        };
-
-        // Test that nonexistent modules fail
-        let result = ctx.execute_import(&import, &resolver);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -773,20 +547,29 @@ mod tests {
             fn inc(x) { return x + 1; }
             data := [1, 2, 3];
         "#;
-        let module_val = resolver.resolve_source(src)?;
-
-        match module_val.as_map() {
-            Some(map) => {
-                assert!(map.contains_key("answer"));
-                assert!(map.contains_key("data"));
-                assert!(matches!(map.get("answer"), Some(Val::Int(7))));
-                assert!(
-                    !map.contains_key("inc"),
-                    "runtime callables are no longer exported through legacy Val maps"
-                );
-            }
-            None => panic!("Expected module map, got {:?}", module_val),
-        }
+        let runtime = resolver.resolve_source_runtime(src)?;
+        let RuntimeVal::Obj(handle) = runtime.value else {
+            panic!("Expected runtime module map");
+        };
+        let state = runtime.state.lock().expect("runtime module state").clone();
+        let Some(HeapValue::Map(map)) = state.heap.get(handle) else {
+            panic!("Expected runtime module map");
+        };
+        let entries = runtime_map_entries(map);
+        assert!(
+            entries
+                .iter()
+                .any(|(key, _)| runtime_key_to_string(key).as_deref() == Some("answer"))
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|(key, _)| runtime_key_to_string(key).as_deref() == Some("data"))
+        );
+        assert!(entries.iter().any(|(key, value)| {
+            runtime_key_to_string(key).as_deref() == Some("inc")
+                && matches!(value, RuntimeVal::Obj(handle) if matches!(state.heap.get(*handle), Some(HeapValue::Callable(_))))
+        }));
         Ok(())
     }
 
@@ -794,9 +577,6 @@ mod tests {
     fn test_resolve_examples_fib_exports_iterative() -> Result<()> {
         let mut resolver = ModuleResolver::new();
         resolver.add_search_path("..");
-        let module_val = resolver.resolve_file("examples/fib")?;
-
-        assert!(module_val.as_map().is_some());
         let runtime = resolver.resolve_runtime_file("examples/fib")?;
         let RuntimeVal::Obj(handle) = runtime.value else {
             panic!("Expected runtime module map");

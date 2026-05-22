@@ -901,13 +901,10 @@ impl Expr {
         match self {
             // 变量解析：查找顺序
             // 1) 本地/全局作用域
-            // 2) 导入上下文符号（import 语句）
-            // 3) 模块解析器注册的内置函数（如测试环境中的 spawn/chan）
+            // 2) 模块解析器注册的内置函数（如测试环境中的 spawn/chan）
             Expr::Var(name) => {
                 if let Some(v) = ctx.get(name).cloned() {
                     Ok(v)
-                } else if let Some(v) = ctx.import_context().get_symbol(name) {
-                    Ok(v.clone())
                 } else if let Some(v) = ctx.resolver().get_builtin(name) {
                     Ok(v.clone())
                 } else {
@@ -1016,8 +1013,6 @@ impl Expr {
                 // Resolve callee with same fallback strategy as variable lookup
                 let func_val = if let Some(v) = ctx.get(func_name).cloned() {
                     v
-                } else if let Some(v) = ctx.import_context().get_symbol(func_name) {
-                    v.clone()
                 } else if let Some(v) = ctx.resolver().get_builtin(func_name) {
                     v.clone()
                 } else {
@@ -1061,7 +1056,7 @@ impl Expr {
                         // 优先检查 trait 实现
                         if let Some(tc) = ctx.type_checker() {
                             let obj_type = obj_val.dispatch_type();
-                            if let Some(method_val) = tc.registry().get_method(&obj_type, method_name) {
+                            if let Some(method_val) = tc.registry().get_legacy_method(&obj_type, method_name) {
                                 return method_val.clone().call(&full_args, ctx);
                             }
                         }
@@ -1128,7 +1123,7 @@ impl Expr {
                         // 检查 trait 实现
                         if let Some(tc) = ctx.type_checker() {
                             let obj_type = obj_val.dispatch_type();
-                            if let Some(method_val) = tc.registry().get_method(&obj_type, method_name) {
+                            if let Some(method_val) = tc.registry().get_legacy_method(&obj_type, method_name) {
                                 return method_val.clone().call(&full_args, ctx);
                             }
                         }

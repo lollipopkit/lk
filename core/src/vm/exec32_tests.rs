@@ -2,7 +2,7 @@ use super::*;
 use std::sync::Arc;
 
 use crate::{
-    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, Val},
     vm::{
         ConstHeapValue32, ConstPool32, Instr32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32,
         Opcode32, RuntimeCallable32, VmContext,
@@ -1057,7 +1057,7 @@ fn execute_module32_context_native_can_use_vm_context() {
 }
 
 #[test]
-fn execute_program32_with_ctx_reads_external_slots_without_exporting_top_level_locals() {
+fn execute_program32_with_ctx_reads_external_slots_without_syncing_back_to_context() {
     let tokens = crate::token::Tokenizer::tokenize(
         r#"
         total := seed + 2;
@@ -1068,12 +1068,12 @@ fn execute_program32_with_ctx_reads_external_slots_without_exporting_top_level_l
     .expect("tokenize");
     let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
     let mut ctx = crate::vm::VmContext::new_without_core_vm_builtins();
-    ctx.set("seed", Val::Int(39));
+    ctx.define_runtime_value("seed", RuntimeVal::Int(39), HeapStore::new());
 
     let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("execute");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
-    assert_eq!(ctx.get("seed"), Some(&Val::Int(42)));
+    assert_eq!(ctx.get("seed"), None);
     assert_eq!(ctx.get("total"), None);
 }
 
@@ -1088,7 +1088,7 @@ fn program_execute32_with_ctx_uses_new_vm_context_path() {
     .expect("tokenize");
     let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
     let mut ctx = crate::vm::VmContext::new_without_core_vm_builtins();
-    ctx.set("seed", Val::Int(40));
+    ctx.define_runtime_value("seed", RuntimeVal::Int(40), HeapStore::new());
 
     let result = program.execute32_with_ctx(&mut ctx).expect("execute32");
 

@@ -3,85 +3,15 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    val::{
-        CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, TypedList, TypedMap, Val,
-        runtime_val_to_val, val_to_runtime_val,
-    },
+    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, TypedList, TypedMap},
     vm::{Module32, NativeArgs32, NativeEntry32, RuntimeCallable32, RuntimeModuleState32, VmContext},
 };
 
 use super::{Exec32Result, Executor32, named_call::order_named_args32, support::call_native_entry};
 
-pub fn call_runtime_callable32(
-    function: &RuntimeCallable32,
-    args: &[Val],
-    ctx: &mut crate::vm::VmContext,
-) -> Result<Val> {
-    let result = call_runtime_callable32_raw(function, args, ctx)?;
-    let value = result.returns.first().unwrap_or(&RuntimeVal::Nil);
-    runtime_val_to_val(value, &result.state.heap)
-}
-
-pub fn call_runtime_callable32_named(
-    function: &RuntimeCallable32,
-    pos: &[Val],
-    named: &[(String, Val)],
-    ctx: &mut crate::vm::VmContext,
-) -> Result<Val> {
-    let result = call_runtime_callable32_named_raw(function, pos, named, ctx)?;
-    let value = result.returns.first().unwrap_or(&RuntimeVal::Nil);
-    runtime_val_to_val(value, &result.state.heap)
-}
-
-pub fn call_runtime_callable32_named_raw(
-    function: &RuntimeCallable32,
-    pos: &[Val],
-    named: &[(String, Val)],
-    ctx: &mut crate::vm::VmContext,
-) -> Result<Exec32Result> {
-    let state = take_runtime_callable32_state(function)?;
-    let function_meta = function
-        .module
-        .functions
-        .get(function.function_index as usize)
-        .ok_or_else(|| anyhow!("function index {} out of bounds", function.function_index))?;
-    let register_count = function_meta.register_count;
-    let result = match Executor32::new(register_count).run_module_function_with_state_recoverable(
-        function.module.as_ref(),
-        function.function_index,
-        function.captures.as_ref().clone(),
-        state,
-        ctx,
-        |executor| {
-            let mut positional = Vec::with_capacity(pos.len());
-            for arg in pos {
-                positional.push(val_to_runtime_val(arg, executor.heap_mut())?);
-            }
-            let mut named_args = Vec::with_capacity(named.len());
-            for (name, value) in named {
-                named_args.push((name.clone(), val_to_runtime_val(value, executor.heap_mut())?));
-            }
-            let args = order_named_args32(function_meta, positional, named_args)?;
-            let arg_count = checked_arg_count(args.len())?;
-            for (index, value) in args.into_iter().enumerate() {
-                executor.seed_param_arg(index, value)?;
-            }
-            Ok(arg_count)
-        },
-    ) {
-        Ok(result) => result,
-        Err(failure) => {
-            commit_runtime_callable32_state(function, &failure.state)?;
-            return Err(failure.error);
-        }
-    };
-    commit_runtime_callable32_state(function, &result.state)?;
-    Ok(result)
-}
-
 pub fn call_runtime_callable32_raw(
     function: &RuntimeCallable32,
-    args: &[Val],
+    args: &[RuntimeVal],
     ctx: &mut crate::vm::VmContext,
 ) -> Result<Exec32Result> {
     let state = take_runtime_callable32_state(function)?;
@@ -99,9 +29,8 @@ pub fn call_runtime_callable32_raw(
         state,
         ctx,
         |executor| {
-            for (index, arg) in args.iter().enumerate() {
-                let value = val_to_runtime_val(arg, executor.heap_mut())?;
-                executor.seed_param_arg(index, value)?;
+            for (index, arg) in args.iter().cloned().enumerate() {
+                executor.seed_param_arg(index, arg)?;
             }
             Ok(arg_count)
         },

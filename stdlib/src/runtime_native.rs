@@ -1,8 +1,9 @@
 use anyhow::{Result, anyhow};
 use lk_core::{
-    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap, de, val_to_runtime_val},
+    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap, de},
     vm::{NativeArgs32, NativeRuntime32},
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) fn parse_format32(
@@ -15,8 +16,124 @@ pub(crate) fn parse_format32(
         return Err(anyhow!("{name}(data) requires 1 argument"));
     }
     let data = runtime_string_arg(args.get(0).expect("checked arity"), &runtime.state.heap, name)?;
-    let parsed = de::parse_with_format(data.as_ref(), Some(format))?;
-    val_to_runtime_val(&parsed, runtime.heap_mut())
+    parse_runtime_with_format(data.as_ref(), format, runtime.heap_mut())
+}
+
+fn parse_runtime_with_format(input: &str, format: de::Format, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    match format {
+        de::Format::Json => {
+            let value = serde_json::from_str::<serde_json::Value>(input).map_err(|e| anyhow!(e))?;
+            json_to_runtime(value, heap)
+        }
+        de::Format::Yaml => {
+            let value = serde_yaml::from_str::<serde_yaml::Value>(input).map_err(|e| anyhow!(e))?;
+            yaml_to_runtime(value, heap)
+        }
+        de::Format::Toml => {
+            let value = toml::from_str::<toml::Value>(input).map_err(|e| anyhow!(e))?;
+            toml_to_runtime(value, heap)
+        }
+    }
+}
+
+fn json_to_runtime(value: serde_json::Value, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    Ok(match value {
+        serde_json::Value::Null => RuntimeVal::Nil,
+        serde_json::Value::Bool(value) => RuntimeVal::Bool(value),
+        serde_json::Value::Number(value) => number_to_runtime(value.as_i64(), value.as_f64()),
+        serde_json::Value::String(value) => runtime_string_value(&value, heap),
+        serde_json::Value::Array(values) => {
+            let values = values
+                .into_iter()
+                .map(|value| json_to_runtime(value, heap))
+                .collect::<Result<Vec<_>>>()?;
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::from_runtime_values(values, heap))))
+        }
+        serde_json::Value::Object(values) => {
+            let entries = values
+                .into_iter()
+                .map(|(key, value)| Ok((runtime_string_key(&key), json_to_runtime(value, heap)?)))
+                .collect::<Result<BTreeMap<_, _>>>()?;
+            RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))))
+        }
+    })
+}
+
+fn yaml_to_runtime(value: serde_yaml::Value, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    Ok(match value {
+        serde_yaml::Value::Null => RuntimeVal::Nil,
+        serde_yaml::Value::Bool(value) => RuntimeVal::Bool(value),
+        serde_yaml::Value::Number(value) => number_to_runtime(value.as_i64(), value.as_f64()),
+        serde_yaml::Value::String(value) => runtime_string_value(&value, heap),
+        serde_yaml::Value::Sequence(values) => {
+            let values = values
+                .into_iter()
+                .map(|value| yaml_to_runtime(value, heap))
+                .collect::<Result<Vec<_>>>()?;
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::from_runtime_values(values, heap))))
+        }
+        serde_yaml::Value::Mapping(values) => {
+            let entries = values
+                .into_iter()
+                .map(|(key, value)| Ok((yaml_key_to_runtime(key)?, yaml_to_runtime(value, heap)?)))
+                .collect::<Result<BTreeMap<_, _>>>()?;
+            RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))))
+        }
+        serde_yaml::Value::Tagged(value) => yaml_to_runtime(value.value, heap)?,
+    })
+}
+
+fn toml_to_runtime(value: toml::Value, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    Ok(match value {
+        toml::Value::String(value) => runtime_string_value(&value, heap),
+        toml::Value::Integer(value) => RuntimeVal::Int(value),
+        toml::Value::Float(value) => RuntimeVal::Float(value),
+        toml::Value::Boolean(value) => RuntimeVal::Bool(value),
+        toml::Value::Datetime(value) => runtime_string_value(&value.to_string(), heap),
+        toml::Value::Array(values) => {
+            let values = values
+                .into_iter()
+                .map(|value| toml_to_runtime(value, heap))
+                .collect::<Result<Vec<_>>>()?;
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::from_runtime_values(values, heap))))
+        }
+        toml::Value::Table(values) => {
+            let entries = values
+                .into_iter()
+                .map(|(key, value)| Ok((runtime_string_key(&key), toml_to_runtime(value, heap)?)))
+                .collect::<Result<BTreeMap<_, _>>>()?;
+            RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))))
+        }
+    })
+}
+
+fn number_to_runtime(int_value: Option<i64>, float_value: Option<f64>) -> RuntimeVal {
+    int_value
+        .map(RuntimeVal::Int)
+        .or_else(|| float_value.map(RuntimeVal::Float))
+        .unwrap_or(RuntimeVal::Nil)
+}
+
+fn runtime_string_key(value: &str) -> RuntimeMapKey {
+    if let Some(value) = ShortStr::new(value) {
+        RuntimeMapKey::ShortStr(value)
+    } else {
+        RuntimeMapKey::String(Arc::<str>::from(value))
+    }
+}
+
+fn yaml_key_to_runtime(value: serde_yaml::Value) -> Result<RuntimeMapKey> {
+    Ok(match value {
+        serde_yaml::Value::Null => RuntimeMapKey::Nil,
+        serde_yaml::Value::Bool(value) => RuntimeMapKey::Bool(value),
+        serde_yaml::Value::Number(value) => RuntimeMapKey::Int(
+            value
+                .as_i64()
+                .ok_or_else(|| anyhow!("YAML map keys cannot be floats"))?,
+        ),
+        serde_yaml::Value::String(value) => runtime_string_key(&value),
+        other => return Err(anyhow!("YAML map key {:?} is not supported", other)),
+    })
 }
 
 pub(crate) fn runtime_string_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<str>> {

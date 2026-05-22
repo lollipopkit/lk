@@ -781,8 +781,8 @@ impl Val {
         {
             let method_val = tc
                 .registry()
-                .get_method(&self.dispatch_type(), "to_string")
-                .or_else(|| tc.registry().get_method(&self.dispatch_type(), "show"));
+                .get_legacy_method(&self.dispatch_type(), "to_string")
+                .or_else(|| tc.registry().get_legacy_method(&self.dispatch_type(), "show"));
 
             if let Some(fun_val) = method_val {
                 // Create a temporary mutable context for method calls

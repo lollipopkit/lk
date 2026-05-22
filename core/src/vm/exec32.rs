@@ -3,7 +3,6 @@
 mod call;
 mod const_load;
 mod imports;
-mod legacy_bridge;
 mod named_call;
 mod runtime_callable;
 mod support;
@@ -11,12 +10,11 @@ mod value_ops;
 
 pub use super::RuntimeCallable32;
 pub use runtime_callable::{
-    call_runtime_callable32, call_runtime_callable32_named, call_runtime_callable32_named_raw,
     call_runtime_callable32_raw, call_runtime_callable32_runtime, call_runtime_value32_runtime,
     call_runtime_value32_runtime_named, copy_runtime_value, runtime_value_to_callable32,
 };
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -28,7 +26,6 @@ use crate::{
     },
     val::{
         CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, TypedList, TypedMap,
-        Val, runtime_val_to_val,
     },
 };
 
@@ -37,7 +34,6 @@ use super::{
     RuntimeExport32, RuntimeModuleState32, VmContext,
 };
 use imports::import_runtime_export;
-use legacy_bridge::legacy_val_to_runtime_val;
 use support::*;
 
 #[derive(Clone, Debug)]
@@ -62,10 +58,6 @@ pub(crate) struct Exec32Failure {
 impl Program32Result {
     pub fn first_return(&self) -> &RuntimeVal {
         self.returns.first().unwrap_or(&RuntimeVal::Nil)
-    }
-
-    pub fn first_return_to_val(&self) -> Result<Val> {
-        runtime_val_to_val(self.first_return(), &self.state.heap)
     }
 
     pub fn first_return_list(&self) -> Result<&TypedList> {
@@ -1282,13 +1274,6 @@ pub fn execute_program32(program: &Program) -> Result<Program32Result> {
     execute_program32_raw_with_ctx(program, &mut ctx)
 }
 
-pub fn execute_program32_value(program: &Program) -> Result<Val> {
-    let module = Compiler32::compile_module(program)?;
-    let result = execute_module32(&module)?;
-    let value = result.returns.first().unwrap_or(&RuntimeVal::Nil);
-    runtime_val_to_val(value, &result.state.heap)
-}
-
 pub fn execute_program32_raw_with_ctx(program: &Program, ctx: &mut super::VmContext) -> Result<Program32Result> {
     let imports = collect_program_imports(program);
     let resolver = ctx.resolver().clone();
@@ -1297,15 +1282,7 @@ pub fn execute_program32_raw_with_ctx(program: &Program, ctx: &mut super::VmCont
     let mut seed_heap = HeapStore::new();
     let mut external_globals = Vec::new();
     let mut external_values = BTreeMap::new();
-    let mut context_sync_globals = BTreeSet::new();
     let mut natives = Vec::new();
-    for (name, value) in ctx.iter() {
-        if let Ok(value) = legacy_val_to_runtime_val(name, value, &mut seed_heap, &mut natives) {
-            external_globals.push(name.clone());
-            context_sync_globals.insert(name.clone());
-            external_values.insert(name.clone(), value);
-        }
-    }
     for (name, value) in ctx.runtime_globals_iter() {
         external_globals.push(name.clone());
         let value = import_runtime_export(value, &mut seed_heap, &mut natives)?;
@@ -1319,16 +1296,11 @@ pub fn execute_program32_raw_with_ctx(program: &Program, ctx: &mut super::VmCont
     )?);
     let globals = seed_module_globals(&module.globals, external_values);
     let result = execute_module32_with_globals_heap_and_ctx(module.as_ref(), globals, seed_heap, ctx)?;
-    sync_module_globals_to_context(&module, &result, ctx, &context_sync_globals)?;
     Ok(Program32Result {
         returns: result.returns,
         state: result.state,
         module,
     })
-}
-
-pub fn execute_program32_value_with_ctx(program: &Program, ctx: &mut super::VmContext) -> Result<Val> {
-    execute_program32_raw_with_ctx(program, ctx)?.first_return_to_val()
 }
 
 pub fn execute_source32(source: &str) -> Result<Program32Result> {
@@ -1341,32 +1313,11 @@ pub fn execute_source32(source: &str) -> Result<Program32Result> {
     })
 }
 
-pub fn execute_source32_value(source: &str) -> Result<Val> {
-    execute_source32(source)?.first_return_to_val()
-}
-
 fn seed_module_globals(slots: &[GlobalSlot32], values: BTreeMap<String, RuntimeVal>) -> Vec<RuntimeVal> {
     slots
         .iter()
         .map(|slot| values.get(&slot.name).cloned().unwrap_or(RuntimeVal::Nil))
         .collect()
-}
-
-fn sync_module_globals_to_context(
-    module: &Arc<Module32>,
-    result: &Exec32Result,
-    ctx: &mut super::VmContext,
-    names: &BTreeSet<String>,
-) -> Result<()> {
-    for (slot, value) in module.globals.iter().zip(result.state.globals.iter()) {
-        if !names.contains(&slot.name) {
-            continue;
-        }
-        if let Ok(value) = runtime_val_to_val(value, &result.state.heap) {
-            ctx.set(slot.name.clone(), value);
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -59,11 +59,34 @@ mod tests {
         }
     }
 
+    fn expect_result_nil(result: &crate::vm::Program32Result) {
+        assert_eq!(result.first_return(), &RuntimeVal::Nil);
+    }
+
+    fn expect_result_int(result: &crate::vm::Program32Result, expected: i64) {
+        assert_eq!(result.first_return(), &RuntimeVal::Int(expected));
+    }
+
+    fn expect_result_float(result: &crate::vm::Program32Result, expected: f64) {
+        assert_eq!(result.first_return(), &RuntimeVal::Float(expected));
+    }
+
+    fn expect_result_str(result: &crate::vm::Program32Result, expected: &str) {
+        match result.first_return() {
+            RuntimeVal::ShortStr(value) => assert_eq!(value.as_str(), expected),
+            RuntimeVal::Obj(handle) => match result.state.heap.get(*handle) {
+                Some(HeapValue::String(value)) => assert_eq!(value.as_ref(), expected),
+                other => panic!("Expected string heap value, got {:?}", other),
+            },
+            other => panic!("Expected string result, got {:?}", other.kind()),
+        }
+    }
+
     #[test]
     fn test_let_statement() {
         let program = parse_program("let x = 42;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -81,15 +104,15 @@ mod tests {
         }
 
         let result = parse_program("const answer = 42; return answer;")
-            .execute()
+            .execute32()
             .expect("Failed to execute const binding");
-        assert_eq!(result, Val::Int(42));
+        expect_result_int(&result, 42);
     }
 
     #[test]
     fn test_const_assignment_error() {
         let program = parse_program("const x = 1; x = 2;");
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err(), "Expected assignment to const to fail");
         let err = result.unwrap_err().to_string();
         assert!(err.contains("const variable"), "Unexpected error message: {}", err);
@@ -98,36 +121,36 @@ mod tests {
     #[test]
     fn test_assign_statement() {
         let program = parse_program("let x = 10; x = 20;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_if_statement() {
         let program = parse_program("let x = 0; if (true) x = 1;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_if_else_statement() {
         let program = parse_program("let x = 0; if (false) x = 1; else x = 2;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_while_loop() {
         let program = parse_program("let i = 0; while (i < 3) { i = i + 1; }");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_break_statement() {
         let program = parse_program("let i = 0; while (true) { i = i + 1; if (i >= 3) break; }");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -143,8 +166,8 @@ mod tests {
             }
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -158,15 +181,15 @@ mod tests {
             }
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_expression_statement() {
         let program = parse_program("2 + 3;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -195,7 +218,7 @@ mod tests {
     #[test]
     fn test_undefined_variable_error() {
         let program = parse_program("x = 42;");
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Undefined variable"));
     }
@@ -203,7 +226,7 @@ mod tests {
     #[test]
     fn test_break_outside_loop_error() {
         let program = parse_program("break;");
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         assert!(
             result
@@ -216,7 +239,7 @@ mod tests {
     #[test]
     fn test_continue_outside_loop_error() {
         let program = parse_program("continue;");
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         assert!(
             result
@@ -241,8 +264,8 @@ mod tests {
             }
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -254,8 +277,8 @@ mod tests {
             let result = x * y;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -272,8 +295,8 @@ mod tests {
             }
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -285,15 +308,15 @@ mod tests {
             let y = 100; // This should not be executed
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(50));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 50);
     }
 
     #[test]
     fn test_simple_return_with_literal() {
         let program = parse_program("return 123;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(123));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 123);
     }
 
     #[test]
@@ -304,8 +327,8 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(42));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 42);
     }
 
     #[test]
@@ -317,8 +340,8 @@ mod tests {
             return x + y;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(3));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 3);
     }
 
     #[test]
@@ -330,8 +353,8 @@ mod tests {
             let y = 20; // This should not be executed
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -347,8 +370,8 @@ mod tests {
             let w = 100; // This should not be executed either
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(3));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 3);
     }
 
     #[test]
@@ -364,8 +387,8 @@ mod tests {
             let y = 999; // This should not be executed
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(10));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 10);
     }
 
     #[test]
@@ -382,64 +405,64 @@ mod tests {
             let done = 999; // This should not be executed
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(30));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 30);
     }
 
     // Type annotation tests
     #[test]
     fn test_let_with_type_annotation_int() {
         let program = parse_program("let x: Int = 42;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_let_with_type_annotation_string() {
         let program = parse_program(r#"let name: String = "hello";"#);
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_let_with_type_annotation_bool() {
         let program = parse_program("let flag: Bool = true;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_let_with_type_annotation_float() {
         let program = parse_program("let pi: Float = 3.14;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_let_with_type_annotation_nil() {
         let program = parse_program("let empty: Nil = nil;");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_let_with_type_annotation_list() {
         let program = parse_program("let items: List = [1, 2, 3];");
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_let_with_type_annotation_map() {
         let program = parse_program(r#"let data: Map = {"key": "value"};"#);
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
     fn test_let_type_mismatch_int() {
         let program = parse_program(r#"let x: Int = "not_int";"#);
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Type mismatch"));
     }
@@ -447,7 +470,7 @@ mod tests {
     #[test]
     fn test_let_type_mismatch_string() {
         let program = parse_program("let name: String = 42;");
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Type mismatch"));
     }
@@ -455,7 +478,7 @@ mod tests {
     #[test]
     fn test_let_type_mismatch_bool() {
         let program = parse_program("let flag: Bool = 123;");
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Type mismatch"));
     }
@@ -463,7 +486,7 @@ mod tests {
     #[test]
     fn test_let_type_mismatch_float() {
         let program = parse_program("let pi: Float = true;");
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Type mismatch"));
     }
@@ -503,8 +526,8 @@ mod tests {
             let w = 3.14;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -517,8 +540,8 @@ mod tests {
             let result: Bool = sum > 25;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     // For loop tests
@@ -531,8 +554,8 @@ mod tests {
             }
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Nil);
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_nil(&result);
     }
 
     #[test]
@@ -546,8 +569,8 @@ mod tests {
             return sum;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(10)); // 0+1+2+3+4
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 10); // 0+1+2+3+4
     }
 
     #[test]
@@ -585,8 +608,8 @@ mod tests {
             return count;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(5));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 5);
     }
 
     #[test]
@@ -602,21 +625,15 @@ mod tests {
             return result;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
+        let result = program.execute32().expect("Failed to execute");
         // Should return [0, 1, 2, 4, 5, 6]
-        if let Some(list) = result.as_list() {
-            let expected = vec![
-                Val::Int(0),
-                Val::Int(1),
-                Val::Int(2),
-                Val::Int(4),
-                Val::Int(5),
-                Val::Int(6),
-            ];
-            assert_eq!(list.as_ref(), &expected);
-        } else {
-            panic!("Expected result to be a list");
-        }
+        assert_eq!(
+            expect_list(result.first_return(), &result.state.heap)
+                .iter()
+                .map(expect_int)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 4, 5, 6]
+        );
     }
 
     #[test]
@@ -630,8 +647,8 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(100)); // Outer x should be unchanged
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 100); // Outer x should be unchanged
     }
 
     #[test]
@@ -645,8 +662,8 @@ mod tests {
             return count;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(0)); // Should not iterate
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 0); // Should not iterate
     }
 
     #[test]
@@ -660,15 +677,12 @@ mod tests {
             return result;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        if let Some(list) = result.as_list() {
-            assert_eq!(list.len(), 3);
-            assert_eq!(list[0], Val::from_str("a"));
-            assert_eq!(list[1], Val::from_str("b"));
-            assert_eq!(list[2], Val::from_str("c"));
-        } else {
-            panic!("Expected list result");
-        }
+        let result = program.execute32().expect("Failed to execute");
+        let list = expect_list(result.first_return(), &result.state.heap);
+        assert_eq!(list.len(), 3);
+        expect_str(&list[0], "a");
+        expect_str(&list[1], "b");
+        expect_str(&list[2], "c");
     }
 
     #[test]
@@ -739,8 +753,8 @@ mod tests {
             return 999; // Should not reach here
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(30));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 30);
     }
 
     #[test]
@@ -754,15 +768,9 @@ mod tests {
             return result;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        if let Some(list) = result.as_list() {
-            assert_eq!(list.len(), 3);
-            assert_eq!(list[0], Val::Int(0));
-            assert_eq!(list[1], Val::Int(1));
-            assert_eq!(list[2], Val::Int(2));
-        } else {
-            panic!("Expected list result");
-        }
+        let result = program.execute32().expect("Failed to execute");
+        let list = expect_list(result.first_return(), &result.state.heap);
+        assert_eq!(list.iter().map(expect_int).collect::<Vec<_>>(), vec![0, 1, 2]);
     }
 
     #[test]
@@ -776,8 +784,8 @@ mod tests {
             return sum;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(20)); // (1+2+3+4)*2 = 20
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 20); // (1+2+3+4)*2 = 20
     }
 
     #[test]
@@ -816,7 +824,7 @@ mod tests {
             }
         "#,
         );
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -834,7 +842,7 @@ mod tests {
             }
         "#,
         );
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("Pattern does not match value"));
@@ -851,8 +859,8 @@ mod tests {
             return sum;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(6));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 6);
     }
 
     // Compound assignment tests
@@ -865,8 +873,8 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(15));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 15);
     }
 
     #[test]
@@ -878,8 +886,8 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(7));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 7);
     }
 
     #[test]
@@ -891,8 +899,8 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(15));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 15);
     }
 
     #[test]
@@ -904,8 +912,8 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(5));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 5);
     }
 
     #[test]
@@ -917,8 +925,8 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(2));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 2);
     }
 
     #[test]
@@ -931,8 +939,8 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(16));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 16);
     }
 
     #[test]
@@ -944,8 +952,8 @@ mod tests {
             return s;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::from_str("hello world"));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_str(&result, "hello world");
     }
 
     #[test]
@@ -957,14 +965,14 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Float(3.0));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_float(&result, 3.0);
     }
 
     #[test]
     fn test_compound_assignment_undefined_variable() {
         let program = parse_program("undefined_var += 5;");
-        let result = program.execute();
+        let result = program.execute32();
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("Cannot compound assign to undefined variable"));
@@ -982,8 +990,8 @@ mod tests {
             return x;
         "#,
         );
-        let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Int(5));
+        let result = program.execute32().expect("Failed to execute");
+        expect_result_int(&result, 5);
     }
 
     #[test]

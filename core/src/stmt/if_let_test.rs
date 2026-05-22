@@ -3,7 +3,7 @@ mod tests {
     use crate::{
         stmt::{StmtParser, run_program},
         token::Tokenizer,
-        val::{RuntimeVal, ShortStr, Val},
+        val::{HeapStore, RuntimeVal, ShortStr, Val, val_to_runtime_val},
         vm::{Program32Result, VmContext},
     };
     use std::collections::HashMap;
@@ -14,8 +14,10 @@ mod tests {
         let program = parser.parse_program()?;
         let mut env = VmContext::new();
         if let Some(m) = ctx.as_map() {
+            let mut heap = HeapStore::new();
             for (k, v) in m.iter() {
-                env.define(k.to_string(), v.clone());
+                let value = val_to_runtime_val(v, &mut heap)?;
+                env.define_runtime_value(k.to_string(), value, heap.clone());
             }
         }
         run_program(&program, &mut env)

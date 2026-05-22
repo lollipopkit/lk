@@ -5,7 +5,7 @@ mod tests {
         stmt::{Program, Stmt, run_program, run_program_default, stmt_parser::StmtParser},
         token::Tokenizer,
         typ::TypeChecker,
-        val::{HeapStore, HeapValue, RuntimeVal, ShortStr, Val},
+        val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedMap, Val},
         vm::{NativeArgs32, Program32Result, VmContext, call_runtime_callable32_raw, call_runtime_callable32_runtime},
     };
     use anyhow::Result;
@@ -217,9 +217,13 @@ mod tests {
         let program = parser.parse_program()?;
 
         let mut env = VmContext::new();
-        let mut user_map = std::collections::HashMap::new();
-        user_map.insert("age".to_string(), Val::Int(25));
-        env.define("user".to_string(), Val::from(user_map));
+        let mut heap = HeapStore::new();
+        let user = heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(
+            [(RuntimeMapKey::String("age".into()), RuntimeVal::Int(25))]
+                .into_iter()
+                .collect(),
+        )));
+        env.define_runtime_value("user", RuntimeVal::Obj(user), heap);
 
         let result = run_program(&program, &mut env)?;
         expect_return_int(&result, 25);

@@ -54,17 +54,14 @@ fn call_callable(
     named: &[(String, Val)],
     ctx: &mut VmContext,
 ) -> Result<Val> {
+    let _ = (pos, named, ctx);
     let crate::val::HeapValue::Callable(function) = value else {
         return Err(anyhow!("{} is not a function", value.type_name()));
     };
     match function {
-        CallableValue::Runtime32(function) => {
-            if named.is_empty() {
-                crate::vm::call_runtime_callable32(function.as_ref(), pos, ctx)
-            } else {
-                crate::vm::call_runtime_callable32_named(function.as_ref(), pos, named, ctx)
-            }
-        }
+        CallableValue::Runtime32(_) => Err(anyhow!(
+            "Runtime32 callable cannot be called through legacy Val::call; execute it in Executor32"
+        )),
         CallableValue::RuntimeNative32 { .. } => Err(anyhow!(
             "RuntimeNative32 callable cannot be called through legacy Val::call; execute it in Executor32"
         )),

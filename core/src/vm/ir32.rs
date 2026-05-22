@@ -83,6 +83,19 @@ pub struct RuntimeExport32 {
     pub module: Arc<Module32>,
 }
 
+impl RuntimeExport32 {
+    pub fn from_value(value: RuntimeVal, heap: HeapStore) -> Self {
+        Self {
+            value,
+            state: Arc::new(Mutex::new(RuntimeModuleState32 {
+                heap,
+                globals: Vec::new(),
+            })),
+            module: Arc::new(Module32::default()),
+        }
+    }
+}
+
 pub struct NativeRuntime32<'a> {
     pub state: &'a mut RuntimeModuleState32,
     pub ctx: Option<&'a mut VmContext>,

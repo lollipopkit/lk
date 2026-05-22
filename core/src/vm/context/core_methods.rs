@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail};
 use arcstr::ArcStr;
 
 use crate::{
-    val::{HeapStore, HeapValue, RuntimeVal, ShortStr, Type, TypedList, runtime_val_to_val, val_to_runtime_val},
+    val::{HeapStore, HeapValue, RuntimeVal, ShortStr, Type, TypedList},
     vm::{NativeArgs32, NativeRuntime32, call_runtime_value32_runtime, call_runtime_value32_runtime_named},
 };
 
@@ -155,13 +155,17 @@ fn call_trait_method_runtime(
         bail!("Named arguments are not supported for trait methods");
     }
 
-    let mut legacy_args = Vec::with_capacity(positional.len() + 1);
-    legacy_args.push(runtime_val_to_val(&receiver, &runtime.state.heap)?);
-    for value in positional {
-        legacy_args.push(runtime_val_to_val(value, &runtime.state.heap)?);
+    match method_val {
+        crate::typ::TraitMethodValue::Runtime(callee) => {
+            let mut args = Vec::with_capacity(positional.len() + 1);
+            args.push(receiver);
+            args.extend_from_slice(positional);
+            crate::vm::call_runtime_value32_runtime(callee, &args, &mut runtime.state, runtime.module, Some(ctx))
+        }
+        crate::typ::TraitMethodValue::Legacy(_) => {
+            bail!("legacy trait methods cannot be called from Executor32")
+        }
     }
-    let result = method_val.call(&legacy_args, ctx)?;
-    val_to_runtime_val(&result, &mut runtime.state.heap)
 }
 
 fn runtime_access(
