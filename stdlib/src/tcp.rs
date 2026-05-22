@@ -116,7 +116,7 @@ fn port_arg(value: &RuntimeVal, name: &str) -> Result<u16> {
 fn connect32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "connect")?;
     let values = args.as_slice();
-    let host = runtime_string_arg(&values[0], &runtime.state.heap, "connect host")?;
+    let host = runtime_string_arg(&values[0], runtime.heap(), "connect host")?;
     let port = port_arg(&values[1], "Port")?;
     let addr = format!("{}:{}", host, port);
     let stream = TcpStream::connect(&addr).map_err(|err| anyhow!("Failed to connect to {addr}: {err}"))?;
@@ -131,7 +131,7 @@ fn connect32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Resul
 fn bind32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "bind")?;
     let values = args.as_slice();
-    let host = runtime_string_arg(&values[0], &runtime.state.heap, "bind host")?;
+    let host = runtime_string_arg(&values[0], runtime.heap(), "bind host")?;
     let port = port_arg(&values[1], "Port")?;
     let addr = format!("{}:{}", host, port);
     let listener = StdTcpListener::bind(&addr).map_err(|err| anyhow!("Failed to bind to {addr}: {err}"))?;
@@ -191,7 +191,7 @@ fn write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     expect_arity(args, 2, "write")?;
     let values = args.as_slice();
     let conn_id = positive_id(&values[0], "Connection ID")?;
-    let data = runtime_string_arg(&values[1], &runtime.state.heap, "write data")?;
+    let data = runtime_string_arg(&values[1], runtime.heap(), "write data")?;
     let registry = TcpRegistry::global();
     let mut registry = registry.lock().map_err(|_| anyhow!("TCP registry poisoned"))?;
     let stream = registry
@@ -218,7 +218,7 @@ mod tests {
     use super::*;
     use lk_core::{
         module::Module,
-        val::{CallableValue, HeapStore, HeapValue},
+        val::{CallableValue, HeapValue},
         vm::RuntimeModuleState32,
     };
 
@@ -239,11 +239,7 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             bail!("{name} must use plain RuntimeNative32");
         };
-        let mut runtime = NativeRuntime32 {
-            state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(state, None, None);
         function(NativeArgs32::new(args), &mut runtime)
     }
 
@@ -259,10 +255,7 @@ mod tests {
 
     #[test]
     fn tcp_argument_validation_uses_runtime_values() {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let err = call("connect", &[], &mut state).expect_err("connect arity should fail");
         assert!(err.to_string().contains("requires 2 arguments"));
         let err = call("bind", &[], &mut state).expect_err("bind arity should fail");
@@ -273,10 +266,7 @@ mod tests {
 
     #[test]
     fn tcp_close_unknown_id_returns_false() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         assert_eq!(
             call("close", &[RuntimeVal::Int(i64::MAX)], &mut state)?,
             RuntimeVal::Bool(false)

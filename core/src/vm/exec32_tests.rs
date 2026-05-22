@@ -2,7 +2,7 @@ use super::*;
 use std::sync::Arc;
 
 use crate::{
-    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, Val},
+    val::{CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, Val},
     vm::{
         ConstHeapValue32, ConstPool32, Instr32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32,
         Opcode32, RuntimeCallable32, VmContext,
@@ -310,7 +310,7 @@ fn execute32_allocates_typed_string_int_map_and_reads_string_key() {
     let result = execute32(&function).expect("execute32");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
-    let RuntimeVal::Obj(handle) = result.frame.read(RegisterIndex::new(2)).expect("map register").clone() else {
+    let RuntimeVal::Obj(handle) = result.state.stack[2] else {
         panic!("expected map object");
     };
     let HeapValue::Map(TypedMap::StringInt(values)) = result.state.heap.get(handle).expect("heap object") else {
@@ -800,6 +800,299 @@ fn execute_module32_calls_closure_with_captured_value() {
 }
 
 #[test]
+fn execute_module32_reuses_shared_stack_for_repeated_closure_calls() {
+    let callee = Function32 {
+        consts: ConstPool32 {
+            ints: vec![1],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadInt, 1, 0),
+            Instr32::abc(Opcode32::AddInt, 2, 0, 1),
+            Instr32::abc(Opcode32::Return, 2, 1, 0),
+        ],
+        register_count: 3,
+        param_count: 1,
+        positional_param_count: 1,
+        param_names: vec![Arc::<str>::from("x")],
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let entry = Function32 {
+        consts: ConstPool32 {
+            ints: vec![0, 10, 20],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadFunction, 0, 1),
+            Instr32::abx(Opcode32::LoadInt, 1, 0),
+            Instr32::abc(Opcode32::Call, 0, 0, 1),
+            Instr32::abx(Opcode32::LoadFunction, 0, 1),
+            Instr32::abx(Opcode32::LoadInt, 1, 1),
+            Instr32::abc(Opcode32::Call, 0, 0, 1),
+            Instr32::abx(Opcode32::LoadFunction, 0, 1),
+            Instr32::abx(Opcode32::LoadInt, 1, 2),
+            Instr32::abc(Opcode32::Call, 0, 0, 1),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let module = Module32 {
+        functions: vec![entry, callee],
+        natives: Vec::new(),
+        globals: Vec::new(),
+        entry: 0,
+    };
+
+    let result = execute_module32(&module).expect("execute repeated closure calls");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Int(21)]);
+    assert_eq!(result.state.stack_top, 2);
+    assert_eq!(result.state.stack.len(), 5);
+}
+
+#[test]
+fn executor_root_refs_include_runtime_state_and_captures() {
+    let mut executor = Executor32::new(2);
+    let global = executor.state.heap.alloc(HeapValue::String(Arc::<str>::from("global")));
+    let stack = executor.state.heap.alloc(HeapValue::String(Arc::<str>::from("stack")));
+    let inactive_stack = executor
+        .state
+        .heap
+        .alloc(HeapValue::String(Arc::<str>::from("inactive")));
+    let capture = executor
+        .state
+        .heap
+        .alloc(HeapValue::String(Arc::<str>::from("capture")));
+    executor.state.globals = vec![RuntimeVal::Obj(global)];
+    executor.state.stack = vec![
+        RuntimeVal::Obj(stack),
+        RuntimeVal::Int(1),
+        RuntimeVal::Obj(inactive_stack),
+    ];
+    executor.state.stack_top = 2;
+    executor.captures = vec![RuntimeVal::Obj(capture)];
+
+    let roots = executor.root_refs();
+
+    assert_eq!(roots, vec![global, stack, capture]);
+}
+
+#[test]
+fn execute32_triggers_heap_gc_from_runtime_roots() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            strings: vec![
+                "keep-long-string".into(),
+                "drop-long-string".into(),
+                "temp-long-string".into(),
+            ],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadString, 0, 0),
+            Instr32::abx(Opcode32::LoadString, 1, 1),
+            Instr32::abc(Opcode32::LoadNil, 1, 0, 0),
+            Instr32::abx(Opcode32::LoadString, 1, 2),
+            Instr32::abc(Opcode32::Nop, 0, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let mut heap = HeapStore::new();
+    heap.set_gc_threshold(3);
+
+    let result = Executor32::new(function.register_count)
+        .run_module_with_globals_and_heap(&Module32::single(function), Vec::new(), heap)
+        .expect("execute with gc");
+
+    assert_eq!(result.state.heap.len(), 2);
+    assert!(result.state.heap.get(HeapRef::new(1)).is_none());
+    assert!(!result.state.heap.should_collect());
+    assert!(matches!(result.returns.first(), Some(RuntimeVal::Obj(_))));
+}
+
+#[test]
+fn execute32_loads_and_stores_upval_cell_values() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            ints: vec![41],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::GetGlobal, 0, 0),
+            Instr32::abc(Opcode32::LoadCellVal, 1, 0, 0),
+            Instr32::abx(Opcode32::LoadInt, 2, 0),
+            Instr32::abc(Opcode32::AddInt, 3, 1, 2),
+            Instr32::abc(Opcode32::StoreCellVal, 0, 3, 0),
+            Instr32::abc(Opcode32::LoadCellVal, 4, 0, 0),
+            Instr32::abc(Opcode32::Return, 4, 1, 0),
+        ],
+        register_count: 5,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let module = Module32 {
+        functions: vec![function],
+        natives: Vec::new(),
+        globals: vec![GlobalSlot32 { name: "cell".into() }],
+        entry: 0,
+    };
+    let mut heap = HeapStore::new();
+    let cell = heap.alloc(HeapValue::UpvalCell(RuntimeVal::Int(1)));
+
+    let result =
+        execute_module32_with_globals_heap_and_ctx(&module, vec![RuntimeVal::Obj(cell)], heap, &mut VmContext::new())
+            .expect("execute cell ops");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert!(matches!(
+        result.state.heap.get(cell),
+        Some(HeapValue::UpvalCell(RuntimeVal::Int(42)))
+    ));
+}
+
+#[test]
+fn execute32_load_cell_rejects_non_cell_objects() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            strings: vec!["not-cell".into()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadString, 0, 0),
+            Instr32::abc(Opcode32::LoadCellVal, 1, 0, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let err = execute32(&function).expect_err("string is not a cell");
+
+    assert!(err.to_string().contains("LoadCellVal expected UpvalCell"));
+}
+
+#[test]
+fn execute32_raise_jumps_to_try_handler_with_error_value() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            strings: vec!["boom".into()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::as_bx(Opcode32::TryBegin, 0, 2),
+            Instr32::abx(Opcode32::Raise, 0, 0),
+            Instr32::abc(Opcode32::LoadNil, 0, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("raise handled");
+    let RuntimeVal::Obj(handle) = result.returns.first().expect("return") else {
+        panic!("handler return should be error object");
+    };
+    let Some(HeapValue::ErrorVal(error)) = result.state.heap.get(*handle) else {
+        panic!("handler return should be ErrorVal");
+    };
+
+    assert_eq!(error.message.as_ref(), "boom");
+}
+
+#[test]
+fn execute32_try_end_removes_raise_handler() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            strings: vec!["boom".into()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::as_bx(Opcode32::TryBegin, 0, 2),
+            Instr32::ax(Opcode32::TryEnd, 0),
+            Instr32::abx(Opcode32::Raise, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let err = execute32(&function).expect_err("handler removed");
+
+    assert!(err.to_string().contains("boom"));
+}
+
+#[test]
+fn execute32_caller_handler_catches_raise_from_callee() {
+    let caller = Function32 {
+        consts: ConstPool32::default(),
+        code: vec![
+            Instr32::as_bx(Opcode32::TryBegin, 0, 3),
+            Instr32::abx(Opcode32::LoadFunction, 0, 1),
+            Instr32::abc(Opcode32::Call, 0, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let callee = Function32 {
+        consts: ConstPool32 {
+            strings: vec!["boom".into()],
+            ..ConstPool32::default()
+        },
+        code: vec![Instr32::abx(Opcode32::Raise, 0, 0)],
+        register_count: 1,
+        ..Function32::default()
+    };
+    let module = Module32 {
+        functions: vec![caller, callee],
+        natives: Vec::new(),
+        globals: Vec::new(),
+        entry: 0,
+    };
+
+    let result = execute_module32(&module).expect("caller handler catches callee raise");
+    let RuntimeVal::Obj(handle) = result.returns.first().expect("return") else {
+        panic!("handler return should be error object");
+    };
+    let Some(HeapValue::ErrorVal(error)) = result.state.heap.get(*handle) else {
+        panic!("handler return should be ErrorVal");
+    };
+
+    assert_eq!(error.message.as_ref(), "boom");
+}
+
+#[test]
 fn execute_module32_calls_native_function_with_same_call_opcode() {
     fn native_add(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let [RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)] = args.as_slice() else {
@@ -862,12 +1155,7 @@ fn execute_module32_calls_runtime32_callable_from_heap() {
         capture_count: 0,
         ..Function32::default()
     };
-    let callee_module = Arc::new(Module32 {
-        functions: vec![callee],
-        natives: Vec::new(),
-        globals: Vec::new(),
-        entry: 0,
-    });
+    let callee_module = Arc::new(Module32::single(callee));
     let callable = RuntimeCallable32::new(Arc::clone(&callee_module), 0, Vec::new(), HeapStore::new(), Vec::new());
 
     let entry = Function32 {
@@ -891,7 +1179,7 @@ fn execute_module32_calls_runtime32_callable_from_heap() {
     let caller_module = Module32 {
         functions: vec![entry],
         natives: Vec::new(),
-        globals: vec![GlobalSlot32 { name: "f".to_string() }],
+        globals: vec![GlobalSlot32 { name: "f".into() }],
         entry: 0,
     };
     let mut heap = HeapStore::new();
@@ -905,6 +1193,57 @@ fn execute_module32_calls_runtime32_callable_from_heap() {
 }
 
 #[test]
+fn execute32_caller_handler_catches_raise_from_runtime32_callable() {
+    let callee = Function32 {
+        consts: ConstPool32 {
+            strings: vec!["boom".into()],
+            ..ConstPool32::default()
+        },
+        code: vec![Instr32::abx(Opcode32::Raise, 0, 0)],
+        register_count: 1,
+        ..Function32::default()
+    };
+    let callee_module = Arc::new(Module32 {
+        functions: vec![callee],
+        natives: Vec::new(),
+        globals: Vec::new(),
+        entry: 0,
+    });
+    let callable = RuntimeCallable32::new(callee_module, 0, Vec::new(), HeapStore::new(), Vec::new());
+    let entry = Function32 {
+        code: vec![
+            Instr32::as_bx(Opcode32::TryBegin, 0, 3),
+            Instr32::abx(Opcode32::GetGlobal, 0, 0),
+            Instr32::abc(Opcode32::Call, 0, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        ..Function32::default()
+    };
+    let caller_module = Module32 {
+        functions: vec![entry],
+        natives: Vec::new(),
+        globals: vec![GlobalSlot32 { name: "f".into() }],
+        entry: 0,
+    };
+    let mut heap = HeapStore::new();
+    let global = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::Runtime32(Arc::new(callable)))));
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    let result = execute_module32_with_globals_heap_and_ctx(&caller_module, vec![global], heap, &mut ctx)
+        .expect("caller handler catches runtime32 raise");
+    let RuntimeVal::Obj(handle) = result.returns.first().expect("return") else {
+        panic!("handler return should be error object");
+    };
+    let Some(HeapValue::ErrorVal(error)) = result.state.heap.get(*handle) else {
+        panic!("handler return should be ErrorVal");
+    };
+
+    assert_eq!(error.message.as_ref(), "boom");
+}
+
+#[test]
 fn execute_module32_calls_runtime32_callable_with_named_args() {
     let callee = Function32 {
         code: vec![
@@ -914,7 +1253,7 @@ fn execute_module32_calls_runtime32_callable_with_named_args() {
         register_count: 3,
         param_count: 2,
         positional_param_count: 1,
-        param_names: vec!["x".to_string(), "y".to_string()],
+        param_names: vec![Arc::<str>::from("x"), Arc::<str>::from("y")],
         capture_count: 0,
         ..Function32::default()
     };
@@ -950,7 +1289,7 @@ fn execute_module32_calls_runtime32_callable_with_named_args() {
     let caller_module = Module32 {
         functions: vec![entry],
         natives: Vec::new(),
-        globals: vec![GlobalSlot32 { name: "f".to_string() }],
+        globals: vec![GlobalSlot32 { name: "f".into() }],
         entry: 0,
     };
     let mut heap = HeapStore::new();
@@ -986,9 +1325,7 @@ fn runtime32_callable_error_keeps_shared_module_state() {
     let callee_module = Arc::new(Module32 {
         functions: vec![callee],
         natives: Vec::new(),
-        globals: vec![GlobalSlot32 {
-            name: "counter".to_string(),
-        }],
+        globals: vec![GlobalSlot32 { name: "counter".into() }],
         entry: 0,
     });
     let callable = RuntimeCallable32::new(
@@ -1029,11 +1366,12 @@ fn execute_module32_context_native_can_use_vm_context() {
         let [RuntimeVal::Int(delta)] = args.as_slice() else {
             bail!("add_seed expects one int");
         };
-        let ctx = runtime.ctx.as_deref_mut().ok_or_else(|| anyhow!("missing VmContext"))?;
+        let delta = *delta;
+        let ctx = runtime.ctx_mut().ok_or_else(|| anyhow!("missing VmContext"))?;
         let Some(Val::Int(seed)) = ctx.get("seed") else {
             bail!("seed must be an int");
         };
-        let value = *seed + *delta;
+        let value = seed + delta;
         ctx.set("seen", Val::Int(value));
         Ok(RuntimeVal::Int(value))
     }

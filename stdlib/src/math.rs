@@ -78,10 +78,10 @@ impl MathModule {
 
         let mut seen = HashSet::with_capacity(args.named().len());
         for (name, value) in args.named() {
-            if !seen.insert(name.as_str()) {
+            if !seen.insert(name.as_ref()) {
                 bail!("clamp() received duplicate named argument '{}'", name);
             }
-            match name.as_str() {
+            match name.as_ref() {
                 "min" => min = int_arg(value, "clamp() named 'min'")?,
                 "max" => max = int_arg(value, "clamp() named 'max'")?,
                 other => bail!("clamp() does not accept named argument '{}'", other),

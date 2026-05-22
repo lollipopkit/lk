@@ -89,6 +89,7 @@ impl Executor32 {
                 }
                 HeapValue::Map(TypedMap::from_runtime_entries(runtime_entries))
             }
+            ConstHeapValue32::UpvalCell(value) => HeapValue::UpvalCell(self.materialize_const_value(*value)?),
         })
     }
 }

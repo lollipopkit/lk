@@ -106,7 +106,7 @@ fn pair(ok: bool, value: RuntimeVal, runtime: &mut NativeRuntime32<'_>) -> Runti
 
 fn chan_close32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.close()")?;
-    let channel = channel_arg(args.get(0).expect("checked arity"), &runtime.state.heap, "chan.close()")?;
+    let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.close()")?;
     rt::with_runtime(|runtime| runtime.close_channel(channel.id))
         .map_err(|err| anyhow!("Failed to close channel: {err}"))?;
     Ok(RuntimeVal::Nil)
@@ -114,35 +114,27 @@ fn chan_close32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Re
 
 fn chan_len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.len()")?;
-    let _ = channel_arg(args.get(0).expect("checked arity"), &runtime.state.heap, "chan.len()")?;
+    let _ = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.len()")?;
     Ok(RuntimeVal::Int(0))
 }
 
 fn chan_capacity32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.capacity()")?;
-    let channel = channel_arg(
-        args.get(0).expect("checked arity"),
-        &runtime.state.heap,
-        "chan.capacity()",
-    )?;
+    let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.capacity()")?;
     Ok(RuntimeVal::Int(channel.capacity.unwrap_or(0)))
 }
 
 fn chan_is_closed32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.is_closed()")?;
-    let _ = channel_arg(
-        args.get(0).expect("checked arity"),
-        &runtime.state.heap,
-        "chan.is_closed()",
-    )?;
+    let _ = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.is_closed()")?;
     Ok(RuntimeVal::Bool(false))
 }
 
 fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "chan.try_send()")?;
     let values = args.as_slice();
-    let channel = channel_arg(&values[0], &runtime.state.heap, "chan.try_send()")?;
-    let value = runtime_payload_from_value(&values[1], &runtime.state.heap)?;
+    let channel = channel_arg(&values[0], runtime.heap(), "chan.try_send()")?;
+    let value = runtime_payload_from_value(&values[1], runtime.heap())?;
     let sent = rt::with_runtime(|runtime| runtime.try_send(channel.id, value))
         .map_err(|err| anyhow!("Failed to send to channel: {err}"))?;
     Ok(RuntimeVal::Bool(sent))
@@ -150,11 +142,7 @@ fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
 
 fn chan_try_recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.try_recv()")?;
-    let channel = channel_arg(
-        args.get(0).expect("checked arity"),
-        &runtime.state.heap,
-        "chan.try_recv()",
-    )?;
+    let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.try_recv()")?;
     match rt::with_runtime(|rt| rt.try_recv(channel.id))
         .map_err(|err| anyhow!("Failed to receive from channel: {err}"))?
     {
@@ -216,11 +204,7 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             bail!("{name} must use plain RuntimeNative32");
         };
-        let mut runtime = NativeRuntime32 {
-            state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(state, None, None);
         function(NativeArgs32::new(args), &mut runtime)
     }
 
@@ -255,10 +239,7 @@ mod tests {
 
     #[test]
     fn chan_capacity_len_and_is_closed_use_runtime_channel() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let channel = runtime_channel(3, &mut state.heap)?;
         assert_eq!(
             call("capacity", std::slice::from_ref(&channel), &mut state)?,
@@ -277,10 +258,7 @@ mod tests {
 
     #[test]
     fn chan_try_send_and_recv_round_trips_runtime_values() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let channel = runtime_channel(1, &mut state.heap)?;
         let value = RuntimeVal::ShortStr(ShortStr::new("payload").expect("short string"));
         assert_eq!(
@@ -301,10 +279,7 @@ mod tests {
 
     #[test]
     fn chan_try_recv_empty_returns_false_nil_pair() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let channel = runtime_channel(1, &mut state.heap)?;
         let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
         assert_eq!(

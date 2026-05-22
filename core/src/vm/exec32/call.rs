@@ -2,12 +2,21 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::{
     val::{CallableValue, HeapValue, RuntimeVal},
-    vm::{CallWindow32, Module32, NativeArgs32, NativeEntry32, RegisterIndex, VmContext},
+    vm::{CallWindow32, Module32, NativeArgs32, NativeEntry32, VmContext},
 };
 
-use super::{Executor32, runtime_callable, support::call_native_entry};
+use super::{Executor32, runtime_callable, support::call_native_entry_parts};
 
 impl Executor32 {
+    pub(super) fn handle_call_error(&mut self, error: anyhow::Error) -> Result<RuntimeVal> {
+        if let Some(raise) = error.downcast_ref::<super::LanguageRaise32>() {
+            self.handle_language_raise(raise)?;
+            Ok(RuntimeVal::Nil)
+        } else {
+            Err(error)
+        }
+    }
+
     pub(super) fn call_function(
         &mut self,
         module: Option<&Module32>,
@@ -16,10 +25,8 @@ impl Executor32 {
     ) -> Result<RuntimeVal> {
         let module = module.ok_or_else(|| anyhow!("Call requires Module32 execution"))?;
         let callee = self
-            .frame
-            .read(window.callee)
-            .cloned()
-            .ok_or_else(|| anyhow!("call callee register {} out of bounds", window.callee.as_usize()))?;
+            .read(u8::try_from(window.callee.as_usize()).map_err(|_| anyhow!("call callee register overflow"))?)?
+            .clone();
         let RuntimeVal::Obj(handle) = callee else {
             bail!("{} is not a function", self.runtime_value_display_string(&callee)?);
         };
@@ -54,23 +61,28 @@ impl Executor32 {
                     arity,
                     function,
                 };
-                call_native_entry(
+                let args = self.call_args_stack_range(window)?;
+                let state = &mut self.state;
+                let result = call_native_entry_parts(
                     &native,
-                    self.frame.call_args(window),
+                    NativeArgs32::new(&state.stack[args]),
                     &[],
-                    &mut self.state,
+                    &mut state.heap,
+                    &state.globals,
                     Some(module),
                     ctx.as_deref_mut(),
-                )
+                );
+                result.or_else(|error| self.handle_call_error(error))
             }
             CallableValue::Runtime32(function) => {
-                let args = self.frame.call_args(window);
-                runtime_callable::call_runtime_callable32_runtime(
+                let args = self.call_args_stack_range(window)?;
+                let result = runtime_callable::call_runtime_callable32_runtime(
                     function.as_ref(),
-                    NativeArgs32::new(args),
+                    NativeArgs32::new(&self.state.stack[args]),
                     &mut self.state.heap,
                     ctx.as_deref_mut(),
-                )
+                );
+                result.or_else(|error| self.handle_call_error(error))
             }
             CallableValue::Aot(_) => {
                 bail!("AOT callable is not implemented in Executor32 yet")
@@ -98,20 +110,63 @@ impl Executor32 {
             );
         }
 
-        let mut callee = Executor32::new(function.register_count);
-        self.frame.copy_call_args_to_frame(window, &mut callee.frame);
-        callee.state = std::mem::take(&mut self.state);
-        callee.captures = captures;
+        self.call_closure_stack_args(module, function_index, captures, window, ctx)
+    }
 
-        match callee.run_function_inner(function, Some(module), ctx) {
-            Ok(returns) => {
-                let result = callee.finish(returns);
-                self.state = result.state;
-                Ok(result.returns.into_iter().next().unwrap_or(RuntimeVal::Nil))
-            }
+    fn call_closure_stack_args(
+        &mut self,
+        module: &Module32,
+        function_index: u32,
+        captures: Vec<RuntimeVal>,
+        window: CallWindow32,
+        ctx: &mut Option<&mut VmContext>,
+    ) -> Result<RuntimeVal> {
+        let function = module
+            .functions
+            .get(function_index as usize)
+            .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
+        if function.param_count != window.arg_count {
+            bail!(
+                "Function expects {} positional arguments, got {}",
+                function.param_count,
+                window.arg_count
+            );
+        }
+
+        let arg_range = self.call_args_stack_range(window)?;
+        let saved_base = self.frame_base;
+        let saved_top = self.state.stack_top;
+        let saved_pc = self.pc;
+        let saved_captures = std::mem::replace(&mut self.captures, captures);
+        let saved_register_count = self.register_count;
+        let new_base = self.state.stack_top;
+        let new_top = new_base + function.register_count as usize;
+        if self.state.stack.len() < new_top {
+            self.state.stack.resize(new_top, RuntimeVal::Nil);
+        }
+        for offset in 0..window.arg_count as usize {
+            self.state.stack[new_base + offset] = self.state.stack[arg_range.start + offset].clone();
+        }
+        self.state.stack[new_base + window.arg_count as usize..new_top].fill(RuntimeVal::Nil);
+        self.frame_base = new_base;
+        self.register_count = function.register_count;
+        self.state.stack_top = new_top;
+        self.pc = 0;
+        let result = self.run_function_inner(function, Some(module), ctx);
+        self.frame_base = saved_base;
+        self.register_count = saved_register_count;
+        self.state.stack_top = saved_top;
+        self.pc = saved_pc;
+        self.captures = saved_captures;
+        match result {
+            Ok(returns) => Ok(returns.into_iter().next().unwrap_or(RuntimeVal::Nil)),
             Err(error) => {
-                self.state = callee.state;
-                Err(error)
+                if let Some(raise) = error.downcast_ref::<super::LanguageRaise32>() {
+                    self.handle_language_raise(raise)?;
+                    Ok(RuntimeVal::Nil)
+                } else {
+                    Err(error)
+                }
             }
         }
     }
@@ -136,22 +191,39 @@ impl Executor32 {
             );
         }
 
-        let mut callee = Executor32::new(function.register_count);
-        for (index, value) in args.enumerate() {
-            callee.frame.write(RegisterIndex::new(index as u16), value);
+        let saved_base = self.frame_base;
+        let saved_top = self.state.stack_top;
+        let saved_pc = self.pc;
+        let saved_captures = std::mem::replace(&mut self.captures, captures);
+        let saved_register_count = self.register_count;
+        let new_base = self.state.stack_top;
+        let new_top = new_base + function.register_count as usize;
+        if self.state.stack.len() < new_top {
+            self.state.stack.resize(new_top, RuntimeVal::Nil);
         }
-        callee.state = std::mem::take(&mut self.state);
-        callee.captures = captures;
-
-        match callee.run_function_inner(function, Some(module), ctx) {
-            Ok(returns) => {
-                let result = callee.finish(returns);
-                self.state = result.state;
-                Ok(result.returns.into_iter().next().unwrap_or(RuntimeVal::Nil))
-            }
+        self.state.stack[new_base..new_top].fill(RuntimeVal::Nil);
+        for (index, value) in args.enumerate() {
+            self.state.stack[new_base + index] = value;
+        }
+        self.frame_base = new_base;
+        self.register_count = function.register_count;
+        self.state.stack_top = new_top;
+        self.pc = 0;
+        let result = self.run_function_inner(function, Some(module), ctx);
+        self.frame_base = saved_base;
+        self.register_count = saved_register_count;
+        self.state.stack_top = saved_top;
+        self.pc = saved_pc;
+        self.captures = saved_captures;
+        match result {
+            Ok(returns) => Ok(returns.into_iter().next().unwrap_or(RuntimeVal::Nil)),
             Err(error) => {
-                self.state = callee.state;
-                Err(error)
+                if let Some(raise) = error.downcast_ref::<super::LanguageRaise32>() {
+                    self.handle_language_raise(raise)?;
+                    Ok(RuntimeVal::Nil)
+                } else {
+                    Err(error)
+                }
             }
         }
     }
@@ -175,7 +247,17 @@ impl Executor32 {
             .natives
             .get(native_index as usize)
             .ok_or_else(|| anyhow!("native index {} out of bounds", native_index))?;
-        let args = self.frame.call_args(window);
-        call_native_entry(native, args, &[], &mut self.state, Some(module), ctx.as_deref_mut())
+        let args = self.call_args_stack_range(window)?;
+        let state = &mut self.state;
+        let result = call_native_entry_parts(
+            native,
+            NativeArgs32::new(&state.stack[args]),
+            &[],
+            &mut state.heap,
+            &state.globals,
+            Some(module),
+            ctx.as_deref_mut(),
+        );
+        result.or_else(|error| self.handle_call_error(error))
     }
 }

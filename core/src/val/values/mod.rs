@@ -661,6 +661,8 @@ fn heap_value_type_name(value: &HeapValue) -> &'static str {
         HeapValue::Stream(_) => "Stream",
         HeapValue::StreamCursor(_) => "StreamCursor",
         HeapValue::Object(_) => "Object",
+        HeapValue::UpvalCell(_) => "UpvalCell",
+        HeapValue::ErrorVal(_) => "Error",
     }
 }
 
@@ -682,6 +684,8 @@ fn heap_values_eq(left: &HeapValue, right: &HeapValue) -> bool {
         (HeapValue::Object(left), HeapValue::Object(right)) => {
             left.type_name == right.type_name && left.fields == right.fields
         }
+        (HeapValue::UpvalCell(left), HeapValue::UpvalCell(right)) => left == right,
+        (HeapValue::ErrorVal(left), HeapValue::ErrorVal(right)) => left == right,
         _ => std::ptr::eq(left, right),
     }
 }
@@ -718,6 +722,8 @@ fn display_heap_value(value: &HeapValue, f: &mut core::fmt::Formatter<'_>) -> co
         }
         HeapValue::Callable(_) => write!(f, "<function>"),
         HeapValue::Object(object) => write!(f, "Object(type={}, fields={:?})", object.type_name, object.fields),
+        HeapValue::UpvalCell(value) => write!(f, "UpvalCell({:?})", value),
+        HeapValue::ErrorVal(error) => write!(f, "Error(message={})", error.message),
     }
 }
 
@@ -739,6 +745,8 @@ fn dispatch_type_for_heap_value(value: &HeapValue) -> Type {
             named_params: Vec::new(),
             return_type: Box::new(Type::Any),
         },
+        HeapValue::UpvalCell(_) => Type::Any,
+        HeapValue::ErrorVal(_) => Type::Named("Error".to_string()),
     }
 }
 

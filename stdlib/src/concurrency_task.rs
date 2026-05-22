@@ -119,7 +119,7 @@ fn is_callable(value: &RuntimeVal, heap: &HeapStore) -> Result<bool> {
 
 fn task_await32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "task.await()")?;
-    let task = task_arg(args.get(0).expect("checked arity"), &runtime.state.heap, "task.await()")?;
+    let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.await()")?;
     let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
         .map_err(|err| anyhow!("Failed to await task: {err}"))?;
     runtime_payload_into_value(value, runtime.heap_mut())
@@ -127,11 +127,7 @@ fn task_await32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Re
 
 fn task_try_await32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "task.try_await()")?;
-    let task = task_arg(
-        args.get(0).expect("checked arity"),
-        &runtime.state.heap,
-        "task.try_await()",
-    )?;
+    let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.try_await()")?;
     let value = match &task.value {
         Some(value) => runtime_payload_ref_to_value(value, runtime.heap_mut())?,
         None => RuntimeVal::Nil,
@@ -144,12 +140,12 @@ fn task_try_await32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -
 fn task_join_all32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     let mut values = Vec::with_capacity(args.len());
     for arg in args.as_slice() {
-        let task = task_arg(arg, &runtime.state.heap, "task.join_all()")?;
+        let task = task_arg(arg, runtime.heap(), "task.join_all()")?;
         let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
             .map_err(|err| anyhow!("Failed to await task: {err}"))?;
         values.push(runtime_payload_into_value(value, runtime.heap_mut())?);
     }
-    let list = lk_core::val::TypedList::from_runtime_values(values, &runtime.state.heap);
+    let list = lk_core::val::TypedList::from_runtime_values(values, runtime.heap());
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
 }
 
@@ -178,7 +174,7 @@ fn task_sleep32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> R
 
 fn task_spawn_blocking32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "task.spawn_blocking()")?;
-    if !is_callable(args.get(0).expect("checked arity"), &runtime.state.heap)? {
+    if !is_callable(args.get(0).expect("checked arity"), runtime.heap())? {
         bail!("task.spawn_blocking() expects a function argument");
     }
     let task_id = rt::with_runtime(|rt| {
@@ -216,11 +212,7 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             bail!("{name} must use plain RuntimeNative32");
         };
-        let mut runtime = NativeRuntime32 {
-            state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(state, None, None);
         function(NativeArgs32::new(args), &mut runtime)
     }
 
@@ -264,10 +256,7 @@ mod tests {
 
     #[test]
     fn task_try_await_uses_runtime_task_value() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let task = resolved_task(Val::Int(42), &mut state.heap);
         let result = call("try_await", &[task], &mut state)?;
         assert_eq!(
@@ -279,10 +268,7 @@ mod tests {
 
     #[test]
     fn task_join_all_empty_returns_empty_list() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let result = call("join_all", &[], &mut state)?;
         assert_eq!(expect_list(&result, &state.heap), Vec::<RuntimeVal>::new());
         Ok(())
@@ -290,30 +276,21 @@ mod tests {
 
     #[test]
     fn task_sleep_accepts_zero_duration() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         assert_eq!(call("sleep", &[RuntimeVal::Int(0)], &mut state)?, RuntimeVal::Nil);
         Ok(())
     }
 
     #[test]
     fn task_spawn_blocking_rejects_non_callable() {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let err = call("spawn_blocking", &[RuntimeVal::Int(1)], &mut state).expect_err("non-callable should fail");
         assert!(err.to_string().contains("expects a function"));
     }
 
     #[test]
     fn task_try_await_pending_returns_false_nil() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let task = RuntimeVal::Obj(state.heap.alloc(HeapValue::Task(Arc::new(TaskValue {
             id: 999_999,
             value: None,

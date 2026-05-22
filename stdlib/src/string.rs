@@ -92,7 +92,7 @@ impl StringModule {
             bail!("replace() received too many positional arguments (expected at most 4)");
         }
 
-        let source = runtime_string_arg(&pos[0], &runtime.state.heap, "replace() first argument")?;
+        let source = runtime_string_arg(&pos[0], runtime.heap(), "replace() first argument")?;
         let mut pattern = None;
         let mut with = None;
         let mut all_flag = None;
@@ -101,14 +101,14 @@ impl StringModule {
         if pos.len() >= 2 {
             pattern = Some(runtime_string_arg(
                 &pos[1],
-                &runtime.state.heap,
+                runtime.heap(),
                 "replace() second argument (pattern)",
             )?);
         }
         if pos.len() >= 3 {
             with = Some(runtime_string_arg(
                 &pos[2],
-                &runtime.state.heap,
+                runtime.heap(),
                 "replace() third argument (with)",
             )?);
         }
@@ -118,24 +118,16 @@ impl StringModule {
 
         let mut seen = HashSet::with_capacity(args.named().len());
         for (name, value) in args.named() {
-            if !seen.insert(name.as_str()) {
+            if !seen.insert(name.as_ref()) {
                 bail!("replace() received duplicate named argument '{}'", name);
             }
-            match name.as_str() {
+            match name.as_ref() {
                 "pattern" => {
-                    pattern = Some(runtime_string_arg(
-                        value,
-                        &runtime.state.heap,
-                        "replace() named 'pattern'",
-                    )?);
+                    pattern = Some(runtime_string_arg(value, runtime.heap(), "replace() named 'pattern'")?);
                     used_named_core = true;
                 }
                 "with" => {
-                    with = Some(runtime_string_arg(
-                        value,
-                        &runtime.state.heap,
-                        "replace() named 'with'",
-                    )?);
+                    with = Some(runtime_string_arg(value, runtime.heap(), "replace() named 'with'")?);
                     used_named_core = true;
                 }
                 "all" => all_flag = Some(bool_arg(value, "replace() named 'all'")?),
@@ -161,7 +153,7 @@ impl StringModule {
     fn substring32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "substring()")?;
         let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], &runtime.state.heap, "substring() first argument")?;
+        let value = runtime_string_arg(&values[0], runtime.heap(), "substring() first argument")?;
         let start = usize_arg(&values[1], "substring() second argument")?;
         let length = usize_arg(&values[2], "substring() third argument")?;
         if start > value.len() {
@@ -186,8 +178,8 @@ impl StringModule {
     fn join32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "join()")?;
         let values = args.as_slice();
-        let strings = string_list_arg(&values[0], &runtime.state.heap, "join() first argument")?;
-        let delimiter = runtime_string_arg(&values[1], &runtime.state.heap, "join() second argument")?;
+        let strings = string_list_arg(&values[0], runtime.heap(), "join() first argument")?;
+        let delimiter = runtime_string_arg(&values[1], runtime.heap(), "join() second argument")?;
         Ok(runtime_string_value(
             &strings.join(delimiter.as_ref()),
             runtime.heap_mut(),
@@ -205,7 +197,7 @@ impl StringModule {
     fn repeat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "repeat()")?;
         let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], &runtime.state.heap, "repeat() first argument")?;
+        let value = runtime_string_arg(&values[0], runtime.heap(), "repeat() first argument")?;
         let count = int_arg(&values[1], "repeat() second argument")?;
         if count < 0 {
             bail!("repeat() count must be non-negative");
@@ -216,7 +208,7 @@ impl StringModule {
     fn char_at32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "char()")?;
         let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], &runtime.state.heap, "char() first argument")?;
+        let value = runtime_string_arg(&values[0], runtime.heap(), "char() first argument")?;
         let index = usize_arg(&values[1], "char() second argument")?;
         Ok(value.chars().nth(index).map_or(RuntimeVal::Nil, |value| {
             runtime_string_value(&value.to_string(), runtime.heap_mut())
@@ -226,7 +218,7 @@ impl StringModule {
     fn byte_at32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "byte()")?;
         let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], &runtime.state.heap, "byte() first argument")?;
+        let value = runtime_string_arg(&values[0], runtime.heap(), "byte() first argument")?;
         let index = usize_arg(&values[1], "byte() second argument")?;
         Ok(value
             .as_bytes()
@@ -247,8 +239,8 @@ impl StringModule {
             bail!("find() takes 2 or 3 arguments: string, pattern[, start]");
         }
         let values = args.as_slice();
-        let value = runtime_string_arg(&values[0], &runtime.state.heap, "find() first argument")?;
-        let pattern = runtime_string_arg(&values[1], &runtime.state.heap, "find() second argument")?;
+        let value = runtime_string_arg(&values[0], runtime.heap(), "find() first argument")?;
+        let pattern = runtime_string_arg(&values[1], runtime.heap(), "find() second argument")?;
         let start = if values.len() == 3 {
             usize_arg(&values[2], "find() third argument")?
         } else {
@@ -272,7 +264,7 @@ impl StringModule {
             bail!("format() requires at least 1 argument (format string)");
         }
         let values = args.as_slice();
-        let fmt = runtime_string_arg(&values[0], &runtime.state.heap, "format() first argument")?;
+        let fmt = runtime_string_arg(&values[0], runtime.heap(), "format() first argument")?;
         let rest = &values[1..];
         let mut out = String::with_capacity(fmt.len());
         let chars = fmt.chars().collect::<Vec<_>>();
@@ -281,7 +273,7 @@ impl StringModule {
         while i < chars.len() {
             if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '}' {
                 if arg_index < rest.len() {
-                    out.push_str(&runtime_display_value(&rest[arg_index], &runtime.state.heap)?);
+                    out.push_str(&runtime_display_value(&rest[arg_index], runtime.heap())?);
                     arg_index += 1;
                 } else {
                     out.push_str("{}");
@@ -300,7 +292,7 @@ impl StringModule {
                 if index > 0 {
                     out.push(' ');
                 }
-                out.push_str(&runtime_display_value(value, &runtime.state.heap)?);
+                out.push_str(&runtime_display_value(value, runtime.heap())?);
             }
         }
         Ok(runtime_string_value(&out, runtime.heap_mut()))
@@ -350,15 +342,15 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
 
 fn one_string(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<Arc<str>> {
     expect_arity(args, 1, name)?;
-    runtime_string_arg(&args.as_slice()[0], &runtime.state.heap, name)
+    runtime_string_arg(&args.as_slice()[0], runtime.heap(), name)
 }
 
 fn two_strings(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<(Arc<str>, Arc<str>)> {
     expect_arity(args, 2, name)?;
     let values = args.as_slice();
     Ok((
-        runtime_string_arg(&values[0], &runtime.state.heap, name)?,
-        runtime_string_arg(&values[1], &runtime.state.heap, name)?,
+        runtime_string_arg(&values[0], runtime.heap(), name)?,
+        runtime_string_arg(&values[1], runtime.heap(), name)?,
     ))
 }
 

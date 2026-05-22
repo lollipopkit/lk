@@ -185,12 +185,12 @@ fn register_runtime_builtin(
 }
 
 fn print32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
-    print!("{}", format_variadic_runtime(args.as_slice(), &runtime.state.heap)?);
+    print!("{}", format_variadic_runtime(args.as_slice(), runtime.heap())?);
     Ok(RuntimeVal::Nil)
 }
 
 fn println32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
-    println!("{}", format_variadic_runtime(args.as_slice(), &runtime.state.heap)?);
+    println!("{}", format_variadic_runtime(args.as_slice(), runtime.heap())?);
     Ok(RuntimeVal::Nil)
 }
 
@@ -198,7 +198,7 @@ fn panic32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     let mut msg = if args.is_empty() {
         "panic".to_string()
     } else {
-        join_runtime_display(args.as_slice(), &runtime.state.heap)?
+        join_runtime_display(args.as_slice(), runtime.heap())?
     };
     let bt = std::backtrace::Backtrace::force_capture();
     msg.push_str("\nBacktrace:\n");
@@ -210,8 +210,7 @@ fn spawn32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     expect_runtime_arity(args, 1, "spawn")?;
     let function = runtime_callable_arg(args.get(0).expect("arity checked"), runtime, "spawn argument")?;
     let mut ctx = runtime
-        .ctx
-        .as_deref()
+        .ctx()
         .cloned()
         .unwrap_or_else(lk_core::vm::VmContext::new_without_core_vm_builtins);
 
@@ -243,7 +242,7 @@ fn chan32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
         other => {
             return Err(anyhow!(
                 "chan() capacity must be numeric, got {}",
-                runtime_type_name(other, &runtime.state.heap)
+                runtime_type_name(other, runtime.heap())
             ));
         }
     };
@@ -251,7 +250,7 @@ fn chan32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
         match &values[1] {
             RuntimeVal::Nil => val::Type::Nil,
             value => {
-                let text = runtime_string(value, &runtime.state.heap, "chan() type")?;
+                let text = runtime_string(value, runtime.heap(), "chan() type")?;
                 val::Type::parse(text.as_ref()).unwrap_or(val::Type::Nil)
             }
         }
@@ -273,8 +272,8 @@ fn chan32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
 fn send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "send")?;
     let values = args.as_slice();
-    let channel_id = channel_id_arg(&values[0], &runtime.state.heap, "send first argument")?;
-    let value = runtime_payload_from_value(&values[1], &runtime.state.heap)?;
+    let channel_id = channel_id_arg(&values[0], runtime.heap(), "send first argument")?;
+    let value = runtime_payload_from_value(&values[1], runtime.heap())?;
     let sent = rt::with_runtime(|runtime| runtime.block_on(runtime.send_async(channel_id, value)))
         .map_err(|error| anyhow!("Send operation failed: {}", error))?;
     Ok(RuntimeVal::Bool(sent))
@@ -284,7 +283,7 @@ fn recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     expect_runtime_arity(args, 1, "recv")?;
     let channel_id = channel_id_arg(
         args.get(0).expect("arity checked"),
-        &runtime.state.heap,
+        runtime.heap(),
         "recv first argument",
     )?;
     let (ok, value) = rt::with_runtime(|runtime| runtime.block_on(runtime.recv_async(channel_id)))
@@ -296,8 +295,8 @@ fn recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
 fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "chan::try_send")?;
     let values = args.as_slice();
-    let channel_id = channel_id_arg(&values[0], &runtime.state.heap, "chan::try_send first argument")?;
-    let value = runtime_payload_from_value(&values[1], &runtime.state.heap)?;
+    let channel_id = channel_id_arg(&values[0], runtime.heap(), "chan::try_send first argument")?;
+    let value = runtime_payload_from_value(&values[1], runtime.heap())?;
     let sent = rt::with_runtime(|runtime| runtime.try_send(channel_id, value))
         .map_err(|error| anyhow!("Failed to send to channel: {}", error))?;
     Ok(RuntimeVal::Bool(sent))
@@ -307,7 +306,7 @@ fn chan_try_recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
     expect_runtime_arity(args, 1, "chan::try_recv")?;
     let channel_id = channel_id_arg(
         args.get(0).expect("arity checked"),
-        &runtime.state.heap,
+        runtime.heap(),
         "chan::try_recv first argument",
     )?;
     let payload = match rt::with_runtime(|runtime| runtime.try_recv(channel_id))? {
@@ -345,11 +344,11 @@ fn select_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
         let RuntimeVal::Int(kind) = types[index] else {
             return Err(anyhow!("select$block: invalid arm entry types"));
         };
-        let channel_id = channel_id_arg(&channels[index], &runtime.state.heap, "select$block channel")?;
+        let channel_id = channel_id_arg(&channels[index], runtime.heap(), "select$block channel")?;
         match kind {
             0 => select.add_recv(index, channel_id),
             1 => {
-                let value = runtime_payload_from_value(&values[index], &runtime.state.heap)?;
+                let value = runtime_payload_from_value(&values[index], runtime.heap())?;
                 select.add_send(index, channel_id, value);
             }
             _ => return Err(anyhow!("select$block: invalid arm entry types")),
@@ -472,24 +471,17 @@ fn runtime_callable_arg(
         return Err(anyhow!("{context} must be a runtime callable"));
     };
     let callable = runtime
-        .state
-        .heap
+        .heap()
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match callable {
         HeapValue::Callable(CallableValue::Runtime32(function)) => Ok(function.as_ref().clone()),
         HeapValue::Callable(CallableValue::Closure { .. }) => {
             let module = runtime
-                .module
-                .as_ref()
+                .module()
                 .ok_or_else(|| anyhow!("{context} requires Module32 execution context"))?;
-            runtime_value_to_callable32(
-                value,
-                &runtime.state.heap,
-                &runtime.state.globals,
-                Arc::new((*module).clone()),
-            )
-            .ok_or_else(|| anyhow!("{context} closure could not be materialized"))
+            runtime_value_to_callable32(value, runtime.heap(), &runtime.globals(), Arc::new((*module).clone()))
+                .ok_or_else(|| anyhow!("{context} closure could not be materialized"))
         }
         _ => Err(anyhow!("{context} must be a runtime callable")),
     }

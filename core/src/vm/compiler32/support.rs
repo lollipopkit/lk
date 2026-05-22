@@ -10,6 +10,8 @@ use crate::{
     vm::ConstRuntimeValue32,
 };
 
+use std::sync::Arc;
+
 use super::{ConstHeapValue32, GlobalSlot32, NativeEntry32};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,13 +86,17 @@ pub(super) fn function_frame_params(params: &[String], named_params: &[NamedPara
     frame_params
 }
 
-pub(super) fn collect_global_names_with_external(
+pub(super) fn collect_global_names_with_external<I, S>(
     program: &Program,
-    external_globals: impl IntoIterator<Item = String>,
-) -> Result<HashMap<String, u32>> {
+    external_globals: I,
+) -> Result<HashMap<String, u32>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut names = HashMap::new();
     for name in external_globals {
-        insert_global_name(&mut names, name)?;
+        insert_global_name(&mut names, name.as_ref().to_owned())?;
     }
     for stmt in &program.statements {
         match stmt.as_ref() {
@@ -115,7 +121,9 @@ fn insert_global_name(names: &mut HashMap<String, u32>, name: String) -> Result<
 pub(super) fn global_slots_from_names(names: &HashMap<String, u32>) -> Vec<GlobalSlot32> {
     let mut slots = vec![None; names.len()];
     for (name, slot) in names {
-        slots[*slot as usize] = Some(GlobalSlot32 { name: name.clone() });
+        slots[*slot as usize] = Some(GlobalSlot32 {
+            name: Arc::<str>::from(name.as_str()),
+        });
     }
     slots.into_iter().map(|slot| slot.expect("dense global slot")).collect()
 }

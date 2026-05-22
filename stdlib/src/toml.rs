@@ -50,7 +50,7 @@ fn parse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
 mod tests {
     use lk_core::{
         module::Module,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, Val},
+        val::{CallableValue, HeapValue, RuntimeVal, Val},
         vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
     };
 
@@ -88,22 +88,15 @@ mod tests {
             panic!("parse must be plain RuntimeNative32");
         };
 
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let input = runtime_string_value("answer = 42", &mut state.heap);
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&[input]), &mut runtime).expect("parse");
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("toml.parse should return runtime object");
         };
-        let Some(HeapValue::Map(map)) = runtime.state.heap.get(handle) else {
+        let Some(HeapValue::Map(map)) = runtime.heap().get(handle) else {
             panic!("toml.parse should return runtime map");
         };
         assert_eq!(map.get_str("answer"), Some(RuntimeVal::Int(42)));

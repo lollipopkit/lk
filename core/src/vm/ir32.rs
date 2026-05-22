@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Result, bail};
 
 use crate::{
-    val::{HeapStore, RuntimeMapKey, RuntimeVal, ShortStr},
+    val::{HeapRef, HeapStore, RuntimeMapKey, RuntimeVal, ShortStr},
     vm::{VmContext, analysis::FunctionAnalysis},
 };
 
@@ -28,10 +28,44 @@ pub struct RuntimeCallable32 {
     pub state: Arc<Mutex<RuntimeModuleState32>>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RuntimeModuleState32 {
     pub heap: HeapStore,
     pub globals: Vec<RuntimeVal>,
+    pub stack: Vec<RuntimeVal>,
+    pub stack_top: usize,
+}
+
+impl RuntimeModuleState32 {
+    pub const INITIAL_STACK_CAPACITY: usize = 256;
+
+    pub fn new(heap: HeapStore, globals: Vec<RuntimeVal>) -> Self {
+        Self {
+            heap,
+            globals,
+            stack: Vec::with_capacity(Self::INITIAL_STACK_CAPACITY),
+            stack_top: 0,
+        }
+    }
+
+    pub fn root_refs<'a>(&self, extra_roots: impl IntoIterator<Item = &'a RuntimeVal>) -> Vec<HeapRef> {
+        let active_stack_end = self.stack_top.min(self.stack.len());
+        let mut roots = HeapStore::roots_from_values(&self.globals);
+        roots.extend(HeapStore::roots_from_values(&self.stack[..active_stack_end]));
+        roots.extend(HeapStore::roots_from_values(extra_roots));
+        roots
+    }
+
+    pub fn collect_garbage<'a>(&mut self, extra_roots: impl IntoIterator<Item = &'a RuntimeVal>) {
+        let roots = self.root_refs(extra_roots);
+        self.heap.collect(roots);
+    }
+}
+
+impl Default for RuntimeModuleState32 {
+    fn default() -> Self {
+        Self::new(HeapStore::new(), Vec::new())
+    }
 }
 
 impl RuntimeCallable32 {
@@ -46,7 +80,7 @@ impl RuntimeCallable32 {
             module,
             function_index,
             captures,
-            Arc::new(Mutex::new(RuntimeModuleState32 { heap, globals })),
+            Arc::new(Mutex::new(RuntimeModuleState32::new(heap, globals))),
         )
     }
 
@@ -87,37 +121,117 @@ impl RuntimeExport32 {
     pub fn from_value(value: RuntimeVal, heap: HeapStore) -> Self {
         Self {
             value,
-            state: Arc::new(Mutex::new(RuntimeModuleState32 {
-                heap,
-                globals: Vec::new(),
-            })),
+            state: Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new()))),
             module: Arc::new(Module32::default()),
         }
     }
 }
 
-pub struct NativeRuntime32<'a> {
-    pub state: &'a mut RuntimeModuleState32,
-    pub ctx: Option<&'a mut VmContext>,
-    pub module: Option<&'a Module32>,
+enum NativeRuntimeStorage32<'a> {
+    State(&'a mut RuntimeModuleState32),
+    Parts {
+        heap: &'a mut HeapStore,
+        globals: &'a [RuntimeVal],
+    },
 }
 
-impl NativeRuntime32<'_> {
+pub struct NativeRuntime32<'a> {
+    storage: NativeRuntimeStorage32<'a>,
+    ctx: Option<&'a mut VmContext>,
+    module: Option<&'a Module32>,
+}
+
+impl<'a> NativeRuntime32<'a> {
+    #[inline]
+    pub fn new(
+        state: &'a mut RuntimeModuleState32,
+        ctx: Option<&'a mut VmContext>,
+        module: Option<&'a Module32>,
+    ) -> Self {
+        Self {
+            storage: NativeRuntimeStorage32::State(state),
+            ctx,
+            module,
+        }
+    }
+
+    #[inline]
+    pub fn from_parts(
+        heap: &'a mut HeapStore,
+        globals: &'a [RuntimeVal],
+        ctx: Option<&'a mut VmContext>,
+        module: Option<&'a Module32>,
+    ) -> Self {
+        Self {
+            storage: NativeRuntimeStorage32::Parts { heap, globals },
+            ctx,
+            module,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn parts_mut(
+        &mut self,
+    ) -> Option<(&mut RuntimeModuleState32, Option<&mut VmContext>, Option<&Module32>)> {
+        match &mut self.storage {
+            NativeRuntimeStorage32::State(state) => Some((*state, self.ctx.as_deref_mut(), self.module)),
+            NativeRuntimeStorage32::Parts { .. } => None,
+        }
+    }
+
+    #[inline]
+    pub fn heap_ctx_mut(&mut self) -> (&mut HeapStore, Option<&mut VmContext>) {
+        let heap = match &mut self.storage {
+            NativeRuntimeStorage32::State(state) => &mut state.heap,
+            NativeRuntimeStorage32::Parts { heap, .. } => *heap,
+        };
+        (heap, self.ctx.as_deref_mut())
+    }
+
+    #[inline]
+    pub fn heap(&self) -> &HeapStore {
+        match &self.storage {
+            NativeRuntimeStorage32::State(state) => &state.heap,
+            NativeRuntimeStorage32::Parts { heap, .. } => heap,
+        }
+    }
+
     #[inline]
     pub fn heap_mut(&mut self) -> &mut HeapStore {
-        &mut self.state.heap
+        match &mut self.storage {
+            NativeRuntimeStorage32::State(state) => &mut state.heap,
+            NativeRuntimeStorage32::Parts { heap, .. } => heap,
+        }
     }
 
     #[inline]
     pub fn globals(&self) -> &[RuntimeVal] {
-        &self.state.globals
+        match &self.storage {
+            NativeRuntimeStorage32::State(state) => &state.globals,
+            NativeRuntimeStorage32::Parts { globals, .. } => globals,
+        }
+    }
+
+    #[inline]
+    pub fn module(&self) -> Option<&Module32> {
+        self.module
+    }
+
+    #[inline]
+    pub fn ctx(&self) -> Option<&VmContext> {
+        self.ctx.as_deref()
+    }
+
+    #[inline]
+    pub fn ctx_mut(&mut self) -> Option<&mut VmContext> {
+        self.ctx.as_deref_mut()
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct NativeArgs32<'a> {
     values: &'a [RuntimeVal],
-    named: &'a [(String, RuntimeVal)],
+    named: &'a [(Arc<str>, RuntimeVal)],
 }
 
 impl<'a> NativeArgs32<'a> {
@@ -127,7 +241,7 @@ impl<'a> NativeArgs32<'a> {
     }
 
     #[inline]
-    pub const fn new_with_named(values: &'a [RuntimeVal], named: &'a [(String, RuntimeVal)]) -> Self {
+    pub const fn new_with_named(values: &'a [RuntimeVal], named: &'a [(Arc<str>, RuntimeVal)]) -> Self {
         Self { values, named }
     }
 
@@ -147,7 +261,7 @@ impl<'a> NativeArgs32<'a> {
     }
 
     #[inline]
-    pub const fn named(self) -> &'a [(String, RuntimeVal)] {
+    pub const fn named(self) -> &'a [(Arc<str>, RuntimeVal)] {
         self.named
     }
 
@@ -192,7 +306,7 @@ impl NativeEntry32 {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlobalSlot32 {
-    pub name: String,
+    pub name: Arc<str>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -267,6 +381,7 @@ pub enum ConstHeapValue32 {
     LongString(Arc<str>),
     List(Vec<ConstRuntimeValue32>),
     Map(BTreeMap<RuntimeMapKey, ConstRuntimeValue32>),
+    UpvalCell(Box<ConstRuntimeValue32>),
 }
 
 #[repr(u8)]
@@ -305,6 +420,8 @@ pub enum Opcode32 {
     LoadString = 6,
     LoadHeapConst = 52,
     LoadCapture = 30,
+    LoadCellVal = 53,
+    StoreCellVal = 54,
     LoadFunction = 28,
     LoadNative = 29,
     MakeClosure = 31,
@@ -326,6 +443,8 @@ pub enum Opcode32 {
     SliceFrom = 46,
     MapRest = 47,
     Raise = 48,
+    TryBegin = 55,
+    TryEnd = 56,
     IsList = 49,
     IsMap = 50,
     CallNamed = 51,
@@ -366,6 +485,8 @@ impl Opcode32 {
             6 => Some(Self::LoadString),
             52 => Some(Self::LoadHeapConst),
             30 => Some(Self::LoadCapture),
+            53 => Some(Self::LoadCellVal),
+            54 => Some(Self::StoreCellVal),
             28 => Some(Self::LoadFunction),
             29 => Some(Self::LoadNative),
             31 => Some(Self::MakeClosure),
@@ -387,6 +508,8 @@ impl Opcode32 {
             46 => Some(Self::SliceFrom),
             47 => Some(Self::MapRest),
             48 => Some(Self::Raise),
+            55 => Some(Self::TryBegin),
+            56 => Some(Self::TryEnd),
             49 => Some(Self::IsList),
             50 => Some(Self::IsMap),
             51 => Some(Self::CallNamed),
@@ -601,7 +724,7 @@ pub struct Function32 {
     pub register_count: u16,
     pub param_count: u16,
     pub positional_param_count: u16,
-    pub param_names: Vec<String>,
+    pub param_names: Vec<Arc<str>>,
     pub capture_count: u16,
 }
 
@@ -711,8 +834,12 @@ mod tests {
     fn instr32_encoder_decoder_round_trips_validated_words() {
         let code = vec![
             Instr32::abc(Opcode32::NewMap, 1, 2, 3),
+            Instr32::abc(Opcode32::LoadCellVal, 2, 3, 0),
+            Instr32::abc(Opcode32::StoreCellVal, 3, 4, 0),
             Instr32::abx(Opcode32::LoadString, 4, 12_345),
             Instr32::abx(Opcode32::LoadHeapConst, 5, 7),
+            Instr32::as_bx(Opcode32::TryBegin, 6, 2),
+            Instr32::ax(Opcode32::TryEnd, 0),
             Instr32::sj(Opcode32::Jmp, -20_000),
         ];
 
@@ -720,6 +847,23 @@ mod tests {
         let decoded = decode_instr32(&bytes).expect("decode");
 
         assert_eq!(decoded, code);
+    }
+
+    #[test]
+    fn cell_and_handler_instr32_disassemble_with_expected_formats() {
+        let load = Instr32::abc(Opcode32::LoadCellVal, 1, 2, 0);
+        let store = Instr32::abc(Opcode32::StoreCellVal, 2, 3, 0);
+        let begin = Instr32::as_bx(Opcode32::TryBegin, 4, 9);
+        let end = Instr32::ax(Opcode32::TryEnd, 0);
+
+        assert_eq!(load.format(), InstrFormat::Abc);
+        assert_eq!(store.format(), InstrFormat::Abc);
+        assert_eq!(begin.format(), InstrFormat::AsBx);
+        assert_eq!(end.format(), InstrFormat::Ax);
+        assert_eq!(load.disassemble(), "LoadCellVal r1 r2 r0");
+        assert_eq!(store.disassemble(), "StoreCellVal r2 r3 r0");
+        assert_eq!(begin.disassemble(), "TryBegin r4 9");
+        assert_eq!(end.disassemble(), "TryEnd #0");
     }
 
     #[test]
@@ -777,6 +921,28 @@ mod tests {
     }
 
     #[test]
+    fn runtime_module_state_roots_cover_globals_active_stack_and_extra_values() {
+        let mut state = RuntimeModuleState32::default();
+        state.globals = vec![RuntimeVal::Obj(crate::val::HeapRef::new(1)), RuntimeVal::Int(9)];
+        state.stack = vec![
+            RuntimeVal::Obj(crate::val::HeapRef::new(2)),
+            RuntimeVal::Nil,
+            RuntimeVal::Obj(crate::val::HeapRef::new(3)),
+        ];
+        state.stack_top = 2;
+        let extra = vec![RuntimeVal::Obj(crate::val::HeapRef::new(4))];
+
+        assert_eq!(
+            state.root_refs(&extra),
+            vec![
+                crate::val::HeapRef::new(1),
+                crate::val::HeapRef::new(2),
+                crate::val::HeapRef::new(4),
+            ]
+        );
+    }
+
+    #[test]
     fn disassembles_function32_stably() {
         let function = Function32 {
             code: vec![
@@ -810,7 +976,7 @@ mod tests {
                 function: NativeFunction32::Plain(|_, _runtime| Ok(RuntimeVal::Nil)),
             }],
             globals: vec![GlobalSlot32 {
-                name: "answer".to_string(),
+                name: Arc::<str>::from("answer"),
             }],
             entry: 0,
         };

@@ -124,6 +124,31 @@ fn import_heap_value(
         HeapValue::Channel(value) => HeapValue::Channel(value),
         HeapValue::Stream(value) => HeapValue::Stream(value),
         HeapValue::StreamCursor(value) => HeapValue::StreamCursor(value),
+        HeapValue::UpvalCell(value) => HeapValue::UpvalCell(import_runtime_value(
+            &value,
+            source_heap,
+            dest_heap,
+            natives,
+            source_module,
+            source_state,
+        )?),
+        HeapValue::ErrorVal(error) => HeapValue::ErrorVal(crate::val::ErrorVal {
+            message: error.message,
+            trace: error
+                .trace
+                .iter()
+                .map(|value| {
+                    import_runtime_value(
+                        value,
+                        source_heap,
+                        dest_heap,
+                        natives,
+                        Arc::clone(&source_module),
+                        source_state.clone(),
+                    )
+                })
+                .collect::<Result<_>>()?,
+        }),
     })
 }
 

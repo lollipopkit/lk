@@ -738,8 +738,8 @@ fn compiler32_lowers_top_level_define_to_global_slot() {
     .expect("compile module");
 
     assert_eq!(module.globals.len(), 2);
-    assert_eq!(module.globals[0].name, "answer");
-    assert_eq!(module.globals[1].name, "read_answer");
+    assert_eq!(module.globals[0].name.as_ref(), "answer");
+    assert_eq!(module.globals[1].name.as_ref(), "read_answer");
 
     let result = execute_module32(&module).expect("execute module");
 
@@ -760,7 +760,7 @@ fn compiler32_keeps_top_level_let_in_entry_frame() {
     .expect("compile module");
 
     assert_eq!(module.globals.len(), 1);
-    assert_eq!(module.globals[0].name, "answer");
+    assert_eq!(module.globals[0].name.as_ref(), "answer");
 
     let result = execute_module32(&module).expect("execute module");
 
@@ -819,6 +819,84 @@ fn compiler32_lowers_nested_closure_captures() {
         let maker = make(10);
         let f = maker(8);
         return f(4);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module32(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler32_lowers_mutable_closure_capture_to_upval_cell() {
+    let module = compile_source_module32(
+        r#"
+        fn make() {
+            let value = 40;
+            let bump = || {
+                value = value + 1;
+                return value;
+            };
+            bump();
+            return bump();
+        }
+
+        return make();
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module32(&module).expect("execute module");
+    let opcodes = module
+        .functions
+        .iter()
+        .flat_map(|function| function.code.iter().map(|instr| instr.opcode()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+    assert!(opcodes.contains(&Opcode32::LoadCellVal));
+    assert!(opcodes.contains(&Opcode32::StoreCellVal));
+}
+
+#[test]
+fn compiler32_mutable_capture_observes_outer_write_after_closure_creation() {
+    let module = compile_source_module32(
+        r#"
+        fn make() {
+            let value = 1;
+            let read = || value;
+            value = 42;
+            return read();
+        }
+
+        return make();
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module32(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler32_mutable_capture_is_shared_between_multiple_closures() {
+    let module = compile_source_module32(
+        r#"
+        fn make() {
+            let value = 40;
+            let inc = || {
+                value = value + 1;
+                return value;
+            };
+            let read = || value;
+            inc();
+            inc();
+            return read();
+        }
+
+        return make();
         "#,
     )
     .expect("compile module");

@@ -44,29 +44,29 @@ impl ListModule {
     fn push32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "push()")?;
         let values = args.as_slice();
-        let list = list_arg(&values[0], &runtime.state.heap, "push() first argument")?;
+        let list = list_arg(&values[0], runtime.heap(), "push() first argument")?;
         let mut items = list.materialize_mixed(runtime.heap_mut());
         items.push(values[1].clone());
-        let typed = TypedList::from_runtime_values(items, &runtime.state.heap);
+        let typed = TypedList::from_runtime_values(items, runtime.heap());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(typed))))
     }
 
     fn concat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "concat()")?;
         let values = args.as_slice();
-        let left = list_arg(&values[0], &runtime.state.heap, "concat() first argument")?;
-        let right = list_arg(&values[1], &runtime.state.heap, "concat() second argument")?;
+        let left = list_arg(&values[0], runtime.heap(), "concat() first argument")?;
+        let right = list_arg(&values[1], runtime.heap(), "concat() second argument")?;
         let mut items = left.materialize_mixed(runtime.heap_mut());
         items.extend(right.materialize_mixed(runtime.heap_mut()));
-        let typed = TypedList::from_runtime_values(items, &runtime.state.heap);
+        let typed = TypedList::from_runtime_values(items, runtime.heap());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(typed))))
     }
 
     fn join32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "join()")?;
         let values = args.as_slice();
-        let strings = string_list_arg(&values[0], &runtime.state.heap, "join() first argument")?;
-        let delimiter = runtime_string_arg(&values[1], &runtime.state.heap, "join() second argument")?;
+        let strings = string_list_arg(&values[0], runtime.heap(), "join() first argument")?;
+        let delimiter = runtime_string_arg(&values[1], runtime.heap(), "join() second argument")?;
         Ok(runtime_string_value(
             &strings.join(delimiter.as_ref()),
             runtime.heap_mut(),
@@ -76,7 +76,7 @@ impl ListModule {
     fn get32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "get()")?;
         let values = args.as_slice();
-        let list = list_arg(&values[0], &runtime.state.heap, "get() first argument")?;
+        let list = list_arg(&values[0], runtime.heap(), "get() first argument")?;
         let index = int_arg(&values[1], "get() index")?;
         if index < 0 {
             return Ok(RuntimeVal::Nil);
@@ -100,7 +100,7 @@ impl ListModule {
     fn set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "set()")?;
         let values = args.as_slice();
-        let list = list_arg(&values[0], &runtime.state.heap, "set() first argument")?;
+        let list = list_arg(&values[0], runtime.heap(), "set() first argument")?;
         let index = int_arg(&values[1], "set() index")?;
         if index < 0 {
             bail!("set() index must be non-negative");
@@ -110,7 +110,7 @@ impl ListModule {
             bail!("list index {} out of bounds", index);
         };
         let old = std::mem::replace(slot, values[2].clone());
-        let updated_list = TypedList::from_runtime_values(items, &runtime.state.heap);
+        let updated_list = TypedList::from_runtime_values(items, runtime.heap());
         let updated = RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(updated_list)));
         Ok(RuntimeVal::Obj(
             runtime
@@ -163,7 +163,7 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
 
 fn one_list(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<TypedList> {
     expect_arity(args, 1, name)?;
-    list_arg(&args.as_slice()[0], &runtime.state.heap, name)
+    list_arg(&args.as_slice()[0], runtime.heap(), name)
 }
 
 fn list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedList> {

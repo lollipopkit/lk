@@ -151,23 +151,16 @@ mod tests {
         let mut heap = HeapStore::new();
         let source = runtime_string_value("lol", &mut heap);
         let named_args = vec![
-            ("pattern".to_string(), runtime_string_value("l", &mut heap)),
-            ("pattern".to_string(), runtime_string_value("x", &mut heap)),
-            ("with".to_string(), runtime_string_value("a", &mut heap)),
+            (Arc::<str>::from("pattern"), runtime_string_value("l", &mut heap)),
+            (Arc::<str>::from("pattern"), runtime_string_value("x", &mut heap)),
+            (Arc::<str>::from("with"), runtime_string_value("a", &mut heap)),
         ];
         let (_, function) = string_native("replace").expect("replace native");
         let NativeFunction32::Plain(function) = function else {
             panic!("replace should use plain RuntimeNative32");
         };
-        let mut state = RuntimeModuleState32 {
-            heap,
-            globals: Vec::new(),
-        };
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut state = RuntimeModuleState32::new(heap, Vec::new());
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let err = function(NativeArgs32::new_with_named(&[source], &named_args), &mut runtime)
             .expect_err("duplicate named arguments should error");
         assert!(err.to_string().contains("duplicate named argument"));
@@ -196,15 +189,8 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             panic!("ends_with should use plain RuntimeNative32");
         };
-        let mut state = RuntimeModuleState32 {
-            heap,
-            globals: Vec::new(),
-        };
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut state = RuntimeModuleState32::new(heap, Vec::new());
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&[input, suffix]), &mut runtime)?;
         assert_eq!(result, RuntimeVal::Bool(true));
         Ok(())

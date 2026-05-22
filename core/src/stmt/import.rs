@@ -264,10 +264,7 @@ fn stdlib_module_runtime_export(exports: HashMap<String, Val>) -> Result<Runtime
         );
     }
     let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))));
-    let state = Arc::new(Mutex::new(RuntimeModuleState32 {
-        heap,
-        globals: Vec::new(),
-    }));
+    let state = Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new())));
     Ok(RuntimeExport32 {
         value,
         state,

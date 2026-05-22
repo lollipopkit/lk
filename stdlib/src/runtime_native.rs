@@ -15,7 +15,7 @@ pub(crate) fn parse_format32(
     if args.len() != 1 {
         return Err(anyhow!("{name}(data) requires 1 argument"));
     }
-    let data = runtime_string_arg(args.get(0).expect("checked arity"), &runtime.state.heap, name)?;
+    let data = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), name)?;
     parse_runtime_with_format(data.as_ref(), format, runtime.heap_mut())
 }
 
@@ -221,6 +221,7 @@ fn runtime_display_map_key(key: &RuntimeMapKey) -> String {
         RuntimeMapKey::Int(value) => value.to_string(),
         RuntimeMapKey::ShortStr(value) => quote_string(value.as_str()),
         RuntimeMapKey::String(value) => quote_string(value),
+        RuntimeMapKey::Obj(value) => format!("<object:{}>", value.index()),
     }
 }
 

@@ -12,9 +12,28 @@ impl Compiler32 {
 
         let src = self.lower_expr(value)?;
         if let Some(dst) = self.locals.get(name).copied() {
+            if self.cell_locals.contains(name) {
+                self.emit(Instr32::abc(
+                    Opcode32::StoreCellVal,
+                    checked_u8("assign cell", dst)?,
+                    checked_u8("assign src", src)?,
+                    0,
+                ));
+            } else {
+                self.emit(Instr32::abc(
+                    Opcode32::Move,
+                    checked_u8("assign dst", dst)?,
+                    checked_u8("assign src", src)?,
+                    0,
+                ));
+            }
+        } else if let Some(capture) = self.capture_names.get(name).copied()
+            && self.capture_cells.contains(name)
+        {
+            let cell = self.emit_load_capture(capture)?;
             self.emit(Instr32::abc(
-                Opcode32::Move,
-                checked_u8("assign dst", dst)?,
+                Opcode32::StoreCellVal,
+                checked_u8("assign capture cell", cell)?,
                 checked_u8("assign src", src)?,
                 0,
             ));
@@ -29,8 +48,34 @@ impl Compiler32 {
     pub(super) fn lower_compound_assign(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<()> {
         let rhs = self.lower_expr(value)?;
         if let Some(dst) = self.locals.get(name).copied() {
-            let result = self.emit_bin_op_to_register(dst, op, dst, rhs)?;
-            self.emit_move(dst, result, "compound assign local")?;
+            let lhs = if self.cell_locals.contains(name) {
+                self.emit_load_cell_value(dst)?
+            } else {
+                dst
+            };
+            let result = self.emit_bin_op_to_register(dst, op, lhs, rhs)?;
+            if self.cell_locals.contains(name) {
+                self.emit(Instr32::abc(
+                    Opcode32::StoreCellVal,
+                    checked_u8("compound assign cell", dst)?,
+                    checked_u8("compound assign src", result)?,
+                    0,
+                ));
+            } else {
+                self.emit_move(dst, result, "compound assign local")?;
+            }
+        } else if let Some(capture) = self.capture_names.get(name).copied()
+            && self.capture_cells.contains(name)
+        {
+            let cell = self.emit_load_capture(capture)?;
+            let lhs = self.emit_load_cell_value(cell)?;
+            let result = self.emit_bin_op_to_register(lhs, op, lhs, rhs)?;
+            self.emit(Instr32::abc(
+                Opcode32::StoreCellVal,
+                checked_u8("compound assign capture cell", cell)?,
+                checked_u8("compound assign capture src", result)?,
+                0,
+            ));
         } else if let Some(slot) = self.global_names.get(name).copied() {
             let lhs = self.emit_get_global(slot)?;
             let dst = self.alloc_reg();

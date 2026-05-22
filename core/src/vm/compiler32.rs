@@ -14,7 +14,10 @@ mod support;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -25,7 +28,9 @@ use crate::{
     val::{ShortStr, Val},
 };
 
-use super::{ConstHeapValue32, Function32, GlobalSlot32, Instr32, Module32, NativeEntry32, Opcode32};
+use super::{
+    ConstHeapValue32, ConstRuntimeValue32, Function32, GlobalSlot32, Instr32, Module32, NativeEntry32, Opcode32,
+};
 use free_vars::collect_expr_free_vars;
 use support::*;
 
@@ -39,6 +44,8 @@ pub struct Compiler32 {
     native_names: HashMap<String, u32>,
     global_names: HashMap<String, u32>,
     capture_names: HashMap<String, u16>,
+    capture_cells: HashSet<String>,
+    cell_locals: HashSet<String>,
     dynamic_function_base: u32,
     pending_functions: Vec<Function32>,
     loops: Vec<LoopPatch32>,
@@ -371,13 +378,18 @@ impl Compiler32 {
             .ok_or_else(|| anyhow!("Compiler32 dynamic function index overflow"))?;
         let capture_base = self.alloc_regs(captures.len())?;
         let mut capture_names = HashMap::new();
+        let mut capture_cells = HashSet::new();
         for (index, name) in captures.iter().enumerate() {
-            let value = self.lower_var(name)?;
+            let (value, is_cell) = self.lower_capture_value(name)?;
             self.emit_move(capture_base + index as u16, value, "closure capture")?;
             capture_names.insert(name.clone(), index as u16);
+            if is_cell {
+                capture_cells.insert(name.clone());
+            }
         }
 
-        let mut compiled = self.compile_closure_function(params, body, capture_names, function_index + 1)?;
+        let mut compiled =
+            self.compile_closure_function(params, body, capture_names, capture_cells, function_index + 1)?;
         let dst = self.alloc_reg();
         self.emit(Instr32::abc(
             Opcode32::MakeClosure,
@@ -395,6 +407,7 @@ impl Compiler32 {
         params: &[String],
         body: &Expr,
         capture_names: HashMap<String, u16>,
+        capture_cells: HashSet<String>,
         dynamic_function_base: u32,
     ) -> Result<CompiledFunction32> {
         if params.len() > u16::MAX as usize {
@@ -408,10 +421,11 @@ impl Compiler32 {
             false,
         );
         compiler.capture_names = capture_names;
+        compiler.capture_cells = capture_cells;
         compiler.dynamic_function_base = dynamic_function_base;
         compiler.function.param_count = params.len() as u16;
         compiler.function.positional_param_count = params.len() as u16;
-        compiler.function.param_names = params.to_vec();
+        compiler.function.param_names = params.iter().map(|name| Arc::<str>::from(name.as_str())).collect();
         compiler.function.capture_count = compiler.capture_names.len() as u16;
         compiler.next_reg = params.len() as u16;
         for (index, param) in params.iter().enumerate() {
@@ -597,12 +611,19 @@ impl Compiler32 {
 
     fn lower_var(&mut self, name: &str) -> Result<u16> {
         if let Some(src) = self.locals.get(name).copied() {
+            if self.cell_locals.contains(name) {
+                return self.emit_load_cell_value(src);
+            }
             let dst = self.alloc_reg();
             self.emit_move(dst, src, "var")?;
             return Ok(dst);
         }
         if let Some(capture) = self.capture_names.get(name).copied() {
-            return self.emit_load_capture(capture);
+            let cell_or_value = self.emit_load_capture(capture)?;
+            if self.capture_cells.contains(name) {
+                return self.emit_load_cell_value(cell_or_value);
+            }
+            return Ok(cell_or_value);
         }
         if let Some(slot) = self.global_names.get(name).copied() {
             return self.emit_get_global(slot);
@@ -1025,6 +1046,50 @@ impl Compiler32 {
             Opcode32::LoadCapture,
             checked_u8("capture dst", dst)?,
             capture,
+        ));
+        Ok(dst)
+    }
+
+    fn emit_load_cell_value(&mut self, cell: u16) -> Result<u16> {
+        let dst = self.alloc_reg();
+        self.emit(Instr32::abc(
+            Opcode32::LoadCellVal,
+            checked_u8("cell value dst", dst)?,
+            checked_u8("cell value src", cell)?,
+            0,
+        ));
+        Ok(dst)
+    }
+
+    fn lower_capture_value(&mut self, name: &str) -> Result<(u16, bool)> {
+        if let Some(local) = self.locals.get(name).copied() {
+            if self.cell_locals.insert(name.to_string()) {
+                let cell = self.emit_upval_cell(local)?;
+                self.emit_move(local, cell, "box captured local")?;
+            }
+            return Ok((local, true));
+        }
+        if let Some(capture) = self.capture_names.get(name).copied() {
+            let value = self.emit_load_capture(capture)?;
+            return Ok((value, self.capture_cells.contains(name)));
+        }
+        let value = self.lower_var(name)?;
+        Ok((value, false))
+    }
+
+    fn emit_upval_cell(&mut self, src: u16) -> Result<u16> {
+        let dst = self.alloc_reg();
+        let k = self.push_heap_value(ConstHeapValue32::UpvalCell(Box::new(ConstRuntimeValue32::Nil)))?;
+        self.emit(Instr32::abx(
+            Opcode32::LoadHeapConst,
+            checked_u8("upval cell dst", dst)?,
+            k,
+        ));
+        self.emit(Instr32::abc(
+            Opcode32::StoreCellVal,
+            checked_u8("upval cell dst", dst)?,
+            checked_u8("upval cell src", src)?,
+            0,
         ));
         Ok(dst)
     }

@@ -410,7 +410,7 @@ fn repeat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
 
 fn from_channel32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.from_channel")?;
-    let channel = channel_arg(&args.as_slice()[0], &runtime.state.heap, "stream.from_channel argument")?;
+    let channel = channel_arg(&args.as_slice()[0], runtime.heap(), "stream.from_channel argument")?;
     create_stream(
         StreamSpec::FromChannel { channel_id: channel.id },
         channel.inner_type.clone(),
@@ -422,7 +422,7 @@ fn map32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<Ru
     expect_arity(args, 2, "stream.map")?;
     let values = args.as_slice();
     ensure_runtime_callable(&values[1], runtime, "stream.map function")?;
-    let upstream = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.map stream")?)?;
+    let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.map stream")?)?;
     create_stream(
         StreamSpec::Map {
             upstream,
@@ -437,7 +437,7 @@ fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
     expect_arity(args, 2, "stream.filter")?;
     let values = args.as_slice();
     ensure_runtime_callable(&values[1], runtime, "stream.filter function")?;
-    let upstream = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.filter stream")?)?;
+    let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.filter stream")?)?;
     create_stream(
         StreamSpec::Filter {
             upstream,
@@ -451,7 +451,7 @@ fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
 fn take32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "stream.take")?;
     let values = args.as_slice();
-    let upstream = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.take stream")?)?;
+    let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.take stream")?)?;
     let n = int_arg(&values[1], "stream.take count")?;
     create_stream(StreamSpec::Take { upstream, n }, Type::Any, runtime.heap_mut())
 }
@@ -459,7 +459,7 @@ fn take32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
 fn skip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "stream.skip")?;
     let values = args.as_slice();
-    let upstream = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.skip stream")?)?;
+    let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.skip stream")?)?;
     let n = int_arg(&values[1], "stream.skip count")?;
     create_stream(StreamSpec::Skip { upstream, n }, Type::Any, runtime.heap_mut())
 }
@@ -467,22 +467,22 @@ fn skip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
 fn chain32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "stream.chain")?;
     let values = args.as_slice();
-    let left = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.chain left")?)?;
-    let right = get_stream_spec(stream_id_arg(&values[1], &runtime.state.heap, "stream.chain right")?)?;
+    let left = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.chain left")?)?;
+    let right = get_stream_spec(stream_id_arg(&values[1], runtime.heap(), "stream.chain right")?)?;
     create_stream(StreamSpec::Chain { left, right }, Type::Any, runtime.heap_mut())
 }
 
 fn subscribe32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.subscribe")?;
     create_cursor(
-        stream_id_arg(&args.as_slice()[0], &runtime.state.heap, "stream.subscribe argument")?,
+        stream_id_arg(&args.as_slice()[0], runtime.heap(), "stream.subscribe argument")?,
         runtime.heap_mut(),
     )
 }
 
 fn next32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.next")?;
-    let cursor_id = cursor_id_arg(&args.as_slice()[0], &runtime.state.heap, "stream.next argument")?;
+    let cursor_id = cursor_id_arg(&args.as_slice()[0], runtime.heap(), "stream.next argument")?;
     next_cursor(cursor_id, runtime)
 }
 
@@ -496,7 +496,7 @@ fn next_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Re
     if values.is_empty() || values.len() > 2 {
         bail!("stream.next_block expects (cursor[, timeout_ms])");
     }
-    let cursor_id = cursor_id_arg(&values[0], &runtime.state.heap, "stream.next_block cursor")?;
+    let cursor_id = cursor_id_arg(&values[0], runtime.heap(), "stream.next_block cursor")?;
     let timeout_ms = match values.get(1) {
         Some(value) => Some(int_arg(value, "stream.next_block timeout_ms")?),
         None => None,
@@ -658,22 +658,20 @@ fn cursor_and_limit(
     context: &str,
 ) -> Result<(u64, Option<i64>)> {
     match values {
-        [value] if is_stream(value, &runtime.state.heap) => {
-            let cursor = create_cursor(stream_id_arg(value, &runtime.state.heap, context)?, runtime.heap_mut())?;
-            Ok((cursor_id_arg(&cursor, &runtime.state.heap, context)?, None))
+        [value] if is_stream(value, runtime.heap()) => {
+            let cursor = create_cursor(stream_id_arg(value, runtime.heap(), context)?, runtime.heap_mut())?;
+            Ok((cursor_id_arg(&cursor, runtime.heap(), context)?, None))
         }
-        [value, limit] if is_stream(value, &runtime.state.heap) => {
-            let cursor = create_cursor(stream_id_arg(value, &runtime.state.heap, context)?, runtime.heap_mut())?;
+        [value, limit] if is_stream(value, runtime.heap()) => {
+            let cursor = create_cursor(stream_id_arg(value, runtime.heap(), context)?, runtime.heap_mut())?;
             Ok((
-                cursor_id_arg(&cursor, &runtime.state.heap, context)?,
+                cursor_id_arg(&cursor, runtime.heap(), context)?,
                 Some(int_arg(limit, "stream.collect limit")?),
             ))
         }
-        [value] if is_cursor(value, &runtime.state.heap) => {
-            Ok((cursor_id_arg(value, &runtime.state.heap, context)?, None))
-        }
-        [value, limit] if is_cursor(value, &runtime.state.heap) => Ok((
-            cursor_id_arg(value, &runtime.state.heap, context)?,
+        [value] if is_cursor(value, runtime.heap()) => Ok((cursor_id_arg(value, runtime.heap(), context)?, None)),
+        [value, limit] if is_cursor(value, runtime.heap()) => Ok((
+            cursor_id_arg(value, runtime.heap(), context)?,
             Some(int_arg(limit, "stream.collect limit")?),
         )),
         _ => bail!("{context} expects (stream|cursor[, n])"),
@@ -796,12 +794,8 @@ fn call_runtime_callable_value(
     context: &str,
 ) -> Result<RuntimeVal> {
     let callable = runtime_callable(callable, runtime, context)?;
-    call_runtime_callable32_runtime(
-        &callable,
-        NativeArgs32::new(args),
-        &mut runtime.state.heap,
-        runtime.ctx.as_deref_mut(),
-    )
+    let (heap, ctx) = runtime.heap_ctx_mut();
+    call_runtime_callable32_runtime(&callable, NativeArgs32::new(args), heap, ctx)
 }
 
 fn runtime_callable(
@@ -813,24 +807,17 @@ fn runtime_callable(
         bail!("{context} must be a runtime callable");
     };
     let callable = runtime
-        .state
-        .heap
+        .heap()
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match callable {
         HeapValue::Callable(CallableValue::Runtime32(function)) => Ok(function.as_ref().clone()),
         HeapValue::Callable(CallableValue::Closure { .. }) => {
             let module = runtime
-                .module
-                .as_ref()
+                .module()
                 .ok_or_else(|| anyhow!("{context} requires Module32 execution context"))?;
-            runtime_value_to_callable32(
-                value,
-                &runtime.state.heap,
-                &runtime.state.globals,
-                Arc::new((*module).clone()),
-            )
-            .ok_or_else(|| anyhow!("{context} closure could not be materialized"))
+            runtime_value_to_callable32(value, runtime.heap(), &runtime.globals(), Arc::new((*module).clone()))
+                .ok_or_else(|| anyhow!("{context} closure could not be materialized"))
         }
         _ => bail!("{context} must be a runtime callable"),
     }

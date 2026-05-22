@@ -87,6 +87,22 @@ fn heap_value_to_val(value: &HeapValue, heap: &HeapStore) -> Result<Val> {
         HeapValue::Channel(value) => Ok(Val::channel(value.clone())),
         HeapValue::Stream(value) => Ok(Val::stream(value.clone())),
         HeapValue::StreamCursor(value) => Ok(Val::stream_cursor(value.clone())),
+        HeapValue::UpvalCell(value) => runtime_val_to_val(value, heap),
+        HeapValue::ErrorVal(error) => {
+            let mut fields = HashMap::with_capacity(2);
+            fields.insert("message".to_string(), Val::from(error.message.as_ref()));
+            fields.insert(
+                "trace".to_string(),
+                Val::from(
+                    error
+                        .trace
+                        .iter()
+                        .map(|value| runtime_val_to_val(value, heap))
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            );
+            Ok(Val::object("Error", fields))
+        }
     }
 }
 
@@ -119,7 +135,7 @@ fn runtime_key_to_string(key: &RuntimeMapKey) -> Option<String> {
     match key {
         RuntimeMapKey::ShortStr(value) => Some(value.as_str().to_string()),
         RuntimeMapKey::String(value) => Some(value.to_string()),
-        RuntimeMapKey::Nil | RuntimeMapKey::Bool(_) | RuntimeMapKey::Int(_) => None,
+        RuntimeMapKey::Nil | RuntimeMapKey::Bool(_) | RuntimeMapKey::Int(_) | RuntimeMapKey::Obj(_) => None,
     }
 }
 

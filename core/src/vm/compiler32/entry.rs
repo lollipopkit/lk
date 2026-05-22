@@ -33,14 +33,18 @@ impl Compiler32 {
     }
 
     pub fn compile_module_with_natives(program: &Program, natives: Vec<NativeEntry32>) -> Result<Module32> {
-        Self::compile_module_with_natives_and_globals(program, natives, std::iter::empty::<String>())
+        Self::compile_module_with_natives_and_globals(program, natives, std::iter::empty::<&str>())
     }
 
-    pub fn compile_module_with_natives_and_globals(
+    pub fn compile_module_with_natives_and_globals<I, S>(
         program: &Program,
         natives: Vec<NativeEntry32>,
-        external_globals: impl IntoIterator<Item = String>,
-    ) -> Result<Module32> {
+        external_globals: I,
+    ) -> Result<Module32>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let function_names = collect_function_names(program)?;
         let function_signatures = collect_function_signatures(program)?;
         let native_names = collect_native_names(&natives)?;
@@ -148,10 +152,13 @@ impl Compiler32 {
         compiler.dynamic_function_base = dynamic_function_base;
         compiler.function.param_count = frame_params.len() as u16;
         compiler.function.positional_param_count = params.len() as u16;
-        compiler.function.param_names = frame_params;
+        compiler.function.param_names = frame_params
+            .iter()
+            .map(|name| std::sync::Arc::<str>::from(name.as_str()))
+            .collect();
         compiler.function.capture_count = compiler.capture_names.len() as u16;
         compiler.next_reg = compiler.function.param_count;
-        for (index, param) in compiler.function.param_names.iter().enumerate() {
+        for (index, param) in frame_params.iter().enumerate() {
             compiler.locals.insert(param.clone(), index as u16);
         }
         compiler.lower_stmt(body)?;

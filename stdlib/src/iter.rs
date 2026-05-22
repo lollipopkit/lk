@@ -224,7 +224,7 @@ fn unique32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
     for value in input {
         if !out
             .iter()
-            .any(|existing| runtime_values_equal(existing, &value, &runtime.state.heap))
+            .any(|existing| runtime_values_equal(existing, &value, runtime.heap()))
         {
             out.push(value);
         }
@@ -328,8 +328,7 @@ fn call_callable(
         bail!("{context} must be callable");
     };
     let value = runtime
-        .state
-        .heap
+        .heap()
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         .clone();
@@ -338,30 +337,23 @@ fn call_callable(
     };
 
     match callable {
-        CallableValue::Runtime32(function) => call_runtime_callable32_runtime(
-            function.as_ref(),
-            NativeArgs32::new(args),
-            &mut runtime.state.heap,
-            runtime.ctx.as_deref_mut(),
-        ),
+        CallableValue::Runtime32(function) => {
+            let (heap, ctx) = runtime.heap_ctx_mut();
+            call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
+        }
         CallableValue::Closure { .. } => {
             let module = runtime
-                .module
-                .as_ref()
+                .module()
                 .ok_or_else(|| anyhow!("{context} closure requires Module32 execution context"))?;
             let callable = runtime_value_to_callable32(
                 callable_value,
-                &runtime.state.heap,
-                &runtime.state.globals,
+                runtime.heap(),
+                &runtime.globals(),
                 Arc::new((*module).clone()),
             )
             .ok_or_else(|| anyhow!("{context} closure could not be materialized"))?;
-            call_runtime_callable32_runtime(
-                &callable,
-                NativeArgs32::new(args),
-                &mut runtime.state.heap,
-                runtime.ctx.as_deref_mut(),
-            )
+            let (heap, ctx) = runtime.heap_ctx_mut();
+            call_runtime_callable32_runtime(&callable, NativeArgs32::new(args), heap, ctx)
         }
         CallableValue::RuntimeNative32 { arity, function } => {
             let entry = NativeEntry32 {
@@ -387,12 +379,10 @@ fn call_runtime_native_entry(
         NativeFunction32::Plain(function) | NativeFunction32::Context(function) => {
             function(NativeArgs32::new(args), runtime)
         }
-        NativeFunction32::RuntimeCallable(function) => call_runtime_callable32_runtime(
-            function.as_ref(),
-            NativeArgs32::new(args),
-            &mut runtime.state.heap,
-            runtime.ctx.as_deref_mut(),
-        ),
+        NativeFunction32::RuntimeCallable(function) => {
+            let (heap, ctx) = runtime.heap_ctx_mut();
+            call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
+        }
     }
 }
 
@@ -632,19 +622,12 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             panic!("range must use plain RuntimeNative32");
         };
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let args = [RuntimeVal::Int(1), RuntimeVal::Int(4)];
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
         assert_eq!(
-            expect_list(&result, &runtime.state.heap),
+            expect_list(&result, runtime.heap()),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
         );
         Ok(())

@@ -152,20 +152,13 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             panic!("push should use plain RuntimeNative32");
         };
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let list = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
         let args = [list, RuntimeVal::Int(3)];
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
         assert_eq!(
-            expect_runtime_list(result, &runtime.state.heap),
+            expect_runtime_list(result, runtime.heap()),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
         );
         Ok(())
@@ -177,21 +170,14 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             panic!("join should use plain RuntimeNative32");
         };
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let list = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("a"),
             Arc::<str>::from("b"),
         ]))));
         let delimiter = runtime_string_value(",", &mut state.heap);
         let args = [list, delimiter];
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
         assert!(matches!(result, RuntimeVal::ShortStr(value) if value.as_str() == "a,b"));
         Ok(())

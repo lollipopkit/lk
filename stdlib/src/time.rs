@@ -168,7 +168,7 @@ mod tests {
     use super::*;
     use lk_core::{
         module::Module,
-        val::{CallableValue, HeapStore},
+        val::CallableValue,
         vm::{NativeFunction32, RuntimeModuleState32},
     };
 
@@ -189,11 +189,7 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             bail!("{name} must use plain RuntimeNative32");
         };
-        let mut runtime = NativeRuntime32 {
-            state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(state, None, None);
         function(NativeArgs32::new(args), &mut runtime)
     }
 
@@ -209,10 +205,7 @@ mod tests {
 
     #[test]
     fn time_now_and_since_return_runtime_ints() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         assert!(matches!(call("now", &[], &mut state)?, RuntimeVal::Int(value) if value > 0));
         assert_eq!(
             call("since", &[RuntimeVal::Int(100), RuntimeVal::Float(175.0)], &mut state)?,
@@ -223,10 +216,7 @@ mod tests {
 
     #[test]
     fn time_timeout_and_after_return_channels() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         for (name, expected_type) in [("timeout", Type::Nil), ("after", Type::Int)] {
             let value = call(name, &[RuntimeVal::Int(0)], &mut state)?;
             let RuntimeVal::Obj(handle) = value else {
@@ -243,10 +233,7 @@ mod tests {
 
     #[test]
     fn time_sleep_accepts_zero_duration() -> Result<()> {
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         assert_eq!(call("sleep", &[RuntimeVal::Int(0)], &mut state)?, RuntimeVal::Nil);
         Ok(())
     }

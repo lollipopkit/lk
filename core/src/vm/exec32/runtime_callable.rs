@@ -7,7 +7,7 @@ use crate::{
     vm::{Module32, NativeArgs32, NativeEntry32, RuntimeCallable32, RuntimeModuleState32, VmContext},
 };
 
-use super::{Exec32Result, Executor32, named_call::order_named_args32, support::call_native_entry};
+use super::{Exec32Result, Executor32, named_call::order_named_args32_from_slice, support::call_native_entry};
 
 pub fn call_runtime_callable32_raw(
     function: &RuntimeCallable32,
@@ -48,7 +48,7 @@ pub fn call_runtime_callable32_raw(
 pub fn call_runtime_callable32_runtime_named(
     function: &RuntimeCallable32,
     pos: NativeArgs32<'_>,
-    named: &[(String, RuntimeVal)],
+    named: &[(Arc<str>, RuntimeVal)],
     caller_heap: &mut HeapStore,
     ctx: Option<&mut crate::vm::VmContext>,
 ) -> Result<RuntimeVal> {
@@ -85,7 +85,7 @@ pub fn call_runtime_callable32_runtime_named(
                     copy_runtime_value(value, caller_heap, executor.heap_mut())?,
                 ));
             }
-            let args = order_named_args32(function_meta, positional, named_args)?;
+            let args = order_named_args32_from_slice(function_meta, &positional, &named_args)?;
             let arg_count = checked_arg_count(args.len())?;
             for (index, value) in args.into_iter().enumerate() {
                 executor.seed_param_arg(index, value)?;
@@ -166,7 +166,7 @@ pub fn call_runtime_value32_runtime(
 pub fn call_runtime_value32_runtime_named(
     callee: RuntimeVal,
     pos: &[RuntimeVal],
-    named: &[(String, RuntimeVal)],
+    named: &[(Arc<str>, RuntimeVal)],
     state: &mut RuntimeModuleState32,
     module: Option<&Module32>,
     ctx: Option<&mut VmContext>,
@@ -230,7 +230,7 @@ fn call_closure_value32(
     function_index: u32,
     captures: Vec<RuntimeVal>,
     pos: &[RuntimeVal],
-    named: &[(String, RuntimeVal)],
+    named: &[(Arc<str>, RuntimeVal)],
     state: &mut RuntimeModuleState32,
     module: Option<&Module32>,
     ctx: Option<&mut VmContext>,
@@ -240,7 +240,12 @@ fn call_closure_value32(
         .functions
         .get(function_index as usize)
         .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
-    let args = if named.is_empty() {
+    let mut ctx = ctx;
+    let mut callee = Executor32::new(function.register_count);
+    callee.state = std::mem::take(state);
+    callee.captures = captures;
+    callee.reset_entry_frame(function.register_count);
+    if named.is_empty() {
         if function.param_count != pos.len() as u16 {
             bail!(
                 "Function expects {} positional arguments, got {}",
@@ -248,16 +253,14 @@ fn call_closure_value32(
                 pos.len()
             );
         }
-        pos.to_vec()
+        for (index, value) in pos.iter().cloned().enumerate() {
+            callee.seed_param_arg(index, value)?;
+        }
     } else {
-        order_named_args32(function, pos.to_vec(), named.to_vec())?
-    };
-    let mut ctx = ctx;
-    let mut callee = Executor32::new(function.register_count);
-    callee.state = std::mem::take(state);
-    callee.captures = captures;
-    for (index, value) in args.into_iter().enumerate() {
-        callee.seed_param_arg(index, value)?;
+        let args = order_named_args32_from_slice(function, pos, named)?;
+        for (index, value) in args.into_iter().enumerate() {
+            callee.seed_param_arg(index, value)?;
+        }
     }
     match callee.run_function_inner(function, Some(module), &mut ctx) {
         Ok(returns) => {
@@ -371,6 +374,15 @@ fn copy_heap_value(value: HeapValue, source_heap: &mut HeapStore, dest_heap: &mu
         HeapValue::Channel(value) => HeapValue::Channel(value),
         HeapValue::Stream(value) => HeapValue::Stream(value),
         HeapValue::StreamCursor(value) => HeapValue::StreamCursor(value),
+        HeapValue::UpvalCell(value) => HeapValue::UpvalCell(copy_runtime_value(&value, source_heap, dest_heap)?),
+        HeapValue::ErrorVal(error) => HeapValue::ErrorVal(crate::val::ErrorVal {
+            message: error.message,
+            trace: error
+                .trace
+                .iter()
+                .map(|value| copy_runtime_value(value, source_heap, dest_heap))
+                .collect::<Result<_>>()?,
+        }),
     })
 }
 

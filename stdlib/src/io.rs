@@ -154,11 +154,7 @@ fn stdin_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> 
 
 fn stdout_write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stdout_write()")?;
-    let data = runtime_display_arg(
-        args.get(0).expect("checked arity"),
-        &runtime.state.heap,
-        "stdout_write data",
-    )?;
+    let data = runtime_display_arg(args.get(0).expect("checked arity"), runtime.heap(), "stdout_write data")?;
     std::io::stdout()
         .write_all(data.as_bytes())
         .map_err(|err| anyhow!("stdout write error: {err}"))?;
@@ -169,7 +165,7 @@ fn stdout_writeln32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -
     expect_arity(args, 1, "stdout_writeln()")?;
     let data = runtime_display_arg(
         args.get(0).expect("checked arity"),
-        &runtime.state.heap,
+        runtime.heap(),
         "stdout_writeln data",
     )?;
     writeln!(std::io::stdout(), "{data}").map_err(|err| anyhow!("stdout write error: {err}"))?;
@@ -186,11 +182,7 @@ fn stdout_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) ->
 
 fn stderr_write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stderr_write()")?;
-    let data = runtime_display_arg(
-        args.get(0).expect("checked arity"),
-        &runtime.state.heap,
-        "stderr_write data",
-    )?;
+    let data = runtime_display_arg(args.get(0).expect("checked arity"), runtime.heap(), "stderr_write data")?;
     std::io::stderr()
         .write_all(data.as_bytes())
         .map_err(|err| anyhow!("stderr write error: {err}"))?;
@@ -201,7 +193,7 @@ fn stderr_writeln32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -
     expect_arity(args, 1, "stderr_writeln()")?;
     let data = runtime_display_arg(
         args.get(0).expect("checked arity"),
-        &runtime.state.heap,
+        runtime.heap(),
         "stderr_writeln data",
     )?;
     writeln!(std::io::stderr(), "{data}").map_err(|err| anyhow!("stderr write error: {err}"))?;
@@ -226,7 +218,7 @@ mod tests {
     use super::*;
     use lk_core::{
         module::Module,
-        val::{CallableValue, HeapStore, HeapValue},
+        val::{CallableValue, HeapValue},
         vm::RuntimeModuleState32,
     };
 
@@ -247,15 +239,8 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             bail!("{name} must use plain RuntimeNative32");
         };
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut state = RuntimeModuleState32::default();
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         function(NativeArgs32::new(args), &mut runtime)
     }
 

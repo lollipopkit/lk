@@ -55,31 +55,31 @@ impl MapModule {
     fn values32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let map = one_map(args, runtime, "values()")?;
         let values = map.entries().into_iter().map(|(_, value)| value).collect::<Vec<_>>();
-        let list = TypedList::from_runtime_values(values, &runtime.state.heap);
+        let list = TypedList::from_runtime_values(values, runtime.heap());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
 
     fn has32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "has()")?;
         let values = args.as_slice();
-        let map = map_arg(&values[0], &runtime.state.heap, "has() first argument")?;
-        let key = string_key_arg(&values[1], &runtime.state.heap, "has() key")?;
+        let map = map_arg(&values[0], runtime.heap(), "has() first argument")?;
+        let key = string_key_arg(&values[1], runtime.heap(), "has() key")?;
         Ok(RuntimeVal::Bool(map.get(&key).is_some()))
     }
 
     fn get32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "get()")?;
         let values = args.as_slice();
-        let map = map_arg(&values[0], &runtime.state.heap, "get() first argument")?;
-        let key = string_key_arg(&values[1], &runtime.state.heap, "get() key")?;
+        let map = map_arg(&values[0], runtime.heap(), "get() first argument")?;
+        let key = string_key_arg(&values[1], runtime.heap(), "get() key")?;
         Ok(map.get(&key).unwrap_or(RuntimeVal::Nil))
     }
 
     fn set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "set()")?;
         let values = args.as_slice();
-        let mut map = map_arg(&values[0], &runtime.state.heap, "set() first argument")?;
-        let key = string_key_arg(&values[1], &runtime.state.heap, "set() key")?;
+        let mut map = map_arg(&values[0], runtime.heap(), "set() first argument")?;
+        let key = string_key_arg(&values[1], runtime.heap(), "set() key")?;
         map.set(key, values[2].clone());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(map))))
     }
@@ -87,8 +87,8 @@ impl MapModule {
     fn delete32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "delete()")?;
         let values = args.as_slice();
-        let map = map_arg(&values[0], &runtime.state.heap, "delete() first argument")?;
-        let key = string_key_arg(&values[1], &runtime.state.heap, "delete() key")?;
+        let map = map_arg(&values[0], runtime.heap(), "delete() first argument")?;
+        let key = string_key_arg(&values[1], runtime.heap(), "delete() key")?;
         let mut entries = BTreeMap::new();
         let mut removed = RuntimeVal::Nil;
         for (entry_key, value) in map.entries() {
@@ -154,7 +154,7 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
 
 fn one_map(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<TypedMap> {
     expect_arity(args, 1, name)?;
-    map_arg(&args.as_slice()[0], &runtime.state.heap, name)
+    map_arg(&args.as_slice()[0], runtime.heap(), name)
 }
 
 fn map_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedMap> {
@@ -309,10 +309,7 @@ mod tests {
         };
         let mut entries = BTreeMap::new();
         entries.insert(RuntimeMapKey::String(Arc::<str>::from("a")), RuntimeVal::Int(1));
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let map = RuntimeVal::Obj(
             state
                 .heap
@@ -320,16 +317,12 @@ mod tests {
         );
         let key = runtime_string_value("b", &mut state.heap);
         let args = [map, key, RuntimeVal::Int(2)];
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
         let RuntimeVal::Obj(handle) = result else {
             panic!("set should return map object");
         };
-        let Some(HeapValue::Map(map)) = runtime.state.heap.get(handle) else {
+        let Some(HeapValue::Map(map)) = runtime.heap().get(handle) else {
             panic!("set should preserve map in runtime heap");
         };
         assert_eq!(map.get_str("a"), Some(RuntimeVal::Int(1)));

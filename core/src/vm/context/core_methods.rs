@@ -35,15 +35,11 @@ pub(super) fn core_call_method_builtin32(
         bail!("__lk_call_method expects 3 arguments: receiver, method name, positional args list");
     }
     let receiver = args.get(0).expect("arity checked").clone();
-    let method = method_name_arc(
-        "__lk_call_method",
-        args.get(1).expect("arity checked"),
-        &runtime.state.heap,
-    )?;
+    let method = method_name_arc("__lk_call_method", args.get(1).expect("arity checked"), runtime.heap())?;
     let positional = runtime_positional_args(
         "__lk_call_method",
         args.get(2).expect("arity checked"),
-        &mut runtime.state.heap,
+        runtime.heap_mut(),
     )?;
     call_method_positional_runtime(receiver, method, &positional, runtime)
 }
@@ -62,17 +58,17 @@ pub(super) fn core_call_method_named_builtin32(
     let method = method_name_arc(
         "__lk_call_method_named",
         args.get(1).expect("arity checked"),
-        &runtime.state.heap,
+        runtime.heap(),
     )?;
     let positional = runtime_positional_args(
         "__lk_call_method_named",
         args.get(2).expect("arity checked"),
-        &mut runtime.state.heap,
+        runtime.heap_mut(),
     )?;
     let named = runtime_named_args(
         "__lk_call_method_named",
         args.get(3).expect("arity checked"),
-        &runtime.state.heap,
+        runtime.heap(),
     )?;
     call_method_named_runtime(receiver, method, &positional, &named, runtime)
 }
@@ -83,15 +79,12 @@ fn call_method_positional_runtime(
     positional: &[RuntimeVal],
     runtime: &mut NativeRuntime32<'_>,
 ) -> anyhow::Result<RuntimeVal> {
-    if let Some(prop) = runtime_access(&receiver, method.as_str(), runtime.state)? {
-        if runtime_is_callable(&prop, &runtime.state.heap)? {
-            return call_runtime_value32_runtime(
-                prop,
-                positional,
-                runtime.state,
-                runtime.module,
-                runtime.ctx.as_deref_mut(),
-            );
+    if let Some(prop) = runtime_access(&receiver, method.as_str(), runtime.heap_mut())? {
+        if runtime_is_callable(&prop, runtime.heap())? {
+            let Some((state, ctx, module)) = runtime.parts_mut() else {
+                bail!("__lk_call_method requires full runtime state for callable receiver");
+            };
+            return call_runtime_value32_runtime(prop, positional, state, module, ctx);
         }
         if positional.is_empty() {
             return Ok(prop);
@@ -104,19 +97,15 @@ fn call_method_named_runtime(
     receiver: RuntimeVal,
     method: ArcStr,
     positional: &[RuntimeVal],
-    named: &[(String, RuntimeVal)],
+    named: &[(Arc<str>, RuntimeVal)],
     runtime: &mut NativeRuntime32<'_>,
 ) -> anyhow::Result<RuntimeVal> {
-    if let Some(prop) = runtime_access(&receiver, method.as_str(), runtime.state)? {
-        if runtime_is_callable(&prop, &runtime.state.heap)? {
-            return call_runtime_value32_runtime_named(
-                prop,
-                positional,
-                named,
-                runtime.state,
-                runtime.module,
-                runtime.ctx.as_deref_mut(),
-            );
+    if let Some(prop) = runtime_access(&receiver, method.as_str(), runtime.heap_mut())? {
+        if runtime_is_callable(&prop, runtime.heap())? {
+            let Some((state, ctx, module)) = runtime.parts_mut() else {
+                bail!("__lk_call_method_named requires full runtime state for callable receiver");
+            };
+            return call_runtime_value32_runtime_named(prop, positional, named, state, module, ctx);
         }
         if positional.is_empty() && named.is_empty() {
             return Ok(prop);
@@ -129,27 +118,23 @@ fn call_trait_method_runtime(
     receiver: RuntimeVal,
     method: ArcStr,
     positional: &[RuntimeVal],
-    named: &[(String, RuntimeVal)],
+    named: &[(Arc<str>, RuntimeVal)],
     runtime: &mut NativeRuntime32<'_>,
 ) -> anyhow::Result<RuntimeVal> {
-    let Some(ctx) = runtime.ctx.as_deref_mut() else {
-        bail!(
-            "{} has no method '{}'",
-            runtime_type_name(&receiver, &runtime.state.heap),
-            method
-        );
+    let receiver_type = runtime_dispatch_type(&receiver, runtime.heap());
+    let receiver_type_name = runtime_type_name(&receiver, runtime.heap());
+    let Some((state, ctx, module)) = runtime.parts_mut() else {
+        bail!("{} method '{}' requires full runtime state", receiver_type_name, method);
     };
-    let receiver_type = runtime_dispatch_type(&receiver, &runtime.state.heap);
+    let Some(ctx) = ctx else {
+        bail!("{} has no method '{}'", receiver_type_name, method);
+    };
     let Some(method_val) = ctx
         .type_checker()
         .as_ref()
         .and_then(|tc| tc.registry().get_method(&receiver_type, method.as_str()).cloned())
     else {
-        bail!(
-            "{} has no method '{}'",
-            runtime_type_name(&receiver, &runtime.state.heap),
-            method
-        );
+        bail!("{} has no method '{}'", receiver_type_name, method);
     };
     if !named.is_empty() {
         bail!("Named arguments are not supported for trait methods");
@@ -160,7 +145,7 @@ fn call_trait_method_runtime(
             let mut args = Vec::with_capacity(positional.len() + 1);
             args.push(receiver);
             args.extend_from_slice(positional);
-            crate::vm::call_runtime_value32_runtime(callee, &args, &mut runtime.state, runtime.module, Some(ctx))
+            crate::vm::call_runtime_value32_runtime(callee, &args, state, module, Some(ctx))
         }
         crate::typ::TraitMethodValue::Legacy(_) => {
             bail!("legacy trait methods cannot be called from Executor32")
@@ -168,16 +153,11 @@ fn call_trait_method_runtime(
     }
 }
 
-fn runtime_access(
-    receiver: &RuntimeVal,
-    field: &str,
-    state: &mut crate::vm::RuntimeModuleState32,
-) -> anyhow::Result<Option<RuntimeVal>> {
+fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> anyhow::Result<Option<RuntimeVal>> {
     match receiver {
         RuntimeVal::ShortStr(value) => Ok(runtime_string_access(value.as_str(), field)),
         RuntimeVal::Obj(handle) => {
-            let value = state
-                .heap
+            let value = heap
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
                 .clone();
@@ -194,15 +174,12 @@ fn runtime_access(
                     Ok(Some(crate::vm::copy_runtime_value(
                         &value.value,
                         &mut source_heap,
-                        &mut state.heap,
+                        heap,
                     )?))
                 }
                 HeapValue::Channel(channel) => match field {
                     "capacity" => Ok(Some(RuntimeVal::Int(channel.capacity.unwrap_or(0) as i64))),
-                    "type" => Ok(Some(runtime_string_value(
-                        format!("{:?}", channel.inner_type),
-                        &mut state.heap,
-                    ))),
+                    "type" => Ok(Some(runtime_string_value(format!("{:?}", channel.inner_type), heap))),
                     _ => Ok(None),
                 },
                 _ => Ok(None),
@@ -246,7 +223,11 @@ fn runtime_positional_args(helper: &str, value: &RuntimeVal, heap: &mut HeapStor
     }
 }
 
-fn runtime_named_args(helper: &str, value: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<Vec<(String, RuntimeVal)>> {
+fn runtime_named_args(
+    helper: &str,
+    value: &RuntimeVal,
+    heap: &HeapStore,
+) -> anyhow::Result<Vec<(Arc<str>, RuntimeVal)>> {
     match value {
         RuntimeVal::Nil => Ok(Vec::new()),
         RuntimeVal::Obj(handle) => {
@@ -261,7 +242,7 @@ fn runtime_named_args(helper: &str, value: &RuntimeVal, heap: &HeapStore) -> any
                 let Some(key) = key.as_str() else {
                     bail!("{helper} named argument key must be a string");
                 };
-                out.push((key.to_string(), value));
+                out.push((Arc::<str>::from(key), value));
             }
             Ok(out)
         }
@@ -329,6 +310,8 @@ fn heap_dispatch_type(value: &HeapValue) -> Type {
         },
         HeapValue::StreamCursor(_) => Type::Named("StreamCursor".to_string()),
         HeapValue::Object(object) => Type::Named(object.type_name.to_string()),
+        HeapValue::UpvalCell(_) => Type::Any,
+        HeapValue::ErrorVal(_) => Type::Named("Error".to_string()),
     }
 }
 

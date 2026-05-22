@@ -42,15 +42,8 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             return Err(anyhow!("{name} must use plain RuntimeNative32"));
         };
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut state = RuntimeModuleState32::default();
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         function(NativeArgs32::new(args), &mut runtime)
     }
 
@@ -59,18 +52,11 @@ mod tests {
         let NativeFunction32::Plain(function) = function else {
             return Err(anyhow!("{name} must use plain RuntimeNative32"));
         };
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
+        let mut state = RuntimeModuleState32::default();
         let left = runtime_string_value(left, &mut state.heap);
         let right = runtime_string_value(right, &mut state.heap);
         let args = [left, right];
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         function(NativeArgs32::new(&args), &mut runtime)
     }
 

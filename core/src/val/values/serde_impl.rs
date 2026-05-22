@@ -63,5 +63,13 @@ where
             }
             map.end()
         }
+        HeapValue::UpvalCell(value) => Val::object_field_to_val(value).serialize(serializer),
+        HeapValue::ErrorVal(error) => {
+            let mut map = serializer.serialize_map(Some(2))?;
+            map.serialize_entry("message", error.message.as_ref())?;
+            let trace = error.trace.iter().map(Val::object_field_to_val).collect::<Vec<_>>();
+            map.serialize_entry("trace", &trace)?;
+            map.end()
+        }
     }
 }

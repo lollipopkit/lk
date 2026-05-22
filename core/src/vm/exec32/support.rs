@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    val::{HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList},
+    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList},
     vm::{Module32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeModuleState32, VmContext},
 };
 
@@ -75,7 +75,7 @@ pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeV
 pub(super) fn call_native_entry(
     native: &NativeEntry32,
     args: &[RuntimeVal],
-    named: &[(String, RuntimeVal)],
+    named: &[(Arc<str>, RuntimeVal)],
     state: &mut RuntimeModuleState32,
     module: Option<&Module32>,
     ctx: Option<&mut VmContext>,
@@ -83,7 +83,7 @@ pub(super) fn call_native_entry(
     let native_args = NativeArgs32::new_with_named(args, named);
     let result = match &native.function {
         NativeFunction32::Plain(function) | NativeFunction32::Context(function) => {
-            let mut runtime = NativeRuntime32 { state, ctx, module };
+            let mut runtime = NativeRuntime32::new(state, ctx, module);
             function(native_args, &mut runtime)
         }
         NativeFunction32::RuntimeCallable(function) => super::runtime_callable::call_runtime_callable32_runtime(
@@ -93,7 +93,53 @@ pub(super) fn call_native_entry(
             ctx,
         ),
     };
-    result.map_err(|err| anyhow!("native `{}` failed: {err}", native.name))
+    map_native_error(native, result)
+}
+
+pub(super) fn call_native_entry_parts(
+    native: &NativeEntry32,
+    args: NativeArgs32<'_>,
+    named: &[(Arc<str>, RuntimeVal)],
+    heap: &mut HeapStore,
+    globals: &[RuntimeVal],
+    module: Option<&Module32>,
+    ctx: Option<&mut VmContext>,
+) -> Result<RuntimeVal> {
+    let native_args = if named.is_empty() {
+        args
+    } else {
+        NativeArgs32::new_with_named(args.as_slice(), named)
+    };
+    let result = match &native.function {
+        NativeFunction32::Plain(function) | NativeFunction32::Context(function) => {
+            let mut runtime = NativeRuntime32::from_parts(heap, globals, ctx, module);
+            function(native_args, &mut runtime)
+        }
+        NativeFunction32::RuntimeCallable(function) => {
+            if named.is_empty() {
+                super::runtime_callable::call_runtime_callable32_runtime(function.as_ref(), native_args, heap, ctx)
+            } else {
+                super::runtime_callable::call_runtime_callable32_runtime_named(
+                    function.as_ref(),
+                    native_args,
+                    named,
+                    heap,
+                    ctx,
+                )
+            }
+        }
+    };
+    map_native_error(native, result)
+}
+
+fn map_native_error(native: &NativeEntry32, result: Result<RuntimeVal>) -> Result<RuntimeVal> {
+    result.map_err(|err| {
+        if err.is::<super::LanguageRaise32>() {
+            err
+        } else {
+            anyhow!("native `{}` failed: {err}", native.name)
+        }
+    })
 }
 
 pub(super) fn checked_u8_count(count: u16) -> Result<u8> {
@@ -124,5 +170,7 @@ pub(super) fn heap_kind(value: &HeapValue) -> &'static str {
         HeapValue::Stream(_) => "Stream",
         HeapValue::StreamCursor(_) => "StreamCursor",
         HeapValue::Object(_) => "Object",
+        HeapValue::UpvalCell(_) => "UpvalCell",
+        HeapValue::ErrorVal(_) => "Error",
     }
 }

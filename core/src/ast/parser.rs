@@ -1140,16 +1140,19 @@ impl<'a> Parser<'a> {
         let mut parts = Vec::new();
         let mut current_literal = String::new();
         let mut in_expr = false;
-        let mut expr_start = 0;
-        let mut pos = 0;
+        let mut expr_start = 0usize; // byte offset into `content`
 
-        while pos < content.len() {
-            let c = content.chars().nth(pos).unwrap();
+        // Use char_indices so `byte_pos` is always a valid byte boundary for slicing.
+        let chars: Vec<(usize, char)> = content.char_indices().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            let (byte_pos, c) = chars[i];
 
             if in_expr {
                 if c == '}' {
-                    // End of ${...} expression
-                    let expr_content = &content[expr_start..pos];
+                    // End of ${...} expression — byte_pos is the correct slice bound.
+                    let expr_content = &content[expr_start..byte_pos];
                     if !expr_content.is_empty() {
                         let expr_tokens = match Tokenizer::tokenize_enhanced(expr_content) {
                             Ok(tokens) => tokens,
@@ -1173,24 +1176,22 @@ impl<'a> Parser<'a> {
                         }
                     }
                     in_expr = false;
-                    pos += 1; // skip the '}'
-                } else {
-                    pos += 1;
                 }
-            } else if c == '$' && pos + 1 < content.len() && content.chars().nth(pos + 1) == Some('{') {
-                // Start of original ${expr} syntax
-                pos += 2; // skip '${'
+                i += 1;
+            } else if c == '$' && i + 1 < chars.len() && chars[i + 1].1 == '{' {
+                // Start of ${expr} syntax — skip both '$' and '{'.
+                i += 2;
 
-                // Push the current literal if not empty
                 if !current_literal.is_empty() {
                     parts.push(TemplateStringPart::Literal(std::mem::take(&mut current_literal)));
                 }
 
                 in_expr = true;
-                expr_start = pos;
+                // expr_start is the byte offset of the first char inside the braces.
+                expr_start = if i < chars.len() { chars[i].0 } else { content.len() };
             } else {
                 current_literal.push(c);
-                pos += 1;
+                i += 1;
             }
         }
 

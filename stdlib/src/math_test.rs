@@ -39,20 +39,13 @@ mod tests {
         Ok((*arity, function.clone()))
     }
 
-    fn call_math(name: &str, args: &[RuntimeVal], named: &[(String, RuntimeVal)]) -> Result<RuntimeVal> {
+    fn call_math(name: &str, args: &[RuntimeVal], named: &[(Arc<str>, RuntimeVal)]) -> Result<RuntimeVal> {
         let (_, function) = math_native(name)?;
         let NativeFunction32::Plain(function) = function else {
             return Err(anyhow!("{name} must use plain RuntimeNative32"));
         };
-        let mut state = RuntimeModuleState32 {
-            heap: HeapStore::new(),
-            globals: Vec::new(),
-        };
-        let mut runtime = NativeRuntime32 {
-            state: &mut state,
-            ctx: None,
-            module: None,
-        };
+        let mut state = RuntimeModuleState32::default();
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
         function(NativeArgs32::new_with_named(args, named), &mut runtime)
     }
 
@@ -124,8 +117,8 @@ mod tests {
     #[test]
     fn test_math_clamp_duplicate_named_argument_error() {
         let named_args = vec![
-            ("min".to_string(), RuntimeVal::Int(0)),
-            ("min".to_string(), RuntimeVal::Int(1)),
+            (Arc::<str>::from("min"), RuntimeVal::Int(0)),
+            (Arc::<str>::from("min"), RuntimeVal::Int(1)),
         ];
         let err =
             call_math("clamp", &[RuntimeVal::Int(5)], &named_args).expect_err("duplicate named arguments should error");

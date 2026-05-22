@@ -29,7 +29,7 @@ use core_methods::{core_call_method_builtin32, core_call_method_named_builtin32}
 pub struct VmContext {
     // Global symbol table
     globals: FastHashMap<String, Val>,
-    runtime_globals: FastHashMap<String, RuntimeExport32>,
+    runtime_globals: FastHashMap<Arc<str>, RuntimeExport32>,
     // Names of global constants (immutable)
     const_globals: FastHashSet<String>,
     // Simple stack of local scopes; top-most is current
@@ -209,11 +209,11 @@ impl VmContext {
     /// 构建函数，允许自定义组件。
     pub fn with_resolver(mut self, resolver: Arc<ModuleResolver>) -> Self {
         for (name, val) in resolver.builtin_iter() {
-            if self.globals.contains_key(name) || self.runtime_globals.contains_key(name) {
+            if self.globals.contains_key(name) || self.runtime_globals.contains_key(name.as_str()) {
                 continue;
             }
             if let Some(value) = runtime_export_from_builtin_val(val) {
-                self.runtime_globals.insert(name.clone(), value);
+                self.runtime_globals.insert(Arc::<str>::from(name.as_str()), value);
             } else {
                 self.globals.insert(name.clone(), val.clone());
             }
@@ -239,19 +239,20 @@ impl VmContext {
     }
 
     #[inline]
-    pub fn runtime_globals_iter(&self) -> impl Iterator<Item = (&String, &RuntimeExport32)> {
+    pub fn runtime_globals_iter(&self) -> impl Iterator<Item = (&Arc<str>, &RuntimeExport32)> {
         self.runtime_globals.iter()
     }
 
-    pub fn define_runtime_global(&mut self, name: impl Into<String>, value: RuntimeExport32) {
+    pub fn define_runtime_global(&mut self, name: impl Into<Arc<str>>, value: RuntimeExport32) {
         let name = name.into();
-        self.globals.remove(name.as_str());
-        self.const_globals.remove(name.as_str());
+        let name_str = name.as_ref();
+        self.globals.remove(name_str);
+        self.const_globals.remove(name_str);
         self.runtime_globals.insert(name, value);
         self.bump_generation();
     }
 
-    pub fn define_runtime_value(&mut self, name: impl Into<String>, value: RuntimeVal, heap: HeapStore) {
+    pub fn define_runtime_value(&mut self, name: impl Into<Arc<str>>, value: RuntimeVal, heap: HeapStore) {
         self.define_runtime_global(name, RuntimeExport32::from_value(value, heap));
     }
 
@@ -510,7 +511,7 @@ impl VmContext {
             return;
         }
         let value = runtime_export_from_runtime_native(function, arity);
-        self.runtime_globals.insert(name.to_string(), value);
+        self.runtime_globals.insert(Arc::<str>::from(name), value);
     }
 
     // -------- Internal helpers --------
@@ -556,7 +557,7 @@ fn core_register_trait_builtin32(
     }
     let name = runtime_string_arg(
         args.get(0).expect("arity checked"),
-        &runtime.state.heap,
+        runtime.heap(),
         "__lk_register_trait",
     )?
     .to_string();
@@ -574,15 +575,14 @@ fn core_register_trait_builtin32(
                 inner.len()
             ));
         }
-        let method_name = runtime_string_arg(&inner[0], &runtime.state.heap, "trait method name")?.to_string();
-        let type_str = runtime_string_arg(&inner[1], &runtime.state.heap, "trait method type")?;
+        let method_name = runtime_string_arg(&inner[0], runtime.heap(), "trait method name")?.to_string();
+        let type_str = runtime_string_arg(&inner[1], runtime.heap(), "trait method type")?;
         let ty = Type::parse(type_str.as_ref())
             .ok_or_else(|| anyhow!("failed to parse trait method type '{}'", type_str))?;
         methods.insert(method_name, ty);
     }
     let ctx = runtime
-        .ctx
-        .as_deref_mut()
+        .ctx_mut()
         .ok_or_else(|| anyhow!("__lk_register_trait requires VmContext"))?;
     let type_checker = ctx
         .get_type_checker_mut()
@@ -603,13 +603,13 @@ fn core_register_trait_impl_builtin32(
     }
     let trait_name = runtime_string_arg(
         args.get(0).expect("arity checked"),
-        &runtime.state.heap,
+        runtime.heap(),
         "__lk_register_trait_impl",
     )?
     .to_string();
     let target_type_str = runtime_string_arg(
         args.get(1).expect("arity checked"),
-        &runtime.state.heap,
+        runtime.heap(),
         "__lk_register_trait_impl",
     )?;
     let target_type = Type::parse(target_type_str.as_ref())
@@ -629,12 +629,12 @@ fn core_register_trait_impl_builtin32(
                 inner.len()
             ));
         }
-        let method_name = runtime_string_arg(&inner[0], &runtime.state.heap, "trait impl method name")?.to_string();
+        let method_name = runtime_string_arg(&inner[0], runtime.heap(), "trait impl method name")?.to_string();
         ensure_runtime_callable(&inner[1], runtime, "trait impl method")?;
         let signature_ty = match &inner[2] {
             RuntimeVal::Nil => None,
             value => {
-                let type_str = runtime_string_arg(value, &runtime.state.heap, "trait impl method type")?;
+                let type_str = runtime_string_arg(value, runtime.heap(), "trait impl method type")?;
                 Some(
                     Type::parse(type_str.as_ref())
                         .ok_or_else(|| anyhow!("failed to parse method type '{}'", type_str))?,
@@ -644,8 +644,7 @@ fn core_register_trait_impl_builtin32(
         method_map.insert(method_name, (TraitMethodValue::Runtime(inner[1].clone()), signature_ty));
     }
     let ctx = runtime
-        .ctx
-        .as_deref_mut()
+        .ctx_mut()
         .ok_or_else(|| anyhow!("__lk_register_trait_impl requires VmContext"))?;
     let type_checker = ctx
         .get_type_checker_mut()
@@ -670,8 +669,7 @@ fn runtime_list_values(
         return Err(anyhow!("{helper} expects list, got {:?}", value.kind()));
     };
     let list = runtime
-        .state
-        .heap
+        .heap()
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     let HeapValue::List(list) = list else {
@@ -685,7 +683,7 @@ fn runtime_list_values(
         TypedList::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
         TypedList::String(values) => values
             .iter()
-            .map(|value| runtime_string_value(value, &mut runtime.state.heap))
+            .map(|value| runtime_string_value(value, runtime.heap_mut()))
             .collect(),
     })
 }
@@ -696,8 +694,7 @@ fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, he
         return Err(anyhow!("{helper} must be callable, got {:?}", value.kind()));
     };
     match runtime
-        .state
-        .heap
+        .heap()
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
     {
@@ -714,18 +711,13 @@ fn core_make_struct_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntim
         ));
     }
 
-    let type_name = runtime_string_arg(
-        args.get(0).expect("arity checked"),
-        &runtime.state.heap,
-        "__lk_make_struct",
-    )?;
+    let type_name = runtime_string_arg(args.get(0).expect("arity checked"), runtime.heap(), "__lk_make_struct")?;
 
     let fields = match args.get(1).expect("arity checked") {
         RuntimeVal::Nil => BTreeMap::new(),
         RuntimeVal::Obj(handle) => {
             let value = runtime
-                .state
-                .heap
+                .heap()
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
             let HeapValue::Map(map) = value else {
@@ -746,8 +738,7 @@ fn core_make_struct_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntim
 
     Ok(RuntimeVal::Obj(
         runtime
-            .state
-            .heap
+            .heap_mut()
             .alloc(HeapValue::Object(RuntimeObject { type_name, fields })),
     ))
 }
@@ -764,13 +755,12 @@ fn core_typeof_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'
         RuntimeVal::ShortStr(_) => "String",
         RuntimeVal::Nil => "Nil",
         RuntimeVal::Obj(handle) => runtime
-            .state
-            .heap
+            .heap()
             .get(*handle)
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             .type_name(),
     };
-    Ok(runtime_string_value(name, &mut runtime.state.heap))
+    Ok(runtime_string_value(name, runtime.heap_mut()))
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -779,28 +769,23 @@ fn core_set_field_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime3
         return Err(anyhow!("__lk_set_field(base, key, value) expects exactly 3 arguments"));
     }
     let base = args.get(0).expect("arity checked").clone();
-    let key = runtime_string_arg(
-        args.get(1).expect("arity checked"),
-        &runtime.state.heap,
-        "__lk_set_field",
-    )?;
+    let key = runtime_string_arg(args.get(1).expect("arity checked"), runtime.heap(), "__lk_set_field")?;
     let field_value = args.get(2).expect("arity checked").clone();
     match base {
         RuntimeVal::Obj(handle) => {
             let heap_value = runtime
-                .state
-                .heap
+                .heap()
                 .get(handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
                 .clone();
             match heap_value {
                 HeapValue::Map(mut map) => {
                     map.set(RuntimeMapKey::String(key), field_value);
-                    Ok(RuntimeVal::Obj(runtime.state.heap.alloc(HeapValue::Map(map))))
+                    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(map))))
                 }
                 HeapValue::Object(mut object) => {
                     object.fields.insert(key, field_value);
-                    Ok(RuntimeVal::Obj(runtime.state.heap.alloc(HeapValue::Object(object))))
+                    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Object(object))))
                 }
                 other => Err(anyhow!(
                     "__lk_set_field target must be Map or Object, got {}",
@@ -827,8 +812,7 @@ fn core_merge_fields_builtin32(
     let mut fields = match args.get(0).expect("arity checked") {
         RuntimeVal::Obj(handle) => {
             let value = runtime
-                .state
-                .heap
+                .heap()
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
             match value {
@@ -858,8 +842,7 @@ fn core_merge_fields_builtin32(
     match args.get(1).expect("arity checked") {
         RuntimeVal::Obj(handle) => {
             let value = runtime
-                .state
-                .heap
+                .heap()
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
             let HeapValue::Map(overlay) = value else {
@@ -873,8 +856,7 @@ fn core_merge_fields_builtin32(
             }
             Ok(RuntimeVal::Obj(
                 runtime
-                    .state
-                    .heap
+                    .heap_mut()
                     .alloc(HeapValue::Map(TypedMap::from_runtime_entries(fields))),
             ))
         }

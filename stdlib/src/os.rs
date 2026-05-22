@@ -111,7 +111,7 @@ fn bool_arg(value: &RuntimeVal, name: &str) -> Result<bool> {
 }
 
 fn string_arg(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, name: &str) -> Result<String> {
-    Ok(runtime_string_arg(value, &runtime.state.heap, name)?.to_string())
+    Ok(runtime_string_arg(value, runtime.heap(), name)?.to_string())
 }
 
 fn optional_string_arg(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, name: &str) -> Result<Option<String>> {
@@ -301,8 +301,7 @@ fn string_list_arg(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, context: &
         bail!("{context} must be a list");
     };
     let value = runtime
-        .state
-        .heap
+        .heap()
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     let HeapValue::List(list) = value else {
@@ -312,7 +311,7 @@ fn string_list_arg(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, context: &
         TypedList::String(values) => Ok(values.iter().map(ToString::to_string).collect()),
         TypedList::Mixed(values) => values
             .iter()
-            .map(|value| runtime_string_arg(value, &runtime.state.heap, context).map(|value| value.to_string()))
+            .map(|value| runtime_string_arg(value, runtime.heap(), context).map(|value| value.to_string()))
             .collect(),
         _ => bail!("{context} must contain only strings"),
     }

@@ -715,7 +715,10 @@ impl Expr {
 fn value_can_fold_into_legacy_container(value: &Val) -> bool {
     match value {
         Val::Nil | Val::Bool(_) | Val::Int(_) | Val::Float(_) | Val::ShortStr(_) => true,
-        Val::Obj(value) => matches!(value.as_ref(), crate::val::HeapValue::String(_)),
+        Val::Obj(value) => matches!(
+            value.as_ref(),
+            crate::val::HeapValue::String(_) | crate::val::HeapValue::List(_) | crate::val::HeapValue::Map(_)
+        ),
     }
 }
 impl TryInto<Val> for &Expr {

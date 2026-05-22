@@ -2,9 +2,11 @@
 
 mod call;
 mod const_load;
+mod handler;
 mod imports;
 mod named_call;
 mod runtime_callable;
+mod stack;
 mod support;
 mod value_ops;
 
@@ -25,21 +27,22 @@ use crate::{
         import::{collect_program_imports, execute_imports},
     },
     val::{
-        CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, TypedList, TypedMap,
+        CallableValue, ErrorVal, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, TypedList,
+        TypedMap,
     },
 };
 
 use super::{
-    CallWindow32, Compiler32, Frame32, Function32, GlobalSlot32, Instr32, Module32, Opcode32, RegisterIndex,
-    RuntimeExport32, RuntimeModuleState32, VmContext,
+    CallWindow32, Compiler32, Function32, GlobalSlot32, Instr32, Module32, Opcode32, RegisterIndex, RuntimeExport32,
+    RuntimeModuleState32, VmContext,
 };
+use handler::{ErrorHandler32, LanguageRaise32};
 use imports::import_runtime_export;
 use support::*;
 
 #[derive(Clone, Debug)]
 pub struct Exec32Result {
     pub returns: Vec<RuntimeVal>,
-    pub frame: Frame32,
     pub state: RuntimeModuleState32,
 }
 
@@ -95,18 +98,15 @@ impl Program32Result {
         let mut heap = self.state.heap.clone();
         let mut entries = BTreeMap::new();
         for (slot, value) in self.module.globals.iter().zip(self.state.globals.iter()) {
-            entries.insert(
-                RuntimeMapKey::String(Arc::<str>::from(slot.name.as_str())),
-                value.clone(),
-            );
+            entries.insert(RuntimeMapKey::String(slot.name.clone()), value.clone());
         }
         let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))));
         RuntimeExport32 {
             value,
-            state: Arc::new(std::sync::Mutex::new(RuntimeModuleState32 {
+            state: Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
                 heap,
-                globals: self.state.globals.clone(),
-            })),
+                self.state.globals.clone(),
+            ))),
             module: Arc::clone(&self.module),
         }
     }
@@ -114,26 +114,33 @@ impl Program32Result {
 
 #[derive(Debug)]
 pub struct Executor32 {
-    frame: Frame32,
     state: RuntimeModuleState32,
     captures: Vec<RuntimeVal>,
+    handler_stack: Vec<ErrorHandler32>,
+    frame_base: usize,
+    register_count: u16,
     pc: usize,
 }
 
 impl Executor32 {
     #[inline]
     pub fn new(register_count: u16) -> Self {
-        Self {
-            frame: Frame32::new(register_count),
+        let mut this = Self {
             state: RuntimeModuleState32::default(),
             captures: Vec::new(),
+            handler_stack: Vec::new(),
+            frame_base: 0,
+            register_count,
             pc: 0,
-        }
+        };
+        this.reset_entry_frame(register_count);
+        this
     }
 
     pub fn run_function(self, function: &Function32) -> Result<Exec32Result> {
         let mut ctx = None;
         let mut this = self;
+        this.reset_entry_frame(function.register_count);
         let returns = this.run_function_inner(function, None, &mut ctx)?;
         Ok(this.finish(returns))
     }
@@ -144,6 +151,7 @@ impl Executor32 {
             .ok_or_else(|| anyhow!("module entry function {} out of bounds", module.entry))?;
         let mut this = self;
         this.state.globals = vec![RuntimeVal::Nil; module.globals.len()];
+        this.reset_entry_frame(entry.register_count);
         let mut ctx = None;
         let returns = this.run_function_inner(entry, Some(module), &mut ctx)?;
         Ok(this.finish(returns))
@@ -171,6 +179,7 @@ impl Executor32 {
         }
         self.state.globals = globals;
         self.state.heap = heap;
+        self.reset_entry_frame(entry.register_count);
         let mut ctx = None;
         let returns = self.run_function_inner(entry, Some(module), &mut ctx)?;
         Ok(self.finish(returns))
@@ -195,6 +204,7 @@ impl Executor32 {
         }
         self.state.globals = globals;
         self.state.heap = heap;
+        self.reset_entry_frame(entry.register_count);
         let mut ctx = Some(ctx);
         let returns = self.run_function_inner(entry, Some(module), &mut ctx)?;
         Ok(self.finish(returns))
@@ -232,6 +242,7 @@ impl Executor32 {
         }
         self.state = state;
         self.captures = captures;
+        self.reset_entry_frame(function.register_count);
         let arg_count = seed_args(&mut self).map_err(|error| Exec32Failure {
             error,
             state: self.state.clone(),
@@ -259,7 +270,6 @@ impl Executor32 {
     fn finish(self, returns: Vec<RuntimeVal>) -> Exec32Result {
         Exec32Result {
             returns,
-            frame: self.frame,
             state: self.state,
         }
     }
@@ -270,15 +280,16 @@ impl Executor32 {
         module: Option<&Module32>,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<Vec<RuntimeVal>> {
-        if self.frame.len() < function.register_count as usize {
+        if self.register_count < function.register_count {
             bail!(
                 "executor frame has {} registers, function requires {}",
-                self.frame.len(),
+                self.register_count,
                 function.register_count
             );
         }
 
         while self.pc < function.code.len() {
+            self.maybe_collect_garbage();
             let instr = function.code[self.pc];
             if self.try_load_const_instr(function, instr)? {
                 continue;
@@ -297,6 +308,15 @@ impl Executor32 {
                         .cloned()
                         .ok_or_else(|| anyhow!("LoadCapture index {} out of bounds", instr.bx()))?;
                     self.write(instr.a(), value)?;
+                    self.pc += 1;
+                }
+                Opcode32::LoadCellVal => {
+                    let value = self.load_cell_value(instr.b())?;
+                    self.write(instr.a(), value)?;
+                    self.pc += 1;
+                }
+                Opcode32::StoreCellVal => {
+                    self.store_cell_value(instr.a(), instr.b())?;
                     self.pc += 1;
                 }
                 Opcode32::LoadFunction => {
@@ -453,7 +473,39 @@ impl Executor32 {
                         .strings
                         .get(instr.bx() as usize)
                         .ok_or_else(|| anyhow!("Raise const index {} out of bounds", instr.bx()))?;
-                    bail!("{message}");
+                    if let Some(handler_index) = self
+                        .handler_stack
+                        .iter()
+                        .rposition(|handler| handler.frame_base == self.frame_base)
+                    {
+                        let handler = self.handler_stack.remove(handler_index);
+                        let error = RuntimeVal::Obj(self.state.heap.alloc(HeapValue::ErrorVal(ErrorVal {
+                            message: Arc::<str>::from(message.as_str()),
+                            trace: Vec::new(),
+                        })));
+                        self.frame_base = handler.frame_base;
+                        self.state.stack_top = handler.stack_top;
+                        self.write(handler.catch_reg, error)?;
+                        self.pc = handler.catch_pc;
+                    } else {
+                        return Err(anyhow!(LanguageRaise32 {
+                            message: Arc::<str>::from(message.as_str()),
+                        }));
+                    }
+                }
+                Opcode32::TryBegin => {
+                    let catch_pc = self.relative_pc(instr.sbx() as i32)?;
+                    self.handler_stack.push(ErrorHandler32::new(
+                        instr.a(),
+                        catch_pc,
+                        self.frame_base,
+                        self.state.stack_top,
+                    ));
+                    self.pc += 1;
+                }
+                Opcode32::TryEnd => {
+                    let _ = self.handler_stack.pop();
+                    self.pc += 1;
                 }
                 Opcode32::Test => {
                     let truthy = self.truthy(instr.a())?;
@@ -522,8 +574,12 @@ impl Executor32 {
                         );
                     }
                     let window = CallWindow32::new(RegisterIndex::new(instr.b() as u16), instr.c() as u16, 1);
+                    let call_pc = self.pc;
                     let value = self.call_function(module, window, ctx)?;
-                    self.frame.write_returns(window, [value]);
+                    if self.pc != call_pc {
+                        continue;
+                    }
+                    self.write_returns(window, [value])?;
                     self.pc += 1;
                 }
                 Opcode32::CallNamed => {
@@ -531,8 +587,12 @@ impl Executor32 {
                     let positional_count = (payload & 0x7f) as u16;
                     let named_count = (payload >> 7) as u16;
                     let window = CallWindow32::new(RegisterIndex::new(instr.a() as u16), positional_count, 1);
+                    let call_pc = self.pc;
                     let value = self.call_function_named(module, window, named_count, ctx)?;
-                    self.frame.write_returns(window, [value]);
+                    if self.pc != call_pc {
+                        continue;
+                    }
+                    self.write_returns(window, [value])?;
                     self.pc += 1;
                 }
                 Opcode32::GetGlobal => {
@@ -548,16 +608,11 @@ impl Executor32 {
                 Opcode32::Return => {
                     let base = instr.a() as usize;
                     let count = instr.b() as usize;
-                    if base + count > self.frame.len() {
+                    if base + count > self.register_count as usize {
                         bail!("Return range out of bounds");
                     }
                     let returns = (0..count)
-                        .map(|offset| {
-                            self.frame
-                                .read(RegisterIndex::new((base + offset) as u16))
-                                .cloned()
-                                .expect("return bounds checked")
-                        })
+                        .map(|offset| self.state.stack[self.frame_base + base + offset].clone())
                         .collect();
                     return Ok(returns);
                 }
@@ -602,6 +657,40 @@ impl Executor32 {
         self.write(instr.a(), value)?;
         self.pc += 1;
         Ok(())
+    }
+
+    fn load_cell_value(&self, cell_register: u8) -> Result<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = self.read(cell_register)? else {
+            bail!("LoadCellVal expected UpvalCell object");
+        };
+        match self
+            .state
+            .heap
+            .get(*handle)
+            .ok_or_else(|| anyhow!("LoadCellVal heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::UpvalCell(value) => Ok(value.clone()),
+            other => bail!("LoadCellVal expected UpvalCell, got {}", other.type_name()),
+        }
+    }
+
+    fn store_cell_value(&mut self, cell_register: u8, src_register: u8) -> Result<()> {
+        let value = self.read(src_register)?.clone();
+        let RuntimeVal::Obj(handle) = self.read(cell_register)?.clone() else {
+            bail!("StoreCellVal expected UpvalCell object");
+        };
+        match self
+            .state
+            .heap
+            .get_mut(handle)
+            .ok_or_else(|| anyhow!("StoreCellVal heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::UpvalCell(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            other => bail!("StoreCellVal expected UpvalCell, got {}", other.type_name()),
+        }
     }
 
     fn dynamic_numeric_binary(
@@ -657,20 +746,16 @@ impl Executor32 {
         })
     }
 
-    #[inline]
-    fn read(&self, register: u8) -> Result<&RuntimeVal> {
-        self.frame
-            .read(RegisterIndex::new(register as u16))
-            .ok_or_else(|| anyhow!("register {} out of bounds", register))
+    pub(crate) fn root_refs(&self) -> Vec<crate::val::HeapRef> {
+        let handler_roots = self.handler_stack.iter().flat_map(ErrorHandler32::roots);
+        self.state.root_refs(self.captures.iter().chain(handler_roots))
     }
 
-    #[inline]
-    fn write(&mut self, register: u8, value: RuntimeVal) -> Result<()> {
-        if self.frame.read(RegisterIndex::new(register as u16)).is_none() {
-            bail!("register {} out of bounds", register);
+    fn maybe_collect_garbage(&mut self) {
+        if self.state.heap.should_collect() {
+            let roots = self.root_refs();
+            self.state.heap.collect(roots);
         }
-        self.frame.write(RegisterIndex::new(register as u16), value);
-        Ok(())
     }
 
     #[inline]
@@ -745,17 +830,10 @@ impl Executor32 {
     fn read_register_range(&self, base: u8, count: u8) -> Result<Vec<RuntimeVal>> {
         let base = base as usize;
         let count = count as usize;
-        if base + count > self.frame.len() {
+        if base + count > self.register_count as usize {
             bail!("register range {}..{} out of bounds", base, base + count);
         }
-        (0..count)
-            .map(|offset| {
-                self.frame
-                    .read(RegisterIndex::new((base + offset) as u16))
-                    .cloned()
-                    .ok_or_else(|| anyhow!("register {} out of bounds", base + offset))
-            })
-            .collect()
+        Ok(self.state.stack[self.frame_base + base..self.frame_base + base + count].to_vec())
     }
 
     fn read_global(&self, slot: u16) -> Result<RuntimeVal> {
@@ -1035,6 +1113,7 @@ impl Executor32 {
                     RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(value)))
                 }
             }
+            RuntimeMapKey::Obj(value) => RuntimeVal::Obj(value),
         }
     }
 
@@ -1313,7 +1392,7 @@ pub fn execute_source32(source: &str) -> Result<Program32Result> {
     })
 }
 
-fn seed_module_globals(slots: &[GlobalSlot32], values: BTreeMap<String, RuntimeVal>) -> Vec<RuntimeVal> {
+fn seed_module_globals(slots: &[GlobalSlot32], values: BTreeMap<Arc<str>, RuntimeVal>) -> Vec<RuntimeVal> {
     slots
         .iter()
         .map(|slot| values.get(&slot.name).cloned().unwrap_or(RuntimeVal::Nil))

@@ -96,15 +96,15 @@ fn now32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<R
 fn format32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, "format", 2)?;
     let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "format")?;
-    let format = runtime_string_arg(args.get(1).expect("checked arity"), &runtime.state.heap, "format")?;
+    let format = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "format")?;
     let formatted = utc_datetime(timestamp)?.format(format.as_ref()).to_string();
     Ok(runtime_string_value(&formatted, runtime.heap_mut()))
 }
 
 fn parse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, "parse", 2)?;
-    let datetime = runtime_string_arg(args.get(0).expect("checked arity"), &runtime.state.heap, "parse")?;
-    let format = runtime_string_arg(args.get(1).expect("checked arity"), &runtime.state.heap, "parse")?;
+    let datetime = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "parse")?;
+    let format = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "parse")?;
     let naive = chrono::NaiveDateTime::parse_from_str(datetime.as_ref(), format.as_ref())
         .map_err(|err| anyhow!("failed to parse datetime: {err}"))?;
     let dt = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc);
