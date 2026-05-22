@@ -1,18 +1,14 @@
-use std::collections::HashMap;
-
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry},
-    val::{HeapValue, RuntimeVal, TypedList, Val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    val::{HeapValue, RuntimeVal, TypedList},
+    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
 };
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
-pub struct OsModule {
-    functions: HashMap<String, Val>,
-}
+pub struct OsModule;
 
 impl Default for OsModule {
     fn default() -> Self {
@@ -22,29 +18,7 @@ impl Default for OsModule {
 
 impl OsModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-
-        register_native(&mut functions, "hostname", hostname32, 0);
-        register_native(&mut functions, "arch", arch32, 0);
-        register_native(&mut functions, "os", os32, 0);
-        register_native(&mut functions, "exit", exit32, lk_core::vm::NativeEntry32::VARIADIC);
-        register_native(&mut functions, "exec", exec32, lk_core::vm::NativeEntry32::VARIADIC);
-        register_native(&mut functions, "clock", clock32, 0);
-        register_native(&mut functions, "time", time32, 0);
-        register_native(&mut functions, "epoch", epoch32, 0);
-        register_native(
-            &mut functions,
-            "env_get",
-            env_get32,
-            lk_core::vm::NativeEntry32::VARIADIC,
-        );
-        register_native(&mut functions, "env_set", env_set32, 2);
-        register_native(&mut functions, "env_unset", env_unset32, 1);
-        register_native(&mut functions, "dir_list", dir_list32, 1);
-        register_native(&mut functions, "dir_temp", dir_temp32, 0);
-        register_native(&mut functions, "dir_current", dir_current32, 0);
-
-        Self { functions }
+        Self
     }
 }
 
@@ -61,21 +35,27 @@ impl Module for OsModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("hostname", hostname32, 0),
+                RuntimeNativeExport32::plain("arch", arch32, 0),
+                RuntimeNativeExport32::plain("os", os32, 0),
+                RuntimeNativeExport32::plain("exit", exit32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("exec", exec32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("clock", clock32, 0),
+                RuntimeNativeExport32::plain("time", time32, 0),
+                RuntimeNativeExport32::plain("epoch", epoch32, 0),
+                RuntimeNativeExport32::plain("env_get", env_get32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("env_set", env_set32, 2),
+                RuntimeNativeExport32::plain("env_unset", env_unset32, 1),
+                RuntimeNativeExport32::plain("dir_list", dir_list32, 1),
+                RuntimeNativeExport32::plain("dir_temp", dir_temp32, 0),
+                RuntimeNativeExport32::plain("dir_current", dir_current32, 0),
+            ],
+            &[],
+        ))
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {

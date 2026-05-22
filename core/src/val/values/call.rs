@@ -66,7 +66,7 @@ fn call_callable(
             "RuntimeNative32 callable cannot be called through legacy Val::call; execute it in Executor32"
         )),
         CallableValue::Aot(_) => Err(anyhow!("AOT callable is disabled during the Instr32 VM migration")),
-        CallableValue::Closure { .. } | CallableValue::Native { .. } => Err(anyhow!(
+        CallableValue::Closure { .. } => Err(anyhow!(
             "Instr32 callable cannot be called through legacy Val::call; execute it in Executor32"
         )),
     }

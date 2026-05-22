@@ -1,15 +1,12 @@
 use anyhow::Result;
 use lk_core::{
-    module::{self, Module},
-    val::{RuntimeVal, Val, de},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    module::{self, Module, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    val::{RuntimeVal, de},
+    vm::{NativeArgs32, NativeRuntime32, RuntimeExport32},
 };
-use std::collections::HashMap;
 
 #[derive(Debug)]
-pub struct YamlModule {
-    functions: HashMap<String, Val>,
-}
+pub struct YamlModule;
 
 impl Default for YamlModule {
     fn default() -> Self {
@@ -19,12 +16,7 @@ impl Default for YamlModule {
 
 impl YamlModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-        functions.insert(
-            "parse".to_string(),
-            Val::runtime_native32(NativeFunction32::Plain(parse32), 1),
-        );
-        YamlModule { functions }
+        Self
     }
 }
 
@@ -37,8 +29,11 @@ impl Module for YamlModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[RuntimeNativeExport32::plain("parse", parse32, 1)],
+            &[],
+        ))
     }
 }
 
@@ -49,8 +44,7 @@ fn parse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
 #[cfg(test)]
 mod tests {
     use lk_core::{
-        module::Module,
-        val::{CallableValue, HeapValue, RuntimeVal, Val},
+        val::{HeapValue, RuntimeVal},
         vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
     };
 
@@ -60,31 +54,16 @@ mod tests {
 
     #[test]
     fn yaml_parse_exports_runtime_native32() {
-        let exports = YamlModule::new().exports();
-        let parse = exports.get("parse").expect("parse export");
-
-        assert!(matches!(
-            parse,
-            Val::Obj(object)
-                if matches!(
-                    object.as_ref(),
-                    HeapValue::Callable(CallableValue::RuntimeNative32 { arity: 1, .. })
-                )
-        ));
+        let (arity, _) =
+            crate::runtime_native::runtime_native_export(&YamlModule::new(), "parse").expect("parse export");
+        assert_eq!(arity, 1);
     }
 
     #[test]
     fn yaml_parse32_decodes_into_runtime_values() {
-        let exports = YamlModule::new().exports();
-        let parse = exports.get("parse").expect("parse export");
-        let Val::Obj(object) = parse else {
-            panic!("parse must be heap callable");
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 {
-            function: NativeFunction32::Plain(function),
-            ..
-        }) = object.as_ref()
-        else {
+        let (_, function) =
+            crate::runtime_native::runtime_native_export(&YamlModule::new(), "parse").expect("parse export");
+        let NativeFunction32::Plain(function) = function else {
             panic!("parse must be plain RuntimeNative32");
         };
 

@@ -5,13 +5,13 @@
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{self, Module},
+    module::{self, Module, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
     rt::{RuntimePayload, with_runtime},
-    val::{ChannelValue, HeapValue, RuntimeVal, Type, Val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    val::{ChannelValue, HeapValue, RuntimeVal, Type},
+    vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32},
 };
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{collections::HashMap, sync::Arc};
 
 #[derive(Debug)]
 pub struct TimeModule;
@@ -36,20 +36,25 @@ impl Module for TimeModule {
     }
 
     fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        for (name, value) in self.exports() {
-            registry.register_builtin(&format!("{}::{}", self.name(), name), value);
-        }
+        registry.register_runtime_builtin("time::sleep", NativeFunction32::Plain(time_sleep32), 1);
+        registry.register_runtime_builtin("time::timeout", NativeFunction32::Plain(time_timeout32), 1);
+        registry.register_runtime_builtin("time::after", NativeFunction32::Plain(time_after32), 1);
+        registry.register_runtime_builtin("time::now", NativeFunction32::Plain(time_now32), 0);
+        registry.register_runtime_builtin("time::since", NativeFunction32::Plain(time_since32), 2);
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        let mut functions = HashMap::new();
-        register_native(&mut functions, "sleep", time_sleep32, 1);
-        register_native(&mut functions, "timeout", time_timeout32, 1);
-        register_native(&mut functions, "after", time_after32, 1);
-        register_native(&mut functions, "now", time_now32, 0);
-        register_native(&mut functions, "since", time_since32, 2);
-        functions
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("sleep", time_sleep32, 1),
+                RuntimeNativeExport32::plain("timeout", time_timeout32, 1),
+                RuntimeNativeExport32::plain("after", time_after32, 1),
+                RuntimeNativeExport32::plain("now", time_now32, 0),
+                RuntimeNativeExport32::plain("since", time_since32, 2),
+            ],
+            &[],
+        ))
     }
 }
 
@@ -57,18 +62,6 @@ impl TimeModule {
     pub fn new() -> Self {
         Self
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
@@ -166,22 +159,10 @@ fn spawn_timer(duration_ms: i64, payload: RuntimeVal) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::{
-        module::Module,
-        val::CallableValue,
-        vm::{NativeFunction32, RuntimeModuleState32},
-    };
+    use lk_core::vm::{NativeFunction32, RuntimeModuleState32};
 
     fn time_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = TimeModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            bail!("{name} must be a heap callable");
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            bail!("{name} must be RuntimeNative32");
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&TimeModule::new(), name)
     }
 
     fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState32) -> Result<RuntimeVal> {

@@ -3,7 +3,7 @@ mod tests {
     use crate::{
         stmt::{StmtParser, run_program},
         token::Tokenizer,
-        val::{HeapStore, RuntimeVal, ShortStr, Val, val_to_runtime_val},
+        val::{HeapStore, RuntimeVal, ShortStr, Val, legacy_val_to_runtime_val},
         vm::{Program32Result, VmContext},
     };
     use std::collections::HashMap;
@@ -16,7 +16,7 @@ mod tests {
         if let Some(m) = ctx.as_map() {
             let mut heap = HeapStore::new();
             for (k, v) in m.iter() {
-                let value = val_to_runtime_val(v, &mut heap)?;
+                let value = legacy_val_to_runtime_val(v, &mut heap)?;
                 env.define_runtime_value(k.to_string(), value, heap.clone());
             }
         }

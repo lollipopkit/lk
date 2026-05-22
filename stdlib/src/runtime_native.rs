@@ -6,6 +6,34 @@ use lk_core::{
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+pub(crate) fn runtime_native_export(
+    module: &dyn lk_core::module::Module,
+    name: &str,
+) -> Result<(u16, lk_core::vm::NativeFunction32)> {
+    let export = module.runtime_exports()?;
+    let state = export
+        .state
+        .lock()
+        .map_err(|_| anyhow!("runtime export state lock poisoned"))?;
+    let RuntimeVal::Obj(handle) = export.value else {
+        return Err(anyhow!("module export must be a map"));
+    };
+    let Some(HeapValue::Map(map)) = state.heap.get(handle) else {
+        return Err(anyhow!("module export must be a map"));
+    };
+    let value = map.get_str(name).ok_or_else(|| anyhow!("{name} export present"))?;
+    let RuntimeVal::Obj(handle) = value else {
+        return Err(anyhow!("{name} must be a heap callable"));
+    };
+    let Some(HeapValue::Callable(lk_core::val::CallableValue::RuntimeNative32 { arity, function })) =
+        state.heap.get(handle)
+    else {
+        return Err(anyhow!("{name} must be RuntimeNative32"));
+    };
+    Ok((*arity, function.clone()))
+}
+
 pub(crate) fn parse_format32(
     args: NativeArgs32<'_>,
     runtime: &mut NativeRuntime32<'_>,
@@ -201,11 +229,30 @@ fn runtime_display_list(values: &TypedList, heap: &HeapStore) -> Result<String> 
         TypedList::Float(values) => values.iter().map(ToString::to_string).collect(),
         TypedList::Bool(values) => values.iter().map(ToString::to_string).collect(),
         TypedList::String(values) => values.iter().map(|value| quote_string(value)).collect(),
+        TypedList::OwnedRuntime(values) => values
+            .values
+            .iter()
+            .map(|value| runtime_display_value(value, &values.heap))
+            .collect::<Result<Vec<_>>>()?,
     };
     Ok(format!("[{}]", values.join(",")))
 }
 
 fn runtime_display_map(values: &TypedMap, heap: &HeapStore) -> Result<String> {
+    if let TypedMap::OwnedRuntime(values) = values {
+        let entries = values
+            .entries
+            .iter()
+            .map(|(key, value)| {
+                Ok((
+                    runtime_display_map_key(key),
+                    runtime_display_value(value, &values.heap)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(display_entries(entries));
+    }
+
     let entries = values
         .entries()
         .into_iter()

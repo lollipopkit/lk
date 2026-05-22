@@ -6,26 +6,17 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use anyhow::Result;
 use arcstr::ArcStr;
 
 use crate::util::fast_map::FastHashMap;
 
 use super::values::{AotFunction, ChannelValue, ShortStr, StreamCursorValue, StreamValue, TaskValue, Val};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct HeapRef(u32);
+mod heap;
+mod legacy;
 
-impl HeapRef {
-    #[inline]
-    pub const fn new(index: u32) -> Self {
-        Self(index)
-    }
-
-    #[inline]
-    pub const fn index(self) -> u32 {
-        self.0
-    }
-}
+pub use heap::{HeapRef, HeapStore};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeVal {
@@ -85,220 +76,6 @@ pub enum RuntimeValKind {
 }
 
 #[derive(Clone, Debug)]
-pub struct HeapStore {
-    slots: Vec<Option<HeapValue>>,
-    marks: Vec<u8>,
-    free_list: Vec<u32>,
-    live_len: usize,
-    alloc_since_gc: u32,
-    gc_threshold: u32,
-}
-
-impl HeapStore {
-    const WHITE: u8 = 0;
-    const BLACK: u8 = 2;
-    pub const DEFAULT_GC_THRESHOLD: u32 = 1024;
-
-    #[inline]
-    pub const fn new() -> Self {
-        Self {
-            slots: Vec::new(),
-            marks: Vec::new(),
-            free_list: Vec::new(),
-            live_len: 0,
-            alloc_since_gc: 0,
-            gc_threshold: Self::DEFAULT_GC_THRESHOLD,
-        }
-    }
-
-    #[inline]
-    pub fn alloc(&mut self, value: HeapValue) -> HeapRef {
-        let index = if let Some(index) = self.free_list.pop() {
-            self.slots[index as usize] = Some(value);
-            self.marks[index as usize] = Self::WHITE;
-            index
-        } else {
-            let index = self.slots.len();
-            assert!(u32::try_from(index).is_ok(), "heap object index overflow");
-            self.slots.push(Some(value));
-            self.marks.push(Self::WHITE);
-            index as u32
-        };
-        self.live_len += 1;
-        self.alloc_since_gc = self.alloc_since_gc.saturating_add(1);
-        HeapRef::new(index)
-    }
-
-    #[inline]
-    pub fn get(&self, reference: HeapRef) -> Option<&HeapValue> {
-        self.slots.get(reference.index() as usize)?.as_ref()
-    }
-
-    #[inline]
-    pub fn get_mut(&mut self, reference: HeapRef) -> Option<&mut HeapValue> {
-        self.slots.get_mut(reference.index() as usize)?.as_mut()
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.live_len
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.live_len == 0
-    }
-
-    #[inline]
-    pub fn should_collect(&self) -> bool {
-        self.alloc_since_gc >= self.gc_threshold
-    }
-
-    #[inline]
-    pub fn gc_threshold(&self) -> u32 {
-        self.gc_threshold
-    }
-
-    #[inline]
-    pub fn set_gc_threshold(&mut self, threshold: u32) {
-        self.gc_threshold = threshold.max(1);
-    }
-
-    #[inline]
-    pub fn roots_from_values<'a>(values: impl IntoIterator<Item = &'a RuntimeVal>) -> Vec<HeapRef> {
-        values
-            .into_iter()
-            .filter_map(|value| match value {
-                RuntimeVal::Obj(reference) => Some(*reference),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub fn collect(&mut self, roots: impl IntoIterator<Item = HeapRef>) {
-        for mark in &mut self.marks {
-            *mark = Self::WHITE;
-        }
-        for root in roots {
-            self.mark_ref(root);
-        }
-        self.sweep();
-        self.alloc_since_gc = 0;
-    }
-
-    fn mark_ref(&mut self, reference: HeapRef) {
-        let index = reference.index() as usize;
-        let Some(slot) = self.slots.get(index) else {
-            return;
-        };
-        if slot.is_none() || self.marks.get(index).copied() == Some(Self::BLACK) {
-            return;
-        }
-        self.marks[index] = Self::BLACK;
-        let value = slot.as_ref().expect("checked live slot").clone();
-        self.mark_heap_value(value);
-    }
-
-    fn mark_heap_value(&mut self, value: HeapValue) {
-        match value {
-            HeapValue::String(_)
-            | HeapValue::Task(_)
-            | HeapValue::Channel(_)
-            | HeapValue::Stream(_)
-            | HeapValue::StreamCursor(_) => {}
-            HeapValue::List(values) => self.mark_typed_list(values),
-            HeapValue::Map(values) => self.mark_typed_map(values),
-            HeapValue::Object(object) => {
-                for value in object.fields.values() {
-                    self.mark_runtime_value(value);
-                }
-            }
-            HeapValue::Callable(CallableValue::Closure { captures, .. }) => {
-                for value in &captures {
-                    self.mark_runtime_value(value);
-                }
-            }
-            HeapValue::Callable(CallableValue::Runtime32(function)) => {
-                if let Ok(mut state) = function.state.lock() {
-                    state.collect_garbage(function.captures.iter());
-                }
-            }
-            HeapValue::Callable(
-                CallableValue::RuntimeNative32 { .. } | CallableValue::Native { .. } | CallableValue::Aot(_),
-            ) => {}
-            HeapValue::UpvalCell(value) => self.mark_runtime_value(&value),
-            HeapValue::ErrorVal(error) => {
-                for value in &error.trace {
-                    self.mark_runtime_value(value);
-                }
-            }
-        }
-    }
-
-    fn mark_typed_list(&mut self, values: TypedList) {
-        if let TypedList::Mixed(values) = values {
-            for value in &values {
-                self.mark_runtime_value(value);
-            }
-        }
-    }
-
-    fn mark_typed_map(&mut self, values: TypedMap) {
-        match values {
-            TypedMap::Mixed(values) => {
-                for (key, value) in &values {
-                    self.mark_runtime_map_key(key);
-                    self.mark_runtime_value(value);
-                }
-            }
-            TypedMap::StringMixed(values) => {
-                for value in values.values() {
-                    self.mark_runtime_value(value);
-                }
-            }
-            TypedMap::StringInt(_) | TypedMap::StringFloat(_) | TypedMap::StringBool(_) => {}
-        }
-    }
-
-    fn mark_runtime_map_key(&mut self, key: &RuntimeMapKey) {
-        if let RuntimeMapKey::Obj(reference) = key {
-            self.mark_ref(*reference);
-        }
-    }
-
-    fn mark_runtime_value(&mut self, value: &RuntimeVal) {
-        if let RuntimeVal::Obj(reference) = value {
-            self.mark_ref(*reference);
-        }
-    }
-
-    fn sweep(&mut self) {
-        self.free_list.clear();
-        let mut live_len = 0;
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            if slot.is_none() {
-                self.free_list.push(index as u32);
-                continue;
-            }
-            if self.marks[index] == Self::BLACK {
-                self.marks[index] = Self::WHITE;
-                live_len += 1;
-            } else {
-                *slot = None;
-                self.free_list.push(index as u32);
-            }
-        }
-        self.live_len = live_len;
-    }
-}
-
-impl Default for HeapStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Clone, Debug)]
 pub enum HeapValue {
     String(Arc<str>),
     List(TypedList),
@@ -342,10 +119,6 @@ pub enum CallableValue {
         arity: u16,
         function: crate::vm::NativeFunction32,
     },
-    Native {
-        function_index: u32,
-        arity: u16,
-    },
     Runtime32(Arc<crate::vm::RuntimeCallable32>),
     Aot(AotFunction),
 }
@@ -362,13 +135,20 @@ pub struct ErrorVal {
     pub trace: Vec<RuntimeVal>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum TypedList {
     Mixed(Vec<RuntimeVal>),
     Int(Vec<i64>),
     Float(Vec<f64>),
     Bool(Vec<bool>),
     String(Vec<Arc<str>>),
+    OwnedRuntime(OwnedRuntimeList),
+}
+
+#[derive(Clone, Debug)]
+pub struct OwnedRuntimeList {
+    pub values: Vec<RuntimeVal>,
+    pub heap: HeapStore,
 }
 
 impl TypedList {
@@ -388,11 +168,11 @@ impl TypedList {
                 Val::Bool(value) if ints.is_empty() && floats.is_empty() && strings.is_empty() => bools.push(*value),
                 value if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
                     let Some(value) = value.as_str() else {
-                        return Self::Mixed(values.iter().cloned().map(Val::val_to_object_field).collect());
+                        return legacy::owned_runtime_list_from_legacy(values);
                     };
                     strings.push(Arc::<str>::from(value));
                 }
-                _ => return Self::Mixed(values.iter().cloned().map(Val::val_to_object_field).collect()),
+                _ => return legacy::owned_runtime_list_from_legacy(values),
             }
         }
 
@@ -402,8 +182,10 @@ impl TypedList {
             Self::Float(floats)
         } else if !bools.is_empty() {
             Self::Bool(bools)
-        } else {
+        } else if !strings.is_empty() {
             Self::String(strings)
+        } else {
+            legacy::owned_runtime_list_from_legacy(values)
         }
     }
 
@@ -414,6 +196,7 @@ impl TypedList {
             Self::Float(values) => values.iter().copied().map(Val::Float).collect(),
             Self::Bool(values) => values.iter().copied().map(Val::Bool).collect(),
             Self::String(values) => values.iter().map(|value| Val::from(value.as_ref())).collect(),
+            Self::OwnedRuntime(values) => values.to_legacy_values(),
         }
     }
 
@@ -461,6 +244,50 @@ impl TypedList {
         }
     }
 
+    pub fn from_runtime_slice(values: &[RuntimeVal], heap: &HeapStore) -> Self {
+        if values.is_empty() {
+            return Self::Mixed(Vec::new());
+        }
+
+        let mut ints = Vec::with_capacity(values.len());
+        let mut floats = Vec::with_capacity(values.len());
+        let mut bools = Vec::with_capacity(values.len());
+        let mut strings = Vec::with_capacity(values.len());
+        for value in values {
+            match value {
+                RuntimeVal::Int(value) if floats.is_empty() && bools.is_empty() && strings.is_empty() => {
+                    ints.push(*value);
+                }
+                RuntimeVal::Float(value) if ints.is_empty() && bools.is_empty() && strings.is_empty() => {
+                    floats.push(*value);
+                }
+                RuntimeVal::Bool(value) if ints.is_empty() && floats.is_empty() && strings.is_empty() => {
+                    bools.push(*value);
+                }
+                RuntimeVal::ShortStr(value) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
+                    strings.push(Arc::<str>::from(value.as_str()));
+                }
+                RuntimeVal::Obj(handle) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
+                    let Some(HeapValue::String(value)) = heap.get(*handle) else {
+                        return Self::Mixed(values.to_vec());
+                    };
+                    strings.push(value.clone());
+                }
+                _ => return Self::Mixed(values.to_vec()),
+            }
+        }
+
+        if !ints.is_empty() {
+            Self::Int(ints)
+        } else if !floats.is_empty() {
+            Self::Float(floats)
+        } else if !bools.is_empty() {
+            Self::Bool(bools)
+        } else {
+            Self::String(strings)
+        }
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         match self {
@@ -469,6 +296,7 @@ impl TypedList {
             Self::Float(values) => values.len(),
             Self::Bool(values) => values.len(),
             Self::String(values) => values.len(),
+            Self::OwnedRuntime(values) => values.values.len(),
         }
     }
 
@@ -493,6 +321,7 @@ impl TypedList {
                     }
                 })
                 .collect(),
+            Self::OwnedRuntime(values) => values.copy_values_into(heap),
         }
     }
 
@@ -503,34 +332,56 @@ impl TypedList {
             Self::Float(values) => Self::Float(values.get(start..).unwrap_or(&[]).to_vec()),
             Self::Bool(values) => Self::Bool(values.get(start..).unwrap_or(&[]).to_vec()),
             Self::String(values) => Self::String(values.get(start..).unwrap_or(&[]).to_vec()),
+            Self::OwnedRuntime(values) => Self::OwnedRuntime(values.slice_from(start)),
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+impl PartialEq for TypedList {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Mixed(left), Self::Mixed(right)) => left == right,
+            (Self::Int(left), Self::Int(right)) => left == right,
+            (Self::Float(left), Self::Float(right)) => left == right,
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::String(left), Self::String(right)) => left == right,
+            _ => self.to_legacy_values() == other.to_legacy_values(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum TypedMap {
     Mixed(BTreeMap<RuntimeMapKey, RuntimeVal>),
     StringMixed(BTreeMap<Arc<str>, RuntimeVal>),
     StringInt(BTreeMap<Arc<str>, i64>),
     StringFloat(BTreeMap<Arc<str>, f64>),
     StringBool(BTreeMap<Arc<str>, bool>),
+    OwnedRuntime(OwnedRuntimeMap),
+}
+
+#[derive(Clone, Debug)]
+pub struct OwnedRuntimeMap {
+    pub entries: BTreeMap<RuntimeMapKey, RuntimeVal>,
+    pub heap: HeapStore,
 }
 
 impl TypedMap {
     pub fn from_legacy_entries(values: &FastHashMap<ArcStr, Val>) -> Self {
-        let entries = values
-            .iter()
-            .map(|(key, value)| {
-                (
-                    RuntimeMapKey::String(Arc::<str>::from(key.as_str())),
-                    Val::val_to_object_field(value.clone()),
-                )
-            })
-            .collect();
+        let mut entries = BTreeMap::new();
+        for (key, value) in values {
+            let Some(value) = legacy::legacy_val_to_inline_runtime(value) else {
+                return legacy::owned_runtime_map_from_legacy(values);
+            };
+            entries.insert(RuntimeMapKey::String(Arc::<str>::from(key.as_str())), value);
+        }
         Self::from_runtime_entries(entries)
     }
 
     pub fn to_legacy_entries(&self) -> FastHashMap<ArcStr, Val> {
+        if let Self::OwnedRuntime(values) = self {
+            return values.to_legacy_entries();
+        }
         let mut out = FastHashMap::default();
         for (key, value) in self.entries() {
             let Some(key) = key.as_str() else {
@@ -590,6 +441,7 @@ impl TypedMap {
             Self::StringInt(values) => values.len(),
             Self::StringFloat(values) => values.len(),
             Self::StringBool(values) => values.len(),
+            Self::OwnedRuntime(values) => values.entries.len(),
         }
     }
 
@@ -611,7 +463,15 @@ impl TypedMap {
             Self::StringBool(values) => key
                 .as_str()
                 .and_then(|key| values.get(key).copied().map(RuntimeVal::Bool)),
+            Self::OwnedRuntime(values) => values.get(key),
         }
+    }
+
+    pub fn get_into_heap(&self, key: &RuntimeMapKey, heap: &mut HeapStore) -> Result<Option<RuntimeVal>> {
+        Ok(match self {
+            Self::OwnedRuntime(values) => values.copy_value_into(key, heap)?,
+            _ => self.get(key),
+        })
     }
 
     pub fn get_str(&self, key: &str) -> Option<RuntimeVal> {
@@ -628,7 +488,15 @@ impl TypedMap {
             Self::StringInt(values) => values.get(key).copied().map(RuntimeVal::Int),
             Self::StringFloat(values) => values.get(key).copied().map(RuntimeVal::Float),
             Self::StringBool(values) => values.get(key).copied().map(RuntimeVal::Bool),
+            Self::OwnedRuntime(values) => values.get_str(key),
         }
+    }
+
+    pub fn get_str_into_heap(&self, key: &str, heap: &mut HeapStore) -> Result<Option<RuntimeVal>> {
+        Ok(match self {
+            Self::OwnedRuntime(values) => values.copy_str_value_into(key, heap)?,
+            _ => self.get_str(key),
+        })
     }
 
     pub fn set(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
@@ -700,6 +568,7 @@ impl TypedMap {
                     self.materialize_string_map_to_mixed(key, value);
                 }
             }
+            Self::OwnedRuntime(values) => values.set(key, value),
         }
     }
 
@@ -722,7 +591,50 @@ impl TypedMap {
                 .iter()
                 .map(|(key, value)| (RuntimeMapKey::String(key.clone()), RuntimeVal::Bool(*value)))
                 .collect(),
+            Self::OwnedRuntime(values) => values.inline_entries(),
         }
+    }
+
+    pub fn entries_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<(RuntimeMapKey, RuntimeVal)>> {
+        Ok(match self {
+            Self::OwnedRuntime(values) => values.copy_entries_into(heap)?.into_iter().collect(),
+            _ => self.entries(),
+        })
+    }
+
+    pub fn string_entries_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<(Arc<str>, RuntimeVal)>> {
+        Ok(match self {
+            Self::StringMixed(values) => values.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
+            Self::StringInt(values) => values
+                .iter()
+                .map(|(key, value)| (key.clone(), RuntimeVal::Int(*value)))
+                .collect(),
+            Self::StringFloat(values) => values
+                .iter()
+                .map(|(key, value)| (key.clone(), RuntimeVal::Float(*value)))
+                .collect(),
+            Self::StringBool(values) => values
+                .iter()
+                .map(|(key, value)| (key.clone(), RuntimeVal::Bool(*value)))
+                .collect(),
+            Self::Mixed(values) => values
+                .iter()
+                .map(|(key, value)| {
+                    key.as_arc_str()
+                        .map(|key| (key, value.clone()))
+                        .ok_or_else(|| anyhow::anyhow!("map contains non-string key"))
+                })
+                .collect::<Result<_>>()?,
+            Self::OwnedRuntime(values) => values
+                .copy_entries_into(heap)?
+                .into_iter()
+                .map(|(key, value)| {
+                    key.as_arc_str()
+                        .map(|key| (key, value))
+                        .ok_or_else(|| anyhow::anyhow!("map contains non-string key"))
+                })
+                .collect::<Result<_>>()?,
+        })
     }
 
     fn materialize_string_map_to_mixed(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
@@ -744,9 +656,23 @@ impl TypedMap {
                 .into_iter()
                 .map(|(key, value)| (RuntimeMapKey::String(key), RuntimeVal::Bool(value)))
                 .collect(),
+            Self::OwnedRuntime(values) => values.inline_entries_map(),
         };
         mixed.insert(key, value);
         *self = Self::Mixed(mixed);
+    }
+}
+
+impl PartialEq for TypedMap {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Mixed(left), Self::Mixed(right)) => left == right,
+            (Self::StringMixed(left), Self::StringMixed(right)) => left == right,
+            (Self::StringInt(left), Self::StringInt(right)) => left == right,
+            (Self::StringFloat(left), Self::StringFloat(right)) => left == right,
+            (Self::StringBool(left), Self::StringBool(right)) => left == right,
+            _ => self.to_legacy_entries() == other.to_legacy_entries(),
+        }
     }
 }
 
@@ -792,151 +718,6 @@ fn entries_to_string_mixed(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> BTre
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn heap_store_returns_stable_refs() {
-        let mut heap = HeapStore::new();
-        let name = heap.alloc(HeapValue::String(Arc::<str>::from("customer")));
-
-        assert_eq!(name.index(), 0);
-        assert_eq!(heap.len(), 1);
-        assert!(matches!(heap.get(name), Some(HeapValue::String(text)) if text.as_ref() == "customer"));
-    }
-
-    #[test]
-    fn heap_store_reuses_collected_slots_and_dangling_refs_return_none() {
-        let mut heap = HeapStore::new();
-        let live = heap.alloc(HeapValue::String(Arc::<str>::from("live")));
-        let dead = heap.alloc(HeapValue::String(Arc::<str>::from("dead")));
-
-        heap.collect([live]);
-
-        assert_eq!(heap.len(), 1);
-        assert!(heap.get(live).is_some());
-        assert_eq!(heap.get(dead).map(HeapValue::type_name), None);
-
-        let reused = heap.alloc(HeapValue::String(Arc::<str>::from("reused")));
-        assert_eq!(reused.index(), dead.index());
-        assert_eq!(heap.len(), 2);
-        assert!(matches!(heap.get(reused), Some(HeapValue::String(value)) if value.as_ref() == "reused"));
-    }
-
-    #[test]
-    fn heap_store_tracks_gc_threshold_without_collecting_implicitly() {
-        let mut heap = HeapStore::new();
-        heap.set_gc_threshold(2);
-
-        assert_eq!(heap.gc_threshold(), 2);
-        assert!(!heap.should_collect());
-
-        let first = heap.alloc(HeapValue::String(Arc::<str>::from("first")));
-        assert!(!heap.should_collect());
-        let second = heap.alloc(HeapValue::String(Arc::<str>::from("second")));
-        assert!(heap.should_collect());
-
-        heap.collect([first, second]);
-
-        assert!(!heap.should_collect());
-        assert_eq!(heap.len(), 2);
-    }
-
-    #[test]
-    fn heap_store_gc_marks_nested_runtime_refs() {
-        let mut heap = HeapStore::new();
-        let leaf = heap.alloc(HeapValue::String(Arc::<str>::from("leaf")));
-        let list = heap.alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Obj(leaf)])));
-        let map = heap.alloc(HeapValue::Map(TypedMap::StringMixed(BTreeMap::from([(
-            Arc::<str>::from("list"),
-            RuntimeVal::Obj(list),
-        )]))));
-        let object = heap.alloc(HeapValue::Object(RuntimeObject {
-            type_name: Arc::<str>::from("Box"),
-            fields: BTreeMap::from([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
-        }));
-        let closure = heap.alloc(HeapValue::Callable(CallableValue::Closure {
-            function_index: 7,
-            captures: vec![RuntimeVal::Obj(object)],
-        }));
-        let cell = heap.alloc(HeapValue::UpvalCell(RuntimeVal::Obj(closure)));
-        let error = heap.alloc(HeapValue::ErrorVal(ErrorVal {
-            message: Arc::<str>::from("boom"),
-            trace: vec![RuntimeVal::Obj(cell)],
-        }));
-        let garbage = heap.alloc(HeapValue::String(Arc::<str>::from("garbage")));
-
-        heap.collect([error]);
-
-        for handle in [leaf, list, map, object, closure, cell, error] {
-            assert!(
-                heap.get(handle).is_some(),
-                "live handle {} should survive",
-                handle.index()
-            );
-        }
-        assert!(heap.get(garbage).is_none());
-    }
-
-    #[test]
-    fn heap_store_gc_marks_mixed_map_object_keys() {
-        let mut heap = HeapStore::new();
-        let key_object = heap.alloc(HeapValue::String(Arc::<str>::from("key-object")));
-        let map = heap.alloc(HeapValue::Map(TypedMap::Mixed(BTreeMap::from([(
-            RuntimeMapKey::Obj(key_object),
-            RuntimeVal::Int(1),
-        )]))));
-
-        heap.collect([map]);
-
-        assert!(heap.get(map).is_some());
-        assert!(heap.get(key_object).is_some());
-    }
-
-    #[test]
-    fn heap_store_gc_collects_runtime32_callable_shared_state_without_marking_dest_heap_captures() {
-        let mut source_heap = HeapStore::new();
-        let source_capture = source_heap.alloc(HeapValue::String(Arc::<str>::from("source-capture")));
-        let source_garbage = source_heap.alloc(HeapValue::String(Arc::<str>::from("source-garbage")));
-        let callable = crate::vm::RuntimeCallable32::new(
-            Arc::new(crate::vm::Module32::default()),
-            0,
-            vec![RuntimeVal::Obj(source_capture)],
-            source_heap,
-            Vec::new(),
-        );
-
-        let mut dest_heap = HeapStore::new();
-        let same_index_garbage = dest_heap.alloc(HeapValue::String(Arc::<str>::from("dest-garbage")));
-        assert_eq!(same_index_garbage.index(), source_capture.index());
-        let callable_handle = dest_heap.alloc(HeapValue::Callable(CallableValue::Runtime32(Arc::new(
-            callable.clone(),
-        ))));
-
-        dest_heap.collect([callable_handle]);
-        let state = callable.state.lock().expect("runtime callable state");
-
-        assert!(dest_heap.get(callable_handle).is_some());
-        assert!(
-            dest_heap.get(same_index_garbage).is_none(),
-            "source capture handle must not mark same-index object in destination heap"
-        );
-        assert!(state.heap.get(source_capture).is_some());
-        assert!(state.heap.get(source_garbage).is_none());
-    }
-
-    #[test]
-    fn heap_store_roots_from_values_extracts_object_refs() {
-        let values = vec![
-            RuntimeVal::Int(1),
-            RuntimeVal::Obj(HeapRef::new(3)),
-            RuntimeVal::Nil,
-            RuntimeVal::Obj(HeapRef::new(5)),
-        ];
-
-        assert_eq!(
-            HeapStore::roots_from_values(&values),
-            vec![HeapRef::new(3), HeapRef::new(5)]
-        );
-    }
 
     #[test]
     fn typed_int_list_materializes_to_runtime_values() {
@@ -991,6 +772,64 @@ mod tests {
     }
 
     #[test]
+    fn runtime_slices_materialize_to_typed_lists_without_precloning() {
+        let mut heap = HeapStore::new();
+        let long = heap.alloc(HeapValue::String(Arc::<str>::from("longer-than-seven")));
+
+        assert_eq!(
+            TypedList::from_runtime_slice(&[RuntimeVal::Int(1), RuntimeVal::Int(2)], &heap),
+            TypedList::Int(vec![1, 2])
+        );
+        assert_eq!(
+            TypedList::from_runtime_slice(
+                &[
+                    RuntimeVal::ShortStr(ShortStr::new("short").expect("short")),
+                    RuntimeVal::Obj(long),
+                ],
+                &heap,
+            ),
+            TypedList::String(vec![Arc::<str>::from("short"), Arc::<str>::from("longer-than-seven")])
+        );
+        assert!(matches!(
+            TypedList::from_runtime_slice(&[RuntimeVal::Int(1), RuntimeVal::Bool(true)], &heap),
+            TypedList::Mixed(_)
+        ));
+    }
+
+    #[test]
+    fn owned_runtime_containers_copy_into_destination_heap() {
+        let nested = Val::from(vec![Val::Int(1), Val::from_str("longer-than-seven")]);
+        let list = TypedList::from_legacy_values(&[nested]);
+        let mut dest_heap = HeapStore::new();
+        let copied = match list {
+            TypedList::OwnedRuntime(values) => values.copy_into_typed_list(&mut dest_heap).expect("copy list"),
+            other => panic!("expected owned runtime list, got {:?}", other),
+        };
+
+        let TypedList::Mixed(values) = copied else {
+            panic!("expected mixed list after owned runtime copy");
+        };
+        let RuntimeVal::Obj(handle) = values[0] else {
+            panic!("expected nested list object");
+        };
+        assert!(matches!(dest_heap.get(handle), Some(HeapValue::List(_))));
+
+        let mut legacy_map = FastHashMap::default();
+        legacy_map.insert(ArcStr::from("items"), Val::from(vec![Val::Int(2)]));
+        let map = TypedMap::from_legacy_entries(&legacy_map);
+        let mut dest_heap = HeapStore::new();
+        let copied = match map {
+            TypedMap::OwnedRuntime(values) => values.copy_into_typed_map(&mut dest_heap).expect("copy map"),
+            other => panic!("expected owned runtime map, got {:?}", other),
+        };
+
+        let Some(RuntimeVal::Obj(handle)) = copied.get_str("items") else {
+            panic!("expected copied nested map value");
+        };
+        assert!(matches!(dest_heap.get(handle), Some(HeapValue::List(_))));
+    }
+
+    #[test]
     fn runtime_entries_materialize_to_typed_string_maps() {
         let mut entries = BTreeMap::new();
         entries.insert(RuntimeMapKey::String(Arc::<str>::from("answer")), RuntimeVal::Int(42));
@@ -1013,6 +852,19 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert(RuntimeMapKey::Int(1), RuntimeVal::Int(42));
         assert!(matches!(TypedMap::from_runtime_entries(entries), TypedMap::Mixed(_)));
+    }
+
+    #[test]
+    fn typed_map_string_entries_into_heap_rejects_non_string_keys_without_materializing_twice() {
+        let mut heap = HeapStore::new();
+        let entries = TypedMap::StringInt(BTreeMap::from([(Arc::<str>::from("answer"), 42)]))
+            .string_entries_into_heap(&mut heap)
+            .expect("string entries");
+        assert_eq!(entries, vec![(Arc::<str>::from("answer"), RuntimeVal::Int(42))]);
+        assert!(heap.is_empty());
+
+        let mixed = TypedMap::Mixed(BTreeMap::from([(RuntimeMapKey::Int(1), RuntimeVal::Bool(true))]));
+        assert!(mixed.string_entries_into_heap(&mut heap).is_err());
     }
 
     #[test]

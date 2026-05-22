@@ -1,6 +1,7 @@
 //! LLVM backend entry points and helpers.
 //!
-//! The backend translates lowered VM bytecode functions into textual LLVM IR.
+//! The backend is disabled during the Instr32 migration and must be rebuilt on
+//! top of canonical `Instr32` modules.
 
 mod backend;
 mod encoding;

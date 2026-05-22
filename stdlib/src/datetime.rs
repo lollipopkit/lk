@@ -1,18 +1,15 @@
 use anyhow::{Result, anyhow};
 use chrono::Datelike;
 use lk_core::{
-    module::Module,
-    val::{RuntimeVal, Val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    module::{Module, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    val::RuntimeVal,
+    vm::{NativeArgs32, NativeRuntime32, RuntimeExport32},
 };
-use std::collections::HashMap;
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
-pub struct DateTimeModule {
-    functions: HashMap<String, Val>,
-}
+pub struct DateTimeModule;
 
 impl Default for DateTimeModule {
     fn default() -> Self {
@@ -22,17 +19,7 @@ impl Default for DateTimeModule {
 
 impl DateTimeModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-        functions.insert("now".to_string(), runtime_native(now32, 0));
-        functions.insert("format".to_string(), runtime_native(format32, 2));
-        functions.insert("parse".to_string(), runtime_native(parse32, 2));
-        functions.insert("add".to_string(), runtime_native(add_seconds32, 2));
-        functions.insert("sub".to_string(), runtime_native(sub_seconds32, 2));
-        functions.insert("day_of_week".to_string(), runtime_native(day_of_week32, 1));
-        functions.insert("day_of_year".to_string(), runtime_native(day_of_year32, 1));
-        functions.insert("is_weekend".to_string(), runtime_native(is_weekend32, 1));
-
-        Self { functions }
+        Self
     }
 }
 
@@ -49,13 +36,21 @@ impl Module for DateTimeModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("now", now32, 0),
+                RuntimeNativeExport32::plain("format", format32, 2),
+                RuntimeNativeExport32::plain("parse", parse32, 2),
+                RuntimeNativeExport32::plain("add", add_seconds32, 2),
+                RuntimeNativeExport32::plain("sub", sub_seconds32, 2),
+                RuntimeNativeExport32::plain("day_of_week", day_of_week32, 1),
+                RuntimeNativeExport32::plain("day_of_year", day_of_year32, 1),
+                RuntimeNativeExport32::plain("is_weekend", is_weekend32, 1),
+            ],
+            &[],
+        ))
     }
-}
-
-fn runtime_native(function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>, arity: u16) -> Val {
-    Val::runtime_native32(NativeFunction32::Plain(function), arity)
 }
 
 fn expect_arity(args: NativeArgs32<'_>, name: &str, arity: usize) -> Result<()> {

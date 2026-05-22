@@ -1,28 +1,23 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 
 use anyhow::{Result, anyhow, bail};
 use dashmap::DashMap;
 use lk_core::{
-    module::{Module, ModuleRegistry},
+    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
     rt::{self, RuntimePayload},
-    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, StreamCursorValue, StreamValue, Type, TypedList, Val},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, StreamCursorValue, StreamValue, Type, TypedList},
     vm::{
-        NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
-        copy_runtime_value, runtime_value_to_callable32,
+        NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32, call_runtime_callable32_runtime,
+        runtime_value_to_callable32,
     },
 };
 use once_cell::sync::Lazy;
 
 #[derive(Debug)]
-pub struct StreamModule {
-    functions: HashMap<String, Val>,
-}
+pub struct StreamModule;
 
 impl Default for StreamModule {
     fn default() -> Self {
@@ -295,7 +290,7 @@ struct ChannelCursor {
 impl StreamCursor for ChannelCursor {
     fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         match rt::with_runtime(|runtime| runtime.try_recv(self.channel_id))? {
-            Some((true, value)) => Ok(Some(runtime_payload_into_value(value, runtime.heap_mut())?)),
+            Some((true, value)) => Ok(Some(value.into_value(runtime.heap_mut())?)),
             Some((false, _)) | None => Ok(None),
         }
     }
@@ -303,30 +298,7 @@ impl StreamCursor for ChannelCursor {
 
 impl StreamModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-
-        register_native(&mut functions, "from_list", from_list32, 1);
-        register_native(&mut functions, "range", range32, NativeEntry32::VARIADIC);
-        register_native(&mut functions, "iterate", iterate32, 2);
-        register_native(&mut functions, "repeat", repeat32, 1);
-        register_native(&mut functions, "from_channel", from_channel32, 1);
-        register_native(&mut functions, "map", map32, 2);
-        register_native(&mut functions, "filter", filter32, 2);
-        register_native(&mut functions, "take", take32, 2);
-        register_native(&mut functions, "skip", skip32, 2);
-        register_native(&mut functions, "chain", chain32, 2);
-        register_native(&mut functions, "subscribe", subscribe32, 1);
-        register_native(&mut functions, "next", next32, 1);
-        register_native(&mut functions, "collect", collect32, NativeEntry32::VARIADIC);
-        register_native(&mut functions, "next_block", next_block32, NativeEntry32::VARIADIC);
-        register_native(
-            &mut functions,
-            "collect_block",
-            collect_block32,
-            NativeEntry32::VARIADIC,
-        );
-
-        Self { functions }
+        Self
     }
 }
 
@@ -343,21 +315,28 @@ impl Module for StreamModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("from_list", from_list32, 1),
+                RuntimeNativeExport32::plain("range", range32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("iterate", iterate32, 2),
+                RuntimeNativeExport32::plain("repeat", repeat32, 1),
+                RuntimeNativeExport32::plain("from_channel", from_channel32, 1),
+                RuntimeNativeExport32::plain("map", map32, 2),
+                RuntimeNativeExport32::plain("filter", filter32, 2),
+                RuntimeNativeExport32::plain("take", take32, 2),
+                RuntimeNativeExport32::plain("skip", skip32, 2),
+                RuntimeNativeExport32::plain("chain", chain32, 2),
+                RuntimeNativeExport32::plain("subscribe", subscribe32, 1),
+                RuntimeNativeExport32::plain("next", next32, 1),
+                RuntimeNativeExport32::plain("collect", collect32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("next_block", next_block32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("collect_block", collect_block32, NativeEntry32::VARIADIC),
+            ],
+            &[],
+        ))
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn from_list32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -583,7 +562,7 @@ fn next_block_cursor(cursor_id: u64, timeout_ms: Option<i64>, runtime: &mut Nati
         return next_cursor(cursor_id, runtime);
     };
     let (ok, value) = recv_channel_blocking(channel_id, timeout_ms)?;
-    let value = runtime_payload_into_value(value, runtime.heap_mut())?;
+    let value = value.into_value(runtime.heap_mut())?;
     runtime_list(vec![RuntimeVal::Bool(ok), value], runtime.heap_mut())
 }
 
@@ -614,7 +593,7 @@ fn collect_block_cursor(
         if !ok {
             break;
         }
-        out.push(runtime_payload_into_value(value, runtime.heap_mut())?);
+        out.push(value.into_value(runtime.heap_mut())?);
         taken += 1;
     }
     runtime_list(out, runtime.heap_mut())
@@ -638,11 +617,6 @@ fn recv_channel_blocking_optional(channel_id: u64, timeout_ms: Option<i64>) -> R
         _ => runtime.block_on(runtime.recv_async(channel_id)).map(Some),
     })?;
     Ok(value)
-}
-
-fn runtime_payload_into_value(payload: RuntimePayload, heap: &mut HeapStore) -> Result<RuntimeVal> {
-    let mut payload_heap = payload.heap;
-    copy_runtime_value(&payload.value, &mut payload_heap, heap)
 }
 
 fn cursor_handle(cursor_id: u64) -> Result<CursorHandle> {

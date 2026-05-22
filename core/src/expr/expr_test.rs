@@ -9,28 +9,28 @@ mod test {
         let mut env = VmContext::new();
 
         // Common test bindings
-        env.define("pub".to_string(), Val::Bool(true));
+        env.legacy_define("pub".to_string(), Val::Bool(true));
 
         let mut user = HashMap::new();
         user.insert("name".to_string(), Val::from_str("lk"));
         user.insert("age".to_string(), Val::Int(18));
-        env.define("user".to_string(), user.into());
+        env.legacy_define("user".to_string(), user.into());
 
-        env.define(
+        env.legacy_define(
             "list".to_string(),
             Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into()),
         );
         // Identifier with dash is allowed by lexer
-        env.define("list-2".to_string(), Val::list(vec![Val::Int(2)].into()));
+        env.legacy_define("list-2".to_string(), Val::list(vec![Val::Int(2)].into()));
 
         // Helper index for index-based access tests
-        env.define("index".to_string(), Val::Int(1));
+        env.legacy_define("index".to_string(), Val::Int(1));
 
         let mut nested_l2 = HashMap::new();
         nested_l2.insert("level2".to_string(), Val::from_str("value"));
         let mut nested_l1: HashMap<String, Val> = HashMap::new();
         nested_l1.insert("level1".to_string(), nested_l2.into());
-        env.define("nested".to_string(), nested_l1.into());
+        env.legacy_define("nested".to_string(), nested_l1.into());
 
         env
     }

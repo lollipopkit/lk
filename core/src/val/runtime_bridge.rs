@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 
 use super::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap, Val};
 
-pub fn val_to_runtime_val(value: &Val, heap: &mut HeapStore) -> Result<RuntimeVal> {
+pub(crate) fn legacy_val_to_runtime_val(value: &Val, heap: &mut HeapStore) -> Result<RuntimeVal> {
     match value {
         Val::Nil => Ok(RuntimeVal::Nil),
         Val::Bool(value) => Ok(RuntimeVal::Bool(*value)),
@@ -15,7 +15,7 @@ pub fn val_to_runtime_val(value: &Val, heap: &mut HeapStore) -> Result<RuntimeVa
             let values = value.as_list().expect("checked list");
             let values = values
                 .iter()
-                .map(|value| val_to_runtime_val(value, heap))
+                .map(|value| legacy_val_to_runtime_val(value, heap))
                 .collect::<Result<Vec<_>>>()?;
             Ok(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::from_runtime_values(values, heap))),
@@ -27,7 +27,7 @@ pub fn val_to_runtime_val(value: &Val, heap: &mut HeapStore) -> Result<RuntimeVa
             for (key, value) in values.iter() {
                 entries.insert(
                     RuntimeMapKey::String(key.as_str().into()),
-                    val_to_runtime_val(value, heap)?,
+                    legacy_val_to_runtime_val(value, heap)?,
                 );
             }
             Ok(RuntimeVal::Obj(
@@ -49,7 +49,7 @@ pub fn val_to_runtime_val(value: &Val, heap: &mut HeapStore) -> Result<RuntimeVa
     }
 }
 
-pub fn runtime_val_to_val(value: &RuntimeVal, heap: &HeapStore) -> Result<Val> {
+pub(crate) fn legacy_runtime_val_to_val(value: &RuntimeVal, heap: &HeapStore) -> Result<Val> {
     match value {
         RuntimeVal::Nil => Ok(Val::Nil),
         RuntimeVal::Bool(value) => Ok(Val::Bool(*value)),
@@ -73,13 +73,13 @@ fn heap_value_to_val(value: &HeapValue, heap: &HeapStore) -> Result<Val> {
         HeapValue::Object(object) => {
             let mut fields = HashMap::with_capacity(object.fields.len());
             for (key, value) in &object.fields {
-                fields.insert(key.to_string(), runtime_val_to_val(value, heap)?);
+                fields.insert(key.to_string(), legacy_runtime_val_to_val(value, heap)?);
             }
             Ok(Val::object(object.type_name.as_ref(), fields))
         }
         HeapValue::Callable(CallableValue::Aot(function)) => Ok(Val::aot_function(*function)),
         HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
-            Ok(Val::runtime_native32(function.clone(), *arity))
+            Ok(Val::legacy_runtime_native32(function.clone(), *arity))
         }
         HeapValue::Callable(CallableValue::Runtime32(value)) => Ok(Val::runtime_callable32(value.clone())),
         HeapValue::Callable(_) => bail!("cannot convert RuntimeVal callable to legacy Val"),
@@ -87,7 +87,7 @@ fn heap_value_to_val(value: &HeapValue, heap: &HeapStore) -> Result<Val> {
         HeapValue::Channel(value) => Ok(Val::channel(value.clone())),
         HeapValue::Stream(value) => Ok(Val::stream(value.clone())),
         HeapValue::StreamCursor(value) => Ok(Val::stream_cursor(value.clone())),
-        HeapValue::UpvalCell(value) => runtime_val_to_val(value, heap),
+        HeapValue::UpvalCell(value) => legacy_runtime_val_to_val(value, heap),
         HeapValue::ErrorVal(error) => {
             let mut fields = HashMap::with_capacity(2);
             fields.insert("message".to_string(), Val::from(error.message.as_ref()));
@@ -97,7 +97,7 @@ fn heap_value_to_val(value: &HeapValue, heap: &HeapStore) -> Result<Val> {
                     error
                         .trace
                         .iter()
-                        .map(|value| runtime_val_to_val(value, heap))
+                        .map(|value| legacy_runtime_val_to_val(value, heap))
                         .collect::<Result<Vec<_>>>()?,
                 ),
             );
@@ -110,23 +110,34 @@ fn typed_list_to_val(values: &TypedList, heap: &HeapStore) -> Result<Val> {
     let values = match values {
         TypedList::Mixed(values) => values
             .iter()
-            .map(|value| runtime_val_to_val(value, heap))
+            .map(|value| legacy_runtime_val_to_val(value, heap))
             .collect::<Result<Vec<_>>>()?,
         TypedList::Int(values) => values.iter().copied().map(Val::Int).collect(),
         TypedList::Float(values) => values.iter().copied().map(Val::Float).collect(),
         TypedList::Bool(values) => values.iter().copied().map(Val::Bool).collect(),
         TypedList::String(values) => values.iter().map(|value| Val::from(value.as_ref())).collect(),
+        TypedList::OwnedRuntime(values) => values.to_legacy_values(),
     };
     Ok(Val::from(values))
 }
 
 fn typed_map_to_val(values: &TypedMap, heap: &HeapStore) -> Result<Val> {
+    if let TypedMap::OwnedRuntime(values) = values {
+        return Ok(Val::from(
+            values
+                .to_legacy_entries()
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect::<HashMap<_, _>>(),
+        ));
+    }
+
     let mut out = HashMap::with_capacity(values.len());
     for (key, value) in values.entries() {
         let Some(key) = runtime_key_to_string(&key) else {
             bail!("cannot convert non-string RuntimeMapKey to legacy Val map");
         };
-        out.insert(key, runtime_val_to_val(&value, heap)?);
+        out.insert(key, legacy_runtime_val_to_val(&value, heap)?);
     }
     Ok(Val::from(out))
 }
@@ -158,7 +169,7 @@ mod tests {
             fields: BTreeMap::from([(Arc::<str>::from("value"), RuntimeVal::Int(42))]),
         }));
 
-        let value = runtime_val_to_val(&RuntimeVal::Obj(object), &heap).expect("convert object");
+        let value = legacy_runtime_val_to_val(&RuntimeVal::Obj(object), &heap).expect("convert object");
         let Some(object) = value.as_object() else {
             panic!("expected object");
         };
@@ -168,7 +179,7 @@ mod tests {
             Some(Val::Int(42))
         );
 
-        let value = runtime_val_to_val(&RuntimeVal::Obj(map), &heap).expect("convert map");
+        let value = legacy_runtime_val_to_val(&RuntimeVal::Obj(map), &heap).expect("convert map");
         assert!(matches!(value.as_map(), Some(values) if values.get("answer") == Some(&Val::Int(42))));
     }
 
@@ -180,7 +191,7 @@ mod tests {
             RuntimeVal::ShortStr(ShortStr::new("x").expect("short")),
         )]))));
 
-        let err = runtime_val_to_val(&RuntimeVal::Obj(map), &heap).expect_err("non-string key");
+        let err = legacy_runtime_val_to_val(&RuntimeVal::Obj(map), &heap).expect_err("non-string key");
 
         assert!(err.to_string().contains("non-string RuntimeMapKey"));
     }
@@ -190,8 +201,8 @@ mod tests {
         let mut heap = HeapStore::new();
         let value = Val::from(HashMap::from([("items", Val::from(vec![Val::Int(40), Val::Int(2)]))]));
 
-        let runtime = val_to_runtime_val(&value, &mut heap).expect("convert to runtime");
-        let round_trip = runtime_val_to_val(&runtime, &heap).expect("convert to legacy");
+        let runtime = legacy_val_to_runtime_val(&value, &mut heap).expect("convert to runtime");
+        let round_trip = legacy_runtime_val_to_val(&runtime, &heap).expect("convert to legacy");
 
         assert_eq!(round_trip, value);
     }

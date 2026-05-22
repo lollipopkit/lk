@@ -7,13 +7,25 @@ use crate::{
     vm::{CallWindow32, Function32, Module32, NativeArgs32, NativeEntry32, VmContext},
 };
 
-use super::{Executor32, runtime_callable, support::call_native_entry_parts};
+use super::{
+    Executor32, runtime_callable,
+    support::{call_native_entry, call_native_entry_parts, inline_native_args_from_stack},
+};
 
-pub(super) fn order_named_args32_from_slice(
+pub(super) fn write_named_args32_to_frame(
     function: &Function32,
     positional: &[RuntimeVal],
     named: &[(Arc<str>, RuntimeVal)],
-) -> Result<Vec<RuntimeVal>> {
+    frame: &mut [RuntimeVal],
+) -> Result<()> {
+    if frame.len() < function.param_count as usize {
+        bail!(
+            "callee frame has {} slots, function requires {} params",
+            frame.len(),
+            function.param_count
+        );
+    }
+
     if named.is_empty() {
         if function.param_count != positional.len() as u16 {
             bail!(
@@ -22,7 +34,8 @@ pub(super) fn order_named_args32_from_slice(
                 positional.len()
             );
         }
-        return Ok(positional.to_vec());
+        frame[..positional.len()].clone_from_slice(positional);
+        return Ok(());
     }
 
     if function.param_names.len() != function.param_count as usize {
@@ -37,8 +50,7 @@ pub(super) fn order_named_args32_from_slice(
         );
     }
 
-    let mut ordered = positional.to_vec();
-    ordered.resize(function.param_count as usize, RuntimeVal::Nil);
+    frame[..positional_count].clone_from_slice(positional);
     let mut seen = vec![false; function.param_count as usize - positional_count];
     for (name, value) in named {
         let Some(offset) = function.param_names[positional_count..]
@@ -50,7 +62,7 @@ pub(super) fn order_named_args32_from_slice(
         if std::mem::replace(&mut seen[offset], true) {
             bail!("duplicate named argument `{name}`");
         }
-        ordered[positional_count + offset] = value.clone();
+        frame[positional_count + offset] = value.clone();
     }
 
     if let Some(index) = seen.iter().position(|seen| !*seen) {
@@ -59,7 +71,7 @@ pub(super) fn order_named_args32_from_slice(
             function.param_names[positional_count + index]
         );
     }
-    Ok(ordered)
+    Ok(())
 }
 
 impl Executor32 {
@@ -87,9 +99,6 @@ impl Executor32 {
             _ => bail!("CallNamed callee is not callable"),
         };
         match callable {
-            CallableValue::Native { function_index, arity } => {
-                self.call_native_named(module, function_index, arity, window, named_count, ctx)
-            }
             CallableValue::RuntimeNative32 { arity, function } => {
                 if arity != NativeEntry32::VARIADIC && arity != window.arg_count {
                     bail!(
@@ -105,30 +114,36 @@ impl Executor32 {
                     function,
                 };
                 let args = self.call_args_stack_range(window)?;
-                let state = &mut self.state;
-                let result = call_native_entry_parts(
-                    &native,
-                    NativeArgs32::new(&state.stack[args]),
-                    &named,
-                    &mut state.heap,
-                    &state.globals,
-                    Some(module),
-                    ctx.as_deref_mut(),
-                );
+                let result = if native.function.requires_full_state() {
+                    let args = inline_native_args_from_stack(&native, &self.state.stack, args)?;
+                    call_native_entry(
+                        &native,
+                        args.as_slice(),
+                        &named,
+                        &mut self.state,
+                        Some(module),
+                        ctx.as_deref_mut(),
+                    )
+                } else {
+                    let state = &mut self.state;
+                    call_native_entry_parts(
+                        &native,
+                        NativeArgs32::new(&state.stack[args]),
+                        &named,
+                        &mut state.heap,
+                        &state.globals,
+                        Some(module),
+                        ctx.as_deref_mut(),
+                    )
+                };
                 result.or_else(|error| self.handle_call_error(error))
             }
             CallableValue::Closure {
                 function_index,
                 captures,
             } => {
-                let function = module
-                    .functions
-                    .get(function_index as usize)
-                    .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
                 let named = self.read_named_call_args(window, named_count)?;
-                let positional = self.call_args_stack_range(window)?;
-                let args = order_named_args32_from_slice(function, &self.state.stack[positional], &named)?;
-                self.call_closure_args(module, function_index, captures, args.into_iter(), ctx)
+                self.call_closure_named_stack_args(module, function_index, captures, window, &named, ctx)
             }
             CallableValue::Runtime32(function) => {
                 let named = self.read_named_call_args(window, named_count)?;
@@ -146,41 +161,6 @@ impl Executor32 {
                 bail!("AOT callable is not implemented in Executor32 yet")
             }
         }
-    }
-
-    fn call_native_named(
-        &mut self,
-        module: &Module32,
-        native_index: u32,
-        arity: u16,
-        window: CallWindow32,
-        named_count: u16,
-        ctx: &mut Option<&mut VmContext>,
-    ) -> Result<RuntimeVal> {
-        if arity != NativeEntry32::VARIADIC && arity != window.arg_count {
-            bail!(
-                "Function expects {} positional arguments, got {}",
-                arity,
-                window.arg_count
-            );
-        }
-        let native = module
-            .natives
-            .get(native_index as usize)
-            .ok_or_else(|| anyhow!("native index {} out of bounds", native_index))?;
-        let named = self.read_named_call_args(window, named_count)?;
-        let args = self.call_args_stack_range(window)?;
-        let state = &mut self.state;
-        let result = call_native_entry_parts(
-            native,
-            NativeArgs32::new(&state.stack[args]),
-            &named,
-            &mut state.heap,
-            &state.globals,
-            Some(module),
-            ctx.as_deref_mut(),
-        );
-        result.or_else(|error| self.handle_call_error(error))
     }
 
     fn read_named_call_args(&self, window: CallWindow32, named_count: u16) -> Result<Vec<(Arc<str>, RuntimeVal)>> {

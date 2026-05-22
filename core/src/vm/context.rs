@@ -1,14 +1,13 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use anyhow::anyhow;
+use anyhow::{Result, anyhow};
 
+use crate::module::runtime_export_from_runtime_native;
 use crate::stmt::ModuleResolver;
 use crate::typ::TypeChecker;
-use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_new, fast_hash_set_new};
-use crate::val::{
-    CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, Type, TypedList, TypedMap, Val,
-};
-use crate::vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32};
+use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, Type, TypedList, TypedMap, Val};
+use crate::vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32, collect_runtime_export32};
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use crate::typ::{TraitDef, TraitImpl, TraitMethodValue};
@@ -19,29 +18,23 @@ mod core_methods;
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use core_methods::{core_call_method_builtin32, core_call_method_named_builtin32};
 
-/// VM 运行期全局上下文。
+mod legacy;
+use legacy::LegacyValContext;
+
+/// VM runtime context.
 ///
-/// - 保存当前可见的全局符号表；
-/// - 维护一个 `generation` 用于失效指令级缓存；
-/// - 维护调用栈信息用于错误报告；
-/// - 提供必要的读写接口。
+/// New VM-visible globals live in `runtime_globals`. The `legacy_*` Val tables
+/// are retained only for legacy expression eval and LLVM AOT compatibility.
 #[derive(Debug, Clone)]
 pub struct VmContext {
-    // Global symbol table
-    globals: FastHashMap<String, Val>,
+    // Legacy Val symbol table; do not add new VM runtime behavior here.
+    legacy: LegacyValContext,
     runtime_globals: FastHashMap<Arc<str>, RuntimeExport32>,
-    // Names of global constants (immutable)
-    const_globals: FastHashSet<String>,
-    // Simple stack of local scopes; top-most is current
-    locals: Vec<FastHashMap<String, Val>>,
     // Cache generation for invalidation
     generation: u64,
     resolver: Arc<ModuleResolver>,
     type_checker: Option<TypeChecker>,
     structs: FastHashMap<String, FastHashMap<String, Type>>,
-    // Slot-based fast-path cache for VM execution. See docs/vm/slot-cache.md for design notes.
-    slot_values: Vec<Val>,
-    slot_scopes: Vec<FastHashMap<String, u16>>,
     call_stack: Vec<CallFrameInfo>,
 }
 
@@ -80,16 +73,12 @@ impl VmContext {
     /// trait-registration fallback paths when imports are replayed natively.
     pub fn new_without_core_vm_builtins() -> Self {
         Self {
-            globals: fast_hash_map_new(),
+            legacy: LegacyValContext::new(),
             runtime_globals: fast_hash_map_new(),
-            const_globals: fast_hash_set_new(),
-            locals: Vec::new(),
             generation: 0,
             resolver: Arc::new(ModuleResolver::default()),
             type_checker: None,
             structs: fast_hash_map_new(),
-            slot_values: Vec::new(),
-            slot_scopes: vec![fast_hash_map_new()],
             call_stack: Vec::new(),
         }
     }
@@ -117,90 +106,34 @@ impl VmContext {
         self.generation = generation;
     }
 
-    /// 从上下文中读取符号（先局部后全局）。
+    /// Legacy Val lookup path for old eval/AOT compatibility.
     #[inline]
-    pub fn get(&self, name: &str) -> Option<&Val> {
-        // Search local scopes from innermost to outermost
-        for scope in self.locals.iter().rev() {
-            if let Some(v) = scope.get(name) {
-                return Some(v);
-            }
-        }
-        // Fallback to globals
-        self.globals.get(name)
+    pub fn legacy_get(&self, name: &str) -> Option<&Val> {
+        self.legacy.get(name)
     }
 
-    /// 定义或覆盖一个变量。
-    /// 当存在局部作用域时，在当前局部作用域中设置；否则设置为全局变量。
-    pub fn set<S: Into<String>>(&mut self, name: S, value: Val) -> Option<Val> {
+    /// Legacy Val define path for old eval/AOT compatibility.
+    pub fn legacy_set<S: Into<String>>(&mut self, name: S, value: Val) -> Option<Val> {
         let name_str = name.into();
         self.runtime_globals.remove(name_str.as_str());
-        if self.locals.last().is_some() {
-            // Sync to frame slot when mapping exists
-            self.try_update_slot(&name_str, &value);
-            let prev = if let Some(scope) = self.locals.last_mut() {
-                scope.insert(name_str, value)
-            } else {
-                None
-            };
-            self.bump_generation();
-            prev
-        } else {
-            self.const_globals.remove(name_str.as_str());
-            // In case a slot mapping exists (should not for globals), best-effort sync
-            self.try_update_slot(&name_str, &value);
-            let prev = self.globals.insert(name_str, value);
-            self.bump_generation();
-            prev
-        }
+        let prev = self.legacy.set(name_str, value);
+        self.bump_generation();
+        prev
     }
 
-    /// 对已存在的变量赋值（优先局部作用域）。
-    pub fn assign(&mut self, name: &str, value: Val) -> anyhow::Result<()> {
+    /// Legacy Val assign path for old eval/AOT compatibility.
+    pub fn legacy_assign(&mut self, name: &str, value: Val) -> anyhow::Result<()> {
         self.runtime_globals.remove(name);
-        // Try local scopes first (from innermost to outermost)
-        for scope in self.locals.iter_mut().rev() {
-            if let Some(slot) = scope.get_mut(name) {
-                *slot = value.clone();
-                // Sync to frame slot when mapping exists
-                self.try_update_slot(name, &value);
-                self.bump_generation();
-                return Ok(());
-            }
-        }
-        // Then globals with const check
-        if self.const_globals.contains(name) {
-            return Err(anyhow!("Cannot assign to const variable '{}'", name));
-        }
-        if let Some(slot) = self.globals.get_mut(name) {
-            *slot = value.clone();
-            // Best-effort sync into any mapped slot (shouldn't normally exist for globals)
-            self.try_update_slot(name, &value);
-            self.bump_generation();
-            Ok(())
-        } else {
-            Err(anyhow!("Undefined variable: {}", name))
-        }
+        self.legacy.assign(name, value)?;
+        self.bump_generation();
+        Ok(())
     }
 
-    /// 删除一个变量：优先删除当前局部作用域中的变量，否则删除全局变量。
-    pub fn remove(&mut self, name: &str) -> Option<Val> {
-        // Try remove from innermost local scope
-        if let Some(scope) = self.locals.last_mut()
-            && let Some(prev) = scope.remove(name)
-        {
-            // Clear corresponding frame slot to Nil if mapped
-            self.try_update_slot(name, &Val::Nil);
-            self.bump_generation();
-            return Some(prev);
-        }
-        // Otherwise remove from globals
-        self.const_globals.remove(name);
+    /// Legacy Val removal path for old eval/AOT compatibility.
+    pub fn legacy_remove(&mut self, name: &str) -> Option<Val> {
         self.runtime_globals.remove(name);
-        let prev = self.globals.remove(name);
+        let prev = self.legacy.remove(name);
         if prev.is_some() {
-            // Best-effort clear mapped slot (shouldn't exist for globals)
-            self.try_update_slot(name, &Val::Nil);
             self.bump_generation();
         }
         prev
@@ -208,15 +141,11 @@ impl VmContext {
 
     /// 构建函数，允许自定义组件。
     pub fn with_resolver(mut self, resolver: Arc<ModuleResolver>) -> Self {
-        for (name, val) in resolver.builtin_iter() {
-            if self.globals.contains_key(name) || self.runtime_globals.contains_key(name.as_str()) {
+        for (name, value) in resolver.runtime_builtin_iter() {
+            if self.runtime_globals.contains_key(name.as_ref()) {
                 continue;
             }
-            if let Some(value) = runtime_export_from_builtin_val(val) {
-                self.runtime_globals.insert(Arc::<str>::from(name.as_str()), value);
-            } else {
-                self.globals.insert(name.clone(), val.clone());
-            }
+            self.runtime_globals.insert(Arc::clone(name), value.clone());
         }
         self.resolver = resolver;
         self
@@ -229,36 +158,31 @@ impl VmContext {
     }
 
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &Val)> {
-        self.globals.iter()
-    }
-
-    #[inline]
-    pub fn globals(&self) -> &FastHashMap<String, Val> {
-        &self.globals
-    }
-
-    #[inline]
     pub fn runtime_globals_iter(&self) -> impl Iterator<Item = (&Arc<str>, &RuntimeExport32)> {
         self.runtime_globals.iter()
+    }
+
+    pub fn collect_runtime_globals_garbage(&self) -> Result<()> {
+        for export in self.runtime_globals.values() {
+            collect_runtime_export32(export)?;
+        }
+        Ok(())
+    }
+
+    pub fn get_runtime_global(&self, name: &str) -> Option<&RuntimeExport32> {
+        self.runtime_globals.get(name)
     }
 
     pub fn define_runtime_global(&mut self, name: impl Into<Arc<str>>, value: RuntimeExport32) {
         let name = name.into();
         let name_str = name.as_ref();
-        self.globals.remove(name_str);
-        self.const_globals.remove(name_str);
+        self.legacy.remove_global(name_str);
         self.runtime_globals.insert(name, value);
         self.bump_generation();
     }
 
     pub fn define_runtime_value(&mut self, name: impl Into<Arc<str>>, value: RuntimeVal, heap: HeapStore) {
         self.define_runtime_global(name, RuntimeExport32::from_value(value, heap));
-    }
-
-    #[inline]
-    pub fn globals_mut(&mut self) -> &mut FastHashMap<String, Val> {
-        &mut self.globals
     }
 
     /// 手动递增版本号，用于强制失效缓存。
@@ -269,23 +193,6 @@ impl VmContext {
 
     fn bump_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
-    }
-
-    #[inline]
-    fn ensure_slot_scope_depth(&mut self, depth: usize) -> &mut FastHashMap<String, u16> {
-        while self.slot_scopes.len() <= depth {
-            self.slot_scopes.push(fast_hash_map_new());
-        }
-        self.slot_scopes
-            .get_mut(depth)
-            .expect("slot scope guaranteed by ensure")
-    }
-
-    fn ensure_slot_capacity(&mut self, slot: usize) {
-        let needed = slot + 1;
-        if self.slot_values.len() < needed {
-            self.slot_values.resize_with(needed, || Val::Nil);
-        }
     }
 
     /// 调用栈管理：进入函数调用
@@ -349,11 +256,6 @@ impl VmContext {
         }
     }
 
-    /// 导出全局符号（用于模块导入系统）
-    pub fn export_symbols(&self) -> FastHashMap<String, Val> {
-        self.globals.clone()
-    }
-
     /// 获取模块解析器的引用
     pub fn resolver(&self) -> &Arc<ModuleResolver> {
         &self.resolver
@@ -369,28 +271,21 @@ impl VmContext {
         &self.structs
     }
 
-    /// 作用域管理：进入新的词法作用域
+    /// Enter a legacy Val lexical scope.
     pub fn push_scope(&mut self) {
-        // Push a new (empty) local scope
-        self.locals.push(fast_hash_map_new());
-        // Maintain slot scope stack for VM fast-path cache
-        self.slot_scopes.push(fast_hash_map_new());
+        self.legacy.push_scope();
     }
 
-    /// 作用域管理：退出当前词法作用域
+    /// Exit a legacy Val lexical scope.
     pub fn pop_scope(&mut self) {
-        // Pop the current local scope if present
-        if self.locals.pop().is_some() {
+        if self.legacy.pop_scope() {
             self.bump_generation();
         }
-        if self.slot_scopes.len() > 1 {
-            let _ = self.slot_scopes.pop();
-        }
     }
 
-    /// 获取变量值（与get方法相同，为了兼容性）
-    pub fn get_value(&self, name: &str) -> Option<Val> {
-        self.get(name).cloned()
+    /// Legacy Val lookup path for old eval/AOT compatibility.
+    pub fn legacy_get_value(&self, name: &str) -> Option<Val> {
+        self.legacy_get(name).cloned()
     }
 
     /// 获取类型检查器的可变引用
@@ -403,17 +298,14 @@ impl VmContext {
         self.structs.insert(name, fields);
     }
 
-    /// 定义一个变量（与 set 方法相同，为了兼容性）
-    pub fn define<S: Into<String>>(&mut self, name: S, value: Val) -> Option<Val> {
-        self.set(name, value)
+    /// Legacy Val define path for old eval/AOT compatibility.
+    pub fn legacy_define<S: Into<String>>(&mut self, name: S, value: Val) -> Option<Val> {
+        self.legacy_set(name, value)
     }
 
-    /// 定义一个常量变量（不能被重新赋值）
-    pub fn define_const<S: Into<String>>(&mut self, name: S, value: Val) {
-        let name_str = name.into();
-        self.globals.insert(name_str.clone(), value);
-        self.const_globals.insert(name_str);
-        // Constants are globals; do not mirror into frame slots by default.
+    /// Legacy Val const define path for old eval/AOT compatibility.
+    pub fn legacy_define_const<S: Into<String>>(&mut self, name: S, value: Val) {
+        self.legacy.define_const(name.into(), value);
         self.bump_generation();
     }
 
@@ -422,48 +314,18 @@ impl VmContext {
         self.clone()
     }
 
-    /// 检查名称是否为本地名称
-    /// 在当前实现中，所有名称都是全局的，所以此方法返回 false
+    /// Check whether legacy Val lexical scopes are active.
     pub fn is_local_name(&self, _name: &str) -> bool {
-        // If any local scope exists, names may be local; exact lookup happens in get/assign
-        !self.locals.is_empty()
+        self.legacy.has_local_scope()
     }
 
-    /// 在指定槽位绑定参数值（用于函数调用优化）
-    pub fn bind_param_at_slot(&mut self, name: String, slot: u16, value: Val) {
-        if self.locals.is_empty() {
-            self.locals.push(fast_hash_map_new());
-        }
-        let last_scope_idx = self.slot_scopes.len().saturating_sub(1);
-        self.ensure_slot_scope_depth(last_scope_idx);
-        self.ensure_slot_capacity(slot as usize);
-        self.slot_values[slot as usize] = value.clone();
-        if let Some(scope) = self.slot_scopes.last_mut() {
-            scope.insert(name.clone(), slot);
-        }
-        if let Some(scope) = self.locals.last_mut() {
-            scope.insert(name, value);
-        }
+    /// Bind a parameter into the current lexical scope.
+    ///
+    /// The old context-owned slot cache has been removed; executable frame
+    /// windows now live in `RuntimeModuleState32.stack`.
+    pub fn bind_param_at_slot(&mut self, name: String, _slot: u16, value: Val) {
+        self.legacy.bind_param_at_slot(name, value);
         self.bump_generation();
-    }
-
-    /// 预加载按深度分组的槽映射（用于函数调用优化）
-    /// `mappings` 形如 (name, slot, depth)。depth=0 为函数级作用域。
-    pub fn preload_slot_mappings_per_depth(&mut self, mappings: &[(String, u16, u16)]) {
-        if mappings.is_empty() {
-            return;
-        }
-        let mut max_depth: usize = 0;
-        let mut max_slot: usize = 0;
-        for (_, slot, depth) in mappings.iter() {
-            max_depth = max_depth.max(*depth as usize);
-            max_slot = max_slot.max(*slot as usize);
-        }
-        self.ensure_slot_capacity(max_slot);
-        for (name, slot, depth) in mappings.iter() {
-            let scope = self.ensure_slot_scope_depth(*depth as usize);
-            scope.entry(name.clone()).or_insert(*slot);
-        }
     }
 
     #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -480,12 +342,12 @@ impl VmContext {
         );
         self.install_runtime_builtin(
             "__lk_call_method",
-            NativeFunction32::Plain(core_call_method_builtin32),
+            NativeFunction32::FullState(core_call_method_builtin32),
             3,
         );
         self.install_runtime_builtin(
             "__lk_call_method_named",
-            NativeFunction32::Plain(core_call_method_named_builtin32),
+            NativeFunction32::FullState(core_call_method_named_builtin32),
             4,
         );
         self.install_runtime_builtin(
@@ -507,42 +369,12 @@ impl VmContext {
 
     #[cfg(not(feature = "aot-minimal-runtime"))]
     fn install_runtime_builtin(&mut self, name: &str, function: NativeFunction32, arity: u16) {
-        if self.globals.contains_key(name) || self.runtime_globals.contains_key(name) {
+        if self.runtime_globals.contains_key(name) {
             return;
         }
         let value = runtime_export_from_runtime_native(function, arity);
         self.runtime_globals.insert(Arc::<str>::from(name), value);
     }
-
-    // -------- Internal helpers --------
-    fn try_update_slot(&mut self, name: &str, value: &Val) {
-        for scope in self.slot_scopes.iter().rev() {
-            if let Some(&slot) = scope.get(name) {
-                let idx = slot as usize;
-                self.ensure_slot_capacity(idx);
-                if let Some(entry) = self.slot_values.get_mut(idx) {
-                    *entry = value.clone();
-                }
-                break;
-            }
-        }
-    }
-}
-
-fn runtime_export_from_builtin_val(value: &Val) -> Option<RuntimeExport32> {
-    let Val::Obj(object) = value else {
-        return None;
-    };
-    let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-        return None;
-    };
-    Some(runtime_export_from_runtime_native(function.clone(), *arity))
-}
-
-fn runtime_export_from_runtime_native(function: NativeFunction32, arity: u16) -> RuntimeExport32 {
-    let mut heap = HeapStore::new();
-    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })));
-    RuntimeExport32::from_value(value, heap)
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -685,6 +517,7 @@ fn runtime_list_values(
             .iter()
             .map(|value| runtime_string_value(value, runtime.heap_mut()))
             .collect(),
+        TypedList::OwnedRuntime(values) => values.copy_values_into(runtime.heap_mut()),
     })
 }
 
@@ -719,14 +552,15 @@ fn core_make_struct_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntim
             let value = runtime
                 .heap()
                 .get(*handle)
+                .cloned()
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-            let HeapValue::Map(map) = value else {
+            let HeapValue::Map(map) = &value else {
                 return Err(anyhow!(
                     "__lk_make_struct expects fields as map, got {}",
                     value.type_name()
                 ));
             };
-            runtime_object_fields_from_map(map)?
+            runtime_object_fields_from_map(map, runtime.heap_mut())?
         }
         other => {
             return Err(anyhow!(
@@ -814,14 +648,18 @@ fn core_merge_fields_builtin32(
             let value = runtime
                 .heap()
                 .get(*handle)
+                .cloned()
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-            match value {
+            match &value {
                 HeapValue::Object(object) => object
                     .fields
                     .iter()
                     .map(|(key, value)| (RuntimeMapKey::String(key.clone()), value.clone()))
                     .collect::<BTreeMap<_, _>>(),
-                HeapValue::Map(map) => map.entries().into_iter().collect::<BTreeMap<_, _>>(),
+                HeapValue::Map(map) => map
+                    .entries_into_heap(runtime.heap_mut())?
+                    .into_iter()
+                    .collect::<BTreeMap<_, _>>(),
                 other => {
                     return Err(anyhow!(
                         "__lk_merge_fields base must be Object, Map, or Nil, got {}",
@@ -844,14 +682,15 @@ fn core_merge_fields_builtin32(
             let value = runtime
                 .heap()
                 .get(*handle)
+                .cloned()
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-            let HeapValue::Map(overlay) = value else {
+            let HeapValue::Map(overlay) = &value else {
                 return Err(anyhow!(
                     "__lk_merge_fields overlay must be Map, got {}",
                     value.type_name()
                 ));
             };
-            for (key, value) in overlay.entries() {
+            for (key, value) in overlay.entries_into_heap(runtime.heap_mut())? {
                 fields.insert(key, value);
             }
             Ok(RuntimeVal::Obj(
@@ -889,9 +728,12 @@ fn runtime_string_value(value: &str, heap: &mut HeapStore) -> RuntimeVal {
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn runtime_object_fields_from_map(map: &TypedMap) -> anyhow::Result<BTreeMap<Arc<str>, RuntimeVal>> {
+fn runtime_object_fields_from_map(
+    map: &TypedMap,
+    heap: &mut HeapStore,
+) -> anyhow::Result<BTreeMap<Arc<str>, RuntimeVal>> {
     let mut fields = BTreeMap::new();
-    for (key, value) in map.entries() {
+    for (key, value) in map.entries_into_heap(heap)? {
         let Some(key) = key.as_arc_str() else {
             return Err(anyhow!("__lk_make_struct field keys must be strings"));
         };
@@ -953,46 +795,57 @@ fn core_bit_not_builtin32(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::{Module32, RuntimeModuleState32};
 
     #[test]
-    fn test_bind_param_at_slot_syncs_frame_and_locals() {
+    fn test_bind_param_at_slot_binds_only_locals() {
         let mut ctx = VmContext::new();
-        // Bind a parameter into slot 1
         ctx.bind_param_at_slot("p".to_string(), 1, Val::Int(42));
-
-        // Visible via locals API
-        assert_eq!(ctx.get("p"), Some(&Val::Int(42)));
-
-        assert!(ctx.slot_values.len() >= 2);
-        assert_eq!(ctx.slot_values[1], Val::Int(42));
-
-        let top_scope = ctx.slot_scopes.last().expect("slot scope present");
-        assert_eq!(top_scope.get("p").copied(), Some(1));
+        assert_eq!(ctx.legacy_get("p"), Some(&Val::Int(42)));
     }
 
     #[test]
-    fn test_set_assign_remove_syncs_slot() {
+    fn test_set_assign_remove_updates_locals_without_context_slots() {
         let mut ctx = VmContext::new();
         ctx.push_scope();
 
-        // Preload name -> slot mapping at function depth 0
-        ctx.preload_slot_mappings_per_depth(&[("x".to_string(), 2, 0)]);
+        ctx.legacy_set("x".to_string(), Val::Int(7));
+        assert_eq!(ctx.legacy_get("x"), Some(&Val::Int(7)));
 
-        // set should write both locals map and frame slot
-        ctx.set("x".to_string(), Val::Int(7));
-        assert_eq!(ctx.get("x"), Some(&Val::Int(7)));
-        assert!(ctx.slot_values.len() >= 3);
-        assert_eq!(ctx.slot_values[2], Val::Int(7));
+        ctx.legacy_assign("x", Val::Int(9)).expect("assign x");
+        assert_eq!(ctx.legacy_get("x"), Some(&Val::Int(9)));
 
-        // assign should update the same slot
-        ctx.assign("x", Val::Int(9)).expect("assign x");
-        assert_eq!(ctx.slot_values[2], Val::Int(9));
-
-        // remove should clear slot to Nil and remove from locals scope
-        let prev = ctx.remove("x");
+        let prev = ctx.legacy_remove("x");
         assert_eq!(prev, Some(Val::Int(9)));
-        assert_eq!(ctx.slot_values[2], Val::Nil);
-        assert_eq!(ctx.get("x"), None);
+        assert_eq!(ctx.legacy_get("x"), None);
+    }
+
+    #[test]
+    fn collect_runtime_globals_garbage_keeps_export_values_and_globals() {
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let mut heap = HeapStore::new();
+        let exported = heap.alloc(HeapValue::String(Arc::<str>::from("exported")));
+        let global = heap.alloc(HeapValue::String(Arc::<str>::from("global")));
+        let dead = heap.alloc(HeapValue::String(Arc::<str>::from("dead")));
+        ctx.define_runtime_global(
+            "module",
+            RuntimeExport32 {
+                value: RuntimeVal::Obj(exported),
+                state: Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
+                    heap,
+                    vec![RuntimeVal::Obj(global)],
+                ))),
+                module: Arc::new(Module32::default()),
+            },
+        );
+
+        ctx.collect_runtime_globals_garbage().expect("collect globals");
+        let export = ctx.get_runtime_global("module").expect("runtime export");
+        let state = export.state.lock().expect("runtime export state");
+
+        assert!(state.heap.get(exported).is_some());
+        assert!(state.heap.get(global).is_some());
+        assert!(state.heap.get(dead).is_none());
     }
 
     #[cfg(not(feature = "aot-minimal-runtime"))]

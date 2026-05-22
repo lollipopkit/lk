@@ -5,13 +5,12 @@
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{self, Module},
+    module::{self, Module, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
     rt,
-    rt::RuntimePayload,
-    val::{HeapStore, HeapValue, RuntimeVal, TaskValue, Val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32, copy_runtime_value},
+    val::{HeapStore, HeapValue, RuntimeVal, TaskValue},
+    vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeExport32},
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct TaskModule;
@@ -36,25 +35,33 @@ impl Module for TaskModule {
     }
 
     fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        for (name, value) in self.exports() {
-            registry.register_builtin(&format!("{}::{}", self.name(), name), value);
-        }
+        registry.register_runtime_builtin("task::await", NativeFunction32::Plain(task_await32), 1);
+        registry.register_runtime_builtin("task::try_await", NativeFunction32::Plain(task_try_await32), 1);
+        registry.register_runtime_builtin(
+            "task::join_all",
+            NativeFunction32::Plain(task_join_all32),
+            NativeEntry32::VARIADIC,
+        );
+        registry.register_runtime_builtin("task::sleep", NativeFunction32::Plain(task_sleep32), 1);
+        registry.register_runtime_builtin(
+            "task::spawn_blocking",
+            NativeFunction32::Plain(task_spawn_blocking32),
+            1,
+        );
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        let mut functions = HashMap::new();
-        register_native(&mut functions, "await", task_await32, 1);
-        register_native(&mut functions, "try_await", task_try_await32, 1);
-        register_native(
-            &mut functions,
-            "join_all",
-            task_join_all32,
-            lk_core::vm::NativeEntry32::VARIADIC,
-        );
-        register_native(&mut functions, "sleep", task_sleep32, 1);
-        register_native(&mut functions, "spawn_blocking", task_spawn_blocking32, 1);
-        functions
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("await", task_await32, 1),
+                RuntimeNativeExport32::plain("try_await", task_try_await32, 1),
+                RuntimeNativeExport32::plain("join_all", task_join_all32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("sleep", task_sleep32, 1),
+                RuntimeNativeExport32::plain("spawn_blocking", task_spawn_blocking32, 1),
+            ],
+            &[],
+        ))
     }
 }
 
@@ -62,18 +69,6 @@ impl TaskModule {
     pub fn new() -> Self {
         Self
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
@@ -122,14 +117,14 @@ fn task_await32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Re
     let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.await()")?;
     let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
         .map_err(|err| anyhow!("Failed to await task: {err}"))?;
-    runtime_payload_into_value(value, runtime.heap_mut())
+    value.into_value(runtime.heap_mut())
 }
 
 fn task_try_await32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "task.try_await()")?;
     let task = task_arg(args.get(0).expect("checked arity"), runtime.heap(), "task.try_await()")?;
     let value = match &task.value {
-        Some(value) => runtime_payload_ref_to_value(value, runtime.heap_mut())?,
+        Some(value) => value.clone_value_into(runtime.heap_mut())?,
         None => RuntimeVal::Nil,
     };
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(
@@ -143,20 +138,10 @@ fn task_join_all32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
         let task = task_arg(arg, runtime.heap(), "task.join_all()")?;
         let value = rt::with_runtime(|rt| rt.block_on(rt.join_task(task.id)))
             .map_err(|err| anyhow!("Failed to await task: {err}"))?;
-        values.push(runtime_payload_into_value(value, runtime.heap_mut())?);
+        values.push(value.into_value(runtime.heap_mut())?);
     }
     let list = lk_core::val::TypedList::from_runtime_values(values, runtime.heap());
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
-}
-
-fn runtime_payload_into_value(payload: RuntimePayload, heap: &mut HeapStore) -> Result<RuntimeVal> {
-    let mut payload_heap = payload.heap;
-    copy_runtime_value(&payload.value, &mut payload_heap, heap)
-}
-
-fn runtime_payload_ref_to_value(payload: &RuntimePayload, heap: &mut HeapStore) -> Result<RuntimeVal> {
-    let mut payload_heap = payload.heap.clone();
-    copy_runtime_value(&payload.value, &mut payload_heap, heap)
 }
 
 fn task_sleep32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -193,18 +178,10 @@ fn task_spawn_blocking32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::{module::Module, val::CallableValue, vm::RuntimeModuleState32};
+    use lk_core::{rt::RuntimePayload, vm::RuntimeModuleState32};
 
     fn task_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = TaskModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            bail!("{name} must be a heap callable");
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            bail!("{name} must be RuntimeNative32");
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&TaskModule::new(), name)
     }
 
     fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState32) -> Result<RuntimeVal> {
@@ -216,9 +193,8 @@ mod tests {
         function(NativeArgs32::new(args), &mut runtime)
     }
 
-    fn resolved_task(value: Val, heap: &mut HeapStore) -> RuntimeVal {
-        let value = lk_core::val::val_to_runtime_val(&value, heap).expect("test value converts to runtime");
-        let payload = RuntimePayload::new(value, heap.clone());
+    fn resolved_task(value: RuntimeVal, heap: &mut HeapStore) -> RuntimeVal {
+        let payload = RuntimePayload::new(value, HeapStore::new());
         RuntimeVal::Obj(heap.alloc(HeapValue::Task(Arc::new(TaskValue {
             id: 0,
             value: Some(payload),
@@ -241,6 +217,7 @@ mod tests {
                 .iter()
                 .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
                 .collect(),
+            lk_core::val::TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 
@@ -257,7 +234,7 @@ mod tests {
     #[test]
     fn task_try_await_uses_runtime_task_value() -> Result<()> {
         let mut state = RuntimeModuleState32::default();
-        let task = resolved_task(Val::Int(42), &mut state.heap);
+        let task = resolved_task(RuntimeVal::Int(42), &mut state.heap);
         let result = call("try_await", &[task], &mut state)?;
         assert_eq!(
             expect_list(&result, &state.heap),

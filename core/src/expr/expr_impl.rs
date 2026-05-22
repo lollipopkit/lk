@@ -1,10 +1,9 @@
-use crate::rt::{RuntimePayload, SelectOperation, with_runtime};
 use crate::{
     ast::Parser,
     op::{BinOp, UnaryOp},
     token::Tokenizer,
     typ::TypeChecker,
-    val::{HeapStore, Type, Val, runtime_val_to_val, val_to_runtime_val},
+    val::{Type, Val},
     vm::VmContext,
 };
 use anyhow::{Result, anyhow};
@@ -906,10 +905,8 @@ impl Expr {
             // 1) 本地/全局作用域
             // 2) 模块解析器注册的内置函数（如测试环境中的 spawn/chan）
             Expr::Var(name) => {
-                if let Some(v) = ctx.get(name).cloned() {
+                if let Some(v) = ctx.legacy_get(name).cloned() {
                     Ok(v)
-                } else if let Some(v) = ctx.resolver().get_builtin(name) {
-                    Ok(v.clone())
                 } else {
                     Err(anyhow!("Undefined variable: {}", name))
                 }
@@ -1014,10 +1011,8 @@ impl Expr {
             // 函数调用：按名称
             Expr::Call(func_name, args) => {
                 // Resolve callee with same fallback strategy as variable lookup
-                let func_val = if let Some(v) = ctx.get(func_name).cloned() {
+                let func_val = if let Some(v) = ctx.legacy_get(func_name).cloned() {
                     v
-                } else if let Some(v) = ctx.resolver().get_builtin(func_name) {
-                    v.clone()
                 } else {
                     return Err(anyhow!("Undefined function: {}", func_name));
                 };
@@ -1209,76 +1204,9 @@ impl Expr {
                 }
             }
             // select 表达式
-            Expr::Select { cases, default_case } => {
-                let mut select_op = SelectOperation::new();
-                let mut bindings: Vec<Option<String>> = Vec::with_capacity(cases.len());
-                for (idx, case) in cases.iter().enumerate() {
-                    // guard
-                    if let Some(g) = &case.guard {
-                        match g.eval_with_ctx(ctx)? {
-                            Val::Bool(true) => {}
-                            Val::Bool(false) => {
-                                bindings.push(None);
-                                continue;
-                            }
-                            other => {
-                                return Err(anyhow!("Select guard must be Bool, got {:?}", other));
-                            }
-                        }
-                    }
-                    match &case.pattern {
-                        SelectPattern::Recv { binding, channel } => {
-                            let channel_val = channel.eval_with_ctx(ctx)?;
-                            let Some(channel) = channel_val.as_channel() else {
-                                return Err(anyhow!("recv() target is not a channel"));
-                            };
-                            let channel_id = channel.id;
-                            select_op.add_recv(idx, channel_id);
-                            bindings.push(binding.clone());
-                        }
-                        SelectPattern::Send { channel, value } => {
-                            let channel_val = channel.eval_with_ctx(ctx)?;
-                            let value_val = value.eval_with_ctx(ctx)?;
-                            let Some(channel) = channel_val.as_channel() else {
-                                return Err(anyhow!("send() target is not a channel"));
-                            };
-                            let channel_id = channel.id;
-                            let mut heap = HeapStore::new();
-                            let value = val_to_runtime_val(&value_val, &mut heap)?;
-                            select_op.add_send(idx, channel_id, RuntimePayload::new(value, heap));
-                            bindings.push(None);
-                        }
-                    }
-                }
-                let has_default = default_case.is_some();
-                if select_op.is_empty() && !has_default {
-                    return Ok(Val::Nil);
-                }
-                let select_result = with_runtime(|runtime| runtime.block_on(select_op.execute(runtime, has_default)))?;
-                if select_result.is_default {
-                    if let Some(default_expr) = default_case {
-                        return default_expr.eval_with_ctx(ctx);
-                    }
-                    return Ok(Val::Nil);
-                }
-                let case_index = select_result
-                    .case_index
-                    .ok_or_else(|| anyhow!("Select returned no case index"))?;
-                let selected_case = cases
-                    .get(case_index)
-                    .ok_or_else(|| anyhow!("Invalid select case index"))?;
-                if let Some(name) = bindings.get(case_index).cloned().flatten()
-                    && let Some((_ok, payload)) = select_result.recv_payload
-                {
-                    let value = runtime_val_to_val(&payload.value, &payload.heap)?;
-                    ctx.push_scope();
-                    ctx.set(name, value);
-                    let result = selected_case.body.eval_with_ctx(ctx);
-                    ctx.pop_scope();
-                    return result;
-                }
-                selected_case.body.eval_with_ctx(ctx)
-            }
+            Expr::Select { .. } => Err(anyhow!(
+                "legacy Expr::eval_with_ctx does not execute select; use the RuntimeNative32 select$block path"
+            )),
             // 匹配表达式
             Expr::Match { value, arms } => {
                 let match_val = value.eval_with_ctx(ctx)?;
@@ -1286,7 +1214,7 @@ impl Expr {
                     if let Some(bindings) = Pattern::matches(&arm.pattern, &match_val, Some(ctx))? {
                         ctx.push_scope();
                         for (name, val) in bindings {
-                            ctx.set(name, val);
+                            ctx.legacy_set(name, val);
                         }
                         let result = arm.body.eval_with_ctx(ctx);
                         ctx.pop_scope();

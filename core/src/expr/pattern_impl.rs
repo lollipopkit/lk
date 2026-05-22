@@ -156,7 +156,7 @@ impl Pattern {
                     let mut temp_ctx = ctx_ref.clone();
                     temp_ctx.push_scope();
                     for (name, value) in &temp_bindings {
-                        temp_ctx.set(name.clone(), value.clone());
+                        temp_ctx.legacy_set(name.clone(), value.clone());
                     }
                     let guard_result = guard.eval_with_ctx(&mut temp_ctx)?;
                     temp_ctx.pop_scope();

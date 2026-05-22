@@ -5,7 +5,10 @@ use arcstr::ArcStr;
 
 use crate::{
     val::{HeapStore, HeapValue, RuntimeVal, ShortStr, Type, TypedList},
-    vm::{NativeArgs32, NativeRuntime32, call_runtime_value32_runtime, call_runtime_value32_runtime_named},
+    vm::{
+        NativeArgs32, NativeRuntime32, call_runtime_value32_runtime, call_runtime_value32_runtime_named,
+        call_runtime_value32_runtime_with_receiver,
+    },
 };
 
 fn method_name_arc(helper: &str, method: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<ArcStr> {
@@ -68,7 +71,7 @@ pub(super) fn core_call_method_named_builtin32(
     let named = runtime_named_args(
         "__lk_call_method_named",
         args.get(3).expect("arity checked"),
-        runtime.heap(),
+        runtime.heap_mut(),
     )?;
     call_method_named_runtime(receiver, method, &positional, &named, runtime)
 }
@@ -142,10 +145,7 @@ fn call_trait_method_runtime(
 
     match method_val {
         crate::typ::TraitMethodValue::Runtime(callee) => {
-            let mut args = Vec::with_capacity(positional.len() + 1);
-            args.push(receiver);
-            args.extend_from_slice(positional);
-            crate::vm::call_runtime_value32_runtime(callee, &args, state, module, Some(ctx))
+            call_runtime_value32_runtime_with_receiver(callee, &receiver, positional, state, module, Some(ctx))
         }
         crate::typ::TraitMethodValue::Legacy(_) => {
             bail!("legacy trait methods cannot be called from Executor32")
@@ -164,7 +164,7 @@ fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> a
             match value {
                 HeapValue::String(value) => Ok(runtime_string_access(value.as_ref(), field)),
                 HeapValue::List(values) => Ok(runtime_list_access(&values, field)),
-                HeapValue::Map(values) => Ok(values.get_str(field)),
+                HeapValue::Map(values) => values.get_str_into_heap(field, heap),
                 HeapValue::Object(object) => Ok(object.fields.get(field).cloned()),
                 HeapValue::Task(task) if field == "value" => {
                     let Some(value) = &task.value else {
@@ -217,7 +217,7 @@ fn runtime_positional_args(helper: &str, value: &RuntimeVal, heap: &mut HeapStor
                     value.type_name()
                 );
             };
-            Ok(runtime_list_values(values, heap))
+            Ok(values.materialize_mixed(heap))
         }
         other => bail!("{helper} expects positional arguments as list, got {:?}", other.kind()),
     }
@@ -226,40 +226,23 @@ fn runtime_positional_args(helper: &str, value: &RuntimeVal, heap: &mut HeapStor
 fn runtime_named_args(
     helper: &str,
     value: &RuntimeVal,
-    heap: &HeapStore,
+    heap: &mut HeapStore,
 ) -> anyhow::Result<Vec<(Arc<str>, RuntimeVal)>> {
     match value {
         RuntimeVal::Nil => Ok(Vec::new()),
         RuntimeVal::Obj(handle) => {
             let value = heap
                 .get(*handle)
+                .cloned()
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-            let HeapValue::Map(values) = value else {
+            let HeapValue::Map(values) = &value else {
                 bail!("{helper} expects named arguments as map, got {}", value.type_name());
             };
-            let mut out = Vec::with_capacity(values.len());
-            for (key, value) in values.entries() {
-                let Some(key) = key.as_str() else {
-                    bail!("{helper} named argument key must be a string");
-                };
-                out.push((Arc::<str>::from(key), value));
-            }
-            Ok(out)
+            values
+                .string_entries_into_heap(heap)
+                .map_err(|error| anyhow!("{helper} named argument key must be a string: {error}"))
         }
         other => bail!("{helper} expects named arguments as map, got {:?}", other.kind()),
-    }
-}
-
-fn runtime_list_values(values: TypedList, heap: &mut HeapStore) -> Vec<RuntimeVal> {
-    match values {
-        TypedList::Mixed(values) => values,
-        TypedList::Int(values) => values.into_iter().map(RuntimeVal::Int).collect(),
-        TypedList::Float(values) => values.into_iter().map(RuntimeVal::Float).collect(),
-        TypedList::Bool(values) => values.into_iter().map(RuntimeVal::Bool).collect(),
-        TypedList::String(values) => values
-            .into_iter()
-            .map(|value| runtime_string_value(value.to_string(), heap))
-            .collect(),
     }
 }
 

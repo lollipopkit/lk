@@ -23,6 +23,23 @@ impl RuntimePayload {
         Self { value, heap }
     }
 
+    pub fn copy_from_value(value: &RuntimeVal, heap: &HeapStore) -> Result<Self> {
+        let mut source_heap = heap.clone();
+        let mut payload_heap = HeapStore::new();
+        let value = crate::vm::copy_runtime_value(value, &mut source_heap, &mut payload_heap)?;
+        Ok(Self::new(value, payload_heap))
+    }
+
+    pub fn into_value(self, heap: &mut HeapStore) -> Result<RuntimeVal> {
+        let mut payload_heap = self.heap;
+        crate::vm::copy_runtime_value(&self.value, &mut payload_heap, heap)
+    }
+
+    pub fn clone_value_into(&self, heap: &mut HeapStore) -> Result<RuntimeVal> {
+        let mut payload_heap = self.heap.clone();
+        crate::vm::copy_runtime_value(&self.value, &mut payload_heap, heap)
+    }
+
     pub fn nil() -> Self {
         Self {
             value: RuntimeVal::Nil,

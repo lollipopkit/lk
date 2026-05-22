@@ -1,19 +1,17 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry},
-    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, TypedMap},
     vm::{
-        NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
-        runtime_value_to_callable32,
+        NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeExport32,
+        call_runtime_callable32_runtime, runtime_value_to_callable32,
     },
 };
 
 #[derive(Debug)]
-pub struct IterModule {
-    functions: HashMap<String, Val>,
-}
+pub struct IterModule;
 
 impl Default for IterModule {
     fn default() -> Self {
@@ -23,24 +21,7 @@ impl Default for IterModule {
 
 impl IterModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-
-        register_native(&mut functions, "map", map32, 2);
-        register_native(&mut functions, "filter", filter32, 2);
-        register_native(&mut functions, "reduce", reduce32, 3);
-        register_native(&mut functions, "enumerate", enumerate32, 1);
-        register_native(&mut functions, "range", range32, NativeEntry32::VARIADIC);
-        register_native(&mut functions, "zip", zip32, 2);
-        register_native(&mut functions, "take", take32, 2);
-        register_native(&mut functions, "skip", skip32, 2);
-        register_native(&mut functions, "chain", chain32, 2);
-        register_native(&mut functions, "flatten", flatten32, 1);
-        register_native(&mut functions, "unique", unique32, 1);
-        register_native(&mut functions, "chunk", chunk32, 2);
-        register_native(&mut functions, "next", next32, 1);
-        register_native(&mut functions, "collect", collect32, 1);
-
-        Self { functions }
+        Self
     }
 }
 
@@ -57,21 +38,27 @@ impl Module for IterModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("map", map32, 2),
+                RuntimeNativeExport32::plain("filter", filter32, 2),
+                RuntimeNativeExport32::plain("reduce", reduce32, 3),
+                RuntimeNativeExport32::plain("enumerate", enumerate32, 1),
+                RuntimeNativeExport32::plain("range", range32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("zip", zip32, 2),
+                RuntimeNativeExport32::plain("take", take32, 2),
+                RuntimeNativeExport32::plain("skip", skip32, 2),
+                RuntimeNativeExport32::plain("chain", chain32, 2),
+                RuntimeNativeExport32::plain("flatten", flatten32, 1),
+                RuntimeNativeExport32::plain("unique", unique32, 1),
+                RuntimeNativeExport32::plain("chunk", chunk32, 2),
+                RuntimeNativeExport32::plain("next", next32, 1),
+                RuntimeNativeExport32::plain("collect", collect32, 1),
+            ],
+            &[],
+        ))
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn map32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -376,9 +363,9 @@ fn call_runtime_native_entry(
     runtime: &mut NativeRuntime32<'_>,
 ) -> Result<RuntimeVal> {
     match &entry.function {
-        NativeFunction32::Plain(function) | NativeFunction32::Context(function) => {
-            function(NativeArgs32::new(args), runtime)
-        }
+        NativeFunction32::Plain(function)
+        | NativeFunction32::Context(function)
+        | NativeFunction32::FullState(function) => function(NativeArgs32::new(args), runtime),
         NativeFunction32::RuntimeCallable(function) => {
             let (heap, ctx) = runtime.heap_ctx_mut();
             call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
@@ -400,6 +387,9 @@ fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore)
         (HeapValue::String(left), HeapValue::String(right)) => left == right,
         (HeapValue::List(left), HeapValue::List(right)) => runtime_lists_equal(left, right, heap),
         (HeapValue::Map(left), HeapValue::Map(right)) => {
+            if matches!(left, TypedMap::OwnedRuntime(_)) || matches!(right, TypedMap::OwnedRuntime(_)) {
+                return left.to_legacy_entries() == right.to_legacy_entries();
+            }
             let left = left.entries();
             let right = right.entries();
             left.len() == right.len()
@@ -438,6 +428,7 @@ fn runtime_list_items(list: &TypedList) -> Option<Vec<RuntimeVal>> {
             .iter()
             .map(|value| lk_core::val::ShortStr::new(value).map(RuntimeVal::ShortStr))
             .collect(),
+        TypedList::OwnedRuntime(values) => Some(values.values.clone()),
     }
 }
 
@@ -446,10 +437,8 @@ mod tests {
     use super::*;
     use crate::register_stdlib_modules;
     use lk_core::{
-        module::Module,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::CallableValue,
         vm::{NativeFunction32, Program32Result, RuntimeModuleState32, VmContext},
     };
 
@@ -485,6 +474,7 @@ mod tests {
                 .iter()
                 .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
                 .collect(),
+            TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 
@@ -493,15 +483,7 @@ mod tests {
     }
 
     fn iter_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = IterModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            bail!("{name} must be a heap callable");
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            bail!("{name} must be RuntimeNative32");
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&IterModule::new(), name)
     }
 
     #[test]

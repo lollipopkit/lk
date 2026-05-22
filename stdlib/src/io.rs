@@ -1,18 +1,15 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry},
-    val::{HeapStore, RuntimeVal, Val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    val::{HeapStore, RuntimeVal},
+    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
 };
-use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
 use crate::runtime_native::{runtime_display_value, runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
-pub struct IoModule {
-    functions: HashMap<String, Val>,
-}
+pub struct IoModule;
 
 impl Default for IoModule {
     fn default() -> Self {
@@ -22,24 +19,7 @@ impl Default for IoModule {
 
 impl IoModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-        register_native(&mut functions, "read", mod_read32, 0);
-        register_native(
-            &mut functions,
-            "stdin_read",
-            stdin_read32,
-            lk_core::vm::NativeEntry32::VARIADIC,
-        );
-        register_native(&mut functions, "stdin_read_line", stdin_read_line32, 0);
-        register_native(&mut functions, "stdin_read_all", stdin_read_all32, 0);
-        register_native(&mut functions, "stdin_flush", stdin_flush32, 0);
-        register_native(&mut functions, "stdout_write", stdout_write32, 1);
-        register_native(&mut functions, "stdout_writeln", stdout_writeln32, 1);
-        register_native(&mut functions, "stdout_flush", stdout_flush32, 0);
-        register_native(&mut functions, "stderr_write", stderr_write32, 1);
-        register_native(&mut functions, "stderr_writeln", stderr_writeln32, 1);
-        register_native(&mut functions, "stderr_flush", stderr_flush32, 0);
-        Self { functions }
+        Self
     }
 }
 
@@ -52,21 +32,24 @@ impl Module for IoModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("read", mod_read32, 0),
+                RuntimeNativeExport32::plain("stdin_read", stdin_read32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("stdin_read_line", stdin_read_line32, 0),
+                RuntimeNativeExport32::plain("stdin_read_all", stdin_read_all32, 0),
+                RuntimeNativeExport32::plain("stdin_flush", stdin_flush32, 0),
+                RuntimeNativeExport32::plain("stdout_write", stdout_write32, 1),
+                RuntimeNativeExport32::plain("stdout_writeln", stdout_writeln32, 1),
+                RuntimeNativeExport32::plain("stdout_flush", stdout_flush32, 0),
+                RuntimeNativeExport32::plain("stderr_write", stderr_write32, 1),
+                RuntimeNativeExport32::plain("stderr_writeln", stderr_writeln32, 1),
+                RuntimeNativeExport32::plain("stderr_flush", stderr_flush32, 0),
+            ],
+            &[],
+        ))
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
@@ -216,22 +199,10 @@ fn mod_read32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::{
-        module::Module,
-        val::{CallableValue, HeapValue},
-        vm::RuntimeModuleState32,
-    };
+    use lk_core::vm::{NativeFunction32, RuntimeModuleState32};
 
     fn io_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = IoModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            bail!("{name} must be a heap callable");
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            bail!("{name} must be RuntimeNative32");
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&IoModule::new(), name)
     }
 
     fn call(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {

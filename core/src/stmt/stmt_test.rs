@@ -42,6 +42,7 @@ mod tests {
                         .unwrap_or_else(|| panic!("test helper only supports short strings"))
                 })
                 .collect(),
+            TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 
@@ -197,22 +198,22 @@ mod tests {
         let mut env = VmContext::new();
 
         // Test define and get
-        env.define("x".to_string(), Val::Int(42));
-        assert_eq!(env.get("x"), Some(&Val::Int(42)));
+        env.legacy_define("x".to_string(), Val::Int(42));
+        assert_eq!(env.legacy_get("x"), Some(&Val::Int(42)));
 
         // Test assign
-        env.assign("x", Val::Int(100)).expect("Failed to assign");
-        assert_eq!(env.get("x"), Some(&Val::Int(100)));
+        env.legacy_assign("x", Val::Int(100)).expect("Failed to assign");
+        assert_eq!(env.legacy_get("x"), Some(&Val::Int(100)));
 
         // Test scoping
         env.push_scope();
-        env.define("y".to_string(), Val::Int(20));
-        assert_eq!(env.get("y"), Some(&Val::Int(20)));
-        assert_eq!(env.get("x"), Some(&Val::Int(100))); // Still accessible
+        env.legacy_define("y".to_string(), Val::Int(20));
+        assert_eq!(env.legacy_get("y"), Some(&Val::Int(20)));
+        assert_eq!(env.legacy_get("x"), Some(&Val::Int(100))); // Still accessible
 
         env.pop_scope();
-        assert_eq!(env.get("y"), None); // No longer accessible
-        assert_eq!(env.get("x"), Some(&Val::Int(100))); // Still accessible
+        assert_eq!(env.legacy_get("y"), None); // No longer accessible
+        assert_eq!(env.legacy_get("x"), Some(&Val::Int(100))); // Still accessible
     }
 
     #[test]

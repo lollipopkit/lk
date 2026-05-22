@@ -2,15 +2,14 @@ use crate::{
     module::ModuleRegistry,
     stmt::{Program, Stmt, stmt_parser::StmtParser},
     token::Tokenizer,
-    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedMap, Val, val_to_runtime_val},
-    vm::{Module32, RuntimeExport32, RuntimeModuleState32, VmContext},
+    val::{HeapValue, RuntimeVal},
+    vm::{RuntimeExport32, VmContext},
 };
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Import system for LK - supports various import syntaxes and plugin-style module resolution
 ///
@@ -93,13 +92,12 @@ impl ModuleResolver {
         }
     }
 
-    pub fn builtin_iter(&self) -> impl Iterator<Item = (&String, &Val)> {
-        self.stdlib_registry.get_all_builtins().iter()
+    pub fn runtime_builtin_iter(&self) -> impl Iterator<Item = (&Arc<str>, &RuntimeExport32)> {
+        self.stdlib_registry.get_all_runtime_builtins().iter()
     }
 
-    /// Get a globally registered builtin function (if any)
-    pub fn get_builtin(&self, name: &str) -> Option<&Val> {
-        self.stdlib_registry.get_builtin(name)
+    pub fn get_runtime_builtin(&self, name: &str) -> Option<&RuntimeExport32> {
+        self.stdlib_registry.get_runtime_builtin(name)
     }
 
     /// Add a search path for file resolution
@@ -138,24 +136,14 @@ impl ModuleResolver {
         }
     }
 
-    /// Resolve only modules already present in the registry.
-    ///
-    /// This is used by native AOT import replay, where falling back to package
-    /// or file execution would pull the VM into otherwise native executables.
-    pub fn resolve_registered_module(&self, name: &str) -> Result<Val> {
-        let module = self.stdlib_registry.get_module(name)?;
-        let exports = module.exports();
-        Ok(Val::from(exports))
-    }
-
     pub fn resolve_runtime_file(&self, path: &str) -> Result<RuntimeExport32> {
         let resolved_path = self.resolve_file_path(path)?;
         self.resolve_resolved_runtime_file(&resolved_path)
     }
 
     pub fn resolve_runtime_module(&self, name: &str) -> Result<RuntimeExport32> {
-        if let Ok(module) = self.stdlib_registry.get_module(name) {
-            return stdlib_module_runtime_export(module.exports());
+        if let Ok(module) = self.stdlib_registry.get_runtime_module(name) {
+            return Ok(module);
         }
         let Some(root) = self.package_modules.get(name) else {
             return Err(anyhow!("Module '{}' not found", name));
@@ -254,40 +242,6 @@ impl ModuleResolver {
     }
 }
 
-fn stdlib_module_runtime_export(exports: HashMap<String, Val>) -> Result<RuntimeExport32> {
-    let mut heap = HeapStore::new();
-    let mut entries = std::collections::BTreeMap::new();
-    for (name, value) in exports {
-        entries.insert(
-            RuntimeMapKey::String(Arc::<str>::from(name.as_str())),
-            stdlib_export_to_runtime_value(&value, &mut heap)?,
-        );
-    }
-    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))));
-    let state = Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new())));
-    Ok(RuntimeExport32 {
-        value,
-        state,
-        module: Arc::new(Module32::default()),
-    })
-}
-
-fn stdlib_export_to_runtime_value(value: &Val, heap: &mut HeapStore) -> Result<RuntimeVal> {
-    match value {
-        Val::Obj(object) => match object.as_ref() {
-            HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => Ok(RuntimeVal::Obj(heap.alloc(
-                HeapValue::Callable(CallableValue::RuntimeNative32 {
-                    arity: *arity,
-                    function: function.clone(),
-                }),
-            ))),
-            HeapValue::Callable(_) => Err(anyhow!("stdlib export still uses legacy callable")),
-            _ => val_to_runtime_val(value, heap),
-        },
-        _ => val_to_runtime_val(value, heap),
-    }
-}
-
 impl Default for ModuleResolver {
     fn default() -> Self {
         Self::new()
@@ -317,46 +271,14 @@ fn runtime_export_field(module: &RuntimeExport32, name: &str) -> Result<RuntimeE
     let HeapValue::Map(map) = value else {
         return Err(anyhow!("runtime module export is not a map"));
     };
-    for (key, value) in runtime_map_entries(map) {
-        if runtime_key_to_string(&key).as_deref() == Some(name) {
-            return Ok(RuntimeExport32 {
-                value,
-                state: module.state.clone(),
-                module: Arc::clone(&module.module),
-            });
-        }
+    if let Some(value) = map.get_str(name) {
+        return Ok(RuntimeExport32 {
+            value,
+            state: module.state.clone(),
+            module: Arc::clone(&module.module),
+        });
     }
     Err(anyhow!("Export '{}' not found in runtime module", name))
-}
-
-fn runtime_map_entries(map: &TypedMap) -> Vec<(RuntimeMapKey, RuntimeVal)> {
-    match map {
-        TypedMap::Mixed(values) => values.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
-        TypedMap::StringMixed(values) => values
-            .iter()
-            .map(|(key, value)| (RuntimeMapKey::String(key.clone()), value.clone()))
-            .collect(),
-        TypedMap::StringInt(values) => values
-            .iter()
-            .map(|(key, value)| (RuntimeMapKey::String(key.clone()), RuntimeVal::Int(*value)))
-            .collect(),
-        TypedMap::StringFloat(values) => values
-            .iter()
-            .map(|(key, value)| (RuntimeMapKey::String(key.clone()), RuntimeVal::Float(*value)))
-            .collect(),
-        TypedMap::StringBool(values) => values
-            .iter()
-            .map(|(key, value)| (RuntimeMapKey::String(key.clone()), RuntimeVal::Bool(*value)))
-            .collect(),
-    }
-}
-
-fn runtime_key_to_string(key: &RuntimeMapKey) -> Option<String> {
-    match key {
-        RuntimeMapKey::ShortStr(value) => Some(value.as_str().to_string()),
-        RuntimeMapKey::String(value) => Some(value.to_string()),
-        _ => None,
-    }
 }
 
 pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &mut VmContext) -> Result<()> {
@@ -552,21 +474,12 @@ mod tests {
         let Some(HeapValue::Map(map)) = state.heap.get(handle) else {
             panic!("Expected runtime module map");
         };
-        let entries = runtime_map_entries(map);
-        assert!(
-            entries
-                .iter()
-                .any(|(key, _)| runtime_key_to_string(key).as_deref() == Some("answer"))
-        );
-        assert!(
-            entries
-                .iter()
-                .any(|(key, _)| runtime_key_to_string(key).as_deref() == Some("data"))
-        );
-        assert!(entries.iter().any(|(key, value)| {
-            runtime_key_to_string(key).as_deref() == Some("inc")
-                && matches!(value, RuntimeVal::Obj(handle) if matches!(state.heap.get(*handle), Some(HeapValue::Callable(_))))
-        }));
+        assert_eq!(map.get_str("answer"), Some(RuntimeVal::Int(7)));
+        assert!(matches!(map.get_str("data"), Some(RuntimeVal::Obj(_))));
+        assert!(matches!(
+            map.get_str("inc"),
+            Some(RuntimeVal::Obj(handle)) if matches!(state.heap.get(handle), Some(HeapValue::Callable(_)))
+        ));
         Ok(())
     }
 
@@ -585,10 +498,10 @@ mod tests {
         let HeapValue::Map(map) = value else {
             panic!("Expected runtime module map");
         };
-        let has_iterative = runtime_map_entries(map)
-            .iter()
-            .any(|(key, _)| runtime_key_to_string(key).as_deref() == Some("iterative"));
-        assert!(has_iterative, "examples/fib should export iterative function");
+        assert!(
+            matches!(map.get_str("iterative"), Some(RuntimeVal::Obj(_))),
+            "examples/fib should export iterative function"
+        );
 
         Ok(())
     }

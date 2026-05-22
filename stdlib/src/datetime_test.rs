@@ -6,10 +6,10 @@ mod tests {
     use anyhow::{Result, anyhow};
     use chrono::{TimeZone, Utc};
     use lk_core::{
-        module::{Module, ModuleRegistry},
+        module::ModuleRegistry,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, Val},
+        val::{HeapStore, HeapValue, RuntimeVal},
         vm::{NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32, VmContext},
     };
 
@@ -26,15 +26,7 @@ mod tests {
     }
 
     fn datetime_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = DateTimeModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            return Err(anyhow!("{name} must be a heap callable"));
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            return Err(anyhow!("{name} must be RuntimeNative32"));
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&DateTimeModule::new(), name)
     }
 
     fn call_datetime(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {

@@ -5,13 +5,9 @@ use anyhow::{Result, anyhow};
 use crate::val::{CallableValue, HeapStore, HeapValue, RuntimeObject, RuntimeVal, TypedList, TypedMap};
 
 use super::RuntimeCallable32;
-use crate::vm::{Module32, NativeEntry32, RuntimeExport32};
+use crate::vm::{Module32, RuntimeExport32};
 
-pub(super) fn import_runtime_export(
-    export: &RuntimeExport32,
-    dest_heap: &mut HeapStore,
-    natives: &mut Vec<NativeEntry32>,
-) -> Result<RuntimeVal> {
+pub(super) fn import_runtime_export(export: &RuntimeExport32, dest_heap: &mut HeapStore) -> Result<RuntimeVal> {
     let state = export
         .state
         .lock()
@@ -22,7 +18,6 @@ pub(super) fn import_runtime_export(
         &export.value,
         &mut source_heap,
         dest_heap,
-        natives,
         Arc::clone(&export.module),
         export.state.clone(),
     )
@@ -32,7 +27,6 @@ fn import_runtime_value(
     value: &RuntimeVal,
     source_heap: &mut HeapStore,
     dest_heap: &mut HeapStore,
-    natives: &mut Vec<NativeEntry32>,
     source_module: Arc<Module32>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
 ) -> Result<RuntimeVal> {
@@ -47,7 +41,7 @@ fn import_runtime_value(
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
                 .clone();
-            let value = import_heap_value(value, source_heap, dest_heap, natives, source_module, source_state)?;
+            let value = import_heap_value(value, source_heap, dest_heap, source_module, source_state)?;
             Ok(RuntimeVal::Obj(dest_heap.alloc(value)))
         }
     }
@@ -57,7 +51,6 @@ fn import_heap_value(
     value: HeapValue,
     source_heap: &mut HeapStore,
     dest_heap: &mut HeapStore,
-    natives: &mut Vec<NativeEntry32>,
     source_module: Arc<Module32>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
 ) -> Result<HeapValue> {
@@ -67,7 +60,6 @@ fn import_heap_value(
             values,
             source_heap,
             dest_heap,
-            natives,
             source_module,
             source_state,
         )?),
@@ -75,7 +67,6 @@ fn import_heap_value(
             values,
             source_heap,
             dest_heap,
-            natives,
             source_module,
             source_state,
         )?),
@@ -90,7 +81,6 @@ fn import_heap_value(
                             value,
                             source_heap,
                             dest_heap,
-                            natives,
                             Arc::clone(&source_module),
                             source_state.clone(),
                         )?,
@@ -113,9 +103,6 @@ fn import_heap_value(
                 RuntimeCallable32::with_state(Arc::clone(&source_module), function_index, captures, source_state);
             HeapValue::Callable(CallableValue::Runtime32(Arc::new(callable)))
         }
-        HeapValue::Callable(CallableValue::Native { function_index, arity }) => {
-            HeapValue::Callable(CallableValue::Native { function_index, arity })
-        }
         HeapValue::Callable(CallableValue::Runtime32(function)) => {
             HeapValue::Callable(CallableValue::Runtime32(function))
         }
@@ -128,7 +115,6 @@ fn import_heap_value(
             &value,
             source_heap,
             dest_heap,
-            natives,
             source_module,
             source_state,
         )?),
@@ -142,7 +128,6 @@ fn import_heap_value(
                         value,
                         source_heap,
                         dest_heap,
-                        natives,
                         Arc::clone(&source_module),
                         source_state.clone(),
                     )
@@ -156,7 +141,6 @@ fn import_typed_list(
     values: TypedList,
     source_heap: &mut HeapStore,
     dest_heap: &mut HeapStore,
-    natives: &mut Vec<NativeEntry32>,
     source_module: Arc<Module32>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
 ) -> Result<TypedList> {
@@ -169,7 +153,6 @@ fn import_typed_list(
                         value,
                         source_heap,
                         dest_heap,
-                        natives,
                         Arc::clone(&source_module),
                         source_state.clone(),
                     )
@@ -180,6 +163,7 @@ fn import_typed_list(
         TypedList::Float(values) => TypedList::Float(values),
         TypedList::Bool(values) => TypedList::Bool(values),
         TypedList::String(values) => TypedList::String(values),
+        TypedList::OwnedRuntime(values) => values.copy_into_typed_list(dest_heap)?,
     })
 }
 
@@ -187,7 +171,6 @@ fn import_typed_map(
     values: TypedMap,
     source_heap: &mut HeapStore,
     dest_heap: &mut HeapStore,
-    natives: &mut Vec<NativeEntry32>,
     source_module: Arc<Module32>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
 ) -> Result<TypedMap> {
@@ -202,7 +185,6 @@ fn import_typed_map(
                             value,
                             source_heap,
                             dest_heap,
-                            natives,
                             Arc::clone(&source_module),
                             source_state.clone(),
                         )?,
@@ -220,7 +202,6 @@ fn import_typed_map(
                             value,
                             source_heap,
                             dest_heap,
-                            natives,
                             Arc::clone(&source_module),
                             source_state.clone(),
                         )?,
@@ -231,5 +212,6 @@ fn import_typed_map(
         TypedMap::StringInt(values) => TypedMap::StringInt(values),
         TypedMap::StringFloat(values) => TypedMap::StringFloat(values),
         TypedMap::StringBool(values) => TypedMap::StringBool(values),
+        TypedMap::OwnedRuntime(values) => values.copy_into_typed_map(dest_heap)?,
     })
 }

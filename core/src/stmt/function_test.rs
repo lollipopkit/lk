@@ -456,7 +456,7 @@ mod tests {
 
         // Introduce a global binding with the same name after capturing; lexical semantics
         // should continue to use the captured value (2) rather than the new global (100).
-        env.define("offset".to_string(), Val::Int(100));
+        env.legacy_define("offset".to_string(), Val::Int(100));
 
         let captured_result = call_runtime_callable32_raw(&outer, &[], &mut env)?;
         let captured = crate::vm::runtime_value_to_callable32(

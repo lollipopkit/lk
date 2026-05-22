@@ -1,18 +1,16 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry},
-    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap, Val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap},
+    vm::{NativeArgs32, NativeRuntime32, RuntimeExport32},
 };
 
 use crate::runtime_native::runtime_string_arg;
 
 #[derive(Debug)]
-pub struct MapModule {
-    functions: HashMap<String, Val>,
-}
+pub struct MapModule;
 
 impl Default for MapModule {
     fn default() -> Self {
@@ -22,17 +20,7 @@ impl Default for MapModule {
 
 impl MapModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-
-        register_native(&mut functions, "len", Self::len32, 1);
-        register_native(&mut functions, "keys", Self::keys32, 1);
-        register_native(&mut functions, "values", Self::values32, 1);
-        register_native(&mut functions, "has", Self::has32, 2);
-        register_native(&mut functions, "get", Self::get32, 2);
-        register_native(&mut functions, "set", Self::set32, 3);
-        register_native(&mut functions, "delete", Self::delete32, 2);
-
-        Self { functions }
+        Self
     }
 
     fn len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -43,7 +31,7 @@ impl MapModule {
     fn keys32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let map = one_map(args, runtime, "keys()")?;
         let keys = map
-            .entries()
+            .entries_into_heap(runtime.heap_mut())?
             .into_iter()
             .filter_map(|(key, _)| key.as_arc_str())
             .collect::<Vec<_>>();
@@ -54,7 +42,11 @@ impl MapModule {
 
     fn values32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let map = one_map(args, runtime, "values()")?;
-        let values = map.entries().into_iter().map(|(_, value)| value).collect::<Vec<_>>();
+        let values = map
+            .entries_into_heap(runtime.heap_mut())?
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>();
         let list = TypedList::from_runtime_values(values, runtime.heap());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
@@ -72,7 +64,7 @@ impl MapModule {
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "get() first argument")?;
         let key = string_key_arg(&values[1], runtime.heap(), "get() key")?;
-        Ok(map.get(&key).unwrap_or(RuntimeVal::Nil))
+        Ok(map.get_into_heap(&key, runtime.heap_mut())?.unwrap_or(RuntimeVal::Nil))
     }
 
     fn set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -91,7 +83,7 @@ impl MapModule {
         let key = string_key_arg(&values[1], runtime.heap(), "delete() key")?;
         let mut entries = BTreeMap::new();
         let mut removed = RuntimeVal::Nil;
-        for (entry_key, value) in map.entries() {
+        for (entry_key, value) in map.entries_into_heap(runtime.heap_mut())? {
             if entry_key == key {
                 removed = value;
             } else {
@@ -124,21 +116,20 @@ impl Module for MapModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("len", Self::len32, 1),
+                RuntimeNativeExport32::plain("keys", Self::keys32, 1),
+                RuntimeNativeExport32::plain("values", Self::values32, 1),
+                RuntimeNativeExport32::plain("has", Self::has32, 2),
+                RuntimeNativeExport32::plain("get", Self::get32, 2),
+                RuntimeNativeExport32::plain("set", Self::set32, 3),
+                RuntimeNativeExport32::plain("delete", Self::delete32, 2),
+            ],
+            &[],
+        ))
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
@@ -184,7 +175,6 @@ mod tests {
         module::ModuleRegistry,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::CallableValue,
         vm::{NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32, VmContext},
     };
     use std::sync::Arc;
@@ -217,19 +207,12 @@ mod tests {
                 .iter()
                 .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
                 .collect(),
+            TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 
     fn map_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = MapModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            return Err(anyhow!("{name} must be a heap callable"));
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            return Err(anyhow!("{name} must be RuntimeNative32"));
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&MapModule::new(), name)
     }
 
     #[test]

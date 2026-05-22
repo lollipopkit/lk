@@ -198,13 +198,7 @@ impl Type {
                 Ok(())
             }
             (Type::Function { .. }, value) if value.is_callable() => Ok(()),
-            (Type::Task(inner_type), value) if value.as_task().is_some() => {
-                let task = value.as_task().expect("checked task");
-                if let Some(value) = &task.value {
-                    inner_type.validate(&crate::val::runtime_val_to_val(&value.value, &value.heap)?)?;
-                }
-                Ok(())
-            }
+            (Type::Task(_), value) if value.as_task().is_some() => Ok(()),
             (Type::Generic { name, params }, value)
                 if name == "Stream" && params.len() == 1 && value.as_stream().is_some() =>
             {

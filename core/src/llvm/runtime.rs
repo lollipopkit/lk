@@ -431,11 +431,11 @@ impl RuntimeState {
             match import {
                 ImportStmt::Module { module } => {
                     let value = Self::resolve_native_import_module(module, native_modules, resolver)?;
-                    ctx.define(module.clone(), value);
+                    ctx.legacy_define(module.clone(), value);
                 }
                 ImportStmt::ModuleAlias { module, alias } => {
                     let value = Self::resolve_native_import_module(module, native_modules, resolver)?;
-                    ctx.define(alias.clone(), value);
+                    ctx.legacy_define(alias.clone(), value);
                 }
                 ImportStmt::Items { items, source } => {
                     let value = Self::resolve_native_import_source(source, native_modules, resolver)?;
@@ -447,12 +447,12 @@ impl RuntimeState {
                             .get(item.name.as_str())
                             .ok_or_else(|| anyhow!("Export '{}' not found in module", item.name))?;
                         let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
-                        ctx.define(symbol_name.clone(), export_value.clone());
+                        ctx.legacy_define(symbol_name.clone(), export_value.clone());
                     }
                 }
                 ImportStmt::Namespace { alias, source } => {
                     let value = Self::resolve_native_import_source(source, native_modules, resolver)?;
-                    ctx.define(alias.clone(), value);
+                    ctx.legacy_define(alias.clone(), value);
                 }
                 ImportStmt::File { path } => {
                     let module_name = std::path::Path::new(path)
@@ -461,7 +461,7 @@ impl RuntimeState {
                         .unwrap_or("module")
                         .to_string();
                     let value = Self::resolve_native_import_module(&module_name, native_modules, resolver)?;
-                    ctx.define(module_name, value);
+                    ctx.legacy_define(module_name, value);
                 }
             }
         }
@@ -488,12 +488,15 @@ impl RuntimeState {
     fn resolve_native_import_module(
         module: &str,
         native_modules: &FastHashMap<String, FastHashMap<ArcStr, Val>>,
-        resolver: &ModuleResolver,
+        _resolver: &ModuleResolver,
     ) -> Result<Val> {
         if let Some(exports) = native_modules.get(module) {
             return Ok(Val::map(Arc::new(exports.clone())));
         }
-        resolver.resolve_registered_module(module)
+        Err(anyhow!(
+            "AOT native import replay no longer converts stdlib module '{}' through legacy Val exports",
+            module
+        ))
     }
 
     fn build_context(
@@ -587,22 +590,11 @@ impl RuntimeState {
     }
 
     fn load_global(&mut self, name: &str) -> Val {
-        self.ctx
-            .get(name)
-            .cloned()
-            .or_else(|| self.ctx.resolver().get_builtin(name).cloned())
-            .unwrap_or(Val::Nil)
+        self.ctx.legacy_get(name).cloned().unwrap_or(Val::Nil)
     }
 }
 
-fn install_aot_core_vm_builtins(ctx: &mut VmContext) {
-    ctx.globals_mut()
-        .entry("__lk_call_method".to_string())
-        .or_insert(Val::Nil);
-    ctx.globals_mut()
-        .entry("__lk_call_method_named".to_string())
-        .or_insert(Val::Nil);
-}
+fn install_aot_core_vm_builtins(_ctx: &mut VmContext) {}
 
 fn register_aot_stdlib_method_modules(registry: &mut ModuleRegistry) -> Result<()> {
     for register in [
@@ -785,20 +777,8 @@ pub extern "C" fn lk_rt_define_global(name: i64, value: i64) {
             .map(|s| s.to_owned())
             .unwrap_or_else(|| key_val.to_string());
         let val = state.decode_value(value);
-        state.ctx.set(name_str, val);
+        state.ctx.legacy_set(name_str, val);
     });
-}
-
-#[cold]
-#[inline(never)]
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32 {
-    if data_ptr.is_null() || data_len <= 0 {
-        eprintln!("lk_rt_run_bytecode: empty bytecode payload");
-        return 1;
-    }
-    eprintln!("lk_rt_run_bytecode: legacy bytecode execution is disabled during the Instr32 VM migration");
-    1
 }
 
 #[unsafe(no_mangle)]

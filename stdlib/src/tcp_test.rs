@@ -1,23 +1,15 @@
 #[cfg(test)]
 mod tests {
     use crate::tcp::TcpModule;
-    use anyhow::{Result, anyhow, bail};
+    use anyhow::{Result, bail};
     use lk_core::{
         module::Module,
-        val::{CallableValue, HeapValue, RuntimeVal, Val},
+        val::RuntimeVal,
         vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
     };
 
     fn tcp_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = TcpModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            bail!("{name} must be a heap callable");
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            bail!("{name} must be RuntimeNative32");
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&TcpModule::new(), name)
     }
 
     fn call(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {
@@ -35,9 +27,7 @@ mod tests {
         let tcp_module = TcpModule::new();
         assert_eq!(tcp_module.name(), "tcp");
 
-        let exports = tcp_module.exports();
         for name in ["connect", "bind", "close", "read", "write", "accept"] {
-            assert!(exports.contains_key(name));
             let (_, function) = tcp_native(name)?;
             assert!(matches!(function, NativeFunction32::Plain(_)));
         }

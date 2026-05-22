@@ -5,7 +5,7 @@ use anyhow::Result;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_with_capacity};
 use arcstr::ArcStr;
 
-use super::{ChannelValue, TaskValue, Type, Val};
+use super::{ChannelValue, Type, Val};
 
 impl From<String> for Val {
     #[inline]
@@ -106,17 +106,6 @@ where
 impl From<()> for Val {
     fn from(_: ()) -> Self {
         Val::Nil
-    }
-}
-
-impl From<(u64, Val)> for Val {
-    fn from((id, value): (u64, Val)) -> Self {
-        let mut heap = crate::val::HeapStore::new();
-        let value = crate::val::val_to_runtime_val(&value, &mut heap).ok();
-        Val::task(Arc::new(TaskValue {
-            id,
-            value: value.map(|value| crate::rt::RuntimePayload::new(value, heap)),
-        }))
     }
 }
 

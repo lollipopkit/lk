@@ -7,7 +7,7 @@ mod tests {
         module, stmt,
         stmt::stmt_parser::StmtParser,
         token::Tokenizer,
-        val::{CallableValue, HeapValue, RuntimeVal, TypedList, Val},
+        val::{CallableValue, HeapValue, RuntimeVal, TypedList},
         vm::{self, NativeFunction32},
     };
 
@@ -72,11 +72,13 @@ mod tests {
             "chan::try_recv",
             "select$block",
         ] {
-            let value = registry.get_builtin(name).expect("builtin present");
-            let Val::Obj(object) = value else {
+            let export = registry.get_runtime_builtin(name).expect("builtin present");
+            let state = export.state.lock().expect("runtime export state lock");
+            let RuntimeVal::Obj(handle) = export.value else {
                 panic!("{name} should be heap callable");
             };
-            let HeapValue::Callable(CallableValue::RuntimeNative32 { function, .. }) = object.as_ref() else {
+            let Some(HeapValue::Callable(CallableValue::RuntimeNative32 { function, .. })) = state.heap.get(handle)
+            else {
                 panic!("{name} should use RuntimeNative32");
             };
             assert!(matches!(function, NativeFunction32::Plain(_)));

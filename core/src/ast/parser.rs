@@ -1496,6 +1496,4 @@ impl<'a> Parser<'a> {
             }
         }
     }
-
-    // legacy '@' syntax fully removed; no parse_at/at-specific field access remain
 }

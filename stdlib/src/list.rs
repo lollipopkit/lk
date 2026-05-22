@@ -1,18 +1,14 @@
-use std::collections::HashMap;
-
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry},
-    val::{HeapStore, HeapValue, RuntimeVal, TypedList, Val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+    vm::{NativeArgs32, NativeRuntime32, RuntimeExport32},
 };
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
-pub struct ListModule {
-    functions: HashMap<String, Val>,
-}
+pub struct ListModule;
 
 impl Default for ListModule {
     fn default() -> Self {
@@ -22,18 +18,7 @@ impl Default for ListModule {
 
 impl ListModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-
-        register_native(&mut functions, "len", Self::len32, 1);
-        register_native(&mut functions, "push", Self::push32, 2);
-        register_native(&mut functions, "concat", Self::concat32, 2);
-        register_native(&mut functions, "join", Self::join32, 2);
-        register_native(&mut functions, "get", Self::get32, 2);
-        register_native(&mut functions, "first", Self::first32, 1);
-        register_native(&mut functions, "last", Self::last32, 1);
-        register_native(&mut functions, "set", Self::set32, 3);
-
-        Self { functions }
+        Self
     }
 
     fn len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -133,21 +118,21 @@ impl Module for ListModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("len", Self::len32, 1),
+                RuntimeNativeExport32::plain("push", Self::push32, 2),
+                RuntimeNativeExport32::plain("concat", Self::concat32, 2),
+                RuntimeNativeExport32::plain("join", Self::join32, 2),
+                RuntimeNativeExport32::plain("get", Self::get32, 2),
+                RuntimeNativeExport32::plain("first", Self::first32, 1),
+                RuntimeNativeExport32::plain("last", Self::last32, 1),
+                RuntimeNativeExport32::plain("set", Self::set32, 3),
+            ],
+            &[],
+        ))
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
@@ -188,6 +173,7 @@ fn list_get(list: &TypedList, index: usize, heap: &mut HeapStore) -> Option<Runt
         TypedList::String(values) => values
             .get(index)
             .map(|value| runtime_string_value(value.as_ref(), heap)),
+        TypedList::OwnedRuntime(values) => values.values.get(index).cloned(),
     }
 }
 

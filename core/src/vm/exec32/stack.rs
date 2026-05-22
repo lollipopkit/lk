@@ -52,6 +52,25 @@ impl Executor32 {
         Ok(range_start..range_start + count)
     }
 
+    pub(super) fn read_register_slice(&self, base: u8, count: u8) -> Result<&[RuntimeVal]> {
+        let range = self.register_range(base, count, "register range")?;
+        Ok(&self.state.stack[range])
+    }
+
+    pub(super) fn read_register_range_owned(&self, base: u8, count: u8) -> Result<Vec<RuntimeVal>> {
+        Ok(self.read_register_slice(base, count)?.to_vec())
+    }
+
+    fn register_range(&self, base: u8, count: u8, label: &str) -> Result<Range<usize>> {
+        let base = base as usize;
+        let count = count as usize;
+        if base + count > self.register_count as usize {
+            bail!("{label} {}..{} out of bounds", base, base + count);
+        }
+        let range_start = self.frame_base + base;
+        Ok(range_start..range_start + count)
+    }
+
     pub(super) fn write_returns(
         &mut self,
         window: CallWindow32,

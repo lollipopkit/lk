@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry},
-    val::{RuntimeVal, Val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    val::RuntimeVal,
+    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
 };
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -37,9 +37,7 @@ impl TcpRegistry {
 }
 
 #[derive(Debug)]
-pub struct TcpModule {
-    functions: HashMap<String, Val>,
-}
+pub struct TcpModule;
 
 impl Default for TcpModule {
     fn default() -> Self {
@@ -49,14 +47,7 @@ impl Default for TcpModule {
 
 impl TcpModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-        register_native(&mut functions, "connect", connect32, 2);
-        register_native(&mut functions, "bind", bind32, 2);
-        register_native(&mut functions, "close", close32, 1);
-        register_native(&mut functions, "read", read32, lk_core::vm::NativeEntry32::VARIADIC);
-        register_native(&mut functions, "write", write32, 2);
-        register_native(&mut functions, "accept", accept32, 1);
-        Self { functions }
+        Self
     }
 }
 
@@ -69,21 +60,19 @@ impl Module for TcpModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("connect", connect32, 2),
+                RuntimeNativeExport32::plain("bind", bind32, 2),
+                RuntimeNativeExport32::plain("close", close32, 1),
+                RuntimeNativeExport32::plain("read", read32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("write", write32, 2),
+                RuntimeNativeExport32::plain("accept", accept32, 1),
+            ],
+            &[],
+        ))
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
@@ -216,22 +205,10 @@ fn close32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::{
-        module::Module,
-        val::{CallableValue, HeapValue},
-        vm::RuntimeModuleState32,
-    };
+    use lk_core::vm::{NativeFunction32, RuntimeModuleState32};
 
     fn tcp_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = TcpModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            bail!("{name} must be a heap callable");
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            bail!("{name} must be RuntimeNative32");
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&TcpModule::new(), name)
     }
 
     fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState32) -> Result<RuntimeVal> {

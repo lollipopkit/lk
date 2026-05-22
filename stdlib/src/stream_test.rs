@@ -2,10 +2,9 @@
 mod tests {
     use anyhow::Result;
     use lk_core::{
-        module::Module,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        val::{HeapStore, HeapValue, RuntimeVal, TypedList},
         vm::{Program32Result, VmContext},
     };
     use std::sync::Arc;
@@ -39,6 +38,7 @@ mod tests {
                 .iter()
                 .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
                 .collect(),
+            TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 
@@ -96,7 +96,6 @@ mod tests {
     #[test]
     fn test_stream_module_exports_use_runtime_native32_abi() {
         let module = crate::stream::StreamModule::new();
-        let exports = module.exports();
         for name in [
             "from_list",
             "range",
@@ -114,13 +113,7 @@ mod tests {
             "next_block",
             "collect_block",
         ] {
-            let value = exports.get(name).expect("stream function export present");
-            let Val::Obj(object) = value else {
-                panic!("{name} should be heap callable");
-            };
-            let HeapValue::Callable(CallableValue::RuntimeNative32 { .. }) = object.as_ref() else {
-                panic!("{name} should use RuntimeNative32");
-            };
+            crate::runtime_native::runtime_native_export(&module, name).expect("stream function export present");
         }
     }
 }

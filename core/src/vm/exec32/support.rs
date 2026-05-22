@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, ops::Range, sync::Arc};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -68,6 +68,12 @@ pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeV
             }
         },
         TypedList::String(_) => bail!("internal error: typed string list write must be handled before mutable borrow"),
+        TypedList::OwnedRuntime(values) => {
+            let Some(slot) = values.values.get_mut(index) else {
+                bail!("list index {} out of bounds", index);
+            };
+            *slot = value;
+        }
     }
     Ok(())
 }
@@ -82,7 +88,9 @@ pub(super) fn call_native_entry(
 ) -> Result<RuntimeVal> {
     let native_args = NativeArgs32::new_with_named(args, named);
     let result = match &native.function {
-        NativeFunction32::Plain(function) | NativeFunction32::Context(function) => {
+        NativeFunction32::Plain(function)
+        | NativeFunction32::Context(function)
+        | NativeFunction32::FullState(function) => {
             let mut runtime = NativeRuntime32::new(state, ctx, module);
             function(native_args, &mut runtime)
         }
@@ -94,6 +102,54 @@ pub(super) fn call_native_entry(
         ),
     };
     map_native_error(native, result)
+}
+
+pub(super) enum InlineNativeArgs32 {
+    Zero,
+    One([RuntimeVal; 1]),
+    Two([RuntimeVal; 2]),
+    Three([RuntimeVal; 3]),
+    Four([RuntimeVal; 4]),
+}
+
+impl InlineNativeArgs32 {
+    #[inline]
+    pub(super) fn as_slice(&self) -> &[RuntimeVal] {
+        match self {
+            Self::Zero => &[],
+            Self::One(values) => values,
+            Self::Two(values) => values,
+            Self::Three(values) => values,
+            Self::Four(values) => values,
+        }
+    }
+}
+
+pub(super) fn inline_native_args_from_stack(
+    native: &NativeEntry32,
+    stack: &[RuntimeVal],
+    args: Range<usize>,
+) -> Result<InlineNativeArgs32> {
+    let Some(values) = stack.get(args.clone()) else {
+        bail!("{} argument window out of bounds", native.name);
+    };
+    Ok(match values.len() {
+        0 => InlineNativeArgs32::Zero,
+        1 => InlineNativeArgs32::One([values[0].clone()]),
+        2 => InlineNativeArgs32::Two([values[0].clone(), values[1].clone()]),
+        3 => InlineNativeArgs32::Three([values[0].clone(), values[1].clone(), values[2].clone()]),
+        4 => InlineNativeArgs32::Four([
+            values[0].clone(),
+            values[1].clone(),
+            values[2].clone(),
+            values[3].clone(),
+        ]),
+        len => bail!(
+            "{} FullState native arity {} exceeds inline argument buffer",
+            native.name,
+            len
+        ),
+    })
 }
 
 pub(super) fn call_native_entry_parts(
@@ -114,6 +170,9 @@ pub(super) fn call_native_entry_parts(
         NativeFunction32::Plain(function) | NativeFunction32::Context(function) => {
             let mut runtime = NativeRuntime32::from_parts(heap, globals, ctx, module);
             function(native_args, &mut runtime)
+        }
+        NativeFunction32::FullState(_) => {
+            bail!("{} requires full runtime state", native.name);
         }
         NativeFunction32::RuntimeCallable(function) => {
             if named.is_empty() {

@@ -1,4 +1,6 @@
-use anyhow::{Result, bail};
+use std::sync::Arc;
+
+use anyhow::{Result, anyhow, bail};
 
 use crate::val::{ErrorVal, HeapValue, RuntimeVal};
 
@@ -41,6 +43,46 @@ impl ErrorHandler32 {
 }
 
 impl super::Executor32 {
+    pub(super) fn raise_language_message(&mut self, message: &str) -> Result<()> {
+        if let Some(handler_index) = self
+            .handler_stack
+            .iter()
+            .rposition(|handler| handler.frame_base == self.frame_base)
+        {
+            let handler = self.handler_stack.remove(handler_index);
+            let error = RuntimeVal::Obj(self.state.heap.alloc(HeapValue::ErrorVal(ErrorVal {
+                message: Arc::<str>::from(message),
+                trace: Vec::new(),
+            })));
+            self.frame_base = handler.frame_base;
+            self.state.stack_top = handler.stack_top;
+            self.write(handler.catch_reg, error)?;
+            self.pc = handler.catch_pc;
+            Ok(())
+        } else {
+            Err(anyhow!(LanguageRaise32 {
+                message: Arc::<str>::from(message),
+            }))
+        }
+    }
+
+    pub(super) fn begin_try(&mut self, catch_reg: u8, catch_offset: i32) -> Result<()> {
+        let catch_pc = self.relative_pc(catch_offset)?;
+        self.handler_stack.push(ErrorHandler32::new(
+            catch_reg,
+            catch_pc,
+            self.frame_base,
+            self.state.stack_top,
+        ));
+        self.pc += 1;
+        Ok(())
+    }
+
+    pub(super) fn end_try(&mut self) {
+        let _ = self.handler_stack.pop();
+        self.pc += 1;
+    }
+
     pub(super) fn handle_language_raise(&mut self, raise: &LanguageRaise32) -> Result<()> {
         let Some(handler) = self.handler_stack.pop() else {
             bail!("{}", raise.message);

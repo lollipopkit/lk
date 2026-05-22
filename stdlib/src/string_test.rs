@@ -3,12 +3,12 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{register_stdlib_modules, runtime_native::runtime_string_value, string::StringModule};
-    use anyhow::{Result, anyhow};
+    use anyhow::Result;
     use lk_core::{
-        module::{Module, ModuleRegistry},
+        module::ModuleRegistry,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        val::{HeapStore, HeapValue, RuntimeVal, TypedList},
         vm::{
             NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32,
             VmContext,
@@ -28,15 +28,7 @@ mod tests {
     }
 
     fn string_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = StringModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            return Err(anyhow!("{name} must be a heap callable"));
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            return Err(anyhow!("{name} must be RuntimeNative32"));
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&StringModule::new(), name)
     }
 
     fn runtime_str<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<&'a str> {

@@ -1,19 +1,17 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry},
-    val::{HeapStore, HeapValue, RuntimeVal, TypedList, Val},
-    vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32},
+    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
 };
 
 use crate::runtime_native::{runtime_display_value, runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
-pub struct StringModule {
-    functions: HashMap<String, Val>,
-}
+pub struct StringModule;
 
 impl Default for StringModule {
     fn default() -> Self {
@@ -23,29 +21,7 @@ impl Default for StringModule {
 
 impl StringModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-
-        register_native(&mut functions, "len", Self::len32, 1);
-        register_native(&mut functions, "lower", Self::lower32, 1);
-        register_native(&mut functions, "upper", Self::upper32, 1);
-        register_native(&mut functions, "trim", Self::trim32, 1);
-        register_native(&mut functions, "starts_with", Self::starts_with32, 2);
-        register_native(&mut functions, "ends_with", Self::ends_with32, 2);
-        register_native(&mut functions, "contains", Self::contains32, 2);
-        register_native(&mut functions, "replace", Self::replace32, NativeEntry32::VARIADIC);
-        register_native(&mut functions, "substring", Self::substring32, 3);
-        register_native(&mut functions, "split", Self::split32, 2);
-        register_native(&mut functions, "join", Self::join32, 2);
-        register_native(&mut functions, "reverse", Self::reverse32, 1);
-        register_native(&mut functions, "repeat", Self::repeat32, 2);
-        register_native(&mut functions, "char", Self::char_at32, 2);
-        register_native(&mut functions, "byte", Self::byte_at32, 2);
-        register_native(&mut functions, "chars", Self::chars32, 1);
-        register_native(&mut functions, "find", Self::find32, NativeEntry32::VARIADIC);
-        register_native(&mut functions, "is_empty", Self::is_empty32, 1);
-        register_native(&mut functions, "format", Self::format32, NativeEntry32::VARIADIC);
-
-        Self { functions }
+        Self
     }
 
     fn len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -312,21 +288,32 @@ impl Module for StringModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("len", Self::len32, 1),
+                RuntimeNativeExport32::plain("lower", Self::lower32, 1),
+                RuntimeNativeExport32::plain("upper", Self::upper32, 1),
+                RuntimeNativeExport32::plain("trim", Self::trim32, 1),
+                RuntimeNativeExport32::plain("starts_with", Self::starts_with32, 2),
+                RuntimeNativeExport32::plain("ends_with", Self::ends_with32, 2),
+                RuntimeNativeExport32::plain("contains", Self::contains32, 2),
+                RuntimeNativeExport32::plain("replace", Self::replace32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("substring", Self::substring32, 3),
+                RuntimeNativeExport32::plain("split", Self::split32, 2),
+                RuntimeNativeExport32::plain("join", Self::join32, 2),
+                RuntimeNativeExport32::plain("reverse", Self::reverse32, 1),
+                RuntimeNativeExport32::plain("repeat", Self::repeat32, 2),
+                RuntimeNativeExport32::plain("char", Self::char_at32, 2),
+                RuntimeNativeExport32::plain("byte", Self::byte_at32, 2),
+                RuntimeNativeExport32::plain("chars", Self::chars32, 1),
+                RuntimeNativeExport32::plain("find", Self::find32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("is_empty", Self::is_empty32, 1),
+                RuntimeNativeExport32::plain("format", Self::format32, NativeEntry32::VARIADIC),
+            ],
+            &[],
+        ))
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {

@@ -3,12 +3,12 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{list::ListModule, register_stdlib_modules, runtime_native::runtime_string_value};
-    use anyhow::{Result, anyhow};
+    use anyhow::Result;
     use lk_core::{
-        module::{self, Module},
+        module::{self},
         stmt::{self, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        val::{HeapStore, HeapValue, RuntimeVal, TypedList},
         vm::{self, NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32},
     };
 
@@ -25,15 +25,7 @@ mod tests {
     }
 
     fn list_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = ListModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            return Err(anyhow!("{name} must be a heap callable"));
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            return Err(anyhow!("{name} must be RuntimeNative32"));
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&ListModule::new(), name)
     }
 
     fn expect_runtime_list(value: RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
@@ -52,6 +44,7 @@ mod tests {
                 .iter()
                 .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
                 .collect(),
+            TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 

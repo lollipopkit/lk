@@ -1,15 +1,13 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::Module,
-    val::{RuntimeVal, Val},
-    vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32},
+    module::{Module, RuntimeNativeExport32, RuntimeValueExport32, runtime_export_from_plain_native_entries},
+    val::RuntimeVal,
+    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 #[derive(Debug)]
-pub struct MathModule {
-    functions: HashMap<String, Val>,
-}
+pub struct MathModule;
 
 impl Default for MathModule {
     fn default() -> Self {
@@ -19,40 +17,7 @@ impl Default for MathModule {
 
 impl MathModule {
     pub fn new() -> Self {
-        let mut functions = HashMap::new();
-
-        register_native(&mut functions, "abs", Self::abs32, 1);
-        register_native(&mut functions, "sqrt", Self::sqrt32, 1);
-        register_native(&mut functions, "sin", Self::sin32, 1);
-        register_native(&mut functions, "cos", Self::cos32, 1);
-        register_native(&mut functions, "tan", Self::tan32, 1);
-        register_native(&mut functions, "asin", Self::asin32, 1);
-        register_native(&mut functions, "acos", Self::acos32, 1);
-        register_native(&mut functions, "atan", Self::atan32, 1);
-        register_native(&mut functions, "atan2", Self::atan2_32, 2);
-        register_native(&mut functions, "log", Self::log32, 1);
-        register_native(&mut functions, "log10", Self::log10_32, 1);
-        register_native(&mut functions, "log2", Self::log2_32, 1);
-        register_native(&mut functions, "exp", Self::exp32, 1);
-        register_native(&mut functions, "pow", Self::pow32, 2);
-        register_native(&mut functions, "floor", Self::floor32, 1);
-        register_native(&mut functions, "ceil", Self::ceil32, 1);
-        register_native(&mut functions, "round", Self::round32, 1);
-        register_native(&mut functions, "min", Self::min32, 2);
-        register_native(&mut functions, "max", Self::max32, 2);
-        register_native(&mut functions, "clamp", Self::clamp32, NativeEntry32::VARIADIC);
-        register_native(&mut functions, "random", Self::random32, 0);
-
-        functions.insert("pi".to_string(), Val::Float(std::f64::consts::PI));
-        functions.insert("e".to_string(), Val::Float(std::f64::consts::E));
-        functions.insert("inf".to_string(), Val::Float(f64::INFINITY));
-        functions.insert("nan".to_string(), Val::Float(f64::NAN));
-        functions.insert("max_int".to_string(), Val::Int(i64::MAX));
-        functions.insert("min_int".to_string(), Val::Int(i64::MIN));
-        functions.insert("max_float".to_string(), Val::Float(f64::MAX));
-        functions.insert("epsilon".to_string(), Val::Float(f64::EPSILON));
-
-        Self { functions }
+        Self
     }
 
     fn clamp32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -236,21 +201,43 @@ impl Module for MathModule {
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("abs", Self::abs32, 1),
+                RuntimeNativeExport32::plain("sqrt", Self::sqrt32, 1),
+                RuntimeNativeExport32::plain("sin", Self::sin32, 1),
+                RuntimeNativeExport32::plain("cos", Self::cos32, 1),
+                RuntimeNativeExport32::plain("tan", Self::tan32, 1),
+                RuntimeNativeExport32::plain("asin", Self::asin32, 1),
+                RuntimeNativeExport32::plain("acos", Self::acos32, 1),
+                RuntimeNativeExport32::plain("atan", Self::atan32, 1),
+                RuntimeNativeExport32::plain("atan2", Self::atan2_32, 2),
+                RuntimeNativeExport32::plain("log", Self::log32, 1),
+                RuntimeNativeExport32::plain("log10", Self::log10_32, 1),
+                RuntimeNativeExport32::plain("log2", Self::log2_32, 1),
+                RuntimeNativeExport32::plain("exp", Self::exp32, 1),
+                RuntimeNativeExport32::plain("pow", Self::pow32, 2),
+                RuntimeNativeExport32::plain("floor", Self::floor32, 1),
+                RuntimeNativeExport32::plain("ceil", Self::ceil32, 1),
+                RuntimeNativeExport32::plain("round", Self::round32, 1),
+                RuntimeNativeExport32::plain("min", Self::min32, 2),
+                RuntimeNativeExport32::plain("max", Self::max32, 2),
+                RuntimeNativeExport32::plain("clamp", Self::clamp32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("random", Self::random32, 0),
+            ],
+            &[
+                RuntimeValueExport32::new("pi", RuntimeVal::Float(std::f64::consts::PI)),
+                RuntimeValueExport32::new("e", RuntimeVal::Float(std::f64::consts::E)),
+                RuntimeValueExport32::new("inf", RuntimeVal::Float(f64::INFINITY)),
+                RuntimeValueExport32::new("nan", RuntimeVal::Float(f64::NAN)),
+                RuntimeValueExport32::new("max_int", RuntimeVal::Int(i64::MAX)),
+                RuntimeValueExport32::new("min_int", RuntimeVal::Int(i64::MIN)),
+                RuntimeValueExport32::new("max_float", RuntimeVal::Float(f64::MAX)),
+                RuntimeValueExport32::new("epsilon", RuntimeVal::Float(f64::EPSILON)),
+            ],
+        ))
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {

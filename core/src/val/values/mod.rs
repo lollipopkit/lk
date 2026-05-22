@@ -6,11 +6,13 @@ use crate::util::fast_map::FastHashMap;
 
 // Using standard HashMap for maps and environments
 
-use super::runtime_model::{CallableValue, HeapValue, RuntimeObject, RuntimeVal, TypedList, TypedMap};
+use super::runtime_model::{CallableValue, HeapValue, RuntimeObject, RuntimeVal};
 
+#[cfg(test)]
+use crate::vm::NativeFunction32;
 use crate::vm::{
-    NativeFunction32, RuntimeCallable32, VmContext, analysis::vm_runtime_metrics_enabled,
-    registers::copy_container_value_for_register_with_metrics,
+    RuntimeCallable32, VmContext, analysis::vm_runtime_metrics_enabled,
+    legacy_registers::copy_container_value_for_register_with_metrics,
 };
 
 mod cache;
@@ -92,7 +94,9 @@ impl Val {
 
     #[inline]
     pub fn list(values: Arc<Vec<Val>>) -> Self {
-        Self::Obj(Arc::new(HeapValue::List(TypedList::from_legacy_values(&values))))
+        Self::Obj(Arc::new(HeapValue::List(
+            super::runtime_model::TypedList::from_legacy_values(values.as_ref()),
+        )))
     }
 
     #[inline]
@@ -108,7 +112,9 @@ impl Val {
 
     #[inline]
     pub fn map(values: Arc<FastHashMap<ArcStr, Val>>) -> Self {
-        Self::Obj(Arc::new(HeapValue::Map(TypedMap::from_legacy_entries(&values))))
+        Self::Obj(Arc::new(HeapValue::Map(
+            super::runtime_model::TypedMap::from_legacy_entries(values.as_ref()),
+        )))
     }
 
     #[inline]
@@ -198,7 +204,8 @@ impl Val {
     }
 
     #[inline]
-    pub fn runtime_native32(function: NativeFunction32, arity: u16) -> Self {
+    #[cfg(test)]
+    pub(crate) fn legacy_runtime_native32(function: NativeFunction32, arity: u16) -> Self {
         Self::Obj(Arc::new(HeapValue::Callable(CallableValue::RuntimeNative32 {
             arity,
             function,
@@ -419,14 +426,6 @@ impl Val {
                     .get(&key)
                     .map(Self::object_field_to_val)
             }
-            (value, key) if value.as_task().is_some() && key.as_str() == Some("value") => {
-                match &value.as_task().expect("checked task").value {
-                    Some(v) => crate::val::runtime_val_to_val(&v.value, &v.heap)
-                        .ok()
-                        .map(|value| Self::access_copy_value(&value, collect_metrics)),
-                    None => Some(Val::Nil),
-                }
-            }
             (value, key) if value.as_channel().is_some() => match key.as_str() {
                 Some("capacity") => Some(Val::Int(
                     value.as_channel().expect("checked channel").capacity.unwrap_or(0),
@@ -533,8 +532,8 @@ mod callable_model_tests {
     }
 
     #[test]
-    fn runtime_native32_is_stored_as_callable_heap_value() {
-        let value = Val::runtime_native32(crate::vm::NativeFunction32::Plain(dummy_native32), 0);
+    fn legacy_runtime_native32_is_stored_as_callable_heap_value() {
+        let value = Val::legacy_runtime_native32(crate::vm::NativeFunction32::Plain(dummy_native32), 0);
 
         assert!(value.is_callable());
         assert!(matches!(
@@ -550,7 +549,7 @@ mod callable_model_tests {
         let list = Val::list(Arc::new(vec![Val::Int(1), Val::Int(2)]));
         assert!(matches!(
             list,
-            Val::Obj(ref object) if matches!(object.as_ref(), HeapValue::List(TypedList::Int(values)) if values == &vec![1, 2])
+            Val::Obj(ref object) if matches!(object.as_ref(), HeapValue::List(crate::val::TypedList::Int(values)) if values == &vec![1, 2])
         ));
 
         let mut map_items = FastHashMap::default();
@@ -559,7 +558,7 @@ mod callable_model_tests {
         assert!(matches!(
             map,
             Val::Obj(ref object)
-                if matches!(object.as_ref(), HeapValue::Map(TypedMap::StringInt(values)) if values.get("answer") == Some(&42))
+                if matches!(object.as_ref(), HeapValue::Map(crate::val::TypedMap::StringInt(values)) if values.get("answer") == Some(&42))
         ));
     }
 }

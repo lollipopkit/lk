@@ -6,13 +6,13 @@
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{self, Module},
+    module::{self, Module, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
     rt,
     rt::RuntimePayload,
-    val::{ChannelValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32, copy_runtime_value},
+    val::{ChannelValue, HeapStore, HeapValue, RuntimeVal, TypedList},
+    vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32},
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct ChannelModule;
@@ -37,21 +37,27 @@ impl Module for ChannelModule {
     }
 
     fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        for (name, value) in self.exports() {
-            registry.register_builtin(&format!("{}::{}", self.name(), name), value);
-        }
+        registry.register_runtime_builtin("chan::close", NativeFunction32::Plain(chan_close32), 1);
+        registry.register_runtime_builtin("chan::len", NativeFunction32::Plain(chan_len32), 1);
+        registry.register_runtime_builtin("chan::capacity", NativeFunction32::Plain(chan_capacity32), 1);
+        registry.register_runtime_builtin("chan::is_closed", NativeFunction32::Plain(chan_is_closed32), 1);
+        registry.register_runtime_builtin("chan::try_send", NativeFunction32::Plain(chan_try_send32), 2);
+        registry.register_runtime_builtin("chan::try_recv", NativeFunction32::Plain(chan_try_recv32), 1);
         Ok(())
     }
 
-    fn exports(&self) -> HashMap<String, Val> {
-        let mut functions = HashMap::new();
-        register_native(&mut functions, "close", chan_close32, 1);
-        register_native(&mut functions, "len", chan_len32, 1);
-        register_native(&mut functions, "capacity", chan_capacity32, 1);
-        register_native(&mut functions, "is_closed", chan_is_closed32, 1);
-        register_native(&mut functions, "try_send", chan_try_send32, 2);
-        register_native(&mut functions, "try_recv", chan_try_recv32, 1);
-        functions
+    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+        Ok(runtime_export_from_plain_native_entries(
+            &[
+                RuntimeNativeExport32::plain("close", chan_close32, 1),
+                RuntimeNativeExport32::plain("len", chan_len32, 1),
+                RuntimeNativeExport32::plain("capacity", chan_capacity32, 1),
+                RuntimeNativeExport32::plain("is_closed", chan_is_closed32, 1),
+                RuntimeNativeExport32::plain("try_send", chan_try_send32, 2),
+                RuntimeNativeExport32::plain("try_recv", chan_try_recv32, 1),
+            ],
+            &[],
+        ))
     }
 }
 
@@ -59,18 +65,6 @@ impl ChannelModule {
     pub fn new() -> Self {
         Self
     }
-}
-
-fn register_native(
-    functions: &mut HashMap<String, Val>,
-    name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
-    arity: u16,
-) {
-    functions.insert(
-        name.to_string(),
-        Val::runtime_native32(NativeFunction32::Plain(function), arity),
-    );
 }
 
 fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
@@ -134,7 +128,7 @@ fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
     expect_arity(args, 2, "chan.try_send()")?;
     let values = args.as_slice();
     let channel = channel_arg(&values[0], runtime.heap(), "chan.try_send()")?;
-    let value = runtime_payload_from_value(&values[1], runtime.heap())?;
+    let value = RuntimePayload::copy_from_value(&values[1], runtime.heap())?;
     let sent = rt::with_runtime(|runtime| runtime.try_send(channel.id, value))
         .map_err(|err| anyhow!("Failed to send to channel: {err}"))?;
     Ok(RuntimeVal::Bool(sent))
@@ -146,46 +140,21 @@ fn chan_try_recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
     match rt::with_runtime(|rt| rt.try_recv(channel.id))
         .map_err(|err| anyhow!("Failed to receive from channel: {err}"))?
     {
-        Some((ok, value)) => Ok(pair(
-            ok,
-            runtime_payload_into_value(value, runtime.heap_mut())?,
-            runtime,
-        )),
+        Some((ok, value)) => Ok(pair(ok, value.into_value(runtime.heap_mut())?, runtime)),
         None => Ok(pair(false, RuntimeVal::Nil, runtime)),
     }
-}
-
-fn runtime_payload_from_value(value: &RuntimeVal, heap: &HeapStore) -> Result<RuntimePayload> {
-    let mut source_heap = heap.clone();
-    let mut payload_heap = HeapStore::new();
-    let value = copy_runtime_value(value, &mut source_heap, &mut payload_heap)?;
-    Ok(RuntimePayload::new(value, payload_heap))
-}
-
-fn runtime_payload_into_value(payload: RuntimePayload, heap: &mut HeapStore) -> Result<RuntimeVal> {
-    let mut payload_heap = payload.heap;
-    copy_runtime_value(&payload.value, &mut payload_heap, heap)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use lk_core::{
-        module::Module,
-        val::{CallableValue, ShortStr, Type},
+        val::{ShortStr, Type},
         vm::{NativeFunction32, RuntimeModuleState32},
     };
 
     fn chan_native(name: &str) -> Result<(u16, NativeFunction32)> {
-        let exports = ChannelModule::new().exports();
-        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
-        let Val::Obj(object) = value else {
-            bail!("{name} must be a heap callable");
-        };
-        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
-            bail!("{name} must be RuntimeNative32");
-        };
-        Ok((*arity, function.clone()))
+        crate::runtime_native::runtime_native_export(&ChannelModule::new(), name)
     }
 
     fn runtime_channel(capacity: i64, heap: &mut HeapStore) -> Result<RuntimeVal> {
@@ -224,6 +193,7 @@ mod tests {
                 .iter()
                 .map(|value| RuntimeVal::ShortStr(ShortStr::new(value).expect("short test string")))
                 .collect(),
+            TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 

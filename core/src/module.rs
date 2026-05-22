@@ -1,6 +1,12 @@
-use crate::val::Val;
+use crate::{
+    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedMap},
+    vm::{Module32, NativeFunction32, PlainNativeFunction32, RuntimeExport32, RuntimeModuleState32},
+};
 use anyhow::{Result, anyhow};
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, Mutex},
+};
 
 /// Central module registry inspired by Lua's linit.c
 ///
@@ -9,13 +15,20 @@ use std::collections::HashMap;
 #[derive(Debug)]
 pub struct ModuleRegistry {
     modules: HashMap<String, Box<dyn Module>>,
-    builtin_functions: HashMap<String, Val>,
+    runtime_builtin_functions: HashMap<Arc<str>, RuntimeExport32>,
 }
 
 impl PartialEq for ModuleRegistry {
     fn eq(&self, other: &Self) -> bool {
-        // Compare only the builtin functions, ignoring modules and cache
-        self.builtin_functions == other.builtin_functions
+        // RuntimeExport32 carries shared state and is not value-comparable.
+        // Resolver equality only needs stable registry shape for cache/debug use.
+        self.modules.len() == other.modules.len()
+            && self.modules.keys().all(|name| other.modules.contains_key(name))
+            && self.runtime_builtin_functions.len() == other.runtime_builtin_functions.len()
+            && self
+                .runtime_builtin_functions
+                .keys()
+                .all(|name| other.runtime_builtin_functions.contains_key(name))
     }
 }
 
@@ -24,7 +37,7 @@ impl ModuleRegistry {
     pub fn new() -> Self {
         let mut registry = Self {
             modules: HashMap::new(),
-            builtin_functions: HashMap::new(),
+            runtime_builtin_functions: HashMap::new(),
         };
 
         registry.register_core_modules();
@@ -57,24 +70,28 @@ impl ModuleRegistry {
             .ok_or_else(|| anyhow!("Module '{}' not found", name))
     }
 
+    /// Resolve a registered module as a VM runtime export.
+    pub fn get_runtime_module(&self, name: &str) -> Result<RuntimeExport32> {
+        self.get_module(name)?.runtime_exports()
+    }
+
     /// Get all registered module names
     pub fn get_module_names(&self) -> Vec<String> {
         self.modules.keys().cloned().collect()
     }
 
-    /// Register a builtin function globally
-    pub fn register_builtin(&mut self, name: &str, func: Val) {
-        self.builtin_functions.insert(name.to_string(), func);
+    /// Register a VM-native builtin globally.
+    pub fn register_runtime_builtin(&mut self, name: &str, function: NativeFunction32, arity: u16) {
+        let value = runtime_export_from_runtime_native(function.clone(), arity);
+        self.runtime_builtin_functions.insert(Arc::<str>::from(name), value);
     }
 
-    /// Get a builtin function by name
-    pub fn get_builtin(&self, name: &str) -> Option<&Val> {
-        self.builtin_functions.get(name)
+    pub fn get_runtime_builtin(&self, name: &str) -> Option<&RuntimeExport32> {
+        self.runtime_builtin_functions.get(name)
     }
 
-    /// Get all builtin functions
-    pub fn get_all_builtins(&self) -> &HashMap<String, Val> {
-        &self.builtin_functions
+    pub fn get_all_runtime_builtins(&self) -> &HashMap<Arc<str>, RuntimeExport32> {
+        &self.runtime_builtin_functions
     }
 }
 
@@ -110,8 +127,8 @@ pub trait Module: Send + Sync + std::fmt::Debug {
     /// Register the module's exports with the registry
     fn register(&self, registry: &mut ModuleRegistry) -> Result<()>;
 
-    /// Get all exports from this module
-    fn exports(&self) -> HashMap<String, Val>;
+    /// Get exports in the canonical VM runtime representation.
+    fn runtime_exports(&self) -> Result<RuntimeExport32>;
 
     /// Initialize the module (called once when loaded)
     fn init(&self) -> Result<()> {
@@ -132,6 +149,61 @@ pub trait Module: Send + Sync + std::fmt::Debug {
         meta.insert("enabled".to_string(), self.enabled().to_string());
         meta
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct RuntimeNativeExport32 {
+    pub name: &'static str,
+    pub function: PlainNativeFunction32,
+    pub arity: u16,
+}
+
+impl RuntimeNativeExport32 {
+    pub const fn plain(name: &'static str, function: PlainNativeFunction32, arity: u16) -> Self {
+        Self { name, function, arity }
+    }
+}
+
+#[derive(Clone)]
+pub struct RuntimeValueExport32 {
+    pub name: &'static str,
+    pub value: RuntimeVal,
+}
+
+impl RuntimeValueExport32 {
+    pub const fn new(name: &'static str, value: RuntimeVal) -> Self {
+        Self { name, value }
+    }
+}
+
+pub fn runtime_export_from_plain_native_entries(
+    natives: &[RuntimeNativeExport32],
+    values: &[RuntimeValueExport32],
+) -> RuntimeExport32 {
+    let mut heap = HeapStore::new();
+    let mut entries = BTreeMap::new();
+    for native in natives {
+        let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+            arity: native.arity,
+            function: NativeFunction32::Plain(native.function),
+        })));
+        entries.insert(RuntimeMapKey::String(Arc::<str>::from(native.name)), value);
+    }
+    for value in values {
+        entries.insert(RuntimeMapKey::String(Arc::<str>::from(value.name)), value.value.clone());
+    }
+    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))));
+    RuntimeExport32 {
+        value,
+        state: Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new()))),
+        module: Arc::new(Module32::default()),
+    }
+}
+
+pub fn runtime_export_from_runtime_native(function: NativeFunction32, arity: u16) -> RuntimeExport32 {
+    let mut heap = HeapStore::new();
+    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })));
+    RuntimeExport32::from_value(value, heap)
 }
 
 #[cfg(test)]
