@@ -1,34 +1,25 @@
-//! Register bytecode VM subsystem
+//! LK VM subsystem.
 //!
-//! This module contains the bytecode definitions, compiler, and VM runtime that
-//! back the LK evaluator. It is now always part of the core crate.
+//! The public surface exposes the canonical `Instr32` compiler/executor path.
 
-mod alloc;
-mod analysis;
+#[allow(dead_code, unused_imports)]
+pub(crate) mod alloc;
+#[allow(dead_code, unused_imports)]
+pub(crate) mod analysis;
+#[allow(dead_code, unused_imports)]
 mod analysis_queries;
-mod bc32;
-mod bytecode;
-mod compiler;
+mod compiler32;
 mod context;
-mod liveness;
-mod lkb;
-mod registers;
-#[allow(clippy::module_inception)]
-mod vm;
+mod exec32;
+mod frame32;
+mod ir32;
+#[allow(dead_code, unused_imports)]
+pub(crate) mod registers;
+#[allow(dead_code)]
+pub(crate) mod ssa;
 
-pub use alloc::*;
-pub use analysis::*;
-pub use bc32::*;
-pub use bytecode::*;
-pub use compiler::*;
+pub use compiler32::*;
 pub use context::VmContext;
-pub(crate) use liveness::*;
-pub use lkb::*;
-pub(crate) use registers::*;
-pub(crate) use vm::with_current_vm;
-pub use vm::*;
-
-#[cfg(test)]
-mod compiler_test;
-#[cfg(test)]
-mod vm_test;
+pub use exec32::*;
+pub use frame32::*;
+pub use ir32::*;

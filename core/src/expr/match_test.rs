@@ -89,7 +89,7 @@ mod tests {
     fn test_list_pattern() {
         // Test [first, second, ..rest] pattern
         let match_expr = Expr::Match {
-            value: Box::new(Expr::Val(Val::List(Arc::from(vec![
+            value: Box::new(Expr::Val(Val::list(Arc::from(vec![
                 Val::Int(1),
                 Val::Int(2),
                 Val::Int(3),
@@ -264,7 +264,7 @@ mod tests {
         };
 
         let mut data = std::collections::HashMap::new();
-        data.insert("users".to_string(), Val::List(Arc::from(vec![user1, user2])));
+        data.insert("users".to_string(), Val::list(Arc::from(vec![user1, user2])));
         data.insert("count".to_string(), Val::Int(2));
 
         let match_expr = Expr::Match {

@@ -49,26 +49,23 @@ impl LkAnalyzer {
                     let exports = m.exports();
                     for (k, v) in exports {
                         let label = format!("{}.{}", module_name, k);
-                        let (kind, detail) = match v {
-                            Val::RustFunction(_)
-                            | Val::RustFastFunction(_)
-                            | Val::RustFastFunctionNamed(_)
-                            | Val::RustFunctionNamed(_)
-                            | Val::AotFunction(_)
-                            | Val::Closure(_) => (CompletionItemKind::FUNCTION, "function".to_string()),
-                            Val::Int(_) | Val::Float(_) | Val::Bool(_) | Val::Str(_) | Val::ShortStr(_) => {
-                                (CompletionItemKind::CONSTANT, "const".to_string())
-                            }
-                            Val::List(_) => (CompletionItemKind::VARIABLE, "list".to_string()),
-                            Val::Map(_) => (CompletionItemKind::MODULE, "namespace".to_string()),
-                            Val::Task(_) => (CompletionItemKind::VALUE, "task".to_string()),
-                            Val::Channel(_) => (CompletionItemKind::VALUE, "channel".to_string()),
-                            Val::Stream(_) => (CompletionItemKind::VALUE, "stream".to_string()),
-                            Val::Iterator(_) => (CompletionItemKind::VALUE, "iterator".to_string()),
-                            Val::MutationGuard(_) => (CompletionItemKind::VALUE, "mutation guard".to_string()),
-                            Val::StreamCursor { .. } => (CompletionItemKind::VALUE, "stream cursor".to_string()),
-                            Val::Object(_) => (CompletionItemKind::VALUE, "object".to_string()),
-                            Val::Nil => (CompletionItemKind::VALUE, "nil".to_string()),
+                        let (kind, detail) = if v.is_callable() {
+                            (CompletionItemKind::FUNCTION, "function".to_string())
+                        } else if matches!(v, Val::Int(_) | Val::Float(_) | Val::Bool(_) | Val::ShortStr(_))
+                            || v.as_str().is_some()
+                        {
+                            (CompletionItemKind::CONSTANT, "const".to_string())
+                        } else if v.as_list().is_some() {
+                            (CompletionItemKind::VARIABLE, "list".to_string())
+                        } else if v.as_map().is_some() {
+                            (CompletionItemKind::MODULE, "namespace".to_string())
+                        } else {
+                            let kind = if matches!(v, Val::Nil) {
+                                CompletionItemKind::VALUE
+                            } else {
+                                CompletionItemKind::VALUE
+                            };
+                            (kind, v.type_name().to_string())
                         };
                         items.push(CompletionItem {
                             label,
@@ -134,15 +131,14 @@ impl LkAnalyzer {
         let mut current = context;
 
         for part in parts {
-            match current {
-                Val::Map(map) => {
-                    if let Some(value) = map.get(part) {
-                        current = value;
-                    } else {
+            match current.as_map() {
+                Some(map) => {
+                    let Some(value) = map.get(part) else {
                         return false;
-                    }
+                    };
+                    current = value;
                 }
-                _ => return false,
+                None => return false,
             }
         }
         true

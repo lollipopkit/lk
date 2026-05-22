@@ -203,6 +203,7 @@ impl<'a> StmtParser<'a> {
             Token::While => self.parse_while_stmt(),
             Token::For => self.parse_for_stmt(),
             Token::Struct => self.parse_struct_stmt(),
+            Token::Type => self.parse_type_alias_stmt(),
             Token::Trait => self.parse_trait_stmt(),
             Token::Impl => self.parse_impl_stmt(),
             Token::Let => self.parse_let_stmt(),

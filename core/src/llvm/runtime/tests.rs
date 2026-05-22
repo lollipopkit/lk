@@ -1,16 +1,7 @@
 use super::*;
 use crate::val::Val;
-use crate::{
-    stmt::{Program, stmt_parser::StmtParser},
-    token::Tokenizer,
-    vm::{ModuleFlags, compile_program, encode_module},
-};
 use once_cell::sync::Lazy;
-use std::{
-    ffi::CString,
-    path::{Path, PathBuf},
-    sync::Mutex,
-};
+use std::{ffi::CString, sync::Mutex};
 
 static RUNTIME_TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -45,7 +36,8 @@ fn build_list_and_len() {
     let len = lk_rt_len(list_handle);
     assert_eq!(len, 3);
     match decode_for_tests(list_handle) {
-        Val::List(list) => {
+        value if value.as_list().is_some() => {
+            let list = value.as_list().expect("checked list");
             assert_eq!(list.len(), 3);
             assert!(matches!(list[0], Val::Bool(true)));
             assert!(matches!(list[1], Val::Int(42)));
@@ -217,24 +209,6 @@ fn define_and_load_global() {
     assert_eq!(loaded, encoding::BOOL_TRUE_VALUE);
 }
 
-fn add_one(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    let value = args.first().cloned().unwrap_or(Val::Int(0));
-    match value {
-        Val::Int(i) => Ok(Val::Int(i + 1)),
-        _ => Ok(Val::Nil),
-    }
-}
-
-#[test]
-fn call_rust_function() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-    let func_handle = with_state(|state| state.encode_value(Val::RustFunction(add_one)));
-    let arg = 41i64;
-    let result = lk_rt_call(func_handle, &arg, 1, 1);
-    assert_eq!(result, 42);
-}
-
 #[test]
 fn stdlib_module_names_are_collected_from_module_imports() {
     let imports = vec![
@@ -271,49 +245,19 @@ fn concurrency_globals_are_registered_only_for_concurrency_imports() {
     }]));
 }
 
-fn compile_module_from_path(path: &Path) -> BytecodeModule {
-    let src = std::fs::read_to_string(path).expect("module source readable");
-    let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(&src).expect("tokenize module");
-    let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-    let program: Program = parser.parse_program_with_enhanced_errors(&src).expect("parse module");
-    let func = compile_program(&program);
-    let mut module = BytecodeModule::new(func);
-    module.flags.insert(ModuleFlags::CONST_FOLDED);
-    module
-}
-
 #[test]
-fn apply_imports_registers_bundled_module() {
+fn bundled_lkb_registration_is_disabled_during_instr32_migration() {
     let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
     reset_runtime_state();
     lk_rt_begin_session();
 
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace root")
-        .to_path_buf();
-    let examples_dir = workspace.join("examples");
-    let search_path = CString::new("examples").unwrap();
-    lk_rt_register_search_path(search_path.as_ptr(), search_path.as_bytes().len() as i64);
-
-    let fib_path = examples_dir.join("fib.lk");
-    let fib_module = compile_module_from_path(&fib_path);
-    let fib_bytes = encode_module(&fib_module).expect("encode module");
     let fib_path_rel = CString::new("examples/fib.lk").unwrap();
-    let _ = lk_rt_register_bundled_module(
+    let bytes = b"LKB";
+    let registered = lk_rt_register_bundled_module(
         fib_path_rel.as_ptr(),
         fib_path_rel.as_bytes().len() as i64,
-        fib_bytes.as_ptr(),
-        fib_bytes.len() as i64,
+        bytes.as_ptr(),
+        bytes.len() as i64,
     );
-
-    let imports_json = CString::new("[{\"File\":{\"path\":\"examples/fib\"}}]").unwrap();
-    let _ = lk_rt_register_imports(imports_json.as_ptr(), imports_json.as_bytes().len() as i64);
-    let apply = lk_rt_apply_imports();
-    assert_eq!(apply, 0, "apply imports succeeds");
-
-    let fib_name = CString::new("fib").unwrap();
-    let fib_handle = lk_rt_intern_string(fib_name.as_ptr(), fib_name.as_bytes().len() as i64);
-    let fib_value = lk_rt_load_global(fib_handle);
-    assert_ne!(fib_value, encoding::NIL_VALUE, "fib module is loaded");
+    assert_eq!(registered, -1, "bundled LKB registration must stay disabled");
 }

@@ -3,7 +3,13 @@ mod tests {
     use std::sync::Arc;
 
     use anyhow::Result;
-    use lk_core::{module, stmt, stmt::stmt_parser::StmtParser, token::Tokenizer, val::Val, vm};
+    use lk_core::{
+        module, stmt,
+        stmt::stmt_parser::StmtParser,
+        token::Tokenizer,
+        val::{CallableValue, HeapValue, Val},
+        vm::{self, NativeFunction32},
+    };
 
     #[test]
     fn test_global_printf_and_panic_available() -> Result<()> {
@@ -21,9 +27,8 @@ mod tests {
         // Create environment with this registry
         let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
-        let mut machine = vm::Vm::new();
 
-        let result = program.execute_with_vm(&mut machine, &mut env)?;
+        let result = program.execute_with_ctx(&mut env)?;
         assert_eq!(result, Val::Int(42));
         Ok(())
     }
@@ -43,11 +48,61 @@ mod tests {
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut machine = vm::Vm::new();
-            let _ = program.execute_with_vm(&mut machine, &mut env);
+            let _ = program.execute_with_ctx(&mut env);
         }));
 
         assert!(result.is_err(), "expected panic, but code did not panic");
+        Ok(())
+    }
+
+    #[test]
+    fn test_stdlib_globals_use_runtime_native32_abi() {
+        let mut registry = module::ModuleRegistry::new();
+        crate::register_stdlib_globals(&mut registry);
+
+        for name in [
+            "print",
+            "println",
+            "panic",
+            "spawn",
+            "chan",
+            "send",
+            "recv",
+            "chan::try_send",
+            "chan::try_recv",
+            "select$block",
+        ] {
+            let value = registry.get_builtin(name).expect("builtin present");
+            let Val::Obj(object) = value else {
+                panic!("{name} should be heap callable");
+            };
+            let HeapValue::Callable(CallableValue::RuntimeNative32 { function, .. }) = object.as_ref() else {
+                panic!("{name} should use RuntimeNative32");
+            };
+            assert!(matches!(function, NativeFunction32::Plain(_)));
+        }
+    }
+
+    #[test]
+    fn test_global_channel_helpers_execute_on_runtime_native32() -> Result<()> {
+        let source = r#"
+            let ch = chan(2);
+            send(ch, 7);
+            return recv(ch);
+        "#;
+        let tokens = Tokenizer::tokenize(source)?;
+        let mut parser = StmtParser::new(&tokens);
+        let program = parser.parse_program()?;
+
+        let mut registry = module::ModuleRegistry::new();
+        crate::register_stdlib_modules(&mut registry)?;
+        crate::register_stdlib_globals(&mut registry);
+
+        let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
+        let mut env = vm::VmContext::new().with_resolver(resolver);
+
+        let result = program.execute_with_ctx(&mut env)?;
+        assert_eq!(result, Val::list(vec![Val::Bool(true), Val::Int(7)].into()));
         Ok(())
     }
 }

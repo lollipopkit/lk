@@ -4,13 +4,15 @@ use anyhow::Result;
 
 use crate::op::{BinOp, err_op};
 use crate::util::fast_map::{fast_hash_map_with_capacity, fast_hash_set_with_capacity};
+use crate::vm::analysis::vm_runtime_metrics_enabled;
+use crate::vm::registers::copy_container_value_for_register_with_metrics;
 
 use super::Val;
 
 #[inline(always)]
 fn copy_collection_op_value(value: &Val, collect_metrics: bool) -> Val {
     if collect_metrics {
-        crate::vm::copy_container_value_for_register_with_metrics(value, true)
+        copy_container_value_for_register_with_metrics(value, true)
     } else {
         value.clone()
     }
@@ -20,7 +22,9 @@ impl Val {
     #[inline]
     pub(crate) fn add_with_metrics(&self, other: &Self, collect_metrics: bool) -> Result<Val> {
         match (self, other) {
-            (Val::Map(l), Val::Map(r)) => {
+            (lval, rval) if lval.as_map().is_some() && rval.as_map().is_some() => {
+                let l = lval.as_map().expect("checked map");
+                let r = rval.as_map().expect("checked map");
                 let mut merged = fast_hash_map_with_capacity(l.len() + r.len());
                 for (k, v) in l.iter() {
                     merged.insert(k.clone(), copy_collection_op_value(v, collect_metrics));
@@ -28,15 +32,15 @@ impl Val {
                 for (k, v) in r.iter() {
                     merged.insert(k.clone(), copy_collection_op_value(v, collect_metrics));
                 }
-                Ok(merged.into())
+                Ok(Val::map(merged.into()))
             }
-            (Val::List(l), Val::List(r)) => Ok(Val::List(Val::concat_lists_with_metrics(
-                l.as_ref(),
-                r.as_ref(),
+            (l, r) if l.as_list().is_some() && r.as_list().is_some() => Ok(Val::list(Val::concat_lists_with_metrics(
+                l.as_list().expect("checked list").as_ref(),
+                r.as_list().expect("checked list").as_ref(),
                 collect_metrics,
             ))),
-            (Val::List(l), r) => Ok(Val::List(Val::append_to_list_with_metrics(
-                l.as_ref(),
+            (l, r) if l.as_list().is_some() => Ok(Val::list(Val::append_to_list_with_metrics(
+                l.as_list().expect("checked list").as_ref(),
                 r,
                 collect_metrics,
             ))),
@@ -47,7 +51,9 @@ impl Val {
     #[inline]
     pub(crate) fn sub_with_metrics(&self, other: &Self, collect_metrics: bool) -> Result<Val> {
         match (self, other) {
-            (Val::List(l), Val::List(r)) => {
+            (lval, rval) if lval.as_list().is_some() && rval.as_list().is_some() => {
+                let l = lval.as_list().expect("checked list");
+                let r = rval.as_list().expect("checked list");
                 if r.len() > 32 {
                     if r.iter().all(|v| matches!(v, Val::Int(_))) {
                         let mut set = fast_hash_set_with_capacity(r.len());
@@ -63,9 +69,9 @@ impl Val {
                                 _ => out.push(copy_collection_op_value(v, collect_metrics)),
                             }
                         }
-                        return Ok(out.into());
+                        return Ok(Val::list(out.into()));
                     }
-                    if r.iter().all(|v| matches!(v, Val::ShortStr(_) | Val::Str(_))) {
+                    if r.iter().all(|v| v.as_str().is_some()) {
                         let mut set: std::collections::HashSet<&str> =
                             std::collections::HashSet::with_capacity(r.len());
                         for v in r.iter() {
@@ -80,7 +86,7 @@ impl Val {
                                 _ => out.push(copy_collection_op_value(v, collect_metrics)),
                             }
                         }
-                        return Ok(out.into());
+                        return Ok(Val::list(out.into()));
                     }
                     if r.iter().all(|v| matches!(v, Val::Bool(_))) {
                         let mut set = fast_hash_set_with_capacity(2);
@@ -96,7 +102,7 @@ impl Val {
                                 _ => out.push(copy_collection_op_value(v, collect_metrics)),
                             }
                         }
-                        return Ok(out.into());
+                        return Ok(Val::list(out.into()));
                     }
                 }
 
@@ -109,9 +115,10 @@ impl Val {
                     }
                     result.push(copy_collection_op_value(left_val, collect_metrics));
                 }
-                Ok(result.into())
+                Ok(Val::list(result.into()))
             }
-            (Val::List(l), r) => {
+            (lval, r) if lval.as_list().is_some() => {
+                let l = lval.as_list().expect("checked list");
                 let mut result = Vec::with_capacity(l.len());
                 let mut found = false;
                 for val in l.iter() {
@@ -121,18 +128,21 @@ impl Val {
                     }
                     result.push(copy_collection_op_value(val, collect_metrics));
                 }
-                Ok(result.into())
+                Ok(Val::list(result.into()))
             }
-            (Val::Map(l), Val::Map(r)) => {
+            (lval, rval) if lval.as_map().is_some() && rval.as_map().is_some() => {
+                let l = lval.as_map().expect("checked map");
+                let r = rval.as_map().expect("checked map");
                 let mut result = fast_hash_map_with_capacity(l.len());
                 for (k, v) in l.iter() {
                     if !r.contains_key(k) {
                         result.insert(k.clone(), copy_collection_op_value(v, collect_metrics));
                     }
                 }
-                Ok(result.into())
+                Ok(Val::map(result.into()))
             }
-            (Val::Map(l), r) => {
+            (lval, r) if lval.as_map().is_some() => {
+                let l = lval.as_map().expect("checked map");
                 if let Some(k) = r.as_str() {
                     let mut result = fast_hash_map_with_capacity(l.len());
                     for (existing_k, v) in l.iter() {
@@ -140,7 +150,7 @@ impl Val {
                             result.insert(existing_k.clone(), copy_collection_op_value(v, collect_metrics));
                         }
                     }
-                    return Ok(result.into());
+                    return Ok(Val::map(result.into()));
                 }
                 err_op(self, BinOp::Sub, other)
             }
@@ -162,10 +172,10 @@ impl Add for &Val {
             (Val::Float(a), Val::Float(b)) => Ok(Val::Float(a + b)),
             (Val::Float(a), Val::Int(b)) => Ok(Val::Float(a + *b as f64)),
             (Val::Int(a), Val::Float(b)) => Ok(Val::Float(*a as f64 + b)),
-            (Val::ShortStr(a), Val::ShortStr(b)) => Ok(Val::concat_strings(a.as_str(), b.as_str())),
-            (Val::ShortStr(a), Val::Str(b)) => Ok(Val::concat_strings(a.as_str(), b.as_str())),
-            (Val::Str(a), Val::ShortStr(b)) => Ok(Val::concat_strings(a.as_str(), b.as_str())),
-            (Val::Str(a), Val::Str(b)) => Ok(Val::concat_strings(a.as_str(), b.as_str())),
+            (lhs, rhs) if lhs.as_str().is_some() && rhs.as_str().is_some() => Ok(Val::concat_strings(
+                lhs.as_str().expect("checked string"),
+                rhs.as_str().expect("checked string"),
+            )),
             (lhs, Val::Int(b)) if lhs.as_str().is_some() => {
                 let mut buf = itoa::Buffer::new();
                 Ok(Val::concat_strings(lhs.as_str().unwrap(), buf.format(*b)))
@@ -182,15 +192,13 @@ impl Add for &Val {
                 let mut buf = ryu::Buffer::new();
                 Ok(Val::concat_strings(buf.format(*a), rhs.as_str().unwrap()))
             }
-            (Val::Map(_), Val::Map(_)) => self.add_with_metrics(other, crate::vm::vm_runtime_metrics_enabled()),
-            (Val::List(l), Val::List(r)) => {
-                let _ = (l, r);
-                self.add_with_metrics(other, crate::vm::vm_runtime_metrics_enabled())
+            (l, r) if l.as_map().is_some() && r.as_map().is_some() => {
+                self.add_with_metrics(other, vm_runtime_metrics_enabled())
             }
-            (Val::List(l), r) => {
-                let _ = (l, r);
-                self.add_with_metrics(other, crate::vm::vm_runtime_metrics_enabled())
+            (l, r) if l.as_list().is_some() && r.as_list().is_some() => {
+                self.add_with_metrics(other, vm_runtime_metrics_enabled())
             }
+            (l, _) if l.as_list().is_some() => self.add_with_metrics(other, vm_runtime_metrics_enabled()),
             _ => err_op(self, BinOp::Add, other),
         }
     }
@@ -206,9 +214,8 @@ impl Sub for &Val {
             (Val::Float(a), Val::Float(b)) => Ok((a - b).into()),
             (Val::Float(a), Val::Int(b)) => Ok((a - *b as f64).into()),
             (Val::Int(a), Val::Float(b)) => Ok((*a as f64 - b).into()),
-            (Val::List(_), Val::List(_)) | (Val::List(_), _) | (Val::Map(_), Val::Map(_)) | (Val::Map(_), _) => {
-                self.sub_with_metrics(other, crate::vm::vm_runtime_metrics_enabled())
-            }
+            (l, _) if l.as_list().is_some() => self.sub_with_metrics(other, vm_runtime_metrics_enabled()),
+            (l, _) if l.as_map().is_some() => self.sub_with_metrics(other, vm_runtime_metrics_enabled()),
             _ => err_op(self, BinOp::Sub, other),
         }
     }

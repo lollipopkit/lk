@@ -4,8 +4,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use lk_core::{stmt::ModuleResolver, val::Val, vm};
-
 fn bin_path() -> PathBuf {
     // Cargo exposes built binary path for tests via this env var
     PathBuf::from(env!("CARGO_BIN_EXE_lk"))
@@ -41,40 +39,29 @@ fn ensure_clean_dir(dir: &Path) {
 }
 
 #[test]
-fn test_lkb_positive_compile_and_run() {
+fn test_lkb_compile_is_disabled_during_instr32_migration() {
     let dir = unique_tmp_dir("lkb_pos");
     ensure_clean_dir(&dir);
 
-    // Create a simple source file that returns 123
     write_file(&dir, "a.lk", "return 123;\n");
 
-    // Compile to LKB (output to a.lkb next to source)
     let output = run_cli(&dir, ["compile", "a.lk"]).output().expect("spawn compile");
+    assert!(!output.status.success(), "LKB compile should be disabled");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "compile failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("compile output is disabled until the Instr32 module format replaces LKB"),
+        "expected migration error, got: {stderr}"
+    );
+    assert!(
+        !dir.join("a.lkb").exists(),
+        "disabled LKB compile must not emit bytecode"
     );
 
-    let lkb_path = dir.join("a.lkb");
-    assert!(lkb_path.exists(), "expected compiled bytecode at {:?}", lkb_path);
-
-    // Run the LKB file; expect it to print the return value
-    let run_out = run_cli(&dir, ["a.lkb"]).output().expect("spawn run");
-    assert!(
-        run_out.status.success(),
-        "run failed: {}",
-        String::from_utf8_lossy(&run_out.stderr)
-    );
-    let stdout = String::from_utf8(run_out.stdout).expect("utf8 stdout");
-    assert_eq!(stdout.trim(), "123");
-
-    // Best-effort cleanup
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn test_lkb_compile_with_import_bundled() {
+fn test_lkb_compile_with_import_is_disabled() {
     let dir = unique_tmp_dir("lkb_import");
     ensure_clean_dir(&dir);
 
@@ -86,44 +73,51 @@ fn test_lkb_compile_with_import_bundled() {
     write_file(&dir, "main.lk", "import \"fib\";\nreturn fib.iterative(10);\n");
 
     let output = run_cli(&dir, ["compile", "main.lk"]).output().expect("spawn compile");
+    assert!(!output.status.success(), "LKB compile should be disabled");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "compile failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("compile output is disabled until the Instr32 module format replaces LKB"),
+        "expected migration error, got: {stderr}"
+    );
+    assert!(
+        !dir.join("main.lkb").exists(),
+        "disabled LKB compile must not emit bytecode"
     );
 
-    let bytes = fs::read(dir.join("main.lkb")).expect("read bytecode");
-    let decoded = vm::decode_module(&bytes).expect("decode module");
-    assert_eq!(decoded.bundled_modules.len(), 1, "expected bundled module");
-    assert!(
-        decoded.bundled_modules[0].path.ends_with("fib.lk"),
-        "unexpected bundled path: {}",
-        decoded.bundled_modules[0].path
-    );
-    let resolver = ModuleResolver::new();
-    resolver.register_embedded_module("fib.lk", decoded.bundled_modules[0].module.clone());
-    let embedded = resolver.resolve_file("fib").expect("resolve embedded");
-    match embedded {
-        Val::Map(map) => {
-            assert!(
-                map.contains_key("iterative"),
-                "embedded module missing iterative export"
-            );
-        }
-        other => panic!("unexpected embedded module type: {:?}", other.type_name()),
-    }
+    let _ = fs::remove_dir_all(&dir);
+}
 
-    let fib_path = dir.join("fib.lk");
-    fs::remove_file(&fib_path).expect("remove fib module");
+#[cfg(feature = "llvm")]
+#[test]
+fn test_llvm_compile_targets_are_disabled_during_instr32_migration() {
+    let dir = unique_tmp_dir("llvm_disabled");
+    ensure_clean_dir(&dir);
+    write_file(&dir, "a.lk", "return 123;\n");
 
-    let run_out = run_cli(&dir, ["main.lkb"]).output().expect("spawn run");
+    let llvm = run_cli(&dir, ["compile", "llvm", "a.lk"])
+        .output()
+        .expect("spawn llvm compile");
+    assert!(!llvm.status.success(), "LLVM IR output should be disabled");
+    let stderr = String::from_utf8_lossy(&llvm.stderr);
     assert!(
-        run_out.status.success(),
-        "run failed: {}",
-        String::from_utf8_lossy(&run_out.stderr)
+        stderr.contains("LLVM IR output is disabled during the Instr32 VM migration"),
+        "expected LLVM migration error, got: {stderr}"
     );
-    let stdout = String::from_utf8(run_out.stdout).expect("utf8 stdout");
-    assert_eq!(stdout.trim(), "55");
+    assert!(!dir.join("a.ll").exists(), "disabled LLVM output must not emit IR");
+
+    let exe = run_cli(&dir, ["compile", "exe", "a.lk"])
+        .output()
+        .expect("spawn exe compile");
+    assert!(!exe.status.success(), "native executable output should be disabled");
+    let stderr = String::from_utf8_lossy(&exe.stderr);
+    assert!(
+        stderr.contains("native executable output is disabled during the Instr32 VM migration"),
+        "expected native migration error, got: {stderr}"
+    );
+    assert!(
+        !dir.join("a").exists(),
+        "disabled native output must not emit executable"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -167,21 +161,15 @@ name = "util"
     let compile = run_cli(&dir, ["compile", "src/main.lk"])
         .output()
         .expect("spawn compile");
+    assert!(!compile.status.success(), "LKB compile should be disabled");
+    let stderr = String::from_utf8_lossy(&compile.stderr);
     assert!(
-        compile.status.success(),
-        "compile failed: {}",
-        String::from_utf8_lossy(&compile.stderr)
+        stderr.contains("compile output is disabled until the Instr32 module format replaces LKB"),
+        "expected migration error, got: {stderr}"
     );
-    let decoded =
-        vm::decode_module(&fs::read(dir.join("src/main.lkb")).expect("read bytecode")).expect("decode module");
-    assert_eq!(decoded.bundled_modules.len(), 1);
     assert!(
-        decoded
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.tags.get("package_modules"))
-            .is_some(),
-        "expected package module metadata"
+        !dir.join("src/main.lkb").exists(),
+        "disabled LKB compile must not emit bytecode"
     );
 
     let _ = fs::remove_dir_all(&dir);
@@ -192,7 +180,6 @@ fn test_compile_rejects_unsupported_constructs_for_vm() {
     let dir = unique_tmp_dir("compile_vm_guard");
     ensure_clean_dir(&dir);
 
-    // Program uses `struct`, which the VM compiler now supports.
     write_file(
         &dir,
         "mod.lk",
@@ -200,15 +187,11 @@ fn test_compile_rejects_unsupported_constructs_for_vm() {
     );
 
     let output = run_cli(&dir, ["compile", "mod.lk"]).output().expect("spawn compile");
+    assert!(!output.status.success(), "LKB compile should be disabled");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "compile should succeed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Compiled successfully") || stdout.is_empty(),
-        "expected successful compilation, got: {stdout}"
+        stderr.contains("compile output is disabled until the Instr32 module format replaces LKB"),
+        "expected migration error, got: {stderr}"
     );
 }
 
@@ -227,8 +210,8 @@ fn test_lkb_negative_corrupted_magic() {
     assert!(!out.status.success(), "expected failure for corrupted LKB");
     let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
     assert!(
-        stderr.contains("Failed to decode LKB from"),
-        "stderr did not contain decode error, got: {}",
+        stderr.contains("LKB execution is disabled during the Instr32 VM migration"),
+        "stderr did not contain migration error, got: {}",
         stderr
     );
 

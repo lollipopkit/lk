@@ -22,18 +22,18 @@ use crate::{
     op::BinOp,
     stmt::{ImportSource, ImportStmt, ModuleResolver, deserialize_imports, execute_imports},
     util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_map_with_capacity},
-    val::{AotFunction, NativeArgs, Val, methods::find_method_for_val},
-    vm::{BytecodeModule, Vm, VmContext, decode_module},
+    val::{AotFunction, CallableValue, HeapValue, Val},
+    vm::VmContext,
 };
 
 mod collections;
+#[cfg(test)]
 mod imports;
 mod math;
 #[cfg(test)]
 mod tests;
 
 pub use collections::*;
-use imports::stdlib_registrars_from_imports;
 #[cfg(test)]
 use imports::{imports_need_concurrency_globals, stdlib_module_names_from_imports};
 pub use math::*;
@@ -138,34 +138,14 @@ pub extern "C" fn lk_rt_register_search_path(ptr: *const i8, len: i64) {
 pub extern "C" fn lk_rt_register_bundled_module(
     path_ptr: *const i8,
     path_len: i64,
-    data_ptr: *const u8,
-    data_len: i64,
+    _data_ptr: *const u8,
+    _data_len: i64,
 ) -> i32 {
-    if data_ptr.is_null() || data_len <= 0 {
-        return -1;
-    }
-    let len = data_len.max(0) as usize;
-    if len == 0 {
-        return -1;
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, len).to_vec() };
-    let module = match decode_module(&bytes) {
-        Ok(module) => module,
-        Err(err) => {
-            eprintln!("lk_rt_register_bundled_module: failed to decode module: {err}");
-            return -1;
-        }
-    };
     let path = read_string(path_ptr, path_len);
-    with_state(move |state| {
-        if let Some(existing) = state.pending_bundled.iter_mut().find(|m| m.path == path) {
-            existing.module = module.clone();
-        } else {
-            state.pending_bundled.push(DecodedBundledModule { path, module });
-        }
-        state.imports_applied = false;
-    });
-    0
+    eprintln!(
+        "lk_rt_register_bundled_module: bundled LKB imports are disabled during the Instr32 VM migration: {path}"
+    );
+    -1
 }
 
 #[unsafe(no_mangle)]
@@ -235,10 +215,10 @@ pub extern "C" fn lk_rt_register_native_module_function(
     if module.is_empty() || name.is_empty() {
         return -1;
     }
-    let function = Val::AotFunction(Box::new(AotFunction {
+    let function = Val::aot_function(AotFunction {
         ptr: fn_ptr as usize,
         arity: arity as u8,
-    }));
+    });
     with_state(move |state| {
         state
             .pending_native_modules
@@ -256,10 +236,10 @@ pub extern "C" fn lk_rt_make_aot_function(fn_ptr: *const (), arity: i64) -> i64 
         return encoding::NIL_VALUE;
     }
     with_state(|state| {
-        state.encode_value(Val::AotFunction(Box::new(AotFunction {
+        state.encode_value(Val::aot_function(AotFunction {
             ptr: fn_ptr as usize,
             arity: arity as u8,
-        })))
+        }))
     })
 }
 
@@ -348,11 +328,6 @@ fn push_unique_registrar(registrars: &mut Vec<StdlibRegistrar>, registrar: Stdli
     }
 }
 
-struct DecodedBundledModule {
-    path: String,
-    module: BytecodeModule,
-}
-
 struct RuntimeState {
     ctx: VmContext,
     handles: HandleTable,
@@ -360,7 +335,6 @@ struct RuntimeState {
     resolver: Arc<ModuleResolver>,
     pending_search_paths: Vec<String>,
     pending_imports: Vec<ImportStmt>,
-    pending_bundled: Vec<DecodedBundledModule>,
     pending_package_modules: Vec<(String, String)>,
     pending_native_modules: FastHashMap<String, FastHashMap<ArcStr, Val>>,
     pending_stdlib_registrars: Vec<StdlibRegistrar>,
@@ -385,7 +359,6 @@ impl RuntimeState {
             resolver,
             pending_search_paths: Vec::new(),
             pending_imports: Vec::new(),
-            pending_bundled: Vec::new(),
             pending_package_modules: Vec::new(),
             pending_native_modules: fast_hash_map_new(),
             pending_stdlib_registrars: Vec::new(),
@@ -396,7 +369,6 @@ impl RuntimeState {
     fn reset_session(&mut self) {
         self.pending_search_paths.clear();
         self.pending_imports.clear();
-        self.pending_bundled.clear();
         self.pending_package_modules.clear();
         self.pending_native_modules.clear();
         self.pending_stdlib_registrars.clear();
@@ -420,7 +392,6 @@ impl RuntimeState {
     fn apply_pending(&mut self) -> Result<()> {
         let (mut ctx, resolver) = Self::build_context(
             &self.pending_search_paths,
-            &self.pending_bundled,
             &self.pending_package_modules,
             &self.pending_stdlib_registrars,
         )?;
@@ -468,7 +439,7 @@ impl RuntimeState {
                 }
                 ImportStmt::Items { items, source } => {
                     let value = Self::resolve_native_import_source(source, native_modules, resolver)?;
-                    let Val::Map(exports) = value else {
+                    let Some(exports) = value.as_map() else {
                         return Err(anyhow!("import source is not a module map"));
                     };
                     for item in items {
@@ -520,14 +491,13 @@ impl RuntimeState {
         resolver: &ModuleResolver,
     ) -> Result<Val> {
         if let Some(exports) = native_modules.get(module) {
-            return Ok(Val::Map(Arc::new(exports.clone())));
+            return Ok(Val::map(Arc::new(exports.clone())));
         }
         resolver.resolve_registered_module(module)
     }
 
     fn build_context(
         search_paths: &[String],
-        bundled: &[DecodedBundledModule],
         package_modules: &[(String, String)],
         stdlib_registrars: &[StdlibRegistrar],
     ) -> Result<(VmContext, Arc<ModuleResolver>)> {
@@ -544,9 +514,6 @@ impl RuntimeState {
         let mut resolver = ModuleResolver::with_registry(registry);
         for path in search_paths {
             resolver.add_search_path(PathBuf::from(path));
-        }
-        for module in bundled {
-            Self::register_embedded_recursive(&resolver, &module.path, &module.module);
         }
         for (name, path) in package_modules {
             resolver.register_package_module(name.clone(), PathBuf::from(path));
@@ -581,13 +548,6 @@ impl RuntimeState {
         let mut ctx = VmContext::new_without_core_vm_builtins().with_resolver(Arc::clone(&resolver_arc));
         install_aot_core_vm_builtins(&mut ctx);
         Ok((ctx, resolver_arc))
-    }
-
-    fn register_embedded_recursive(resolver: &ModuleResolver, path: &str, module: &BytecodeModule) {
-        resolver.register_embedded_module(PathBuf::from(path), module.clone());
-        for child in &module.bundled_modules {
-            Self::register_embedded_recursive(resolver, &child.path, &child.module);
-        }
     }
 
     fn encode_value(&mut self, value: Val) -> i64 {
@@ -638,10 +598,10 @@ impl RuntimeState {
 fn install_aot_core_vm_builtins(ctx: &mut VmContext) {
     ctx.globals_mut()
         .entry("__lk_call_method".to_string())
-        .or_insert(Val::RustFunction(aot_core_call_method_builtin));
+        .or_insert(Val::Nil);
     ctx.globals_mut()
         .entry("__lk_call_method_named".to_string())
-        .or_insert(Val::RustFunction(aot_core_call_method_named_builtin));
+        .or_insert(Val::Nil);
 }
 
 fn register_aot_stdlib_method_modules(registry: &mut ModuleRegistry) -> Result<()> {
@@ -657,119 +617,14 @@ fn register_aot_stdlib_method_modules(registry: &mut ModuleRegistry) -> Result<(
     Ok(())
 }
 
-fn aot_core_call_method_builtin(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 3 {
-        return Err(anyhow!(
-            "__lk_call_method expects 3 arguments: receiver, method name, positional args list"
-        ));
+fn aot_function_from_val(value: Val) -> Option<AotFunction> {
+    match value {
+        Val::Obj(value) => match value.as_ref() {
+            HeapValue::Callable(CallableValue::Aot(function)) => Some(*function),
+            _ => None,
+        },
+        _ => None,
     }
-
-    let receiver = args[0].clone();
-    let method_name = args[1].as_str().ok_or_else(|| {
-        anyhow!(
-            "__lk_call_method expects method name as string, got {}",
-            args[1].type_name()
-        )
-    })?;
-    let method_key = Val::from_str(method_name);
-    let positional_args: Vec<Val> = match &args[2] {
-        Val::List(list) => list.iter().cloned().collect(),
-        Val::Nil => Vec::new(),
-        other => {
-            return Err(anyhow!(
-                "__lk_call_method expects positional arguments as list, got {}",
-                other.type_name()
-            ));
-        }
-    };
-
-    if let Some(prop_val) = receiver.access(&method_key) {
-        match prop_val {
-            Val::Closure(_)
-            | Val::RustFunction(_)
-            | Val::RustFastFunction(_)
-            | Val::RustFastFunctionNamed(_)
-            | Val::RustFunctionNamed(_)
-            | Val::AotFunction(_) => {
-                return prop_val.call(&positional_args, ctx);
-            }
-            other if positional_args.is_empty() => return Ok(other),
-            _ => {}
-        }
-    }
-
-    if let Some(func) = find_method_for_val(&receiver, method_name) {
-        let mut full_args = Vec::with_capacity(positional_args.len() + 1);
-        full_args.push(receiver);
-        full_args.extend(positional_args);
-        return func.call(&full_args, ctx);
-    }
-
-    Err(anyhow!("{} has no method '{}'", args[0].type_name(), method_name))
-}
-
-fn aot_core_call_method_named_builtin(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 4 {
-        return Err(anyhow!(
-            "__lk_call_method_named expects 4 arguments: receiver, method name, positional args list, named args map"
-        ));
-    }
-
-    let receiver = args[0].clone();
-    let method_name = args[1].as_str().ok_or_else(|| {
-        anyhow!(
-            "__lk_call_method_named expects method name as string, got {}",
-            args[1].type_name()
-        )
-    })?;
-    let method_key = Val::from_str(method_name);
-    let positional_args: Vec<Val> = match &args[2] {
-        Val::List(list) => list.iter().cloned().collect(),
-        Val::Nil => Vec::new(),
-        other => {
-            return Err(anyhow!(
-                "__lk_call_method_named expects positional arguments as list, got {}",
-                other.type_name()
-            ));
-        }
-    };
-    let named_pairs: Vec<(String, Val)> = match &args[3] {
-        Val::Map(map) => map
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.clone()))
-            .collect(),
-        Val::Nil => Vec::new(),
-        other => {
-            return Err(anyhow!(
-                "__lk_call_method_named expects named arguments as map, got {}",
-                other.type_name()
-            ));
-        }
-    };
-
-    if let Some(prop_val) = receiver.access(&method_key) {
-        match prop_val {
-            Val::Closure(_) | Val::RustFastFunctionNamed(_) | Val::RustFunctionNamed(_) | Val::AotFunction(_) => {
-                return prop_val.call_named(&positional_args, &named_pairs, ctx);
-            }
-            Val::RustFunction(_) | Val::RustFastFunction(_) if named_pairs.is_empty() => {
-                return prop_val.call(&positional_args, ctx);
-            }
-            other if positional_args.is_empty() && named_pairs.is_empty() => return Ok(other),
-            _ => {}
-        }
-    }
-
-    if named_pairs.is_empty()
-        && let Some(func) = find_method_for_val(&receiver, method_name)
-    {
-        let mut full_args = Vec::with_capacity(positional_args.len() + 1);
-        full_args.push(receiver);
-        full_args.extend(positional_args);
-        return func.call(&full_args, ctx);
-    }
-
-    Err(anyhow!("{} has no method '{}'", args[0].type_name(), method_name))
 }
 
 impl Default for RuntimeState {
@@ -827,8 +682,7 @@ fn bool_to_str(value: bool) -> &'static str {
 
 fn encode_map_key(value: &Val) -> Result<ArcStr> {
     match value {
-        Val::ShortStr(s) => Ok(Val::intern_str(s.as_str())),
-        Val::Str(s) => Ok(s.clone()),
+        value if value.as_str().is_some() => Ok(Val::intern_str(value.as_str().expect("checked string"))),
         Val::Int(i) => Ok(Val::intern_str(i.to_string().as_str())),
         Val::Float(f) => Ok(Val::intern_str(f.to_string().as_str())),
         Val::Bool(b) => Ok(Val::intern_str(bool_to_str(*b))),
@@ -842,28 +696,29 @@ fn map_to_iterable(map: &FastHashMap<ArcStr, Val>) -> Val {
     let mut pairs = Vec::with_capacity(keys.len());
     for key in keys {
         if let Some(value) = map.get(key) {
-            let pair = Val::List(vec![Val::from_str(key), value.clone()].into());
+            let pair = Val::list(vec![Val::from_str(key), value.clone()].into());
             pairs.push(pair);
         }
     }
-    Val::List(Arc::new(pairs))
+    Val::list(Arc::new(pairs))
 }
 
 fn list_slice(list: &Arc<Vec<Val>>, start: i64) -> Val {
     if start <= 0 {
-        return Val::List(list.clone());
+        return Val::list(list.clone());
     }
     let idx = start as usize;
     if idx >= list.len() {
-        Val::List(Arc::new(Vec::new()))
+        Val::list(Arc::new(Vec::new()))
     } else {
-        Val::List(list[idx..].to_vec().into())
+        Val::list(list[idx..].to_vec().into())
     }
 }
 
 fn index_value(base: &Val, idx: &Val) -> Val {
     match (base, idx) {
-        (Val::List(list), Val::Int(i)) => {
+        (base, Val::Int(i)) if base.as_list().is_some() => {
+            let list = base.as_list().expect("checked list");
             if *i < 0 {
                 Val::Nil
             } else {
@@ -942,51 +797,14 @@ pub extern "C" fn lk_rt_run_bytecode(data_ptr: *const u8, data_len: i64) -> i32 
         eprintln!("lk_rt_run_bytecode: empty bytecode payload");
         return 1;
     }
-    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, data_len as usize) };
-    let result: Result<Val> = (|| {
-        let module = decode_module(bytes)?;
-        let imports = module
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.tags.get("imports"))
-            .map(|raw| deserialize_imports(raw))
-            .transpose()?;
-        let bundled: Vec<DecodedBundledModule> = module
-            .bundled_modules
-            .iter()
-            .map(|child| DecodedBundledModule {
-                path: child.path.clone(),
-                module: child.module.clone(),
-            })
-            .collect();
-        if let Some(imports) = imports.as_ref() {
-            let stdlib_registrars = stdlib_registrars_from_imports(imports);
-            let (mut ctx, resolver) = RuntimeState::build_context(&[], &bundled, &[], &stdlib_registrars)?;
-            execute_imports(imports, resolver.as_ref(), &mut ctx)?;
-            let mut vm = Vm::new();
-            return vm.exec(&module.entry, &mut ctx);
-        }
-        let (mut ctx, _resolver) = RuntimeState::build_context(&[], &bundled, &[], &[])?;
-        let mut vm = Vm::new();
-        vm.exec(&module.entry, &mut ctx)
-    })();
-
-    match result {
-        Ok(_) => 0,
-        Err(err) => {
-            eprintln!("lk_rt_run_bytecode error: {err}");
-            1
-        }
-    }
+    eprintln!("lk_rt_run_bytecode: legacy bytecode execution is disabled during the Instr32 VM migration");
+    1
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_call(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
     let argc_usize = argc.max(0) as usize;
-    let aot_function = with_state(|state| match state.decode_value(func) {
-        Val::AotFunction(function) => Some(*function),
-        _ => None,
-    });
+    let aot_function = with_state(|state| aot_function_from_val(state.decode_value(func)));
     if let Some(function) = aot_function {
         return match call_aot_function_raw(function, args_ptr, argc_usize) {
             Ok(raw) => {
@@ -1038,13 +856,11 @@ pub extern "C" fn lk_rt_call_method(receiver: i64, method: i64, args_ptr: *const
             .as_str()
             .map(|s| s.to_owned())
             .unwrap_or_else(|| method_val.to_string());
-        match receiver_val
-            .access(&Val::from_str(method_name.as_str()))
-            .unwrap_or(Val::Nil)
-        {
-            Val::AotFunction(function) => Some(*function),
-            _ => None,
-        }
+        aot_function_from_val(
+            receiver_val
+                .access(&Val::from_str(method_name.as_str()))
+                .unwrap_or(Val::Nil),
+        )
     });
     if let Some(function) = aot_function {
         return match call_aot_function_raw(function, args_ptr, argc_usize) {
@@ -1092,29 +908,16 @@ pub extern "C" fn lk_rt_call_method(receiver: i64, method: i64, args_ptr: *const
                 }
             };
         }
-        let result: Result<i64> = if let Some(function) = find_method_for_val(&receiver_val, method_name.as_str()) {
-            let mut full_args = Vec::with_capacity(args.len() + 1);
-            full_args.push(receiver_val);
-            full_args.extend(args);
-            function.call(&full_args, &mut state.ctx).map(|val| {
-                if retc <= 0 {
-                    encoding::NIL_VALUE
-                } else {
-                    state.encode_value(val)
-                }
-            })
-        } else {
-            let callee = receiver_val
-                .access(&Val::from_str(method_name.as_str()))
-                .unwrap_or(Val::Nil);
-            callee.call(&args, &mut state.ctx).map(|val| {
-                if retc <= 0 {
-                    encoding::NIL_VALUE
-                } else {
-                    state.encode_value(val)
-                }
-            })
-        };
+        let callee = receiver_val
+            .access(&Val::from_str(method_name.as_str()))
+            .unwrap_or(Val::Nil);
+        let result: Result<i64> = callee.call(&args, &mut state.ctx).map(|val| {
+            if retc <= 0 {
+                encoding::NIL_VALUE
+            } else {
+                state.encode_value(val)
+            }
+        });
         match result {
             Ok(val) => {
                 if retc <= 0 {
@@ -1134,10 +937,7 @@ pub extern "C" fn lk_rt_call_method(receiver: i64, method: i64, args_ptr: *const
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_call_native(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
     let argc_usize = argc.max(0) as usize;
-    let aot_function = with_state(|state| match state.decode_value(func) {
-        Val::AotFunction(function) => Some(*function),
-        _ => None,
-    });
+    let aot_function = with_state(|state| aot_function_from_val(state.decode_value(func)));
     if let Some(function) = aot_function {
         return match call_aot_function_raw(function, args_ptr, argc_usize) {
             Ok(raw) => {
@@ -1157,13 +957,7 @@ pub extern "C" fn lk_rt_call_native(func: i64, args_ptr: *const i64, argc: i64, 
     with_state(|state| {
         let callee = state.decode_value(func);
         let args = state.decode_values(args_ptr, argc_usize);
-        let result = match callee {
-            Val::RustFunction(function) => function(&args, &mut state.ctx),
-            Val::RustFastFunction(function) => function(NativeArgs::new(&args), &mut state.ctx),
-            Val::RustFastFunctionNamed(function) => function(NativeArgs::new(&args), &[], &mut state.ctx),
-            Val::RustFunctionNamed(function) => function(&args, &[], &mut state.ctx),
-            other => Err(anyhow!("{} is not a native function", other.type_name())),
-        };
+        let result = callee.call(&args, &mut state.ctx);
         match result {
             Ok(val) => {
                 if retc <= 0 {

@@ -2,10 +2,9 @@ use crate::rt::{SelectOperation, with_runtime};
 use crate::{
     ast::Parser,
     op::{BinOp, UnaryOp},
-    stmt::Stmt,
     token::Tokenizer,
     typ::TypeChecker,
-    val::{ClosureCapture, ClosureInit, ClosureValue, ObjectValue, Type, Val, methods::find_method_for_val},
+    val::{ClosureInit, ClosureValue, Type, Val},
     vm::VmContext,
 };
 use anyhow::{Result, anyhow};
@@ -502,7 +501,7 @@ impl Expr {
                 Expr::OptionalAccess(Box::new(base), Box::new(field))
             }
             Expr::List(exprs) => {
-                // List constant folding: if all elements are constants then fold to one Val::List
+                // List constant folding: if all elements are constants then fold to one list value.
                 let folded_elems: Vec<Expr> = exprs.into_iter().map(|e| e.fold_constants()).collect();
                 if folded_elems.iter().all(|e| matches!(e, Expr::Val(_))) {
                     // Extract all constant values as new list elements
@@ -510,7 +509,7 @@ impl Expr {
                         .into_iter()
                         .map(|e| if let Expr::Val(v) = e { v } else { unreachable!() })
                         .collect();
-                    return Expr::Val(Val::List(Arc::from(const_vals)));
+                    return Expr::Val(Val::list(Arc::from(const_vals)));
                 }
                 Expr::List(folded_elems.into_iter().map(Box::new).collect())
             }
@@ -625,27 +624,23 @@ impl Expr {
                             let folded_expr = expr.fold_constants();
                             if let Expr::Val(val) = folded_expr {
                                 // Convert constant value to string
-                                let str_val = match val {
-                                    Val::ShortStr(s) => s.as_str().to_string(),
-                                    Val::Str(s) => s.as_str().to_string(),
-                                    Val::Int(i) => i.to_string(),
-                                    Val::Float(f) => f.to_string(),
-                                    Val::Bool(b) => b.to_string(),
-                                    Val::Nil => "nil".to_string(),
-                                    Val::List(l) => format!("{:?}", l),
-                                    Val::Map(m) => format!("{:?}", m),
-                                    Val::Object(_) => format!("{:?}", val),
-                                    Val::Task(_) => format!("{:?}", val),
-                                    Val::Channel(_) => format!("{:?}", val),
-                                    Val::Stream(_) | Val::StreamCursor(_) => format!("{:?}", val),
-                                    Val::Iterator(_) => "[Iterator]".to_string(),
-                                    Val::MutationGuard(_) => "[MutationGuard]".to_string(),
-                                    Val::Closure(_) => "[Closure]".to_string(),
-                                    Val::RustFunction(_)
-                                    | Val::RustFastFunction(_)
-                                    | Val::RustFastFunctionNamed(_)
-                                    | Val::RustFunctionNamed(_)
-                                    | Val::AotFunction(_) => "[Function]".to_string(),
+                                let str_val = match val.as_str() {
+                                    Some(s) => s.to_string(),
+                                    None => match val {
+                                        Val::Int(i) => i.to_string(),
+                                        Val::Float(f) => f.to_string(),
+                                        Val::Bool(b) => b.to_string(),
+                                        Val::Nil => "nil".to_string(),
+                                        value if value.as_list().is_some() => {
+                                            format!("{:?}", value.as_list().expect("checked list"))
+                                        }
+                                        value if value.as_map().is_some() => {
+                                            format!("{:?}", value.as_map().expect("checked map"))
+                                        }
+                                        value if value.is_callable() => "[Function]".to_string(),
+                                        Val::Obj(_) => format!("{:?}", val),
+                                        Val::ShortStr(_) => unreachable!("string handled above"),
+                                    },
                                 };
                                 TemplateStringPart::Literal(str_val)
                             } else {
@@ -914,7 +909,7 @@ impl Expr {
                 for e in items {
                     out.push(e.eval_with_ctx(ctx)?);
                 }
-                Ok(Val::List(Arc::from(out)))
+                Ok(Val::list(Arc::from(out)))
             }
             // 字面量 Map（键统一为字符串）
             Expr::Map(pairs) => {
@@ -939,10 +934,7 @@ impl Expr {
                 for (k, vexpr) in fields {
                     hm.insert(k.clone(), vexpr.eval_with_ctx(ctx)?);
                 }
-                Ok(Val::Object(Arc::new(ObjectValue {
-                    type_name: name.clone().into(),
-                    fields: Arc::new(hm),
-                })))
+                Ok(Val::object(name.as_str(), hm))
             }
             // 二元运算（使用已有 BinOp::eval_vals 以统一算术与比较语义）
             Expr::Bin(l, op, r) => {
@@ -1034,25 +1026,17 @@ impl Expr {
                         let method_key = Val::from_str(method_name);
                         // 1) 直接属性可调用；若属性是非函数且无实参调用，则返回该属性值（如 list.len() -> list.len）
                         if let Some(prop_val) = obj_val.access(&method_key) {
-                            match prop_val {
-                                Val::Closure(_)
-                                | Val::RustFunction(_)
-                                | Val::RustFastFunction(_)
-                                | Val::RustFastFunctionNamed(_)
-                                | Val::RustFunctionNamed(_) => {
-                                    let mut argv = Vec::with_capacity(args.len());
-                                    for a in args {
-                                        argv.push(a.eval_with_ctx(ctx)?);
-                                    }
-                                    return prop_val.call(&argv, ctx);
+                            if prop_val.is_callable() {
+                                let mut argv = Vec::with_capacity(args.len());
+                                for a in args {
+                                    argv.push(a.eval_with_ctx(ctx)?);
                                 }
-                                other => {
-                                    if args.is_empty() {
-                                        return Ok(other);
-                                    }
-                                    // fall through to meta-method lookup for non-empty args
-                                }
+                                return prop_val.call(&argv, ctx);
                             }
+                            if args.is_empty() {
+                                return Ok(prop_val);
+                            }
+                            // fall through to meta-method lookup for non-empty args
                         }
                         // 2) 检查 trait 实现 - 先评估参数再检查 trait 以避免借用冲突
                         let mut full_args = Vec::with_capacity(args.len() + 1);
@@ -1069,29 +1053,19 @@ impl Expr {
                             }
                         }
 
-                        // 回退到内置方法注册
-                        if let Some(func) = find_method_for_val(&obj_val, method_name) {
-                            return func.call(&full_args, ctx);
-                        }
-
                         return Err(anyhow!("{} has no method '{}'", obj_val.type_name(), method_name));
                     }
                 }
                 // 普通 callee
                 let callee_val = callee.eval_with_ctx(ctx)?;
-                match callee_val {
-                    Val::Closure(_)
-                    | Val::RustFunction(_)
-                    | Val::RustFastFunction(_)
-                    | Val::RustFastFunctionNamed(_)
-                    | Val::RustFunctionNamed(_) => {
-                        let mut argv = Vec::with_capacity(args.len());
-                        for a in args {
-                            argv.push(a.eval_with_ctx(ctx)?);
-                        }
-                        callee_val.call(&argv, ctx)
+                if callee_val.is_callable() {
+                    let mut argv = Vec::with_capacity(args.len());
+                    for a in args {
+                        argv.push(a.eval_with_ctx(ctx)?);
                     }
-                    other => Err(anyhow!("{} is not a function", other.type_name())),
+                    callee_val.call(&argv, ctx)
+                } else {
+                    Err(anyhow!("{} is not a function", callee_val.type_name()))
                 }
             }
             // 具名参数调用（含方法糖）
@@ -1104,35 +1078,21 @@ impl Expr {
                         let method_key = Val::from_str(method_name);
                         // 1) 直接属性可调用
                         if let Some(prop_val) = obj_val.access(&method_key) {
-                            match prop_val {
-                                Val::Closure(_) | Val::RustFastFunctionNamed(_) | Val::RustFunctionNamed(_) => {
-                                    let mut pos = Vec::with_capacity(pos_args.len());
-                                    for a in pos_args {
-                                        pos.push(a.eval_with_ctx(ctx)?);
-                                    }
-                                    let mut named: Vec<(String, Val)> = Vec::with_capacity(named_args.len());
-                                    for (n, e) in named_args {
-                                        named.push((n.clone(), e.eval_with_ctx(ctx)?));
-                                    }
-                                    return prop_val.call_named(&pos, &named, ctx);
+                            if prop_val.is_callable() {
+                                let mut pos = Vec::with_capacity(pos_args.len());
+                                for a in pos_args {
+                                    pos.push(a.eval_with_ctx(ctx)?);
                                 }
-                                Val::RustFunction(_) | Val::RustFastFunction(_) => {
-                                    if !named_args.is_empty() {
-                                        return Err(anyhow!("Named arguments are not supported for native functions"));
-                                    }
-                                    let mut argv = Vec::with_capacity(pos_args.len());
-                                    for a in pos_args {
-                                        argv.push(a.eval_with_ctx(ctx)?);
-                                    }
-                                    return prop_val.call(&argv, ctx);
+                                let mut named: Vec<(String, Val)> = Vec::with_capacity(named_args.len());
+                                for (n, e) in named_args {
+                                    named.push((n.clone(), e.eval_with_ctx(ctx)?));
                                 }
-                                other => {
-                                    if pos_args.is_empty() && named_args.is_empty() {
-                                        return Ok(other);
-                                    }
-                                    // fall through to meta-method lookup otherwise
-                                }
+                                return prop_val.call_named(&pos, &named, ctx);
                             }
+                            if pos_args.is_empty() && named_args.is_empty() {
+                                return Ok(prop_val);
+                            }
+                            // fall through to meta-method lookup otherwise
                         }
                         // 2) 检查 trait 实现 - 先评估参数避免借用冲突（仅支持非具名）
                         if !named_args.is_empty() {
@@ -1158,11 +1118,6 @@ impl Expr {
                             if let Some(method_val) = tc.registry().get_method(&obj_type, method_name) {
                                 return method_val.clone().call(&full_args, ctx);
                             }
-                        }
-
-                        // 回退到内置方法
-                        if let Some(func) = find_method_for_val(&obj_val, method_name) {
-                            return func.call(&full_args, ctx);
                         }
 
                         return Err(anyhow!("{} has no method '{}'", obj_val.type_name(), method_name));
@@ -1206,7 +1161,7 @@ impl Expr {
                         } else {
                             (s..e).map(Val::Int).collect()
                         };
-                        Ok(Val::List(range.into()))
+                        Ok(Val::list(range.into()))
                     }
                     (Val::Int(mut i), Val::Int(e), Some(Val::Int(st))) => {
                         if st == 0 {
@@ -1236,7 +1191,7 @@ impl Expr {
                                 i += st;
                             }
                         }
-                        Ok(Val::List(out.into()))
+                        Ok(Val::list(out.into()))
                     }
                     (_, _, Some(_)) => Err(anyhow!("Range step must be an integer")),
                     _ => Err(anyhow!("Range bounds must be integers")),
@@ -1263,22 +1218,20 @@ impl Expr {
                     match &case.pattern {
                         SelectPattern::Recv { binding, channel } => {
                             let channel_val = channel.eval_with_ctx(ctx)?;
-                            let channel_id = if let Val::Channel(channel) = channel_val {
-                                channel.id
-                            } else {
+                            let Some(channel) = channel_val.as_channel() else {
                                 return Err(anyhow!("recv() target is not a channel"));
                             };
+                            let channel_id = channel.id;
                             select_op.add_recv(idx, channel_id);
                             bindings.push(binding.clone());
                         }
                         SelectPattern::Send { channel, value } => {
                             let channel_val = channel.eval_with_ctx(ctx)?;
                             let value_val = value.eval_with_ctx(ctx)?;
-                            let channel_id = if let Val::Channel(channel) = channel_val {
-                                channel.id
-                            } else {
+                            let Some(channel) = channel_val.as_channel() else {
                                 return Err(anyhow!("send() target is not a channel"));
                             };
+                            let channel_id = channel.id;
                             select_op.add_send(idx, channel_id, value_val);
                             bindings.push(None);
                         }
@@ -1344,18 +1297,10 @@ impl Expr {
             }
             // 闭包表达式
             Expr::Closure { params, body } => {
-                let stmt = Stmt::Expr(body.clone());
-                Ok(Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
+                let _ = body;
+                Ok(Val::closure(Arc::new(ClosureValue::new(ClosureInit {
                     params: Arc::new(params.clone()),
-                    param_types: Arc::new(Vec::new()),
                     named_params: Arc::new(Vec::new()),
-                    body: Arc::new(stmt),
-                    env: Arc::new(VmContext::new()),
-                    upvalues: Arc::new(Vec::new()),
-                    captures: ClosureCapture::empty(),
-                    capture_specs: Arc::new(Vec::new()),
-                    default_funcs: Arc::new(Vec::new()),
-                    code: Arc::new(once_cell::sync::OnceCell::new()),
                     debug_name: None,
                     debug_location: None,
                 }))))

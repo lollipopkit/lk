@@ -1,14 +1,11 @@
 use crate::{
     expr::{Expr, Pattern},
     op::BinOp,
-    stmt::{
-        ImportStmt,
-        import::{collect_program_imports, execute_imports},
-    },
+    stmt::ImportStmt,
     token::Span,
     typ::TypeChecker,
     val::{Type, Val},
-    vm::{Vm, VmContext, compile_program},
+    vm::VmContext,
 };
 use anyhow::Result;
 
@@ -169,23 +166,27 @@ impl Program {
     }
 
     pub fn execute(&self) -> Result<Val> {
-        let mut vm = Vm::new();
-        let mut ctx = VmContext::new();
-        self.execute_with_vm(&mut vm, &mut ctx)
+        self.execute32()
     }
 
     pub fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<Val> {
-        let mut vm = Vm::new();
-        self.execute_with_vm(&mut vm, ctx)
+        self.execute32_with_ctx(ctx)
     }
 
-    pub fn execute_with_vm(&self, vm: &mut Vm, ctx: &mut VmContext) -> Result<Val> {
+    pub fn execute32(&self) -> Result<Val> {
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        self.execute32_with_ctx(&mut ctx)
+    }
+
+    pub fn execute32_with_ctx(&self, ctx: &mut VmContext) -> Result<Val> {
         let mut type_checker = TypeChecker::new();
         self.type_check(&mut type_checker)?;
-        let imports = collect_program_imports(self);
-        let resolver = ctx.resolver().clone();
-        execute_imports(&imports, resolver.as_ref(), ctx)?;
-        let function = compile_program(self);
-        vm.exec_with(&function, ctx, None)
+        crate::vm::execute_program32_with_ctx(self, ctx)
+    }
+
+    pub fn execute32_raw_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::Program32Result> {
+        let mut type_checker = TypeChecker::new();
+        self.type_check(&mut type_checker)?;
+        crate::vm::execute_program32_raw_with_ctx(self, ctx)
     }
 }

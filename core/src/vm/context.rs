@@ -1,23 +1,23 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::anyhow;
 
 use crate::stmt::{ImportContext, ModuleResolver};
 use crate::typ::TypeChecker;
 use crate::util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_new, fast_hash_set_new};
-use crate::val::{Type, Val};
+use crate::val::{
+    HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, Type, TypedList, TypedMap, Val, runtime_val_to_val,
+};
+use crate::vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32, runtime_value_to_callable32};
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use crate::typ::{TraitDef, TraitImpl};
 #[cfg(not(feature = "aot-minimal-runtime"))]
-use crate::val::{NativeArgs, ObjectValue};
-#[cfg(not(feature = "aot-minimal-runtime"))]
 use std::collections::HashMap;
 
 mod core_methods;
-use core_methods::{call_method_positional, method_name_arc};
 #[cfg(not(feature = "aot-minimal-runtime"))]
-use core_methods::{core_call_method_builtin_fast, core_call_method_named_builtin_fast};
+use core_methods::{core_call_method_builtin32, core_call_method_named_builtin32};
 
 /// VM 运行期全局上下文。
 ///
@@ -29,6 +29,7 @@ use core_methods::{core_call_method_builtin_fast, core_call_method_named_builtin
 pub struct VmContext {
     // Global symbol table
     globals: FastHashMap<String, Val>,
+    runtime_globals: FastHashMap<String, RuntimeExport32>,
     // Names of global constants (immutable)
     const_globals: FastHashSet<String>,
     // Simple stack of local scopes; top-most is current
@@ -81,6 +82,7 @@ impl VmContext {
     pub fn new_without_core_vm_builtins() -> Self {
         Self {
             globals: fast_hash_map_new(),
+            runtime_globals: fast_hash_map_new(),
             const_globals: fast_hash_set_new(),
             locals: Vec::new(),
             generation: 0,
@@ -134,6 +136,7 @@ impl VmContext {
     /// 当存在局部作用域时，在当前局部作用域中设置；否则设置为全局变量。
     pub fn set<S: Into<String>>(&mut self, name: S, value: Val) -> Option<Val> {
         let name_str = name.into();
+        self.runtime_globals.remove(name_str.as_str());
         if self.locals.last().is_some() {
             // Sync to frame slot when mapping exists
             self.try_update_slot(&name_str, &value);
@@ -156,6 +159,7 @@ impl VmContext {
 
     /// 对已存在的变量赋值（优先局部作用域）。
     pub fn assign(&mut self, name: &str, value: Val) -> anyhow::Result<()> {
+        self.runtime_globals.remove(name);
         // Try local scopes first (from innermost to outermost)
         for scope in self.locals.iter_mut().rev() {
             if let Some(slot) = scope.get_mut(name) {
@@ -194,6 +198,7 @@ impl VmContext {
         }
         // Otherwise remove from globals
         self.const_globals.remove(name);
+        self.runtime_globals.remove(name);
         let prev = self.globals.remove(name);
         if prev.is_some() {
             // Best-effort clear mapped slot (shouldn't exist for globals)
@@ -233,6 +238,19 @@ impl VmContext {
     #[inline]
     pub fn globals(&self) -> &FastHashMap<String, Val> {
         &self.globals
+    }
+
+    #[inline]
+    pub fn runtime_globals_iter(&self) -> impl Iterator<Item = (&String, &RuntimeExport32)> {
+        self.runtime_globals.iter()
+    }
+
+    pub fn define_runtime_global(&mut self, name: impl Into<String>, value: RuntimeExport32) {
+        let name = name.into();
+        self.globals.remove(name.as_str());
+        self.const_globals.remove(name.as_str());
+        self.runtime_globals.insert(name, value);
+        self.bump_generation();
     }
 
     #[inline]
@@ -341,11 +359,6 @@ impl VmContext {
     /// 获取导入上下文的可变引用
     pub fn import_context_mut(&mut self) -> &mut ImportContext {
         &mut self.import_ctx
-    }
-
-    pub(crate) fn call_method_zero(&mut self, receiver: Val, method: &Val) -> anyhow::Result<Val> {
-        let method_arc = method_name_arc("__lk_call_method", method)?;
-        call_method_positional(receiver, method_arc, &[], self)
     }
 
     /// 获取模块解析器的引用
@@ -465,65 +478,67 @@ impl VmContext {
         if !self.globals.contains_key("__lk_register_trait") {
             self.globals.insert(
                 "__lk_register_trait".to_string(),
-                Val::RustFastFunction(core_register_trait_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_register_trait_builtin32), 2),
             );
         }
         if !self.globals.contains_key("__lk_register_trait_impl") {
             self.globals.insert(
                 "__lk_register_trait_impl".to_string(),
-                Val::RustFastFunction(core_register_trait_impl_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_register_trait_impl_builtin32), 3),
             );
         }
         if !self.globals.contains_key("__lk_call_method") {
             self.globals.insert(
                 "__lk_call_method".to_string(),
-                Val::RustFastFunction(core_call_method_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_call_method_builtin32), 3),
             );
         }
         if !self.globals.contains_key("__lk_call_method_named") {
             self.globals.insert(
                 "__lk_call_method_named".to_string(),
-                Val::RustFastFunction(core_call_method_named_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_call_method_named_builtin32), 4),
             );
         }
         if !self.globals.contains_key("__lk_make_struct") {
             self.globals.insert(
                 "__lk_make_struct".to_string(),
-                Val::RustFastFunction(core_make_struct_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_make_struct_builtin32), 2),
             );
         }
         if !self.globals.contains_key("typeof") {
-            self.globals
-                .insert("typeof".to_string(), Val::RustFastFunction(core_typeof_builtin_fast));
+            self.globals.insert(
+                "typeof".to_string(),
+                Val::runtime_native32(NativeFunction32::Plain(core_typeof_builtin32), 1),
+            );
         }
         if !self.globals.contains_key("__lk_set_field") {
             self.globals.insert(
                 "__lk_set_field".to_string(),
-                Val::RustFastFunction(core_set_field_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_set_field_builtin32), 3),
             );
         }
         if !self.globals.contains_key("__lk_merge_fields") {
             self.globals.insert(
                 "__lk_merge_fields".to_string(),
-                Val::RustFastFunction(core_merge_fields_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_merge_fields_builtin32), 2),
             );
         }
         if !self.globals.contains_key("__lk_bit_and") {
             self.globals.insert(
                 "__lk_bit_and".to_string(),
-                Val::RustFastFunction(core_bit_and_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_bit_and_builtin32), 2),
             );
         }
         if !self.globals.contains_key("__lk_bit_or") {
             self.globals.insert(
                 "__lk_bit_or".to_string(),
-                Val::RustFastFunction(core_bit_or_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_bit_or_builtin32), 2),
             );
         }
         if !self.globals.contains_key("__lk_bit_not") {
             self.globals.insert(
                 "__lk_bit_not".to_string(),
-                Val::RustFastFunction(core_bit_not_builtin_fast),
+                Val::runtime_native32(NativeFunction32::Plain(core_bit_not_builtin32), 1),
             );
         }
     }
@@ -541,11 +556,6 @@ impl VmContext {
             }
         }
     }
-}
-
-#[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_register_trait_builtin_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
-    core_register_trait_builtin(args.as_slice(), ctx)
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -567,7 +577,7 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
     };
 
     let method_entries = match &args[1] {
-        Val::List(list) => list.as_ref(),
+        value if value.as_list().is_some() => value.as_list().expect("checked list"),
         other => {
             return Err(anyhow!(
                 "__lk_register_trait expects methods as list, got {}",
@@ -579,7 +589,7 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
     let mut methods = HashMap::with_capacity(method_entries.len());
     for entry in method_entries.iter() {
         let inner = match entry {
-            Val::List(values) => values.as_ref(),
+            value if value.as_list().is_some() => value.as_list().expect("checked list"),
             other => {
                 return Err(anyhow!("trait methods must be lists, got {}", other.type_name()));
             }
@@ -624,8 +634,17 @@ fn core_register_trait_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow::Res
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_register_trait_impl_builtin_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
-    core_register_trait_impl_builtin(args.as_slice(), ctx)
+fn core_register_trait_builtin32(
+    args: NativeArgs32<'_>,
+    runtime: &mut NativeRuntime32<'_>,
+) -> anyhow::Result<RuntimeVal> {
+    let values = runtime_args_to_vals(args.as_slice(), runtime, "__lk_register_trait")?;
+    let ctx = runtime
+        .ctx
+        .as_deref_mut()
+        .ok_or_else(|| anyhow!("__lk_register_trait requires VmContext"))?;
+    core_register_trait_builtin(&values, ctx)?;
+    Ok(RuntimeVal::Nil)
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -659,7 +678,7 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
         Type::parse(target_type_str).ok_or_else(|| anyhow!("failed to parse target type '{}'", target_type_str))?;
 
     let methods_list = match &args[2] {
-        Val::List(list) => list.as_ref(),
+        value if value.as_list().is_some() => value.as_list().expect("checked list"),
         other => {
             return Err(anyhow!(
                 "__lk_register_trait_impl expects methods list, got {}",
@@ -671,7 +690,7 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
     let mut method_map: HashMap<String, (Val, Option<Type>)> = HashMap::with_capacity(methods_list.len());
     for entry in methods_list.iter() {
         let inner = match entry {
-            Val::List(values) => values.as_ref(),
+            value if value.as_list().is_some() => value.as_list().expect("checked list"),
             other => {
                 return Err(anyhow!("trait impl methods must be lists, got {}", other.type_name()));
             }
@@ -727,189 +746,359 @@ fn core_register_trait_impl_builtin(args: &[Val], ctx: &mut VmContext) -> anyhow
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_make_struct_builtin_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> anyhow::Result<Val> {
-    core_make_struct_builtin(args.as_slice(), ctx)
+fn core_register_trait_impl_builtin32(
+    args: NativeArgs32<'_>,
+    runtime: &mut NativeRuntime32<'_>,
+) -> anyhow::Result<RuntimeVal> {
+    let values = runtime_args_to_vals(args.as_slice(), runtime, "__lk_register_trait_impl")?;
+    let ctx = runtime
+        .ctx
+        .as_deref_mut()
+        .ok_or_else(|| anyhow!("__lk_register_trait_impl requires VmContext"))?;
+    core_register_trait_impl_builtin(&values, ctx)?;
+    Ok(RuntimeVal::Nil)
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_make_struct_builtin(args: &[Val], _ctx: &mut VmContext) -> anyhow::Result<Val> {
+fn runtime_args_to_vals(
+    args: &[RuntimeVal],
+    runtime: &mut NativeRuntime32<'_>,
+    helper: &str,
+) -> anyhow::Result<Vec<Val>> {
+    args.iter()
+        .map(|value| runtime_value_to_builtin_val(value, runtime, helper))
+        .collect()
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn runtime_value_to_builtin_val(
+    value: &RuntimeVal,
+    runtime: &mut NativeRuntime32<'_>,
+    helper: &str,
+) -> anyhow::Result<Val> {
+    match value {
+        RuntimeVal::Nil => Ok(Val::Nil),
+        RuntimeVal::Bool(value) => Ok(Val::Bool(*value)),
+        RuntimeVal::Int(value) => Ok(Val::Int(*value)),
+        RuntimeVal::Float(value) => Ok(Val::Float(*value)),
+        RuntimeVal::ShortStr(value) => Ok(Val::from(value.as_str())),
+        RuntimeVal::Obj(handle) => {
+            let heap_value = runtime
+                .state
+                .heap
+                .get(*handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+                .clone();
+            match heap_value {
+                HeapValue::Callable(crate::val::CallableValue::Runtime32(function)) => {
+                    Ok(Val::runtime_callable32(function))
+                }
+                HeapValue::Callable(crate::val::CallableValue::RuntimeNative32 { arity, function }) => {
+                    Ok(Val::runtime_native32(function, arity))
+                }
+                HeapValue::Callable(crate::val::CallableValue::Closure { .. }) => {
+                    let module = runtime
+                        .module
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("{helper} closure argument requires Module32 context"))?;
+                    let callable = runtime_value_to_callable32(
+                        value,
+                        &runtime.state.heap,
+                        &runtime.state.globals,
+                        Arc::new((*module).clone()),
+                    )
+                    .ok_or_else(|| anyhow!("{helper} closure could not be materialized"))?;
+                    Ok(Val::runtime_callable32(Arc::new(callable)))
+                }
+                HeapValue::List(list) => {
+                    let values = match list {
+                        TypedList::Mixed(values) => values
+                            .iter()
+                            .map(|value| runtime_value_to_builtin_val(value, runtime, helper))
+                            .collect::<anyhow::Result<Vec<_>>>()?,
+                        TypedList::Int(values) => values.iter().copied().map(Val::Int).collect(),
+                        TypedList::Float(values) => values.iter().copied().map(Val::Float).collect(),
+                        TypedList::Bool(values) => values.iter().copied().map(Val::Bool).collect(),
+                        TypedList::String(values) => values.iter().map(|value| Val::from(value.as_ref())).collect(),
+                    };
+                    Ok(Val::list(Arc::from(values)))
+                }
+                HeapValue::Map(map) => {
+                    let mut out = HashMap::with_capacity(map.len());
+                    for (key, value) in map.entries() {
+                        let Some(key) = key.as_str() else {
+                            return Err(anyhow!("{helper} cannot convert non-string map key"));
+                        };
+                        out.insert(key.to_string(), runtime_value_to_builtin_val(&value, runtime, helper)?);
+                    }
+                    Ok(Val::from(out))
+                }
+                other => runtime_val_to_val(&RuntimeVal::Obj(runtime.state.heap.alloc(other)), &runtime.state.heap),
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_make_struct_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> anyhow::Result<RuntimeVal> {
     if args.len() != 2 {
         return Err(anyhow!(
             "__lk_make_struct expects 2 arguments: struct name and fields map"
         ));
     }
 
-    let type_name = match &args[0] {
-        Val::Str(s) => s.clone(),
-        Val::ShortStr(s) => Val::intern_str(s.as_str()),
+    let type_name = runtime_string_arg(
+        args.get(0).expect("arity checked"),
+        &runtime.state.heap,
+        "__lk_make_struct",
+    )?;
+
+    let fields = match args.get(1).expect("arity checked") {
+        RuntimeVal::Nil => BTreeMap::new(),
+        RuntimeVal::Obj(handle) => {
+            let value = runtime
+                .state
+                .heap
+                .get(*handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+            let HeapValue::Map(map) = value else {
+                return Err(anyhow!(
+                    "__lk_make_struct expects fields as map, got {}",
+                    value.type_name()
+                ));
+            };
+            runtime_object_fields_from_map(map)?
+        }
         other => {
             return Err(anyhow!(
-                "__lk_make_struct expects struct name as string, got {}",
-                other.type_name()
+                "__lk_make_struct expects fields as map, got {:?}",
+                other.kind()
             ));
         }
     };
 
-    let fields_map = match &args[1] {
-        Val::Map(map) => map,
-        Val::Nil => {
-            return Ok(Val::Object(Arc::new(ObjectValue {
-                type_name,
-                fields: Arc::new(HashMap::new()),
-            })));
-        }
-        other => {
-            return Err(anyhow!(
-                "__lk_make_struct expects fields as map, got {}",
-                other.type_name()
-            ));
-        }
-    };
-
-    let mut fields = HashMap::with_capacity(fields_map.len());
-    for (k, v) in fields_map.iter() {
-        fields.insert(k.to_string(), v.clone());
-    }
-
-    Ok(Val::Object(Arc::new(ObjectValue {
-        type_name,
-        fields: Arc::new(fields),
-    })))
+    Ok(RuntimeVal::Obj(
+        runtime
+            .state
+            .heap
+            .alloc(HeapValue::Object(RuntimeObject { type_name, fields })),
+    ))
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_typeof_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+fn core_typeof_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> anyhow::Result<RuntimeVal> {
     let value = args
         .get(0)
         .ok_or_else(|| anyhow!("typeof(value) expects exactly one argument"))?;
     let name = match value {
-        Val::Int(_) => "Int",
-        Val::Float(_) => "Float",
-        Val::Bool(_) => "Bool",
-        Val::ShortStr(_) | Val::Str(_) => "String",
-        Val::List(_) => "List",
-        Val::Map(_) => "Map",
-        Val::Object(object) => object.type_name.as_str(),
-        Val::Closure(_)
-        | Val::RustFunction(_)
-        | Val::RustFastFunction(_)
-        | Val::RustFastFunctionNamed(_)
-        | Val::RustFunctionNamed(_)
-        | Val::AotFunction(_) => "Function",
-        Val::Task(_) => "Task",
-        Val::Channel(_) => "Channel",
-        Val::Stream(_) => "Stream",
-        Val::Iterator(_) => "Iterator",
-        Val::MutationGuard(guard) => guard.guard_type(),
-        Val::StreamCursor(_) => "StreamCursor",
-        Val::Nil => "Nil",
+        RuntimeVal::Int(_) => "Int",
+        RuntimeVal::Float(_) => "Float",
+        RuntimeVal::Bool(_) => "Bool",
+        RuntimeVal::ShortStr(_) => "String",
+        RuntimeVal::Nil => "Nil",
+        RuntimeVal::Obj(handle) => runtime
+            .state
+            .heap
+            .get(*handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+            .type_name(),
     };
-    Ok(Val::from_str(name))
+    Ok(runtime_string_value(name, &mut runtime.state.heap))
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_set_field_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+fn core_set_field_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> anyhow::Result<RuntimeVal> {
     if args.len() != 3 {
         return Err(anyhow!("__lk_set_field(base, key, value) expects exactly 3 arguments"));
     }
-    let base = args.get(0).expect("arity checked");
-    let key = args
-        .get(1)
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| anyhow!("__lk_set_field key must be a string"))?;
-    let value = args.get(2).expect("arity checked").clone();
+    let base = args.get(0).expect("arity checked").clone();
+    let key = runtime_string_arg(
+        args.get(1).expect("arity checked"),
+        &runtime.state.heap,
+        "__lk_set_field",
+    )?;
+    let field_value = args.get(2).expect("arity checked").clone();
     match base {
-        Val::Map(map) => {
-            let mut updated = (**map).clone();
-            Val::map_insert_arcstr(&mut updated, Val::intern_str(key), value);
-            Ok(Val::Map(Arc::new(updated)))
-        }
-        Val::Object(object) => {
-            let mut fields = (*object.fields).clone();
-            fields.insert(key.to_string(), value);
-            Ok(Val::Object(Arc::new(ObjectValue {
-                type_name: object.type_name.clone(),
-                fields: Arc::new(fields),
-            })))
+        RuntimeVal::Obj(handle) => {
+            let heap_value = runtime
+                .state
+                .heap
+                .get(handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+                .clone();
+            match heap_value {
+                HeapValue::Map(mut map) => {
+                    map.set(RuntimeMapKey::String(key), field_value);
+                    Ok(RuntimeVal::Obj(runtime.state.heap.alloc(HeapValue::Map(map))))
+                }
+                HeapValue::Object(mut object) => {
+                    object.fields.insert(key, field_value);
+                    Ok(RuntimeVal::Obj(runtime.state.heap.alloc(HeapValue::Object(object))))
+                }
+                other => Err(anyhow!(
+                    "__lk_set_field target must be Map or Object, got {}",
+                    other.type_name()
+                )),
+            }
         }
         other => Err(anyhow!(
-            "__lk_set_field target must be Map or Object, got {}",
-            other.type_name()
+            "__lk_set_field target must be Map or Object, got {:?}",
+            other.kind()
         )),
     }
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_merge_fields_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+fn core_merge_fields_builtin32(
+    args: NativeArgs32<'_>,
+    runtime: &mut NativeRuntime32<'_>,
+) -> anyhow::Result<RuntimeVal> {
     if args.len() != 2 {
         return Err(anyhow!("__lk_merge_fields(base, overlay) expects exactly 2 arguments"));
     }
+
     let mut fields = match args.get(0).expect("arity checked") {
-        Val::Object(object) => object
-            .fields
-            .iter()
-            .map(|(key, value)| (Val::intern_str(key), value.clone()))
-            .collect(),
-        Val::Map(map) => (**map).clone(),
-        Val::Nil => fast_hash_map_new(),
+        RuntimeVal::Obj(handle) => {
+            let value = runtime
+                .state
+                .heap
+                .get(*handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+            match value {
+                HeapValue::Object(object) => object
+                    .fields
+                    .iter()
+                    .map(|(key, value)| (RuntimeMapKey::String(key.clone()), value.clone()))
+                    .collect::<BTreeMap<_, _>>(),
+                HeapValue::Map(map) => map.entries().into_iter().collect::<BTreeMap<_, _>>(),
+                other => {
+                    return Err(anyhow!(
+                        "__lk_merge_fields base must be Object, Map, or Nil, got {}",
+                        other.type_name()
+                    ));
+                }
+            }
+        }
+        RuntimeVal::Nil => BTreeMap::new(),
         other => {
             return Err(anyhow!(
-                "__lk_merge_fields base must be Object, Map, or Nil, got {}",
-                other.type_name()
+                "__lk_merge_fields base must be Object, Map, or Nil, got {:?}",
+                other.kind()
             ));
         }
     };
 
     match args.get(1).expect("arity checked") {
-        Val::Map(overlay) => {
-            for (key, value) in overlay.iter() {
-                fields.insert(key.clone(), value.clone());
+        RuntimeVal::Obj(handle) => {
+            let value = runtime
+                .state
+                .heap
+                .get(*handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+            let HeapValue::Map(overlay) = value else {
+                return Err(anyhow!(
+                    "__lk_merge_fields overlay must be Map, got {}",
+                    value.type_name()
+                ));
+            };
+            for (key, value) in overlay.entries() {
+                fields.insert(key, value);
             }
-            Ok(Val::Map(Arc::new(fields)))
+            Ok(RuntimeVal::Obj(
+                runtime
+                    .state
+                    .heap
+                    .alloc(HeapValue::Map(TypedMap::from_runtime_entries(fields))),
+            ))
         }
-        other => Err(anyhow!(
-            "__lk_merge_fields overlay must be Map, got {}",
-            other.type_name()
-        )),
+        other => Err(anyhow!("__lk_merge_fields overlay must be Map, got {:?}", other.kind())),
     }
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn bit_arg(value: &Val, func: &str) -> anyhow::Result<i64> {
+fn runtime_string_arg(value: &RuntimeVal, heap: &HeapStore, func: &str) -> anyhow::Result<Arc<str>> {
     match value {
-        Val::Int(i) => Ok(*i),
-        other => Err(anyhow!("{func} expects Int arguments, got {}", other.type_name())),
+        RuntimeVal::ShortStr(value) => Ok(Arc::<str>::from(value.as_str())),
+        RuntimeVal::Obj(handle) => match heap
+            .get(*handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::String(value) => Ok(value.clone()),
+            other => Err(anyhow!("{func} expects string argument, got {}", other.type_name())),
+        },
+        other => Err(anyhow!("{func} expects string argument, got {:?}", other.kind())),
     }
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_bit_and_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+fn runtime_string_value(value: &str, heap: &mut HeapStore) -> RuntimeVal {
+    if let Some(short) = crate::val::ShortStr::new(value) {
+        RuntimeVal::ShortStr(short)
+    } else {
+        RuntimeVal::Obj(heap.alloc(HeapValue::String(Arc::<str>::from(value))))
+    }
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn runtime_object_fields_from_map(map: &TypedMap) -> anyhow::Result<BTreeMap<Arc<str>, RuntimeVal>> {
+    let mut fields = BTreeMap::new();
+    for (key, value) in map.entries() {
+        let Some(key) = key.as_arc_str() else {
+            return Err(anyhow!("__lk_make_struct field keys must be strings"));
+        };
+        fields.insert(key, value);
+    }
+    Ok(fields)
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn bit_arg32(value: &crate::val::RuntimeVal, func: &str) -> anyhow::Result<i64> {
+    match value {
+        crate::val::RuntimeVal::Int(i) => Ok(*i),
+        other => Err(anyhow!("{func} expects Int arguments, got {:?}", other.kind())),
+    }
+}
+
+#[cfg(not(feature = "aot-minimal-runtime"))]
+fn core_bit_and_builtin32(
+    args: NativeArgs32<'_>,
+    _runtime: &mut NativeRuntime32<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
     if args.len() != 2 {
         return Err(anyhow!("__lk_bit_and(left, right) expects exactly 2 arguments"));
     }
-    Ok(Val::Int(
-        bit_arg(args.get(0).expect("arity checked"), "__lk_bit_and")?
-            & bit_arg(args.get(1).expect("arity checked"), "__lk_bit_and")?,
+    Ok(crate::val::RuntimeVal::Int(
+        bit_arg32(args.get(0).expect("arity checked"), "__lk_bit_and")?
+            & bit_arg32(args.get(1).expect("arity checked"), "__lk_bit_and")?,
     ))
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_bit_or_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+fn core_bit_or_builtin32(
+    args: NativeArgs32<'_>,
+    _runtime: &mut NativeRuntime32<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
     if args.len() != 2 {
         return Err(anyhow!("__lk_bit_or(left, right) expects exactly 2 arguments"));
     }
-    Ok(Val::Int(
-        bit_arg(args.get(0).expect("arity checked"), "__lk_bit_or")?
-            | bit_arg(args.get(1).expect("arity checked"), "__lk_bit_or")?,
+    Ok(crate::val::RuntimeVal::Int(
+        bit_arg32(args.get(0).expect("arity checked"), "__lk_bit_or")?
+            | bit_arg32(args.get(1).expect("arity checked"), "__lk_bit_or")?,
     ))
 }
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-fn core_bit_not_builtin_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
+fn core_bit_not_builtin32(
+    args: NativeArgs32<'_>,
+    _runtime: &mut NativeRuntime32<'_>,
+) -> anyhow::Result<crate::val::RuntimeVal> {
     if args.len() != 1 {
         return Err(anyhow!("__lk_bit_not(value) expects exactly 1 argument"));
     }
-    Ok(Val::Int(!bit_arg(args.get(0).expect("arity checked"), "__lk_bit_not")?))
+    Ok(crate::val::RuntimeVal::Int(!bit_arg32(
+        args.get(0).expect("arity checked"),
+        "__lk_bit_not",
+    )?))
 }
 
 #[cfg(test)]
@@ -955,5 +1144,35 @@ mod tests {
         assert_eq!(prev, Some(Val::Int(9)));
         assert_eq!(ctx.slot_values[2], Val::Nil);
         assert_eq!(ctx.get("x"), None);
+    }
+
+    #[cfg(not(feature = "aot-minimal-runtime"))]
+    #[test]
+    fn core_vm_builtins_use_runtime_native32() {
+        let ctx = VmContext::new();
+        for name in [
+            "__lk_register_trait",
+            "__lk_register_trait_impl",
+            "__lk_call_method",
+            "__lk_call_method_named",
+            "__lk_make_struct",
+            "typeof",
+            "__lk_set_field",
+            "__lk_merge_fields",
+            "__lk_bit_and",
+            "__lk_bit_or",
+            "__lk_bit_not",
+        ] {
+            let value = ctx
+                .globals
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} builtin present"));
+            let Val::Obj(object) = value else {
+                panic!("{name} should be heap callable");
+            };
+            let HeapValue::Callable(crate::val::CallableValue::RuntimeNative32 { .. }) = object.as_ref() else {
+                panic!("{name} should use RuntimeNative32");
+            };
+        }
     }
 }

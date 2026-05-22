@@ -1,16 +1,26 @@
-use anyhow::{Result, anyhow};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
+use anyhow::{Result, anyhow, bail};
 use dashmap::DashMap;
 use lk_core::{
-    module,
-    module::Module,
+    module::{Module, ModuleRegistry},
     rt,
-    val::{NativeArgs, StreamCursorValue, StreamValue, Type, Val, methods::register_fast_method},
-    vm::VmContext,
+    val::{
+        CallableValue, HeapStore, HeapValue, RuntimeVal, StreamCursorValue, StreamValue, Type, TypedList, Val,
+        val_to_runtime_val,
+    },
+    vm::{
+        NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
+        runtime_value_to_callable32,
+    },
 };
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 pub struct StreamModule {
@@ -23,48 +33,43 @@ impl Default for StreamModule {
     }
 }
 
-// Global registries for streams and cursors
 static NEXT_STREAM_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_CURSOR_ID: AtomicU64 = AtomicU64::new(1);
 
 static STREAMS: Lazy<DashMap<u64, Arc<StreamSpec>>> = Lazy::new(DashMap::new);
-// Reduce type complexity for cursor registry
 type CursorBox = Box<dyn StreamCursor + Send>;
 type CursorHandle = Arc<Mutex<CursorBox>>;
-type CursorMap = DashMap<u64, CursorHandle>;
-static CURSORS: Lazy<CursorMap> = Lazy::new(DashMap::new);
+static CURSORS: Lazy<DashMap<u64, CursorHandle>> = Lazy::new(DashMap::new);
+static CURSOR_INFO: Lazy<DashMap<u64, CursorInfo>> = Lazy::new(DashMap::new);
 
 #[derive(Debug, Clone, Default)]
 struct CursorInfo {
     channel_id: Option<u64>,
 }
 
-static CURSOR_INFO: Lazy<DashMap<u64, CursorInfo>> = Lazy::new(DashMap::new);
-
-// Stream specification: cold (multi-consumer) description that can open independent cursors
 #[derive(Debug, Clone)]
 enum StreamSpec {
-    FromList(Arc<Vec<Val>>),
+    FromList(Vec<RuntimeVal>),
     Range {
         start: i64,
         end: Option<i64>,
         step: i64,
     },
-    Repeat(Val),
+    Repeat(RuntimeVal),
     Iterate {
-        seed: Val,
-        func: Val,
-    }, // infinite: v0=seed, then v_{n+1}=func(v_n)
+        seed: RuntimeVal,
+        func: RuntimeVal,
+    },
     FromChannel {
         channel_id: u64,
     },
     Map {
         upstream: Arc<StreamSpec>,
-        func: Val,
+        func: RuntimeVal,
     },
     Filter {
         upstream: Arc<StreamSpec>,
-        func: Val,
+        func: RuntimeVal,
     },
     Take {
         upstream: Arc<StreamSpec>,
@@ -81,167 +86,152 @@ enum StreamSpec {
 }
 
 trait StreamCursor {
-    fn next(&mut self, ctx: &mut VmContext) -> Result<Option<Val>>;
+    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>>;
 }
 
 impl StreamSpec {
     fn open_cursor(&self) -> Box<dyn StreamCursor + Send> {
         match self.clone() {
-            StreamSpec::FromList(data) => Box::new(FromListCursor { data, idx: 0 }),
-            StreamSpec::Range { start, end, step } => Box::new(RangeCursor { cur: start, end, step }),
-            StreamSpec::Repeat(v) => Box::new(RepeatCursor { value: v }),
+            StreamSpec::FromList(data) => Box::new(FromListCursor { data, index: 0 }),
+            StreamSpec::Range { start, end, step } => Box::new(RangeCursor {
+                current: start,
+                end,
+                step,
+            }),
+            StreamSpec::Repeat(value) => Box::new(RepeatCursor { value }),
             StreamSpec::Iterate { seed, func } => Box::new(IterateCursor {
-                cur: seed,
+                current: seed,
                 func,
                 first: true,
             }),
             StreamSpec::FromChannel { channel_id } => Box::new(ChannelCursor { channel_id }),
-            StreamSpec::Map { upstream, func } => {
-                let upstream_cursor = upstream.open_cursor();
-                Box::new(MapCursor {
-                    upstream: upstream_cursor,
-                    func,
-                })
-            }
-            StreamSpec::Filter { upstream, func } => {
-                let upstream_cursor = upstream.open_cursor();
-                Box::new(FilterCursor {
-                    upstream: upstream_cursor,
-                    func,
-                })
-            }
-            StreamSpec::Take { upstream, n } => {
-                let upstream_cursor = upstream.open_cursor();
-                Box::new(TakeCursor {
-                    upstream: upstream_cursor,
-                    remaining: n,
-                })
-            }
-            StreamSpec::Skip { upstream, n } => {
-                let upstream_cursor = upstream.open_cursor();
-                // Skipping performed lazily on first next()
-                Box::new(SkipCursor {
-                    upstream: upstream_cursor,
-                    to_skip: n,
-                })
-            }
-            StreamSpec::Chain { left, right } => {
-                let left_cursor = left.open_cursor();
-                let right_cursor = right.open_cursor();
-                Box::new(ChainCursor {
-                    left: left_cursor,
-                    right: right_cursor,
-                    left_exhausted: false,
-                })
-            }
+            StreamSpec::Map { upstream, func } => Box::new(MapCursor {
+                upstream: upstream.open_cursor(),
+                func,
+            }),
+            StreamSpec::Filter { upstream, func } => Box::new(FilterCursor {
+                upstream: upstream.open_cursor(),
+                func,
+            }),
+            StreamSpec::Take { upstream, n } => Box::new(TakeCursor {
+                upstream: upstream.open_cursor(),
+                remaining: n,
+            }),
+            StreamSpec::Skip { upstream, n } => Box::new(SkipCursor {
+                upstream: upstream.open_cursor(),
+                to_skip: n,
+            }),
+            StreamSpec::Chain { left, right } => Box::new(ChainCursor {
+                left: left.open_cursor(),
+                right: right.open_cursor(),
+                left_exhausted: false,
+            }),
         }
     }
 }
 
-// Concrete cursors
 #[derive(Debug)]
 struct FromListCursor {
-    data: Arc<Vec<Val>>,
-    idx: usize,
+    data: Vec<RuntimeVal>,
+    index: usize,
 }
+
 impl StreamCursor for FromListCursor {
-    fn next(&mut self, _ctx: &mut VmContext) -> Result<Option<Val>> {
-        if self.idx >= self.data.len() {
+    fn next(&mut self, _runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+        let Some(value) = self.data.get(self.index).cloned() else {
             return Ok(None);
-        }
-        let v = self.data[self.idx].clone();
-        self.idx += 1;
-        Ok(Some(v))
+        };
+        self.index += 1;
+        Ok(Some(value))
     }
 }
 
 #[derive(Debug)]
 struct RangeCursor {
-    cur: i64,
+    current: i64,
     end: Option<i64>,
     step: i64,
 }
+
 impl StreamCursor for RangeCursor {
-    fn next(&mut self, _ctx: &mut VmContext) -> Result<Option<Val>> {
+    fn next(&mut self, _runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         if self.step == 0 {
-            return Err(anyhow!("range step cannot be zero"));
+            bail!("range step cannot be zero");
         }
         if let Some(end) = self.end
-            && ((self.step > 0 && self.cur >= end) || (self.step < 0 && self.cur <= end))
+            && ((self.step > 0 && self.current >= end) || (self.step < 0 && self.current <= end))
         {
             return Ok(None);
         }
-        let out = self.cur;
-        self.cur += self.step;
-        Ok(Some(Val::Int(out)))
+        let value = self.current;
+        self.current += self.step;
+        Ok(Some(RuntimeVal::Int(value)))
     }
 }
 
 #[derive(Debug)]
 struct RepeatCursor {
-    value: Val,
+    value: RuntimeVal,
 }
+
 impl StreamCursor for RepeatCursor {
-    fn next(&mut self, _ctx: &mut VmContext) -> Result<Option<Val>> {
+    fn next(&mut self, _runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         Ok(Some(self.value.clone()))
     }
 }
 
 #[derive(Debug)]
 struct IterateCursor {
-    cur: Val,
-    func: Val,
+    current: RuntimeVal,
+    func: RuntimeVal,
     first: bool,
 }
+
 impl StreamCursor for IterateCursor {
-    fn next(&mut self, _ctx: &mut VmContext) -> Result<Option<Val>> {
+    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         if self.first {
             self.first = false;
-            return Ok(Some(self.cur.clone()));
+            return Ok(Some(self.current.clone()));
         }
-        // cur = func(cur)
-        let next_val = self.func.call(std::slice::from_ref(&self.cur), _ctx)?;
-        self.cur = next_val.clone();
-        Ok(Some(next_val))
+        let next = call_runtime_callable_value(
+            &self.func,
+            std::slice::from_ref(&self.current),
+            runtime,
+            "stream.iterate",
+        )?;
+        self.current = next.clone();
+        Ok(Some(next))
     }
 }
 
 struct MapCursor {
     upstream: Box<dyn StreamCursor + Send>,
-    func: Val,
+    func: RuntimeVal,
 }
+
 impl StreamCursor for MapCursor {
-    fn next(&mut self, ctx: &mut VmContext) -> Result<Option<Val>> {
-        match self.upstream.next(ctx)? {
-            Some(v) => {
-                let mapped = self.func.call(&[v], ctx)?;
-                Ok(Some(mapped))
-            }
-            None => Ok(None),
-        }
+    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+        let Some(value) = self.upstream.next(runtime)? else {
+            return Ok(None);
+        };
+        call_runtime_callable_value(&self.func, &[value], runtime, "stream.map").map(Some)
     }
 }
 
 struct FilterCursor {
     upstream: Box<dyn StreamCursor + Send>,
-    func: Val,
+    func: RuntimeVal,
 }
+
 impl StreamCursor for FilterCursor {
-    fn next(&mut self, ctx: &mut VmContext) -> Result<Option<Val>> {
+    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         loop {
-            match self.upstream.next(ctx)? {
-                Some(v) => {
-                    let keep = self.func.call(std::slice::from_ref(&v), ctx)?;
-                    let k = match keep {
-                        Val::Bool(b) => b,
-                        Val::Nil => false,
-                        _ => true,
-                    };
-                    if k {
-                        return Ok(Some(v));
-                    }
-                }
-                None => return Ok(None),
+            let Some(value) = self.upstream.next(runtime)? else {
+                return Ok(None);
+            };
+            let keep = call_runtime_callable_value(&self.func, std::slice::from_ref(&value), runtime, "stream.filter")?;
+            if truthy(&keep) {
+                return Ok(Some(value));
             }
         }
     }
@@ -251,18 +241,17 @@ struct TakeCursor {
     upstream: Box<dyn StreamCursor + Send>,
     remaining: i64,
 }
+
 impl StreamCursor for TakeCursor {
-    fn next(&mut self, ctx: &mut VmContext) -> Result<Option<Val>> {
+    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         if self.remaining <= 0 {
             return Ok(None);
         }
-        match self.upstream.next(ctx)? {
-            Some(v) => {
-                self.remaining -= 1;
-                Ok(Some(v))
-            }
-            None => Ok(None),
+        let value = self.upstream.next(runtime)?;
+        if value.is_some() {
+            self.remaining -= 1;
         }
+        Ok(value)
     }
 }
 
@@ -270,15 +259,16 @@ struct SkipCursor {
     upstream: Box<dyn StreamCursor + Send>,
     to_skip: i64,
 }
+
 impl StreamCursor for SkipCursor {
-    fn next(&mut self, ctx: &mut VmContext) -> Result<Option<Val>> {
+    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         while self.to_skip > 0 {
-            match self.upstream.next(ctx)? {
-                Some(_) => self.to_skip -= 1,
-                None => return Ok(None),
+            if self.upstream.next(runtime)?.is_none() {
+                return Ok(None);
             }
+            self.to_skip -= 1;
         }
-        self.upstream.next(ctx)
+        self.upstream.next(runtime)
     }
 }
 
@@ -287,42 +277,29 @@ struct ChainCursor {
     right: Box<dyn StreamCursor + Send>,
     left_exhausted: bool,
 }
+
 impl StreamCursor for ChainCursor {
-    fn next(&mut self, ctx: &mut VmContext) -> Result<Option<Val>> {
+    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         if !self.left_exhausted {
-            match self.left.next(ctx)? {
-                Some(v) => return Ok(Some(v)),
-                None => self.left_exhausted = true,
+            if let Some(value) = self.left.next(runtime)? {
+                return Ok(Some(value));
             }
+            self.left_exhausted = true;
         }
-        self.right.next(ctx)
+        self.right.next(runtime)
     }
 }
 
+#[derive(Debug)]
 struct ChannelCursor {
     channel_id: u64,
 }
 
-impl std::fmt::Debug for ChannelCursor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChannelCursor")
-            .field("channel_id", &self.channel_id)
-            .finish()
-    }
-}
-
 impl StreamCursor for ChannelCursor {
-    fn next(&mut self, _ctx: &mut VmContext) -> Result<Option<Val>> {
-        let res = rt::with_runtime(|runtime| runtime.try_recv(self.channel_id))?;
-        match res {
-            Some((ok, value)) => {
-                if ok {
-                    Ok(Some(value))
-                } else {
-                    Ok(None)
-                }
-            }
-            None => Ok(None),
+    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+        match rt::with_runtime(|runtime| runtime.try_recv(self.channel_id))? {
+            Some((true, value)) => Ok(Some(val_to_runtime_val(&value, runtime.heap_mut())?)),
+            Some((false, _)) | None => Ok(None),
         }
     }
 }
@@ -331,492 +308,231 @@ impl StreamModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
 
-        // Constructors
-        functions.insert("from_list".to_string(), Val::RustFastFunction(Self::from_list_fast));
-        functions.insert("range".to_string(), Val::RustFastFunction(Self::range_fast));
-        functions.insert("iterate".to_string(), Val::RustFastFunction(Self::iterate_fast));
-        functions.insert("repeat".to_string(), Val::RustFastFunction(Self::repeat_fast));
-
-        functions.insert(
-            "from_channel".to_string(),
-            Val::RustFastFunction(Self::from_channel_fast),
+        register_native(&mut functions, "from_list", from_list32, 1);
+        register_native(&mut functions, "range", range32, NativeEntry32::VARIADIC);
+        register_native(&mut functions, "iterate", iterate32, 2);
+        register_native(&mut functions, "repeat", repeat32, 1);
+        register_native(&mut functions, "from_channel", from_channel32, 1);
+        register_native(&mut functions, "map", map32, 2);
+        register_native(&mut functions, "filter", filter32, 2);
+        register_native(&mut functions, "take", take32, 2);
+        register_native(&mut functions, "skip", skip32, 2);
+        register_native(&mut functions, "chain", chain32, 2);
+        register_native(&mut functions, "subscribe", subscribe32, 1);
+        register_native(&mut functions, "next", next32, 1);
+        register_native(&mut functions, "collect", collect32, NativeEntry32::VARIADIC);
+        register_native(&mut functions, "next_block", next_block32, NativeEntry32::VARIADIC);
+        register_native(
+            &mut functions,
+            "collect_block",
+            collect_block32,
+            NativeEntry32::VARIADIC,
         );
-
-        // Transformers
-        functions.insert("map".to_string(), Val::RustFastFunction(Self::map_fast));
-        functions.insert("filter".to_string(), Val::RustFastFunction(Self::filter_fast));
-        functions.insert("take".to_string(), Val::RustFastFunction(Self::take_fast));
-        functions.insert("skip".to_string(), Val::RustFastFunction(Self::skip_fast));
-        functions.insert("chain".to_string(), Val::RustFastFunction(Self::chain_fast));
-
-        // Cursors
-        functions.insert("subscribe".to_string(), Val::RustFastFunction(Self::subscribe_fast));
-        functions.insert("next".to_string(), Val::RustFastFunction(Self::next_fast));
-        functions.insert("collect".to_string(), Val::RustFastFunction(Self::collect_fast));
-
-        functions.insert("next_block".to_string(), Val::RustFastFunction(Self::next_block_fast));
-        functions.insert(
-            "collect_block".to_string(),
-            Val::RustFastFunction(Self::collect_block_fast),
-        );
-
-        // Register meta-methods
-        register_fast_method("List", "to_stream", Self::to_stream_fast);
-
-        register_fast_method("Channel", "to_stream", Self::from_channel_fast);
-
-        register_fast_method("Stream", "map", Self::map_fast);
-        register_fast_method("Stream", "filter", Self::filter_fast);
-        register_fast_method("Stream", "take", Self::take_fast);
-        register_fast_method("Stream", "skip", Self::skip_fast);
-        register_fast_method("Stream", "chain", Self::chain_fast);
-        register_fast_method("Stream", "subscribe", Self::subscribe_fast);
-        register_fast_method("Stream", "collect", Self::collect_fast);
-
-        register_fast_method("StreamCursor", "next", Self::next_fast);
-        register_fast_method("StreamCursor", "collect", Self::collect_fast);
-
-        register_fast_method("StreamCursor", "next_block", Self::next_block_fast);
-        register_fast_method("Stream", "collect_block", Self::collect_block_fast);
-        register_fast_method("StreamCursor", "collect_block", Self::collect_block_fast);
 
         Self { functions }
     }
+}
 
-    fn create_stream(spec: Arc<StreamSpec>, inner: Type) -> Val {
-        let id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
-        STREAMS.insert(id, spec);
-        Val::Stream(Arc::new(StreamValue { id, inner_type: inner }))
+impl Module for StreamModule {
+    fn name(&self) -> &str {
+        "stream"
     }
 
-    fn create_cursor(stream_id: u64) -> Result<Val> {
-        let spec = STREAMS
-            .get(&stream_id)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| anyhow!("Stream not found: {}", stream_id))?;
-        let cursor = spec.open_cursor();
-        let id = NEXT_CURSOR_ID.fetch_add(1, Ordering::Relaxed);
-        let wrapped = Arc::new(Mutex::new(cursor));
-        CURSORS.insert(id, wrapped);
-        // Record cursor info for blocking operations
-        let mut ci = CursorInfo::default();
-        if let StreamSpec::FromChannel { channel_id } = spec.as_ref() {
-            ci.channel_id = Some(*channel_id);
-        }
-        CURSOR_INFO.insert(id, ci);
-        Ok(Val::StreamCursor(Arc::new(StreamCursorValue { id, stream_id })))
+    fn description(&self) -> &str {
+        "Lazy, cold stream utilities"
     }
 
-    // Module API implementations
-    fn from_list_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::from_list(args.as_slice(), ctx)
+    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
+        Ok(())
     }
 
-    fn from_list(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let list = match args {
-            [Val::List(l)] => l.clone(),
-            _ => return Err(anyhow!("from_list expects (list)")),
-        };
-        let spec = Arc::new(StreamSpec::FromList(list));
-        Ok(Self::create_stream(spec, Type::Any))
+    fn exports(&self) -> HashMap<String, Val> {
+        self.functions.clone()
     }
+}
 
-    fn range_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::range(args.as_slice(), ctx)
+fn register_native(
+    functions: &mut HashMap<String, Val>,
+    name: &str,
+    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    arity: u16,
+) {
+    functions.insert(
+        name.to_string(),
+        Val::runtime_native32(NativeFunction32::Plain(function), arity),
+    );
+}
+
+fn from_list32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "stream.from_list")?;
+    let values = list_items(&args.as_slice()[0], runtime.heap_mut(), "stream.from_list argument")?;
+    create_stream(StreamSpec::FromList(values), Type::Any, runtime.heap_mut())
+}
+
+fn range32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    let (start, end, step) = match values {
+        [end] => (0, Some(int_arg(end, "stream.range end")?), 1),
+        [start, end] => (
+            int_arg(start, "stream.range start")?,
+            Some(int_arg(end, "stream.range end")?),
+            1,
+        ),
+        [start, end, step] => (
+            int_arg(start, "stream.range start")?,
+            Some(int_arg(end, "stream.range end")?),
+            int_arg(step, "stream.range step")?,
+        ),
+        _ => bail!("stream.range expects 1-3 arguments"),
+    };
+    create_stream(StreamSpec::Range { start, end, step }, Type::Int, runtime.heap_mut())
+}
+
+fn iterate32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "stream.iterate")?;
+    let values = args.as_slice();
+    ensure_runtime_callable(&values[1], runtime, "stream.iterate function")?;
+    create_stream(
+        StreamSpec::Iterate {
+            seed: values[0].clone(),
+            func: values[1].clone(),
+        },
+        Type::Any,
+        runtime.heap_mut(),
+    )
+}
+
+fn repeat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "stream.repeat")?;
+    create_stream(
+        StreamSpec::Repeat(args.as_slice()[0].clone()),
+        Type::Any,
+        runtime.heap_mut(),
+    )
+}
+
+fn from_channel32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "stream.from_channel")?;
+    let channel = channel_arg(&args.as_slice()[0], &runtime.state.heap, "stream.from_channel argument")?;
+    create_stream(
+        StreamSpec::FromChannel { channel_id: channel.id },
+        channel.inner_type.clone(),
+        runtime.heap_mut(),
+    )
+}
+
+fn map32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "stream.map")?;
+    let values = args.as_slice();
+    ensure_runtime_callable(&values[1], runtime, "stream.map function")?;
+    let upstream = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.map stream")?)?;
+    create_stream(
+        StreamSpec::Map {
+            upstream,
+            func: values[1].clone(),
+        },
+        Type::Any,
+        runtime.heap_mut(),
+    )
+}
+
+fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "stream.filter")?;
+    let values = args.as_slice();
+    ensure_runtime_callable(&values[1], runtime, "stream.filter function")?;
+    let upstream = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.filter stream")?)?;
+    create_stream(
+        StreamSpec::Filter {
+            upstream,
+            func: values[1].clone(),
+        },
+        Type::Any,
+        runtime.heap_mut(),
+    )
+}
+
+fn take32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "stream.take")?;
+    let values = args.as_slice();
+    let upstream = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.take stream")?)?;
+    let n = int_arg(&values[1], "stream.take count")?;
+    create_stream(StreamSpec::Take { upstream, n }, Type::Any, runtime.heap_mut())
+}
+
+fn skip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "stream.skip")?;
+    let values = args.as_slice();
+    let upstream = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.skip stream")?)?;
+    let n = int_arg(&values[1], "stream.skip count")?;
+    create_stream(StreamSpec::Skip { upstream, n }, Type::Any, runtime.heap_mut())
+}
+
+fn chain32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "stream.chain")?;
+    let values = args.as_slice();
+    let left = get_stream_spec(stream_id_arg(&values[0], &runtime.state.heap, "stream.chain left")?)?;
+    let right = get_stream_spec(stream_id_arg(&values[1], &runtime.state.heap, "stream.chain right")?)?;
+    create_stream(StreamSpec::Chain { left, right }, Type::Any, runtime.heap_mut())
+}
+
+fn subscribe32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "stream.subscribe")?;
+    create_cursor(
+        stream_id_arg(&args.as_slice()[0], &runtime.state.heap, "stream.subscribe argument")?,
+        runtime.heap_mut(),
+    )
+}
+
+fn next32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "stream.next")?;
+    let cursor_id = cursor_id_arg(&args.as_slice()[0], &runtime.state.heap, "stream.next argument")?;
+    next_cursor(cursor_id, runtime)
+}
+
+fn collect32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let (cursor_id, limit) = cursor_and_limit(args.as_slice(), runtime, "stream.collect")?;
+    collect_cursor(cursor_id, limit, runtime)
+}
+
+fn next_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    if values.is_empty() || values.len() > 2 {
+        bail!("stream.next_block expects (cursor[, timeout_ms])");
     }
+    let cursor_id = cursor_id_arg(&values[0], &runtime.state.heap, "stream.next_block cursor")?;
+    let timeout_ms = match values.get(1) {
+        Some(value) => Some(int_arg(value, "stream.next_block timeout_ms")?),
+        None => None,
+    };
+    next_block_cursor(cursor_id, timeout_ms, runtime)
+}
 
-    fn range(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let (start, end, step) = match args.len() {
-            1 => (0, Some(extract_int(&args[0])?), 1),
-            2 => (extract_int(&args[0])?, Some(extract_int(&args[1])?), 1),
-            3 => (
-                extract_int(&args[0])?,
-                Some(extract_int(&args[1])?),
-                extract_int(&args[2])?,
-            ),
-            _ => return Err(anyhow!("range expects 1-3 arguments")),
-        };
-        let spec = Arc::new(StreamSpec::Range { start, end, step });
-        Ok(Self::create_stream(spec, Type::Int))
-    }
+fn collect_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let (cursor_id, limit, timeout_ms) = cursor_limit_timeout(args.as_slice(), runtime, "stream.collect_block")?;
+    collect_block_cursor(cursor_id, limit, timeout_ms, runtime)
+}
 
-    fn iterate_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::iterate(args.as_slice(), ctx)
-    }
+fn create_stream(spec: StreamSpec, inner_type: Type, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    let id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
+    STREAMS.insert(id, Arc::new(spec));
+    Ok(RuntimeVal::Obj(
+        heap.alloc(HeapValue::Stream(Arc::new(StreamValue { id, inner_type }))),
+    ))
+}
 
-    fn iterate(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("iterate expects 2 arguments: seed, func"));
-        }
-        let seed = args[0].clone();
-        let func = match &args[1] {
-            Val::Closure(_) | Val::RustFunction(_) | Val::RustFastFunction(_) | Val::RustFastFunctionNamed(_) => {
-                args[1].clone()
-            }
-            other => return Err(anyhow!("iterate func must be a function, got {}", other.type_name())),
-        };
-        let spec = Arc::new(StreamSpec::Iterate { seed, func });
-        Ok(Self::create_stream(spec, Type::Any))
-    }
-
-    fn repeat_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::repeat(args.as_slice(), ctx)
-    }
-
-    fn repeat(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("repeat expects 1 argument"));
-        }
-        let spec = Arc::new(StreamSpec::Repeat(args[0].clone()));
-        Ok(Self::create_stream(spec, Type::Any))
-    }
-
-    fn from_channel_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::from_channel(args.as_slice(), ctx)
-    }
-
-    fn from_channel(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let (channel_id, inner) = match args {
-            [Val::Channel(channel)] => (channel.id, channel.inner_type.clone()),
-            _ => return Err(anyhow!("from_channel expects (channel)")),
-        };
-        let spec = Arc::new(StreamSpec::FromChannel { channel_id });
-        Ok(Self::create_stream(spec, inner))
-    }
-
-    fn map_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::map(args.as_slice(), ctx)
-    }
-
-    fn map(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let (stream, func) = match args {
-            [Val::Stream(stream), f] => (stream.id, f.clone()),
-            _ => return Err(anyhow!("map expects (stream, func)")),
-        };
-        let upstream = get_stream_spec(stream)?;
-        let spec = Arc::new(StreamSpec::Map { upstream, func });
-        Ok(Self::create_stream(spec, Type::Any))
-    }
-
-    fn filter_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::filter(args.as_slice(), ctx)
-    }
-
-    fn filter(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let (stream, func) = match args {
-            [Val::Stream(stream), f] => (stream.id, f.clone()),
-            _ => return Err(anyhow!("filter expects (stream, func)")),
-        };
-        let upstream = get_stream_spec(stream)?;
-        let spec = Arc::new(StreamSpec::Filter { upstream, func });
-        Ok(Self::create_stream(spec, Type::Any))
-    }
-
-    fn take_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::take(args.as_slice(), ctx)
-    }
-
-    fn take(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let (sid, n) = match args {
-            [Val::Stream(stream), n] => (stream.id, extract_int(n)?),
-            _ => return Err(anyhow!("take expects (stream, n:int)")),
-        };
-        let upstream = get_stream_spec(sid)?;
-        let spec = Arc::new(StreamSpec::Take { upstream, n });
-        Ok(Self::create_stream(spec, Type::Any))
-    }
-
-    fn skip_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::skip(args.as_slice(), ctx)
-    }
-
-    fn skip(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let (sid, n) = match args {
-            [Val::Stream(stream), n] => (stream.id, extract_int(n)?),
-            _ => return Err(anyhow!("skip expects (stream, n:int)")),
-        };
-        let upstream = get_stream_spec(sid)?;
-        let spec = Arc::new(StreamSpec::Skip { upstream, n });
-        Ok(Self::create_stream(spec, Type::Any))
-    }
-
-    fn chain_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::chain(args.as_slice(), ctx)
-    }
-
-    fn chain(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let (a, b) = match args {
-            [Val::Stream(a), Val::Stream(b)] => (a.id, b.id),
-            _ => return Err(anyhow!("chain expects (stream, stream)")),
-        };
-        let left = get_stream_spec(a)?;
-        let right = get_stream_spec(b)?;
-        let spec = Arc::new(StreamSpec::Chain { left, right });
-        Ok(Self::create_stream(spec, Type::Any))
-    }
-
-    fn subscribe_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::subscribe(args.as_slice(), ctx)
-    }
-
-    fn subscribe(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-        let sid = match args {
-            [Val::Stream(stream)] => stream.id,
-            _ => return Err(anyhow!("subscribe expects (stream)")),
-        };
-        Self::create_cursor(sid)
-    }
-
-    fn next_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::next(args.as_slice(), ctx)
-    }
-
-    fn next(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        let cid = match args {
-            [Val::StreamCursor(c)] => c.id,
-            _ => return Err(anyhow!("next expects (cursor)")),
-        };
-        let cursor_arc = CURSORS
-            .get(&cid)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| anyhow!("Cursor not found: {}", cid))?;
-        let mut locked = cursor_arc.lock().map_err(|_| anyhow!("cursor mutex poisoned"))?;
-        match locked.next(ctx)? {
-            Some(v) => Ok(Val::List(vec![Val::Bool(true), v].into())),
-            None => Ok(Val::List(vec![Val::Bool(false), Val::Nil].into())),
-        }
-    }
-
-    fn collect_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::collect(args.as_slice(), ctx)
-    }
-
-    fn collect(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        match args {
-            // collect(cursor[, n])
-            [Val::StreamCursor(_), ..] => Self::collect_cursor(args, ctx),
-            // collect(stream[, n])
-            [Val::Stream(_), ..] => Self::collect_stream(args, ctx),
-            _ => Err(anyhow!("collect expects (stream|cursor[, n])")),
-        }
-    }
-
-    fn collect_stream(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        let (stream, limit) = match args {
-            [Val::Stream(stream)] => (stream.id, None),
-            [Val::Stream(stream), n] => (stream.id, Some(extract_int(n)?)),
-            _ => return Err(anyhow!("collect(stream[, n]) expects stream as first argument")),
-        };
-        let cursor_val = Self::create_cursor(stream)?;
-        let mut argv: Vec<Val> = vec![cursor_val];
-        if let Some(n) = limit {
-            argv.push(Val::Int(n));
-        }
-        Self::collect_cursor(&argv, ctx)
-    }
-
-    fn collect_cursor(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        let (cid, limit) = match args {
-            [Val::StreamCursor(c)] => (c.id, None),
-            [Val::StreamCursor(c), n] => (c.id, Some(extract_int(n)?)),
-            _ => return Err(anyhow!("collect(cursor[, n]) expects cursor as first argument")),
-        };
-        let cursor_arc = CURSORS
-            .get(&cid)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| anyhow!("Cursor not found: {}", cid))?;
-        let mut out: Vec<Val> = Vec::new();
-        let mut taken: i64 = 0;
-        loop {
-            if let Some(max) = limit
-                && taken >= max
-            {
-                break;
-            }
-            let next_opt = {
-                let mut locked = cursor_arc.lock().map_err(|_| anyhow!("cursor mutex poisoned"))?;
-                locked.next(ctx)?
-            };
-            match next_opt {
-                Some(v) => {
-                    out.push(v);
-                    taken += 1;
-                }
-                None => break,
-            }
-        }
-        Ok(Val::List(Arc::new(out)))
-    }
-
-    fn next_block_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::next_block(args.as_slice(), ctx)
-    }
-
-    fn next_block(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        use std::time::Duration;
-        let (cid, timeout_ms) = match args {
-            [Val::StreamCursor(c)] => (c.id, None),
-            [Val::StreamCursor(c), Val::Int(ms)] => (c.id, Some(*ms)),
-            _ => {
-                return Err(anyhow!(
-                    "next_block(cursor[, timeout_ms]) expects cursor as first argument"
-                ));
-            }
-        };
-        let info = CURSOR_INFO
-            .get(&cid)
-            .map(|entry| entry.value().clone())
-            .unwrap_or_default();
-        if let Some(ch_id) = info.channel_id {
-            let res = rt::with_runtime(|rt| match timeout_ms {
-                Some(ms) if ms > 0 => {
-                    let fut = rt.recv_async(ch_id);
-                    let res =
-                        rt.block_on(async move { tokio::time::timeout(Duration::from_millis(ms as u64), fut).await });
-                    match res {
-                        Ok(Ok((ok, val))) => Ok(Val::List(vec![Val::Bool(ok), val].into())),
-                        Ok(Err(e)) => Err(e),
-                        Err(_elapsed) => Ok(Val::List(vec![Val::Bool(false), Val::Nil].into())),
-                    }
-                }
-                _ => {
-                    let (ok, val) = rt.block_on(rt.recv_async(ch_id))?;
-                    Ok(Val::List(vec![Val::Bool(ok), val].into()))
-                }
-            })?;
-            Ok(res)
-        } else {
-            // Fallback for non-channel cursors
-            Self::next(args, ctx)
-        }
-    }
-
-    fn collect_block_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::collect_block(args.as_slice(), ctx)
-    }
-
-    fn collect_block(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        // Forms:
-        // - collect_block(stream)
-        // - collect_block(stream, n)
-        // - collect_block(stream, n, timeout_ms)
-        // - collect_block(cursor)
-        // - collect_block(cursor, n)
-        // - collect_block(cursor, n, timeout_ms)
-        let (cursor_id, need_drop_cursor, limit, timeout_ms) = match args {
-            [Val::Stream(stream)] => {
-                let c = Self::create_cursor(stream.id)?;
-                let cid = match &c {
-                    Val::StreamCursor(cur) => cur.id,
-                    _ => unreachable!(),
-                };
-                (cid, Some(c), None, None)
-            }
-            [Val::Stream(stream), n] => {
-                let c = Self::create_cursor(stream.id)?;
-                let cid = match &c {
-                    Val::StreamCursor(cur) => cur.id,
-                    _ => unreachable!(),
-                };
-                (cid, Some(c), Some(extract_int(n)?), None)
-            }
-            [Val::Stream(stream), n, Val::Int(ms)] => {
-                let c = Self::create_cursor(stream.id)?;
-                let cid = match &c {
-                    Val::StreamCursor(cur) => cur.id,
-                    _ => unreachable!(),
-                };
-                (cid, Some(c), Some(extract_int(n)?), Some(*ms))
-            }
-            [Val::StreamCursor(cur)] => (cur.id, None, None, None),
-            [Val::StreamCursor(cur), n] => (cur.id, None, Some(extract_int(n)?), None),
-            [Val::StreamCursor(cur), n, Val::Int(ms)] => (cur.id, None, Some(extract_int(n)?), Some(*ms)),
-            _ => return Err(anyhow!("collect_block expects (stream|cursor[, n][, timeout_ms])")),
-        };
-
-        let info = CURSOR_INFO
-            .get(&cursor_id)
-            .map(|entry| entry.value().clone())
-            .unwrap_or_default();
-
-        let cursor_arc = CURSORS
-            .get(&cursor_id)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| anyhow!("Cursor not found: {}", cursor_id))?;
-
-        let mut out: Vec<Val> = Vec::new();
-        let mut taken: i64 = 0;
-
-        if let Some(ch_id) = info.channel_id {
-            use std::time::Duration;
-            rt::with_runtime(|rt| {
-                loop {
-                    if let Some(max) = limit
-                        && taken >= max
-                    {
-                        break;
-                    }
-                    let res = match timeout_ms {
-                        Some(ms) if ms > 0 => {
-                            let fut = rt.recv_async(ch_id);
-                            match rt.block_on(async move {
-                                tokio::time::timeout(Duration::from_millis(ms as u64), fut).await
-                            }) {
-                                Ok(Ok((ok, val))) => Some((ok, val)),
-                                Ok(Err(e)) => return Err(e),
-                                Err(_elapsed) => None, // timeout for this item
-                            }
-                        }
-                        _ => Some(rt.block_on(rt.recv_async(ch_id))?),
-                    };
-                    match res {
-                        Some((true, v)) => {
-                            out.push(v);
-                            taken += 1;
-                        }
-                        Some((false, _)) => break, // channel closed
-                        None => break,             // timeout
-                    }
-                }
-                Ok(())
-            })?;
-        } else {
-            // Non-channel cursor: behave like non-blocking collect
-            loop {
-                if let Some(max) = limit
-                    && taken >= max
-                {
-                    break;
-                }
-                let next_opt = {
-                    let mut locked = cursor_arc.lock().map_err(|_| anyhow!("cursor mutex poisoned"))?;
-                    locked.next(ctx)?
-                };
-                match next_opt {
-                    Some(v) => {
-                        out.push(v);
-                        taken += 1;
-                    }
-                    None => break,
-                }
-            }
-        }
-
-        // need_drop_cursor is not used beyond lifetime tracking; cursor will drop at end of scope
-        let _ = need_drop_cursor;
-        Ok(Val::List(Arc::new(out)))
-    }
-
-    fn to_stream(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        match args {
-            [Val::List(_)] => Self::from_list(args, ctx),
-            _ => Err(anyhow!("to_stream expects list as receiver")),
-        }
-    }
-
-    fn to_stream_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::to_stream(args.as_slice(), ctx)
-    }
+fn create_cursor(stream_id: u64, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    let spec = get_stream_spec(stream_id)?;
+    let cursor = spec.open_cursor();
+    let id = NEXT_CURSOR_ID.fetch_add(1, Ordering::Relaxed);
+    CURSORS.insert(id, Arc::new(Mutex::new(cursor)));
+    let channel_id = match spec.as_ref() {
+        StreamSpec::FromChannel { channel_id } => Some(*channel_id),
+        _ => None,
+    };
+    CURSOR_INFO.insert(id, CursorInfo { channel_id });
+    Ok(RuntimeVal::Obj(heap.alloc(HeapValue::StreamCursor(Arc::new(
+        StreamCursorValue { id, stream_id },
+    )))))
 }
 
 fn get_stream_spec(id: u64) -> Result<Arc<StreamSpec>> {
@@ -826,24 +542,294 @@ fn get_stream_spec(id: u64) -> Result<Arc<StreamSpec>> {
         .ok_or_else(|| anyhow!("Stream not found: {}", id))
 }
 
-fn extract_int(val: &Val) -> Result<i64> {
-    match val {
-        Val::Int(i) => Ok(*i),
-        _ => Err(anyhow!("Expected integer, got {:?}", val)),
+fn next_cursor(cursor_id: u64, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let cursor = cursor_handle(cursor_id)?;
+    let value = {
+        let mut guard = cursor.lock().map_err(|_| anyhow!("cursor mutex poisoned"))?;
+        guard.next(runtime)?
+    };
+    match value {
+        Some(value) => runtime_list(vec![RuntimeVal::Bool(true), value], runtime.heap_mut()),
+        None => runtime_list(vec![RuntimeVal::Bool(false), RuntimeVal::Nil], runtime.heap_mut()),
     }
 }
 
-impl Module for StreamModule {
-    fn name(&self) -> &str {
-        "stream"
+fn collect_cursor(cursor_id: u64, limit: Option<i64>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let cursor = cursor_handle(cursor_id)?;
+    let mut out = Vec::new();
+    let mut taken = 0i64;
+    loop {
+        if let Some(limit) = limit
+            && taken >= limit
+        {
+            break;
+        }
+        let value = {
+            let mut guard = cursor.lock().map_err(|_| anyhow!("cursor mutex poisoned"))?;
+            guard.next(runtime)?
+        };
+        let Some(value) = value else {
+            break;
+        };
+        out.push(value);
+        taken += 1;
     }
-    fn description(&self) -> &str {
-        "Lazy, cold stream utilities (multi-consumer)"
+    runtime_list(out, runtime.heap_mut())
+}
+
+fn next_block_cursor(cursor_id: u64, timeout_ms: Option<i64>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let info = CURSOR_INFO
+        .get(&cursor_id)
+        .map(|entry| entry.value().clone())
+        .unwrap_or_default();
+    let Some(channel_id) = info.channel_id else {
+        return next_cursor(cursor_id, runtime);
+    };
+    let (ok, value) = recv_channel_blocking(channel_id, timeout_ms)?;
+    let value = val_to_runtime_val(&value, runtime.heap_mut())?;
+    runtime_list(vec![RuntimeVal::Bool(ok), value], runtime.heap_mut())
+}
+
+fn collect_block_cursor(
+    cursor_id: u64,
+    limit: Option<i64>,
+    timeout_ms: Option<i64>,
+    runtime: &mut NativeRuntime32<'_>,
+) -> Result<RuntimeVal> {
+    let info = CURSOR_INFO
+        .get(&cursor_id)
+        .map(|entry| entry.value().clone())
+        .unwrap_or_default();
+    let Some(channel_id) = info.channel_id else {
+        return collect_cursor(cursor_id, limit, runtime);
+    };
+    let mut out = Vec::new();
+    let mut taken = 0i64;
+    loop {
+        if let Some(limit) = limit
+            && taken >= limit
+        {
+            break;
+        }
+        let Some((ok, value)) = recv_channel_blocking_optional(channel_id, timeout_ms)? else {
+            break;
+        };
+        if !ok {
+            break;
+        }
+        out.push(val_to_runtime_val(&value, runtime.heap_mut())?);
+        taken += 1;
     }
-    fn register(&self, _registry: &mut module::ModuleRegistry) -> Result<()> {
+    runtime_list(out, runtime.heap_mut())
+}
+
+fn recv_channel_blocking(channel_id: u64, timeout_ms: Option<i64>) -> Result<(bool, Val)> {
+    Ok(recv_channel_blocking_optional(channel_id, timeout_ms)?.unwrap_or((false, Val::Nil)))
+}
+
+fn recv_channel_blocking_optional(channel_id: u64, timeout_ms: Option<i64>) -> Result<Option<(bool, Val)>> {
+    use std::time::Duration;
+    let value = rt::with_runtime(|runtime| match timeout_ms {
+        Some(ms) if ms > 0 => {
+            let future = runtime.recv_async(channel_id);
+            match runtime.block_on(async move { tokio::time::timeout(Duration::from_millis(ms as u64), future).await })
+            {
+                Ok(result) => result.map(Some),
+                Err(_) => Ok(None),
+            }
+        }
+        _ => runtime.block_on(runtime.recv_async(channel_id)).map(Some),
+    })?;
+    Ok(value)
+}
+
+fn cursor_handle(cursor_id: u64) -> Result<CursorHandle> {
+    CURSORS
+        .get(&cursor_id)
+        .map(|entry| entry.value().clone())
+        .ok_or_else(|| anyhow!("Cursor not found: {}", cursor_id))
+}
+
+fn cursor_and_limit(
+    values: &[RuntimeVal],
+    runtime: &mut NativeRuntime32<'_>,
+    context: &str,
+) -> Result<(u64, Option<i64>)> {
+    match values {
+        [value] if is_stream(value, &runtime.state.heap) => {
+            let cursor = create_cursor(stream_id_arg(value, &runtime.state.heap, context)?, runtime.heap_mut())?;
+            Ok((cursor_id_arg(&cursor, &runtime.state.heap, context)?, None))
+        }
+        [value, limit] if is_stream(value, &runtime.state.heap) => {
+            let cursor = create_cursor(stream_id_arg(value, &runtime.state.heap, context)?, runtime.heap_mut())?;
+            Ok((
+                cursor_id_arg(&cursor, &runtime.state.heap, context)?,
+                Some(int_arg(limit, "stream.collect limit")?),
+            ))
+        }
+        [value] if is_cursor(value, &runtime.state.heap) => {
+            Ok((cursor_id_arg(value, &runtime.state.heap, context)?, None))
+        }
+        [value, limit] if is_cursor(value, &runtime.state.heap) => Ok((
+            cursor_id_arg(value, &runtime.state.heap, context)?,
+            Some(int_arg(limit, "stream.collect limit")?),
+        )),
+        _ => bail!("{context} expects (stream|cursor[, n])"),
+    }
+}
+
+fn cursor_limit_timeout(
+    values: &[RuntimeVal],
+    runtime: &mut NativeRuntime32<'_>,
+    context: &str,
+) -> Result<(u64, Option<i64>, Option<i64>)> {
+    let (cursor_id, limit) = cursor_and_limit(values.get(..values.len().min(2)).unwrap_or(values), runtime, context)?;
+    let timeout_ms = match values.get(2) {
+        Some(value) => Some(int_arg(value, "stream.collect_block timeout_ms")?),
+        None => None,
+    };
+    if values.len() > 3 {
+        bail!("{context} expects (stream|cursor[, n][, timeout_ms])");
+    }
+    Ok((cursor_id, limit, timeout_ms))
+}
+
+fn stream_id_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<u64> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} must be a Stream");
+    };
+    match heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+    {
+        HeapValue::Stream(stream) => Ok(stream.id),
+        other => Err(anyhow!("{context} must be a Stream, got {}", other.type_name())),
+    }
+}
+
+fn cursor_id_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<u64> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} must be a StreamCursor");
+    };
+    match heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+    {
+        HeapValue::StreamCursor(cursor) => Ok(cursor.id),
+        other => Err(anyhow!("{context} must be a StreamCursor, got {}", other.type_name())),
+    }
+}
+
+fn channel_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Arc<lk_core::val::ChannelValue>> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} must be a Channel");
+    };
+    match heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+    {
+        HeapValue::Channel(channel) => Ok(channel.clone()),
+        other => Err(anyhow!("{context} must be a Channel, got {}", other.type_name())),
+    }
+}
+
+fn is_stream(value: &RuntimeVal, heap: &HeapStore) -> bool {
+    matches!(value, RuntimeVal::Obj(handle) if matches!(heap.get(*handle), Some(HeapValue::Stream(_))))
+}
+
+fn is_cursor(value: &RuntimeVal, heap: &HeapStore) -> bool {
+    matches!(value, RuntimeVal::Obj(handle) if matches!(heap.get(*handle), Some(HeapValue::StreamCursor(_))))
+}
+
+fn list_items(value: &RuntimeVal, heap: &mut HeapStore, context: &str) -> Result<Vec<RuntimeVal>> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} must be a List");
+    };
+    let value = heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        .clone();
+    match value {
+        HeapValue::List(list) => Ok(list.materialize_mixed(heap)),
+        other => Err(anyhow!("{context} must be a List, got {}", other.type_name())),
+    }
+}
+
+fn runtime_list(values: Vec<RuntimeVal>, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    Ok(RuntimeVal::Obj(
+        heap.alloc(HeapValue::List(TypedList::from_runtime_values(values, heap))),
+    ))
+}
+
+fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
+    match value {
+        RuntimeVal::Int(value) => Ok(*value),
+        _ => Err(anyhow!("{context} must be an integer")),
+    }
+}
+
+fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
         Ok(())
+    } else {
+        Err(anyhow!(
+            "{name} expects exactly {expected} argument{}",
+            if expected == 1 { "" } else { "s" }
+        ))
     }
-    fn exports(&self) -> HashMap<String, Val> {
-        self.functions.clone()
+}
+
+fn truthy(value: &RuntimeVal) -> bool {
+    !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
+}
+
+fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, context: &str) -> Result<()> {
+    runtime_callable(value, runtime, context).map(|_| ())
+}
+
+fn call_runtime_callable_value(
+    callable: &RuntimeVal,
+    args: &[RuntimeVal],
+    runtime: &mut NativeRuntime32<'_>,
+    context: &str,
+) -> Result<RuntimeVal> {
+    let callable = runtime_callable(callable, runtime, context)?;
+    call_runtime_callable32_runtime(
+        &callable,
+        NativeArgs32::new(args),
+        &mut runtime.state.heap,
+        runtime.ctx.as_deref_mut(),
+    )
+}
+
+fn runtime_callable(
+    value: &RuntimeVal,
+    runtime: &NativeRuntime32<'_>,
+    context: &str,
+) -> Result<lk_core::vm::RuntimeCallable32> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} must be a runtime callable");
+    };
+    let callable = runtime
+        .state
+        .heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+    match callable {
+        HeapValue::Callable(CallableValue::Runtime32(function)) => Ok(function.as_ref().clone()),
+        HeapValue::Callable(CallableValue::Closure { .. }) => {
+            let module = runtime
+                .module
+                .as_ref()
+                .ok_or_else(|| anyhow!("{context} requires Module32 execution context"))?;
+            runtime_value_to_callable32(
+                value,
+                &runtime.state.heap,
+                &runtime.state.globals,
+                Arc::new((*module).clone()),
+            )
+            .ok_or_else(|| anyhow!("{context} closure could not be materialized"))
+        }
+        _ => bail!("{context} must be a runtime callable"),
     }
 }

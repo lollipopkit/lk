@@ -138,62 +138,6 @@ mod tests {
         assert_eq!(file, main.canonicalize().expect("canonical main"));
     }
 
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn default_executable_path_uses_target_platform_extension() {
-        let source = Path::new("apps/demo/src/main.lk");
-
-        assert_eq!(
-            default_executable_path(source, Some("aarch64-apple-darwin")),
-            PathBuf::from("apps/demo/src/main")
-        );
-        assert_eq!(
-            default_executable_path(source, Some("x86_64-unknown-linux-gnu")),
-            PathBuf::from("apps/demo/src/main.elf")
-        );
-        assert_eq!(
-            default_executable_path(source, Some("x86_64-pc-windows-msvc")),
-            PathBuf::from("apps/demo/src/main.exe")
-        );
-        assert_eq!(
-            default_executable_path(source, Some("wasm32-unknown-unknown")),
-            PathBuf::from("apps/demo/src/main.out")
-        );
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn default_executable_path_uses_host_platform_without_target_triple() {
-        let source = Path::new("main.lk");
-        let path = default_executable_path(source, None);
-
-        if cfg!(windows) {
-            assert_eq!(path, PathBuf::from("main.exe"));
-        } else if cfg!(target_os = "macos") {
-            assert_eq!(path, PathBuf::from("main"));
-        } else if cfg!(unix) {
-            assert_eq!(path, PathBuf::from("main.elf"));
-        } else {
-            assert_eq!(path, PathBuf::from("main.out"));
-        }
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn compile_exe_defaults_to_release_runtime() {
-        assert_eq!(default_runtime_profile_for_exe(), RuntimeProfile::Release);
-        assert!(default_runtime_profile_for_exe().use_release());
-        assert_eq!(default_runtime_profile_for_exe().label(), "release");
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn strip_is_limited_to_host_target() {
-        assert!(should_strip_executable(None));
-        assert!(!should_strip_executable(Some("aarch64-apple-darwin")));
-        assert!(!should_strip_executable(Some("x86_64-unknown-linux-gnu")));
-    }
-
     #[test]
     fn test_split_compile_args_defaults_to_single_workspace_app() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -241,43 +185,6 @@ mod tests {
         let err = split_compile_args_with_cwd(&[], temp.path()).expect_err("workspace root has multiple entries");
 
         assert!(err.to_string().contains("multiple workspace app entries"));
-    }
-
-    #[cfg(feature = "llvm")]
-    #[test]
-    fn runtime_init_plan_embeds_assets() {
-        let module_ir = "define i64 @lk_entry() { ret i64 0 }\n";
-        let search_paths = vec!["examples".to_string()];
-        let imports_json = Some("[{\"File\":{\"path\":\"examples/fib.lk\"}}]".to_string());
-        let modules = vec![EncodedBundledModule {
-            path: "examples/fib.lk".to_string(),
-            bytes: b"LKB".to_vec(),
-        }];
-
-        let plan = build_runtime_init_plan(
-            module_ir,
-            &search_paths,
-            imports_json.as_deref(),
-            None,
-            &modules,
-            &[],
-            false,
-        );
-
-        assert!(
-            plan.declarations
-                .iter()
-                .any(|decl| decl.contains("lk_rt_begin_session"))
-        );
-        assert!(plan.globals.iter().any(|g| g.contains("@.lk_path.0")));
-        assert!(plan.globals.iter().any(|g| g.contains("@.lk_mod_blob.0")));
-        assert!(plan.body_lines.first().unwrap().contains("lk_rt_begin_session"));
-        assert!(
-            plan.body_lines
-                .iter()
-                .any(|line| line.contains("lk_rt_register_bundled_module"))
-        );
-        assert!(plan.body_lines.last().unwrap().contains("lk_rt_apply_imports"));
     }
 
     #[cfg(not(feature = "llvm"))]

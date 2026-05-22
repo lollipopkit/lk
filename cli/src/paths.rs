@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context;
-use clap::ValueEnum;
 use lk_core::package::{MANIFEST_FILE, Manifest};
 use lk_core::stmt::{Program, stmt_parser::StmtParser};
 use lk_core::token::Tokenizer;
@@ -69,7 +68,7 @@ pub(crate) fn split_compile_args_with_cwd(
                     args[0]
                 );
             }
-            if let Ok(mode) = CompileMode::from_str(&args[0], true) {
+            if let Some(mode) = parse_compile_mode(&args[0])? {
                 return Ok((Some(mode), default_compile_entry(cwd)?));
             }
             Ok((None, sanitize_path(&args[0])?))
@@ -82,12 +81,31 @@ pub(crate) fn split_compile_args_with_cwd(
                     args[0]
                 );
             }
-            let mode = CompileMode::from_str(&args[0], true)
-                .map_err(|_| anyhow::anyhow!("Unknown compile target '{}'", args[0]))?;
+            let mode =
+                parse_compile_mode(&args[0])?.ok_or_else(|| anyhow::anyhow!("Unknown compile target '{}'", args[0]))?;
             let file = sanitize_path(&args[1])?;
             Ok((Some(mode), file))
         }
         _ => anyhow::bail!("compile requires [FILE] or [TARGET FILE]"),
+    }
+}
+
+fn parse_compile_mode(raw: &str) -> anyhow::Result<Option<CompileMode>> {
+    let target = raw.to_ascii_lowercase();
+    match target.as_str() {
+        "lkb" | "bytecode" => anyhow::bail!(
+            "LKB/bytecode output has been removed during the Instr32 VM migration; use the new module format when it lands"
+        ),
+        #[cfg(feature = "llvm")]
+        "llvm" => Ok(Some(CompileMode::Llvm)),
+        #[cfg(feature = "llvm")]
+        "exe" => Ok(Some(CompileMode::Exe)),
+        #[cfg(not(feature = "llvm"))]
+        "llvm" | "exe" => anyhow::bail!(
+            "LLVM backend disabled at build time; rebuild with `--features llvm` to use '{}' target",
+            raw
+        ),
+        _ => Ok(None),
     }
 }
 

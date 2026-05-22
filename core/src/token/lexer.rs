@@ -926,8 +926,7 @@ impl<'a> Tokenizer<'a> {
             '+' => {
                 let next = self.chars.get(self.idx + 1);
                 if let Some(&c) = next {
-                    // Treat '+<digits>' or '+.<digits>' as a signed number regardless of context
-                    if c.is_ascii_digit() || c == '.' {
+                    if self.signed_number_can_start() && (c.is_ascii_digit() || c == '.') {
                         return self.parse_num();
                     }
                 }
@@ -946,8 +945,7 @@ impl<'a> Tokenizer<'a> {
             '-' => {
                 let next = self.chars.get(self.idx + 1);
                 if let Some(&c) = next {
-                    // Treat '-<digits>' or '-.<digits>' as a signed number regardless of context
-                    if c.is_ascii_digit() || c == '.' {
+                    if self.signed_number_can_start() && (c.is_ascii_digit() || c == '.') {
                         return self.parse_num();
                     }
                 }
@@ -1150,6 +1148,57 @@ impl<'a> Tokenizer<'a> {
                 | '!'
                 | '>'
                 | '<'
+        )
+    }
+
+    fn signed_number_can_start(&self) -> bool {
+        let Some(previous) = self.tokens.last() else {
+            return true;
+        };
+        matches!(
+            previous,
+            Token::LParen
+                | Token::LBrace
+                | Token::LBracket
+                | Token::Comma
+                | Token::Colon
+                | Token::Semicolon
+                | Token::Assign
+                | Token::AddAssign
+                | Token::SubAssign
+                | Token::MulAssign
+                | Token::DivAssign
+                | Token::ModAssign
+                | Token::Eq
+                | Token::Ne
+                | Token::Gt
+                | Token::Lt
+                | Token::Ge
+                | Token::Le
+                | Token::In
+                | Token::And
+                | Token::Or
+                | Token::BitAnd
+                | Token::Not
+                | Token::Add
+                | Token::Sub
+                | Token::Mul
+                | Token::Div
+                | Token::Mod
+                | Token::Arrow
+                | Token::LeftArrow
+                | Token::NullishCoalescing
+                | Token::Range
+                | Token::RangeInclusive
+                | Token::If
+                | Token::While
+                | Token::Let
+                | Token::Const
+                | Token::Return
+                | Token::For
+                | Token::Case
+                | Token::Default
+                | Token::Question
         )
     }
 }

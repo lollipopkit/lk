@@ -20,20 +20,6 @@ pub const BOOL_FALSE_VALUE: i64 = i64::MIN + 1;
 /// Encoded value representing boolean `true`.
 pub const BOOL_TRUE_VALUE: i64 = i64::MIN + 2;
 
-/// LLVM IR literal for `nil`.
-pub const NIL_LITERAL: &str = "-9223372036854775808";
-
-/// LLVM IR literal for boolean `false`.
-pub const BOOL_FALSE_LITERAL: &str = "-9223372036854775807";
-
-/// LLVM IR literal for boolean `true`.
-pub const BOOL_TRUE_LITERAL: &str = "-9223372036854775806";
-
-#[inline]
-pub const fn bool_literal(value: bool) -> &'static str {
-    if value { BOOL_TRUE_LITERAL } else { BOOL_FALSE_LITERAL }
-}
-
 /// Returns `true` when the encoded value lies inside the reserved sentinel range.
 #[inline]
 pub const fn is_reserved_sentinel(value: i64) -> bool {

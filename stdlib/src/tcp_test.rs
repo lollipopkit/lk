@@ -1,75 +1,71 @@
 #[cfg(test)]
 mod tests {
     use crate::tcp::TcpModule;
-    use lk_core::{module::Module, stmt::ModuleResolver, val::NativeArgs, val::Val, vm::VmContext};
-    use std::sync::Arc;
+    use anyhow::{Result, anyhow, bail};
+    use lk_core::{
+        module::Module,
+        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, Val},
+        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
+    };
 
-    fn create_test_env() -> VmContext {
-        VmContext::new().with_resolver(Arc::new(ModuleResolver::new()))
+    fn tcp_native(name: &str) -> Result<(u16, NativeFunction32)> {
+        let exports = TcpModule::new().exports();
+        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
+        let Val::Obj(object) = value else {
+            bail!("{name} must be a heap callable");
+        };
+        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
+            bail!("{name} must be RuntimeNative32");
+        };
+        Ok((*arity, function.clone()))
+    }
+
+    fn call(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {
+        let (_, function) = tcp_native(name)?;
+        let NativeFunction32::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative32");
+        };
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let mut runtime = NativeRuntime32 {
+            state: &mut state,
+            ctx: None,
+            module: None,
+        };
+        function(NativeArgs32::new(args), &mut runtime)
     }
 
     #[test]
-    fn test_tcp_module_creation() {
+    fn test_tcp_module_creation() -> Result<()> {
         let tcp_module = TcpModule::new();
         assert_eq!(tcp_module.name(), "tcp");
 
         let exports = tcp_module.exports();
-        assert!(exports.contains_key("connect"));
-        assert!(exports.contains_key("bind"));
-        assert!(exports.contains_key("close"));
-        assert!(exports.contains_key("read"));
-        assert!(exports.contains_key("write"));
-        assert!(exports.contains_key("accept"));
+        for name in ["connect", "bind", "close", "read", "write", "accept"] {
+            assert!(exports.contains_key(name));
+            let (_, function) = tcp_native(name)?;
+            assert!(matches!(function, NativeFunction32::Plain(_)));
+        }
+        Ok(())
     }
 
     #[test]
     fn test_tcp_connect_requires_args() {
-        let tcp_module = TcpModule::new();
-        let exports = tcp_module.exports();
-        let connect_fn = exports.get("connect").unwrap();
-        let mut env = create_test_env();
-
-        // Test with no arguments
-        let result = match connect_fn {
-            Val::RustFastFunction(f) => f(NativeArgs::new(&[]), &mut env),
-            _ => panic!("Expected RustFastFunction"),
-        };
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("requires 2 arguments"));
+        let err = call("connect", &[]).expect_err("connect arity should fail");
+        assert!(err.to_string().contains("requires 2 arguments"));
     }
 
     #[test]
     fn test_tcp_bind_requires_args() {
-        let tcp_module = TcpModule::new();
-        let exports = tcp_module.exports();
-        let bind_fn = exports.get("bind").unwrap();
-        let mut env = create_test_env();
-
-        // Test with no arguments
-        let result = match bind_fn {
-            Val::RustFastFunction(f) => f(NativeArgs::new(&[]), &mut env),
-            _ => panic!("Expected RustFastFunction"),
-        };
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("requires 2 arguments"));
+        let err = call("bind", &[]).expect_err("bind arity should fail");
+        assert!(err.to_string().contains("requires 2 arguments"));
     }
 
     #[test]
     fn test_tcp_close_requires_args() {
-        let tcp_module = TcpModule::new();
-        let exports = tcp_module.exports();
-        let close_fn = exports.get("close").unwrap();
-        let mut env = create_test_env();
-
-        // Test with no arguments
-        let result = match close_fn {
-            Val::RustFastFunction(f) => f(NativeArgs::new(&[]), &mut env),
-            _ => panic!("Expected RustFastFunction"),
-        };
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("requires 1 argument"));
+        let err = call("close", &[]).expect_err("close arity should fail");
+        assert!(err.to_string().contains("requires 1 argument"));
     }
 }

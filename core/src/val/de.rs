@@ -61,7 +61,7 @@ impl<'de> Visitor<'de> for ValVisitor {
         while let Some(elem) = seq.next_element::<Val>()? {
             elements.push(elem);
         }
-        Ok(Val::List(Arc::from(elements)))
+        Ok(Val::list(Arc::from(elements)))
     }
 
     fn visit_map<M>(self, mut map_access: M) -> Result<Val, M::Error>
@@ -73,7 +73,7 @@ impl<'de> Visitor<'de> for ValVisitor {
         while let Some((key, value)) = map_access.next_entry::<String, Val>()? {
             map.insert(Val::intern_str(key.as_str()), value);
         }
-        Ok(Val::Map(Arc::new(map)))
+        Ok(Val::map(Arc::new(map)))
     }
 }
 

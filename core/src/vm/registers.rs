@@ -85,10 +85,6 @@ fn copy_value_for_register_with_metric_gate(value: &Val, metric: VmValueCopyMetr
         Val::Int(value) => Val::Int(*value),
         Val::Float(value) => Val::Float(*value),
         Val::Bool(value) => Val::Bool(*value),
-        Val::RustFunction(value) => Val::RustFunction(*value),
-        Val::RustFastFunction(value) => Val::RustFastFunction(*value),
-        Val::RustFastFunctionNamed(value) => Val::RustFastFunctionNamed(*value),
-        Val::RustFunctionNamed(value) => Val::RustFunctionNamed(*value),
         Val::Nil => Val::Nil,
         value => copy_heap_value_for_register_with_metric_gate(value, metric, collect_metrics),
     }
@@ -101,18 +97,8 @@ fn copy_heap_value_for_register_with_metric_gate(value: &Val, metric: VmValueCop
         record_val_clone(true);
     }
     match value {
-        Val::Str(value) => Val::Str(value.clone()),
-        Val::Map(value) => Val::Map(value.clone()),
-        Val::List(value) => Val::List(value.clone()),
-        Val::Closure(value) => Val::Closure(value.clone()),
-        Val::AotFunction(value) => Val::AotFunction(value.clone()),
-        Val::Task(value) => Val::Task(value.clone()),
-        Val::Channel(value) => Val::Channel(value.clone()),
-        Val::Stream(value) => Val::Stream(value.clone()),
-        Val::Iterator(value) => Val::Iterator(value.clone()),
-        Val::MutationGuard(value) => Val::MutationGuard(value.clone()),
-        Val::StreamCursor(value) => Val::StreamCursor(value.clone()),
-        Val::Object(value) => Val::Object(value.clone()),
+        value if value.as_map().is_some() => Val::map(value.as_map().expect("checked map").clone()),
+        Val::Obj(value) => Val::Obj(value.clone()),
         _ => unreachable!("copy_heap_value_for_register_with_metric only accepts heap-backed values"),
     }
 }
@@ -236,7 +222,7 @@ pub(crate) fn move_register_value(regs: &mut [Val], idx: usize) -> Val {
 #[cfg(test)]
 mod tests {
     use crate::val::Val;
-    use crate::vm::{vm_runtime_metrics_reset, vm_runtime_metrics_snapshot};
+    use crate::vm::analysis::{vm_runtime_metrics_reset, vm_runtime_metrics_snapshot};
 
     use super::{
         copy_call_arg_value_for_register, copy_const_value_for_register, copy_container_value_for_register,

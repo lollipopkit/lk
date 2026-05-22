@@ -1,155 +1,13 @@
-use anyhow::Result;
-use lk_core::{
-    module::Module,
-    val::{NativeArgs, Val},
-    vm::VmContext,
-};
 use std::collections::HashMap;
-use std::sync::Arc;
 
-#[derive(Debug, Clone)]
-struct EnvObject;
+use anyhow::{Result, anyhow, bail};
+use lk_core::{
+    module::{Module, ModuleRegistry},
+    val::{HeapValue, RuntimeVal, TypedList, Val},
+    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+};
 
-impl EnvObject {
-    fn create() -> Val {
-        let mut methods = HashMap::new();
-        methods.insert("get".to_string(), Val::RustFastFunction(Self::get));
-        methods.insert("set".to_string(), Val::RustFastFunction(Self::set));
-        methods.insert("unset".to_string(), Val::RustFastFunction(Self::unset));
-        methods.into()
-    }
-
-    fn get(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 && args.len() != 2 {
-            return Err(anyhow::anyhow!(
-                "env.get() takes 1 or 2 arguments: variable_name [, default_value]"
-            ));
-        }
-        let args = args.as_slice();
-
-        let var_name = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("first argument must be a string"))?;
-
-        // Get default value if provided
-        let default_val = if args.len() == 2 {
-            match args[1].as_str() {
-                Some(s) => Some(s),
-                None if args[1] == Val::Nil => None,
-                None => return Err(anyhow::anyhow!("second argument must be a string or nil")),
-            }
-        } else {
-            None
-        };
-
-        match std::env::var_os(var_name) {
-            Some(value) => match value.into_string() {
-                Ok(value_str) => Ok(Val::from_str(&value_str)),
-                Err(_) => Ok(Val::Nil),
-            },
-            None => match default_val {
-                Some(default) => Ok(Val::from_str(default)),
-                None => Ok(Val::Nil),
-            },
-        }
-    }
-
-    fn set(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow::anyhow!(
-                "env.set() takes exactly 2 arguments: variable_name, value"
-            ));
-        }
-        let args = args.as_slice();
-
-        let var_name = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("first argument must be a string"))?;
-
-        let value = args[1]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("second argument must be a string"))?;
-
-        unsafe {
-            std::env::set_var(var_name, value);
-        }
-        Ok(Val::Bool(true))
-    }
-
-    fn unset(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow::anyhow!("env.unset() takes exactly 1 argument: variable_name"));
-        }
-        let args = args.as_slice();
-
-        let var_name = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("argument must be a string"))?;
-
-        unsafe {
-            std::env::remove_var(var_name);
-        }
-        Ok(Val::Bool(true))
-    }
-}
-
-struct DirObject;
-
-impl DirObject {
-    fn create() -> Val {
-        let mut methods = HashMap::new();
-        methods.insert("list".to_string(), Val::RustFastFunction(Self::list));
-        methods.insert("temp".to_string(), Val::RustFastFunction(Self::temp_dir));
-        methods.insert("current".to_string(), Val::RustFastFunction(Self::current_dir));
-        methods.into()
-    }
-
-    fn list(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow::anyhow!("dir.list() takes exactly 1 argument: path"));
-        }
-        let args = args.as_slice();
-
-        let path = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("argument must be a string"))?;
-
-        let mut entries = Vec::new();
-        match std::fs::read_dir(path) {
-            Ok(read_dir) => {
-                for entry in read_dir {
-                    match entry {
-                        Ok(dir_entry) => {
-                            if let Some(name) = dir_entry.file_name().to_str() {
-                                entries.push(Val::from_str(name))
-                            }
-                        }
-                        Err(_) => continue,
-                    }
-                }
-                Ok(Val::List(Arc::from(entries)))
-            }
-            Err(e) => Err(anyhow::anyhow!("failed to read directory: {}", e)),
-        }
-    }
-
-    fn temp_dir(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        Ok(match std::env::temp_dir().into_os_string().into_string() {
-            Ok(path) => Val::from_str(&path),
-            Err(_) => Val::Nil,
-        })
-    }
-
-    fn current_dir(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        Ok(match std::env::current_dir() {
-            Ok(path) => match path.into_os_string().into_string() {
-                Ok(path_str) => Val::from_str(&path_str),
-                Err(_) => Val::Nil,
-            },
-            Err(_) => Val::Nil,
-        })
-    }
-}
+use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
 pub struct OsModule {
@@ -166,206 +24,27 @@ impl OsModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
 
-        // Register os functions on the fast native ABI.
-        functions.insert("hostname".to_string(), Val::RustFastFunction(Self::hostname));
-        functions.insert("arch".to_string(), Val::RustFastFunction(Self::arch));
-        functions.insert("os".to_string(), Val::RustFastFunction(Self::os));
-        functions.insert("exit".to_string(), Val::RustFastFunction(Self::exit));
-        functions.insert("exec".to_string(), Val::RustFastFunction(Self::exec));
-        functions.insert("clock".to_string(), Val::RustFastFunction(Self::clock));
-        functions.insert("time".to_string(), Val::RustFastFunction(Self::time));
-        functions.insert("epoch".to_string(), Val::RustFastFunction(Self::epoch));
-
-        // Add env object
-        functions.insert("env".to_string(), EnvObject::create());
-
-        // Add dir object
-        functions.insert("dir".to_string(), DirObject::create());
+        register_native(&mut functions, "hostname", hostname32, 0);
+        register_native(&mut functions, "arch", arch32, 0);
+        register_native(&mut functions, "os", os32, 0);
+        register_native(&mut functions, "exit", exit32, lk_core::vm::NativeEntry32::VARIADIC);
+        register_native(&mut functions, "exec", exec32, lk_core::vm::NativeEntry32::VARIADIC);
+        register_native(&mut functions, "clock", clock32, 0);
+        register_native(&mut functions, "time", time32, 0);
+        register_native(&mut functions, "epoch", epoch32, 0);
+        register_native(
+            &mut functions,
+            "env_get",
+            env_get32,
+            lk_core::vm::NativeEntry32::VARIADIC,
+        );
+        register_native(&mut functions, "env_set", env_set32, 2);
+        register_native(&mut functions, "env_unset", env_unset32, 1);
+        register_native(&mut functions, "dir_list", dir_list32, 1);
+        register_native(&mut functions, "dir_temp", dir_temp32, 0);
+        register_native(&mut functions, "dir_current", dir_current32, 0);
 
         Self { functions }
-    }
-
-    /// Get CPU time in seconds (like Lua's os.clock())
-    fn clock(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        // Use a simple timing mechanism. For benchmark purposes,
-        // we return wall-clock elapsed since first call.
-        use std::sync::atomic::AtomicBool;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static START: AtomicU64 = AtomicU64::new(0);
-        static INIT: AtomicBool = AtomicBool::new(false);
-        if !INIT.swap(true, Ordering::SeqCst) {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            START.store(now, Ordering::SeqCst);
-        }
-        let start = START.load(Ordering::SeqCst);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        let elapsed_secs = (now.wrapping_sub(start) as f64) / 1_000_000_000.0;
-        Ok(Val::Float(elapsed_secs))
-    }
-
-    /// Get current time in seconds since epoch
-    fn time(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        let elapsed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        Ok(Val::Int(elapsed.as_secs() as i64))
-    }
-
-    /// Get current time in milliseconds since epoch
-    fn epoch(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        let elapsed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        Ok(Val::Int(elapsed.as_millis() as i64))
-    }
-
-    /// Get system hostname
-    fn hostname(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 0 {
-            return Err(anyhow::anyhow!("hostname() takes no arguments"));
-        }
-
-        match std::env::var_os("HOSTNAME") {
-            Some(hostname) => match hostname.into_string() {
-                Ok(hostname_str) => Ok(Val::from_str(&hostname_str)),
-                Err(_) => Ok(Val::from_str("localhost")),
-            },
-            None => match std::env::var_os("COMPUTERNAME") {
-                Some(hostname) => match hostname.into_string() {
-                    Ok(hostname_str) => Ok(Val::from_str(&hostname_str)),
-                    Err(_) => Ok(Val::from_str("localhost")),
-                },
-                None => Ok(Val::from_str("localhost")),
-            },
-        }
-    }
-
-    /// Get system architecture
-    fn arch(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 0 {
-            return Err(anyhow::anyhow!("arch() takes no arguments"));
-        }
-
-        Ok(Val::from_str(std::env::consts::ARCH))
-    }
-
-    /// Get operating system
-    fn os(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 0 {
-            return Err(anyhow::anyhow!("os() takes no arguments"));
-        }
-
-        Ok(Val::from_str(std::env::consts::OS))
-    }
-
-    /// Exit the program
-    fn exit(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() > 1 {
-            return Err(anyhow::anyhow!("exit() takes at most 1 argument: exit_code"));
-        }
-        let args = args.as_slice();
-
-        let exit_code = if args.is_empty() {
-            0
-        } else {
-            match &args[0] {
-                Val::Int(code) => *code as i32,
-                _ => return Err(anyhow::anyhow!("exit code must be an integer")),
-            }
-        };
-
-        std::process::exit(exit_code);
-    }
-
-    /// Execute an external command.
-    /// Usage:
-    /// - os.exec(cmd: String) -> String (stdout captured)
-    /// - os.exec(cmd: String, args: List<String>) -> String
-    /// - os.exec(cmd: String, stream: Bool) -> Stream (when true)
-    /// - os.exec(cmd: String, args: List<String>, stream: Bool) -> Stream
-    fn exec(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        use anyhow::anyhow;
-        use std::process::{Command, Stdio};
-
-        if args.len() == 0 || args.len() > 3 {
-            return Err(anyhow!("exec() expects 1-3 arguments: cmd[, args_list][, stream_bool]"));
-        }
-        let args = args.as_slice();
-
-        // cmd
-        let cmd = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow!("first argument (cmd) must be a string"))?;
-
-        // parse args list and stream flag
-        let mut argv: Vec<String> = Vec::new();
-        let mut stream = false;
-
-        if args.len() >= 2 {
-            match &args[1] {
-                Val::List(list) => {
-                    for v in list.iter() {
-                        match v.as_str() {
-                            Some(s) => argv.push(s.to_owned()),
-                            None => argv.push(v.to_string()),
-                        }
-                    }
-                }
-                Val::Bool(b) => {
-                    stream = *b;
-                }
-                _ => return Err(anyhow!("second argument must be args list or stream bool")),
-            }
-        }
-
-        if args.len() == 3 {
-            match &args[2] {
-                Val::Bool(b) => stream = *b,
-                _ => return Err(anyhow!("third argument must be a boolean (stream)")),
-            }
-        }
-
-        if stream {
-            // Synchronously capture stdout, split into lines, and expose as a Stream
-            let output = Command::new(cmd)
-                .args(&argv)
-                .stdout(Stdio::piped())
-                .output()
-                .map_err(|e| anyhow!("failed to execute '{}': {}", cmd, e))?;
-            let s = match String::from_utf8(output.stdout) {
-                Ok(s) => s,
-                Err(_) => return Ok(Val::Nil),
-            };
-            let mut items: Vec<Val> = Vec::new();
-            for mut line in s.lines().map(|x| x.to_string()) {
-                if line.ends_with('\r') {
-                    line.pop();
-                }
-                items.push(Val::from_str(&line));
-            }
-            let list_val = Val::List(items.into());
-            if let Some(to_stream) = lk_core::val::methods::find_method_for_val(&list_val, "to_stream") {
-                let res = to_stream.call(&[list_val], ctx)?;
-                return Ok(res);
-            }
-            return Ok(list_val);
-        }
-
-        // Non-streaming: capture stdout fully
-        let output = Command::new(cmd)
-            .args(&argv)
-            .output()
-            .map_err(|e| anyhow!("failed to execute '{}': {}", cmd, e))?;
-        match String::from_utf8(output.stdout) {
-            Ok(s) => Ok(Val::from_str(&s)),
-            Err(_) => Ok(Val::Nil),
-        }
     }
 }
 
@@ -378,11 +57,263 @@ impl Module for OsModule {
         "Operating system interface"
     }
 
-    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
+    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
         Ok(())
     }
 
     fn exports(&self) -> HashMap<String, Val> {
         self.functions.clone()
+    }
+}
+
+fn register_native(
+    functions: &mut HashMap<String, Val>,
+    name: &str,
+    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    arity: u16,
+) {
+    functions.insert(
+        name.to_string(),
+        Val::runtime_native32(NativeFunction32::Plain(function), arity),
+    );
+}
+
+fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        return Ok(());
+    }
+    bail!(
+        "{name}() takes exactly {expected} argument{}",
+        if expected == 1 { "" } else { "s" }
+    )
+}
+
+fn no_args(args: NativeArgs32<'_>, name: &str) -> Result<()> {
+    if args.len() == 0 {
+        Ok(())
+    } else {
+        bail!("{name}() takes no arguments")
+    }
+}
+
+fn int_arg(value: &RuntimeVal, name: &str) -> Result<i64> {
+    match value {
+        RuntimeVal::Int(value) => Ok(*value),
+        other => Err(anyhow!("{name} must be an integer, got {:?}", other.kind())),
+    }
+}
+
+fn bool_arg(value: &RuntimeVal, name: &str) -> Result<bool> {
+    match value {
+        RuntimeVal::Bool(value) => Ok(*value),
+        other => Err(anyhow!("{name} must be a boolean, got {:?}", other.kind())),
+    }
+}
+
+fn string_arg(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, name: &str) -> Result<String> {
+    Ok(runtime_string_arg(value, &runtime.state.heap, name)?.to_string())
+}
+
+fn optional_string_arg(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, name: &str) -> Result<Option<String>> {
+    if matches!(value, RuntimeVal::Nil) {
+        return Ok(None);
+    }
+    Ok(Some(string_arg(value, runtime, name)?))
+}
+
+fn hostname32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    no_args(args, "hostname")?;
+    let hostname = std::env::var_os("HOSTNAME")
+        .or_else(|| std::env::var_os("COMPUTERNAME"))
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(|| "localhost".to_string());
+    Ok(runtime_string_value(&hostname, runtime.heap_mut()))
+}
+
+fn arch32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    no_args(args, "arch")?;
+    Ok(runtime_string_value(std::env::consts::ARCH, runtime.heap_mut()))
+}
+
+fn os32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    no_args(args, "os")?;
+    Ok(runtime_string_value(std::env::consts::OS, runtime.heap_mut()))
+}
+
+fn exit32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    if args.len() > 1 {
+        bail!("exit() takes at most 1 argument: exit_code");
+    }
+    let code = if let Some(value) = args.get(0) {
+        int_arg(value, "exit code")? as i32
+    } else {
+        0
+    };
+    std::process::exit(code);
+}
+
+fn clock32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    no_args(args, "clock")?;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    static START: AtomicU64 = AtomicU64::new(0);
+    static INIT: AtomicBool = AtomicBool::new(false);
+    if !INIT.swap(true, Ordering::SeqCst) {
+        START.store(epoch_nanos(), Ordering::SeqCst);
+    }
+    let elapsed_secs = epoch_nanos().wrapping_sub(START.load(Ordering::SeqCst)) as f64 / 1_000_000_000.0;
+    Ok(RuntimeVal::Float(elapsed_secs))
+}
+
+fn time32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    no_args(args, "time")?;
+    Ok(RuntimeVal::Int(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64,
+    ))
+}
+
+fn epoch32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    no_args(args, "epoch")?;
+    Ok(RuntimeVal::Int(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64,
+    ))
+}
+
+fn epoch_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
+fn env_get32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    if args.len() != 1 && args.len() != 2 {
+        bail!("env.get() takes 1 or 2 arguments: variable_name [, default_value]");
+    }
+    let name = string_arg(args.get(0).expect("checked arity"), runtime, "env.get variable_name")?;
+    let default = if let Some(value) = args.get(1) {
+        optional_string_arg(value, runtime, "env.get default_value")?
+    } else {
+        None
+    };
+    match std::env::var_os(&name).and_then(|value| value.into_string().ok()) {
+        Some(value) => Ok(runtime_string_value(&value, runtime.heap_mut())),
+        None => match default {
+            Some(value) => Ok(runtime_string_value(&value, runtime.heap_mut())),
+            None => Ok(RuntimeVal::Nil),
+        },
+    }
+}
+
+fn env_set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "env.set")?;
+    let _ = string_arg(args.get(0).expect("checked arity"), runtime, "env.set variable_name")?;
+    let _ = string_arg(args.get(1).expect("checked arity"), runtime, "env.set value")?;
+    bail!("env.set() is disabled: mutating process environment is unsafe in the VM runtime")
+}
+
+fn env_unset32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "env.unset")?;
+    let _ = string_arg(args.get(0).expect("checked arity"), runtime, "env.unset variable_name")?;
+    bail!("env.unset() is disabled: mutating process environment is unsafe in the VM runtime")
+}
+
+fn dir_list32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "dir.list")?;
+    let path = string_arg(args.get(0).expect("checked arity"), runtime, "dir.list path")?;
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&path).map_err(|err| anyhow!("failed to read directory: {err}"))? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if let Some(name) = entry.file_name().to_str() {
+            entries.push(std::sync::Arc::<str>::from(name));
+        }
+    }
+    Ok(RuntimeVal::Obj(
+        runtime.heap_mut().alloc(HeapValue::List(TypedList::String(entries))),
+    ))
+}
+
+fn dir_temp32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    no_args(args, "dir.temp")?;
+    Ok(match std::env::temp_dir().into_os_string().into_string() {
+        Ok(path) => runtime_string_value(&path, runtime.heap_mut()),
+        Err(_) => RuntimeVal::Nil,
+    })
+}
+
+fn dir_current32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    no_args(args, "dir.current")?;
+    Ok(match std::env::current_dir() {
+        Ok(path) => match path.into_os_string().into_string() {
+            Ok(path) => runtime_string_value(&path, runtime.heap_mut()),
+            Err(_) => RuntimeVal::Nil,
+        },
+        Err(_) => RuntimeVal::Nil,
+    })
+}
+
+fn exec32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    use std::process::Command;
+
+    if args.is_empty() || args.len() > 3 {
+        bail!("exec() expects 1-3 arguments: cmd[, args_list][, stream_bool]");
+    }
+    let cmd = string_arg(args.get(0).expect("checked arity"), runtime, "exec cmd")?;
+    let mut argv = Vec::new();
+    let mut stream = false;
+
+    if let Some(second) = args.get(1) {
+        match second {
+            RuntimeVal::Bool(_) => stream = bool_arg(second, "exec stream")?,
+            _ => argv = string_list_arg(second, runtime, "exec args_list")?,
+        }
+    }
+    if let Some(third) = args.get(2) {
+        stream = bool_arg(third, "exec stream")?;
+    }
+
+    let output = Command::new(&cmd)
+        .args(&argv)
+        .output()
+        .map_err(|err| anyhow!("failed to execute '{cmd}': {err}"))?;
+    let stdout = String::from_utf8(output.stdout).map_err(|_| anyhow!("command stdout is not valid UTF-8"))?;
+    if stream {
+        let lines = stdout
+            .lines()
+            .map(|line| std::sync::Arc::<str>::from(line.trim_end_matches('\r')))
+            .collect::<Vec<_>>();
+        return Ok(RuntimeVal::Obj(
+            runtime.heap_mut().alloc(HeapValue::List(TypedList::String(lines))),
+        ));
+    }
+    Ok(runtime_string_value(&stdout, runtime.heap_mut()))
+}
+
+fn string_list_arg(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, context: &str) -> Result<Vec<String>> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} must be a list");
+    };
+    let value = runtime
+        .state
+        .heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+    let HeapValue::List(list) = value else {
+        bail!("{context} must be a list, got {}", value.type_name());
+    };
+    match list {
+        TypedList::String(values) => Ok(values.iter().map(ToString::to_string).collect()),
+        TypedList::Mixed(values) => values
+            .iter()
+            .map(|value| runtime_string_arg(value, &runtime.state.heap, context).map(|value| value.to_string()))
+            .collect(),
+        _ => bail!("{context} must contain only strings"),
     }
 }

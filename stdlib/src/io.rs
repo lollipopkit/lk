@@ -1,191 +1,13 @@
-use anyhow::Result;
-use lk_core::module::Module;
-use lk_core::val::{NativeArgs, Val};
-use lk_core::vm::VmContext;
+use anyhow::{Result, anyhow, bail};
+use lk_core::{
+    module::{Module, ModuleRegistry},
+    val::{HeapStore, RuntimeVal, Val, runtime_val_to_val},
+    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
+};
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 
-fn make_stdin_object() -> Val {
-    let mut methods = HashMap::new();
-    methods.insert("read".to_string(), Val::RustFastFunction(stdin_read));
-    methods.insert("read_line".to_string(), Val::RustFastFunction(stdin_read_line));
-    methods.insert("read_all".to_string(), Val::RustFastFunction(stdin_read_all));
-    // stdin flush is a no-op for convenience; returns true
-    methods.insert("flush".to_string(), Val::RustFastFunction(stdin_flush));
-    methods.into()
-}
-
-fn make_stdout_object() -> Val {
-    let mut methods = HashMap::new();
-    methods.insert("write".to_string(), Val::RustFastFunction(stdout_write));
-    methods.insert("writeln".to_string(), Val::RustFastFunction(stdout_writeln));
-    methods.insert("flush".to_string(), Val::RustFastFunction(stdout_flush));
-    methods.into()
-}
-
-fn make_stderr_object() -> Val {
-    let mut methods = HashMap::new();
-    methods.insert("write".to_string(), Val::RustFastFunction(stderr_write));
-    methods.insert("writeln".to_string(), Val::RustFastFunction(stderr_writeln));
-    methods.insert("flush".to_string(), Val::RustFastFunction(stderr_flush));
-    methods.into()
-}
-
-fn stdin_read(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() > 1 {
-        return Err(anyhow::anyhow!("stdin.read() takes at most 1 argument: [bytes]"));
-    }
-    let args = args.as_slice();
-
-    let mut handle = std::io::stdin().lock();
-    if args.is_empty() {
-        // default: read a single line
-        let mut line = String::new();
-        match handle.read_line(&mut line) {
-            Ok(0) => Ok(Val::Nil), // EOF
-            Ok(_) => {
-                if line.ends_with('\n') {
-                    line.pop();
-                    if line.ends_with('\r') {
-                        line.pop();
-                    }
-                }
-                Ok(Val::from_str(&line))
-            }
-            Err(e) => Err(anyhow::anyhow!("stdin read error: {}", e)),
-        }
-    } else {
-        let n = match &args[0] {
-            Val::Int(i) if *i >= 0 => *i as usize,
-            _ => return Err(anyhow::anyhow!("bytes must be a non-negative integer")),
-        };
-        if n == 0 {
-            return Ok(Val::from_str(""));
-        }
-        let mut buf = vec![0u8; n];
-        match handle.read(&mut buf) {
-            Ok(0) => Ok(Val::Nil),
-            Ok(read) => {
-                buf.truncate(read);
-                match String::from_utf8(buf) {
-                    Ok(s) => Ok(Val::from_str(&s)),
-                    Err(_) => Ok(Val::Nil),
-                }
-            }
-            Err(e) => Err(anyhow::anyhow!("stdin read error: {}", e)),
-        }
-    }
-}
-
-fn stdin_read_line(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 0 {
-        return Err(anyhow::anyhow!("stdin.read_line() takes no arguments"));
-    }
-    stdin_read(NativeArgs::new(&[]), ctx)
-}
-
-fn stdin_flush(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    // No-op; included for API symmetry. Return true for convenience.
-    Ok(Val::Bool(true))
-}
-
-fn stdin_read_all(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 0 {
-        return Err(anyhow::anyhow!("stdin.read_all() takes no arguments"));
-    }
-    let mut s = String::new();
-    let res = std::io::stdin().lock().read_to_string(&mut s);
-    match res {
-        Ok(_) => Ok(Val::from_str(&s)),
-        Err(e) => Err(anyhow::anyhow!("stdin read error: {}", e)),
-    }
-}
-
-fn stdout_write(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow::anyhow!("stdout.write() requires 1 argument: data"));
-    }
-    let args = args.as_slice();
-    let data = match &args[0] {
-        v if v.as_str().is_some() => v.as_str().unwrap(),
-        v => {
-            let _ = v;
-            &args[0].to_string()
-        }
-    };
-    match std::io::stdout().write_all(data.as_bytes()) {
-        Ok(()) => Ok(Val::Bool(true)),
-        Err(e) => Err(anyhow::anyhow!("stdout write error: {}", e)),
-    }
-}
-
-fn stdout_writeln(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow::anyhow!("stdout.writeln() requires 1 argument: data"));
-    }
-    let args = args.as_slice();
-    let data = match &args[0] {
-        v if v.as_str().is_some() => v.as_str().unwrap(),
-        v => {
-            let _ = v;
-            &args[0].to_string()
-        }
-    };
-    match writeln!(std::io::stdout(), "{}", data) {
-        Ok(()) => Ok(Val::Bool(true)),
-        Err(e) => Err(anyhow::anyhow!("stdout write error: {}", e)),
-    }
-}
-
-fn stdout_flush(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    match std::io::stdout().flush() {
-        Ok(()) => Ok(Val::Bool(true)),
-        Err(e) => Err(anyhow::anyhow!("stdout flush error: {}", e)),
-    }
-}
-
-fn stderr_write(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow::anyhow!("stderr.write() requires 1 argument: data"));
-    }
-    let args = args.as_slice();
-    let data = match &args[0] {
-        v if v.as_str().is_some() => v.as_str().unwrap(),
-        v => {
-            let _ = v;
-            &args[0].to_string()
-        }
-    };
-    match std::io::stderr().write_all(data.as_bytes()) {
-        Ok(()) => Ok(Val::Bool(true)),
-        Err(e) => Err(anyhow::anyhow!("stderr write error: {}", e)),
-    }
-}
-
-fn stderr_writeln(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow::anyhow!("stderr.writeln() requires 1 argument: data"));
-    }
-    let args = args.as_slice();
-    let data = match &args[0] {
-        v if v.as_str().is_some() => v.as_str().unwrap(),
-        v => {
-            let _ = v;
-            &args[0].to_string()
-        }
-    };
-    match writeln!(std::io::stderr(), "{}", data) {
-        Ok(()) => Ok(Val::Bool(true)),
-        Err(e) => Err(anyhow::anyhow!("stderr write error: {}", e)),
-    }
-}
-
-fn stderr_flush(_args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    match std::io::stderr().flush() {
-        Ok(()) => Ok(Val::Bool(true)),
-        Err(e) => Err(anyhow::anyhow!("stderr flush error: {}", e)),
-    }
-}
+use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
 pub struct IoModule {
@@ -201,16 +23,23 @@ impl Default for IoModule {
 impl IoModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
-
-        // Create objects for stdin, stdout, stderr
-        functions.insert("stdin".to_string(), make_stdin_object());
-        functions.insert("stdout".to_string(), make_stdout_object());
-        functions.insert("stderr".to_string(), make_stderr_object());
-
-        // Convenience top-level helpers
-        functions.insert("read".to_string(), Val::RustFastFunction(mod_read));
-
-        IoModule { functions }
+        register_native(&mut functions, "read", mod_read32, 0);
+        register_native(
+            &mut functions,
+            "stdin_read",
+            stdin_read32,
+            lk_core::vm::NativeEntry32::VARIADIC,
+        );
+        register_native(&mut functions, "stdin_read_line", stdin_read_line32, 0);
+        register_native(&mut functions, "stdin_read_all", stdin_read_all32, 0);
+        register_native(&mut functions, "stdin_flush", stdin_flush32, 0);
+        register_native(&mut functions, "stdout_write", stdout_write32, 1);
+        register_native(&mut functions, "stdout_writeln", stdout_writeln32, 1);
+        register_native(&mut functions, "stdout_flush", stdout_flush32, 0);
+        register_native(&mut functions, "stderr_write", stderr_write32, 1);
+        register_native(&mut functions, "stderr_writeln", stderr_writeln32, 1);
+        register_native(&mut functions, "stderr_flush", stderr_flush32, 0);
+        Self { functions }
     }
 }
 
@@ -219,8 +48,7 @@ impl Module for IoModule {
         "io"
     }
 
-    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
-        // Don't register functions globally - they should be accessed via module.function()
+    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
         Ok(())
     }
 
@@ -229,56 +57,242 @@ impl Module for IoModule {
     }
 }
 
-// ----- Top-level helpers -----
-
-fn read_all_to_string() -> anyhow::Result<String> {
-    let mut s = String::new();
-    std::io::stdin().lock().read_to_string(&mut s)?;
-    Ok(s)
+fn register_native(
+    functions: &mut HashMap<String, Val>,
+    name: &str,
+    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    arity: u16,
+) {
+    functions.insert(
+        name.to_string(),
+        Val::runtime_native32(NativeFunction32::Plain(function), arity),
+    );
 }
 
-fn mod_read(args: NativeArgs<'_>, _ctx: &mut VmContext) -> anyhow::Result<Val> {
-    if args.len() != 0 {
-        return Err(anyhow::anyhow!("io.read() takes no arguments"));
+fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        return Ok(());
     }
-    Ok(Val::from_str(&read_all_to_string()?))
+    bail!(
+        "{name} takes exactly {expected} argument{}",
+        if expected == 1 { "" } else { "s" }
+    )
+}
+
+fn runtime_display_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<String> {
+    match runtime_string_arg(value, heap, name) {
+        Ok(value) => Ok(value.to_string()),
+        Err(_) => Ok(runtime_val_to_val(value, heap)?.to_string()),
+    }
+}
+
+fn stdin_read32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    if args.len() > 1 {
+        bail!("stdin_read() takes at most 1 argument: [bytes]");
+    }
+    if args.is_empty() {
+        return read_stdin_line_into(runtime);
+    }
+    let bytes = match args.get(0).expect("checked arity") {
+        RuntimeVal::Int(value) if *value >= 0 => *value as usize,
+        other => bail!("bytes must be a non-negative integer, got {:?}", other.kind()),
+    };
+    if bytes == 0 {
+        return Ok(runtime_string_value("", runtime.heap_mut()));
+    }
+    let mut buffer = vec![0u8; bytes];
+    match std::io::stdin().lock().read(&mut buffer) {
+        Ok(0) => Ok(RuntimeVal::Nil),
+        Ok(read) => {
+            buffer.truncate(read);
+            match String::from_utf8(buffer) {
+                Ok(value) => Ok(runtime_string_value(&value, runtime.heap_mut())),
+                Err(_) => Ok(RuntimeVal::Nil),
+            }
+        }
+        Err(err) => Err(anyhow!("stdin read error: {err}")),
+    }
+}
+
+fn read_stdin_line_into(runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let mut handle = std::io::stdin().lock();
+    let mut line = String::new();
+    match handle.read_line(&mut line) {
+        Ok(0) => Ok(RuntimeVal::Nil),
+        Ok(_) => {
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+            Ok(runtime_string_value(&line, runtime.heap_mut()))
+        }
+        Err(err) => Err(anyhow!("stdin read error: {err}")),
+    }
+}
+
+fn stdin_read_line32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 0, "stdin_read_line()")?;
+    read_stdin_line_into(runtime)
+}
+
+fn stdin_read_all32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 0, "stdin_read_all()")?;
+    let mut value = String::new();
+    std::io::stdin()
+        .lock()
+        .read_to_string(&mut value)
+        .map_err(|err| anyhow!("stdin read error: {err}"))?;
+    Ok(runtime_string_value(&value, runtime.heap_mut()))
+}
+
+fn stdin_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 0, "stdin_flush()")?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn stdout_write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "stdout_write()")?;
+    let data = runtime_display_arg(
+        args.get(0).expect("checked arity"),
+        &runtime.state.heap,
+        "stdout_write data",
+    )?;
+    std::io::stdout()
+        .write_all(data.as_bytes())
+        .map_err(|err| anyhow!("stdout write error: {err}"))?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn stdout_writeln32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "stdout_writeln()")?;
+    let data = runtime_display_arg(
+        args.get(0).expect("checked arity"),
+        &runtime.state.heap,
+        "stdout_writeln data",
+    )?;
+    writeln!(std::io::stdout(), "{data}").map_err(|err| anyhow!("stdout write error: {err}"))?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn stdout_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 0, "stdout_flush()")?;
+    std::io::stdout()
+        .flush()
+        .map_err(|err| anyhow!("stdout flush error: {err}"))?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn stderr_write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "stderr_write()")?;
+    let data = runtime_display_arg(
+        args.get(0).expect("checked arity"),
+        &runtime.state.heap,
+        "stderr_write data",
+    )?;
+    std::io::stderr()
+        .write_all(data.as_bytes())
+        .map_err(|err| anyhow!("stderr write error: {err}"))?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn stderr_writeln32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "stderr_writeln()")?;
+    let data = runtime_display_arg(
+        args.get(0).expect("checked arity"),
+        &runtime.state.heap,
+        "stderr_writeln data",
+    )?;
+    writeln!(std::io::stderr(), "{data}").map_err(|err| anyhow!("stderr write error: {err}"))?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn stderr_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 0, "stderr_flush()")?;
+    std::io::stderr()
+        .flush()
+        .map_err(|err| anyhow!("stderr flush error: {err}"))?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn mod_read32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 0, "io.read()")?;
+    stdin_read_all32(args, runtime)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lk_core::{
+        module::Module,
+        val::{CallableValue, HeapStore, HeapValue},
+        vm::RuntimeModuleState32,
+    };
+
+    fn io_native(name: &str) -> Result<(u16, NativeFunction32)> {
+        let exports = IoModule::new().exports();
+        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
+        let Val::Obj(object) = value else {
+            bail!("{name} must be a heap callable");
+        };
+        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
+            bail!("{name} must be RuntimeNative32");
+        };
+        Ok((*arity, function.clone()))
+    }
+
+    fn call(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {
+        let (_, function) = io_native(name)?;
+        let NativeFunction32::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative32");
+        };
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let mut runtime = NativeRuntime32 {
+            state: &mut state,
+            ctx: None,
+            module: None,
+        };
+        function(NativeArgs32::new(args), &mut runtime)
+    }
 
     #[test]
-    fn test_io_module_has_objects() -> Result<()> {
-        let module = IoModule::new();
-        let exports = module.exports();
-        assert!(exports.contains_key("stdin"));
-        assert!(exports.contains_key("stdout"));
-        assert!(exports.contains_key("stderr"));
+    fn io_exports_use_runtime_native32() -> Result<()> {
+        for name in [
+            "read",
+            "stdin_read",
+            "stdin_read_line",
+            "stdin_read_all",
+            "stdin_flush",
+            "stdout_write",
+            "stdout_writeln",
+            "stdout_flush",
+            "stderr_write",
+            "stderr_writeln",
+            "stderr_flush",
+        ] {
+            let (_, function) = io_native(name)?;
+            assert!(matches!(function, NativeFunction32::Plain(_)));
+        }
+        assert_eq!(io_native("stdin_read")?.0, lk_core::vm::NativeEntry32::VARIADIC);
         Ok(())
     }
 
     #[test]
-    fn test_stdin_flush_returns_true() -> Result<()> {
-        let mut env = VmContext::new();
-        let result = stdin_flush(NativeArgs::new(&[]), &mut env)?;
-        assert_eq!(result, Val::Bool(true));
+    fn flush_functions_return_true() -> Result<()> {
+        assert_eq!(call("stdin_flush", &[])?, RuntimeVal::Bool(true));
+        assert_eq!(call("stdout_flush", &[])?, RuntimeVal::Bool(true));
+        assert_eq!(call("stderr_flush", &[])?, RuntimeVal::Bool(true));
         Ok(())
     }
 
     #[test]
-    fn test_stdout_flush_returns_true() -> Result<()> {
-        let mut env = VmContext::new();
-        let result = stdout_flush(NativeArgs::new(&[]), &mut env)?;
-        assert_eq!(result, Val::Bool(true));
-        Ok(())
-    }
-
-    #[test]
-    fn test_stderr_flush_returns_true() -> Result<()> {
-        let mut env = VmContext::new();
-        let result = stderr_flush(NativeArgs::new(&[]), &mut env)?;
-        assert_eq!(result, Val::Bool(true));
+    fn write_functions_accept_runtime_values() -> Result<()> {
+        assert_eq!(call("stdout_write", &[RuntimeVal::Int(0)])?, RuntimeVal::Bool(true));
+        assert_eq!(call("stderr_write", &[RuntimeVal::Int(0)])?, RuntimeVal::Bool(true));
         Ok(())
     }
 }

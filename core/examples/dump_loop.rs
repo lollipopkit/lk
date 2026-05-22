@@ -1,6 +1,4 @@
-use lk_core::stmt::{Stmt, StmtParser};
-use lk_core::token::Tokenizer;
-use lk_core::vm::Compiler;
+use lk_core::vm::{Compiler32, disassemble_module32};
 
 fn main() {
     let scripts = [
@@ -20,17 +18,8 @@ fn main() {
 
     for (name, script) in scripts {
         println!("=== {} ===", name);
-        let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(script).unwrap();
-        let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-        let program = parser.parse_program_with_enhanced_errors(script).unwrap();
-        let block = Stmt::Block {
-            statements: program.statements,
-        };
-        let func = Compiler::new().compile_stmt(&block);
-        println!("n_regs: {}, code_len: {}", func.n_regs, func.code.len());
-        for (i, op) in func.code.iter().enumerate() {
-            println!("  {:4}: {:?}", i, op);
-        }
+        let module = Compiler32::compile_source_module(script).unwrap();
+        println!("{}", disassemble_module32(&module));
         println!();
     }
 }

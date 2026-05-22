@@ -1,17 +1,18 @@
 #[cfg(test)]
 mod tests {
-    use crate::{list::ListModule, register_stdlib_modules};
-    use anyhow::Result;
+    use std::sync::Arc;
+
+    use crate::{list::ListModule, register_stdlib_modules, runtime_native::runtime_string_value};
+    use anyhow::{Result, anyhow};
     use lk_core::{
         module::{self, Module},
         stmt::{self, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{NativeArgs, Val},
-        vm::{self, VmContext},
+        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val, runtime_val_to_val},
+        vm::{self, NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
     };
-    use std::sync::Arc;
 
-    fn run(source: &str) -> Result<Val> {
+    fn run32(source: &str) -> Result<Val> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -20,153 +21,130 @@ mod tests {
         register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
-        let mut machine = vm::Vm::new();
-        program.execute_with_vm(&mut machine, &mut env)
+        program.execute32_with_ctx(&mut env)
+    }
+
+    fn list_native(name: &str) -> Result<(u16, NativeFunction32)> {
+        let exports = ListModule::new().exports();
+        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
+        let Val::Obj(object) = value else {
+            return Err(anyhow!("{name} must be a heap callable"));
+        };
+        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
+            return Err(anyhow!("{name} must be RuntimeNative32"));
+        };
+        Ok((*arity, function.clone()))
     }
 
     #[test]
-    fn test_list_len_method_sugar() -> Result<()> {
-        let v = run("return [1,2,3].len();")?;
-        assert_eq!(v, Val::Int(3));
-        Ok(())
-    }
-
-    #[test]
-    fn test_list_push_join() -> Result<()> {
-        let v = run("return [\"a\", \"b\"].push(\"c\").join(\",\");")?;
-        assert_eq!(v, Val::Str("a,b,c".into()));
+    fn test_list_len_push_join() -> Result<()> {
+        assert_eq!(run32("import list; return list.len([1,2,3]);")?, Val::Int(3));
+        assert_eq!(
+            run32("import list; return list.join(list.push([\"a\", \"b\"], \"c\"), \",\");")?,
+            Val::from_str("a,b,c")
+        );
         Ok(())
     }
 
     #[test]
     fn test_list_get_first_last() -> Result<()> {
-        assert_eq!(run("return [10,20,30].get(1);")?, Val::Int(20));
-        assert_eq!(run("return [10,20,30].get(5);")?, Val::Nil);
-        assert_eq!(run("return [10,20,30].first();")?, Val::Int(10));
-        assert_eq!(run("return [10,20,30].last();")?, Val::Int(30));
+        assert_eq!(run32("import list; return list.get([10,20,30], 1);")?, Val::Int(20));
+        assert_eq!(run32("import list; return list.get([10,20,30], 5);")?, Val::Nil);
+        assert_eq!(run32("import list; return list.get([10,20,30], -1);")?, Val::Nil);
+        assert_eq!(run32("import list; return list.first([10,20,30]);")?, Val::Int(10));
+        assert_eq!(run32("import list; return list.last([10,20,30]);")?, Val::Int(30));
+        assert_eq!(run32("import list; return [list.first([]), list.last([])];")?, {
+            Val::list(vec![Val::Nil, Val::Nil].into())
+        });
         Ok(())
     }
 
     #[test]
-    fn test_list_map_filter_reduce() -> Result<()> {
-        // map
+    fn test_list_concat_and_set_returns_pair() -> Result<()> {
         assert_eq!(
-            run("return [1,2,3].map(|x| x + 1);")?,
-            Val::List(Arc::from(vec![Val::Int(2), Val::Int(3), Val::Int(4)]))
+            run32("import list; return list.concat([1,2], [3,4]);")?,
+            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3), Val::Int(4)].into())
         );
-
-        // filter
-        assert_eq!(
-            run("return [1,2,3,4,5].filter(|x| x % 2 == 0);")?,
-            Val::List(Arc::from(vec![Val::Int(2), Val::Int(4)]))
-        );
-
-        // reduce (sum)
-        assert_eq!(run("return [1,2,3,4].reduce(0, |acc, x| acc + x);")?, Val::Int(10));
-        Ok(())
-    }
-
-    #[test]
-    fn test_list_get_out_of_bounds_yields_nil() -> Result<()> {
-        let result =
-            run("import list; let data = [1, 2]; return [list.get(data, 1), list.get(data, 5), list.get(data, -1)];")?;
-        let Val::List(values) = result else {
-            panic!("expected list result");
-        };
-        assert_eq!(values.len(), 3);
-        assert_eq!(values[0], Val::Int(2));
-        assert_eq!(values[1], Val::Nil);
-        assert_eq!(values[2], Val::Nil);
-        Ok(())
-    }
-
-    #[test]
-    fn test_list_push_method_sugar_preserves_original() -> Result<()> {
-        // push() is now mutating (in-place); result is the same list
-        let result = run("import list; let xs = [1, 2]; let ys = xs.push(3); return [xs.len(), ys.len(), ys.get(2)];")?;
-        let Val::List(values) = result else {
-            panic!("expected list result");
-        };
-        assert_eq!(values.len(), 3);
-        assert_eq!(values[0], Val::Int(3)); // xs also grew to 3
-        assert_eq!(values[1], Val::Int(3)); // ys is same list
-        assert_eq!(values[2], Val::Int(3));
+        let result = run32(
+            "import list; let pair = list.set([1, 2, 3], 1, 42); \
+             let updated = pair[0]; \
+             let old = pair[1]; \
+             return [updated[1], old];",
+        )?;
+        assert_eq!(result, Val::list(vec![Val::Int(42), Val::Int(2)].into()));
         Ok(())
     }
 
     #[test]
     fn test_list_get_rejects_non_integer_index() {
-        let module = ListModule::new();
-        let Val::RustFastFunction(get_fn) = module.exports().get("get").expect("get function present").clone() else {
-            panic!("expected get to be a RustFastFunction");
-        };
-
-        let list_val = Val::List(vec![Val::Int(1)].into());
-        let mut env = VmContext::new();
-        let args = [list_val, Val::Str("x".into())];
-        let err = get_fn(NativeArgs::new(&args), &mut env).expect_err("non-integer index should error");
+        let err = run32("import list; return list.get([1], \"x\");").expect_err("non-integer index should error");
         assert!(err.to_string().contains("index must be an integer"));
     }
 
     #[test]
-    fn test_list_public_functions_use_fast_native_abi() {
-        let module = ListModule::new();
-        let exports = module.exports();
-        for name in [
-            "len",
-            "push",
-            "concat",
-            "join",
-            "get",
-            "first",
-            "last",
-            "set",
-            "map",
-            "filter",
-            "reduce",
-            "take",
-            "skip",
-            "chain",
-            "flatten",
-            "unique",
-            "chunk",
-            "enumerate",
-            "zip",
-            "into_iter",
-            "mutate",
-        ] {
-            let value = exports.get(name).expect("list function export present");
-            assert!(
-                matches!(value, Val::RustFastFunction(_)),
-                "{name} should use RustFastFunction"
-            );
-        }
+    fn test_list_join_rejects_non_string_items() {
+        let err =
+            run32("import list; return list.join([\"ok\", 1], \",\");").expect_err("non-string items should error");
+        assert!(err.to_string().contains("list must contain only strings"));
     }
 
     #[test]
-    fn test_list_first_last_empty_return_nil() -> Result<()> {
-        let result = run("import list; return [list.first([]), list.last([])];")?;
-        let Val::List(values) = result else {
-            panic!("expected list result");
-        };
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[0], Val::Nil);
-        assert_eq!(values[1], Val::Nil);
+    fn test_list_public_functions_use_runtime_native32_abi() -> Result<()> {
+        for name in ["len", "push", "concat", "join", "get", "first", "last", "set"] {
+            let (arity, function) = list_native(name)?;
+            assert!(matches!(function, NativeFunction32::Plain(_)));
+            assert_ne!(arity, lk_core::vm::NativeEntry32::VARIADIC);
+        }
         Ok(())
     }
 
     #[test]
-    fn test_list_set_returns_pair() -> Result<()> {
-        let result = run("import list; let pair = list.set([1, 2, 3], 1, 42); \
-             let updated = pair.get(0); \
-             let old = pair.get(1); \
-             return [updated.get(1), old];")?;
-        let Val::List(values) = result else {
-            panic!("expected list result");
+    fn test_list_direct_runtime_call_preserves_typed_backing() -> Result<()> {
+        let (_, function) = list_native("push")?;
+        let NativeFunction32::Plain(function) = function else {
+            panic!("push should use plain RuntimeNative32");
         };
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[0], Val::Int(42));
-        assert_eq!(values[1], Val::Int(2));
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let list = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
+        let args = [list, RuntimeVal::Int(3)];
+        let mut runtime = NativeRuntime32 {
+            state: &mut state,
+            ctx: None,
+            module: None,
+        };
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let value = runtime_val_to_val(&result, &runtime.state.heap)?;
+        assert_eq!(value, Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_direct_runtime_join_with_heap_strings() -> Result<()> {
+        let (_, function) = list_native("join")?;
+        let NativeFunction32::Plain(function) = function else {
+            panic!("join should use plain RuntimeNative32");
+        };
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let list = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::String(vec![
+            Arc::<str>::from("a"),
+            Arc::<str>::from("b"),
+        ]))));
+        let delimiter = runtime_string_value(",", &mut state.heap);
+        let args = [list, delimiter];
+        let mut runtime = NativeRuntime32 {
+            state: &mut state,
+            ctx: None,
+            module: None,
+        };
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let value = runtime_val_to_val(&result, &runtime.state.heap)?;
+        assert_eq!(value.as_str(), Some("a,b"));
         Ok(())
     }
 }

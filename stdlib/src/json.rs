@@ -1,8 +1,7 @@
 use anyhow::Result;
 use lk_core::module::Module;
-use lk_core::val::de;
-use lk_core::val::{NativeArgs, Val};
-use lk_core::vm::VmContext;
+use lk_core::val::{RuntimeVal, Val, de};
+use lk_core::vm::{NativeArgs32, NativeFunction32, NativeRuntime32};
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -19,7 +18,10 @@ impl Default for JsonModule {
 impl JsonModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
-        functions.insert("parse".to_string(), Val::RustFastFunction(parse));
+        functions.insert(
+            "parse".to_string(),
+            Val::runtime_native32(NativeFunction32::Plain(parse32), 1),
+        );
         JsonModule { functions }
     }
 }
@@ -38,14 +40,67 @@ impl Module for JsonModule {
     }
 }
 
-fn parse(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow::anyhow!("json.parse(data) requires 1 argument"));
+fn parse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    crate::runtime_native::parse_format32(args, runtime, "json.parse", de::Format::Json)
+}
+
+#[cfg(test)]
+mod tests {
+    use lk_core::{
+        module::Module,
+        val::{CallableValue, HeapStore, HeapValue, RuntimeVal, Val, runtime_val_to_val},
+        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
+    };
+
+    use crate::runtime_native::runtime_string_value;
+
+    use super::JsonModule;
+
+    #[test]
+    fn json_parse_exports_runtime_native32() {
+        let exports = JsonModule::new().exports();
+        let parse = exports.get("parse").expect("parse export");
+
+        assert!(matches!(
+            parse,
+            Val::Obj(object)
+                if matches!(
+                    object.as_ref(),
+                    HeapValue::Callable(CallableValue::RuntimeNative32 { arity: 1, .. })
+                )
+        ));
     }
-    let args = args.as_slice();
-    let s = args[0]
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| args[0].to_string());
-    de::parse_with_format(&s, Some(de::Format::Json))
+
+    #[test]
+    fn json_parse32_decodes_into_runtime_values() {
+        let exports = JsonModule::new().exports();
+        let parse = exports.get("parse").expect("parse export");
+        let Val::Obj(object) = parse else {
+            panic!("parse must be heap callable");
+        };
+        let HeapValue::Callable(CallableValue::RuntimeNative32 {
+            function: NativeFunction32::Plain(function),
+            ..
+        }) = object.as_ref()
+        else {
+            panic!("parse must be plain RuntimeNative32");
+        };
+
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let input = runtime_string_value(r#"{"answer": 42}"#, &mut state.heap);
+        let mut runtime = NativeRuntime32 {
+            state: &mut state,
+            ctx: None,
+            module: None,
+        };
+        let result = function(NativeArgs32::new(&[input]), &mut runtime).expect("parse");
+
+        let value = runtime_val_to_val(&result, &runtime.state.heap).expect("runtime to val");
+        let map = value.as_map().expect("json object");
+        assert_eq!(map.get("answer"), Some(&Val::Int(42)));
+        assert!(matches!(result, RuntimeVal::Obj(_)));
+    }
 }

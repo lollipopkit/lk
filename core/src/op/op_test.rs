@@ -17,7 +17,7 @@ mod tests {
         let result = expr.eval().unwrap();
 
         // The result should be a map with "a": 4, "b": 2, "c": 3
-        if let Val::Map(map) = result {
+        if let Some(map) = result.as_map() {
             assert_eq!(map.get("a"), Some(&Val::Int(4)));
             assert_eq!(map.get("b"), Some(&Val::Int(2)));
             assert_eq!(map.get("c"), Some(&Val::Int(3)));

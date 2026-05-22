@@ -88,7 +88,7 @@ impl Pattern {
             Pattern::Wildcard => Ok(true),
             Pattern::List { patterns, rest } => {
                 let list_items: Vec<Val> = match value {
-                    Val::List(list) => (*list).to_vec(),
+                    value if value.as_list().is_some() => value.as_list().expect("checked list").as_ref().clone(),
                     _ if value.as_str().is_some() => value
                         .as_str()
                         .unwrap()
@@ -107,14 +107,14 @@ impl Pattern {
                 }
                 if let Some(rest_name) = rest {
                     let rest_items: Vec<Val> = list_items.iter().skip(patterns.len()).cloned().collect();
-                    bindings.push((rest_name.clone(), Val::List(Arc::from(rest_items))));
+                    bindings.push((rest_name.clone(), Val::list(Arc::from(rest_items))));
                 } else if patterns.len() != list_items.len() {
                     return Ok(false);
                 }
                 Ok(true)
             }
             Pattern::Map { patterns, rest } => {
-                let Val::Map(map) = value else {
+                let Some(map) = value.as_map() else {
                     return Ok(false);
                 };
                 let map_ref = map.as_ref();

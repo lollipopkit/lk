@@ -213,7 +213,7 @@ mod tests {
                 rest: Some("rest".to_string()),
             },
             type_annotation: None,
-            value: Box::new(Expr::Val(Val::List(Arc::from(vec![
+            value: Box::new(Expr::Val(Val::list(Arc::from(vec![
                 Val::Int(1),
                 Val::Int(2),
                 Val::Int(3),
@@ -253,7 +253,7 @@ mod tests {
                 rest: None,
             },
             type_annotation: None,
-            value: Box::new(Expr::Val(Val::Map(Arc::new(Default::default())))),
+            value: Box::new(Expr::Val(Val::map(Arc::new(Default::default())))),
             span: None,
             is_const: false,
         };

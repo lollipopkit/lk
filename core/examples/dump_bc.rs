@@ -1,6 +1,4 @@
-use lk_core::stmt::{Stmt, StmtParser};
-use lk_core::token::Tokenizer;
-use lk_core::vm::Compiler;
+use lk_core::vm::{Compiler32, Module32, disassemble_module32};
 use std::path::PathBuf;
 
 const FIB_SCRIPT: &str = r#"
@@ -39,14 +37,8 @@ while (i < 200) {
 return total;
 "#;
 
-fn compile_script(source: &str) -> lk_core::vm::Function {
-    let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(source).unwrap();
-    let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-    let program = parser.parse_program_with_enhanced_errors(source).unwrap();
-    let block = Stmt::Block {
-        statements: program.statements,
-    };
-    Compiler::new().compile_stmt(&block)
+fn compile_script(source: &str) -> Module32 {
+    Compiler32::compile_source_module(source).unwrap()
 }
 
 fn main() {
@@ -68,24 +60,7 @@ fn main() {
     }
 }
 
-fn dump_function(name: &str, func: &lk_core::vm::Function) {
+fn dump_function(name: &str, module: &Module32) {
     println!("=== {} ===", name);
-    println!("n_regs: {}", func.n_regs);
-    println!("code len: {}", func.code.len());
-    if let Some(code32) = &func.code32 {
-        println!("code32 len: {}", code32.len());
-    }
-    for (i, op) in func.code.iter().enumerate() {
-        println!("  {:4}: {:?}", i, op);
-    }
-    for (idx, proto) in func.protos.iter().enumerate() {
-        if let Some(child) = proto.func.as_ref() {
-            let child_name = proto.self_name.as_deref().map_or_else(
-                || format!("{name}.closure[{idx}]"),
-                |self_name| format!("{name}.{self_name}"),
-            );
-            dump_function(&child_name, child);
-        }
-    }
-    println!();
+    println!("{}", disassemble_module32(module));
 }

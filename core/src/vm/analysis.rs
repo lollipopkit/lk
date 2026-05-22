@@ -1,13 +1,10 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::val::{Type, Val};
-use crate::vm::RegionPlan;
-use crate::vm::bc32::{Bc32PackStatus, bc32_pack_status};
-use crate::vm::bytecode::{Function, Op};
-use crate::vm::compiler::SsaFunction;
+use crate::vm::alloc::RegionPlan;
+use crate::vm::ssa::SsaFunction;
 
 /// Classification of how a value escapes during execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -90,9 +87,9 @@ impl PerfValueKind {
             Val::Bool(_) => Self::Bool,
             Val::Int(_) => Self::Int,
             Val::Float(_) => Self::Float,
-            Val::ShortStr(_) | Val::Str(_) => Self::String,
-            Val::List(_) => Self::List,
-            Val::Map(_) => Self::Map,
+            value if value.as_str().is_some() => Self::String,
+            value if value.as_list().is_some() => Self::List,
+            value if value.as_map().is_some() => Self::Map,
             _ => Self::Unknown,
         }
     }
@@ -322,91 +319,6 @@ pub struct FunctionAnalysis {
     pub perf: PerformanceFacts,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum VmOpcodeCategory {
-    Data,
-    Numeric,
-    Compare,
-    Local,
-    Global,
-    Access,
-    Container,
-    Control,
-    Call,
-    Closure,
-    Pattern,
-    Error,
-}
-
-impl VmOpcodeCategory {
-    pub fn label(self) -> &'static str {
-        match self {
-            VmOpcodeCategory::Data => "data",
-            VmOpcodeCategory::Numeric => "numeric",
-            VmOpcodeCategory::Compare => "compare",
-            VmOpcodeCategory::Local => "local",
-            VmOpcodeCategory::Global => "global",
-            VmOpcodeCategory::Access => "access",
-            VmOpcodeCategory::Container => "container",
-            VmOpcodeCategory::Control => "control",
-            VmOpcodeCategory::Call => "call",
-            VmOpcodeCategory::Closure => "closure",
-            VmOpcodeCategory::Pattern => "pattern",
-            VmOpcodeCategory::Error => "error",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VmOpcodeCount {
-    pub opcode: &'static str,
-    pub category: VmOpcodeCategory,
-    pub count: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct VmFunctionCoverage {
-    pub name: String,
-    pub depth: usize,
-    pub instruction_count: usize,
-    pub const_count: usize,
-    pub register_count: u16,
-    pub proto_count: usize,
-    pub unmaterialized_closures: usize,
-    pub call_sites: usize,
-    pub named_call_sites: usize,
-    pub closure_sites: usize,
-    pub bc32_status: Bc32PackStatus,
-    pub code32_words: Option<usize>,
-    pub has_decoded_bc32: bool,
-    pub opcode_counts: Vec<VmOpcodeCount>,
-    pub bc32_typed_gate_counts: Vec<VmOpcodeCount>,
-    pub category_counts: Vec<(VmOpcodeCategory, usize)>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct VmCoverageTotals {
-    pub functions: usize,
-    pub instructions: usize,
-    pub packed_functions: usize,
-    pub code32_words: usize,
-    pub call_sites: usize,
-    pub named_call_sites: usize,
-    pub closure_sites: usize,
-    pub unmaterialized_closures: usize,
-    pub bc32_fallback_reasons: Vec<(String, usize)>,
-    pub bc32_fallback_opcodes: Vec<(String, usize)>,
-    pub opcode_counts: Vec<VmOpcodeCount>,
-    pub bc32_typed_gate_counts: Vec<VmOpcodeCount>,
-    pub category_counts: Vec<(VmOpcodeCategory, usize)>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct VmCoverageReport {
-    pub functions: Vec<VmFunctionCoverage>,
-    pub totals: VmCoverageTotals,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VmRuntimeMetrics {
     pub opcode_steps: u64,
@@ -435,17 +347,6 @@ pub struct VmRuntimeMetrics {
     pub list_ops: u64,
     pub map_ops: u64,
     pub string_ops: u64,
-    pub bc32_fallback_ops: u64,
-    pub bc32_fallback_build_misses: u64,
-    pub bc32_hot_stale_slots: u64,
-    pub bc32_hot_stale_misses: u64,
-    pub bc32_hot_sentinel_skips: u64,
-    pub quickening_hits: u64,
-    pub quickening_build_attempts: u64,
-    pub quickening_build_successes: u64,
-    pub quickening_misses: u64,
-    pub quickening_deopts: u64,
-    pub quickening_sentinel_skips: u64,
 }
 
 #[cfg(test)]
@@ -477,17 +378,6 @@ impl VmRuntimeMetrics {
         list_ops: 0,
         map_ops: 0,
         string_ops: 0,
-        bc32_fallback_ops: 0,
-        bc32_fallback_build_misses: 0,
-        bc32_hot_stale_slots: 0,
-        bc32_hot_stale_misses: 0,
-        bc32_hot_sentinel_skips: 0,
-        quickening_hits: 0,
-        quickening_build_attempts: 0,
-        quickening_build_successes: 0,
-        quickening_misses: 0,
-        quickening_deopts: 0,
-        quickening_sentinel_skips: 0,
     };
 }
 
@@ -560,28 +450,6 @@ static MAP_OPS: AtomicU64 = AtomicU64::new(0);
 #[cfg(not(test))]
 static STRING_OPS: AtomicU64 = AtomicU64::new(0);
 #[cfg(not(test))]
-static BC32_FALLBACK_OPS: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static BC32_FALLBACK_BUILD_MISSES: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static BC32_HOT_STALE_SLOTS: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static BC32_HOT_STALE_MISSES: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static BC32_HOT_SENTINEL_SKIPS: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static QUICKENING_HITS: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static QUICKENING_BUILD_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static QUICKENING_BUILD_SUCCESSES: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static QUICKENING_MISSES: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static QUICKENING_DEOPTS: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static QUICKENING_SENTINEL_SKIPS: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
 static RUNTIME_METRICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(not(test))]
@@ -618,14 +486,6 @@ pub(crate) enum VmContainerMetric {
     List,
     Map,
     String,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum VmBc32FallbackMetric {
-    BuildMiss,
-    StaleSlot,
-    StaleMiss,
-    SentinelSkip,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -877,120 +737,6 @@ pub(crate) fn record_container_op_known_enabled(kind: VmContainerMetric) {
 }
 
 #[cfg(not(test))]
-#[inline]
-pub(crate) fn record_bc32_fallback_op_known_enabled() {
-    BC32_FALLBACK_OPS.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_bc32_fallback_op_known_enabled() {
-    update_thread_runtime_metrics(|metrics| metrics.bc32_fallback_ops += 1);
-}
-
-#[cfg(not(test))]
-#[inline]
-pub(crate) fn record_bc32_fallback_reason_known_enabled(reason: VmBc32FallbackMetric) {
-    match reason {
-        VmBc32FallbackMetric::BuildMiss => {
-            BC32_FALLBACK_BUILD_MISSES.fetch_add(1, Ordering::Relaxed);
-        }
-        VmBc32FallbackMetric::StaleSlot => {
-            BC32_HOT_STALE_SLOTS.fetch_add(1, Ordering::Relaxed);
-        }
-        VmBc32FallbackMetric::StaleMiss => {
-            BC32_HOT_STALE_MISSES.fetch_add(1, Ordering::Relaxed);
-        }
-        VmBc32FallbackMetric::SentinelSkip => {
-            BC32_HOT_SENTINEL_SKIPS.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_bc32_fallback_reason_known_enabled(reason: VmBc32FallbackMetric) {
-    update_thread_runtime_metrics(|metrics| match reason {
-        VmBc32FallbackMetric::BuildMiss => metrics.bc32_fallback_build_misses += 1,
-        VmBc32FallbackMetric::StaleSlot => metrics.bc32_hot_stale_slots += 1,
-        VmBc32FallbackMetric::StaleMiss => metrics.bc32_hot_stale_misses += 1,
-        VmBc32FallbackMetric::SentinelSkip => metrics.bc32_hot_sentinel_skips += 1,
-    });
-}
-
-#[cfg(not(test))]
-#[inline]
-pub(crate) fn record_quickening_hit_known_enabled() {
-    QUICKENING_HITS.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_quickening_hit_known_enabled() {
-    update_thread_runtime_metrics(|metrics| metrics.quickening_hits += 1);
-}
-
-#[cfg(not(test))]
-#[inline]
-pub(crate) fn record_quickening_build_attempt_known_enabled() {
-    QUICKENING_BUILD_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_quickening_build_attempt_known_enabled() {
-    update_thread_runtime_metrics(|metrics| metrics.quickening_build_attempts += 1);
-}
-
-#[cfg(not(test))]
-#[inline]
-pub(crate) fn record_quickening_build_success_known_enabled() {
-    QUICKENING_BUILD_SUCCESSES.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_quickening_build_success_known_enabled() {
-    update_thread_runtime_metrics(|metrics| metrics.quickening_build_successes += 1);
-}
-
-#[cfg(not(test))]
-#[inline]
-pub(crate) fn record_quickening_miss_known_enabled() {
-    QUICKENING_MISSES.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_quickening_miss_known_enabled() {
-    update_thread_runtime_metrics(|metrics| metrics.quickening_misses += 1);
-}
-
-#[cfg(not(test))]
-#[inline]
-pub(crate) fn record_quickening_deopt_known_enabled() {
-    QUICKENING_DEOPTS.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_quickening_deopt_known_enabled() {
-    update_thread_runtime_metrics(|metrics| metrics.quickening_deopts += 1);
-}
-
-#[cfg(not(test))]
-#[inline]
-pub(crate) fn record_quickening_sentinel_skip_known_enabled() {
-    QUICKENING_SENTINEL_SKIPS.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_quickening_sentinel_skip_known_enabled() {
-    update_thread_runtime_metrics(|metrics| metrics.quickening_sentinel_skips += 1);
-}
-
-#[cfg(not(test))]
 pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
     VmRuntimeMetrics {
         opcode_steps: OPCODE_STEPS.load(Ordering::Relaxed),
@@ -1019,17 +765,6 @@ pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
         list_ops: LIST_OPS.load(Ordering::Relaxed),
         map_ops: MAP_OPS.load(Ordering::Relaxed),
         string_ops: STRING_OPS.load(Ordering::Relaxed),
-        bc32_fallback_ops: BC32_FALLBACK_OPS.load(Ordering::Relaxed),
-        bc32_fallback_build_misses: BC32_FALLBACK_BUILD_MISSES.load(Ordering::Relaxed),
-        bc32_hot_stale_slots: BC32_HOT_STALE_SLOTS.load(Ordering::Relaxed),
-        bc32_hot_stale_misses: BC32_HOT_STALE_MISSES.load(Ordering::Relaxed),
-        bc32_hot_sentinel_skips: BC32_HOT_SENTINEL_SKIPS.load(Ordering::Relaxed),
-        quickening_hits: QUICKENING_HITS.load(Ordering::Relaxed),
-        quickening_build_attempts: QUICKENING_BUILD_ATTEMPTS.load(Ordering::Relaxed),
-        quickening_build_successes: QUICKENING_BUILD_SUCCESSES.load(Ordering::Relaxed),
-        quickening_misses: QUICKENING_MISSES.load(Ordering::Relaxed),
-        quickening_deopts: QUICKENING_DEOPTS.load(Ordering::Relaxed),
-        quickening_sentinel_skips: QUICKENING_SENTINEL_SKIPS.load(Ordering::Relaxed),
     }
 }
 
@@ -1067,397 +802,9 @@ pub fn vm_runtime_metrics_reset() {
     LIST_OPS.store(0, Ordering::Relaxed);
     MAP_OPS.store(0, Ordering::Relaxed);
     STRING_OPS.store(0, Ordering::Relaxed);
-    BC32_FALLBACK_OPS.store(0, Ordering::Relaxed);
-    BC32_FALLBACK_BUILD_MISSES.store(0, Ordering::Relaxed);
-    BC32_HOT_STALE_SLOTS.store(0, Ordering::Relaxed);
-    BC32_HOT_STALE_MISSES.store(0, Ordering::Relaxed);
-    BC32_HOT_SENTINEL_SKIPS.store(0, Ordering::Relaxed);
-    QUICKENING_HITS.store(0, Ordering::Relaxed);
-    QUICKENING_BUILD_ATTEMPTS.store(0, Ordering::Relaxed);
-    QUICKENING_BUILD_SUCCESSES.store(0, Ordering::Relaxed);
-    QUICKENING_MISSES.store(0, Ordering::Relaxed);
-    QUICKENING_DEOPTS.store(0, Ordering::Relaxed);
-    QUICKENING_SENTINEL_SKIPS.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 pub fn vm_runtime_metrics_reset() {
     THREAD_RUNTIME_METRICS.with(|cell| cell.set(VmRuntimeMetrics::default()));
 }
-
-pub fn vm_coverage_report(entry: &Function) -> VmCoverageReport {
-    let mut report = VmCoverageReport::default();
-    collect_function_coverage("entry".to_string(), entry, 0, &mut report);
-    report.totals = aggregate_coverage(&report.functions);
-    report
-}
-
-fn collect_function_coverage(name: String, function: &Function, depth: usize, report: &mut VmCoverageReport) {
-    let mut opcode_counts = BTreeMap::<(&'static str, VmOpcodeCategory), usize>::new();
-    let mut bc32_typed_gate_counts = BTreeMap::<(&'static str, VmOpcodeCategory), usize>::new();
-    let mut category_counts = BTreeMap::<VmOpcodeCategory, usize>::new();
-    let mut call_sites = 0;
-    let mut named_call_sites = 0;
-    let mut closure_sites = 0;
-
-    for op in &function.code {
-        let name = opcode_name(op);
-        let category = opcode_category(op);
-        *opcode_counts.entry((name, category)).or_default() += 1;
-        if let Some(name) = op.bc32_typed_gate_name() {
-            *bc32_typed_gate_counts.entry((name, category)).or_default() += 1;
-        }
-        *category_counts.entry(category).or_default() += 1;
-        match op {
-            Op::Call { .. }
-            | Op::CallExact { .. }
-            | Op::CallClosureExact { .. }
-            | Op::CallNativeFast { .. }
-            | Op::CallMethod0 { .. }
-            | Op::CallGlobalMethod0 { .. } => call_sites += 1,
-            Op::CallNamed { .. } | Op::CallNamedFallback { .. } => named_call_sites += 1,
-            Op::MakeClosure { .. } => closure_sites += 1,
-            _ => {}
-        }
-    }
-
-    let bc32_status = bc32_pack_status(function);
-    let unmaterialized_closures = function.protos.iter().filter(|proto| proto.func.is_none()).count();
-    report.functions.push(VmFunctionCoverage {
-        name: name.clone(),
-        depth,
-        instruction_count: function.code.len(),
-        const_count: function.consts.len(),
-        register_count: function.n_regs,
-        proto_count: function.protos.len(),
-        unmaterialized_closures,
-        call_sites,
-        named_call_sites,
-        closure_sites,
-        bc32_status,
-        code32_words: function.code32.as_ref().map(Vec::len),
-        has_decoded_bc32: function.bc32_decoded.is_some(),
-        opcode_counts: opcode_counts
-            .into_iter()
-            .map(|((opcode, category), count)| VmOpcodeCount {
-                opcode,
-                category,
-                count,
-            })
-            .collect(),
-        bc32_typed_gate_counts: bc32_typed_gate_counts
-            .into_iter()
-            .map(|((opcode, category), count)| VmOpcodeCount {
-                opcode,
-                category,
-                count,
-            })
-            .collect(),
-        category_counts: category_counts.into_iter().collect(),
-    });
-
-    for (idx, proto) in function.protos.iter().enumerate() {
-        if let Some(nested) = proto.func.as_ref() {
-            let proto_name = proto
-                .self_name
-                .as_deref()
-                .map(|self_name| format!("{name}.closure[{idx}] {self_name}"))
-                .unwrap_or_else(|| format!("{name}.closure[{idx}]"));
-            collect_function_coverage(proto_name, nested.as_ref(), depth + 1, report);
-        }
-    }
-}
-
-fn aggregate_coverage(functions: &[VmFunctionCoverage]) -> VmCoverageTotals {
-    let mut totals = VmCoverageTotals {
-        functions: functions.len(),
-        ..VmCoverageTotals::default()
-    };
-    let mut fallback_reasons = BTreeMap::<String, usize>::new();
-    let mut fallback_opcodes = BTreeMap::<String, usize>::new();
-    let mut opcode_counts = BTreeMap::<(&'static str, VmOpcodeCategory), usize>::new();
-    let mut bc32_typed_gate_counts = BTreeMap::<(&'static str, VmOpcodeCategory), usize>::new();
-    let mut category_counts = BTreeMap::<VmOpcodeCategory, usize>::new();
-
-    for function in functions {
-        totals.instructions += function.instruction_count;
-        totals.call_sites += function.call_sites;
-        totals.named_call_sites += function.named_call_sites;
-        totals.closure_sites += function.closure_sites;
-        totals.unmaterialized_closures += function.unmaterialized_closures;
-        if function.bc32_status.packed {
-            totals.packed_functions += 1;
-            totals.code32_words += function.bc32_status.words.unwrap_or(0);
-        } else {
-            if let Some(reason) = function.bc32_status.reason.as_ref() {
-                *fallback_reasons.entry(reason.clone()).or_default() += 1;
-            }
-            if let Some(opcode) = function.bc32_status.opcode.as_ref() {
-                *fallback_opcodes.entry(opcode.clone()).or_default() += 1;
-            }
-        }
-        for entry in &function.opcode_counts {
-            *opcode_counts.entry((entry.opcode, entry.category)).or_default() += entry.count;
-        }
-        for entry in &function.bc32_typed_gate_counts {
-            *bc32_typed_gate_counts
-                .entry((entry.opcode, entry.category))
-                .or_default() += entry.count;
-        }
-        for (category, count) in &function.category_counts {
-            *category_counts.entry(*category).or_default() += *count;
-        }
-    }
-
-    totals.bc32_fallback_reasons = fallback_reasons.into_iter().collect();
-    totals.bc32_fallback_opcodes = fallback_opcodes.into_iter().collect();
-    totals.opcode_counts = opcode_counts
-        .into_iter()
-        .map(|((opcode, category), count)| VmOpcodeCount {
-            opcode,
-            category,
-            count,
-        })
-        .collect();
-    totals.bc32_typed_gate_counts = bc32_typed_gate_counts
-        .into_iter()
-        .map(|((opcode, category), count)| VmOpcodeCount {
-            opcode,
-            category,
-            count,
-        })
-        .collect();
-    totals.category_counts = category_counts.into_iter().collect();
-    totals
-}
-
-pub fn opcode_name(op: &Op) -> &'static str {
-    match op {
-        Op::Nop => "Nop",
-        Op::LoadK(..) => "LoadK",
-        Op::Move(..) => "Move",
-        Op::Not(..) => "Not",
-        Op::ToStr(..) => "ToStr",
-        Op::ToBool(..) => "ToBool",
-        Op::JmpIfNil(..) => "JmpIfNil",
-        Op::JmpIfNotNil(..) => "JmpIfNotNil",
-        Op::NullishPick { .. } => "NullishPick",
-        Op::JmpFalseSet { .. } => "JmpFalseSet",
-        Op::JmpTrueSet { .. } => "JmpTrueSet",
-        Op::Add(..) => "Add",
-        Op::StrConcatKnownCap(..) => "StrConcatKnownCap",
-        Op::StrConcatToStr(..) => "StrConcatToStr",
-        Op::Sub(..) => "Sub",
-        Op::Mul(..) => "Mul",
-        Op::Div(..) => "Div",
-        Op::Mod(..) => "Mod",
-        Op::AddInt(..) => "AddInt",
-        Op::AddFloat(..) => "AddFloat",
-        Op::AddIntImm(..) => "AddIntImm",
-        Op::SubInt(..) => "SubInt",
-        Op::SubFloat(..) => "SubFloat",
-        Op::MulInt(..) => "MulInt",
-        Op::MulFloat(..) => "MulFloat",
-        Op::DivFloat(..) => "DivFloat",
-        Op::FloorDivImm { .. } => "FloorDivImm",
-        Op::ModInt(..) => "ModInt",
-        Op::ModFloat(..) => "ModFloat",
-        Op::CmpEq(..) => "CmpEq",
-        Op::CmpNe(..) => "CmpNe",
-        Op::CmpLt(..) => "CmpLt",
-        Op::CmpLe(..) => "CmpLe",
-        Op::CmpGt(..) => "CmpGt",
-        Op::CmpGe(..) => "CmpGe",
-        Op::CmpI { .. } => "CmpI",
-        Op::CMoveInt { .. } => "CMoveInt",
-        Op::CmpEqImm(..) => "CmpEqImm",
-        Op::CmpNeImm(..) => "CmpNeImm",
-        Op::CmpLtImm(..) => "CmpLtImm",
-        Op::CmpLeImm(..) => "CmpLeImm",
-        Op::CmpGtImm(..) => "CmpGtImm",
-        Op::CmpGeImm(..) => "CmpGeImm",
-        Op::In(..) => "In",
-        Op::LoadLocal(..) => "LoadLocal",
-        Op::StoreLocal(..) => "StoreLocal",
-        Op::LoadGlobal(..) => "LoadGlobal",
-        Op::DefineGlobal(..) => "DefineGlobal",
-        Op::LoadCapture { .. } => "LoadCapture",
-        Op::Access(..) => "Access",
-        Op::AccessK(..) => "AccessK",
-        Op::IndexK(..) => "IndexK",
-        Op::ListIndex(..) => "ListIndex",
-        Op::ListIndexI(..) => "ListIndexI",
-        Op::ListSetI { .. } => "ListSetI",
-        Op::StrIndex(..) => "StrIndex",
-        Op::StrIndexI(..) => "StrIndexI",
-        Op::Len { .. } => "Len",
-        Op::ListLen { .. } => "ListLen",
-        Op::MapLen { .. } => "MapLen",
-        Op::StrLen { .. } => "StrLen",
-        Op::Floor { .. } => "Floor",
-        Op::StartsWithK(..) => "StartsWithK",
-        Op::ContainsK(..) => "ContainsK",
-        Op::MapHas(..) => "MapHas",
-        Op::MapGetInterned(..) => "MapGetInterned",
-        Op::MapGetDynamic(..) => "MapGetDynamic",
-        Op::MapSetInterned(..) => "MapSetInterned",
-        Op::MapSetInternedMove(..) => "MapSetInternedMove",
-        Op::MapHasK(..) => "MapHasK",
-        Op::ListFoldAdd { .. } => "ListFoldAdd",
-        Op::MapValuesFoldAdd { .. } => "MapValuesFoldAdd",
-        Op::Index { .. } => "Index",
-        Op::PatternMatch { .. } => "PatternMatch",
-        Op::PatternMatchOrFail { .. } => "PatternMatchOrFail",
-        Op::Raise { .. } => "Raise",
-        Op::ToIter { .. } => "ToIter",
-        Op::BuildList { .. } => "BuildList",
-        Op::BuildMap { .. } => "BuildMap",
-        Op::ListSlice { .. } => "ListSlice",
-        Op::ListPush { .. } => "ListPush",
-        Op::ListPushMove { .. } => "ListPushMove",
-        Op::MapSet { .. } => "MapSet",
-        Op::MapSetMove { .. } => "MapSetMove",
-        Op::MakeClosure { .. } => "MakeClosure",
-        Op::Jmp(..) => "Jmp",
-        Op::JmpFalse(..) => "JmpFalse",
-        Op::BoolBranch(..) => "BoolBranch",
-        Op::CmpLtImmJmp { .. } => "CmpLtImmJmp",
-        Op::JmpNilOrFalseJmp { .. } => "JmpNilOrFalseJmp",
-        Op::AddIntImmJmp { .. } => "AddIntImmJmp",
-        Op::AddRangeCountImm { .. } => "AddRangeCountImm",
-        Op::CmpLeImmJmp { .. } => "CmpLeImmJmp",
-        Op::CmpEqImmJmp { .. } => "CmpEqImmJmp",
-        Op::CmpGtImmJmp { .. } => "CmpGtImmJmp",
-        Op::CmpGeImmJmp { .. } => "CmpGeImmJmp",
-        Op::CmpNeImmJmp { .. } => "CmpNeImmJmp",
-        Op::CmpIntJmp { .. } => "CmpIntJmp",
-        Op::Call { .. } => "Call",
-        Op::CallExact { .. } => "CallExact",
-        Op::CallClosureExact { .. } => "CallClosureExact",
-        Op::CallNativeFast { .. } => "CallNativeFast",
-        Op::CallMethod0 { .. } => "CallMethod0",
-        Op::CallGlobalMethod0 { .. } => "CallGlobalMethod0",
-        Op::CallNamed { .. } => "CallNamed",
-        Op::CallNamedFallback { .. } => "CallNamedFallback",
-        Op::Ret { .. } => "Ret",
-        Op::ForRangePrep { .. } => "ForRangePrep",
-        Op::ForRangeLoop { .. } => "ForRangeLoop",
-        Op::RangeLoopI { .. } => "RangeLoopI",
-        Op::ForRangeStep { .. } => "ForRangeStep",
-        Op::Break(..) => "Break",
-        Op::Continue(..) => "Continue",
-    }
-}
-
-pub fn opcode_category(op: &Op) -> VmOpcodeCategory {
-    match op {
-        Op::Nop | Op::LoadK(..) | Op::Move(..) | Op::Not(..) | Op::ToStr(..) | Op::ToBool(..) => VmOpcodeCategory::Data,
-        Op::Add(..)
-        | Op::StrConcatKnownCap(..)
-        | Op::StrConcatToStr(..)
-        | Op::Sub(..)
-        | Op::Mul(..)
-        | Op::Div(..)
-        | Op::Mod(..)
-        | Op::AddInt(..)
-        | Op::AddFloat(..)
-        | Op::AddIntImm(..)
-        | Op::SubInt(..)
-        | Op::SubFloat(..)
-        | Op::MulInt(..)
-        | Op::MulFloat(..)
-        | Op::DivFloat(..)
-        | Op::FloorDivImm { .. }
-        | Op::ModInt(..)
-        | Op::ModFloat(..)
-        | Op::Floor { .. }
-        | Op::AddIntImmJmp { .. }
-        | Op::AddRangeCountImm { .. } => VmOpcodeCategory::Numeric,
-        Op::CmpEq(..)
-        | Op::CmpNe(..)
-        | Op::CmpLt(..)
-        | Op::CmpLe(..)
-        | Op::CmpGt(..)
-        | Op::CmpGe(..)
-        | Op::CmpI { .. }
-        | Op::CMoveInt { .. }
-        | Op::CmpEqImm(..)
-        | Op::CmpNeImm(..)
-        | Op::CmpLtImm(..)
-        | Op::CmpLeImm(..)
-        | Op::CmpGtImm(..)
-        | Op::CmpGeImm(..)
-        | Op::CmpLtImmJmp { .. }
-        | Op::CmpLeImmJmp { .. }
-        | Op::CmpEqImmJmp { .. }
-        | Op::CmpGtImmJmp { .. }
-        | Op::CmpGeImmJmp { .. }
-        | Op::CmpNeImmJmp { .. }
-        | Op::CmpIntJmp { .. }
-        | Op::In(..) => VmOpcodeCategory::Compare,
-        Op::LoadLocal(..) | Op::StoreLocal(..) => VmOpcodeCategory::Local,
-        Op::LoadGlobal(..) | Op::DefineGlobal(..) | Op::LoadCapture { .. } => VmOpcodeCategory::Global,
-        Op::Access(..)
-        | Op::AccessK(..)
-        | Op::IndexK(..)
-        | Op::ListIndex(..)
-        | Op::ListIndexI(..)
-        | Op::ListSetI { .. }
-        | Op::StrIndex(..)
-        | Op::StrIndexI(..)
-        | Op::Index { .. }
-        | Op::Len { .. }
-        | Op::ListLen { .. }
-        | Op::MapLen { .. }
-        | Op::StrLen { .. }
-        | Op::StartsWithK(..)
-        | Op::ContainsK(..)
-        | Op::MapHas(..)
-        | Op::MapGetInterned(..)
-        | Op::MapGetDynamic(..)
-        | Op::MapHasK(..) => VmOpcodeCategory::Access,
-        Op::ListFoldAdd { .. }
-        | Op::MapValuesFoldAdd { .. }
-        | Op::ToIter { .. }
-        | Op::BuildList { .. }
-        | Op::BuildMap { .. }
-        | Op::ListSlice { .. }
-        | Op::ListPush { .. }
-        | Op::ListPushMove { .. }
-        | Op::MapSet { .. }
-        | Op::MapSetInterned(..)
-        | Op::MapSetInternedMove(..)
-        | Op::MapSetMove { .. } => VmOpcodeCategory::Container,
-        Op::JmpIfNil(..)
-        | Op::JmpIfNotNil(..)
-        | Op::NullishPick { .. }
-        | Op::JmpFalseSet { .. }
-        | Op::JmpTrueSet { .. }
-        | Op::Jmp(..)
-        | Op::JmpFalse(..)
-        | Op::BoolBranch(..)
-        | Op::JmpNilOrFalseJmp { .. }
-        | Op::Ret { .. }
-        | Op::ForRangePrep { .. }
-        | Op::ForRangeLoop { .. }
-        | Op::RangeLoopI { .. }
-        | Op::ForRangeStep { .. }
-        | Op::Break(..)
-        | Op::Continue(..) => VmOpcodeCategory::Control,
-        Op::Call { .. }
-        | Op::CallExact { .. }
-        | Op::CallClosureExact { .. }
-        | Op::CallNativeFast { .. }
-        | Op::CallMethod0 { .. }
-        | Op::CallGlobalMethod0 { .. }
-        | Op::CallNamed { .. }
-        | Op::CallNamedFallback { .. } => VmOpcodeCategory::Call,
-        Op::MakeClosure { .. } => VmOpcodeCategory::Closure,
-        Op::PatternMatch { .. } | Op::PatternMatchOrFail { .. } => VmOpcodeCategory::Pattern,
-        Op::Raise { .. } => VmOpcodeCategory::Error,
-    }
-}
-
-#[cfg(test)]
-#[path = "analysis_tests.rs"]
-mod analysis_tests;

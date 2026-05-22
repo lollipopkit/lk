@@ -150,7 +150,7 @@ fn test_validate_identifier_access_with_valid_vars() {
 
     // Create a variables map with req.user.role
     let mut user_map = HashMap::new();
-    user_map.insert("role".to_string(), Val::Str("admin".to_string().into()));
+    user_map.insert("role".to_string(), Val::from_str("admin"));
     user_map.insert("id".to_string(), Val::Int(123));
 
     let mut req_map = HashMap::new();
@@ -179,7 +179,7 @@ fn test_identifier_map_has_key() {
 
     // Create nested variables map structure
     let mut inner_map = HashMap::new();
-    inner_map.insert("name".to_string(), Val::Str("test".to_string().into()));
+    inner_map.insert("name".to_string(), Val::from_str("test"));
 
     let mut middle_map = HashMap::new();
     middle_map.insert("user".to_string(), Val::from(inner_map));

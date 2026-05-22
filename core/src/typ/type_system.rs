@@ -199,18 +199,11 @@ impl TypeRegistry {
 
             // Only function values are valid implementations
             let mut actual_ty = match val {
-                Val::Closure(closure) => Type::Function {
-                    params: vec![Type::Any; closure.params.len()], // Without annotations, conservatively Any
-                    named_params: Vec::new(),
-                    return_type: Box::new(Type::Any),
-                },
-                Val::RustFunction(_)
-                | Val::RustFastFunction(_)
-                | Val::RustFastFunctionNamed(_)
-                | Val::RustFunctionNamed(_) => {
+                value if value.is_callable() => {
                     // Native function type info not carried; accept for now as Function Any
+                    let params = value.as_closure().map_or(0, |closure| closure.params.len());
                     Type::Function {
-                        params: vec![],
+                        params: vec![Type::Any; params],
                         named_params: Vec::new(),
                         return_type: Box::new(Type::Any),
                     }

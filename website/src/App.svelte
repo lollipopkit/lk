@@ -172,9 +172,7 @@ import * as config from "config/app";`,
       label: 'Collection pipelines',
       code: `import iter;
 
-let total = iter
-  .range(0, 10, 2)
-  .reduce(0, |acc, n| acc + n);`,
+let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     },
   ]
 

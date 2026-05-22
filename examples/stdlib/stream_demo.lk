@@ -9,42 +9,43 @@ fn assert(cond) {
 
 // 1. Create a stream from a list
 let s1 = stream.from_list([10, 20, 30, 40, 50]);
-let collected1 = s1.collect();
+let collected1 = stream.collect(s1);
 assert(collected1 == [10, 20, 30, 40, 50]);
 
 // 2. Stream from finite range
 let s2 = stream.range(0, 6);
-let evens = s2.filter(|x| x % 2 == 0).collect();
+let evens = stream.collect(stream.filter(s2, fn(x) => x % 2 == 0));
 assert(evens == [0, 2, 4]);
 
 // 3. Map and collect
 let s3 = stream.from_list([1, 2, 3]);
-let doubled = s3.map(|x| x * 10).collect();
+let doubled = stream.collect(stream.map(s3, fn(x) => x * 10));
 assert(doubled == [10, 20, 30]);
 
 // 4. Filter + map pipeline
 let s4 = stream.from_list([1, 2, 3, 4, 5, 6]);
-let result = s4.filter(|x| x > 3).map(|x| x * x).collect();
+let filtered = stream.filter(s4, fn(x) => x > 3);
+let result = stream.collect(stream.map(filtered, fn(x) => x * x));
 assert(result == [16, 25, 36]);
 
 // 5. Take and collect (finite only — avoid infinite streams)
 let s5a = stream.range(0, 100);
-let first5 = s5a.take(5).collect();
+let first5 = stream.collect(stream.take(s5a, 5));
 assert(first5 == [0, 1, 2, 3, 4]);
 
 let s5b = stream.range(0, 10);
-let skipped = s5b.skip(7).collect();
+let skipped = stream.collect(stream.skip(s5b, 7));
 assert(skipped == [7, 8, 9]);
 
 // 6. Chain two finite streams
 let s6a = stream.from_list([1, 2]);
 let s6b = stream.from_list([3, 4]);
-let chained = s6a.chain(s6b).collect();
+let chained = stream.collect(stream.chain(s6a, s6b));
 assert(chained == [1, 2, 3, 4]);
 
-// 7. List.to_stream() method
+// 7. List source through stream.from_list
 let original = [1, 2, 3, 4, 5];
-let via_stream = original.to_stream().map(|x| x + 100).collect();
+let via_stream = stream.collect(stream.map(stream.from_list(original), fn(x) => x + 100));
 assert(via_stream == [101, 102, 103, 104, 105]);
 
 println("stream_demo: all assertions passed");

@@ -53,7 +53,7 @@ where
         for (k, v) in m.into_iter() {
             inner.insert(Val::intern_str(k.as_ref()), v.into());
         }
-        Val::Map(Arc::new(inner))
+        Val::map(Arc::new(inner))
     }
 }
 
@@ -68,7 +68,7 @@ where
         for (k, v) in m.into_iter() {
             inner.insert(Val::intern_str(k.as_ref()), v.into());
         }
-        Val::Map(Arc::new(inner))
+        Val::map(Arc::new(inner))
     }
 }
 
@@ -78,7 +78,7 @@ where
 {
     fn from(v: Vec<T>) -> Self {
         let v: Vec<Val> = v.into_iter().map(Into::into).collect();
-        Val::List(Arc::new(v))
+        Val::list(Arc::new(v))
     }
 }
 
@@ -111,13 +111,13 @@ impl From<()> for Val {
 
 impl From<(u64, Val)> for Val {
     fn from((id, value): (u64, Val)) -> Self {
-        Val::Task(Arc::new(TaskValue { id, value: Some(value) }))
+        Val::task(Arc::new(TaskValue { id, value: Some(value) }))
     }
 }
 
 impl From<(u64, i64, Type)> for Val {
     fn from((id, capacity, inner_type): (u64, i64, Type)) -> Self {
-        Val::Channel(Arc::new(ChannelValue {
+        Val::channel(Arc::new(ChannelValue {
             id,
             capacity: Some(capacity),
             inner_type,
@@ -141,14 +141,14 @@ impl From<serde_json::Value> for Val {
             serde_json::Value::Bool(b) => Val::Bool(b),
             serde_json::Value::Array(a) => {
                 let v: Vec<Val> = a.into_iter().map(Val::from).collect();
-                Val::List(Arc::from(v))
+                Val::list(Arc::from(v))
             }
             serde_json::Value::Object(o) => {
                 let m: FastHashMap<ArcStr, Val> = o
                     .into_iter()
                     .map(|(k, v)| (Val::intern_str(k.as_str()), Val::from(v)))
                     .collect();
-                Val::Map(Arc::new(m))
+                Val::map(Arc::new(m))
             }
             serde_json::Value::Null => Val::Nil,
         }
@@ -171,7 +171,7 @@ impl From<serde_yaml::Value> for Val {
             serde_yaml::Value::Bool(b) => Val::Bool(b),
             serde_yaml::Value::Sequence(a) => {
                 let v: Vec<Val> = a.into_iter().map(Val::from).collect();
-                Val::List(Arc::from(v))
+                Val::list(Arc::from(v))
             }
             serde_yaml::Value::Mapping(o) => {
                 let m: FastHashMap<ArcStr, Val> = o
@@ -184,7 +184,7 @@ impl From<serde_yaml::Value> for Val {
                         }
                     })
                     .collect();
-                Val::Map(Arc::new(m))
+                Val::map(Arc::new(m))
             }
             serde_yaml::Value::Null => Val::Nil,
             serde_yaml::Value::Tagged(tagged) => Val::from(tagged.value),

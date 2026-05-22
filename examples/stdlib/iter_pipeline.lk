@@ -16,18 +16,13 @@ assert(r2 == [2, 3, 4, 5]);
 let r3 = iter.range(0, 10, 2); // [0,2,4,6,8]
 assert(r3 == [0, 2, 4, 6, 8]);
 
-// 2. iter module functions vs method sugar
+// 2. iter module functions
 let xs = [1, 2, 3, 4, 5];
 
-// Both styles work:
-let m1 = iter.map(xs, |x| x * 3);        // module style
-let m2 = xs.map(|x| x * 3);              // method sugar
-assert(m1 == m2);
+let m1 = iter.map(xs, |x| x * 3);
 assert(m1 == [3, 6, 9, 12, 15]);
 
 let f1 = iter.filter(xs, |x| x > 3);
-let f2 = xs.filter(|x| x > 3);
-assert(f1 == f2);
 assert(f1 == [4, 5]);
 
 // 3. enumerate — index + value pairs
@@ -49,7 +44,10 @@ let chained = iter.chain([1, 2], [3, 4]);
 assert(chained == [1, 2, 3, 4]);
 
 // 7. flatten — one-level deep
-let flat = iter.flatten([[1, 2], [3], [4, 5]]);
+let left = [1, 2];
+let middle = [3];
+let right = [4, 5];
+let flat = iter.flatten([left, middle, right]);
 assert(flat == [1, 2, 3, 4, 5]);
 
 // 8. unique — deduplicate
@@ -60,11 +58,11 @@ assert(uniq == [3, 1, 4, 5, 9, 2, 6]);
 let chunks = iter.chunk([1, 2, 3, 4, 5], 2);
 assert(chunks.len() == 3);
 
-// 10. Pipeline: generate → filter → map → reduce
-let pipeline = iter.range(1, 20)
-  .filter(|x| x % 2 == 0)
-  .map(|x| x * x)
-  .reduce(0, |acc, x| acc + x);
+// 10. Pipeline: generate -> filter -> map -> reduce
+let pipeline_src = iter.range(1, 20);
+let pipeline_even = iter.filter(pipeline_src, |x| x % 2 == 0);
+let pipeline_squares = iter.map(pipeline_even, |x| x * x);
+let pipeline = iter.reduce(pipeline_squares, 0, |acc, x| acc + x);
 // Even squares 1..19: 4+16+36+64+100+144+196+256+324 = 1140
 assert(pipeline == 1140);
 

@@ -1,127 +1,14 @@
-use anyhow::{Result, anyhow};
-use arcstr::ArcStr;
-use lk_core::module::Module;
-use lk_core::val::methods::register_fast_method;
-use lk_core::val::{IteratorState, IteratorValue, NativeArgs, Val};
-use lk_core::vm::VmContext;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{collections::HashMap, sync::Arc};
 
-static LEGACY_WARNINGS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-
-fn warn_legacy(api: &'static str, message: &'static str) {
-    let inserted = {
-        let registry = LEGACY_WARNINGS.get_or_init(|| Mutex::new(HashSet::new()));
-        let mut guard = registry.lock().expect("legacy warning mutex poisoned");
-        guard.insert(api)
-    };
-    if inserted {
-        tracing::warn!(target: "lk::iter", "{}: {}", api, message);
-    }
-}
-
-fn expect_iterator(val: &Val, func: &str) -> Result<Arc<IteratorValue>> {
-    match val {
-        Val::Iterator(handle) => Ok(handle.clone()),
-        other => Err(anyhow!("{} expects iterator, got {}", func, other.type_name())),
-    }
-}
-
-fn expect_callable(val: &Val, func: &str) -> Result<Val> {
-    match val {
-        f @ Val::Closure(_)
-        | f @ Val::RustFunction(_)
-        | f @ Val::RustFastFunction(_)
-        | f @ Val::RustFastFunctionNamed(_)
-        | f @ Val::RustFunctionNamed(_) => Ok(f.clone()),
-        other => Err(anyhow!("{} expects function, got {}", func, other.type_name())),
-    }
-}
-
-fn collect_iterator_to_list(iter: Arc<IteratorValue>, ctx: &mut VmContext) -> Result<Val> {
-    let (lower, upper) = iter.size_hint();
-    let capacity = upper.unwrap_or(lower);
-    let mut out: Vec<Val> = Vec::with_capacity(capacity);
-    while let Some(value) = iter.next(ctx)? {
-        out.push(value);
-    }
-    Ok(Val::List(out.into()))
-}
-
-fn truthy(value: &Val) -> bool {
-    !matches!(value, Val::Bool(false) | Val::Nil)
-}
-
-struct MapIteratorState {
-    source: Arc<IteratorValue>,
-    mapper: Val,
-}
-
-impl IteratorState for MapIteratorState {
-    fn next(&mut self, ctx: &mut VmContext) -> Result<Option<Val>> {
-        match self.source.next(ctx)? {
-            Some(value) => {
-                let args = [value.clone()];
-                let mapped = self.mapper.call(&args, ctx)?;
-                Ok(Some(mapped))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.source.size_hint()
-    }
-
-    fn debug_name(&self) -> &'static str {
-        "iterator.map"
-    }
-}
-
-struct FilterIteratorState {
-    source: Arc<IteratorValue>,
-    predicate: Val,
-}
-
-impl IteratorState for FilterIteratorState {
-    fn next(&mut self, ctx: &mut VmContext) -> Result<Option<Val>> {
-        loop {
-            match self.source.next(ctx)? {
-                Some(candidate) => {
-                    let args = [candidate.clone()];
-                    let keep = self.predicate.call(&args, ctx)?;
-                    if truthy(&keep) {
-                        return Ok(Some(candidate));
-                    }
-                }
-                None => return Ok(None),
-            }
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let (_, upper) = self.source.size_hint();
-        (0, upper)
-    }
-
-    fn debug_name(&self) -> &'static str {
-        "iterator.filter"
-    }
-}
-
-fn map_iterator_handle(source: Arc<IteratorValue>, mapper: Val) -> Result<Arc<IteratorValue>> {
-    Ok(IteratorValue::with_origin(
-        MapIteratorState { source, mapper },
-        ArcStr::from("iter.map"),
-    ))
-}
-
-fn filter_iterator_handle(source: Arc<IteratorValue>, predicate: Val) -> Result<Arc<IteratorValue>> {
-    Ok(IteratorValue::with_origin(
-        FilterIteratorState { source, predicate },
-        ArcStr::from("iter.filter"),
-    ))
-}
+use anyhow::{Result, anyhow, bail};
+use lk_core::{
+    module::{Module, ModuleRegistry},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val, runtime_val_to_val},
+    vm::{
+        NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
+        runtime_value_to_callable32,
+    },
+};
 
 #[derive(Debug)]
 pub struct IterModule {
@@ -138,45 +25,35 @@ impl IterModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
 
-        // Register iterator functions on the fast native ABI.
-        // Generic higher-order ops
-        functions.insert("map".to_string(), Val::RustFastFunction(map_fast));
-        functions.insert("filter".to_string(), Val::RustFastFunction(filter_fast));
-        functions.insert("reduce".to_string(), Val::RustFastFunction(reduce_fast));
-        // Sequence utilities
-        functions.insert("enumerate".to_string(), Val::RustFastFunction(enumerate_fast));
-        functions.insert("range".to_string(), Val::RustFastFunction(range_fast));
-        functions.insert("zip".to_string(), Val::RustFastFunction(zip_fast));
-        functions.insert("take".to_string(), Val::RustFastFunction(take_fast));
-        functions.insert("skip".to_string(), Val::RustFastFunction(skip_fast));
-        functions.insert("chain".to_string(), Val::RustFastFunction(chain_fast));
-        functions.insert("flatten".to_string(), Val::RustFastFunction(flatten_fast));
-        functions.insert("unique".to_string(), Val::RustFastFunction(unique_fast));
-        functions.insert("chunk".to_string(), Val::RustFastFunction(chunk_fast));
-        functions.insert("next".to_string(), Val::RustFastFunction(next_fast));
-        functions.insert("collect".to_string(), Val::RustFastFunction(collect_fast));
-
-        register_fast_method("Iterator", "map", iterator_map_method_fast);
-        register_fast_method("Iterator", "filter", iterator_filter_method_fast);
-        register_fast_method("Iterator", "reduce", iterator_reduce_method_fast);
-        register_fast_method("Iterator", "next", iterator_next_method_fast);
-        register_fast_method("Iterator", "collect", iterator_collect_method_fast);
+        register_native(&mut functions, "map", map32, 2);
+        register_native(&mut functions, "filter", filter32, 2);
+        register_native(&mut functions, "reduce", reduce32, 3);
+        register_native(&mut functions, "enumerate", enumerate32, 1);
+        register_native(&mut functions, "range", range32, NativeEntry32::VARIADIC);
+        register_native(&mut functions, "zip", zip32, 2);
+        register_native(&mut functions, "take", take32, 2);
+        register_native(&mut functions, "skip", skip32, 2);
+        register_native(&mut functions, "chain", chain32, 2);
+        register_native(&mut functions, "flatten", flatten32, 1);
+        register_native(&mut functions, "unique", unique32, 1);
+        register_native(&mut functions, "chunk", chunk32, 2);
+        register_native(&mut functions, "next", next32, 1);
+        register_native(&mut functions, "collect", collect32, 1);
 
         Self { functions }
     }
 }
 
 impl Module for IterModule {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "iter"
     }
 
-    fn description(&self) -> &'static str {
-        "Iterator utilities and functions for working with collections"
+    fn description(&self) -> &str {
+        "List-oriented iterator utilities"
     }
 
-    fn register(&self, _registry: &mut lk_core::module::ModuleRegistry) -> Result<()> {
-        // Don't register functions globally - they should be accessed via module.function()
+    fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
         Ok(())
     }
 
@@ -185,529 +62,388 @@ impl Module for IterModule {
     }
 }
 
-fn map_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    map(args.as_slice(), ctx)
+fn register_native(
+    functions: &mut HashMap<String, Val>,
+    name: &str,
+    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    arity: u16,
+) {
+    functions.insert(
+        name.to_string(),
+        Val::runtime_native32(NativeFunction32::Plain(function), arity),
+    );
 }
 
-/// map - apply function to each element of list or iterator
-/// Accepts (receiver, function), including method sugar.
-pub fn map(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    if let [Val::Iterator(iter), func] = args {
-        let mapper = expect_callable(func, "map() second argument")?;
-        let handle = map_iterator_handle(iter.clone(), mapper)?;
-        warn_legacy(
-            "iter.map(iterator)",
-            "Returning materialised list for compatibility; prefer iterator.map(...).collect()",
-        );
-        return collect_iterator_to_list(handle, ctx);
+fn map32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "iter.map")?;
+    let values = args.as_slice();
+    let input = list_items(&values[0], runtime.heap_mut(), "iter.map first argument")?;
+    let mut out = Vec::with_capacity(input.len());
+    for value in input {
+        out.push(call_callable(
+            &values[1],
+            &[value],
+            runtime,
+            "iter.map second argument",
+        )?);
     }
-    if matches!(args, [Val::List(_), _]) {
-        warn_legacy(
-            "iter.map(list)",
-            "Legacy eager map is deprecated; use list.into_iter().map(...).collect()",
-        );
-    }
-    legacy_map(args, ctx)
+    runtime_list(out, runtime.heap_mut())
 }
 
-fn legacy_map(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    let (list, func) = match args {
-        [Val::List(l), f] => (l.clone(), f.clone()),
-        _ => return Err(anyhow!("map() expects (list, function)")),
-    };
-
-    let call = match func {
-        Val::Closure(_) | Val::RustFunction(_) | Val::RustFastFunction(_) | Val::RustFastFunctionNamed(_) => func,
-        other => {
-            return Err(anyhow!(
-                "map() second argument must be a function, got {}",
-                other.type_name()
-            ));
-        }
-    };
-
-    let mut out: Vec<Val> = Vec::with_capacity(list.len());
-    for item in list.iter() {
-        let res = call.call(std::slice::from_ref(item), ctx)?;
-        out.push(res);
-    }
-    Ok(Val::List(out.into()))
-}
-
-fn filter_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    filter(args.as_slice(), ctx)
-}
-
-/// filter - keep elements where predicate is truthy
-/// Truthiness: false and nil are false; everything else true.
-/// Accepts (receiver, function), including method sugar.
-pub fn filter(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    if let [Val::Iterator(iter), func] = args {
-        let predicate = expect_callable(func, "filter() second argument")?;
-        let handle = filter_iterator_handle(iter.clone(), predicate)?;
-        warn_legacy(
-            "iter.filter(iterator)",
-            "Returning materialised list for compatibility; prefer iterator.filter(...).collect()",
-        );
-        return collect_iterator_to_list(handle, ctx);
-    }
-    if matches!(args, [Val::List(_), _]) {
-        warn_legacy(
-            "iter.filter(list)",
-            "Legacy eager filter is deprecated; use list.into_iter().filter(...).collect()",
-        );
-    }
-    legacy_filter(args, ctx)
-}
-
-fn legacy_filter(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    let (list, func) = match args {
-        [Val::List(l), f] => (l.clone(), f.clone()),
-        _ => return Err(anyhow!("filter() expects (list, function)")),
-    };
-
-    let call = match func {
-        Val::Closure(_) | Val::RustFunction(_) | Val::RustFastFunction(_) | Val::RustFastFunctionNamed(_) => func,
-        other => {
-            return Err(anyhow!(
-                "filter() second argument must be a function, got {}",
-                other.type_name()
-            ));
-        }
-    };
-
-    let mut out: Vec<Val> = Vec::with_capacity(list.len());
-    for item in list.iter() {
-        let res = call.call(std::slice::from_ref(item), ctx)?;
-        if truthy(&res) {
-            out.push(item.clone());
+fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "iter.filter")?;
+    let values = args.as_slice();
+    let input = list_items(&values[0], runtime.heap_mut(), "iter.filter first argument")?;
+    let mut out = Vec::with_capacity(input.len());
+    for value in input {
+        let keep = call_callable(
+            &values[1],
+            std::slice::from_ref(&value),
+            runtime,
+            "iter.filter second argument",
+        )?;
+        if truthy(&keep) {
+            out.push(value);
         }
     }
-    Ok(Val::List(out.into()))
+    runtime_list(out, runtime.heap_mut())
 }
 
-fn reduce_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    reduce(args.as_slice(), ctx)
-}
-
-/// reduce - fold list with accumulator
-/// Accepts (receiver, init, function)
-pub fn reduce(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 3 {
-        return Err(anyhow!("reduce() expects 3 arguments: list|iterator, init, function"));
-    }
-    if let Val::Iterator(iter) = &args[0] {
-        let func = expect_callable(&args[2], "reduce() third argument")?;
-        let mut acc = args[1].clone();
-        while let Some(value) = iter.next(ctx)? {
-            let args = [acc, value];
-            acc = func.call(&args, ctx)?;
-        }
-        return Ok(acc);
-    }
-    if matches!(args[0], Val::List(_)) {
-        warn_legacy(
-            "iter.reduce(list)",
-            "Legacy eager reduce is deprecated; use list.into_iter().reduce(...)",
-        );
-    }
-    legacy_reduce(args, ctx)
-}
-
-fn legacy_reduce(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    let list = match &args[0] {
-        Val::List(l) => l.clone(),
-        _ => return Err(anyhow!("reduce() first argument must be a list")),
-    };
-    let mut acc = args[1].clone();
-    let func = match &args[2] {
-        f @ Val::Closure(_)
-        | f @ Val::RustFunction(_)
-        | f @ Val::RustFastFunction(_)
-        | f @ Val::RustFastFunctionNamed(_) => f.clone(),
-        other => {
-            return Err(anyhow!(
-                "reduce() third argument must be a function, got {}",
-                other.type_name()
-            ));
-        }
-    };
-
-    for item in list.iter() {
-        acc = func.call(&[acc, item.clone()], ctx)?;
+fn reduce32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 3, "iter.reduce")?;
+    let values = args.as_slice();
+    let input = list_items(&values[0], runtime.heap_mut(), "iter.reduce first argument")?;
+    let mut acc = values[1].clone();
+    for value in input {
+        acc = call_callable(&values[2], &[acc, value], runtime, "iter.reduce third argument")?;
     }
     Ok(acc)
 }
 
-fn enumerate_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    enumerate(args.as_slice(), ctx)
-}
-
-/// enumerate - 为序列添加索引
-/// enumerate([1, 2, 3]) => [[0, 1], [1, 2], [2, 3]]
-pub fn enumerate(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("enumerate expects 1 argument, got {}", args.len()));
+fn enumerate32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let input = one_list(args, runtime, "iter.enumerate")?;
+    let mut out = Vec::with_capacity(input.len());
+    for (index, value) in input.into_iter().enumerate() {
+        out.push(runtime_list(
+            vec![RuntimeVal::Int(index as i64), value],
+            runtime.heap_mut(),
+        )?);
     }
-
-    match &args[0] {
-        Val::List(list) => {
-            let enumerated: Vec<Val> = list
-                .iter()
-                .enumerate()
-                .map(|(i, v)| Val::List(vec![Val::Int(i as i64), v.clone()].into()))
-                .collect();
-            Ok(Val::List(enumerated.into()))
-        }
-        _ => Err(anyhow!("enumerate expects a list, got {:?}", args[0].type_name())),
-    }
+    runtime_list(out, runtime.heap_mut())
 }
 
-fn range_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    range(args.as_slice(), ctx)
-}
-
-/// range - 生成整数范围
-/// range(5) => [0, 1, 2, 3, 4]
-/// range(2, 5) => [2, 3, 4]
-/// range(0, 10, 2) => [0, 2, 4, 6, 8]
-pub fn range(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    let (start, end, step) = match args.len() {
-        1 => (0, extract_int(&args[0])?, 1),
-        2 => (extract_int(&args[0])?, extract_int(&args[1])?, 1),
-        3 => (extract_int(&args[0])?, extract_int(&args[1])?, extract_int(&args[2])?),
-        _ => return Err(anyhow!("range expects 1-3 arguments, got {}", args.len())),
+fn range32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let values = args.as_slice();
+    let (start, end, step) = match values {
+        [end] => (0, int_arg(end, "iter.range end")?, 1),
+        [start, end] => (int_arg(start, "iter.range start")?, int_arg(end, "iter.range end")?, 1),
+        [start, end, step] => (
+            int_arg(start, "iter.range start")?,
+            int_arg(end, "iter.range end")?,
+            int_arg(step, "iter.range step")?,
+        ),
+        _ => bail!("iter.range expects (end), (start, end), or (start, end, step)"),
     };
-
     if step == 0 {
-        return Err(anyhow!("range step cannot be zero"));
+        bail!("iter.range step cannot be zero");
     }
 
-    let mut result = Vec::new();
+    let mut out = Vec::new();
     let mut current = start;
-
     if step > 0 {
         while current < end {
-            result.push(Val::Int(current));
+            out.push(current);
             current += step;
         }
-    } else if step < 0 {
+    } else {
         while current > end {
-            result.push(Val::Int(current));
+            out.push(current);
             current += step;
         }
     }
-
-    Ok(Val::List(result.into()))
+    Ok(RuntimeVal::Obj(
+        runtime.heap_mut().alloc(HeapValue::List(TypedList::Int(out))),
+    ))
 }
 
-/// Helper function to extract integer from Val
-fn extract_int(val: &Val) -> Result<i64> {
-    match val {
-        Val::Int(i) => Ok(*i),
-        _ => Err(anyhow!("Expected integer, got {:?}", val)),
+fn zip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "iter.zip")?;
+    let values = args.as_slice();
+    let left = list_items(&values[0], runtime.heap_mut(), "iter.zip first argument")?;
+    let right = list_items(&values[1], runtime.heap_mut(), "iter.zip second argument")?;
+    let mut out = Vec::with_capacity(left.len().min(right.len()));
+    for (left, right) in left.into_iter().zip(right) {
+        out.push(runtime_list(vec![left, right], runtime.heap_mut())?);
     }
+    runtime_list(out, runtime.heap_mut())
 }
 
-fn zip_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    zip(args.as_slice(), ctx)
+fn take32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "iter.take")?;
+    let values = args.as_slice();
+    let input = list_items(&values[0], runtime.heap_mut(), "iter.take first argument")?;
+    let n = count_arg(&values[1], "iter.take count")?;
+    runtime_list(input.into_iter().take(n).collect(), runtime.heap_mut())
 }
 
-/// zip - pair elements from two lists by index
-/// zip([1,2], ["a","b","c"]) => [[1,"a"], [2,"b"]]
-pub fn zip(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("zip expects 2 arguments: list1, list2"));
-    }
-    let a = match &args[0] {
-        Val::List(l) => l,
-        _ => return Err(anyhow!("zip first argument must be a list")),
-    };
-    let b = match &args[1] {
-        Val::List(l) => l,
-        _ => return Err(anyhow!("zip second argument must be a list")),
-    };
-    let len = std::cmp::min(a.len(), b.len());
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        out.push(Val::List(vec![a[i].clone(), b[i].clone()].into()));
-    }
-    Ok(Val::List(out.into()))
+fn skip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "iter.skip")?;
+    let values = args.as_slice();
+    let input = list_items(&values[0], runtime.heap_mut(), "iter.skip first argument")?;
+    let n = count_arg(&values[1], "iter.skip count")?;
+    runtime_list(input.into_iter().skip(n).collect(), runtime.heap_mut())
 }
 
-fn take_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    take(args.as_slice(), ctx)
+fn chain32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "iter.chain")?;
+    let values = args.as_slice();
+    let mut out = list_items(&values[0], runtime.heap_mut(), "iter.chain first argument")?;
+    out.extend(list_items(
+        &values[1],
+        runtime.heap_mut(),
+        "iter.chain second argument",
+    )?);
+    runtime_list(out, runtime.heap_mut())
 }
 
-/// take - take first n elements from list
-pub fn take(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("take expects 2 arguments: list, n"));
-    }
-    let list = match &args[0] {
-        Val::List(l) => l,
-        _ => return Err(anyhow!("take first argument must be a list")),
-    };
-    let n = extract_int(&args[1])?;
-    if n <= 0 {
-        return Ok(Val::List(Vec::<Val>::new().into()));
-    }
-    let end = std::cmp::min(list.len(), n as usize);
-    Ok(Val::List(list[0..end].to_vec().into()))
-}
-
-fn skip_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    skip(args.as_slice(), ctx)
-}
-
-/// skip - skip first n elements from list
-pub fn skip(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("skip expects 2 arguments: list, n"));
-    }
-    let list = match &args[0] {
-        Val::List(l) => l,
-        _ => return Err(anyhow!("skip first argument must be a list")),
-    };
-    let n = extract_int(&args[1])?;
-    if n <= 0 {
-        return Ok(Val::List(list.clone()));
-    }
-    let start = std::cmp::min(list.len(), n as usize);
-    Ok(Val::List(list[start..].to_vec().into()))
-}
-
-fn chain_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    chain(args.as_slice(), ctx)
-}
-
-/// chain - concatenate two lists
-pub fn chain(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("chain expects 2 arguments: list1, list2"));
-    }
-    let a = match &args[0] {
-        Val::List(l) => l,
-        _ => return Err(anyhow!("chain first argument must be a list")),
-    };
-    let b = match &args[1] {
-        Val::List(l) => l,
-        _ => return Err(anyhow!("chain second argument must be a list")),
-    };
-    let mut out = Vec::with_capacity(a.len() + b.len());
-    out.extend(a.iter().cloned());
-    out.extend(b.iter().cloned());
-    Ok(Val::List(out.into()))
-}
-
-fn flatten_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    flatten(args.as_slice(), ctx)
-}
-
-/// flatten - flatten one level of nesting in a list
-pub fn flatten(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("flatten expects 1 argument: list"));
-    }
-    let list = match &args[0] {
-        Val::List(l) => l,
-        _ => return Err(anyhow!("flatten argument must be a list")),
-    };
-    let mut out: Vec<Val> = Vec::new();
-    for item in list.iter() {
-        match item {
-            Val::List(inner) => out.extend(inner.iter().cloned()),
-            other => out.push(other.clone()),
+fn flatten32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let input = one_list(args, runtime, "iter.flatten")?;
+    let mut out = Vec::new();
+    for value in input {
+        match maybe_list_items(&value, runtime.heap_mut())? {
+            Some(values) => out.extend(values),
+            None => out.push(value),
         }
     }
-    Ok(Val::List(out.into()))
+    runtime_list(out, runtime.heap_mut())
 }
 
-fn unique_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    unique(args.as_slice(), ctx)
-}
-
-/// unique - remove duplicates (O(n^2), stable)
-pub fn unique(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("unique expects 1 argument: list"));
+fn unique32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let input = one_list(args, runtime, "iter.unique")?;
+    let mut out: Vec<RuntimeVal> = Vec::with_capacity(input.len());
+    for value in input {
+        if !out
+            .iter()
+            .any(|existing| runtime_values_equal(existing, &value, &runtime.state.heap))
+        {
+            out.push(value);
+        }
     }
-    let list = match &args[0] {
-        Val::List(l) => &**l,
-        _ => return Err(anyhow!("unique argument must be a list")),
+    runtime_list(out, runtime.heap_mut())
+}
+
+fn chunk32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "iter.chunk")?;
+    let values = args.as_slice();
+    let input = list_items(&values[0], runtime.heap_mut(), "iter.chunk first argument")?;
+    let size = count_arg(&values[1], "iter.chunk size")?;
+    if size == 0 {
+        bail!("iter.chunk size must be positive");
+    }
+    let mut out = Vec::new();
+    for chunk in input.chunks(size) {
+        out.push(runtime_list(chunk.to_vec(), runtime.heap_mut())?);
+    }
+    runtime_list(out, runtime.heap_mut())
+}
+
+fn next32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let mut input = one_list(args, runtime, "iter.next")?.into_iter();
+    Ok(input.next().unwrap_or(RuntimeVal::Nil))
+}
+
+fn collect32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    let input = one_list(args, runtime, "iter.collect")?;
+    runtime_list(input, runtime.heap_mut())
+}
+
+fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        Ok(())
+    } else {
+        bail!(
+            "{name} expects exactly {expected} argument{}",
+            if expected == 1 { "" } else { "s" }
+        )
+    }
+}
+
+fn one_list(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>, name: &str) -> Result<Vec<RuntimeVal>> {
+    expect_arity(args, 1, name)?;
+    list_items(&args.as_slice()[0], runtime.heap_mut(), name)
+}
+
+fn list_items(value: &RuntimeVal, heap: &mut HeapStore, context: &str) -> Result<Vec<RuntimeVal>> {
+    match maybe_list_items(value, heap)? {
+        Some(values) => Ok(values),
+        None => bail!("{context} expects a list"),
+    }
+}
+
+fn maybe_list_items(value: &RuntimeVal, heap: &mut HeapStore) -> Result<Option<Vec<RuntimeVal>>> {
+    let RuntimeVal::Obj(handle) = value else {
+        return Ok(None);
     };
-    let mut out: Vec<Val> = Vec::with_capacity(list.len());
-    'outer: for v in list.iter() {
-        for seen in out.iter() {
-            if seen == v {
-                continue 'outer;
+    let value = heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        .clone();
+    match value {
+        HeapValue::List(list) => Ok(Some(list.materialize_mixed(heap))),
+        _ => Ok(None),
+    }
+}
+
+fn runtime_list(values: Vec<RuntimeVal>, heap: &mut HeapStore) -> Result<RuntimeVal> {
+    let list = TypedList::from_runtime_values(values, heap);
+    Ok(RuntimeVal::Obj(heap.alloc(HeapValue::List(list))))
+}
+
+fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
+    match value {
+        RuntimeVal::Int(value) => Ok(*value),
+        _ => Err(anyhow!("{context} must be an integer")),
+    }
+}
+
+fn count_arg(value: &RuntimeVal, context: &str) -> Result<usize> {
+    let value = int_arg(value, context)?;
+    if value < 0 {
+        bail!("{context} must be non-negative");
+    }
+    usize::try_from(value).map_err(|_| anyhow!("{context} is too large"))
+}
+
+fn truthy(value: &RuntimeVal) -> bool {
+    !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
+}
+
+fn call_callable(
+    callable_value: &RuntimeVal,
+    args: &[RuntimeVal],
+    runtime: &mut NativeRuntime32<'_>,
+    context: &str,
+) -> Result<RuntimeVal> {
+    let RuntimeVal::Obj(handle) = callable_value else {
+        bail!("{context} must be callable");
+    };
+    let value = runtime
+        .state
+        .heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        .clone();
+    let HeapValue::Callable(callable) = value else {
+        bail!("{context} must be callable");
+    };
+
+    match callable {
+        CallableValue::Runtime32(function) => call_runtime_callable32_runtime(
+            function.as_ref(),
+            NativeArgs32::new(args),
+            &mut runtime.state.heap,
+            runtime.ctx.as_deref_mut(),
+        ),
+        CallableValue::Closure { .. } => {
+            let module = runtime
+                .module
+                .as_ref()
+                .ok_or_else(|| anyhow!("{context} closure requires Module32 execution context"))?;
+            let callable = runtime_value_to_callable32(
+                callable_value,
+                &runtime.state.heap,
+                &runtime.state.globals,
+                Arc::new((*module).clone()),
+            )
+            .ok_or_else(|| anyhow!("{context} closure could not be materialized"))?;
+            call_runtime_callable32_runtime(
+                &callable,
+                NativeArgs32::new(args),
+                &mut runtime.state.heap,
+                runtime.ctx.as_deref_mut(),
+            )
+        }
+        CallableValue::RuntimeNative32 { arity, function } => {
+            let entry = NativeEntry32 {
+                name: context.to_string(),
+                arity,
+                function,
+            };
+            if !entry.accepts_arity(args.len() as u16) {
+                bail!("{context} expects {arity} arguments, got {}", args.len());
             }
+            call_runtime_native_entry(&entry, args, runtime)
         }
-        out.push(v.clone());
-    }
-    Ok(Val::List(out.into()))
-}
-
-fn chunk_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    chunk(args.as_slice(), ctx)
-}
-
-/// chunk - split list into chunks of given positive size
-pub fn chunk(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("chunk expects 2 arguments: list, size"));
-    }
-    let list = match &args[0] {
-        Val::List(l) => &**l,
-        _ => return Err(anyhow!("chunk first argument must be a list")),
-    };
-    let size = extract_int(&args[1])?;
-    if size <= 0 {
-        return Err(anyhow!("chunk size must be positive"));
-    }
-    let size = size as usize;
-    let mut out: Vec<Val> = Vec::new();
-    let mut i = 0usize;
-    while i < list.len() {
-        let end = std::cmp::min(i + size, list.len());
-        out.push(Val::List(list[i..end].to_vec().into()));
-        i = end;
-    }
-    Ok(Val::List(out.into()))
-}
-
-fn next_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    next(args.as_slice(), ctx)
-}
-
-fn next(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("next() expects exactly 1 argument: iterator"));
-    }
-    let iter = expect_iterator(&args[0], "next()")?;
-    Ok(iter.next(ctx)?.unwrap_or(Val::Nil))
-}
-
-fn collect_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    collect(args.as_slice(), ctx)
-}
-
-fn collect(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    match args {
-        [Val::Iterator(iter)] => collect_iterator_to_list(iter.clone(), ctx),
-        [Val::Iterator(iter), target] if target.as_str() == Some("list") => collect_iterator_to_list(iter.clone(), ctx),
-        [Val::Iterator(_), target] => Err(anyhow!("collect() unsupported target type {}", target.type_name())),
-        _ => Err(anyhow!("collect() expects (iterator[, target_type])")),
+        _ => bail!("{context} must be a RuntimeNative32 or Runtime32 callable"),
     }
 }
 
-fn iterator_map_method(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("Iterator.map expects (iterator, function)"));
-    }
-    let iter = expect_iterator(&args[0], "Iterator.map")?;
-    let mapper = expect_callable(&args[1], "Iterator.map")?;
-    let handle = map_iterator_handle(iter, mapper)?;
-    Ok(Val::Iterator(handle))
-}
-
-fn iterator_map_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    iterator_map_method(args.as_slice(), ctx)
-}
-
-fn iterator_filter_method(args: &[Val], _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("Iterator.filter expects (iterator, function)"));
-    }
-    let iter = expect_iterator(&args[0], "Iterator.filter")?;
-    let predicate = expect_callable(&args[1], "Iterator.filter")?;
-    let handle = filter_iterator_handle(iter, predicate)?;
-    Ok(Val::Iterator(handle))
-}
-
-fn iterator_filter_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    iterator_filter_method(args.as_slice(), ctx)
-}
-
-fn iterator_reduce_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 3 {
-        return Err(anyhow!("Iterator.reduce expects (iterator, init, function)"));
-    }
-    let iter = expect_iterator(&args[0], "Iterator.reduce")?;
-    let func = expect_callable(&args[2], "Iterator.reduce")?;
-    let mut acc = args[1].clone();
-    while let Some(value) = iter.next(ctx)? {
-        let call_args = [acc, value];
-        acc = func.call(&call_args, ctx)?;
-    }
-    Ok(acc)
-}
-
-fn iterator_reduce_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    iterator_reduce_method(args.as_slice(), ctx)
-}
-
-fn iterator_next_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("Iterator.next expects exactly 1 argument"));
-    }
-    let iter = expect_iterator(&args[0], "Iterator.next")?;
-    Ok(iter.next(ctx)?.unwrap_or(Val::Nil))
-}
-
-fn iterator_next_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    iterator_next_method(args.as_slice(), ctx)
-}
-
-fn iterator_collect_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-    match args {
-        [val] => {
-            let iter = expect_iterator(val, "Iterator.collect")?;
-            collect_iterator_to_list(iter, ctx)
+fn call_runtime_native_entry(
+    entry: &NativeEntry32,
+    args: &[RuntimeVal],
+    runtime: &mut NativeRuntime32<'_>,
+) -> Result<RuntimeVal> {
+    match &entry.function {
+        NativeFunction32::Plain(function) | NativeFunction32::Context(function) => {
+            function(NativeArgs32::new(args), runtime)
         }
-        [val, target] => {
-            let iter = expect_iterator(val, "Iterator.collect")?;
-            collect(&[Val::Iterator(iter), target.clone()], ctx)
-        }
-        _ => Err(anyhow!("Iterator.collect expects (iterator[, target_type])")),
+        NativeFunction32::RuntimeCallable(function) => call_runtime_callable32_runtime(
+            function.as_ref(),
+            NativeArgs32::new(args),
+            &mut runtime.state.heap,
+            runtime.ctx.as_deref_mut(),
+        ),
     }
 }
 
-fn iterator_collect_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    iterator_collect_method(args.as_slice(), ctx)
+fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore) -> bool {
+    if left == right {
+        return true;
+    }
+    match (runtime_val_to_val(left, heap), runtime_val_to_val(right, heap)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-
-    use crate::{iter::IterModule, register_stdlib_modules};
-    use anyhow::Result;
+    use super::*;
+    use crate::register_stdlib_modules;
     use lk_core::{
         module::Module,
-        stmt::stmt_parser::StmtParser,
+        stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::Val,
-        vm::{Vm, VmContext},
+        val::{CallableValue, runtime_val_to_val},
+        vm::{NativeFunction32, RuntimeModuleState32, VmContext},
     };
-    use std::sync::Arc;
 
-    fn run(source: &str) -> Result<Val> {
+    fn run32(source: &str) -> Result<Val> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
 
         let mut registry = lk_core::module::ModuleRegistry::new();
         register_stdlib_modules(&mut registry)?;
-        let resolver = Arc::new(lk_core::stmt::ModuleResolver::with_registry(registry));
+        let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
-        let mut vm = Vm::new();
-        program.execute_with_vm(&mut vm, &mut env)
+        program.execute32_with_ctx(&mut env)
+    }
+
+    fn iter_native(name: &str) -> Result<(u16, NativeFunction32)> {
+        let exports = IterModule::new().exports();
+        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
+        let Val::Obj(object) = value else {
+            bail!("{name} must be a heap callable");
+        };
+        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
+            bail!("{name} must be RuntimeNative32");
+        };
+        Ok((*arity, function.clone()))
     }
 
     #[test]
-    fn test_iter_module_exports_use_fast_native_abi() {
-        let module = IterModule::new();
-        let exports = module.exports();
+    fn iter_exports_use_runtime_native32_abi() -> Result<()> {
         for name in [
             "map",
             "filter",
@@ -724,99 +460,108 @@ mod tests {
             "next",
             "collect",
         ] {
-            let value = exports.get(name).expect("iter function export present");
-            assert!(
-                matches!(value, Val::RustFastFunction(_)),
-                "{name} should use RustFastFunction"
-            );
+            let (_, function) = iter_native(name)?;
+            assert!(matches!(function, NativeFunction32::Plain(_)));
         }
+        Ok(())
     }
 
     #[test]
-    fn test_iter_zip() -> Result<()> {
-        let v = run("import iter; return iter.zip([1,2], [\"a\",\"b\",\"c\"]);")?;
+    fn iter_sequence_ops_run_on_exec32() -> Result<()> {
         assert_eq!(
-            v,
-            Val::List(Arc::from(vec![
-                Val::List(vec![Val::Int(1), Val::Str("a".into())].into()),
-                Val::List(vec![Val::Int(2), Val::Str("b".into())].into()),
-            ]))
+            run32("import iter; return iter.range(0, 6, 2);")?,
+            Val::list(vec![Val::Int(0), Val::Int(2), Val::Int(4)].into())
+        );
+        assert_eq!(
+            run32("import iter; return iter.zip([1,2], [\"a\",\"b\",\"c\"]);")?,
+            Val::list(
+                vec![
+                    Val::list(vec![Val::Int(1), Val::from_str("a")].into()),
+                    Val::list(vec![Val::Int(2), Val::from_str("b")].into()),
+                ]
+                .into()
+            )
+        );
+        assert_eq!(
+            run32("import iter; return iter.chain(iter.take([1,2,3], 2), iter.skip([4,5,6], 1));")?,
+            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(5), Val::Int(6)].into())
         );
         Ok(())
     }
 
     #[test]
-    fn test_iter_take_skip_chain_flatten_unique_chunk() -> Result<()> {
-        // take
+    fn iter_list_shape_ops_run_on_exec32() -> Result<()> {
         assert_eq!(
-            run("import iter; return iter.take([1,2,3,4], 2);")?,
-            Val::List(Arc::from(vec![Val::Int(1), Val::Int(2)]))
+            run32("import iter; let a = [1,2]; let b = [3]; let c = [4]; return iter.flatten([a,b,c]);")?,
+            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3), Val::Int(4)].into())
         );
         assert_eq!(
-            run("import iter; return iter.take([1,2], 0);")?,
-            Val::List(Arc::from(vec![]))
-        );
-        // skip
-        assert_eq!(
-            run("import iter; return iter.skip([1,2,3,4], 2);")?,
-            Val::List(Arc::from(vec![Val::Int(3), Val::Int(4)]))
+            run32("import iter; return iter.unique([1,1,2,2,3]);")?,
+            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into())
         );
         assert_eq!(
-            run("import iter; return iter.skip([1,2], 10);")?,
-            Val::List(Arc::from(vec![]))
-        );
-        // chain
-        assert_eq!(
-            run("import iter; return iter.chain([1,2], [3,4]);")?,
-            Val::List(Arc::from(vec![Val::Int(1), Val::Int(2), Val::Int(3), Val::Int(4)]))
-        );
-        // flatten
-        assert_eq!(
-            run("import iter; return iter.flatten([[1,2],[3],[4]]);")?,
-            Val::List(Arc::from(vec![Val::Int(1), Val::Int(2), Val::Int(3), Val::Int(4)]))
-        );
-        // unique
-        assert_eq!(
-            run("import iter; return iter.unique([1,1,2,2,3]);")?,
-            Val::List(Arc::from(vec![Val::Int(1), Val::Int(2), Val::Int(3)]))
-        );
-        // chunk
-        assert_eq!(
-            run("import iter; return iter.chunk([1,2,3,4,5], 2);")?,
-            Val::List(Arc::from(vec![
-                Val::List(Arc::from(vec![Val::Int(1), Val::Int(2)])),
-                Val::List(Arc::from(vec![Val::Int(3), Val::Int(4)])),
-                Val::List(Arc::from(vec![Val::Int(5)])),
-            ]))
+            run32("import iter; return iter.chunk([1,2,3,4,5], 2);")?,
+            Val::list(
+                vec![
+                    Val::list(vec![Val::Int(1), Val::Int(2)].into()),
+                    Val::list(vec![Val::Int(3), Val::Int(4)].into()),
+                    Val::list(vec![Val::Int(5)].into()),
+                ]
+                .into()
+            )
         );
         Ok(())
     }
 
     #[test]
-    fn test_iterator_pipeline_collects() -> Result<()> {
-        let value = run("
-            import iter;
-            let xs = [1, 2, 3, 4];
-            let result = xs
-                .into_iter()
-                .map(fn(x) => x * x)
-                .filter(fn(x) => x % 2 == 0)
-                .collect();
-            return result;
-            ")?;
-        assert_eq!(value, Val::List(Arc::from(vec![Val::Int(4), Val::Int(16)])));
+    fn iter_higher_order_ops_call_runtime_closures() -> Result<()> {
+        assert_eq!(
+            run32("import iter; return iter.map([1,2,3], fn(x) => x * 2);")?,
+            Val::list(vec![Val::Int(2), Val::Int(4), Val::Int(6)].into())
+        );
+        assert_eq!(
+            run32("import iter; return iter.filter([1,2,3,4], fn(x) => x % 2 == 0);")?,
+            Val::list(vec![Val::Int(2), Val::Int(4)].into())
+        );
+        assert_eq!(
+            run32("import iter; return iter.reduce([1,2,3], 0, fn(acc, x) => acc + x);")?,
+            Val::Int(6)
+        );
         Ok(())
     }
 
     #[test]
-    fn test_iterator_reduce() -> Result<()> {
-        let value = run("
-            import iter;
-            let xs = [1, 2, 3];
-            let sum = xs.into_iter().reduce(0, fn(acc, x) => acc + x);
-            return sum;
-            ")?;
-        assert_eq!(value, Val::Int(6));
+    fn iter_direct_runtime_call_preserves_typed_lists() -> Result<()> {
+        let (_, function) = iter_native("range")?;
+        let NativeFunction32::Plain(function) = function else {
+            panic!("range must use plain RuntimeNative32");
+        };
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let args = [RuntimeVal::Int(1), RuntimeVal::Int(4)];
+        let mut runtime = NativeRuntime32 {
+            state: &mut state,
+            ctx: None,
+            module: None,
+        };
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        assert_eq!(
+            runtime_val_to_val(&result, &runtime.state.heap)?,
+            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn iter_collect_and_next_accept_lists_only() -> Result<()> {
+        assert_eq!(run32("import iter; return iter.next([7,8]);")?, Val::Int(7));
+        assert_eq!(run32("import iter; return iter.next([]);")?, Val::Nil);
+        assert_eq!(
+            run32("import iter; return iter.collect([1,2]);")?,
+            Val::list(vec![Val::Int(1), Val::Int(2)].into())
+        );
         Ok(())
     }
 }

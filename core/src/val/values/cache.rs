@@ -177,8 +177,7 @@ fn cached_list_contains_bool(list: &Arc<Vec<Val>>, needle: bool) -> Option<bool>
 pub(super) fn cached_list_contains(list: &Arc<Vec<Val>>, needle: &Val) -> Option<bool> {
     match needle {
         Val::Int(i) => cached_list_contains_int(list, *i),
-        Val::ShortStr(s) => cached_list_contains_str(list, s.as_str()),
-        Val::Str(s) => cached_list_contains_str(list, s.as_str()),
+        value if value.as_str().is_some() => cached_list_contains_str(list, value.as_str().expect("checked string")),
         Val::Bool(b) => cached_list_contains_bool(list, *b),
         _ => None,
     }

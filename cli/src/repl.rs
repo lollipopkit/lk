@@ -8,7 +8,7 @@ use lk_core::{
     token::Tokenizer,
     typ::TypeChecker,
     val::Val,
-    vm::{Vm, VmContext, compile_program},
+    vm::VmContext,
 };
 
 fn print_repl_help() {
@@ -120,7 +120,6 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
     let mut env = VmContext::new()
         .with_resolver(resolver)
         .with_type_checker(Some(TypeChecker::new_strict()));
-    let mut vm = Vm::new();
 
     // In-memory line editor with history and arrow key support
     let mut rl = DefaultEditor::new()?;
@@ -216,10 +215,7 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
 
             let mut parser = StmtParser::new_with_spans(&tokens, &spans);
             match parser.parse_program_with_enhanced_errors(&src) {
-                Ok(program) => {
-                    let function = compile_program(&program);
-                    vm.exec_with(&function, &mut env, None)
-                }
+                Ok(program) => program.execute32_with_ctx(&mut env),
                 Err(_parse_err) => {
                     // Attempt to treat input as expression: println((<src>));
                     // Normalize to avoid tokenizer merging '+'/'-' with following digits in binary contexts.
@@ -229,10 +225,7 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
                         Ok((wtoks, wspans)) => {
                             let mut wparser = StmtParser::new_with_spans(&wtoks, &wspans);
                             match wparser.parse_program_with_enhanced_errors(&wrapped) {
-                                Ok(wprog) => {
-                                    let function = compile_program(&wprog);
-                                    vm.exec_with(&function, &mut env, None)
-                                }
+                                Ok(wprog) => wprog.execute32_with_ctx(&mut env),
                                 Err(perr) => {
                                     eprintln!("Error: {}", perr);
                                     continue;

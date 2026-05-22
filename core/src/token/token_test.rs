@@ -42,6 +42,32 @@ mod tests {
     }
 
     #[test]
+    fn signed_numbers_are_context_sensitive() {
+        let tokens = Tokenizer::tokenize("1.5 + 2.0 - -3").unwrap();
+        let expected = vec![
+            Token::Float(1.5),
+            Token::Add,
+            Token::Float(2.0),
+            Token::Sub,
+            Token::Int(-3),
+        ];
+        assert_eq!(tokens, expected);
+
+        let tokens = Tokenizer::tokenize("let x = -1; return +2;").unwrap();
+        let expected = vec![
+            Token::Let,
+            Token::Id("x".to_string()),
+            Token::Assign,
+            Token::Int(-1),
+            Token::Semicolon,
+            Token::Return,
+            Token::Int(2),
+            Token::Semicolon,
+        ];
+        assert_eq!(tokens, expected);
+    }
+
+    #[test]
     fn test_for_tokens() {
         let tokens = Tokenizer::tokenize("for i in [1, 2, 3] {}").unwrap();
         let expected = vec![
@@ -188,7 +214,7 @@ line2""#,
         assert!(t.is_ok());
 
         let t = Tokenizer::tokenize("-1.0 +1.2");
-        let e = vec![Token::Float(-1.0), Token::Float(1.2)];
+        let e = vec![Token::Float(-1.0), Token::Add, Token::Float(1.2)];
         assert_eq!(t.unwrap(), e);
     }
 
@@ -325,8 +351,11 @@ line2""#,
         let t = Tokenizer::tokenize("-123 +456 -1.23 +4.56");
         let e = vec![
             Token::Int(-123),
+            Token::Add,
             Token::Int(456),
-            Token::Float(-1.23),
+            Token::Sub,
+            Token::Float(1.23),
+            Token::Add,
             Token::Float(4.56),
         ];
         assert_eq!(t.unwrap(), e);

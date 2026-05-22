@@ -193,27 +193,14 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_short_key_insert_matches_string_lookup() {
-        let key = Val::from_str("n42");
-        let mut map = fast_hash_map_with_capacity(1);
-        let key_arc = key
-            .dynamic_string_key_arcstr()
-            .expect("short string should be a dynamic map key");
-
-        assert_eq!(Val::map_insert_arcstr(&mut map, key_arc, Val::Int(42)), None);
-        assert_eq!(Val::map_get_str(&map, "n42"), Some(&Val::Int(42)));
-        assert!(Val::map_contains_str(&map, "n42"));
-    }
-
-    #[test]
     fn concatenated_long_key_seeds_lookup_cache() {
         let key = Val::concat_strings(
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
             "0123456789--concat-key",
         );
-        let Val::Str(key) = key else {
-            panic!("expected long concat to produce ArcStr");
-        };
+        let key = key
+            .string_key_arcstr()
+            .expect("expected long concat to produce string key");
         let mut map = fast_hash_map_with_capacity(1);
         Val::map_insert_arcstr(&mut map, key.clone(), Val::Int(11));
 

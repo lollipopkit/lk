@@ -1,0 +1,216 @@
+use std::sync::Arc;
+
+use anyhow::{Result, anyhow};
+
+use crate::val::{CallableValue, HeapStore, HeapValue, RuntimeObject, RuntimeVal, TypedList, TypedMap};
+
+use super::RuntimeCallable32;
+use crate::vm::{Module32, NativeEntry32, RuntimeExport32};
+
+pub(super) fn import_runtime_export(
+    export: &RuntimeExport32,
+    dest_heap: &mut HeapStore,
+    natives: &mut Vec<NativeEntry32>,
+) -> Result<RuntimeVal> {
+    let state = export
+        .state
+        .lock()
+        .map_err(|_| anyhow!("RuntimeExport32 state lock poisoned"))?
+        .clone();
+    let mut source_heap = state.heap;
+    import_runtime_value(
+        &export.value,
+        &mut source_heap,
+        dest_heap,
+        natives,
+        Arc::clone(&export.module),
+        export.state.clone(),
+    )
+}
+
+fn import_runtime_value(
+    value: &RuntimeVal,
+    source_heap: &mut HeapStore,
+    dest_heap: &mut HeapStore,
+    natives: &mut Vec<NativeEntry32>,
+    source_module: Arc<Module32>,
+    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
+) -> Result<RuntimeVal> {
+    match value {
+        RuntimeVal::Nil => Ok(RuntimeVal::Nil),
+        RuntimeVal::Bool(value) => Ok(RuntimeVal::Bool(*value)),
+        RuntimeVal::Int(value) => Ok(RuntimeVal::Int(*value)),
+        RuntimeVal::Float(value) => Ok(RuntimeVal::Float(*value)),
+        RuntimeVal::ShortStr(value) => Ok(RuntimeVal::ShortStr(*value)),
+        RuntimeVal::Obj(handle) => {
+            let value = source_heap
+                .get(*handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+                .clone();
+            let value = import_heap_value(value, source_heap, dest_heap, natives, source_module, source_state)?;
+            Ok(RuntimeVal::Obj(dest_heap.alloc(value)))
+        }
+    }
+}
+
+fn import_heap_value(
+    value: HeapValue,
+    source_heap: &mut HeapStore,
+    dest_heap: &mut HeapStore,
+    natives: &mut Vec<NativeEntry32>,
+    source_module: Arc<Module32>,
+    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
+) -> Result<HeapValue> {
+    Ok(match value {
+        HeapValue::String(value) => HeapValue::String(value),
+        HeapValue::List(values) => HeapValue::List(import_typed_list(
+            values,
+            source_heap,
+            dest_heap,
+            natives,
+            source_module,
+            source_state,
+        )?),
+        HeapValue::Map(values) => HeapValue::Map(import_typed_map(
+            values,
+            source_heap,
+            dest_heap,
+            natives,
+            source_module,
+            source_state,
+        )?),
+        HeapValue::Object(object) => {
+            let fields = object
+                .fields
+                .iter()
+                .map(|(key, value)| {
+                    Ok((
+                        key.clone(),
+                        import_runtime_value(
+                            value,
+                            source_heap,
+                            dest_heap,
+                            natives,
+                            Arc::clone(&source_module),
+                            source_state.clone(),
+                        )?,
+                    ))
+                })
+                .collect::<Result<_>>()?;
+            HeapValue::Object(RuntimeObject {
+                type_name: object.type_name,
+                fields,
+            })
+        }
+        HeapValue::Callable(CallableValue::ParsedClosure(value)) => {
+            HeapValue::Callable(CallableValue::ParsedClosure(value))
+        }
+        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
+            HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })
+        }
+        HeapValue::Callable(CallableValue::Closure {
+            function_index,
+            captures,
+        }) => {
+            let callable =
+                RuntimeCallable32::with_state(Arc::clone(&source_module), function_index, captures, source_state);
+            HeapValue::Callable(CallableValue::Runtime32(Arc::new(callable)))
+        }
+        HeapValue::Callable(CallableValue::Native { function_index, arity }) => {
+            HeapValue::Callable(CallableValue::Native { function_index, arity })
+        }
+        HeapValue::Callable(CallableValue::Runtime32(function)) => {
+            HeapValue::Callable(CallableValue::Runtime32(function))
+        }
+        HeapValue::Callable(CallableValue::Aot(value)) => HeapValue::Callable(CallableValue::Aot(value)),
+        HeapValue::Callable(CallableValue::AotHandle { handle, arity }) => {
+            HeapValue::Callable(CallableValue::AotHandle { handle, arity })
+        }
+        HeapValue::Task(value) => HeapValue::Task(value),
+        HeapValue::Channel(value) => HeapValue::Channel(value),
+        HeapValue::Stream(value) => HeapValue::Stream(value),
+        HeapValue::StreamCursor(value) => HeapValue::StreamCursor(value),
+    })
+}
+
+fn import_typed_list(
+    values: TypedList,
+    source_heap: &mut HeapStore,
+    dest_heap: &mut HeapStore,
+    natives: &mut Vec<NativeEntry32>,
+    source_module: Arc<Module32>,
+    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
+) -> Result<TypedList> {
+    Ok(match values {
+        TypedList::Mixed(values) => TypedList::Mixed(
+            values
+                .iter()
+                .map(|value| {
+                    import_runtime_value(
+                        value,
+                        source_heap,
+                        dest_heap,
+                        natives,
+                        Arc::clone(&source_module),
+                        source_state.clone(),
+                    )
+                })
+                .collect::<Result<_>>()?,
+        ),
+        TypedList::Int(values) => TypedList::Int(values),
+        TypedList::Float(values) => TypedList::Float(values),
+        TypedList::Bool(values) => TypedList::Bool(values),
+        TypedList::String(values) => TypedList::String(values),
+    })
+}
+
+fn import_typed_map(
+    values: TypedMap,
+    source_heap: &mut HeapStore,
+    dest_heap: &mut HeapStore,
+    natives: &mut Vec<NativeEntry32>,
+    source_module: Arc<Module32>,
+    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
+) -> Result<TypedMap> {
+    Ok(match values {
+        TypedMap::Mixed(values) => TypedMap::Mixed(
+            values
+                .iter()
+                .map(|(key, value)| {
+                    Ok((
+                        key.clone(),
+                        import_runtime_value(
+                            value,
+                            source_heap,
+                            dest_heap,
+                            natives,
+                            Arc::clone(&source_module),
+                            source_state.clone(),
+                        )?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
+        ),
+        TypedMap::StringMixed(values) => TypedMap::StringMixed(
+            values
+                .iter()
+                .map(|(key, value)| {
+                    Ok((
+                        key.clone(),
+                        import_runtime_value(
+                            value,
+                            source_heap,
+                            dest_heap,
+                            natives,
+                            Arc::clone(&source_module),
+                            source_state.clone(),
+                        )?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
+        ),
+        TypedMap::StringInt(values) => TypedMap::StringInt(values),
+        TypedMap::StringFloat(values) => TypedMap::StringFloat(values),
+        TypedMap::StringBool(values) => TypedMap::StringBool(values),
+    })
+}

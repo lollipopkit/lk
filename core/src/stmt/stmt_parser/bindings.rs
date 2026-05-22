@@ -238,11 +238,8 @@ impl<'a> StmtParser<'a> {
             }))
         } else {
             let map_set = Expr::CallExpr(
-                Box::new(Expr::Access(
-                    Box::new(Expr::Var(name)),
-                    Box::new(Expr::Val(Val::from_str("set"))),
-                )),
-                vec![Box::new(key), Box::new(value)],
+                Box::new(Expr::Var("__lk_set_index".to_string())),
+                vec![Box::new(Expr::Var(name)), Box::new(key), Box::new(value)],
             );
             Ok(Some(Stmt::Expr(Box::new(map_set))))
         }

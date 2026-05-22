@@ -1,12 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry},
-    val::{NativeArgs, Val, methods::register_fast_method},
-    vm::VmContext,
+    val::{HeapStore, HeapValue, RuntimeVal, TypedList, Val, runtime_val_to_val},
+    vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, VmContext},
 };
+
+use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
 pub struct StringModule {
@@ -23,218 +25,121 @@ impl StringModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
 
-        // Register string functions as Rust functions
-        functions.insert("len".to_string(), Val::RustFastFunction(Self::len_fast));
-        functions.insert("lower".to_string(), Val::RustFastFunction(Self::lower));
-        functions.insert("upper".to_string(), Val::RustFastFunction(Self::upper));
-        functions.insert("trim".to_string(), Val::RustFastFunction(Self::trim));
-        functions.insert("starts_with".to_string(), Val::RustFastFunction(Self::starts_with_fast));
-        functions.insert("ends_with".to_string(), Val::RustFastFunction(Self::ends_with_fast));
-        functions.insert("contains".to_string(), Val::RustFastFunction(Self::contains_fast));
-        functions.insert("replace".to_string(), Val::RustFastFunctionNamed(Self::replace_fast));
-        functions.insert("substring".to_string(), Val::RustFastFunction(Self::substring));
-        functions.insert("split".to_string(), Val::RustFastFunction(Self::split));
-        functions.insert("join".to_string(), Val::RustFastFunction(Self::join));
-        functions.insert("reverse".to_string(), Val::RustFastFunction(Self::reverse));
-        functions.insert("repeat".to_string(), Val::RustFastFunction(Self::repeat));
-        functions.insert("char".to_string(), Val::RustFastFunction(Self::char_at));
-        functions.insert("byte".to_string(), Val::RustFastFunction(Self::byte_at));
-        functions.insert("chars".to_string(), Val::RustFastFunction(Self::chars));
-        functions.insert("find".to_string(), Val::RustFastFunction(Self::find));
-        functions.insert("is_empty".to_string(), Val::RustFastFunction(Self::is_empty_fast));
-        functions.insert("format".to_string(), Val::RustFastFunction(Self::format));
-
-        // Also register as meta-methods for String type
-        register_fast_method("String", "len", Self::len_fast);
-        register_fast_method("String", "lower", Self::lower);
-        register_fast_method("String", "upper", Self::upper);
-        register_fast_method("String", "trim", Self::trim);
-        register_fast_method("String", "starts_with", Self::starts_with_fast);
-        register_fast_method("String", "ends_with", Self::ends_with_fast);
-        register_fast_method("String", "contains", Self::contains_fast);
-        register_fast_method("String", "replace", Self::replace_method_fast);
-        register_fast_method("String", "substring", Self::substring);
-        register_fast_method("String", "split", Self::split);
-        register_fast_method("String", "join", Self::join);
-
-        register_fast_method("String", "reverse", Self::reverse);
-        register_fast_method("String", "repeat", Self::repeat);
-        register_fast_method("String", "char", Self::char_at);
-        register_fast_method("String", "byte", Self::byte_at);
-        register_fast_method("String", "chars", Self::chars);
-        register_fast_method("String", "find", Self::find);
-        register_fast_method("String", "is_empty", Self::is_empty_fast);
+        register_native(&mut functions, "len", Self::len32, 1);
+        register_native(&mut functions, "lower", Self::lower32, 1);
+        register_native(&mut functions, "upper", Self::upper32, 1);
+        register_native(&mut functions, "trim", Self::trim32, 1);
+        register_native(&mut functions, "starts_with", Self::starts_with32, 2);
+        register_native(&mut functions, "ends_with", Self::ends_with32, 2);
+        register_native(&mut functions, "contains", Self::contains32, 2);
+        register_native(&mut functions, "replace", Self::replace32, NativeEntry32::VARIADIC);
+        register_native(&mut functions, "substring", Self::substring32, 3);
+        register_native(&mut functions, "split", Self::split32, 2);
+        register_native(&mut functions, "join", Self::join32, 2);
+        register_native(&mut functions, "reverse", Self::reverse32, 1);
+        register_native(&mut functions, "repeat", Self::repeat32, 2);
+        register_native(&mut functions, "char", Self::char_at32, 2);
+        register_native(&mut functions, "byte", Self::byte_at32, 2);
+        register_native(&mut functions, "chars", Self::chars32, 1);
+        register_native(&mut functions, "find", Self::find32, NativeEntry32::VARIADIC);
+        register_native(&mut functions, "is_empty", Self::is_empty32, 1);
+        register_native(&mut functions, "format", Self::format32, NativeEntry32::VARIADIC);
 
         Self { functions }
     }
 
-    fn len_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("len() takes exactly 1 argument"));
-        }
-
-        match args.get(0).and_then(Val::as_str) {
-            Some(s) => Ok(Val::Int(s.len() as i64)),
-            None => Err(anyhow!("len() argument must be a string")),
-        }
+    fn len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "len()")?;
+        Ok(RuntimeVal::Int(value.len() as i64))
     }
 
-    /// Convert to lowercase
-    fn lower(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("lower() takes exactly 1 argument"));
-        }
-
-        match args.get(0).and_then(Val::as_str) {
-            Some(s) => Ok(Val::from_str(&s.to_lowercase())),
-            None => Err(anyhow!("lower() argument must be a string")),
-        }
+    fn lower32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "lower()")?;
+        Ok(runtime_string_value(&value.to_lowercase(), runtime.heap_mut()))
     }
 
-    /// Convert to uppercase
-    fn upper(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("upper() takes exactly 1 argument"));
-        }
-
-        match args.get(0).and_then(Val::as_str) {
-            Some(s) => Ok(Val::from_str(&s.to_uppercase())),
-            None => Err(anyhow!("upper() argument must be a string")),
-        }
+    fn upper32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "upper()")?;
+        Ok(runtime_string_value(&value.to_uppercase(), runtime.heap_mut()))
     }
 
-    /// Trim whitespace from both ends
-    fn trim(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("trim() takes exactly 1 argument"));
-        }
-
-        match args.get(0).and_then(Val::as_str) {
-            Some(s) => Ok(Val::from_str(s.trim())),
-            None => Err(anyhow!("trim() argument must be a string")),
-        }
+    fn trim32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "trim()")?;
+        Ok(runtime_string_value(value.trim(), runtime.heap_mut()))
     }
 
-    fn starts_with_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("starts_with() takes exactly 2 arguments: string, prefix"));
-        }
-
-        let string = args
-            .get(0)
-            .and_then(Val::as_str)
-            .ok_or_else(|| anyhow!("starts_with() first argument must be a string"))?;
-        let prefix = args
-            .get(1)
-            .and_then(Val::as_str)
-            .ok_or_else(|| anyhow!("starts_with() second argument must be a string"))?;
-        Ok(Val::Bool(string.starts_with(prefix)))
+    fn starts_with32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let (value, prefix) = two_strings(args, runtime, "starts_with()")?;
+        Ok(RuntimeVal::Bool(value.starts_with(prefix.as_ref())))
     }
 
-    /// Check if string ends with suffix
-    fn ends_with_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("ends_with() takes exactly 2 arguments: string, suffix"));
-        }
-
-        let string = args
-            .get(0)
-            .and_then(Val::as_str)
-            .ok_or_else(|| anyhow!("ends_with() first argument must be a string"))?;
-        let suffix = args
-            .get(1)
-            .and_then(Val::as_str)
-            .ok_or_else(|| anyhow!("ends_with() second argument must be a string"))?;
-        Ok(Val::Bool(string.ends_with(suffix)))
+    fn ends_with32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let (value, suffix) = two_strings(args, runtime, "ends_with()")?;
+        Ok(RuntimeVal::Bool(value.ends_with(suffix.as_ref())))
     }
 
-    fn contains_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("contains() takes exactly 2 arguments: string, substring"));
-        }
-
-        let string = args
-            .get(0)
-            .and_then(Val::as_str)
-            .ok_or_else(|| anyhow!("contains() first argument must be a string"))?;
-        let substring = args
-            .get(1)
-            .and_then(Val::as_str)
-            .ok_or_else(|| anyhow!("contains() second argument must be a string"))?;
-        Ok(Val::Bool(string.contains(substring)))
+    fn contains32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let (value, needle) = two_strings(args, runtime, "contains()")?;
+        Ok(RuntimeVal::Bool(value.contains(needle.as_ref())))
     }
 
-    /// Replace occurrences of substring with support for named parameters.
-    /// Usage examples:
-    /// - string.replace("foo", "o", "a")                // legacy positional API (replaces all)
-    /// - string.replace("foo", pattern: "o", with: "a") // named API (defaults to first occurrence)
-    /// - string.replace("foo", pattern: "o", with: "a", all: true)
-    fn replace(pos: &[Val], named: &[(String, Val)], _ctx: &mut VmContext) -> Result<Val> {
+    fn replace32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let pos = args.as_slice();
         if pos.is_empty() {
-            return Err(anyhow!(
-                "replace() requires at least the source string as the first argument"
-            ));
+            bail!("replace() requires at least the source string as the first argument");
         }
         if pos.len() > 4 {
-            return Err(anyhow!(
-                "replace() received too many positional arguments (expected at most 4)"
-            ));
+            bail!("replace() received too many positional arguments (expected at most 4)");
         }
 
-        let extract_str = |val: &Val, ctx: &str| -> Result<String> {
-            val.as_str()
-                .ok_or_else(|| anyhow!("replace() {} must be a string", ctx))
-                .map(str::to_owned)
-        };
-        let extract_bool = |val: &Val, ctx: &str| -> Result<bool> {
-            match val {
-                Val::Bool(b) => Ok(*b),
-                _ => Err(anyhow!("replace() {} must be a boolean", ctx)),
-            }
-        };
-
-        let source = pos[0]
-            .as_str()
-            .ok_or_else(|| anyhow!("replace() first argument must be a string"))?
-            .to_owned();
-
-        let mut pattern: Option<String> = None;
-        let mut with: Option<String> = None;
-        let mut all_flag: Option<bool> = None;
+        let source = runtime_string_arg(&pos[0], &runtime.state.heap, "replace() first argument")?;
+        let mut pattern = None;
+        let mut with = None;
+        let mut all_flag = None;
         let mut used_named_core = false;
 
         if pos.len() >= 2 {
-            pattern = Some(extract_str(&pos[1], "second argument (pattern)")?);
+            pattern = Some(runtime_string_arg(
+                &pos[1],
+                &runtime.state.heap,
+                "replace() second argument (pattern)",
+            )?);
         }
         if pos.len() >= 3 {
-            with = Some(extract_str(&pos[2], "third argument (with)")?);
+            with = Some(runtime_string_arg(
+                &pos[2],
+                &runtime.state.heap,
+                "replace() third argument (with)",
+            )?);
         }
         if pos.len() >= 4 {
-            all_flag = Some(extract_bool(&pos[3], "fourth argument (all flag)")?);
+            all_flag = Some(bool_arg(&pos[3], "replace() fourth argument (all flag)")?);
         }
 
-        use std::collections::HashSet;
-        let mut seen: HashSet<&str> = HashSet::with_capacity(named.len());
-        for (name, value) in named {
-            let key = name.as_str();
-            if !seen.insert(key) {
-                return Err(anyhow!("replace() received duplicate named argument '{}'", name));
+        let mut seen = HashSet::with_capacity(args.named().len());
+        for (name, value) in args.named() {
+            if !seen.insert(name.as_str()) {
+                bail!("replace() received duplicate named argument '{}'", name);
             }
-            match key {
+            match name.as_str() {
                 "pattern" => {
-                    pattern = Some(extract_str(value, "named 'pattern'")?);
+                    pattern = Some(runtime_string_arg(
+                        value,
+                        &runtime.state.heap,
+                        "replace() named 'pattern'",
+                    )?);
                     used_named_core = true;
                 }
                 "with" => {
-                    with = Some(extract_str(value, "named 'with'")?);
+                    with = Some(runtime_string_arg(
+                        value,
+                        &runtime.state.heap,
+                        "replace() named 'with'",
+                    )?);
                     used_named_core = true;
                 }
-                "all" => {
-                    all_flag = Some(extract_bool(value, "named 'all'")?);
-                }
-                other => {
-                    return Err(anyhow!("replace() does not accept named argument '{}'", other));
-                }
+                "all" => all_flag = Some(bool_arg(value, "replace() named 'all'")?),
+                other => bail!("replace() does not accept named argument '{}'", other),
             }
         }
 
@@ -244,229 +149,144 @@ impl StringModule {
         let with = with.ok_or_else(|| {
             anyhow!("replace() requires a replacement string (provide it positionally or via named 'with')")
         })?;
-
-        let default_all = !used_named_core;
-        let all = all_flag.unwrap_or(default_all);
-
+        let all = all_flag.unwrap_or(!used_named_core);
         let result = if all {
-            source.replace(pattern.as_str(), with.as_str())
+            source.replace(pattern.as_ref(), with.as_ref())
         } else {
-            source.replacen(pattern.as_str(), with.as_str(), 1)
+            source.replacen(pattern.as_ref(), with.as_ref(), 1)
         };
-
-        Ok(Val::from_str(&result))
+        Ok(runtime_string_value(&result, runtime.heap_mut()))
     }
 
-    fn replace_fast(args: NativeArgs<'_>, named: &[(String, Val)], ctx: &mut VmContext) -> Result<Val> {
-        Self::replace(args.as_slice(), named, ctx)
-    }
-
-    fn replace_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        Self::replace(args, &[], ctx)
-    }
-
-    fn replace_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::replace_method(args.as_slice(), ctx)
-    }
-
-    /// Extract substring
-    fn substring(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 3 {
-            return Err(anyhow!("substring() takes exactly 3 arguments: string, start, length"));
+    fn substring32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 3, "substring()")?;
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], &runtime.state.heap, "substring() first argument")?;
+        let start = usize_arg(&values[1], "substring() second argument")?;
+        let length = usize_arg(&values[2], "substring() third argument")?;
+        if start > value.len() {
+            bail!("substring() start index out of bounds");
         }
-        let args = args.as_slice();
-
-        let string = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow!("substring() first argument must be a string"))?;
-
-        let start = match &args[1] {
-            Val::Int(i) => *i as usize,
-            _ => {
-                return Err(anyhow!("substring() second argument must be an integer"));
-            }
-        };
-
-        let length = match &args[2] {
-            Val::Int(i) => *i as usize,
-            _ => {
-                return Err(anyhow!("substring() third argument must be an integer"));
-            }
-        };
-
-        if start > string.len() {
-            return Err(anyhow!("substring() start index out of bounds"));
-        }
-
-        let end = std::cmp::min(start + length, string.len());
-        Ok(Val::from_str(&string[start..end]))
+        let end = std::cmp::min(start + length, value.len());
+        Ok(runtime_string_value(&value[start..end], runtime.heap_mut()))
     }
 
-    /// Split string by delimiter
-    fn split(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("split() takes exactly 2 arguments: string, delimiter"));
-        }
-        let args = args.as_slice();
-
-        let string = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow!("split() first argument must be a string"))?;
-        let delimiter = args[1]
-            .as_str()
-            .ok_or_else(|| anyhow!("split() second argument must be a string"))?;
-
-        let parts: Vec<Val> = if delimiter.is_empty() {
-            string.chars().map(|c| Val::from_str(&c.to_string())).collect()
+    fn split32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let (value, delimiter) = two_strings(args, runtime, "split()")?;
+        let parts = if delimiter.is_empty() {
+            value.chars().map(|value| Arc::<str>::from(value.to_string())).collect()
         } else {
-            string.split(delimiter).map(Val::from_str).collect()
+            value.split(delimiter.as_ref()).map(Arc::<str>::from).collect()
         };
-
-        Ok(Val::List(Arc::from(parts)))
+        Ok(RuntimeVal::Obj(
+            runtime.heap_mut().alloc(HeapValue::List(TypedList::String(parts))),
+        ))
     }
 
-    /// Reverse a string
-    fn reverse(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("reverse() takes exactly 1 argument"));
-        }
-        match args.get(0).and_then(Val::as_str) {
-            Some(s) => Ok(Val::from_str(&s.chars().rev().collect::<String>())),
-            None => Err(anyhow!("reverse() argument must be a string")),
-        }
+    fn join32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "join()")?;
+        let values = args.as_slice();
+        let strings = string_list_arg(&values[0], &runtime.state.heap, "join() first argument")?;
+        let delimiter = runtime_string_arg(&values[1], &runtime.state.heap, "join() second argument")?;
+        Ok(runtime_string_value(
+            &strings.join(delimiter.as_ref()),
+            runtime.heap_mut(),
+        ))
     }
 
-    /// Repeat a string n times
-    fn repeat(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("repeat() takes exactly 2 arguments: string, count"));
-        }
-        let args = args.as_slice();
-        let s = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow!("repeat() first argument must be a string"))?;
-        let n = match &args[1] {
-            Val::Int(i) => *i,
-            _ => return Err(anyhow!("repeat() second argument must be an integer")),
-        };
-        if n < 0 {
-            return Err(anyhow!("repeat() count must be non-negative"));
-        }
-        Ok(Val::from_str(&s.repeat(n as usize)))
+    fn reverse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "reverse()")?;
+        Ok(runtime_string_value(
+            &value.chars().rev().collect::<String>(),
+            runtime.heap_mut(),
+        ))
     }
 
-    /// Get character at index (returns single-char string)
-    fn char_at(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("char() takes exactly 2 arguments: string, index"));
+    fn repeat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "repeat()")?;
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], &runtime.state.heap, "repeat() first argument")?;
+        let count = int_arg(&values[1], "repeat() second argument")?;
+        if count < 0 {
+            bail!("repeat() count must be non-negative");
         }
-        let args = args.as_slice();
-        let s = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow!("char() first argument must be a string"))?;
-        let idx = match &args[1] {
-            Val::Int(i) => *i as usize,
-            _ => return Err(anyhow!("char() second argument must be an integer")),
-        };
-        match s.chars().nth(idx) {
-            Some(c) => Ok(Val::from_str(&c.to_string())),
-            None => Ok(Val::Nil),
-        }
+        Ok(runtime_string_value(&value.repeat(count as usize), runtime.heap_mut()))
     }
 
-    /// Get byte value of character at index
-    fn byte_at(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("byte() takes exactly 2 arguments: string, index"));
-        }
-        let args = args.as_slice();
-        let s = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow!("byte() first argument must be a string"))?;
-        let idx = match &args[1] {
-            Val::Int(i) => *i as usize,
-            _ => return Err(anyhow!("byte() second argument must be an integer")),
-        };
-        match s.as_bytes().get(idx) {
-            Some(b) => Ok(Val::Int(*b as i64)),
-            None => Ok(Val::Nil),
-        }
+    fn char_at32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "char()")?;
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], &runtime.state.heap, "char() first argument")?;
+        let index = usize_arg(&values[1], "char() second argument")?;
+        Ok(value.chars().nth(index).map_or(RuntimeVal::Nil, |value| {
+            runtime_string_value(&value.to_string(), runtime.heap_mut())
+        }))
     }
 
-    /// Convert string to list of characters
-    fn chars(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("chars() takes exactly 1 argument"));
-        }
-        match args.get(0).and_then(Val::as_str) {
-            Some(s) => {
-                let list: Vec<Val> = s.chars().map(|c| Val::from_str(&c.to_string())).collect();
-                Ok(Val::List(Arc::from(list)))
-            }
-            None => Err(anyhow!("chars() argument must be a string")),
-        }
+    fn byte_at32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "byte()")?;
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], &runtime.state.heap, "byte() first argument")?;
+        let index = usize_arg(&values[1], "byte() second argument")?;
+        Ok(value
+            .as_bytes()
+            .get(index)
+            .map_or(RuntimeVal::Nil, |value| RuntimeVal::Int(*value as i64)))
     }
 
-    /// Find substring position (returns index or nil)
-    fn find(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
+    fn chars32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "chars()")?;
+        let chars = value.chars().map(|value| Arc::<str>::from(value.to_string())).collect();
+        Ok(RuntimeVal::Obj(
+            runtime.heap_mut().alloc(HeapValue::List(TypedList::String(chars))),
+        ))
+    }
+
+    fn find32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         if args.len() != 2 && args.len() != 3 {
-            return Err(anyhow!("find() takes 2 or 3 arguments: string, pattern[, start]"));
+            bail!("find() takes 2 or 3 arguments: string, pattern[, start]");
         }
-        let args = args.as_slice();
-        let s = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow!("find() first argument must be a string"))?;
-        let pattern = args[1]
-            .as_str()
-            .ok_or_else(|| anyhow!("find() second argument must be a string"))?;
-        let start = if args.len() >= 3 {
-            match &args[2] {
-                Val::Int(i) => *i as usize,
-                _ => return Err(anyhow!("find() third argument must be an integer")),
-            }
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], &runtime.state.heap, "find() first argument")?;
+        let pattern = runtime_string_arg(&values[1], &runtime.state.heap, "find() second argument")?;
+        let start = if values.len() == 3 {
+            usize_arg(&values[2], "find() third argument")?
         } else {
             0
         };
-        if start > s.len() {
-            return Ok(Val::Nil);
+        if start > value.len() {
+            return Ok(RuntimeVal::Nil);
         }
-        match s[start..].find(pattern) {
-            Some(idx) => Ok(Val::Int((start + idx) as i64)),
-            None => Ok(Val::Nil),
-        }
+        Ok(value[start..]
+            .find(pattern.as_ref())
+            .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int((start + index) as i64)))
     }
 
-    /// Check if string is empty
-    fn is_empty_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("is_empty() takes exactly 1 argument"));
-        }
-        match args.get(0).and_then(Val::as_str) {
-            Some(s) => Ok(Val::Bool(s.is_empty())),
-            None => Err(anyhow!("is_empty() argument must be a string")),
-        }
+    fn is_empty32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "is_empty()")?;
+        Ok(RuntimeVal::Bool(value.is_empty()))
     }
 
-    /// Format string (simple positional formatting)
-    fn format(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        if args.len() == 0 {
-            return Err(anyhow!("format() requires at least 1 argument (format string)"));
+    fn format32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        if args.is_empty() {
+            bail!("format() requires at least 1 argument (format string)");
         }
-        let args = args.as_slice();
-        let fmt = args[0]
-            .as_str()
-            .ok_or_else(|| anyhow!("format() first argument must be a string"))?
-            .to_owned();
-        let rest = &args[1..];
+        let values = args.as_slice();
+        let fmt = runtime_string_arg(&values[0], &runtime.state.heap, "format() first argument")?;
+        let rest = &values[1..];
         let mut out = String::with_capacity(fmt.len());
-        let chars: Vec<char> = fmt.chars().collect();
+        let chars = fmt.chars().collect::<Vec<_>>();
         let mut i = 0usize;
-        let mut arg_idx = 0usize;
+        let mut arg_index = 0usize;
         while i < chars.len() {
             if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '}' {
-                if arg_idx < rest.len() {
-                    out.push_str(&rest[arg_idx].display_string(Some(ctx)));
-                    arg_idx += 1;
+                if arg_index < rest.len() {
+                    out.push_str(&display_runtime_value(
+                        &rest[arg_index],
+                        &runtime.state.heap,
+                        runtime.ctx.as_deref(),
+                    ));
+                    arg_index += 1;
                 } else {
                     out.push_str("{}");
                 }
@@ -476,46 +296,22 @@ impl StringModule {
                 i += 1;
             }
         }
-        // Append any remaining args
-        if arg_idx < rest.len() {
+        if arg_index < rest.len() {
             if !out.is_empty() {
                 out.push(' ');
             }
-            for (j, v) in rest[arg_idx..].iter().enumerate() {
-                if j > 0 {
+            for (index, value) in rest[arg_index..].iter().enumerate() {
+                if index > 0 {
                     out.push(' ');
                 }
-                out.push_str(&v.display_string(Some(ctx)));
+                out.push_str(&display_runtime_value(
+                    value,
+                    &runtime.state.heap,
+                    runtime.ctx.as_deref(),
+                ));
             }
         }
-        Ok(Val::from_str(&out))
-    }
-
-    /// Join list of strings with delimiter
-    fn join(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("join() takes exactly 2 arguments: list, delimiter"));
-        }
-        let args = args.as_slice();
-
-        let list = match &args[0] {
-            Val::List(l) => &**l,
-            _ => return Err(anyhow!("join() first argument must be a list")),
-        };
-
-        let delimiter = args[1]
-            .as_str()
-            .ok_or_else(|| anyhow!("join() second argument must be a string"))?;
-
-        let mut strings: Vec<&str> = Vec::with_capacity(list.len());
-        for item in list.iter() {
-            match item.as_str() {
-                Some(s) => strings.push(s),
-                None => return Err(anyhow!("join() list must contain only strings")),
-            }
-        }
-
-        Ok(Val::from_str(&strings.join(delimiter)))
+        Ok(runtime_string_value(&out, runtime.heap_mut()))
     }
 }
 
@@ -529,11 +325,96 @@ impl Module for StringModule {
     }
 
     fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        // Don't register functions globally - they should be accessed via module.function()
         Ok(())
     }
 
     fn exports(&self) -> HashMap<String, Val> {
         self.functions.clone()
     }
+}
+
+fn register_native(
+    functions: &mut HashMap<String, Val>,
+    name: &str,
+    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    arity: u16,
+) {
+    functions.insert(
+        name.to_string(),
+        Val::runtime_native32(NativeFunction32::Plain(function), arity),
+    );
+}
+
+fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        Ok(())
+    } else {
+        bail!(
+            "{name} takes exactly {expected} argument{}",
+            if expected == 1 { "" } else { "s" }
+        )
+    }
+}
+
+fn one_string(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<Arc<str>> {
+    expect_arity(args, 1, name)?;
+    runtime_string_arg(&args.as_slice()[0], &runtime.state.heap, name)
+}
+
+fn two_strings(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<(Arc<str>, Arc<str>)> {
+    expect_arity(args, 2, name)?;
+    let values = args.as_slice();
+    Ok((
+        runtime_string_arg(&values[0], &runtime.state.heap, name)?,
+        runtime_string_arg(&values[1], &runtime.state.heap, name)?,
+    ))
+}
+
+fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
+    match value {
+        RuntimeVal::Int(value) => Ok(*value),
+        _ => Err(anyhow!("{context} must be an integer")),
+    }
+}
+
+fn usize_arg(value: &RuntimeVal, context: &str) -> Result<usize> {
+    let value = int_arg(value, context)?;
+    if value < 0 {
+        bail!("{context} must be non-negative");
+    }
+    Ok(value as usize)
+}
+
+fn bool_arg(value: &RuntimeVal, context: &str) -> Result<bool> {
+    match value {
+        RuntimeVal::Bool(value) => Ok(*value),
+        _ => Err(anyhow!("{context} must be a boolean")),
+    }
+}
+
+fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Vec<String>> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} must be a list");
+    };
+    let Some(HeapValue::List(list)) = heap.get(*handle) else {
+        bail!("{context} must be a list");
+    };
+    match list {
+        TypedList::String(values) => Ok(values.iter().map(ToString::to_string).collect()),
+        TypedList::Mixed(values) => values
+            .iter()
+            .map(|value| {
+                runtime_string_arg(value, heap, context)
+                    .map(|value| value.to_string())
+                    .map_err(|_| anyhow!("join() list must contain only strings"))
+            })
+            .collect(),
+        _ => Err(anyhow!("join() list must contain only strings")),
+    }
+}
+
+fn display_runtime_value(value: &RuntimeVal, heap: &HeapStore, ctx: Option<&VmContext>) -> String {
+    runtime_val_to_val(value, heap)
+        .map(|value| value.display_string(ctx))
+        .unwrap_or_else(|_| format!("{:?}", value.kind()))
 }

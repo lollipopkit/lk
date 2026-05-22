@@ -1,8 +1,8 @@
 use anyhow::Result;
 use lk_core::{
     module::{self, Module},
-    val::{NativeArgs, Val, de},
-    vm::VmContext,
+    val::{RuntimeVal, Val, de},
+    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
 };
 use std::collections::HashMap;
 
@@ -20,7 +20,10 @@ impl Default for TomlModule {
 impl TomlModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
-        functions.insert("parse".to_string(), Val::RustFastFunction(parse));
+        functions.insert(
+            "parse".to_string(),
+            Val::runtime_native32(NativeFunction32::Plain(parse32), 1),
+        );
         TomlModule { functions }
     }
 }
@@ -39,14 +42,66 @@ impl Module for TomlModule {
     }
 }
 
-fn parse(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow::anyhow!("toml.parse(data) requires 1 argument"));
+fn parse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    crate::runtime_native::parse_format32(args, runtime, "toml.parse", de::Format::Toml)
+}
+
+#[cfg(test)]
+mod tests {
+    use lk_core::{
+        module::Module,
+        val::{CallableValue, HeapStore, HeapValue, Val, runtime_val_to_val},
+        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
+    };
+
+    use crate::runtime_native::runtime_string_value;
+
+    use super::TomlModule;
+
+    #[test]
+    fn toml_parse_exports_runtime_native32() {
+        let exports = TomlModule::new().exports();
+        let parse = exports.get("parse").expect("parse export");
+
+        assert!(matches!(
+            parse,
+            Val::Obj(object)
+                if matches!(
+                    object.as_ref(),
+                    HeapValue::Callable(CallableValue::RuntimeNative32 { arity: 1, .. })
+                )
+        ));
     }
-    let args = args.as_slice();
-    let s = args[0]
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| args[0].to_string());
-    de::parse_with_format(&s, Some(de::Format::Toml))
+
+    #[test]
+    fn toml_parse32_decodes_into_runtime_values() {
+        let exports = TomlModule::new().exports();
+        let parse = exports.get("parse").expect("parse export");
+        let Val::Obj(object) = parse else {
+            panic!("parse must be heap callable");
+        };
+        let HeapValue::Callable(CallableValue::RuntimeNative32 {
+            function: NativeFunction32::Plain(function),
+            ..
+        }) = object.as_ref()
+        else {
+            panic!("parse must be plain RuntimeNative32");
+        };
+
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let input = runtime_string_value("answer = 42", &mut state.heap);
+        let mut runtime = NativeRuntime32 {
+            state: &mut state,
+            ctx: None,
+            module: None,
+        };
+        let result = function(NativeArgs32::new(&[input]), &mut runtime).expect("parse");
+
+        let value = runtime_val_to_val(&result, &runtime.state.heap).expect("runtime to val");
+        let map = value.as_map().expect("toml object");
+        assert_eq!(map.get("answer"), Some(&Val::Int(42)));
+    }
 }

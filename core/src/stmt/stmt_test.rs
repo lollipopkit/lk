@@ -521,16 +521,16 @@ mod tests {
         );
         let result = program.execute().expect("Failed to execute");
         // Should return [["a", "b"], [1, 2]]
-        if let Val::List(outer) = result {
+        if let Some(outer) = result.as_list() {
             assert_eq!(outer.len(), 2);
-            if let Val::List(keys) = &outer[0] {
+            if let Some(keys) = outer[0].as_list() {
                 assert_eq!(keys.len(), 2);
-                assert_eq!(keys[0], Val::Str("a".into()));
-                assert_eq!(keys[1], Val::Str("b".into()));
+                assert_eq!(keys[0], Val::from_str("a"));
+                assert_eq!(keys[1], Val::from_str("b"));
             } else {
                 panic!("Expected keys to be a list");
             }
-            if let Val::List(values) = &outer[1] {
+            if let Some(values) = outer[1].as_list() {
                 assert_eq!(values.len(), 2);
                 assert_eq!(values[0], Val::Int(1));
                 assert_eq!(values[1], Val::Int(2));
@@ -572,7 +572,7 @@ mod tests {
         );
         let result = program.execute().expect("Failed to execute");
         // Should return [0, 1, 2, 4, 5, 6]
-        if let Val::List(list) = result {
+        if let Some(list) = result.as_list() {
             let expected = vec![
                 Val::Int(0),
                 Val::Int(1),
@@ -581,7 +581,7 @@ mod tests {
                 Val::Int(5),
                 Val::Int(6),
             ];
-            assert_eq!(*list, expected);
+            assert_eq!(list.as_ref(), &expected);
         } else {
             panic!("Expected result to be a list");
         }
@@ -629,11 +629,11 @@ mod tests {
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        if let Val::List(list) = result {
+        if let Some(list) = result.as_list() {
             assert_eq!(list.len(), 3);
-            assert_eq!(list[0], Val::Str("a".into()));
-            assert_eq!(list[1], Val::Str("b".into()));
-            assert_eq!(list[2], Val::Str("c".into()));
+            assert_eq!(list[0], Val::from_str("a"));
+            assert_eq!(list[1], Val::from_str("b"));
+            assert_eq!(list[2], Val::from_str("c"));
         } else {
             panic!("Expected list result");
         }
@@ -654,10 +654,10 @@ mod tests {
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        if let Val::List(outer) = result {
+        if let Some(outer) = result.as_list() {
             assert_eq!(outer.len(), 2);
-            if let Val::List(keys) = &outer[0] {
-                if let Val::List(values) = &outer[1] {
+            if let Some(keys) = outer[0].as_list() {
+                if let Some(values) = outer[1].as_list() {
                     assert_eq!(keys.len(), 2);
                     assert_eq!(values.len(), 2);
                     // Check that we have the expected key-value pairs
@@ -698,15 +698,15 @@ mod tests {
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        if let Val::List(outer) = result {
+        if let Some(outer) = result.as_list() {
             assert_eq!(outer.len(), 4);
             let expected = vec![
-                Val::List(vec![Val::Int(1), Val::Int(3)].into()),
-                Val::List(vec![Val::Int(1), Val::Int(4)].into()),
-                Val::List(vec![Val::Int(2), Val::Int(3)].into()),
-                Val::List(vec![Val::Int(2), Val::Int(4)].into()),
+                Val::list(vec![Val::Int(1), Val::Int(3)].into()),
+                Val::list(vec![Val::Int(1), Val::Int(4)].into()),
+                Val::list(vec![Val::Int(2), Val::Int(3)].into()),
+                Val::list(vec![Val::Int(2), Val::Int(4)].into()),
             ];
-            assert_eq!(*outer, expected);
+            assert_eq!(outer.as_ref(), &expected);
         } else {
             panic!("Expected result to be a list");
         }
@@ -740,7 +740,7 @@ mod tests {
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        if let Val::List(list) = result {
+        if let Some(list) = result.as_list() {
             assert_eq!(list.len(), 3);
             assert_eq!(list[0], Val::Int(0));
             assert_eq!(list[1], Val::Int(1));
@@ -779,13 +779,13 @@ mod tests {
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        if let Val::List(outer) = result {
+        if let Some(outer) = result.as_list() {
             assert_eq!(outer.len(), 2);
             // Check first elements
-            if let Val::List(first) = &outer[0] {
+            if let Some(first) = outer[0].as_list() {
                 assert_eq!(first.len(), 2);
-                assert_eq!(first[0], Val::List(vec![Val::Int(1), Val::Int(2)].into()));
-                assert_eq!(first[1], Val::List(vec![Val::Int(5), Val::Int(6)].into()));
+                assert_eq!(first[0], Val::list(vec![Val::Int(1), Val::Int(2)].into()));
+                assert_eq!(first[1], Val::list(vec![Val::Int(5), Val::Int(6)].into()));
             } else {
                 panic!("Expected first to be a list");
             }
@@ -932,7 +932,7 @@ mod tests {
         "#,
         );
         let result = program.execute().expect("Failed to execute");
-        assert_eq!(result, Val::Str("hello world".into()));
+        assert_eq!(result, Val::from_str("hello world"));
     }
 
     #[test]

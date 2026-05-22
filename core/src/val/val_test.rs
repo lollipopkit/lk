@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn string_concat_preserves_short_and_heap_string_shapes() {
         assert!(matches!(Val::concat_strings("ab", "cd"), Val::ShortStr(_)));
-        assert!(matches!(Val::concat_strings("longer-", "than-short"), Val::Str(_)));
+        assert!(matches!(Val::concat_strings("longer-", "than-short"), Val::Obj(_)));
         assert_eq!(Val::concat_strings("prefix-", "suffix").as_str(), Some("prefix-suffix"));
     }
 
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn test_literal_list_creation() {
         let list = vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)];
-        let val = Val::List(list.clone().into());
+        let val = Val::list(list.clone().into());
 
         // Test access
         assert_eq!(val.access(&Val::Int(0)), Some(Val::Int(1)));
@@ -212,7 +212,7 @@ mod tests {
         let users_list = vec![Val::from(inner_map)];
 
         let mut outer_map = HashMap::new();
-        outer_map.insert("users".to_string(), Val::List(users_list.into()));
+        outer_map.insert("users".to_string(), Val::list(users_list.into()));
 
         let val = Val::from(outer_map);
 
@@ -268,9 +268,9 @@ mod tests {
     #[test]
     fn test_literal_equality() {
         // Test list equality
-        let list1 = Val::List(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into());
-        let list2 = Val::List(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into());
-        let list3 = Val::List(vec![Val::Int(1), Val::Int(2), Val::Int(4)].into());
+        let list1 = Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into());
+        let list2 = Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into());
+        let list3 = Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(4)].into());
 
         assert_eq!(list1, list2);
         assert_ne!(list1, list3);
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn test_display_formatting() {
         // Test list display
-        let list = Val::List(vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)].into());
+        let list = Val::list(vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)].into());
         let display = format!("{}", list);
         assert!(display.contains("1") && display.contains("hello") && display.contains("true"));
 
@@ -347,7 +347,7 @@ mod tests {
         ]);
         let val: Val = yaml_seq.into();
 
-        let expected = Val::List(vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)].into());
+        let expected = Val::list(vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)].into());
 
         assert_eq!(val, expected);
     }

@@ -154,7 +154,7 @@ impl Type {
             (Type::Int, Val::Int(_)) => Ok(()),
             (Type::Float, Val::Float(_)) => Ok(()),
             (Type::Float, Val::Int(_)) => Ok(()),
-            (Type::String, Val::ShortStr(_)) | (Type::String, Val::Str(_)) => Ok(()),
+            (Type::String, value) if value.as_str().is_some() => Ok(()),
             (Type::Bool, Val::Bool(_)) => Ok(()),
             (Type::Nil, Val::Nil) => Ok(()),
             (Type::Boxed(inner), value) => {
@@ -165,13 +165,15 @@ impl Type {
                 }
             }
             (Type::Any, _) => Ok(()),
-            (Type::List(elem_type), Val::List(list)) => {
+            (Type::List(elem_type), value) if value.as_list().is_some() => {
+                let list = value.as_list().expect("checked list");
                 for item in list.iter() {
                     elem_type.validate(item)?;
                 }
                 Ok(())
             }
-            (Type::Map(key_type, val_type), Val::Map(map)) => {
+            (Type::Map(key_type, val_type), value) if value.as_map().is_some() => {
+                let map = value.as_map().expect("checked map");
                 for (key, value) in map.iter() {
                     let key_val = Val::from_str(key.as_str());
                     key_type.validate(&key_val)?;
@@ -179,7 +181,8 @@ impl Type {
                 }
                 Ok(())
             }
-            (Type::Tuple(elems), Val::List(list)) => {
+            (Type::Tuple(elems), value) if value.as_list().is_some() => {
+                let list = value.as_list().expect("checked list");
                 if list.len() != elems.len() {
                     return Err(anyhow!(
                         "Tuple length mismatch: expected {}, got {}",
@@ -194,19 +197,18 @@ impl Type {
                 }
                 Ok(())
             }
-            (Type::Function { .. }, Val::Closure(_)) => Ok(()),
-            (Type::Function { .. }, Val::RustFunction(_)) => Ok(()),
-            (Type::Function { .. }, Val::RustFastFunction(_)) => Ok(()),
-            (Type::Function { .. }, Val::RustFastFunctionNamed(_)) => Ok(()),
-            (Type::Function { .. }, Val::RustFunctionNamed(_)) => Ok(()),
-            (Type::Function { .. }, Val::AotFunction(_)) => Ok(()),
-            (Type::Task(inner_type), Val::Task(task)) => {
+            (Type::Function { .. }, value) if value.is_callable() => Ok(()),
+            (Type::Task(inner_type), value) if value.as_task().is_some() => {
+                let task = value.as_task().expect("checked task");
                 if let Some(value) = &task.value {
                     inner_type.validate(value)?;
                 }
                 Ok(())
             }
-            (Type::Generic { name, params }, Val::Stream(stream)) if name == "Stream" && params.len() == 1 => {
+            (Type::Generic { name, params }, value)
+                if name == "Stream" && params.len() == 1 && value.as_stream().is_some() =>
+            {
+                let stream = value.as_stream().expect("checked stream");
                 let expected_inner = &params[0];
                 if expected_inner == &stream.inner_type || expected_inner.is_assignable_to(&stream.inner_type) {
                     Ok(())
@@ -218,7 +220,8 @@ impl Type {
                     ))
                 }
             }
-            (Type::Channel(inner_type), Val::Channel(channel)) => {
+            (Type::Channel(inner_type), value) if value.as_channel().is_some() => {
+                let channel = value.as_channel().expect("checked channel");
                 if inner_type.as_ref() == &channel.inner_type {
                     Ok(())
                 } else {
@@ -246,11 +249,6 @@ impl Type {
             (Type::Variable(_), _) => Ok(()),
             (Type::Named(_), _) => Ok(()),
             (Type::Generic { .. }, _) => Ok(()),
-            (expected, actual @ Val::Iterator(_)) | (expected, actual @ Val::MutationGuard(_)) => Err(anyhow!(
-                "Type mismatch: expected {:?}, got {:?}",
-                expected,
-                actual.type_name()
-            )),
             (expected, actual) => Err(anyhow!(
                 "Type mismatch: expected {:?}, got {:?}",
                 expected,

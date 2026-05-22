@@ -13,7 +13,7 @@ mod tests {
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
         let mut env = VmContext::new();
-        if let Val::Map(m) = ctx {
+        if let Some(m) = ctx.as_map() {
             for (k, v) in m.iter() {
                 env.define(k.to_string(), v.clone());
             }
@@ -35,7 +35,7 @@ mod tests {
 
     #[test]
     fn test_if_let_literal_match() {
-        let ctx: Val = [("status".to_string(), Val::Str("ok".into()))]
+        let ctx: Val = [("status".to_string(), Val::from_str("ok"))]
             .into_iter()
             .collect::<HashMap<String, Val>>()
             .into();
@@ -47,7 +47,7 @@ mod tests {
 
     #[test]
     fn test_if_let_literal_no_match() {
-        let ctx: Val = [("status".to_string(), Val::Str("error".into()))]
+        let ctx: Val = [("status".to_string(), Val::from_str("error"))]
             .into_iter()
             .collect::<HashMap<String, Val>>()
             .into();
@@ -61,7 +61,7 @@ mod tests {
     fn test_if_let_list_destructuring() {
         let ctx: Val = [(
             "list".to_string(),
-            Val::List(Arc::from(vec![Val::Int(1), Val::Int(2), Val::Int(3)])),
+            Val::list(Arc::from(vec![Val::Int(1), Val::Int(2), Val::Int(3)])),
         )]
         .into_iter()
         .collect::<HashMap<String, Val>>()
@@ -80,7 +80,7 @@ mod tests {
     fn test_if_let_list_with_rest() {
         let ctx: Val = [(
             "list".to_string(),
-            Val::List(Arc::from(vec![Val::Int(1), Val::Int(2), Val::Int(3), Val::Int(4)])),
+            Val::list(Arc::from(vec![Val::Int(1), Val::Int(2), Val::Int(3), Val::Int(4)])),
         )]
         .into_iter()
         .collect::<HashMap<String, Val>>()
@@ -96,7 +96,7 @@ mod tests {
         let ctx: Val = [(
             "user".to_string(),
             ([
-                ("name".to_string(), Val::Str("Alice".into())),
+                ("name".to_string(), Val::from_str("Alice")),
                 ("age".to_string(), Val::Int(30)),
             ]
             .into_iter()
@@ -109,7 +109,7 @@ mod tests {
 
         let result = parse_and_execute_stmt(r#"if let {"name": name} = user { return name; }"#, &ctx).unwrap();
 
-        assert_eq!(result, Val::Str("Alice".into()));
+        assert_eq!(result, Val::from_str("Alice"));
     }
 
     #[test]
@@ -130,7 +130,7 @@ mod tests {
             "data".to_string(),
             ([(
                 "items".to_string(),
-                Val::List(Arc::from(vec![Val::Str("first".into()), Val::Str("second".into())])),
+                Val::list(Arc::from(vec![Val::from_str("first"), Val::from_str("second")])),
             )]
             .into_iter()
             .collect::<HashMap<String, Val>>()
@@ -143,7 +143,7 @@ mod tests {
         let result =
             parse_and_execute_stmt(r#"if let {"items": [first, second]} = data { return first; }"#, &ctx).unwrap();
 
-        assert_eq!(result, Val::Str("first".into()));
+        assert_eq!(result, Val::from_str("first"));
     }
 
     #[test]
@@ -198,7 +198,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result, Val::Str("adult".into()));
+        assert_eq!(result, Val::from_str("adult"));
     }
 
     #[test]
@@ -228,10 +228,10 @@ mod tests {
     fn test_if_let_complex_expression() {
         let ctx: Val = [(
             "data".to_string(),
-            Val::List(Arc::from(vec![
+            Val::list(Arc::from(vec![
                 ([
                     ("id".to_string(), Val::Int(1)),
-                    ("value".to_string(), Val::Str("test".into())),
+                    ("value".to_string(), Val::from_str("test")),
                 ]
                 .into_iter()
                 .collect::<HashMap<String, Val>>()
@@ -245,7 +245,7 @@ mod tests {
         let result =
             parse_and_execute_stmt(r#"if let [{"id": id, "value": value}] = data { return value; }"#, &ctx).unwrap();
 
-        assert_eq!(result, Val::Str("test".into()));
+        assert_eq!(result, Val::from_str("test"));
     }
 
     #[test]

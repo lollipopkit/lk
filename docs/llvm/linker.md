@@ -28,18 +28,17 @@ LLVM 后端已经能够将大部分 VM 字节码指令翻译成 LLVM IR，并在
 | `0b010` | Bool | 1 bit | `0` -> false, `1` -> true |
 | `0b011` | Nil | - | 固定常量 |
 | `0b100` | Pointer handle | 61 bits | 指向堆对象表（字符串、列表、map 等） |
-| `0b101` | Function handle | 61 bits | 指向闭包或 Rust 函数 |
-| `0b110` | Iterator handle | 61 bits | 等 |
+| `0b101` | Function handle | 61 bits | 指向闭包或 runtime callable |
 
 > TODO: 最终方案需考虑 GC/生命周期。初版可以借助 `VmContext` 的 `Val` 转换并在 runtime 内部暂存于 `Arc<Val>` 表。
 
 ## Helper 实现要点
 
-- **字符串 (`intern_string`)**：构造 `Val::Str`，返回 handle；支持重复利用。
+- **字符串 (`intern_string`)**：构造 heap string/short string 值，返回 handle；支持重复利用。
 - **全局 (`load_global`/`define_global`)**：通过全局 `VmContext` 字典读写。
-- **集合 (`build_list`/`build_map`)**：根据传入 array 构造 `Val::List` / `Val::Map`。
+- **集合 (`build_list`/`build_map`)**：根据传入 array 构造堆对象承载的 list / map 值。
 - **索引 (`access`/`index`/`len`/`to_iter`)**：直接复用现有 VM 逻辑，处理错误 -> 返回 Nil。
-- **函数调用 (`call`)**：解析函数 handle -> `Val::Closure` / `Val::RustFunction`，执行并返回结果。
+- **函数调用 (`call`)**：解析函数 handle -> heap `Callable`，执行并返回结果。
 
 ## 工程步骤
 

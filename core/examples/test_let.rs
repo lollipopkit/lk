@@ -1,7 +1,4 @@
-// Quick test to check let binding behavior
-use lk_core::stmt::{Stmt, StmtParser};
-use lk_core::token::Tokenizer;
-use lk_core::vm::{Compiler, Vm, VmContext};
+use lk_core::vm::{Compiler32, disassemble_module32, execute_source32_to_val};
 
 fn main() {
     // Test: let variable with function call
@@ -10,21 +7,8 @@ fn g() { return 42 }
 let a = g()
 return a
 "#;
-    let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(program).unwrap();
-    let mut parser = StmtParser::new_with_spans(&tokens, &spans);
-    let parsed = parser.parse_program_with_enhanced_errors(program).unwrap();
-    let block = Stmt::Block {
-        statements: parsed.statements,
-    };
-    let fun = Compiler::new().compile_stmt(&block);
-
-    println!("n_regs: {}", fun.n_regs);
-    for (i, op) in fun.code.iter().enumerate() {
-        println!("  {:4}: {:?}", i, op);
-    }
-
-    let mut vm = Vm::new();
-    let mut ctx = VmContext::new();
-    let result = vm.exec_with(&fun, &mut ctx, None).unwrap();
+    let module = Compiler32::compile_source_module(program).unwrap();
+    println!("{}", disassemble_module32(&module));
+    let result = execute_source32_to_val(program).unwrap();
     println!("Result: {:?}", result);
 }

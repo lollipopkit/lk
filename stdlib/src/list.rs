@@ -1,304 +1,13 @@
-use arcstr::ArcStr;
 use std::collections::HashMap;
-use std::{mem, sync::Arc};
 
-use crate::collections::{ListMutation, MutableSequence};
-use crate::iter::{
-    chain as iter_chain, chunk as iter_chunk, enumerate as iter_enumerate, filter as iter_filter,
-    flatten as iter_flatten, map as iter_map, reduce as iter_reduce, skip as iter_skip, take as iter_take,
-    unique as iter_unique, zip as iter_zip,
+use anyhow::{Result, anyhow, bail};
+use lk_core::{
+    module::{Module, ModuleRegistry},
+    val::{HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
 };
-use anyhow::{Result, anyhow};
-use lk_core::module::{Module, ModuleRegistry};
-use lk_core::val::Val;
-use lk_core::val::methods::register_fast_method;
-use lk_core::val::{IteratorState, IteratorValue, MutationGuardState, MutationGuardValue, NativeArgs};
-use lk_core::vm::VmContext;
 
-const LIST_MUT_TYPE: &str = "ListMut";
-
-struct ListIteratorState {
-    data: Arc<Vec<Val>>,
-    index: usize,
-}
-
-impl ListIteratorState {
-    fn new(data: Arc<Vec<Val>>) -> Self {
-        Self { data, index: 0 }
-    }
-
-    fn remaining(&self) -> usize {
-        self.data.len().saturating_sub(self.index)
-    }
-}
-
-impl IteratorState for ListIteratorState {
-    fn next(&mut self, _ctx: &mut VmContext) -> Result<Option<Val>> {
-        if self.index >= self.data.len() {
-            return Ok(None);
-        }
-        let value = self.data[self.index].clone();
-        self.index += 1;
-        Ok(Some(value))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.remaining();
-        (remaining, Some(remaining))
-    }
-
-    fn debug_name(&self) -> &'static str {
-        "list_iter"
-    }
-}
-
-struct ListMutationGuardState {
-    inner: ListMutation,
-    mutated: bool,
-}
-
-impl ListMutationGuardState {
-    fn new(inner: ListMutation) -> Self {
-        Self { inner, mutated: false }
-    }
-
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    fn mark_mutated(&mut self) {
-        self.mutated = true;
-    }
-
-    fn push(&mut self, value: Val) {
-        self.inner.push(value);
-        self.mark_mutated();
-    }
-
-    fn reserve(&mut self, additional: usize) {
-        self.inner.reserve(additional);
-    }
-
-    fn replace(&mut self, index: usize, value: Val) -> Result<Val> {
-        let replaced = self.inner.replace(index, value)?;
-        self.mark_mutated();
-        Ok(replaced)
-    }
-
-    fn remove(&mut self, index: usize) -> Option<Val> {
-        let removed = self.inner.remove(index);
-        if removed.is_some() {
-            self.mark_mutated();
-        }
-        removed
-    }
-
-    fn pop(&mut self) -> Option<Val> {
-        if self.len() == 0 {
-            None
-        } else {
-            self.remove(self.len() - 1)
-        }
-    }
-
-    fn as_list_val(&self) -> Val {
-        Val::List(Arc::from(self.inner.as_slice().to_vec()))
-    }
-}
-
-impl MutationGuardState for ListMutationGuardState {
-    fn guard_type(&self) -> &'static str {
-        LIST_MUT_TYPE
-    }
-
-    fn commit(&mut self) -> Result<Val> {
-        let scratch: Arc<Vec<Val>> = Arc::from(Vec::<Val>::new());
-        let current = mem::replace(&mut self.inner, ListMutation::new(scratch));
-        let updated = current.finish();
-        self.inner = ListMutation::from_val(&updated)?;
-        self.mutated = false;
-        Ok(updated)
-    }
-
-    fn snapshot(&mut self) -> Result<Val> {
-        Ok(self.as_list_val())
-    }
-
-    fn has_mutated(&self) -> bool {
-        self.mutated
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-fn expect_list_guard(val: &Val) -> Result<Arc<MutationGuardValue>> {
-    match val {
-        Val::MutationGuard(handle) if handle.guard_type() == LIST_MUT_TYPE => Ok(handle.clone()),
-        Val::MutationGuard(handle) => Err(anyhow!(
-            "expected {} mutation guard, got {}",
-            LIST_MUT_TYPE,
-            handle.guard_type()
-        )),
-        other => Err(anyhow!(
-            "expected {} mutation guard, got {}",
-            LIST_MUT_TYPE,
-            other.type_name()
-        )),
-    }
-}
-
-fn with_list_guard_mut<F, R>(guard: &Arc<MutationGuardValue>, f: F) -> Result<R>
-where
-    F: FnOnce(&mut ListMutationGuardState) -> Result<R>,
-{
-    guard.with_state_mut(|state| {
-        let state = state
-            .as_any_mut()
-            .downcast_mut::<ListMutationGuardState>()
-            .ok_or_else(|| anyhow!("invalid ListMut guard handle"))?;
-        f(state)
-    })
-}
-
-fn with_list_guard<F, R>(guard: &Arc<MutationGuardValue>, f: F) -> Result<R>
-where
-    F: FnOnce(&ListMutationGuardState) -> Result<R>,
-{
-    guard.with_state(|state| {
-        let state = state
-            .as_any()
-            .downcast_ref::<ListMutationGuardState>()
-            .ok_or_else(|| anyhow!("invalid ListMut guard handle"))?;
-        f(state)
-    })
-}
-
-fn list_mut_guard_len(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("len() expects guard argument"));
-    }
-    let guard = expect_list_guard(&args[0])?;
-    let len = with_list_guard(&guard, |state| Ok(state.len()))?;
-    Ok(Val::Int(len as i64))
-}
-
-fn list_mut_guard_len_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    list_mut_guard_len(args.as_slice(), ctx)
-}
-
-fn list_mut_guard_push(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("push() expects (guard, value)"));
-    }
-    let guard = expect_list_guard(&args[0])?;
-    let value = args[1].clone();
-    with_list_guard_mut(&guard, |state| {
-        state.push(value);
-        Ok(())
-    })?;
-    Ok(args[0].clone())
-}
-
-fn list_mut_guard_push_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    list_mut_guard_push(args.as_slice(), ctx)
-}
-
-fn list_mut_guard_pop(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("pop() expects guard argument"));
-    }
-    let guard = expect_list_guard(&args[0])?;
-    let result = with_list_guard_mut(&guard, |state| Ok(state.pop().unwrap_or(Val::Nil)))?;
-    Ok(result)
-}
-
-fn list_mut_guard_pop_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    list_mut_guard_pop(args.as_slice(), ctx)
-}
-
-fn list_mut_guard_replace(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 3 {
-        return Err(anyhow!("replace() expects (guard, index, value)"));
-    }
-    let guard = expect_list_guard(&args[0])?;
-    let index = match &args[1] {
-        Val::Int(i) if *i >= 0 => *i as usize,
-        _ => return Err(anyhow!("replace() index must be non-negative integer")),
-    };
-    let value = args[2].clone();
-    with_list_guard_mut(&guard, |state| state.replace(index, value))
-}
-
-fn list_mut_guard_replace_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    list_mut_guard_replace(args.as_slice(), ctx)
-}
-
-fn list_mut_guard_remove(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("remove() expects (guard, index)"));
-    }
-    let guard = expect_list_guard(&args[0])?;
-    let index = match &args[1] {
-        Val::Int(i) if *i >= 0 => *i as usize,
-        _ => return Err(anyhow!("remove() index must be non-negative integer")),
-    };
-    let removed = with_list_guard_mut(&guard, |state| Ok(state.remove(index).unwrap_or(Val::Nil)))?;
-    Ok(removed)
-}
-
-fn list_mut_guard_remove_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    list_mut_guard_remove(args.as_slice(), ctx)
-}
-
-fn list_mut_guard_reserve(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("reserve() expects (guard, additional)"));
-    }
-    let guard = expect_list_guard(&args[0])?;
-    let additional = match &args[1] {
-        Val::Int(i) if *i >= 0 => *i as usize,
-        _ => return Err(anyhow!("reserve() additional must be non-negative integer")),
-    };
-    with_list_guard_mut(&guard, |state| {
-        state.reserve(additional);
-        Ok(())
-    })?;
-    Ok(args[0].clone())
-}
-
-fn list_mut_guard_reserve_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    list_mut_guard_reserve(args.as_slice(), ctx)
-}
-
-fn list_mut_guard_commit(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("commit() expects guard argument"));
-    }
-    let guard = expect_list_guard(&args[0])?;
-    guard.commit()
-}
-
-fn list_mut_guard_commit_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    list_mut_guard_commit(args.as_slice(), ctx)
-}
-
-fn list_mut_guard_as_list(args: &[Val], _: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("as_list() expects guard argument"));
-    }
-    let guard = expect_list_guard(&args[0])?;
-    guard.snapshot()
-}
-
-fn list_mut_guard_as_list_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-    list_mut_guard_as_list(args.as_slice(), ctx)
-}
+use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
 #[derive(Debug)]
 pub struct ListModule {
@@ -315,321 +24,99 @@ impl ListModule {
     pub fn new() -> Self {
         let mut functions = HashMap::new();
 
-        // Core list utilities
-        functions.insert("len".to_string(), Val::RustFastFunction(Self::len_fast));
-        functions.insert("push".to_string(), Val::RustFastFunction(Self::push));
-        functions.insert("concat".to_string(), Val::RustFastFunction(Self::concat));
-        functions.insert("join".to_string(), Val::RustFastFunction(Self::join));
-        functions.insert("get".to_string(), Val::RustFastFunction(Self::get));
-        functions.insert("first".to_string(), Val::RustFastFunction(Self::first));
-        functions.insert("last".to_string(), Val::RustFastFunction(Self::last));
-        functions.insert("set".to_string(), Val::RustFastFunction(Self::set));
-        // Functional helpers
-        functions.insert("map".to_string(), Val::RustFastFunction(Self::map));
-        functions.insert("filter".to_string(), Val::RustFastFunction(Self::filter));
-        functions.insert("reduce".to_string(), Val::RustFastFunction(Self::reduce));
-        // Iterator-based helpers (method sugar delegating to iter)
-        functions.insert("take".to_string(), Val::RustFastFunction(Self::take));
-        functions.insert("skip".to_string(), Val::RustFastFunction(Self::skip));
-        functions.insert("chain".to_string(), Val::RustFastFunction(Self::chain));
-        functions.insert("flatten".to_string(), Val::RustFastFunction(Self::flatten));
-        functions.insert("unique".to_string(), Val::RustFastFunction(Self::unique));
-        functions.insert("chunk".to_string(), Val::RustFastFunction(Self::chunk));
-        functions.insert("enumerate".to_string(), Val::RustFastFunction(Self::enumerate));
-        functions.insert("zip".to_string(), Val::RustFastFunction(Self::zip));
-        {
-            functions.insert("into_iter".to_string(), Val::RustFastFunction(Self::into_iter));
-            functions.insert("mutate".to_string(), Val::RustFastFunction(Self::mutate));
-        }
-
-        // Register as meta-methods for List
-        register_fast_method("List", "len", Self::len_fast);
-        register_fast_method("List", "push", Self::push);
-        register_fast_method("List", "concat", Self::concat);
-        register_fast_method("List", "join", Self::join);
-        register_fast_method("List", "get", Self::get);
-        register_fast_method("List", "first", Self::first);
-        register_fast_method("List", "last", Self::last);
-        register_fast_method("List", "set", Self::set);
-        register_fast_method("List", "map", Self::map);
-        register_fast_method("List", "filter", Self::filter);
-        register_fast_method("List", "reduce", Self::reduce);
-        // Iterator-based helpers as List methods
-        register_fast_method("List", "take", Self::take);
-        register_fast_method("List", "skip", Self::skip);
-        register_fast_method("List", "chain", Self::chain);
-        register_fast_method("List", "flatten", Self::flatten);
-        register_fast_method("List", "unique", Self::unique);
-        register_fast_method("List", "chunk", Self::chunk);
-        register_fast_method("List", "enumerate", Self::enumerate);
-        register_fast_method("List", "zip", Self::zip);
-        {
-            register_fast_method("List", "into_iter", Self::into_iter);
-            register_fast_method("List", "__iter__", Self::into_iter);
-            register_fast_method("List", "mutate", Self::mutate_method_fast);
-
-            register_fast_method(LIST_MUT_TYPE, "len", list_mut_guard_len_fast);
-            register_fast_method(LIST_MUT_TYPE, "push", list_mut_guard_push_fast);
-            register_fast_method(LIST_MUT_TYPE, "pop", list_mut_guard_pop_fast);
-            register_fast_method(LIST_MUT_TYPE, "replace", list_mut_guard_replace_fast);
-            register_fast_method(LIST_MUT_TYPE, "remove", list_mut_guard_remove_fast);
-            register_fast_method(LIST_MUT_TYPE, "reserve", list_mut_guard_reserve_fast);
-            register_fast_method(LIST_MUT_TYPE, "commit", list_mut_guard_commit_fast);
-            register_fast_method(LIST_MUT_TYPE, "as_list", list_mut_guard_as_list_fast);
-        }
+        register_native(&mut functions, "len", Self::len32, 1);
+        register_native(&mut functions, "push", Self::push32, 2);
+        register_native(&mut functions, "concat", Self::concat32, 2);
+        register_native(&mut functions, "join", Self::join32, 2);
+        register_native(&mut functions, "get", Self::get32, 2);
+        register_native(&mut functions, "first", Self::first32, 1);
+        register_native(&mut functions, "last", Self::last32, 1);
+        register_native(&mut functions, "set", Self::set32, 3);
 
         Self { functions }
     }
 
-    fn len_fast(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("len() takes exactly 1 argument"));
-        }
-        match args.get(0) {
-            Some(Val::List(list)) => Ok(Val::Int(list.len() as i64)),
-            _ => Err(anyhow!("len() argument must be a list")),
-        }
+    fn len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let list = one_list(args, runtime, "len()")?;
+        Ok(RuntimeVal::Int(list.len() as i64))
     }
 
-    // Return a new list with value appended (immutable)
-    fn push(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("push() takes exactly 2 arguments: list, value"));
-        }
-        let args = args.as_slice();
-        match &args[0] {
-            Val::List(list) => Ok(Val::List(Val::append_to_list(list.as_ref(), &args[1]))),
-            _ => Err(anyhow!("push() first argument must be a list")),
-        }
+    fn push32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "push()")?;
+        let values = args.as_slice();
+        let list = list_arg(&values[0], &runtime.state.heap, "push() first argument")?;
+        let mut items = list.materialize_mixed(runtime.heap_mut());
+        items.push(values[1].clone());
+        let typed = TypedList::from_runtime_values(items, &runtime.state.heap);
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(typed))))
     }
 
-    // Concatenate two lists
-    fn concat(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("concat() takes exactly 2 arguments: list, other_list"));
-        }
-        let args = args.as_slice();
-        let other = match &args[1] {
-            Val::List(list) => list.clone(),
-            _ => {
-                return Err(anyhow!("concat() second argument must be a list"));
-            }
-        };
-        match &args[0] {
-            Val::List(_) => {
-                let mut list = ListMutation::from_val(&args[0])?;
-                list.reserve(other.len());
-                list.extend(other.iter().cloned());
-                Ok(list.finish())
-            }
-            _ => Err(anyhow!("concat() first argument must be a list")),
-        }
+    fn concat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "concat()")?;
+        let values = args.as_slice();
+        let left = list_arg(&values[0], &runtime.state.heap, "concat() first argument")?;
+        let right = list_arg(&values[1], &runtime.state.heap, "concat() second argument")?;
+        let mut items = left.materialize_mixed(runtime.heap_mut());
+        items.extend(right.materialize_mixed(runtime.heap_mut()));
+        let typed = TypedList::from_runtime_values(items, &runtime.state.heap);
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(typed))))
     }
 
-    // Join a list of strings with a delimiter
-    fn join(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("join() takes exactly 2 arguments: list<string>, delimiter"));
-        }
-        let args = args.as_slice();
-        let list = match &args[0] {
-            Val::List(l) => &**l,
-            _ => return Err(anyhow!("join() first argument must be a list")),
-        };
-        let delimiter = args[1]
-            .as_str()
-            .ok_or_else(|| anyhow!("join() second argument must be a string"))?;
-        let mut strings: Vec<&str> = Vec::with_capacity(list.len());
-        for item in list.iter() {
-            match item.as_str() {
-                Some(s) => strings.push(s),
-                None => return Err(anyhow!("join() list must contain only strings")),
-            }
-        }
-        Ok(Val::from_str(&strings.join(delimiter)))
+    fn join32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "join()")?;
+        let values = args.as_slice();
+        let strings = string_list_arg(&values[0], &runtime.state.heap, "join() first argument")?;
+        let delimiter = runtime_string_arg(&values[1], &runtime.state.heap, "join() second argument")?;
+        Ok(runtime_string_value(
+            &strings.join(delimiter.as_ref()),
+            runtime.heap_mut(),
+        ))
     }
 
-    // Safe index access: get(index) -> value|nil
-    fn get(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 2 {
-            return Err(anyhow!("get() takes exactly 2 arguments: list, index"));
-        }
-        let args = args.as_slice();
-        let list = match &args[0] {
-            Val::List(l) => &**l,
-            _ => return Err(anyhow!("get() first argument must be a list")),
-        };
-        let idx = match &args[1] {
-            Val::Int(i) => *i,
-            _ => return Err(anyhow!("get() index must be an integer")),
-        };
-        if idx < 0 {
-            return Ok(Val::Nil);
-        }
-        let uidx = idx as usize;
-        Ok(list.get(uidx).cloned().unwrap_or(Val::Nil))
-    }
-
-    fn first(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("first() takes exactly 1 argument"));
-        }
-        match args.get(0) {
-            Some(Val::List(l)) => Ok(l.first().cloned().unwrap_or(Val::Nil)),
-            _ => Err(anyhow!("first() argument must be a list")),
-        }
-    }
-
-    fn last(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("last() takes exactly 1 argument"));
-        }
-        match args.get(0) {
-            Some(Val::List(l)) => Ok(l.last().cloned().unwrap_or(Val::Nil)),
-            _ => Err(anyhow!("last() argument must be a list")),
-        }
-    }
-
-    // Replace the element at index with a new value, returning [updated_list, old_value]
-    fn set(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-        if args.len() != 3 {
-            return Err(anyhow!("set() takes exactly 3 arguments: list, index, value"));
-        }
-        let args = args.as_slice();
-        let index = match &args[1] {
-            Val::Int(i) => *i,
-            _ => return Err(anyhow!("set() index must be an integer")),
-        };
+    fn get32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "get()")?;
+        let values = args.as_slice();
+        let list = list_arg(&values[0], &runtime.state.heap, "get() first argument")?;
+        let index = int_arg(&values[1], "get() index")?;
         if index < 0 {
-            return Err(anyhow!("set() index must be non-negative"));
+            return Ok(RuntimeVal::Nil);
         }
-        match &args[0] {
-            Val::List(_) => {
-                let mut list = ListMutation::from_val(&args[0])?;
-                let old = list.replace(index as usize, args[2].clone())?;
-                let updated = list.finish();
-                Ok(Val::List(vec![updated, old].into()))
-            }
-            _ => Err(anyhow!("set() first argument must be a list")),
-        }
+        Ok(list_get(&list, index as usize, runtime.heap_mut()).unwrap_or(RuntimeVal::Nil))
     }
 
-    // Map over list with a function: list.map(|x| ...)
-    // Accepts either as module call: map(list, func) or meta-method: list.map(func)
-    fn map(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        // Delegate to iter::map for core logic
-        iter_map(args.as_slice(), ctx)
+    fn first32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let list = one_list(args, runtime, "first()")?;
+        Ok(list_get(&list, 0, runtime.heap_mut()).unwrap_or(RuntimeVal::Nil))
     }
 
-    // Filter list with predicate function: list.filter(|x| cond)
-    // Truthiness: false and nil are false; everything else treated as true
-    fn filter(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        // Delegate to iter::filter for core logic
-        iter_filter(args.as_slice(), ctx)
-    }
-
-    // Reduce list with accumulator: list.reduce(init, |acc, x| ...)
-    fn reduce(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        // Delegate to iter::reduce for core logic
-        iter_reduce(args.as_slice(), ctx)
-    }
-
-    // Method sugar delegating to iter::* sequence helpers
-    fn take(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        iter_take(args.as_slice(), ctx)
-    }
-
-    fn skip(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        iter_skip(args.as_slice(), ctx)
-    }
-
-    fn chain(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        iter_chain(args.as_slice(), ctx)
-    }
-
-    fn flatten(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        iter_flatten(args.as_slice(), ctx)
-    }
-
-    fn unique(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        iter_unique(args.as_slice(), ctx)
-    }
-
-    fn chunk(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        iter_chunk(args.as_slice(), ctx)
-    }
-
-    fn enumerate(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        iter_enumerate(args.as_slice(), ctx)
-    }
-
-    fn zip(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        iter_zip(args.as_slice(), ctx)
-    }
-
-    fn into_iter(args: NativeArgs<'_>, _: &mut VmContext) -> Result<Val> {
-        if args.len() != 1 {
-            return Err(anyhow!("into_iter expects exactly 1 argument"));
-        }
-        let list = match args.get(0) {
-            Some(Val::List(list)) => list.clone(),
-            Some(other) => return Err(anyhow!("into_iter expects a list, got {}", other.type_name())),
-            None => return Err(anyhow!("into_iter expects exactly 1 argument")),
+    fn last32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let list = one_list(args, runtime, "last()")?;
+        let Some(index) = list.len().checked_sub(1) else {
+            return Ok(RuntimeVal::Nil);
         };
-        let iter_state = ListIteratorState::new(list);
-        let handle = IteratorValue::with_origin(iter_state, ArcStr::from("list.into_iter"));
-        Ok(Val::Iterator(handle))
+        Ok(list_get(&list, index, runtime.heap_mut()).unwrap_or(RuntimeVal::Nil))
     }
 
-    fn mutate(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        let (updated, closure_result) = Self::mutate_impl(args.as_slice(), ctx)?;
-        let out = Vec::from([updated, closure_result]);
-        Ok(Val::List(Arc::from(out)))
-    }
-
-    fn mutate_method(args: &[Val], ctx: &mut VmContext) -> Result<Val> {
-        let (updated, _) = Self::mutate_impl(args, ctx)?;
-        Ok(updated)
-    }
-
-    fn mutate_method_fast(args: NativeArgs<'_>, ctx: &mut VmContext) -> Result<Val> {
-        Self::mutate_method(args.as_slice(), ctx)
-    }
-
-    fn mutate_impl(args: &[Val], ctx: &mut VmContext) -> Result<(Val, Val)> {
-        if args.len() != 2 {
-            return Err(anyhow!("mutate() expects (list, function)"));
+    fn set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 3, "set()")?;
+        let values = args.as_slice();
+        let list = list_arg(&values[0], &runtime.state.heap, "set() first argument")?;
+        let index = int_arg(&values[1], "set() index")?;
+        if index < 0 {
+            bail!("set() index must be non-negative");
         }
-        let list_val = match &args[0] {
-            Val::List(_) => args[0].clone(),
-            other => {
-                return Err(anyhow!(
-                    "mutate() first argument must be a list, got {}",
-                    other.type_name()
-                ));
-            }
+        let mut items = list.materialize_mixed(runtime.heap_mut());
+        let Some(slot) = items.get_mut(index as usize) else {
+            bail!("list index {} out of bounds", index);
         };
-        let mutator = match &args[1] {
-            f @ Val::Closure(_)
-            | f @ Val::RustFunction(_)
-            | f @ Val::RustFastFunction(_)
-            | f @ Val::RustFastFunctionNamed(_)
-            | f @ Val::RustFunctionNamed(_) => f.clone(),
-            other => {
-                return Err(anyhow!(
-                    "mutate() second argument must be a function, got {}",
-                    other.type_name()
-                ));
-            }
-        };
-
-        let guard_state = ListMutationGuardState::new(ListMutation::from_val(&list_val)?);
-        let guard_handle = MutationGuardValue::new(guard_state);
-        let guard_val = Val::MutationGuard(guard_handle.clone());
-
-        let closure_result = mutator.call(std::slice::from_ref(&guard_val), ctx)?;
-        let updated = guard_handle.commit()?;
-        Ok((updated, closure_result))
+        let old = std::mem::replace(slot, values[2].clone());
+        let updated_list = TypedList::from_runtime_values(items, &runtime.state.heap);
+        let updated = RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(updated_list)));
+        Ok(RuntimeVal::Obj(
+            runtime
+                .heap_mut()
+                .alloc(HeapValue::List(TypedList::Mixed(vec![updated, old]))),
+        ))
     }
 }
 
@@ -639,15 +126,90 @@ impl Module for ListModule {
     }
 
     fn description(&self) -> &str {
-        "List utilities and meta-methods"
+        "List utilities"
     }
 
     fn register(&self, _registry: &mut ModuleRegistry) -> Result<()> {
-        // Functions are available via module import; meta methods are registered above
         Ok(())
     }
 
     fn exports(&self) -> HashMap<String, Val> {
         self.functions.clone()
+    }
+}
+
+fn register_native(
+    functions: &mut HashMap<String, Val>,
+    name: &str,
+    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    arity: u16,
+) {
+    functions.insert(
+        name.to_string(),
+        Val::runtime_native32(NativeFunction32::Plain(function), arity),
+    );
+}
+
+fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        Ok(())
+    } else {
+        bail!(
+            "{name} takes exactly {expected} argument{}",
+            if expected == 1 { "" } else { "s" }
+        )
+    }
+}
+
+fn one_list(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<TypedList> {
+    expect_arity(args, 1, name)?;
+    list_arg(&args.as_slice()[0], &runtime.state.heap, name)
+}
+
+fn list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedList> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} argument must be a list");
+    };
+    let value = heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+    match value {
+        HeapValue::List(list) => Ok(list.clone()),
+        other => Err(anyhow!("{context} argument must be a list, got {}", other.type_name())),
+    }
+}
+
+fn list_get(list: &TypedList, index: usize, heap: &mut HeapStore) -> Option<RuntimeVal> {
+    match list {
+        TypedList::Mixed(values) => values.get(index).cloned(),
+        TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int),
+        TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float),
+        TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool),
+        TypedList::String(values) => values
+            .get(index)
+            .map(|value| runtime_string_value(value.as_ref(), heap)),
+    }
+}
+
+fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
+    match value {
+        RuntimeVal::Int(value) => Ok(*value),
+        _ => Err(anyhow!("{context} must be an integer")),
+    }
+}
+
+fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Vec<String>> {
+    let list = list_arg(value, heap, context)?;
+    match list {
+        TypedList::String(values) => Ok(values.iter().map(ToString::to_string).collect()),
+        TypedList::Mixed(values) => values
+            .iter()
+            .map(|value| {
+                runtime_string_arg(value, heap, context)
+                    .map(|value| value.to_string())
+                    .map_err(|_| anyhow!("join() list must contain only strings"))
+            })
+            .collect(),
+        _ => Err(anyhow!("join() list must contain only strings")),
     }
 }

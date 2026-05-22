@@ -18,10 +18,10 @@ mod test {
 
         env.define(
             "list".to_string(),
-            Val::List(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into()),
+            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into()),
         );
         // Identifier with dash is allowed by lexer
-        env.define("list-2".to_string(), Val::List(vec![Val::Int(2)].into()));
+        env.define("list-2".to_string(), Val::list(vec![Val::Int(2)].into()));
 
         // Helper index for index-based access tests
         env.define("index".to_string(), Val::Int(1));
@@ -253,7 +253,7 @@ mod test {
         let mut expected = HashMap::new();
         expected.insert(
             "numbers".to_string(),
-            Val::List(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into()),
+            Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into()),
         );
         expected.insert("active".to_string(), Val::Bool(true));
         expect(r#"{"numbers": [1, 2, 3], "active": true}"#, expected);

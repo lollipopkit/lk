@@ -1356,8 +1356,10 @@ impl TypeChecker {
             Val::Bool(_) => Ok(Type::Bool),
             Val::Int(_) => Ok(Type::Int),
             Val::Float(_) => Ok(Type::Float),
-            Val::Str(_) | Val::ShortStr(_) => Ok(Type::String),
-            Val::List(items) => {
+            Val::ShortStr(_) => Ok(Type::String),
+            value if value.as_str().is_some() => Ok(Type::String),
+            value if value.as_list().is_some() => {
+                let items = value.as_list().expect("checked list");
                 if items.is_empty() {
                     let elem_type = self.registry.fresh_type_var();
                     Ok(Type::List(Box::new(elem_type)))
@@ -1366,7 +1368,8 @@ impl TypeChecker {
                     Ok(Type::List(Box::new(first_type)))
                 }
             }
-            Val::Map(map) => {
+            value if value.as_map().is_some() => {
+                let map = value.as_map().expect("checked map");
                 if map.is_empty() {
                     let key_type = self.registry.fresh_type_var();
                     let value_type = self.registry.fresh_type_var();
@@ -1379,19 +1382,8 @@ impl TypeChecker {
                 }
             }
             // Other types return Any for now
-            Val::Closure(_) => Ok(Type::Any),
-            Val::RustFunction(_)
-            | Val::RustFastFunction(_)
-            | Val::RustFastFunctionNamed(_)
-            | Val::RustFunctionNamed(_)
-            | Val::AotFunction(_) => Ok(Type::Any),
-            Val::Task(_) => Ok(Type::Any),
-            Val::Channel(_) => Ok(Type::Any),
-            Val::Stream(_) => Ok(Type::Any),
-            Val::StreamCursor(_) => Ok(Type::Any),
-            Val::Iterator(_) => Ok(Type::Any),
-            Val::MutationGuard(_) => Ok(Type::Any),
-            Val::Object(_) => Ok(Type::Any),
+            value if value.is_callable() => Ok(Type::Any),
+            Val::Obj(_) => Ok(Type::Any),
         }
     }
 
@@ -1402,8 +1394,10 @@ impl TypeChecker {
             Val::Bool(_) => Ok(Type::Bool),
             Val::Int(_) => Ok(Type::Int),
             Val::Float(_) => Ok(Type::Float),
-            Val::Str(_) | Val::ShortStr(_) => Ok(Type::String),
-            Val::List(items) => {
+            Val::ShortStr(_) => Ok(Type::String),
+            value if value.as_str().is_some() => Ok(Type::String),
+            value if value.as_list().is_some() => {
+                let items = value.as_list().expect("checked list");
                 if items.is_empty() {
                     let elem_type = self.registry.fresh_type_var();
                     Ok(Type::List(Box::new(elem_type)))
@@ -1412,7 +1406,8 @@ impl TypeChecker {
                     Ok(Type::List(Box::new(elem_type)))
                 }
             }
-            Val::Map(map) => {
+            value if value.as_map().is_some() => {
+                let map = value.as_map().expect("checked map");
                 if map.is_empty() {
                     let key_type = self.registry.fresh_type_var();
                     let value_type = self.registry.fresh_type_var();
@@ -1424,19 +1419,8 @@ impl TypeChecker {
                     Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
                 }
             }
-            Val::Closure(_) => Ok(Type::Any),
-            Val::RustFunction(_)
-            | Val::RustFastFunction(_)
-            | Val::RustFastFunctionNamed(_)
-            | Val::RustFunctionNamed(_)
-            | Val::AotFunction(_) => Ok(Type::Any),
-            Val::Task(_) => Ok(Type::Any),
-            Val::Channel(_) => Ok(Type::Any),
-            Val::Stream(_) => Ok(Type::Any),
-            Val::StreamCursor(_) => Ok(Type::Any),
-            Val::Iterator(_) => Ok(Type::Any),
-            Val::MutationGuard(_) => Ok(Type::Any),
-            Val::Object(_) => Ok(Type::Any),
+            value if value.is_callable() => Ok(Type::Any),
+            Val::Obj(_) => Ok(Type::Any),
         }
     }
 

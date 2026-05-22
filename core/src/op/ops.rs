@@ -5,6 +5,7 @@ use std::fmt::Display;
 
 use anyhow::{Result, anyhow};
 
+use crate::vm::analysis::vm_runtime_metrics_enabled;
 use crate::{expr::Expr, val::Val};
 
 pub(crate) fn err_op<T: Display, R>(l: &Val, op: T, r: &Val) -> Result<R> {
@@ -65,7 +66,7 @@ impl BinOp {
     }
 
     fn arith(&self, l: &Val, r: &Val) -> Result<Val> {
-        self.arith_with_metrics(l, r, crate::vm::vm_runtime_metrics_enabled())
+        self.arith_with_metrics(l, r, vm_runtime_metrics_enabled())
     }
 
     fn arith_with_metrics(&self, l: &Val, r: &Val, collect_metrics: bool) -> Result<Val> {
@@ -89,22 +90,30 @@ impl BinOp {
                 }
 
                 // All elements in l must be in r
-                (Val::List(l), Val::List(r)) => Ok(Val::list_contains_all(r, l)),
-                (_, Val::List(r)) => Ok(Val::list_contains(r, l)),
+                (l, r) if l.as_list().is_some() && r.as_list().is_some() => Ok(Val::list_contains_all(
+                    &r.as_list().expect("checked list"),
+                    &l.as_list().expect("checked list"),
+                )),
+                (l, r) if r.as_list().is_some() => Ok(Val::list_contains(&r.as_list().expect("checked list"), l)),
 
-                (l, Val::Map(m)) if l.as_str().is_some() => Ok(m.contains_key(l.as_str().unwrap())),
+                (l, r) if l.as_str().is_some() && r.as_map().is_some() => {
+                    Ok(r.as_map().expect("checked map").contains_key(l.as_str().unwrap()))
+                }
                 // For non-string keys, convert to string key with fast path when enabled
-                (Val::Int(i), Val::Map(m)) => {
+                (Val::Int(i), r) if r.as_map().is_some() => {
+                    let m = r.as_map().expect("checked map");
                     let mut buf = itoa::Buffer::new();
                     let s = buf.format(*i);
-                    Ok(Val::map_contains_str(m, s))
+                    Ok(Val::map_contains_str(&m, s))
                 }
-                (Val::Float(f), Val::Map(m)) => {
+                (Val::Float(f), r) if r.as_map().is_some() => {
+                    let m = r.as_map().expect("checked map");
                     let mut buf = ryu::Buffer::new();
                     let s = buf.format(*f);
-                    Ok(Val::map_contains_str(m, s))
+                    Ok(Val::map_contains_str(&m, s))
                 }
-                (Val::Bool(b), Val::Map(m)) => {
+                (Val::Bool(b), r) if r.as_map().is_some() => {
+                    let m = r.as_map().expect("checked map");
                     // Avoid allocation for boolean conversion
                     if *b {
                         Ok(m.contains_key("true"))
@@ -113,7 +122,7 @@ impl BinOp {
                     }
                 }
                 // Other types return false (Nil or complex structures can't be keys)
-                (_, Val::Map(_)) => Ok(false),
+                (_, r) if r.as_map().is_some() => Ok(false),
 
                 (Val::Float(l), Val::Float(r)) => Ok(l < r),
                 (Val::Int(l), Val::Int(r)) => Ok(l < r),
@@ -177,7 +186,7 @@ impl BinOp {
     }
 
     pub(crate) fn eval_vals(&self, l_val: &Val, r_val: &Val) -> Result<Val> {
-        self.eval_vals_with_metrics(l_val, r_val, crate::vm::vm_runtime_metrics_enabled())
+        self.eval_vals_with_metrics(l_val, r_val, vm_runtime_metrics_enabled())
     }
 
     pub(crate) fn eval_vals_with_metrics(&self, l_val: &Val, r_val: &Val, collect_metrics: bool) -> Result<Val> {

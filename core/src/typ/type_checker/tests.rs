@@ -20,7 +20,7 @@ fn test_literal_types() {
         Type::Float
     );
     assert_eq!(
-        checker.check_expr(&Expr::Val(Val::Str("hello".into()))).unwrap(),
+        checker.check_expr(&Expr::Val(Val::from_str("hello"))).unwrap(),
         Type::String
     );
 }
@@ -44,9 +44,9 @@ fn test_binary_operations() {
 fn test_string_addition_type() {
     let mut checker = TypeChecker::new();
     let add_expr = Expr::Bin(
-        Box::new(Expr::Val(Val::Str("a".into()))),
+        Box::new(Expr::Val(Val::from_str("a"))),
         BinOp::Add,
-        Box::new(Expr::Val(Val::Str("b".into()))),
+        Box::new(Expr::Val(Val::from_str("b"))),
     );
     let result_type = checker.check_expr(&add_expr).unwrap();
     assert!(matches!(result_type, Type::String));
@@ -80,7 +80,7 @@ fn test_division_promotes_float() {
 fn test_numeric_type_error_message() {
     let mut checker = TypeChecker::new();
     let bad_expr = Expr::Bin(
-        Box::new(Expr::Val(Val::Str("bad".into()))),
+        Box::new(Expr::Val(Val::from_str("bad"))),
         BinOp::Mul,
         Box::new(Expr::Val(Val::Bool(true))),
     );
@@ -181,7 +181,7 @@ fn test_assignment_type_checking() {
     // Test invalid assignment
     let assign_stmt_invalid = Stmt::Assign {
         name: "x".to_string(),
-        value: Box::new(Expr::Val(Val::Str("hello".into()))), // String assigned to Int
+        value: Box::new(Expr::Val(Val::from_str("hello"))), // String assigned to Int
         span: None,
     };
     let result = assign_stmt_invalid.type_check(&mut checker);

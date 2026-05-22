@@ -219,12 +219,12 @@ Import as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`,
 - `math`: constants `pi`, `e`; functions `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `exp`, `sin`, `cos`.
 - `string`: methods (see meta‑methods below).
 - `list`: methods (see meta‑methods below).
-- `map`: methods (see meta‑methods below), plus `map.set(m, key, val)` (returns updated map), `map.delete(m, key)` (returns `[updated_map, removed_value]`), `map.mutate(m, |guard| ...)` (batch mutations with a guard).
-- `iter`: `range([start,] end [, step])`, `enumerate(list)`, `zip(list1, list2)`, `take(list, n)`, `skip(list, n)`, `chain(list1, list2)`, `flatten(list)`, `unique(list)`, `chunk(list, size)`, and generic higher-order ops `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`.
-- `stream`: lazy pipelines. `stream.from_list(list)`, `stream.range(start, end)`, `stream.iterate(seed, fn)`, `stream.repeat(val)`, `stream.from_channel(ch)`. Methods: `.map(fn)`, `.filter(fn)`, `.take(n)`, `.skip(n)`, `.chain(other)`, `.subscribe()`, `.collect()`, `.collect_block()`.
+- `map`: `map.len(m)`, `map.keys(m)`, `map.values(m)`, `map.has(m, key)`, `map.get(m, key)`, `map.set(m, key, val)` (returns updated map), `map.delete(m, key)` (returns `[updated_map, removed_value]`).
+- `iter`: module-level list utilities only: `range([start,] end [, step])`, `enumerate(list)`, `zip(list1, list2)`, `take(list, n)`, `skip(list, n)`, `chain(list1, list2)`, `flatten(list)`, `unique(list)`, `chunk(list, size)`, and higher-order ops `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`.
+- `stream`: module-level lazy pipelines. `stream.from_list(list)`, `stream.range(start, end)`, `stream.iterate(seed, fn)`, `stream.repeat(val)`, `stream.from_channel(ch)`, `stream.map(s, fn)`, `stream.filter(s, fn)`, `stream.take(s, n)`, `stream.skip(s, n)`, `stream.chain(a, b)`, `stream.subscribe(s)`, `stream.next(cursor)`, `stream.collect(stream_or_cursor)`, `stream.next_block(cursor[, timeout_ms])`, `stream.collect_block(stream_or_cursor[, n][, timeout_ms])`.
 - `datetime`: `now()` (microseconds), `format(secs, fmt)`, `add(secs, delta)`, `sub(secs, delta)`, `day_of_week(secs)`, `day_of_year(secs)`, `is_weekend(secs)`.
-- `os`: `hostname()`, `arch()`, `os()`, `clock()`, `epoch()`, `env.get(key)`, `env.set(key, val)`, `env.unset(key)`, `dir.current()`, `dir.temp()`, `dir.list(path)`.
-- `io`: `io.read()` (stdin), `io.stdout.write(s)`, `io.stdout.writeln(s)`, `io.stdout.flush()`, `io.stderr.write(s)`.
+- `os`: `hostname()`, `arch()`, `os()`, `clock()`, `epoch()`, `env_get(key)`, `env_set(key, val)`, `env_unset(key)`, `dir_current()`, `dir_temp()`, `dir_list(path)`.
+- `io`: `io.read()` (stdin), `io.stdout_write(s)`, `io.stdout_writeln(s)`, `io.stdout_flush()`, `io.stderr_write(s)`.
 - `json`: `json.parse(string)`.
 - `yaml`: `yaml.parse(string)`.
 - `toml`: `toml.parse(string)`.
@@ -235,7 +235,6 @@ Import as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`,
 - String: `len`, `lower`, `upper`, `trim`, `starts_with`, `ends_with`, `contains`, `replace`, `substring`, `split`, `join`, `reverse`, `repeat`, `chars`, `char_at`, `byte_at`, `find`, `is_empty`
 - List: `len`, `push`, `set`, `concat`, `join`, `get`, `first`, `last`, `map`, `filter`, `reduce`, `take`, `skip`, `chain`, `flatten`, `unique`, `chunk`, `enumerate`, `zip`, `to_stream`, `mutate` (guard: `push`, `pop`, `replace`, `remove`, `reserve`, `commit`, `as_list`)
 - Map: `len`, `keys`, `values`, `has`, `get`, `set`, `delete`, `mutate` (guard: `len`, `has`/`contains`, `set`/`insert`, `delete`/`remove`, `commit`, `as_map`)
-- Iterator: `map`, `filter`, `reduce`, `next`, `collect`
 - Stream: `map`, `filter`, `take`, `skip`, `chain`, `subscribe`, `collect`, `collect_block`
 - StreamCursor: `next`, `collect`, `next_block`, `collect_block`
 - Channel: `to_stream`
@@ -381,5 +380,4 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - `Channel` — Concurrency channel (feature‑gated)
 - `Stream` — Lazy stream pipeline (feature‑gated)
 - `StreamCursor` — Stream cursor for consuming stream elements
-- `Iterator` — Iterator state
 - `MutationGuard` — Guard for batch mutations (lists and maps)

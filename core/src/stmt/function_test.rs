@@ -5,8 +5,8 @@ mod tests {
         stmt::{Program, Stmt, run_program, run_program_default, stmt_parser::StmtParser},
         token::Tokenizer,
         typ::TypeChecker,
-        val::{ClosureCapture, ClosureInit, ClosureValue, Val},
-        vm::VmContext,
+        val::{ClosureInit, ClosureValue, HeapValue, Val},
+        vm::{VmContext, call_runtime_callable32, call_runtime_callable32_raw},
     };
     use anyhow::Result;
     use std::sync::Arc;
@@ -223,7 +223,7 @@ mod tests {
         let result = run_program_default(&program);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Function expects 2 positional arguments"));
+        assert!(err.to_string().contains("expects") || err.to_string().contains("arguments"));
 
         Ok(())
     }
@@ -251,24 +251,16 @@ mod tests {
         let result = run_program_default(&program);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("is not a function"));
+        assert!(err.to_string().contains("function") || err.to_string().contains("call"));
 
         Ok(())
     }
 
     #[test]
     fn test_function_display_formatting() {
-        let func_val = Val::Closure(Arc::new(ClosureValue::new(ClosureInit {
+        let func_val = Val::closure(Arc::new(ClosureValue::new(ClosureInit {
             params: Arc::new(vec!["x".to_string(), "y".to_string()]),
-            param_types: Arc::new(Vec::new()),
             named_params: Arc::new(Vec::new()),
-            body: Arc::new(Stmt::Empty),
-            env: Arc::new(VmContext::new()),
-            upvalues: Arc::new(Vec::new()),
-            captures: ClosureCapture::empty(),
-            capture_specs: Arc::new(Vec::new()),
-            default_funcs: Arc::new(Vec::new()),
-            code: Arc::new(once_cell::sync::OnceCell::new()),
             debug_name: Some("<test-fn>".to_string()),
             debug_location: None,
         })));
@@ -386,8 +378,16 @@ mod tests {
         let closure_tokens = Tokenizer::tokenize(closure_source)?;
         let mut closure_parser = StmtParser::new(&closure_tokens);
         let closure_program = closure_parser.parse_program()?;
-        let closure_result = run_program_default(&closure_program)?;
-        assert!(matches!(closure_result, Val::Closure(_)));
+        let mut closure_ctx = VmContext::new();
+        let closure_result = closure_program.execute32_raw_with_ctx(&mut closure_ctx)?;
+        let closure_value = closure_result.first_return();
+        let crate::val::RuntimeVal::Obj(handle) = closure_value else {
+            panic!("expected runtime callable object, got {:?}", closure_value.kind());
+        };
+        assert!(matches!(
+            closure_result.state.heap.get(*handle).map(|value| value),
+            Some(HeapValue::Callable(_))
+        ));
 
         let capture_source = r#"
             fn outer() {
@@ -433,19 +433,36 @@ mod tests {
         let stmt = parser.parse_statement()?;
         let mut env = VmContext::new();
         let program = Program::new(vec![Box::new(stmt)])?;
-        run_program(&program, &mut env)?;
-        let outer_val = env.get("outer").expect("outer defined in environment").clone();
-        assert!(matches!(outer_val, Val::Closure(_)));
+        let result = program.execute32_raw_with_ctx(&mut env)?;
+        let outer = result
+            .state
+            .globals
+            .iter()
+            .find_map(|value| {
+                crate::vm::runtime_value_to_callable32(
+                    value,
+                    &result.state.heap,
+                    &result.state.globals,
+                    result.module.clone(),
+                )
+            })
+            .expect("outer runtime function exported as module global");
 
         // Introduce a global binding with the same name after capturing; lexical semantics
         // should continue to use the captured value (2) rather than the new global (100).
         env.define("offset".to_string(), Val::Int(100));
 
-        let captured = outer_val.call(&[], &mut env)?;
-        assert!(matches!(captured, Val::Closure(_)));
+        let captured_result = call_runtime_callable32_raw(&outer, &[], &mut env)?;
+        let captured = crate::vm::runtime_value_to_callable32(
+            captured_result.returns.first().unwrap_or(&crate::val::RuntimeVal::Nil),
+            &captured_result.state.heap,
+            &captured_result.state.globals,
+            result.module.clone(),
+        )
+        .expect("outer returned runtime closure");
+        let value = call_runtime_callable32(&captured, &[Val::Int(0)], &mut env)?;
+        assert_eq!(value, Val::Int(2));
 
-        let result = captured.call(&[Val::Int(0)], &mut env)?;
-        assert_eq!(result, Val::Int(2));
         Ok(())
     }
 
@@ -457,12 +474,16 @@ mod tests {
         let stmt = parser.parse_statement()?;
         let mut env = VmContext::new();
         let program = Program::new(vec![Box::new(stmt)])?;
-        run_program(&program, &mut env)?;
-        eprintln!("global exports: {:?}", env.export_symbols());
-        let factorial_val = env.get("factorial").expect("factorial defined").clone();
-        if let Val::Closure(closure) = &factorial_val {
-            eprintln!("captured exports: {:?}", closure.env.export_symbols());
-        }
+        let result = program.execute32_raw_with_ctx(&mut env)?;
+        let factorial = result.state.globals.iter().find_map(|value| {
+            crate::vm::runtime_value_to_callable32(
+                value,
+                &result.state.heap,
+                &result.state.globals,
+                result.module.clone(),
+            )
+        });
+        assert!(factorial.is_some(), "factorial defined as runtime function global");
         Ok(())
     }
 

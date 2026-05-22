@@ -220,12 +220,12 @@ import "d/d1";    // c/d/d1.lk，导出名为 d1
 - `math`：常量 `pi`、`e`；函数 `abs`、`sqrt`、`floor`、`ceil`、`round`、`min`、`max`、`pow`、`exp`、`sin`、`cos`。
 - `string`：方法（见下方元方法）。
 - `list`：方法（见下方元方法）。
-- `map`：方法（见下方元方法），以及 `map.set(m, key, val)`（返回更新后的映射）、`map.delete(m, key)`（返回 `[updated_map, removed_value]`）、`map.mutate(m, |guard| ...)`（通过 guard 批量变更）。
-- `iter`：`range([start,] end [, step])`、`enumerate(list)`、`zip(list1, list2)`、`take(list, n)`、`skip(list, n)`、`chain(list1, list2)`、`flatten(list)`、`unique(list)`、`chunk(list, size)`，以及高阶泛型操作 `map(list, fn)`、`filter(list, fn)`、`reduce(list, init, fn)`。
-- `stream`：懒执行管道。`stream.from_list(list)`、`stream.range(start, end)`、`stream.iterate(seed, fn)`、`stream.repeat(val)`、`stream.from_channel(ch)`。方法：`.map(fn)`、`.filter(fn)`、`.take(n)`、`.skip(n)`、`.chain(other)`、`.subscribe()`、`.collect()`、`.collect_block()`。
+- `map`：`map.len(m)`、`map.keys(m)`、`map.values(m)`、`map.has(m, key)`、`map.get(m, key)`、`map.set(m, key, val)`（返回更新后的映射）、`map.delete(m, key)`（返回 `[updated_map, removed_value]`）。
+- `iter`：仅提供模块级列表工具：`range([start,] end [, step])`、`enumerate(list)`、`zip(list1, list2)`、`take(list, n)`、`skip(list, n)`、`chain(list1, list2)`、`flatten(list)`、`unique(list)`、`chunk(list, size)`，以及高阶操作 `map(list, fn)`、`filter(list, fn)`、`reduce(list, init, fn)`。
+- `stream`：模块级懒执行管道。`stream.from_list(list)`、`stream.range(start, end)`、`stream.iterate(seed, fn)`、`stream.repeat(val)`、`stream.from_channel(ch)`、`stream.map(s, fn)`、`stream.filter(s, fn)`、`stream.take(s, n)`、`stream.skip(s, n)`、`stream.chain(a, b)`、`stream.subscribe(s)`、`stream.next(cursor)`、`stream.collect(stream_or_cursor)`、`stream.next_block(cursor[, timeout_ms])`、`stream.collect_block(stream_or_cursor[, n][, timeout_ms])`。
 - `datetime`：`now()`（微秒）、`format(secs, fmt)`、`add(secs, delta)`、`sub(secs, delta)`、`day_of_week(secs)`、`day_of_year(secs)`、`is_weekend(secs)`。
-- `os`：`hostname()`、`arch()`、`os()`、`clock()`、`epoch()`、`env.get(key)`、`env.set(key, val)`、`env.unset(key)`、`dir.current()`、`dir.temp()`、`dir.list(path)`。
-- `io`：`io.read()`（stdin）、`io.stdout.write(s)`、`io.stdout.writeln(s)`、`io.stdout.flush()`、`io.stderr.write(s)`。
+- `os`：`hostname()`、`arch()`、`os()`、`clock()`、`epoch()`、`env_get(key)`、`env_set(key, val)`、`env_unset(key)`、`dir_current()`、`dir_temp()`、`dir_list(path)`。
+- `io`：`io.read()`（stdin）、`io.stdout_write(s)`、`io.stdout_writeln(s)`、`io.stdout_flush()`、`io.stderr_write(s)`。
 - `json`：`json.parse(string)`。
 - `yaml`：`yaml.parse(string)`。
 - `toml`：`toml.parse(string)`。
@@ -236,7 +236,6 @@ import "d/d1";    // c/d/d1.lk，导出名为 d1
 - String：`len`、`lower`、`upper`、`trim`、`starts_with`、`ends_with`、`contains`、`replace`、`substring`、`split`、`join`、`reverse`、`repeat`、`chars`、`char_at`、`byte_at`、`find`、`is_empty`
 - List：`len`、`push`、`set`、`concat`、`join`、`get`、`first`、`last`、`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`flatten`、`unique`、`chunk`、`enumerate`、`zip`、`to_stream`、`mutate`（guard：`push`、`pop`、`replace`、`remove`、`reserve`、`commit`、`as_list`）
 - Map：`len`、`keys`、`values`、`has`、`get`、`set`、`delete`、`mutate`（guard：`len`、`has`/`contains`、`set`/`insert`、`delete`/`remove`、`commit`、`as_map`）
-- Iterator：`map`、`filter`、`reduce`、`next`、`collect`
 - Stream：`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`subscribe`、`collect`、`collect_block`
 - StreamCursor：`next`、`collect`、`next_block`、`collect_block`
 - Channel：`to_stream`
@@ -382,5 +381,4 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - `Channel` —— 并发通道（功能开关）
 - `Stream` —— 懒执行流管线（功能开关）
 - `StreamCursor` —— 流元素消费器
-- `Iterator` —— 迭代器状态
 - `MutationGuard` —— 列表和映射的批量变更 guard

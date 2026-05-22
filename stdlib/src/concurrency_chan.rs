@@ -1,18 +1,18 @@
-//! Channel module for LK
+//! Channel module for LK.
 //!
-//! Provides channel operations for inter-task communication.
+//! The module-level API uses the RuntimeNative32 ABI. Global concurrency
+//! builtins are still registered separately while compiler lowering is being
+//! migrated.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module,
-    module::Module,
+    module::{self, Module},
     rt,
-    val::{NativeArgs, Val},
-    vm::VmContext,
+    val::{ChannelValue, HeapStore, HeapValue, RuntimeVal, TypedList, Val, runtime_val_to_val, val_to_runtime_val},
+    vm::{NativeArgs32, NativeFunction32, NativeRuntime32},
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
-/// Channel module - provides channel operations
 #[derive(Debug)]
 pub struct ChannelModule;
 
@@ -36,8 +36,7 @@ impl Module for ChannelModule {
     }
 
     fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        let exports = self.exports();
-        for (name, value) in exports {
+        for (name, value) in self.exports() {
             registry.register_builtin(&format!("{}::{}", self.name(), name), value);
         }
         Ok(())
@@ -45,14 +44,12 @@ impl Module for ChannelModule {
 
     fn exports(&self) -> HashMap<String, Val> {
         let mut functions = HashMap::new();
-
-        functions.insert("close".to_string(), Val::RustFastFunction(chan_close));
-        functions.insert("len".to_string(), Val::RustFastFunction(chan_len));
-        functions.insert("capacity".to_string(), Val::RustFastFunction(chan_capacity));
-        functions.insert("is_closed".to_string(), Val::RustFastFunction(chan_is_closed));
-        functions.insert("try_send".to_string(), Val::RustFastFunction(chan_try_send));
-        functions.insert("try_recv".to_string(), Val::RustFastFunction(chan_try_recv));
-
+        register_native(&mut functions, "close", chan_close32, 1);
+        register_native(&mut functions, "len", chan_len32, 1);
+        register_native(&mut functions, "capacity", chan_capacity32, 1);
+        register_native(&mut functions, "is_closed", chan_is_closed32, 1);
+        register_native(&mut functions, "try_send", chan_try_send32, 2);
+        register_native(&mut functions, "try_recv", chan_try_recv32, 1);
         functions
     }
 }
@@ -63,106 +60,220 @@ impl ChannelModule {
     }
 }
 
-/// Close a channel
-fn chan_close(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("chan::close() expects exactly 1 argument"));
-    }
-    let args = args.as_slice();
+fn register_native(
+    functions: &mut HashMap<String, Val>,
+    name: &str,
+    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    arity: u16,
+) {
+    functions.insert(
+        name.to_string(),
+        Val::runtime_native32(NativeFunction32::Plain(function), arity),
+    );
+}
 
-    match &args[0] {
-        Val::Channel(channel) => match rt::with_runtime(|runtime| runtime.close_channel(channel.id)) {
-            Ok(()) => Ok(Val::Nil),
-            Err(e) => Err(anyhow!("Failed to close channel: {}", e)),
-        },
-        _ => Err(anyhow!("chan::close() expects a Channel argument")),
+fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+    if args.len() == expected {
+        return Ok(());
+    }
+    bail!(
+        "{name} expects exactly {expected} argument{}",
+        if expected == 1 { "" } else { "s" }
+    )
+}
+
+fn channel_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<ChannelValue>> {
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{name} expects a Channel argument");
+    };
+    let value = heap
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+    match value {
+        HeapValue::Channel(channel) => Ok(channel.clone()),
+        other => Err(anyhow!("{name} expects a Channel argument, got {}", other.type_name())),
     }
 }
 
-/// Get the current length of a channel (number of buffered items)
-fn chan_len(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("chan::len() expects exactly 1 argument"));
-    }
-    let args = args.as_slice();
+fn pair(ok: bool, value: RuntimeVal, runtime: &mut NativeRuntime32<'_>) -> RuntimeVal {
+    RuntimeVal::Obj(
+        runtime
+            .heap_mut()
+            .alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Bool(ok), value]))),
+    )
+}
 
-    match &args[0] {
-        Val::Channel(_) => {
-            // TODO: This is a simplified implementation
-            // In practice, we'd need to track the actual buffer length
-            Ok(Val::Int(0))
+fn chan_close32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "chan.close()")?;
+    let channel = channel_arg(args.get(0).expect("checked arity"), &runtime.state.heap, "chan.close()")?;
+    rt::with_runtime(|runtime| runtime.close_channel(channel.id))
+        .map_err(|err| anyhow!("Failed to close channel: {err}"))?;
+    Ok(RuntimeVal::Nil)
+}
+
+fn chan_len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "chan.len()")?;
+    let _ = channel_arg(args.get(0).expect("checked arity"), &runtime.state.heap, "chan.len()")?;
+    Ok(RuntimeVal::Int(0))
+}
+
+fn chan_capacity32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "chan.capacity()")?;
+    let channel = channel_arg(
+        args.get(0).expect("checked arity"),
+        &runtime.state.heap,
+        "chan.capacity()",
+    )?;
+    Ok(RuntimeVal::Int(channel.capacity.unwrap_or(0)))
+}
+
+fn chan_is_closed32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "chan.is_closed()")?;
+    let _ = channel_arg(
+        args.get(0).expect("checked arity"),
+        &runtime.state.heap,
+        "chan.is_closed()",
+    )?;
+    Ok(RuntimeVal::Bool(false))
+}
+
+fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "chan.try_send()")?;
+    let values = args.as_slice();
+    let channel = channel_arg(&values[0], &runtime.state.heap, "chan.try_send()")?;
+    let value = runtime_val_to_val(&values[1], &runtime.state.heap)?;
+    let sent = rt::with_runtime(|runtime| runtime.try_send(channel.id, value))
+        .map_err(|err| anyhow!("Failed to send to channel: {err}"))?;
+    Ok(RuntimeVal::Bool(sent))
+}
+
+fn chan_try_recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "chan.try_recv()")?;
+    let channel = channel_arg(
+        args.get(0).expect("checked arity"),
+        &runtime.state.heap,
+        "chan.try_recv()",
+    )?;
+    match rt::with_runtime(|rt| rt.try_recv(channel.id))
+        .map_err(|err| anyhow!("Failed to receive from channel: {err}"))?
+    {
+        Some((ok, value)) => {
+            let value = val_to_runtime_val(&value, runtime.heap_mut())?;
+            Ok(pair(ok, value, runtime))
         }
-        _ => Err(anyhow!("chan::len() expects a Channel argument")),
+        None => Ok(pair(false, RuntimeVal::Nil, runtime)),
     }
 }
 
-/// Get the capacity of a channel
-fn chan_capacity(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("chan::capacity() expects exactly 1 argument"));
-    }
-    let args = args.as_slice();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lk_core::{
+        module::Module,
+        val::{CallableValue, ShortStr, Type, runtime_val_to_val},
+        vm::{NativeFunction32, RuntimeModuleState32},
+    };
 
-    match &args[0] {
-        Val::Channel(channel) => {
-            match channel.capacity {
-                Some(cap) => Ok(Val::Int(cap)),
-                None => Ok(Val::Int(0)), // Unbounded channels return 0 capacity
-            }
+    fn chan_native(name: &str) -> Result<(u16, NativeFunction32)> {
+        let exports = ChannelModule::new().exports();
+        let value = exports.get(name).ok_or_else(|| anyhow!("{name} export present"))?;
+        let Val::Obj(object) = value else {
+            bail!("{name} must be a heap callable");
+        };
+        let HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) = object.as_ref() else {
+            bail!("{name} must be RuntimeNative32");
+        };
+        Ok((*arity, function.clone()))
+    }
+
+    fn runtime_channel(capacity: i64, heap: &mut HeapStore) -> Result<RuntimeVal> {
+        let id = rt::with_runtime(|runtime| runtime.create_channel(Some(capacity as usize)))?;
+        Ok(RuntimeVal::Obj(heap.alloc(HeapValue::Channel(Arc::new(
+            ChannelValue {
+                id,
+                capacity: Some(capacity),
+                inner_type: Type::Nil,
+            },
+        )))))
+    }
+
+    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState32) -> Result<RuntimeVal> {
+        let (_, function) = chan_native(name)?;
+        let NativeFunction32::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative32");
+        };
+        let mut runtime = NativeRuntime32 {
+            state,
+            ctx: None,
+            module: None,
+        };
+        function(NativeArgs32::new(args), &mut runtime)
+    }
+
+    #[test]
+    fn chan_exports_use_runtime_native32() -> Result<()> {
+        for name in ["close", "len", "capacity", "is_closed", "try_send", "try_recv"] {
+            let (arity, function) = chan_native(name)?;
+            assert!(matches!(function, NativeFunction32::Plain(_)));
+            assert_ne!(arity, lk_core::vm::NativeEntry32::VARIADIC);
         }
-        _ => Err(anyhow!("chan::capacity() expects a Channel argument")),
+        Ok(())
     }
-}
 
-/// Check if a channel is closed
-fn chan_is_closed(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("chan::is_closed() expects exactly 1 argument"));
+    #[test]
+    fn chan_capacity_len_and_is_closed_use_runtime_channel() -> Result<()> {
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let channel = runtime_channel(3, &mut state.heap)?;
+        assert_eq!(
+            call("capacity", std::slice::from_ref(&channel), &mut state)?,
+            RuntimeVal::Int(3)
+        );
+        assert_eq!(
+            call("len", std::slice::from_ref(&channel), &mut state)?,
+            RuntimeVal::Int(0)
+        );
+        assert_eq!(
+            call("is_closed", std::slice::from_ref(&channel), &mut state)?,
+            RuntimeVal::Bool(false)
+        );
+        Ok(())
     }
-    let args = args.as_slice();
 
-    match &args[0] {
-        Val::Channel(_) => {
-            // TODO: This is a simplified implementation
-            // In practice, we'd need to check the actual channel state
-            Ok(Val::Bool(false))
-        }
-        _ => Err(anyhow!("chan::is_closed() expects a Channel argument")),
+    #[test]
+    fn chan_try_send_and_recv_round_trips_runtime_values() -> Result<()> {
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let channel = runtime_channel(1, &mut state.heap)?;
+        let value = RuntimeVal::ShortStr(ShortStr::new("payload").expect("short string"));
+        assert_eq!(
+            call("try_send", &[channel.clone(), value], &mut state)?,
+            RuntimeVal::Bool(true)
+        );
+
+        let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
+        let legacy = runtime_val_to_val(&received, &state.heap)?;
+        assert_eq!(
+            legacy,
+            Val::list(vec![Val::Bool(true), Val::from_str("payload")].into())
+        );
+        Ok(())
     }
-}
 
-/// Try to send a value to a channel without blocking
-fn chan_try_send(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 2 {
-        return Err(anyhow!("chan::try_send() expects exactly 2 arguments"));
-    }
-    let args = args.as_slice();
-
-    let channel = &args[0];
-    let value = &args[1];
-
-    match channel {
-        Val::Channel(channel) => match rt::with_runtime(|runtime| runtime.try_send(channel.id, value.clone())) {
-            Ok(success) => Ok(Val::Bool(success)),
-            Err(e) => Err(anyhow!("Failed to send to channel: {}", e)),
-        },
-        _ => Err(anyhow!("chan::try_send() expects a Channel as first argument")),
-    }
-}
-
-/// Try to receive a value from a channel without blocking
-fn chan_try_recv(args: NativeArgs<'_>, _ctx: &mut VmContext) -> Result<Val> {
-    if args.len() != 1 {
-        return Err(anyhow!("chan::try_recv() expects exactly 1 argument"));
-    }
-    let args = args.as_slice();
-
-    match &args[0] {
-        Val::Channel(channel) => match rt::with_runtime(|runtime| runtime.try_recv(channel.id)) {
-            Ok(Some((ok, value))) => Ok(Val::List(vec![Val::Bool(ok), value].into())),
-            Ok(None) => Ok(Val::List(vec![Val::Bool(false), Val::Nil].into())),
-            Err(e) => Err(anyhow!("Failed to receive from channel: {}", e)),
-        },
-        _ => Err(anyhow!("chan::try_recv() expects a Channel argument")),
+    #[test]
+    fn chan_try_recv_empty_returns_false_nil_pair() -> Result<()> {
+        let mut state = RuntimeModuleState32 {
+            heap: HeapStore::new(),
+            globals: Vec::new(),
+        };
+        let channel = runtime_channel(1, &mut state.heap)?;
+        let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
+        let legacy = runtime_val_to_val(&received, &state.heap)?;
+        assert_eq!(legacy, Val::list(vec![Val::Bool(false), Val::Nil].into()));
+        Ok(())
     }
 }

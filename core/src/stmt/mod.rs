@@ -9,13 +9,9 @@ mod function_test;
 #[cfg(test)]
 mod if_let_test;
 #[cfg(test)]
-mod rust_function_test;
-#[cfg(test)]
 mod stmt_recover_test;
 #[cfg(test)]
 mod stmt_test;
-#[cfg(test)]
-mod while_let_test;
 
 pub use import::*;
 pub use stmt_impl::*;
@@ -27,16 +23,11 @@ pub use test_support::*;
 #[cfg(test)]
 pub mod test_support {
     use super::*;
-    use crate::{
-        val::Val,
-        vm::{Vm, VmContext, compile_program},
-    };
+    use crate::{val::Val, vm::VmContext};
     use anyhow::Result;
 
     pub fn run_program(program: &Program, ctx: &mut VmContext) -> Result<Val> {
-        let function = compile_program(program);
-        let mut vm = Vm::new();
-        vm.exec_with(&function, ctx, None)
+        program.execute32_with_ctx(ctx)
     }
 
     pub fn run_program_default(program: &Program) -> Result<Val> {
