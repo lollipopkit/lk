@@ -1,10 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::{
-        val::{Type, Val},
-        vm::execute_source32,
-    };
-    use std::collections::HashMap;
+    use crate::{val::Val, vm::execute_source32};
     use std::mem::size_of;
 
     #[test]
@@ -16,18 +12,6 @@ mod tests {
         );
     }
 
-    macro_rules! test_op {
-        ($name:ident, $op:tt, $l:expr, $r:expr, $res:expr) => {
-            #[test]
-            fn $name() {
-                let l = Val::test_from($l);
-                let r = Val::test_from($r);
-                let res = Val::test_from($res);
-                assert_eq!((&l $op &r).unwrap(), res);
-            }
-        };
-    }
-
     fn expect_expr(expr: &str, expected: &str) {
         let result = execute_source32(&format!("return {expr};")).expect("execute source");
         assert_eq!(result.display_first_return(), expected);
@@ -37,60 +21,35 @@ mod tests {
         assert!(execute_source32(&format!("return {expr};")).is_err());
     }
 
-    test_op!(add, +, 1, 2, 3);
-
-    test_op!(sub, -, 1, 2, -1);
-
-    test_op!(mul, *, 2, 3, 6);
-    test_op!(div, /, 3, 2, 1.5);
-
     #[test]
-    fn old_val_container_arithmetic_is_not_supported() {
-        let list = Val::test_from(vec![1]);
-        let map = Val::test_string_map_from_hashmap(HashMap::from([("answer", 42)]));
-
-        assert!((&list + &Val::Int(2)).is_err());
-        assert!((&list - &Val::Int(1)).is_err());
-        assert!((&map + &map).is_err());
-        assert!((&map - &Val::from_str("answer")).is_err());
-    }
-
-    #[test]
-    fn heap_val_containers_satisfy_container_types() {
-        let list = Val::test_list_from_values(vec![Val::Int(1)]);
-        let map = Val::test_string_map_from_hashmap(HashMap::from([("answer".to_string(), Val::Int(42))]));
-
-        assert_eq!(list.dispatch_type(), Type::List(Box::new(Type::Any)));
-        assert_eq!(map.dispatch_type(), Type::Map(Box::new(Type::Any), Box::new(Type::Any)));
-        assert!(Type::List(Box::new(Type::Int)).validate(&list).is_ok());
-        assert!(
-            Type::Map(Box::new(Type::String), Box::new(Type::Int))
-                .validate(&map)
-                .is_ok()
-        );
+    fn arithmetic_runs_through_exec32() {
+        expect_expr("1 + 2", "3");
+        expect_expr("1 - 2", "-1");
+        expect_expr("2 * 3", "6");
+        expect_expr("3 / 2", "1.5");
     }
 
     #[test]
     fn string_concat_preserves_short_and_heap_string_shapes() {
         assert!(matches!(Val::concat_strings("ab", "cd"), Val::ShortStr(_)));
-        assert!(matches!(Val::concat_strings("longer-", "than-short"), Val::Obj(_)));
+        assert!(matches!(Val::concat_strings("longer-", "than-short"), Val::LongStr(_)));
         assert_eq!(Val::concat_strings("prefix-", "suffix").as_str(), Some("prefix-suffix"));
     }
 
-    // Modulo tests
-    test_op!(mod_int, %, 7, 3, 1);
-    test_op!(mod_float, %, 7.5, 2.0, 1.5);
-    test_op!(mod_mixed1, %, 7, 2.5, 2.0);
-    test_op!(mod_mixed2, %, 7.5, 2, 1.5);
+    #[test]
+    fn modulo_runs_through_exec32() {
+        expect_expr("7 % 3", "1");
+        expect_expr("7.5 % 2.0", "1.5");
+        expect_expr("7 % 2.5", "2");
+        expect_expr("7.5 % 2", "1.5");
+    }
 
-    mod adv_arith_tests {
-        use super::*;
-
-        // String concatenation with numbers
-        test_op!(str_add_int, +, "hello", 123, "hello123");
-        test_op!(str_add_float, +, "hello", 12.34, "hello12.34");
-        test_op!(int_add_str, +, 123, "hello", "123hello");
-        test_op!(float_add_str, +, 12.34, "hello", "12.34hello");
+    #[test]
+    fn string_numeric_concat_runs_through_exec32() {
+        expect_expr(r#""hello" + 123"#, "hello123");
+        expect_expr(r#""hello" + 12.34"#, "hello12.34");
+        expect_expr(r#"123 + "hello""#, "123hello");
+        expect_expr(r#"12.34 + "hello""#, "12.34hello");
     }
 
     // Access tests
@@ -102,18 +61,6 @@ mod tests {
     #[test]
     fn test_list_access() {
         expect_expr("[10, 20, 30].1", "20");
-    }
-
-    #[test]
-    fn test_ascii_string_access_reuses_cached_single_char_arc() {
-        let val: Val = "abc".into();
-        let first = val.access(&Val::Int(1)).expect("first access");
-        let second = val.access(&Val::Int(1)).expect("second access");
-
-        // Single-char ASCII strings are now ShortStr (zero heap, Copy), no Arc needed.
-        assert_eq!(first, Val::from_str("b"));
-        assert_eq!(second, Val::from_str("b"));
-        assert_eq!(first, second);
     }
 
     #[test]
@@ -151,45 +98,13 @@ mod tests {
         expect_expr(r#"{"users": [{"name": "Alice", "age": 30}]}.users.0.name"#, "Alice");
     }
 
-    // Comparison tests
     #[test]
-    fn test_partial_ord_integers() {
-        let a = Val::Int(10);
-        let b = Val::Int(20);
-
-        assert!(a < b);
-    }
-
-    #[test]
-    fn test_partial_ord_floats() {
-        let a = Val::Float(10.5);
-        let b = Val::Float(20.5);
-
-        assert!(a < b);
-    }
-
-    #[test]
-    fn test_partial_ord_mixed() {
-        let a = Val::Int(10);
-        let b = Val::Float(10.5);
-
-        assert!(a < b);
-    }
-
-    #[test]
-    fn test_partial_ord_strings() {
-        let a = Val::from_str("abc");
-        let b = Val::from_str("def");
-
-        assert!(a < b);
-    }
-
-    #[test]
-    fn test_incomparable_types() {
-        let a = Val::Int(10);
-        let b = Val::from_str("abc");
-
-        assert_eq!(a.partial_cmp(&b), None);
+    fn comparisons_run_through_exec32() {
+        expect_expr("10 < 20", "true");
+        expect_expr("10.5 < 20.5", "true");
+        expect_expr("10 < 10.5", "true");
+        expect_expr(r#""abc" < "def""#, "true");
+        panic_expr(r#"10 < "abc""#);
     }
 
     #[test]

@@ -3,8 +3,6 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::val::Val;
-use arcstr::ArcStr;
 use tracing::trace;
 
 /// Allocation region selected by escape analysis.
@@ -35,12 +33,6 @@ impl RegionPlan {
 
 thread_local! {
     static TLS_ARENA: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(32 * 1024));
-    static TLS_VAL_BUF: RefCell<Vec<Val>> = const { RefCell::new(Vec::new()) };
-    static TLS_BOOL_FLAGS: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
-    static TLS_MAP_ENTRIES: RefCell<Vec<(ArcStr, Val)>> = const { RefCell::new(Vec::new()) };
-    static TLS_INDEXED_VALS: RefCell<Vec<(usize, Val)>> = const { RefCell::new(Vec::new()) };
-    static TLS_REG_VALS: RefCell<Vec<(u16, Val)>> = const { RefCell::new(Vec::new()) };
-    static TLS_NAMED_PAIRS: RefCell<Vec<(String, Val)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Thread-safe allocator that prefers thread-local arenas and falls back to heap.
@@ -70,115 +62,6 @@ impl RegionAllocator {
             }
             let result = f(&mut buffer[..len]);
             buffer[..len].fill(0);
-            result
-        })
-    }
-
-    /// Borrow a reusable `Vec<Val>` from thread-local storage. The buffer is cleared before
-    /// invoking `f` and after it returns.
-    pub fn with_val_buffer<F, R>(&self, min_capacity: usize, f: F) -> R
-    where
-        F: FnOnce(&mut Vec<Val>) -> R,
-    {
-        TLS_VAL_BUF.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            let capacity = buf.capacity();
-            if capacity < min_capacity {
-                buf.reserve(min_capacity - capacity);
-            }
-            buf.clear();
-            let result = f(&mut buf);
-            buf.clear();
-            result
-        })
-    }
-
-    /// Borrow a reusable `Vec<bool>` from thread-local storage.
-    pub fn with_bool_buffer<F, R>(&self, min_capacity: usize, f: F) -> R
-    where
-        F: FnOnce(&mut Vec<bool>) -> R,
-    {
-        TLS_BOOL_FLAGS.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            let capacity = buf.capacity();
-            if capacity < min_capacity {
-                buf.reserve(min_capacity - capacity);
-            }
-            buf.clear();
-            let result = f(&mut buf);
-            buf.clear();
-            result
-        })
-    }
-
-    /// Borrow a reusable `(ArcStr, Val)` entry buffer for map construction.
-    pub fn with_map_entries<F, R>(&self, min_capacity: usize, f: F) -> R
-    where
-        F: FnOnce(&mut Vec<(ArcStr, Val)>) -> R,
-    {
-        TLS_MAP_ENTRIES.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            let capacity = buf.capacity();
-            if capacity < min_capacity {
-                buf.reserve(min_capacity - capacity);
-            }
-            buf.clear();
-            let result = f(&mut buf);
-            buf.clear();
-            result
-        })
-    }
-
-    /// Borrow a reusable `(usize, Val)` buffer used when mapping named arguments to parameter indices.
-    pub fn with_indexed_vals<F, R>(&self, min_capacity: usize, f: F) -> R
-    where
-        F: FnOnce(&mut Vec<(usize, Val)>) -> R,
-    {
-        TLS_INDEXED_VALS.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            let capacity = buf.capacity();
-            if capacity < min_capacity {
-                buf.reserve(min_capacity - capacity);
-            }
-            buf.clear();
-            let result = f(&mut buf);
-            buf.clear();
-            result
-        })
-    }
-
-    /// Borrow a reusable `(u16, Val)` buffer for converting named arguments to register seeds.
-    pub fn with_reg_val_pairs<F, R>(&self, min_capacity: usize, f: F) -> R
-    where
-        F: FnOnce(&mut Vec<(u16, Val)>) -> R,
-    {
-        TLS_REG_VALS.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            let capacity = buf.capacity();
-            if capacity < min_capacity {
-                buf.reserve(min_capacity - capacity);
-            }
-            buf.clear();
-            let result = f(&mut buf);
-            buf.clear();
-            result
-        })
-    }
-
-    /// Borrow a reusable `(String, Val)` buffer for bridging named arguments to native functions.
-    pub fn with_named_pairs<F, R>(&self, min_capacity: usize, f: F) -> R
-    where
-        F: FnOnce(&mut Vec<(String, Val)>) -> R,
-    {
-        TLS_NAMED_PAIRS.with(|cell| {
-            let mut buf = cell.borrow_mut();
-            let capacity = buf.capacity();
-            if capacity < min_capacity {
-                buf.reserve(min_capacity - capacity);
-            }
-            buf.clear();
-            let result = f(&mut buf);
-            buf.clear();
             result
         })
     }

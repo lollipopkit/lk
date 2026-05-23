@@ -2,22 +2,11 @@
 mod test {
     use std::collections::HashSet;
 
-    use crate::{
-        expr::Expr,
-        val::Val,
-        vm::{VmContext, execute_source32},
-    };
-
-    fn seed_env() -> VmContext {
-        let mut env = VmContext::new();
-
-        env.set_val_binding("pub".to_string(), Val::Bool(true));
-        env
-    }
+    use crate::{expr::Expr, vm::execute_source32};
 
     #[test]
     fn simple() {
-        expect("pub", true);
+        expect32_env("pub", "true");
         expect32_env("user.name + 'pt'", "lkpt");
         expect32_env("user.age + list.0 == 19", "true");
         expect32_env("user.name + user.age", "lk18");
@@ -62,31 +51,31 @@ mod test {
         expect32_env("pub || (user.age < 17 && user.name == 'john')", "true");
 
         // Short-circuit evaluation (RHS not evaluated)
-        expect("false && nonexistent.field", false);
-        expect("true || nonexistent.field", true);
+        expect("false && nonexistent.field", "false");
+        expect("true || nonexistent.field", "true");
     }
 
     #[test]
     fn ternary_operator() {
         // Basic boolean conditions
-        expect("true ? 1 : 2", 1);
-        expect("false ? 1 : 2", 2);
+        expect("true ? 1 : 2", "1");
+        expect("false ? 1 : 2", "2");
 
         // With bound variables
         expect32_env("pub ? user.name : 'guest'", "lk");
 
         // Short-circuit: only selected branch should evaluate
-        expect("false ? (nonexistent.field) : 42", 42);
+        expect("false ? (nonexistent.field) : 42", "42");
 
         // Precedence with arithmetic on else branch
-        expect("true ? 1 : 2 + 3", 1);
-        expect("false ? 1 : 2 + 3", 5);
+        expect("true ? 1 : 2 + 3", "1");
+        expect("false ? 1 : 2 + 3", "5");
 
         // Nested ternary
-        expect("true ? (false ? 1 : 2) : 3", 2);
+        expect("true ? (false ? 1 : 2) : 3", "2");
 
         // Nullish inside else branch
-        expect("false ? 1 : (nil ?? 5)", 5);
+        expect("false ? 1 : (nil ?? 5)", "5");
 
         // Ternary as map key requires parentheses to avoid ambiguity with ':'
         expect32("{('a' == 'a' ? 'x' : 'y'): 1}.x", "1");
@@ -125,11 +114,11 @@ mod test {
     #[test]
     fn unary_operations() {
         // Logical NOT
-        expect("!pub", false);
-        expect("!false", true);
+        expect32_env("!pub", "false");
+        expect("!false", "true");
 
         // Double negation
-        expect("!!pub", true);
+        expect32_env("!!pub", "true");
 
         // NOT with expressions
         expect32_env("!(user.age > 20)", "true");
@@ -278,9 +267,9 @@ mod test {
 
     #[test]
     fn test_nil_handling() {
-        expect("nil == nil", true);
+        expect("nil == nil", "true");
         expect32_env("user.nonexistent == nil", "true");
-        expect("nil", None::<Val>);
+        expect("nil", "nil");
     }
 
     // 缺失 Optional Chanining 测试
@@ -303,11 +292,8 @@ mod test {
         expect32_env("list?[1]", "2");
     }
 
-    fn expect<V: crate::val::TestIntoVal>(rule: &str, val: V) {
-        let expr = Expr::try_from(rule).unwrap();
-        let mut ctx = seed_env();
-        let res = expr.eval_with_ctx(&mut ctx);
-        assert_eq!(res.unwrap(), Val::test_from(val));
+    fn expect(rule: &str, expected_display: &str) {
+        expect32(rule, expected_display);
     }
 
     fn expect32(rule: &str, expected_display: &str) {
@@ -352,11 +338,10 @@ mod test {
     fn panic(rule: &str) {
         match Expr::try_from(rule) {
             Ok(expr) => {
-                let mut ctx = seed_env();
-                let res = expr.eval_with_ctx(&mut ctx);
+                let source = format!("return {expr};");
+                let res = execute_source32(&source);
                 assert!(res.is_err());
-                let err = res.unwrap_err();
-                println!("{}", err);
+                println!("{}", res.unwrap_err());
             }
             Err(e) => {
                 // Parsing itself failed; this is also an expected failure path for this helper

@@ -4,14 +4,12 @@ use crate::{
     token::Tokenizer,
     typ::TypeChecker,
     val::{Type, Val},
-    vm::VmContext,
 };
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fmt::{Debug, Display},
     sync::Arc,
 };
@@ -32,7 +30,7 @@ use std::{
 /// map     ::= '{' [expr ':' expr {',' expr ':' expr}] '}'
 ///
 /// Select case pattern for select statements
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SelectPattern {
     /// recv(channel) pattern with optional binding
     Recv {
@@ -43,14 +41,14 @@ pub enum SelectPattern {
     Send { channel: Box<Expr>, value: Box<Expr> },
 }
 /// Select case: case pattern => expr
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SelectCase {
     pub pattern: SelectPattern,
     pub guard: Option<Box<Expr>>, // Optional guard expression
     pub body: Box<Expr>,
 }
 /// Template string part: either a literal string or an interpolated expression
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TemplateStringPart {
     /// String literal part
     Literal(String),
@@ -62,7 +60,7 @@ impl Expr {
     // Default value-to-string conversion handled inline where needed.
 }
 /// Pattern matching pattern for match expressions
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     /// Literal pattern: matches exact values (1, "hello", true)
     Literal(Val),
@@ -92,7 +90,7 @@ pub enum Pattern {
     },
 }
 /// Match arm: pattern => expression
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Box<Expr>,
@@ -120,7 +118,7 @@ pub struct MatchArm {
 /// - `{"name": "John", "age": 30}`
 /// - `[1, 2, 3].1`
 /// - `{"name": "Alice"}.name`
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// expr == expr
     Bin(Box<Expr>, BinOp, Box<Expr>),
@@ -177,7 +175,6 @@ pub enum Expr {
         body: Box<Expr>,
     },
     /// Expression-level block, primarily for multi-statement closure bodies.
-    #[serde(skip)]
     Block(Vec<Box<crate::stmt::Stmt>>),
     /// Match expression: match value { pattern => expr, ... }
     Match {
@@ -187,11 +184,6 @@ pub enum Expr {
     Val(Val),
 }
 impl Expr {
-    pub fn eval(&self) -> Result<Val> {
-        let mut ctx = VmContext::new();
-        self.eval_with_ctx(&mut ctx)
-    }
-
     /// Get the identifier roots referenced by the expression.
     pub fn requested_ctx(&self) -> HashSet<String> {
         let mut names = HashSet::new();
@@ -369,21 +361,11 @@ impl Expr {
                 // Try to calculate binary expression as constant
                 if let (Expr::Val(lval), Expr::Val(rval)) = (&left, &right) {
                     if op.is_arith() {
-                        // Arithmetic operation constant folding
-                        let result = match op {
-                            BinOp::Add => (lval as &Val) + (rval as &Val),
-                            BinOp::Sub => (lval as &Val) - (rval as &Val),
-                            BinOp::Mul => (lval as &Val) * (rval as &Val),
-                            BinOp::Div => (lval as &Val) / (rval as &Val),
-                            BinOp::Mod => (lval as &Val) % (rval as &Val),
-                            _ => unreachable!(),
-                        };
-                        if let Ok(result_val) = result {
+                        if let Some(result_val) = fold_literal_arith(lval, &op, rval) {
                             return Expr::Val(result_val);
                         }
                     } else if op.is_cmp() {
-                        // Comparison/contains operation constant folding
-                        if let Ok(res_bool) = op.cmp(lval, rval) {
+                        if let Some(res_bool) = op.cmp_literals(lval, rval) {
                             return Expr::Val(Val::Bool(res_bool));
                         }
                     }
@@ -469,12 +451,7 @@ impl Expr {
                     if field_val.as_str().is_some() {
                         return Expr::Access(Box::new(base.clone()), Box::new(field.clone()));
                     }
-                    // For non-string fields (e.g. numeric indices), fold direct access where possible
-                    if let Some(res_val) = base_val.access(field_val) {
-                        return Expr::Val(res_val);
-                    } else {
-                        return Expr::Val(Val::Nil);
-                    }
+                    let _ = (base_val, field_val);
                 }
                 Expr::Access(Box::new(base), Box::new(field))
             }
@@ -487,15 +464,10 @@ impl Expr {
                     if field_val.as_str().is_some() {
                         return Expr::OptionalAccess(Box::new(base.clone()), Box::new(field.clone()));
                     }
-                    // Direct access to constant structure with optional chaining
                     if base_val == &Val::Nil {
                         return Expr::Val(Val::Nil);
                     }
-                    if let Some(res_val) = base_val.access(field_val) {
-                        return Expr::Val(res_val);
-                    } else {
-                        return Expr::Val(Val::Nil);
-                    }
+                    let _ = field_val;
                 }
                 Expr::OptionalAccess(Box::new(base), Box::new(field))
             }
@@ -597,8 +569,7 @@ impl Expr {
                                         Val::Float(f) => f.to_string(),
                                         Val::Bool(b) => b.to_string(),
                                         Val::Nil => "nil".to_string(),
-                                        value if value.is_callable() => "[Function]".to_string(),
-                                        Val::Obj(_) => format!("{:?}", val),
+                                        Val::LongStr(_) => format!("{:?}", val),
                                         Val::ShortStr(_) => unreachable!("string handled above"),
                                     },
                                 };
@@ -666,18 +637,6 @@ impl Expr {
     }
 }
 
-impl TryInto<Val> for &Expr {
-    type Error = anyhow::Error;
-    fn try_into(self) -> Result<Val> {
-        match self {
-            Expr::Val(val) => Ok(val.clone()), // Clone necessary as eval returns owned Val
-            _ => {
-                let msg = format!("Can't convert Expr::{:?} to Val", self);
-                Err(anyhow!(msg))
-            }
-        }
-    }
-}
 fn into_expr<S: AsRef<str>>(s: S) -> Result<Expr> {
     let tokens = Tokenizer::tokenize(s.as_ref())?;
     let expr = Parser::new(&tokens).parse()?;
@@ -832,281 +791,108 @@ impl Display for Expr {
         }
     }
 }
-impl From<Val> for Expr {
-    fn from(val: Val) -> Self {
-        Expr::Val(val)
+
+fn fold_literal_arith(lhs: &Val, op: &BinOp, rhs: &Val) -> Option<Val> {
+    match op {
+        BinOp::Add => fold_literal_add(lhs, rhs),
+        BinOp::Sub => fold_literal_numeric(lhs, rhs, |a, b| a - b, |a, b| a - b),
+        BinOp::Mul => fold_literal_mul(lhs, rhs),
+        BinOp::Div => fold_literal_div(lhs, rhs),
+        BinOp::Mod => fold_literal_numeric(lhs, rhs, |a, b| a % b, |a, b| a % b),
+        _ => None,
     }
 }
+
+fn fold_literal_add(lhs: &Val, rhs: &Val) -> Option<Val> {
+    match (lhs, rhs) {
+        (Val::Int(a), Val::Int(b)) => Some(Val::Int(a + b)),
+        (Val::Float(a), Val::Float(b)) => Some(Val::Float(a + b)),
+        (Val::Float(a), Val::Int(b)) => Some(Val::Float(a + *b as f64)),
+        (Val::Int(a), Val::Float(b)) => Some(Val::Float(*a as f64 + b)),
+        (lhs, rhs) if lhs.as_str().is_some() && rhs.as_str().is_some() => Some(Val::concat_strings(
+            lhs.as_str().expect("checked string"),
+            rhs.as_str().expect("checked string"),
+        )),
+        (lhs, Val::Int(value)) if lhs.as_str().is_some() => {
+            let mut buf = itoa::Buffer::new();
+            Some(Val::concat_strings(
+                lhs.as_str().expect("checked string"),
+                buf.format(*value),
+            ))
+        }
+        (lhs, Val::Float(value)) if lhs.as_str().is_some() => {
+            let mut buf = ryu::Buffer::new();
+            Some(Val::concat_strings(
+                lhs.as_str().expect("checked string"),
+                buf.format(*value),
+            ))
+        }
+        (Val::Int(value), rhs) if rhs.as_str().is_some() => {
+            let mut buf = itoa::Buffer::new();
+            Some(Val::concat_strings(
+                buf.format(*value),
+                rhs.as_str().expect("checked string"),
+            ))
+        }
+        (Val::Float(value), rhs) if rhs.as_str().is_some() => {
+            let mut buf = ryu::Buffer::new();
+            Some(Val::concat_strings(
+                buf.format(*value),
+                rhs.as_str().expect("checked string"),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn fold_literal_mul(lhs: &Val, rhs: &Val) -> Option<Val> {
+    match (lhs, rhs) {
+        (left, Val::Int(count)) if left.as_str().is_some() => Some(repeat_literal_string(left.as_str()?, *count)),
+        (Val::Int(count), right) if right.as_str().is_some() => Some(repeat_literal_string(right.as_str()?, *count)),
+        _ => fold_literal_numeric(lhs, rhs, |a, b| a * b, |a, b| a * b),
+    }
+}
+
+fn repeat_literal_string(value: &str, count: i64) -> Val {
+    if count <= 0 {
+        Val::from_str("")
+    } else {
+        Val::from_str(&value.repeat(count as usize))
+    }
+}
+
+fn fold_literal_div(lhs: &Val, rhs: &Val) -> Option<Val> {
+    match (lhs, rhs) {
+        (Val::Int(a), Val::Int(b)) => {
+            let result = (*a as f64) / (*b as f64);
+            if result.fract() == 0.0 {
+                Some(Val::Int(result as i64))
+            } else {
+                Some(Val::Float(result))
+            }
+        }
+        _ => fold_literal_numeric(lhs, rhs, |a, b| a / b, |a, b| a / b),
+    }
+}
+
+fn fold_literal_numeric(
+    lhs: &Val,
+    rhs: &Val,
+    int_op: fn(i64, i64) -> i64,
+    float_op: fn(f64, f64) -> f64,
+) -> Option<Val> {
+    match (lhs, rhs) {
+        (Val::Int(a), Val::Int(b)) => Some(Val::Int(int_op(*a, *b))),
+        (Val::Float(a), Val::Float(b)) => Some(Val::Float(float_op(*a, *b))),
+        (Val::Float(a), Val::Int(b)) => Some(Val::Float(float_op(*a, *b as f64))),
+        (Val::Int(a), Val::Float(b)) => Some(Val::Float(float_op(*a as f64, *b))),
+        _ => None,
+    }
+}
+
 impl Expr {
     /// 静态类型检查表达式
     pub fn type_check(&self, type_checker: &mut TypeChecker) -> Result<Type> {
         type_checker.check_expr(self)
-    }
-    /// 使用 VmContext 进行表达式求值（统一接口）
-    ///
-    /// 渐进收敛：优先使用 ctx 语义处理常见分支；未覆盖的场景回退到旧实现。
-    pub fn eval_with_ctx(&self, ctx: &mut VmContext) -> Result<Val> {
-        match self {
-            // 变量解析：查找顺序
-            // 1) 本地/全局作用域
-            // 2) 模块解析器注册的内置函数（如测试环境中的 spawn/chan）
-            Expr::Var(name) => {
-                if let Some(v) = ctx.get_val_binding(name).cloned() {
-                    Ok(v)
-                } else {
-                    Err(anyhow!("Undefined variable: {}", name))
-                }
-            }
-            // 括号表达式
-            Expr::Paren(expr) => expr.eval_with_ctx(ctx),
-            Expr::List(_) => Err(anyhow!(
-                "Expr::eval_with_ctx does not evaluate list literals; use Executor32"
-            )),
-            Expr::Map(_) => Err(anyhow!(
-                "Expr::eval_with_ctx does not evaluate map literals; use Executor32"
-            )),
-            // 结构体字面量（字段求值）
-            Expr::StructLiteral { name, fields } => {
-                let mut hm = HashMap::with_capacity(fields.len());
-                for (k, vexpr) in fields {
-                    hm.insert(k.clone(), vexpr.eval_with_ctx(ctx)?);
-                }
-                Ok(Val::object(name.as_str(), hm))
-            }
-            // 二元运算（使用已有 BinOp::eval_vals 以统一算术与比较语义）
-            Expr::Bin(l, op, r) => {
-                let lval = l.eval_with_ctx(ctx)?;
-                let rval = r.eval_with_ctx(ctx)?;
-                // 直接复用 BinOp 上的值级运算实现，覆盖：
-                // - 算术：+ - * / %
-                // - 比较：== != < <= > >= in
-                op.eval_vals(&lval, &rval)
-            }
-            // 逻辑与/或/空合并（短路）
-            Expr::And(l, r) => {
-                let lv = l.eval_with_ctx(ctx)?;
-                let is_truthy = !matches!(lv, Val::Bool(false) | Val::Nil);
-                if is_truthy {
-                    r.eval_with_ctx(ctx)
-                } else {
-                    Ok(Val::Bool(false))
-                }
-            }
-            Expr::Or(l, r) => {
-                let lv = l.eval_with_ctx(ctx)?;
-                let is_truthy = !matches!(lv, Val::Bool(false) | Val::Nil);
-                if is_truthy {
-                    Ok(Val::Bool(true))
-                } else {
-                    r.eval_with_ctx(ctx)
-                }
-            }
-            Expr::NullishCoalescing(l, r) => {
-                let lv = l.eval_with_ctx(ctx)?;
-                if matches!(lv, Val::Nil) {
-                    r.eval_with_ctx(ctx)
-                } else {
-                    Ok(lv)
-                }
-            }
-            // 模板字符串
-            Expr::TemplateString(parts) => {
-                let mut s = String::new();
-                for p in parts {
-                    match p {
-                        TemplateStringPart::Literal(t) => s.push_str(t),
-                        TemplateStringPart::Expr(e) => s.push_str(&e.eval_with_ctx(ctx)?.display_string(Some(ctx))),
-                    }
-                }
-                Ok(Val::from_str(&s))
-            }
-            // 属性访问 / 下标访问
-            Expr::Access(expr, field) => {
-                let val = expr.eval_with_ctx(ctx)?;
-                let field_val = field.eval_with_ctx(ctx)?;
-                Ok(val.access(&field_val).unwrap_or(Val::Nil))
-            }
-            // 可选访问
-            Expr::OptionalAccess(expr, field) => {
-                let val = expr.eval_with_ctx(ctx)?;
-                if matches!(val, Val::Nil) {
-                    return Ok(Val::Nil);
-                }
-                let field_val = field.eval_with_ctx(ctx)?;
-                Ok(val.access(&field_val).unwrap_or(Val::Nil))
-            }
-            // 函数调用：按名称
-            Expr::Call(func_name, args) => {
-                // Resolve callee with same fallback strategy as variable lookup
-                let func_val = if let Some(v) = ctx.get_val_binding(func_name).cloned() {
-                    v
-                } else {
-                    return Err(anyhow!("Undefined function: {}", func_name));
-                };
-                let mut argv = Vec::with_capacity(args.len());
-                for a in args {
-                    argv.push(a.eval_with_ctx(ctx)?);
-                }
-                func_val.call(&argv, ctx)
-            }
-            // 函数调用：通用 callee 表达式（含方法糖）
-            Expr::CallExpr(callee, args) => {
-                // 方法糖：obj.method(...)
-                if let Expr::Access(obj_expr, field_expr) = callee.as_ref() {
-                    let obj_val = obj_expr.eval_with_ctx(ctx)?;
-                    let field_val = field_expr.eval_with_ctx(ctx)?;
-                    if let Some(method_name) = field_val.as_str() {
-                        let method_key = Val::from_str(method_name);
-                        // 1) 直接属性可调用；若属性是非函数且无实参调用，则返回该属性值（如 list.len() -> list.len）
-                        if let Some(prop_val) = obj_val.access(&method_key) {
-                            if prop_val.is_callable() {
-                                let mut argv = Vec::with_capacity(args.len());
-                                for a in args {
-                                    argv.push(a.eval_with_ctx(ctx)?);
-                                }
-                                return prop_val.call(&argv, ctx);
-                            }
-                            if args.is_empty() {
-                                return Ok(prop_val);
-                            }
-                            // fall through to meta-method lookup for non-empty args
-                        }
-                        // 2) Trait methods are registered as RuntimeVal callables and execute through Executor32.
-                        if let Some(tc) = ctx.type_checker() {
-                            let obj_type = obj_val.dispatch_type();
-                            if tc.registry().get_method(&obj_type, method_name).is_some() {
-                                return Err(anyhow!(
-                                    "trait method '{}' requires Executor32; Expr::eval_with_ctx cannot call runtime trait methods",
-                                    method_name
-                                ));
-                            }
-                        }
-
-                        return Err(anyhow!("{} has no method '{}'", obj_val.type_name(), method_name));
-                    }
-                }
-                // 普通 callee
-                let callee_val = callee.eval_with_ctx(ctx)?;
-                if callee_val.is_callable() {
-                    let mut argv = Vec::with_capacity(args.len());
-                    for a in args {
-                        argv.push(a.eval_with_ctx(ctx)?);
-                    }
-                    callee_val.call(&argv, ctx)
-                } else {
-                    Err(anyhow!("{} is not a function", callee_val.type_name()))
-                }
-            }
-            // 具名参数调用（含方法糖）
-            Expr::CallNamed(callee, pos_args, named_args) => {
-                // 方法糖：obj.method(...)
-                if let Expr::Access(obj_expr, field_expr) = callee.as_ref() {
-                    let obj_val = obj_expr.eval_with_ctx(ctx)?;
-                    let field_val = field_expr.eval_with_ctx(ctx)?;
-                    if let Some(method_name) = field_val.as_str() {
-                        let method_key = Val::from_str(method_name);
-                        // 1) 直接属性可调用
-                        if let Some(prop_val) = obj_val.access(&method_key) {
-                            if prop_val.is_callable() {
-                                let mut pos = Vec::with_capacity(pos_args.len());
-                                for a in pos_args {
-                                    pos.push(a.eval_with_ctx(ctx)?);
-                                }
-                                let mut named: Vec<(String, Val)> = Vec::with_capacity(named_args.len());
-                                for (n, e) in named_args {
-                                    named.push((n.clone(), e.eval_with_ctx(ctx)?));
-                                }
-                                return prop_val.call_named(&pos, &named, ctx);
-                            }
-                            if pos_args.is_empty() && named_args.is_empty() {
-                                return Ok(prop_val);
-                            }
-                            // fall through to meta-method lookup otherwise
-                        }
-                        // 2) 检查 trait 实现 - 先评估参数避免借用冲突（仅支持非具名）
-                        if !named_args.is_empty() {
-                            // trait 方法不支持具名参数，先检查避免评估工作
-                            if let Some(tc) = ctx.type_checker() {
-                                let obj_type = obj_val.dispatch_type();
-                                if tc.registry().get_method(&obj_type, method_name).is_some() {
-                                    return Err(anyhow!("Named arguments are not supported for trait methods"));
-                                }
-                            }
-                        }
-
-                        // Trait methods are registered as RuntimeVal callables and execute through Executor32.
-                        if let Some(tc) = ctx.type_checker() {
-                            let obj_type = obj_val.dispatch_type();
-                            if tc.registry().get_method(&obj_type, method_name).is_some() {
-                                return Err(anyhow!(
-                                    "trait method '{}' requires Executor32; Expr::eval_with_ctx cannot call runtime trait methods",
-                                    method_name
-                                ));
-                            }
-                        }
-
-                        return Err(anyhow!("{} has no method '{}'", obj_val.type_name(), method_name));
-                    }
-                }
-                // 普通 callee
-                let callee_val = callee.eval_with_ctx(ctx)?;
-                let mut pos = Vec::with_capacity(pos_args.len());
-                for a in pos_args {
-                    pos.push(a.eval_with_ctx(ctx)?);
-                }
-                let mut named: Vec<(String, Val)> = Vec::with_capacity(named_args.len());
-                for (n, e) in named_args {
-                    named.push((n.clone(), e.eval_with_ctx(ctx)?));
-                }
-                callee_val.call_named(&pos, &named, ctx)
-            }
-            Expr::Range { .. } => Err(anyhow!(
-                "Expr::eval_with_ctx does not evaluate range expressions; use Executor32"
-            )),
-            // select 表达式
-            Expr::Select { .. } => Err(anyhow!(
-                "Expr::eval_with_ctx does not execute select; use the RuntimeNative32 select$block path"
-            )),
-            // 匹配表达式
-            Expr::Match { value, arms } => {
-                let match_val = value.eval_with_ctx(ctx)?;
-                for arm in arms {
-                    if let Some(bindings) = Pattern::matches(&arm.pattern, &match_val, Some(ctx))? {
-                        ctx.push_scope();
-                        for (name, val) in bindings {
-                            ctx.set_val_binding(name, val);
-                        }
-                        let result = arm.body.eval_with_ctx(ctx);
-                        ctx.pop_scope();
-                        return result;
-                    }
-                }
-                Err(anyhow!("No pattern matched in match expression"))
-            }
-            // 一元运算
-            Expr::Unary(op, expr) => {
-                let val = expr.eval_with_ctx(ctx)?;
-                op.eval_val(&val)
-            }
-            // 条件表达式
-            Expr::Conditional(cond, then_expr, else_expr) => {
-                let cv = cond.eval_with_ctx(ctx)?;
-                match cv {
-                    Val::Bool(true) => then_expr.eval_with_ctx(ctx),
-                    Val::Bool(false) => else_expr.eval_with_ctx(ctx),
-                    _ => Err(anyhow!("Ternary condition must be Bool, got: {:?}", cv)),
-                }
-            }
-            // 闭包表达式
-            Expr::Closure { params, body } => {
-                let _ = (params, body);
-                Err(anyhow!(
-                    "closure evaluation through Expr::eval_with_ctx is disabled during the Instr32 VM migration; use compiler32"
-                ))
-            }
-            Expr::Block(_) => Err(anyhow!("Block expression can only be used as a closure body")),
-            // 字面量值
-            Expr::Val(val) => Ok(val.clone()),
-        }
     }
 }

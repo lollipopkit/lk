@@ -7,7 +7,7 @@ use crate::{
 
 use super::{
     Executor32,
-    named_call::write_named_args32_to_frame,
+    named_call::write_named_args32_to_frame_from_stack,
     runtime_callable,
     support::{call_native_entry, call_native_entry_parts, inline_native_args_from_stack},
 };
@@ -98,9 +98,6 @@ impl Executor32 {
                 );
                 result.or_else(|error| self.handle_call_error(error))
             }
-            CallableValue::Aot(_) => {
-                bail!("AOT callable is not implemented in Executor32 yet")
-            }
         }
     }
 
@@ -133,7 +130,7 @@ impl Executor32 {
         function_index: u32,
         captures: Vec<RuntimeVal>,
         window: CallWindow32,
-        named: &[(std::sync::Arc<str>, RuntimeVal)],
+        named_count: u16,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<RuntimeVal> {
         let function = module
@@ -142,6 +139,7 @@ impl Executor32 {
             .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
 
         let positional = self.call_args_stack_range(window)?;
+        let named_start = positional.end;
         let saved_base = self.frame_base;
         let saved_top = self.state.stack_top;
         let saved_pc = self.pc;
@@ -156,7 +154,15 @@ impl Executor32 {
         let positional = &caller_stack[positional];
         let callee_frame = &mut callee_stack[..function.register_count as usize];
         callee_frame.fill(RuntimeVal::Nil);
-        write_named_args32_to_frame(function, positional, named, callee_frame)?;
+        write_named_args32_to_frame_from_stack(
+            function,
+            positional,
+            caller_stack,
+            named_start,
+            named_count,
+            &self.state.heap,
+            callee_frame,
+        )?;
         self.frame_base = new_base;
         self.register_count = function.register_count;
         self.state.stack_top = new_top;

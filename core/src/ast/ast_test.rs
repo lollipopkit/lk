@@ -41,7 +41,7 @@ mod test {
                 Box::new(Expr::Val(Val::from_str("age"))),
             )),
             BinOp::Gt,
-            Box::new(Expr::Val(18.into())),
+            Box::new(Expr::Val(Val::Int(18))),
         );
         let parsed = Parser::new(&tokens).parse().unwrap();
         assert_eq!(parsed, expr);
@@ -82,7 +82,7 @@ mod test {
                 Box::new(Expr::Bin(
                     Box::new(Expr::Var("time".to_string())),
                     BinOp::Ne,
-                    Box::new(Expr::Val(0.into())),
+                    Box::new(Expr::Val(Val::Int(0))),
                 )),
                 Box::new(Expr::Bin(
                     Box::new(Expr::Access(
@@ -90,13 +90,13 @@ mod test {
                         Box::new(Expr::Val(Val::from_str("pub"))),
                     )),
                     BinOp::Eq,
-                    Box::new(Expr::Val(true.into())),
+                    Box::new(Expr::Val(Val::Bool(true))),
                 )),
             )))),
             Box::new(Expr::Bin(
                 Box::new(Expr::Var("random".to_string())),
                 BinOp::Gt,
-                Box::new(Expr::Val(0.5.into())),
+                Box::new(Expr::Val(Val::Float(0.5))),
             )),
         );
         assert_eq!(parsed, expected);
@@ -469,7 +469,7 @@ mod test {
                 Box::new(Expr::Val(Val::from_str("debug-mode"))),
             )),
             BinOp::Eq,
-            Box::new(Expr::Val(true.into())),
+            Box::new(Expr::Val(Val::Bool(true))),
         );
         assert_eq!(parsed, expected);
     }
@@ -533,7 +533,7 @@ mod test {
                     Box::new(Expr::Val(Val::from_str("debug-enabled"))),
                 )),
                 BinOp::Eq,
-                Box::new(Expr::Val(false.into())),
+                Box::new(Expr::Val(Val::Bool(false))),
             )),
         );
         assert_eq!(parsed, expected);

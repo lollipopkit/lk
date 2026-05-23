@@ -39,29 +39,42 @@ fn ensure_clean_dir(dir: &Path) {
 }
 
 #[test]
-fn test_lkb_compile_is_disabled_during_instr32_migration() {
+fn test_compile_writes_instr32_module_output() {
     let dir = unique_tmp_dir("lkb_pos");
     ensure_clean_dir(&dir);
 
     write_file(&dir, "a.lk", "return 123;\n");
 
     let output = run_cli(&dir, ["compile", "a.lk"]).output().expect("spawn compile");
-    assert!(!output.status.success(), "LKB compile should be disabled");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("compile output is disabled until the Instr32 module format replaces LKB"),
-        "expected migration error, got: {stderr}"
+        output.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !dir.join("a.lkb").exists(),
-        "disabled LKB compile must not emit bytecode"
+        stdout.contains("a.lkm"),
+        "compile should print output path, got: {stdout}"
     );
+    let module = fs::read_to_string(dir.join("a.lkm")).expect("read module output");
+    assert!(
+        module.contains("\"format\": \"lk.module32\"") && module.contains("\"code\""),
+        "expected Instr32 module artifact, got: {module}"
+    );
+    let run = run_cli(&dir, ["a.lkm"]).output().expect("spawn module run");
+    assert!(
+        run.status.success(),
+        "module run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8(run.stdout).expect("utf8 stdout").trim(), "123");
+    assert!(!dir.join("a.lkb").exists(), "compile must not emit old LKB bytecode");
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn test_lkb_compile_with_import_is_disabled() {
+fn test_compile_with_import_writes_instr32_module_output() {
     let dir = unique_tmp_dir("lkb_import");
     ensure_clean_dir(&dir);
 
@@ -73,16 +86,24 @@ fn test_lkb_compile_with_import_is_disabled() {
     write_file(&dir, "main.lk", "import \"fib\";\nreturn fib.iterative(10);\n");
 
     let output = run_cli(&dir, ["compile", "main.lk"]).output().expect("spawn compile");
-    assert!(!output.status.success(), "LKB compile should be disabled");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("compile output is disabled until the Instr32 module format replaces LKB"),
-        "expected migration error, got: {stderr}"
+        output.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let module = fs::read_to_string(dir.join("main.lkm")).expect("read module output");
     assert!(
-        !dir.join("main.lkb").exists(),
-        "disabled LKB compile must not emit bytecode"
+        module.contains("\"imports\"") && module.contains("\"module\""),
+        "expected module artifact with imports, got: {module}"
     );
+    let run = run_cli(&dir, ["main.lkm"]).output().expect("spawn module run");
+    assert!(
+        run.status.success(),
+        "module run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8(run.stdout).expect("utf8 stdout").trim(), "55");
+    assert!(!dir.join("main.lkb").exists(), "compile must not emit old LKB bytecode");
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -161,22 +182,32 @@ name = "util"
     let compile = run_cli(&dir, ["compile", "src/main.lk"])
         .output()
         .expect("spawn compile");
-    assert!(!compile.status.success(), "LKB compile should be disabled");
-    let stderr = String::from_utf8_lossy(&compile.stderr);
     assert!(
-        stderr.contains("compile output is disabled until the Instr32 module format replaces LKB"),
-        "expected migration error, got: {stderr}"
+        compile.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
     );
     assert!(
+        dir.join("src/main.lkm").exists(),
+        "compile should emit Instr32 module output"
+    );
+    let run_module = run_cli(&dir, ["src/main.lkm"]).output().expect("spawn module run");
+    assert!(
+        run_module.status.success(),
+        "module run failed: {}",
+        String::from_utf8_lossy(&run_module.stderr)
+    );
+    assert_eq!(String::from_utf8(run_module.stdout).expect("utf8 stdout").trim(), "42");
+    assert!(
         !dir.join("src/main.lkb").exists(),
-        "disabled LKB compile must not emit bytecode"
+        "compile must not emit old LKB bytecode"
     );
 
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn test_compile_rejects_unsupported_constructs_for_vm() {
+fn test_compile_struct_constructs_to_instr32_module() {
     let dir = unique_tmp_dir("compile_vm_guard");
     ensure_clean_dir(&dir);
 
@@ -187,11 +218,15 @@ fn test_compile_rejects_unsupported_constructs_for_vm() {
     );
 
     let output = run_cli(&dir, ["compile", "mod.lk"]).output().expect("spawn compile");
-    assert!(!output.status.success(), "LKB compile should be disabled");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("compile output is disabled until the Instr32 module format replaces LKB"),
-        "expected migration error, got: {stderr}"
+        output.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let module = fs::read_to_string(dir.join("mod.lkm")).expect("read module output");
+    assert!(
+        module.contains("\"format\": \"lk.module32\""),
+        "expected module artifact, got: {module}"
     );
 }
 
@@ -207,11 +242,11 @@ fn test_lkb_negative_corrupted_magic() {
 
     let out = run_cli(&dir, ["bad.lkb"]).output().expect("spawn run");
 
-    assert!(!out.status.success(), "expected failure for corrupted LKB");
+    assert!(!out.status.success(), "expected failure for removed LKB input");
     let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
     assert!(
-        stderr.contains("LKB execution is disabled during the Instr32 VM migration"),
-        "stderr did not contain migration error, got: {}",
+        stderr.contains("LKB execution has been removed"),
+        "stderr did not contain removed-LKB error, got: {}",
         stderr
     );
 

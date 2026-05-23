@@ -1,12 +1,10 @@
 use std::fmt;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use arcstr::ArcStr;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::typ::{NumericClass, NumericHierarchy};
-
-use super::{HeapValue, Val};
 
 /// 内联短字符串：0–7 字节 UTF-8，完全存储在 Val 内（零堆分配）。
 /// 实现了 Copy，克隆无需原子操作。
@@ -149,117 +147,6 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn validate(&self, val: &Val) -> Result<()> {
-        match (self, val) {
-            (Type::Int, Val::Int(_)) => Ok(()),
-            (Type::Float, Val::Float(_)) => Ok(()),
-            (Type::Float, Val::Int(_)) => Ok(()),
-            (Type::String, value) if value.as_str().is_some() => Ok(()),
-            (Type::Bool, Val::Bool(_)) => Ok(()),
-            (Type::Nil, Val::Nil) => Ok(()),
-            (Type::Boxed(inner), value) => {
-                if matches!(**inner, Type::Any) {
-                    Ok(())
-                } else {
-                    inner.validate(value)
-                }
-            }
-            (Type::Any, _) => Ok(()),
-            (Type::List(elem_type), Val::Obj(value)) if matches!(value.as_ref(), HeapValue::List(_)) => {
-                let HeapValue::List(list) = value.as_ref() else {
-                    unreachable!("checked list")
-                };
-                let items = list.to_val_values();
-                for item in &items {
-                    elem_type.validate(item)?;
-                }
-                Ok(())
-            }
-            (Type::Map(key_type, val_type), Val::Obj(value)) if matches!(value.as_ref(), HeapValue::Map(_)) => {
-                let HeapValue::Map(map) = value.as_ref() else {
-                    unreachable!("checked map")
-                };
-                let entries = map.to_val_entries();
-                for (key, value) in &entries {
-                    let key_val = Val::from_str(key.as_str());
-                    key_type.validate(&key_val)?;
-                    val_type.validate(value)?;
-                }
-                Ok(())
-            }
-            (Type::Tuple(elems), Val::Obj(value)) if matches!(value.as_ref(), HeapValue::List(_)) => {
-                let HeapValue::List(list) = value.as_ref() else {
-                    unreachable!("checked tuple list")
-                };
-                let items = list.to_val_values();
-                if items.len() != elems.len() {
-                    return Err(anyhow!(
-                        "Tuple length mismatch: expected {}, got {}",
-                        elems.len(),
-                        items.len()
-                    ));
-                }
-                for (idx, (expected, value)) in elems.iter().zip(items.iter()).enumerate() {
-                    expected
-                        .validate(value)
-                        .map_err(|err| anyhow!("Tuple element {}: {}", idx, err))?;
-                }
-                Ok(())
-            }
-            (Type::Function { .. }, value) if value.is_callable() => Ok(()),
-            (Type::Task(_), value) if value.as_task().is_some() => Ok(()),
-            (Type::Generic { name, params }, value)
-                if name == "Stream" && params.len() == 1 && value.as_stream().is_some() =>
-            {
-                let stream = value.as_stream().expect("checked stream");
-                let expected_inner = &params[0];
-                if expected_inner == &stream.inner_type || expected_inner.is_assignable_to(&stream.inner_type) {
-                    Ok(())
-                } else {
-                    Err(anyhow!(
-                        "Stream type mismatch: expected Stream<{:?}>, got Stream<{:?}>",
-                        expected_inner,
-                        stream.inner_type
-                    ))
-                }
-            }
-            (Type::Channel(inner_type), value) if value.as_channel().is_some() => {
-                let channel = value.as_channel().expect("checked channel");
-                if inner_type.as_ref() == &channel.inner_type {
-                    Ok(())
-                } else {
-                    Err(anyhow!(
-                        "Channel type mismatch: expected {:?}, got {:?}",
-                        inner_type,
-                        channel.inner_type
-                    ))
-                }
-            }
-            (Type::Union(types), val) => {
-                for typ in types {
-                    if typ.validate(val).is_ok() {
-                        return Ok(());
-                    }
-                }
-                Err(anyhow!(
-                    "Union type mismatch: value {:?} doesn't match any of {:?}",
-                    val.type_name(),
-                    types
-                ))
-            }
-            (Type::Optional(_), Val::Nil) => Ok(()),
-            (Type::Optional(inner_type), val) => inner_type.validate(val),
-            (Type::Variable(_), _) => Ok(()),
-            (Type::Named(_), _) => Ok(()),
-            (Type::Generic { .. }, _) => Ok(()),
-            (expected, actual) => Err(anyhow!(
-                "Type mismatch: expected {:?}, got {:?}",
-                expected,
-                actual.type_name()
-            )),
-        }
-    }
-
     pub fn parse(s: &str) -> Option<Type> {
         let s = s.trim();
 

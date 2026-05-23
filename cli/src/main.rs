@@ -9,10 +9,10 @@ use lk_core::{
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
     rt,
-    stmt::{ModuleResolver, stmt_parser::StmtParser},
+    stmt::{ModuleResolver, import::collect_program_imports, stmt_parser::StmtParser},
     token::Tokenizer,
     typ::TypeChecker,
-    vm::VmContext,
+    vm::{Module32Artifact, VmContext, compile_program32_module_with_ctx, execute_module32_artifact_with_ctx},
 };
 
 use anyhow::Context;
@@ -236,10 +236,8 @@ fn main() -> anyhow::Result<()> {
 
                 match compile_mode {
                     None => {
-                        anyhow::bail!(
-                            "compile output is disabled until the Instr32 module format replaces LKB: {}",
-                            src_path_str
-                        );
+                        compile_instr32_module(&safe)?;
+                        return Ok(());
                     }
                     #[cfg(feature = "llvm")]
                     Some(CompileMode::Llvm) => {
@@ -275,8 +273,6 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
-    // No separate subcommand to run bytecode; handled below by auto-detecting LKB magic
-
     // Otherwise: execute FILE as statements
     let file = file.expect("internal: file should be present when no subcommand");
     let safe = sanitize_path(file.to_string_lossy().as_ref()).map_err(|e| {
@@ -284,22 +280,36 @@ fn main() -> anyhow::Result<()> {
         e
     })?;
     let src_path_str = safe.to_string_lossy().to_string();
-    // Read raw bytes first to auto-detect LKB magic
     let raw = std::fs::read(&safe).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", src_path_str, e))?;
 
-    // LKB execution is intentionally disabled while runtime execution is moved
-    // to Instr32. Re-enable this through the new runtime module format, not by
-    // reviving the legacy Vm path.
-    if raw.starts_with(b"LKB") {
+    if safe.extension().and_then(|ext| ext.to_str()) == Some("lkb") {
         anyhow::bail!(
-            "LKB execution is disabled during the Instr32 VM migration: {}",
+            "LKB execution has been removed; run LK source through the Instr32 VM: {}",
             src_path_str
         );
     }
 
-    // Otherwise: treat as UTF-8 LK source and execute statements
-    let input = String::from_utf8(raw)
-        .map_err(|e| anyhow::anyhow!("Input file is neither LKB bytecode nor valid UTF-8 source: {}", e))?;
+    if safe.extension().and_then(|ext| ext.to_str()) == Some("lkm") {
+        let input =
+            String::from_utf8(raw).map_err(|e| anyhow::anyhow!("Input file is not valid UTF-8 LK module: {}", e))?;
+        if let Err(e) = rt::init_runtime() {
+            eprintln!("Warning: Failed to initialize runtime: {}", e);
+        }
+        let artifact = Module32Artifact::from_json_str(&input)
+            .with_context(|| format!("decode Instr32 module {}", safe.display()))?;
+        let mut base_env = build_vm_context(&safe)?;
+        let exec_result =
+            execute_module32_artifact_with_ctx(artifact, &mut base_env).with_context(|| "VM32 module execution failed");
+        rt::shutdown_runtime();
+        let result = exec_result?;
+        if !result.first_return_is_nil() {
+            println!("{}", result.display_first_return());
+        }
+        return Ok(());
+    }
+
+    let input =
+        String::from_utf8(raw).map_err(|e| anyhow::anyhow!("Input file is not valid UTF-8 LK source: {}", e))?;
 
     // Initialize runtime for concurrency if enabled
     if let Err(e) = rt::init_runtime() {
@@ -323,18 +333,7 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let mut registry = ModuleRegistry::new();
-    lk_stdlib::register_stdlib_globals(&mut registry);
-    lk_stdlib::register_stdlib_modules(&mut registry)?;
-    let mut resolver = ModuleResolver::with_registry(registry);
-    if let Some(parent) = safe.parent().filter(|p| !p.as_os_str().is_empty()) {
-        resolver.set_base_dir(parent.to_path_buf());
-    }
-    configure_package_resolver(&mut resolver, &safe)?;
-    let resolver = Arc::new(resolver);
-    let mut base_env = VmContext::new()
-        .with_resolver(Arc::clone(&resolver))
-        .with_type_checker(Some(TypeChecker::new_strict()));
+    let mut base_env = build_vm_context(&safe)?;
 
     let exec_result = program
         .execute32_with_ctx(&mut base_env)
@@ -362,7 +361,38 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn configure_package_resolver(resolver: &mut ModuleResolver, path: &Path) -> anyhow::Result<Option<PackageGraph>> {
+fn compile_instr32_module(path: &Path) -> anyhow::Result<()> {
+    let program = parse_program_file(path)?;
+    let mut ctx = build_vm_context(path)?;
+    let module = compile_program32_module_with_ctx(&program, &mut ctx)
+        .with_context(|| format!("compile Instr32 module for {}", path.display()))?;
+    let artifact = Module32Artifact::new(collect_program_imports(&program), &module)?;
+    let output = path.with_extension("lkm");
+    std::fs::write(&output, artifact.to_json_string()?)
+        .with_context(|| format!("write Instr32 module {}", output.display()))?;
+    println!("{}", output.display());
+    Ok(())
+}
+
+pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {
+    let mut registry = ModuleRegistry::new();
+    lk_stdlib::register_stdlib_globals(&mut registry);
+    lk_stdlib::register_stdlib_modules(&mut registry)?;
+    let mut resolver = ModuleResolver::with_registry(registry);
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        resolver.set_base_dir(parent.to_path_buf());
+    }
+    configure_package_resolver(&mut resolver, path)?;
+    let resolver = Arc::new(resolver);
+    Ok(VmContext::new()
+        .with_resolver(Arc::clone(&resolver))
+        .with_type_checker(Some(TypeChecker::new_strict())))
+}
+
+pub(crate) fn configure_package_resolver(
+    resolver: &mut ModuleResolver,
+    path: &Path,
+) -> anyhow::Result<Option<PackageGraph>> {
     let Some(graph) = PackageGraph::discover(path)? else {
         return Ok(None);
     };

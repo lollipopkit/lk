@@ -646,6 +646,132 @@ AST literal 已经迁到 `Expr::List` / `Expr::Map` 后，继续把新 VM 编译
 - 旧 `as_list()` / `as_map()` materialization API 仍被 LLVM AOT runtime collections 和少量 runtime helper 使用；这是删除 `Val::List` / `Val::Map` 前的最大剩余块。
 - `Expr::eval_with_ctx` 仍存在旧 scalar/control/template 路径，但已不再承载 collection literal/access/arithmetic/membership/pattern 主语义。
 
+### 本 session 继续：移除顶层 `Val::List` / `Val::Map` 变体
+
+本次完成 `plan.md` 中 runtime value model 的一个关键收口：`Val` 顶层不再携带 list/map 兼容变体。
+
+- 从 `Val` enum 删除 `List(Arc<Vec<Val>>)` / `Map(Arc<FastHashMap<ArcStr, Val>>)`。
+- `Val::list(...)` / `Val::map(...)` 过渡构造函数保留，但现在直接构造 `Val::Obj(HeapValue::List/Map)`：
+  - list 使用 `HeapValue::List(TypedList::Mixed(...))`；
+  - map 使用 `HeapValue::Map(TypedMap::from_runtime_entries(...))`。
+- `Val::as_list()` / `Val::as_map()` 仍作为 AOT/旧 helper 的 materialization API，但只从 heap-backed `HeapValue::List/Map` 读取。
+- 删除 `Val::List` / `Val::Map` 在 clone、serde、display、PartialEq、type checker literal fallback、template constant folding、AOT iterator fallback 中的匹配分支。
+- `val::val_test` 中旧负向测试改为 `heap_val_containers_satisfy_container_types`，确认测试 helper 现在创建 heap-backed container，并能通过 `Type::List/Map` validation。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+验证：
+
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core val::val_test -- --nocapture` → 34 passed。
+- `cargo test -p lk-core val::runtime_model -- --nocapture` → 14 passed。
+- `cargo test -p lk-core llvm::runtime -- --nocapture` → 13 passed。
+- `cargo test -p lk-core vm::compiler32::tests -- --nocapture` → 63 passed。
+- `cargo test -p lk-core --lib` → 532 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- `rg -n "Val::List|Val::Map|Self::List|Self::Map" core/src stdlib/src -g '*.rs'` → no top-level `Val` variant matches；剩余 `Self::List/Map` 仅属于 runtime model / analysis / opcode enum 名称。
+- 单文件行数检查：最大仍为 `core/src/ast/parser.rs` 1499 行，未超过 1500 行限制。
+
+当前剩余旧模型面：
+
+- `Val::list` / `Val::map` / `as_list` / `as_map` 仍存在，主要服务 LLVM AOT runtime collections 和少量旧测试/helper；它们现在已经是 heap-backed materialization API，不再是顶层 `Val` 变体。
+- `Val::Obj(Arc<HeapValue>)` 本身仍与 `RuntimeVal::Obj(HeapRef)` 并存，未完全达到 `plan.md` 里最终 `Val::Obj(HeapRef)` 的形式。
+- LLVM AOT runtime collections 仍大量通过 `Val` materialization 操作 list/map；后续需要按 AOT 边界迁移或删除旧 AOT collection runtime。
+
+### 本 session 继续：删除 LLVM AOT collection materialization 边界
+
+本次继续按“legacy 全部移除”收口，不再保留 `Val` 的 crate 内 list/map materialization 过渡 API。
+
+- 删除 `Val::list(...)` / `Val::map(...)` / `Val::as_list()` / `Val::as_map()`。
+- 删除 `core/src/llvm/runtime/collections.rs`，不再导出旧 AOT collection helper：
+  - `lk_rt_build_list` / `lk_rt_build_map`；
+  - `lk_rt_list_*`；
+  - `lk_rt_map_*`；
+  - 旧 `lk_rt_access` / `lk_rt_index` / `lk_rt_len` / `lk_rt_to_iter` collection bridge。
+- LLVM backend 当前已在 `core/src/llvm/backend.rs` 中禁用，本次没有迁移旧 AOT collection ABI；后续恢复 AOT 时必须基于 `Instr32` 和 `RuntimeVal`/`HeapStore` 重新设计。
+- `lk_rt_register_native_module_function` 不再把 native module exports materialize 成 `Val::Map`，现在明确返回 `-1` 并报告 AOT native module replay 已在 Instr32 迁移期间禁用。
+- `lk_rt_apply_native_imports` 保留入口，但 item/native module replay 不再尝试转换旧 `Val` map exports。
+- 删除 LLVM runtime collection tests，仅保留 scalar runtime helpers、global load/store、imports 收集和 LKB 禁用测试。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "Val::list\\(|Val::map\\(|as_list\\(|as_map\\(|lk_rt_build_list|lk_rt_build_map|lk_rt_list_|lk_rt_map_|lk_rt_to_iter|lk_rt_index|lk_rt_len|lk_rt_access" core/src stdlib/src -g '*.rs'` → no matches。
+- `rg -n "legacy|Legacy|LEGACY" core/src stdlib/src -g '*.rs'` → no matches。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core llvm::runtime -- --nocapture` → 7 passed。
+- `cargo test -p lk-core --lib` → 526 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：最大仍为 `core/src/ast/parser.rs` 1499 行，未超过 1500 行限制。
+
+当前剩余旧模型面：
+
+- `Val::Obj(Arc<HeapValue>)` 仍未收敛为 `Val::Obj(HeapRef)`；这是 runtime value model 的下一块基础迁移。
+- LLVM runtime 仍保留 scalar/global/import/AOT function 壳层，作为已禁用 backend 的外围入口；collection bridge 已删除。
+- 旧 `Expr::eval_with_ctx` scalar/control/template 路径仍存在，但 collection literal/access/arithmetic/membership/pattern 主语义已不在 old evaluator 承载。
+
+### 本 session 继续：删除 old `Val` object/channel/type validation helper
+
+继续收窄 `Val::Obj(Arc<HeapValue>)` 的创建和消费表面，本次删除只服务 old evaluator / old Val API 的 helper：
+
+- `Expr::eval_with_ctx` 不再构造 struct literal；`Expr::StructLiteral` 与 list/map 一样直接要求使用 `Executor32`。
+- 删除 `Val::object(...)`、`Val::as_object()`、`Val::val_to_object_field(...)`，old `Val` 不再提供 runtime object 构造 API。
+- 删除 `Val::task/channel/stream/stream_cursor` 构造 helper 及对应 `as_*` helper；stdlib/runtime modules 已走 `RuntimeVal::Obj(HeapRef)` + `HeapStore`。
+- 删除 `impl From<(u64, i64, Type)> for Val`，不再用旧 `Val` conversion 构造 channel heap object。
+- 删除 `Type::validate(&Val)`。这是旧 `Val` 运行时验证入口，且当前只有测试调用；新类型检查走 `TypeChecker`，新 runtime 容器验证走 `RuntimeVal`/`HeapStore`。
+- 删除 `val::val_test` 中对 `Type::validate(&Val)` 的 heap container 测试，不再用测试保护 old `Val` container validation。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "Val::object\\(|as_object\\(|val_to_object_field|\\.validate\\(&|pub fn validate\\(|as_task\\(|as_channel\\(|as_stream\\(|as_stream_cursor\\(|Val::task\\(|Val::channel\\(|Val::stream\\(|Val::stream_cursor\\(|From<\\(u64, i64, Type\\)>" core/src stdlib/src -g '*.rs'` → no matches。
+- `rg -n "legacy|Legacy|LEGACY" core/src stdlib/src -g '*.rs'` → no matches。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core val::val_test -- --nocapture` → 33 passed。
+- `cargo test -p lk-core expr::expr_test -- --nocapture` → 21 passed。
+- `cargo test -p lk-core typ::type_checker::tests -- --nocapture` → 15 passed。
+- `cargo test -p lk-core vm::compiler32::tests -- --nocapture` → 63 passed。
+- `cargo test -p lk-core --lib` → 525 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：最大仍为 `core/src/ast/parser.rs` 1499 行，未超过 1500 行限制。
+
+当前剩余旧模型面：
+
+- `Val::Obj(Arc<HeapValue>)` 仍存在，主要服务 heap string、old callable/AOT 壳层、display/serde/materialization 测试；但 old list/map/object/channel 构造 API 已删除。
+- old evaluator 仍保留 scalar/control/template/function-call 壳层；list/map/struct literal 已不再由 old evaluator 构造 heap object。
+- `Val::call` / `call_named` 仍是旧 callable bridge，且 LLVM runtime scalar call helpers 仍会进入该路径；后续可继续禁用或迁到 `RuntimeVal`/`Executor32`。
+
+### 本 session 继续：删除 old `Val::call` callable bridge
+
+继续收窄旧 `Val` 执行路径，本次删除 old evaluator / LLVM runtime 通过 `Val` 调用函数的桥接层：
+
+- 删除 `core/src/val/values/call.rs`，`Val` 不再提供 `call` / `call_vm` / `call_named` / `call_named_vm`。
+- `Expr::eval_with_ctx` 的函数调用、call expression、具名参数调用不再尝试通过 `Val::call` 执行 callable，统一返回“use Executor32”错误。
+- LLVM runtime 的 `lk_rt_call` / `lk_rt_call_native` 只保留直接 AOT raw function pointer 调用；非 AOT 的 `Val` callable fallback 已禁用。
+- LLVM runtime 的 `lk_rt_call_method` 整体禁用，避免继续通过 `Val::access` + `Val::call` 维持旧方法调用桥。
+- 删除 `RuntimeState::decode_values`，不再为 LLVM call fallback materialize `Vec<Val>` 参数。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "decode_values\\(|\\.call\\(|call_named\\(|call_named_vm|call_vm\\(|Val::call|core/src/val/values/call" core/src stdlib/src -g '*.rs'` → no old `Val` callable bridge matches；剩余 stdlib `iter::call_callable` 是 `RuntimeVal`/`Executor32` 路径。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core expr::expr_test -- --nocapture` → 21 passed。
+- `cargo test -p lk-core llvm::runtime -- --nocapture` → 7 passed。
+- `cargo test -p lk-core vm::compiler32::tests -- --nocapture` → 63 passed。
+- `cargo test -p lk-core --lib` → 525 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：最大仍为 `core/src/ast/parser.rs` 1499 行，未超过 1500 行限制。
+
+当前剩余旧模型面：
+
+- `Val::Obj(Arc<HeapValue>)` 仍存在，主要服务 long string、AOT function handle、old display/serde/type dispatch 壳层；但 old callable execution bridge 已删除。
+- LLVM runtime 仍保留 scalar/global/import/AOT function pointer 壳层；backend 仍整体禁用，后续恢复必须基于 Instr32。
+- old evaluator 仍保留 scalar/control/template/access 壳层；函数调用、list/map/struct/range/select 已不再由 old evaluator 执行。
+
 ---
 
 ## 接手注意事项
@@ -678,3 +804,462 @@ AST literal 已经迁到 `Expr::List` / `Expr::Map` 后，继续把新 VM 编译
 - `core/src/vm/context.rs`
 - `core/src/vm/context/val_bindings.rs`
 - `core/src/vm/compiler32/builder.rs`
+
+### 本 session 继续：删除 `Val` callable/AOT 壳层并收窄 heap display/serde
+
+继续按“legacy 全部移除，迁移到新架构”收窄旧 `Val::Obj(Arc<HeapValue>)` 表面，本次删除旧
+`Val` 可调用对象和 AOT raw function handle 入口：
+
+- 删除 `AotFunction` 与 `CallableValue::Aot`，当前 AOT backend 仍禁用；后续恢复 AOT 必须基于
+  `Instr32`/`RuntimeVal`/`HeapStore` 重新建 callable ABI。
+- 删除 `Val::aot_function`、`Val::runtime_callable32`、`Val::runtime_native32_for_test`、
+  `Val::as_runtime_callable32`、`Val::is_callable` 以及对应测试。
+- `lk_rt_make_aot_function`、`lk_rt_call`、`lk_rt_call_native` 不再保留 raw function pointer
+  direct-call bridge，迁移期统一返回 `nil` 并打印禁用信息。
+- 删除 Executor32/import/runtime callable copy 路径中对 `CallableValue::Aot` 的分支。
+- 删除 old `Val` container literal 兼容测试，不再通过测试直接构造
+  `Val::Obj(HeapValue::List/Map)` 来保护旧模型。
+- `Val::Obj` 不再持有 `Arc<HeapValue>`，收窄为只承载 long string 的 `ArcStr`；容器、object、
+  callable、task/channel/stream/error 的真实语义只由 `RuntimeVal::Obj(HeapRef)` + `HeapStore`
+  承载。
+- `Val` 的 `Display`、`Serialize`、`dispatch_type`、`type_name` 只处理 scalar/string，不再半支持
+  runtime heap container/object/callable。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "CallableValue::Aot|AotFunction|aot_function_from_val|call_aot_function_raw|Val::aot_function|runtime_callable32\\(|runtime_native32_for_test|as_runtime_callable32|\\.is_callable\\(" core/src stdlib/src -g '*.rs'`
+  → no matches。
+- `rg -n "(^|[^A-Za-z])Val::Obj\\(|Arc<HeapValue>|CallableValue::Aot|AotFunction|Val::aot_function|runtime_callable32\\(|runtime_native32_for_test|as_runtime_callable32|\\.is_callable\\(" core/src stdlib/src -g '*.rs'`
+  → `Val::Obj` 仅剩 scalar long string shell；无 `Arc<HeapValue>` / callable / AOT 旧入口。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core val::val_test -- --nocapture` → 32 passed。
+- `cargo test -p lk-core val::val_test::tests::val_stays_within_two_words -- --nocapture` → 1 passed。
+- `cargo test -p lk-core vm::compiler32::tests -- --nocapture` → 62 passed。
+- `cargo test -p lk-core llvm::runtime -- --nocapture` → 7 passed。
+- `cargo test -p lk-core --lib` → 520 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行，未超过 1500 行限制。
+
+### 本 session 继续：删除剩余旧容器 materialization 与 Val buffer 壳层
+
+继续按“legacy 全部移除，迁移到新架构”推进，本次把上一轮未写入进度的事实补齐，并继续切掉
+无生产调用方的旧 `Val` 缓冲区：
+
+- 旧 `Val::Obj` 名称已从 `Val` 删除并收敛为 `Val::LongStr(ArcStr)`；`Obj` 名称只属于
+  `RuntimeVal::Obj(HeapRef)`。
+- 删除旧容器 materialization helper：
+  `Val::object_field_to_val`、`TypedList::to_val_values`、`TypedMap::to_val_entries`。
+- 删除旧 string/map key 缓存模块 `core/src/val/values/map_key_cache.rs` 以及对应 module wiring。
+- `TypedList`/`TypedMap` 跨 backing equality 已基于 `RuntimeVal`/`entries()` 比较，不再依赖旧
+  `Val` 容器快照。
+- 删除 `core/src/vm/alloc.rs` 中无调用方的旧 TLS `Vec<Val>` / map-entry / named-arg buffer API：
+  `TLS_VAL_BUF`、`with_val_buffer`、`with_map_entries`、`with_indexed_vals`、
+  `with_reg_val_pairs`、`with_named_pairs` 等。
+- LLVM runtime 的迁移期 scalar globals 已移到 `RuntimeState::aot_globals`，不再通过
+  `VmContext::set_val_binding` / `get_val_binding` 存取 AOT global。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "(^|[^[:alnum:]_])Val::Obj|object_field_to_val|to_val_values\\(|to_val_entries\\(|Arc<HeapValue>|CallableValue::Aot|AotFunction|Val::aot_function|runtime_callable32\\(|runtime_native32_for_test|as_runtime_callable32|\\.is_callable\\(|TLS_VAL_BUF|with_val_buffer|with_map_entries|map_key_cache|ctx\\.set_val_binding|ctx\\.get_val_binding" core/src stdlib/src -g '*.rs'`
+  → 只剩 `Expr::eval_with_ctx` / `Pattern` / `VmContext` tests 的 old expression `Val` binding 面；无
+  `Val::Obj`、AOT callable、旧容器 materialization、TLS `Val` buffer 或 LLVM `ctx` global 访问。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core llvm::runtime -- --nocapture` → 7 passed。
+- `cargo test -p lk-core vm::alloc -- --nocapture` → 3 passed。
+- `cargo test -p lk-core --lib` → 516 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行，未超过 1500 行限制；`core/src/vm/alloc.rs`
+  已降到 130 行。
+
+当前剩余旧模型面：
+
+- `VmContext::val_bindings`、`Expr::eval_with_ctx` 和 `Pattern` guard/range 仍保留 old scalar
+  expression compatibility；它们已经不再被 exec32 或 LLVM runtime global path 使用。
+- LLVM backend/runtime 仍是迁移期禁用/标量壳层；后续恢复 AOT 必须基于
+  `Instr32`/`RuntimeVal`/`HeapStore`。
+
+### 本 session 继续：删除 old expression evaluator 与 VmContext Val binding
+
+继续移除 `plan.md` 中明确要求淘汰的旧 context/global 字符串映射和 old evaluator 路径：
+
+- 删除 `Expr::eval()` / `Expr::eval_with_ctx()`，表达式行为测试统一迁到 `execute_source32`。
+- `Pattern` 的 old `Val` guard/range evaluator 不再调用 `Expr::eval_with_ctx`；match/if-let 的真实语义由
+  compiler32/exec32 路径覆盖。
+- 删除 `VmContext::val_bindings`、`core/src/vm/context/val_bindings.rs` 和所有 old `Val` binding API：
+  `get_val_binding`、`set_val_binding`、`assign_val_binding`、`remove_val_binding`、
+  `push_scope`、`pop_scope`、`is_local_name`、`bind_param_at_slot`。
+- 删除只保护旧 `Val` context 行为的 `stmt_test::test_environment` 和 `vm::context` Val binding tests。
+- closure capture 测试中的后置冲突变量改为 `define_runtime_value`，继续验证新 runtime global 不影响
+  lexical capture。
+- 删除 `UnaryOp::eval_val`、`BinOp::eval`、`BinOp::eval_vals` 和 metrics wrapper；LLVM scalar math
+  helper 现在直接使用 `Val` 运算符，不再通过 old expression/value evaluator。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "eval_with_ctx|Expr::eval\\(|\\.eval\\(\\)|get_val_binding|set_val_binding|assign_val_binding|remove_val_binding|bind_param_at_slot|is_local_name|ValBindingContext|val_bindings|context/val_bindings|TLS_VAL_BUF|CallableValue::Aot|AotFunction|map_key_cache" core/src stdlib/src -g '*.rs'`
+  → no matches。
+- `rg -n "(^|[^[:alnum:]_])Val::Obj" core/src stdlib/src -g '*.rs'` → no matches；`RuntimeVal::Obj`
+  仍是新 runtime model 的合法 heap handle。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core expr::expr_test -- --nocapture` → 21 passed。
+- `cargo test -p lk-core vm::context -- --nocapture` → 2 passed。
+- `cargo test -p lk-core stmt::function_test::tests::test_outer_returns_closure_value -- --nocapture` → 1 passed。
+- `cargo test -p lk-core stmt::stmt_test -- --nocapture` → 69 passed。
+- `cargo test -p lk-core llvm::runtime -- --nocapture` → 7 passed。
+- `cargo test -p lk-core --lib` → 513 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行，未超过 1500 行限制；`core/src/vm/context.rs`
+  已降到 774 行，`core/src/expr/expr_impl.rs` 已降到 838 行。
+
+当前剩余旧模型面：
+
+- `Val` 仍作为 scalar/string shell 存在，主要服务 parser constants、LLVM scalar runtime helper 和旧
+  value-level arithmetic tests；容器/object/callable/global context 旧路径已删除。
+- LLVM backend/runtime 仍是迁移期禁用/标量壳层；后续恢复 AOT 必须基于
+  `Instr32`/`RuntimeVal`/`HeapStore`。
+
+### 本 session 继续：LLVM runtime scalar shell 迁到 RuntimeVal
+
+继续按“legacy 全部移除，迁移到新架构”收口 AOT/LLVM 迁移期外壳，本次把 LLVM runtime 的
+scalar handle/global 模型从旧 `Val` 切到新 `RuntimeVal`：
+
+- `core/src/llvm/encoding.rs` 的 immediate encode/decode 现在接收和返回 `RuntimeVal`，不再依赖旧
+  `Val`。
+- `RuntimeState::aot_globals` 从 `FastHashMap<String, Val>` 改为
+  `FastHashMap<String, RuntimeVal>`。
+- LLVM runtime `HandleTable` 从 `Vec<Val>` 改为 `Vec<RuntimeVal>`，并新增 `HeapStore` 保存
+  long string handle。
+- `lk_rt_intern_string` / `lk_rt_to_string` / `lk_rt_load_global` / `lk_rt_define_global` / scalar math
+  helpers 均改为读写 `RuntimeVal`。
+- `lk_rt_cmp` 不再通过 `BinOp::cmp(&Val, &Val)`，改为本地 `RuntimeVal` scalar/string compare。
+- LLVM runtime 中旧 `AOT/Val` 错误文案已改为 AOT runtime bridge 文案。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "use crate::val::Val|crate::val::Val|(^|[^A-Za-z0-9_])Val::|Vec<Val>|FastHashMap<String, Val>|AOT/Val|HandleTable.*Val|decode_value\\(&self, raw: i64\\) -> Val" core/src/llvm -g '*.rs'`
+  → no matches。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core llvm::runtime -- --nocapture` → 7 passed。
+- `cargo test -p lk-core llvm::encoding -- --nocapture` → 4 passed。
+- `cargo test -p lk-core --lib` → 513 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行，未超过 1500 行限制。
+
+当前剩余旧模型面：
+
+- `Val` 仍作为 AST scalar literal / constant folding / 部分 value-level scalar tests 的壳存在。
+- LLVM backend/runtime 仍是迁移期禁用外壳；collection/call ABI 已删或禁用，后续恢复 AOT 必须基于
+  `Instr32`/`RuntimeVal`/`HeapStore`。
+
+### 本 session 继续：删除 AST/Val serde 与旧便捷转换入口
+
+继续收窄 `Val` 的职责，让它只作为 AST scalar literal 壳，不再承担通用序列化/反序列化或表达式转换
+边界：
+
+- `Expr`、`Pattern`、`SelectPattern`、`SelectCase`、`TemplateStringPart`、`MatchArm` 删除
+  `Serialize` / `Deserialize` derive；AST 不再要求 `Val` 实现 serde。
+- 删除 `ValLiteralVisitor` 和 `impl Deserialize for Val`；结构化 JSON/YAML/TOML 入口继续只走
+  `RuntimeVal + HeapStore` runtime decoder。
+- 删除 `core/src/val/values/serde_impl.rs` 和 `impl Serialize for Val`。
+- 删除 `Val::try_from<T: Serialize>`，不再通过 serde_json 把任意 Rust 数据折回旧 `Val`。
+- 删除无调用方的 `Val::dispatch_type()` / `Val::display_string()`。
+- 删除无调用方的 `impl TryInto<Val> for &Expr` 和 `impl From<Val> for Expr`，避免继续暴露
+  old scalar expression bridge。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "TryInto<Val>|From<Val> for Expr|Val::try_from|impl Serialize for Val|impl<'de> Deserialize<'de> for Val|serde_impl|pub fn dispatch_type\\(&self\\)|pub fn display_string\\(&self" core/src stdlib/src -g '*.rs'`
+  → no old `Val` API matches；剩余 `runtime_value_display_string` / `runtime_dispatch_type` 属于
+  `RuntimeVal` 新路径。
+- `cargo test -p lk-core val::de_test -- --nocapture` → 8 passed。
+- `cargo test -p lk-core ast::ast_test -- --nocapture` → 32 passed。
+- `cargo test -p lk-core vm::compiler32::tests -- --nocapture` → 62 passed。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core --lib` → 513 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行，未超过 1500 行限制。
+
+当前剩余旧模型面：
+
+- `Val` 仍作为 AST scalar literal / constant folding / value-level scalar operator tests 的壳存在。
+- `Val::LongStr(ArcStr)` 仍未按 `plan.md` 最终形态收敛为 heap-backed object handle；后续应继续把
+  AST scalar literal lowering 与 runtime immediate/heap string 模型对齐。
+
+### 本 session 继续：删除旧 `Val` arithmetic operator API
+
+继续收窄 `Val` 的运行时表面积，本次把旧的 `&Val` 运算符实现从 value model 中移除，让算术语义
+只保留在 exec32/runtime 路径和显式 AST literal folding helper 中：
+
+- 删除 `core/src/val/values/ops.rs` 以及 `val::values::ops` module wiring。
+- 删除 `impl Add/Sub/Mul/Div/Rem for &Val`，不再暴露 `&Val + &Val` 这类旧运行时 API。
+- 删除无调用方的测试 helper `Val::test_from` / `TestIntoVal`。
+- `Expr::fold_constants` 改为调用私有 `fold_literal_arith` helper；这是 AST literal folding，不再通过
+  `Val` 的 trait operator 伪装成 runtime value 运算。
+- `BinOp::cmp(&Val, &Val) -> Result<bool>` 改为 `cmp_literals(&Val, &Val) -> Option<bool>`，只表达
+  “能否静态折叠 literal comparison”，不再构造旧 value-op 错误。
+- `val::val_test` 中旧 `&Val` 运算单测改为 source-level exec32 行为测试。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "impl Add for &Val|impl Sub for &Val|impl Mul for &Val|impl Div for &Val|impl Rem for &Val|err_op\\(|op\\.cmp\\(|cmp\\(&self, l: &Val|test_from\\(|TestIntoVal|mod ops;|values/ops" core/src stdlib/src -g '*.rs'`
+  → no old `Val` operator/test helper matches；`core/src/op/mod.rs` 的 `mod ops` 是 `BinOp` module，合法。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core val::val_test -- --nocapture` → 22 passed。
+- `cargo test -p lk-core expr::expr_test -- --nocapture` → 21 passed。
+- `cargo test -p lk-core op::op_test -- --nocapture` → 4 passed。
+- `cargo test -p lk-core --lib` → 503 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+
+当前剩余旧模型面：
+
+- `Val` 仍作为 AST scalar literal / constant folding shell 存在。
+- `Val::LongStr(ArcStr)` 仍未按 `plan.md` 最终形态收敛为 heap-backed object handle；后续应继续把
+  AST scalar literal lowering 与 runtime immediate/heap string 模型对齐。
+
+### 本 session 继续：删除旧 `Val` introspection / ordering / intern helper
+
+继续收窄 `Val`，本次移除旧 scalar shell 上不应继续暴露给 runtime 的辅助 API：
+
+- 删除无调用方的 `Val::str_intern`、`Val::intern_str`、`Val::string_key_arcstr`。
+- `Val::concat_strings` 仍仅用于 AST literal folding，注释已改为 literal folding 语义，不再标为 hot path。
+- 删除 `Val::type_name()`；compiler32 错误文案改用内部 `ast_literal_kind(&Val)` helper。
+- 删除 `impl PartialOrd for Val`；`BinOp::cmp_literals` 现在使用私有 `cmp_literal_ordering`，比较语义不再作为
+  `Val` 的公共 value-level ordering 暴露。
+- `val::val_test` 中旧 `Val` ordering 测试改为 source-level exec32 比较行为测试。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "impl PartialOrd for Val|partial_cmp\\(&.*Val|Val::type_name|pub fn type_name\\(&self\\)|str_intern\\(|intern_str\\(|string_key_arcstr\\(" core/src stdlib/src cli/src -g '*.rs'`
+  → no old `Val` helper matches；剩余 `RuntimeVal` / `HeapValue` 的 `type_name()` 合法。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core val::val_test -- --nocapture` → 18 passed。
+- `cargo test -p lk-core expr::expr_test -- --nocapture` → 21 passed。
+- `cargo test -p lk-core op::op_test -- --nocapture` → 4 passed。
+- `cargo test -p lk-core vm::compiler32::tests -- --nocapture` → 62 passed。
+- `cargo test -p lk-core --lib` → 499 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+
+当前剩余旧模型面：
+
+- `Val` 仍作为 AST scalar literal / constant folding shell 存在，且仍包含 `LongStr(ArcStr)`。
+- CLI coverage、LKB、LLVM/native AOT 仍处于 Instr32 migration disabled 状态；最终闭环仍需恢复到新 IR。
+
+### 本 session 继续：删除 `Val::access` 与剩余旧 Val pattern API
+
+继续按“legacy 全部移除，迁移到新架构”收窄 `Val` 的职责，本次删除旧 `Val` 上的字段/索引读取入口和
+无调用方的宽泛转换：
+
+- 删除 `Val::access` / `access_impl` 后的残留测试和 helper；`Val` 不再提供 list/map/string access API。
+- 删除 `Val::ascii_char_value`，字符串索引读取现在只走 exec32/runtime access 路径。
+- 删除 `impl<T> From<Box<T>> for Val`、`impl<T> From<Option<T>> for Val`、`impl From<()> for Val`，
+  避免任意 Rust 容器继续隐式折回旧 `Val` 壳。
+- `Expr::fold_constants` 不再尝试通过 `Val::access` 折叠常量 access；source-level 访问行为仍由
+  compiler32/exec32 测试覆盖。
+- 删除无调用方的 `Pattern::matches(&Val, Option<&VmContext>)` 和内部 `matches_impl`；真实 pattern
+  语义继续由 compiler32 pattern lowering 与 exec32 执行路径承担。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "ascii_char_value|Val::access\\(|\\.access\\(&|pub\\(crate\\) fn access|fn access_impl|From<Box|From<Option|From<\\(\\)>|Val::from\\(None|Val::from\\(Some|Val::from\\(Box" core/src stdlib/src -g '*.rs'`
+  → no matches。
+- `rg -n "legacy_|LegacyValContext|legacy|eval_with_ctx|pub fn eval\\(|fn eval\\(|Expr::eval|runtime_bridge|Val::List|Val::Map|copy_container_value|ValLiteral|serde_impl|val_bindings|collections.rs|values/call|map_key_cache" core/src stdlib/src -g '*.rs'`
+  → no legacy bridge/API matches；剩余 `legacy` 文案只属于 LLVM/AOT disabled migration message。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core val::val_test -- --nocapture` → 31 passed。
+- `cargo test -p lk-core expr::expr_test -- --nocapture` → 21 passed。
+- `cargo test -p lk-core --lib` → 512 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行，未超过 1500 行限制。
+
+当前剩余旧模型面：
+
+- `Val` 仍作为 AST scalar literal / constant folding / value-level scalar operator tests 的壳存在。
+- `Val::LongStr(ArcStr)` 仍未按 `plan.md` 最终形态收敛为 heap-backed object handle；后续应继续把
+  AST scalar literal lowering 与 runtime immediate/heap string 模型对齐。
+
+### 本 session 继续：删除 `Val::From<T>` 并收紧 named-call map materialization
+
+继续按“先把 legacy 全部移除，迁移到新架构”收口，本次切掉两个仍会把新旧 value 边界混在一起的面：
+
+- 删除 `core/src/val/values/convert.rs` 和 `mod convert;`。
+- 删除 `impl From<String> for Val`、`impl From<&str> for Val`、`impl From<i64> for Val`、
+  `impl From<f64> for Val`、`impl From<bool> for Val`。
+- `core/src/ast/ast_test.rs` 中剩余 `.into()` literal 全部改为显式 `Val::Int` / `Val::Bool` /
+  `Val::Float`，避免测试继续依赖旧隐式转换。
+- `__lk_call_method_named` 不再把 named args map 立即展开成 `Vec<(Arc<str>, RuntimeVal)>`。
+  现在只校验并传递 `HeapRef`，runtime callable/property closure 分支通过
+  `write_named_args32_to_frame_from_typed_map` 从 `TypedMap` 直接写入 callee frame。
+- 新增 `call_runtime_value32_runtime_named_map`，native 和跨 `Runtime32` fallback 仍按需 materialize，
+  但常见 runtime closure/property call 不再走 named map -> Vec -> frame 的旧中转。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "Expr::Val\\([^\\n]*\\.into\\(\\)|let [^:]+: Val = .*\\.into\\(\\)|Val::from\\(|impl From<.*> for Val|mod convert;|values/convert" core/src stdlib/src cli/src -g '*.rs'`
+  → no matches。
+- `rg -n "runtime_named_args\\(" core/src stdlib/src cli/src -g '*.rs'`
+  → no matches。
+- 剩余 `Vec<(Arc<str>, RuntimeVal)>` 只在 `TypedMap::string_entries_*` helper、`CallNamed`
+  bytecode/native fallback、以及 `materialize_named_arg_map` fallback 中存在；`__lk_call_method_named`
+  的 runtime closure/property path 已改为 direct frame writer。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core ast::ast_test -- --nocapture` → 32 passed。
+- `cargo test -p lk-core val::val_test -- --nocapture` → 18 passed。
+- `cargo test -p lk-core vm::compiler32::tests -- --nocapture` → 62 passed。
+- `cargo test -p lk-core vm::exec32::exec32_tests::native -- --nocapture` → 12 passed。
+- `cargo test -p lk-core --lib` → 499 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行。
+
+当前剩余旧模型面：
+
+- `Val` 仍作为 AST scalar literal / constant folding 壳存在，且仍包含 `LongStr(ArcStr)`。
+- `CallNamed` bytecode 和 native / cross-runtime fallback 仍会 materialize
+  `Vec<(Arc<str>, RuntimeVal)>`；后续可以继续把 `CallNamed` 的 closure 分支也改成 stack/direct
+  named source。
+- CLI coverage、LKB、LLVM/native AOT 仍处于 Instr32 migration disabled 状态；最终闭环仍需恢复到新 IR。
+
+### 本 session 继续：CallNamed closure 分支改为 stack direct named writer
+
+继续清掉 call 参数 materialization，本次把 `Opcode32::CallNamed` 的同 runtime closure 分支从
+`read_named_call_args() -> Vec<(Arc<str>, RuntimeVal)> -> write_named_args32_to_frame()` 改为直接读
+caller stack window 并写入 callee frame：
+
+- 新增 `write_named_args32_to_frame_from_stack`，从 caller stack 的 name/value pair 读取命名参数，
+  用 `&str` 对比 `Function32.param_names`，不为 closure 分支构造 named `Vec`。
+- `call_closure_named_stack_args` 现在接收 `named_count`，在共享 stack 上 split caller/callee
+  window 后调用 direct writer。
+- `read_named_call_args` 仍保留给 `RuntimeNative32` 和跨 `Runtime32` fallback；closure 分支不再调用它。
+- 移除 `write_named_args32_to_frame_from_typed_map` 上过期的 `#[allow(dead_code)]`。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `rg -n "read_named_call_args\\(|call_closure_named_stack_args\\(|write_named_args32_to_frame_from_stack|Vec<\\(Arc<str>, RuntimeVal\\)>|runtime_named_args\\(" core/src/vm core/src/val stdlib/src -g '*.rs'`
+  → closure 分支只命中 `call_closure_named_stack_args(..., named_count, ...)` 和
+  `write_named_args32_to_frame_from_stack`；`read_named_call_args` 只剩 native / cross-runtime fallback。
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-stdlib` → passed。
+- `cargo test -p lk-core vm::compiler32::tests::compiler32_lowers_named_args_to_normal_call_window -- --nocapture`
+  → 1 passed。
+- `cargo test -p lk-core vm::compiler32::tests -- --nocapture` → 62 passed。
+- `cargo test -p lk-core vm::exec32::exec32_tests::native -- --nocapture` → 12 passed。
+- `cargo test -p lk-core stmt::function_test -- --nocapture` → 28 passed。
+- `cargo test -p lk-core --lib` → 499 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行；
+  `core/src/vm/exec32/named_call.rs` 361 行，未接近 1500 行限制。
+
+当前剩余旧模型面：
+
+- `Val` 仍作为 AST scalar literal / constant folding 壳存在，且仍包含 `LongStr(ArcStr)`。
+- `RuntimeNative32` 和跨 `Runtime32` named fallback 仍会 materialize
+  `Vec<(Arc<str>, RuntimeVal)>`；这是跨 native/runtime ABI 的剩余边界，不再是同 runtime closure 热路径。
+- CLI coverage、LKB、LLVM/native AOT 仍处于 Instr32 migration disabled 状态；最终闭环仍需恢复到新 IR。
+
+### 本 session 继续：恢复 CLI coverage 到统一 Instr32 编译/执行路径
+
+继续按“legacy 全部移除，迁移到新架构”收口 CLI 工具链，本次把 coverage 从迁移期 disabled
+状态恢复到新 `Instr32` module：
+
+- `cli/src/coverage.rs` 不再 hard bail；现在会解析 source、构建 stdlib/package resolver context，
+  输出 `Module32` 的静态 coverage（functions/natives/globals/instructions/registers/consts/opcodes）。
+- `--runtime` 会执行 `Program::execute32_with_ctx`，复用执行结果里的 `Program32Result.module` 输出静态
+  coverage，并打印 `VmRuntimeMetrics`。
+- `core/src/vm/exec32/program.rs` 新增 `compile_program32_module_with_ctx`，把 imports replay、
+  `VmContext::runtime_globals_iter()` 和 `Compiler32::compile_module_with_natives_and_globals` 收成唯一 helper。
+- `execute_program32_raw_with_ctx` 复用该 helper，coverage 不再在 CLI 里复制一套 external globals 编译逻辑。
+- 修复 `coverage --runtime bench/workloads_business_algorithms.lk` 之前失败的
+  `Compiler32 undefined callable __lk_call_method`：root cause 是 coverage 静态编译路径没有对齐真实
+  `execute_program32_raw_with_ctx` 的 imports + runtime globals 编译流程。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-cli` → passed。
+- `cargo run -p lk-cli -- coverage examples/fib.lk` → 输出 2 functions / 41 instructions / 36 globals。
+- `cargo run -p lk-cli -- coverage --runtime examples/fib.lk` → 输出 coverage + runtime metrics，
+  `opcode_steps=4`、`register_writes=2`。
+- `cargo run -p lk-cli -- coverage --runtime bench/workloads_business_algorithms.lk` → 15 个 workload 全部完成；
+  输出 9 functions / 2590 instructions / 52 globals，runtime metrics 中
+  `opcode_steps=198001101`、`register_writes=162931811`。
+- `cargo test -p lk-cli` → 25 passed。
+- `cargo test -p lk-core --lib` → 499 passed。
+- `cargo test -p lk-stdlib --lib` → 95 passed。
+- `rg -n "legacy|Legacy|LEGACY" core/src stdlib/src cli/src -g '*.rs'`
+  → no source matches。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行；`cli/src/coverage.rs` 124 行；
+  `core/src/vm/exec32.rs` 789 行；`core/src/vm/exec32/program.rs` 75 行。
+
+当前剩余旧模型面：
+
+- LKB compile/run 仍 disabled；下一步应以新的 `Module32` artifact 格式替代 LKB，而不是恢复旧 bytecode。
+- LLVM/native AOT 仍 disabled；需要在 `Instr32` module/runtime ABI 上重建，不回接旧 `Val`/old bytecode。
+- `RuntimeNative32` 和跨 `Runtime32` named fallback 仍会 materialize
+  `Vec<(Arc<str>, RuntimeVal)>`；同 runtime closure hot path 已经 direct frame writer。
+
+### 本 session 继续：`lk compile` 迁到可执行 `.lkm` Instr32 module artifact
+
+继续推进 `plan.md` 第 12 步，本次把 CLI compile 从 LKB disabled stub 切到新 `Module32` 输出：
+
+- `lk compile [FILE]` 现在解析 source、构建与运行/coverage 共享的 stdlib/package resolver context，
+  调用 `compile_program32_module_with_ctx`，写出 `FILE.lkm`。
+- 新增 `Module32Artifact` JSON artifact，编码 imports、globals、functions、typed const pool 和
+  raw `Instr32` words；不编码 inline native entries。
+- `lk FILE.lkm` 现在会 decode artifact、replay imports、按 module globals 从当前 `VmContext`
+  seed runtime globals，并执行 `Module32`。
+- `.lkm` 不再是不可执行文本 listing；它是当前 LKB 替代物的可运行 module artifact。
+- CLI source 执行不再读取 raw bytes 后按 `LKB` magic auto-detect；`.lkb` 输入现在直接报
+  `LKB execution has been removed`。
+- `cli/src/coverage.rs` 改为复用 `build_vm_context`，coverage、compile、run 三条 CLI 路径共用同一
+  stdlib/package resolver 初始化。
+- `cli/src/paths.rs` 的 `lkb` / `bytecode` target 文案改为指向 `lk compile FILE` 的 `.lkm`
+  输出。
+- `README.md` 和 `website/src` 中仍提到 `.lkb` / bytecode 的用户文档已更新为 `Instr32` /
+  `.lkm`。
+- `website/src/spec/LANG.md` 和 `LANG_zh.md` 已同步 CLI compile/run `.lkm` 说明。
+- 没有修改或拆分 `core/src/ast/parser.rs`。
+
+当前已确认：
+
+- `cargo fmt --all -- --check` → passed。
+- `cargo check -p lk-core -p lk-cli` → passed。
+- `cargo test -p lk-core vm::artifact32 -- --nocapture` → 1 passed。
+- `cargo test -p lk-cli --test lkb_cli_test -- --nocapture` → 9 passed。
+- `cargo test -p lk-cli` → 25 passed。
+- `cargo run -p lk-cli -- compile examples/fib.lk` → 输出 `examples/fib.lkm`；临时生成物已删除。
+- CLI tests 覆盖 `.lkm` 运行：普通 source、file import、package path dependency compile 后均能
+  通过 `lk FILE.lkm` 执行。
+- `cd website && bun run build` → built in 892ms。
+- `rg -n "compile output is disabled|LKB execution is disabled|disabled LKB compile|LKB compile should be disabled|coverage is disabled|legacy|Legacy|LEGACY" cli/src cli/tests -g '*.rs'`
+  → no matches。
+- `rg -n "LKB|lkb|bytecode|字节码|\\.lkb" README.md website/src docs -g '*.md' -g '*.ts' -g '*.svelte'`
+  → no matches。
+- 单文件行数检查：`core/src/ast/parser.rs` 仍为 1499 行；`cli/src/main.rs` 391 行；
+  `cli/src/coverage.rs` 104 行；`core/src/vm/artifact32.rs` 347 行。
+
+当前剩余旧模型面：
+
+- LLVM IR / native executable output 仍 disabled，需要后续基于 `Instr32` module/runtime ABI 重建。
+- `.lkm` artifact 目前是 JSON，不是紧凑二进制格式；后续如需发布级 artifact，应继续补版本化
+  binary encode/decode 和兼容性策略。
+- `RuntimeNative32` 和跨 `Runtime32` named fallback 仍会 materialize
+  `Vec<(Arc<str>, RuntimeVal)>`。

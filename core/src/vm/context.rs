@@ -6,7 +6,7 @@ use crate::module::runtime_export_from_runtime_native;
 use crate::stmt::ModuleResolver;
 use crate::typ::TypeChecker;
 use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, Type, TypedList, TypedMap, Val};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, Type, TypedList, TypedMap};
 use crate::vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32, collect_runtime_export32};
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -18,18 +18,12 @@ mod core_methods;
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use core_methods::{core_call_method_builtin32, core_call_method_named_builtin32};
 
-mod val_bindings;
-use val_bindings::ValBindingContext;
-
 /// VM runtime context.
 ///
-/// New VM-visible globals live in `runtime_globals`. The `Val` binding table is
-/// retained only for expression-level compatibility and LLVM AOT replay while
-/// those paths move onto runtime values.
+/// VM-visible globals live in `runtime_globals`; top-level locals and call
+/// frames live in `RuntimeModuleState32.stack`.
 #[derive(Debug, Clone)]
 pub struct VmContext {
-    // Val symbol table; do not add new VM runtime behavior here.
-    val_bindings: ValBindingContext,
     runtime_globals: FastHashMap<Arc<str>, RuntimeExport32>,
     // Cache generation for invalidation
     generation: u64,
@@ -74,7 +68,6 @@ impl VmContext {
     /// trait-registration fallback paths when imports are replayed natively.
     pub fn new_without_core_vm_builtins() -> Self {
         Self {
-            val_bindings: ValBindingContext::new(),
             runtime_globals: fast_hash_map_new(),
             generation: 0,
             resolver: Arc::new(ModuleResolver::default()),
@@ -105,39 +98,6 @@ impl VmContext {
     #[inline]
     pub fn restore_generation(&mut self, generation: u64) {
         self.generation = generation;
-    }
-
-    /// Val lookup path for expression eval/AOT compatibility.
-    #[inline]
-    pub fn get_val_binding(&self, name: &str) -> Option<&Val> {
-        self.val_bindings.get(name)
-    }
-
-    /// Val define path for expression eval/AOT compatibility.
-    pub fn set_val_binding<S: Into<String>>(&mut self, name: S, value: Val) -> Option<Val> {
-        let name_str = name.into();
-        self.runtime_globals.remove(name_str.as_str());
-        let prev = self.val_bindings.set(name_str, value);
-        self.bump_generation();
-        prev
-    }
-
-    /// Val assign path for expression eval/AOT compatibility.
-    pub fn assign_val_binding(&mut self, name: &str, value: Val) -> anyhow::Result<()> {
-        self.runtime_globals.remove(name);
-        self.val_bindings.assign(name, value)?;
-        self.bump_generation();
-        Ok(())
-    }
-
-    /// Val removal path for expression eval/AOT compatibility.
-    pub fn remove_val_binding(&mut self, name: &str) -> Option<Val> {
-        self.runtime_globals.remove(name);
-        let prev = self.val_bindings.remove(name);
-        if prev.is_some() {
-            self.bump_generation();
-        }
-        prev
     }
 
     /// 构建函数，允许自定义组件。
@@ -176,8 +136,6 @@ impl VmContext {
 
     pub fn define_runtime_global(&mut self, name: impl Into<Arc<str>>, value: RuntimeExport32) {
         let name = name.into();
-        let name_str = name.as_ref();
-        self.val_bindings.remove_global(name_str);
         self.runtime_globals.insert(name, value);
         self.bump_generation();
     }
@@ -272,18 +230,6 @@ impl VmContext {
         &self.structs
     }
 
-    /// Enter a Val lexical scope.
-    pub fn push_scope(&mut self) {
-        self.val_bindings.push_scope();
-    }
-
-    /// Exit a Val lexical scope.
-    pub fn pop_scope(&mut self) {
-        if self.val_bindings.pop_scope() {
-            self.bump_generation();
-        }
-    }
-
     /// 获取类型检查器的可变引用
     pub fn get_type_checker_mut(&mut self) -> Option<&mut TypeChecker> {
         self.type_checker.as_mut()
@@ -297,20 +243,6 @@ impl VmContext {
     /// 创建当前上下文的快照
     pub fn snapshot(&self) -> Self {
         self.clone()
-    }
-
-    /// Check whether Val lexical scopes are active.
-    pub fn is_local_name(&self, _name: &str) -> bool {
-        self.val_bindings.has_local_scope()
-    }
-
-    /// Bind a parameter into the current lexical scope.
-    ///
-    /// The old context-owned slot cache has been removed; executable frame
-    /// windows now live in `RuntimeModuleState32.stack`.
-    pub fn bind_param_at_slot(&mut self, name: String, _slot: u16, value: Val) {
-        self.val_bindings.bind_param_at_slot(name, value);
-        self.bump_generation();
     }
 
     #[cfg(not(feature = "aot-minimal-runtime"))]
@@ -779,29 +711,6 @@ fn core_bit_not_builtin32(
 mod tests {
     use super::*;
     use crate::vm::{Module32, RuntimeModuleState32};
-
-    #[test]
-    fn test_bind_param_at_slot_binds_only_locals() {
-        let mut ctx = VmContext::new();
-        ctx.bind_param_at_slot("p".to_string(), 1, Val::Int(42));
-        assert_eq!(ctx.get_val_binding("p"), Some(&Val::Int(42)));
-    }
-
-    #[test]
-    fn test_set_assign_remove_updates_locals_without_context_slots() {
-        let mut ctx = VmContext::new();
-        ctx.push_scope();
-
-        ctx.set_val_binding("x".to_string(), Val::Int(7));
-        assert_eq!(ctx.get_val_binding("x"), Some(&Val::Int(7)));
-
-        ctx.assign_val_binding("x", Val::Int(9)).expect("assign x");
-        assert_eq!(ctx.get_val_binding("x"), Some(&Val::Int(9)));
-
-        let prev = ctx.remove_val_binding("x");
-        assert_eq!(prev, Some(Val::Int(9)));
-        assert_eq!(ctx.get_val_binding("x"), None);
-    }
 
     #[test]
     fn collect_runtime_globals_garbage_keeps_export_values_and_globals() {

@@ -5,7 +5,7 @@ mod tests {
         stmt::{Program, Stmt, stmt_parser::StmtParser},
         token::Tokenizer,
         typ::TypeChecker,
-        val::{HeapStore, HeapValue, RuntimeVal, TypedList, Val},
+        val::{HeapStore, HeapValue, RuntimeVal, TypedList},
         vm::{VmContext, execute_program32_raw_with_ctx},
     };
 
@@ -190,29 +190,6 @@ mod tests {
         let program = parse_program("2 + 3;");
         let result = program.execute32().expect("Failed to execute");
         expect_result_nil(&result);
-    }
-
-    #[test]
-    fn test_environment() {
-        let mut env = VmContext::new();
-
-        // Test define and get
-        env.set_val_binding("x".to_string(), Val::Int(42));
-        assert_eq!(env.get_val_binding("x"), Some(&Val::Int(42)));
-
-        // Test assign
-        env.assign_val_binding("x", Val::Int(100)).expect("Failed to assign");
-        assert_eq!(env.get_val_binding("x"), Some(&Val::Int(100)));
-
-        // Test scoping
-        env.push_scope();
-        env.set_val_binding("y".to_string(), Val::Int(20));
-        assert_eq!(env.get_val_binding("y"), Some(&Val::Int(20)));
-        assert_eq!(env.get_val_binding("x"), Some(&Val::Int(100))); // Still accessible
-
-        env.pop_scope();
-        assert_eq!(env.get_val_binding("y"), None); // No longer accessible
-        assert_eq!(env.get_val_binding("x"), Some(&Val::Int(100))); // Still accessible
     }
 
     #[test]

@@ -454,9 +454,9 @@ mod tests {
             })
             .expect("outer runtime function exported as module global");
 
-        // Introduce a global binding with the same name after capturing; lexical semantics
+        // Introduce a runtime global with the same name after capturing; lexical semantics
         // should continue to use the captured value (2) rather than the new global (100).
-        env.set_val_binding("offset".to_string(), Val::Int(100));
+        env.define_runtime_value("offset", RuntimeVal::Int(100), HeapStore::new());
 
         let captured_result = call_runtime_callable32_raw(&outer, &[], &mut env)?;
         let captured = crate::vm::runtime_value_to_callable32(

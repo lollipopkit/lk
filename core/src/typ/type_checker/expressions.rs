@@ -1362,8 +1362,7 @@ impl TypeChecker {
             Val::Float(_) => Ok(Type::Float),
             Val::ShortStr(_) => Ok(Type::String),
             value if value.as_str().is_some() => Ok(Type::String),
-            value if value.is_callable() => Ok(Type::Any),
-            Val::Obj(_) => Ok(Type::Any),
+            Val::LongStr(_) => Ok(Type::String),
         }
     }
 
@@ -1376,8 +1375,7 @@ impl TypeChecker {
             Val::Float(_) => Ok(Type::Float),
             Val::ShortStr(_) => Ok(Type::String),
             value if value.as_str().is_some() => Ok(Type::String),
-            value if value.is_callable() => Ok(Type::Any),
-            Val::Obj(_) => Ok(Type::Any),
+            Val::LongStr(_) => Ok(Type::String),
         }
     }
 }

@@ -24,7 +24,7 @@ type RootTranslation = {
 		 */
 		title: string
 		/**
-		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​a​ ​b​y​t​e​c​o​d​e​ ​V​M​,​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​a​c​k​a​g​e​ ​i​m​p​o​r​t​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
+		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​a​n​ ​I​n​s​t​r​3​2​ ​V​M​,​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​a​c​k​a​g​e​ ​i​m​p​o​r​t​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
 		 */
 		description: string
 	}
@@ -52,7 +52,7 @@ type RootTranslation = {
 		 */
 		title: string
 		/**
-		 * L​K​ ​g​i​v​e​s​ ​y​o​u​ ​c​l​e​a​r​ ​s​y​n​t​a​x​,​ ​d​e​t​e​r​m​i​n​i​s​t​i​c​ ​b​y​t​e​c​o​d​e​ ​e​x​e​c​u​t​i​o​n​,​ ​s​t​r​u​c​t​u​r​e​d​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​a​n​d​ ​a​ ​p​r​a​c​t​i​c​a​l​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​ ​f​o​r​ ​e​m​b​e​d​d​i​n​g​ ​l​o​g​i​c​ ​i​n​ ​a​p​p​l​i​c​a​t​i​o​n​s​,​ ​w​r​i​t​i​n​g​ ​a​u​t​o​m​a​t​i​o​n​ ​s​c​r​i​p​t​s​,​ ​a​n​d​ ​m​o​v​i​n​g​ ​c​o​m​p​l​e​x​ ​d​e​c​i​s​i​o​n​s​ ​o​u​t​ ​o​f​ ​h​o​s​t​ ​c​o​d​e​.
+		 * L​K​ ​g​i​v​e​s​ ​y​o​u​ ​c​l​e​a​r​ ​s​y​n​t​a​x​,​ ​d​e​t​e​r​m​i​n​i​s​t​i​c​ ​I​n​s​t​r​3​2​ ​e​x​e​c​u​t​i​o​n​,​ ​s​t​r​u​c​t​u​r​e​d​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​a​n​d​ ​a​ ​p​r​a​c​t​i​c​a​l​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​ ​f​o​r​ ​e​m​b​e​d​d​i​n​g​ ​l​o​g​i​c​ ​i​n​ ​a​p​p​l​i​c​a​t​i​o​n​s​,​ ​w​r​i​t​i​n​g​ ​a​u​t​o​m​a​t​i​o​n​ ​s​c​r​i​p​t​s​,​ ​a​n​d​ ​m​o​v​i​n​g​ ​c​o​m​p​l​e​x​ ​d​e​c​i​s​i​o​n​s​ ​o​u​t​ ​o​f​ ​h​o​s​t​ ​c​o​d​e​.
 		 */
 		subtitle: string
 		/**
@@ -130,11 +130,11 @@ type RootTranslation = {
 		 */
 		kicker: string
 		/**
-		 * F​r​o​m​ ​s​c​r​i​p​t​ ​t​o​ ​b​y​t​e​c​o​d​e​,​ ​d​i​a​g​n​o​s​t​i​c​s​,​ ​L​L​V​M​ ​I​R​,​ ​o​r​ ​e​x​e​c​u​t​a​b​l​e​.
+		 * F​r​o​m​ ​s​c​r​i​p​t​ ​t​o​ ​I​n​s​t​r​3​2​ ​m​o​d​u​l​e​s​,​ ​d​i​a​g​n​o​s​t​i​c​s​,​ ​L​L​V​M​ ​I​R​,​ ​o​r​ ​e​x​e​c​u​t​a​b​l​e​.
 		 */
 		title: string
 		/**
-		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​c​o​m​p​i​l​e​ ​t​o​ ​`​.​l​k​b​`​,​ ​a​n​d​ ​r​o​u​t​e​ ​d​e​e​p​e​r​ ​c​o​m​p​i​l​a​t​i​o​n​ ​t​h​r​o​u​g​h​ ​L​L​V​M​-​b​a​c​k​e​d​ ​p​a​t​h​s​ ​w​h​e​n​ ​t​h​o​s​e​ ​t​o​o​l​s​ ​a​r​e​ ​a​v​a​i​l​a​b​l​e​.
+		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​c​o​m​p​i​l​e​ ​t​o​ ​e​x​e​c​u​t​a​b​l​e​ ​`​.​l​k​m​`​ ​I​n​s​t​r​3​2​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​r​o​u​t​e​ ​d​e​e​p​e​r​ ​c​o​m​p​i​l​a​t​i​o​n​ ​t​h​r​o​u​g​h​ ​L​L​V​M​-​b​a​c​k​e​d​ ​p​a​t​h​s​ ​w​h​e​n​ ​t​h​o​s​e​ ​t​o​o​l​s​ ​a​r​e​ ​a​v​a​i​l​a​b​l​e​.
 		 */
 		subtitle: string
 		rows: {
@@ -243,7 +243,7 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK is a Rust-like scripting language with a bytecode VM, rich pattern matching, package imports, and a batteries-included standard library.
+		 * LK is a Rust-like scripting language with an Instr32 VM, rich pattern matching, package imports, and a batteries-included standard library.
 		 */
 		description: () => LocalizedString
 	}
@@ -271,7 +271,7 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK gives you clear syntax, deterministic bytecode execution, structured pattern matching, and a practical standard library for embedding logic in applications, writing automation scripts, and moving complex decisions out of host code.
+		 * LK gives you clear syntax, deterministic Instr32 execution, structured pattern matching, and a practical standard library for embedding logic in applications, writing automation scripts, and moving complex decisions out of host code.
 		 */
 		subtitle: () => LocalizedString
 		/**
@@ -349,11 +349,11 @@ export type TranslationFunctions = {
 		 */
 		kicker: () => LocalizedString
 		/**
-		 * From script to bytecode, diagnostics, LLVM IR, or executable.
+		 * From script to Instr32 modules, diagnostics, LLVM IR, or executable.
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK can run a REPL, execute `.lk` files, type-check without executing, compile to `.lkb`, and route deeper compilation through LLVM-backed paths when those tools are available.
+		 * LK can run a REPL, execute `.lk` files, type-check without executing, compile to executable `.lkm` Instr32 module artifacts, and route deeper compilation through LLVM-backed paths when those tools are available.
 		 */
 		subtitle: () => LocalizedString
 		rows: {

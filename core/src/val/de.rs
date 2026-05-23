@@ -1,64 +1,6 @@
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap, Val};
-use serde::de::{Deserialize, Deserializer, Error as DeError, Visitor};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap};
 use std::collections::BTreeMap;
-use std::fmt;
 use std::sync::Arc;
-
-struct ValLiteralVisitor;
-
-impl<'de> Visitor<'de> for ValLiteralVisitor {
-    type Value = Val;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("an LK scalar Val literal")
-    }
-
-    fn visit_bool<E>(self, value: bool) -> Result<Val, E> {
-        Ok(Val::Bool(value))
-    }
-
-    fn visit_i64<E>(self, value: i64) -> Result<Val, E> {
-        Ok(Val::Int(value))
-    }
-
-    fn visit_u64<E>(self, value: u64) -> Result<Val, E>
-    where
-        E: DeError,
-    {
-        i64::try_from(value)
-            .map(Val::Int)
-            .map_err(|_| E::custom("u64 literal exceeds LK Int range"))
-    }
-
-    fn visit_f64<E>(self, value: f64) -> Result<Val, E> {
-        Ok(Val::Float(value))
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Val, E> {
-        Ok(Val::from_str(value))
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Val, E> {
-        Ok(Val::from_str(&value))
-    }
-
-    fn visit_none<E>(self) -> Result<Val, E> {
-        Ok(Val::Nil)
-    }
-
-    fn visit_unit<E>(self) -> Result<Val, E> {
-        Ok(Val::Nil)
-    }
-}
-
-impl<'de> Deserialize<'de> for Val {
-    fn deserialize<D>(deserializer: D) -> Result<Val, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(ValLiteralVisitor)
-    }
-}
 
 #[derive(Debug)]
 pub struct RuntimeDecodedValue {

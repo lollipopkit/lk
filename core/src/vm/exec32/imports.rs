@@ -106,7 +106,6 @@ fn import_heap_value(
         HeapValue::Callable(CallableValue::Runtime32(function)) => {
             HeapValue::Callable(CallableValue::Runtime32(function))
         }
-        HeapValue::Callable(CallableValue::Aot(value)) => HeapValue::Callable(CallableValue::Aot(value)),
         HeapValue::Task(value) => HeapValue::Task(value),
         HeapValue::Channel(value) => HeapValue::Channel(value),
         HeapValue::Stream(value) => HeapValue::Stream(value),

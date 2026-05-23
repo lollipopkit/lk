@@ -25,9 +25,9 @@ impl Clone for Val {
                 record_val_clone(false);
                 Val::Nil
             }
-            Val::Obj(value) => {
+            Val::LongStr(value) => {
                 record_val_clone(true);
-                Val::Obj(value.clone())
+                Val::LongStr(value.clone())
             }
         }
     }

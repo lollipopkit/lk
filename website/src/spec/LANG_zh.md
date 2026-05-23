@@ -363,7 +363,8 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ## CLI 使用说明
 - 运行 REPL：`lk`
 - 执行文件（语句）：`lk FILE`
-- Instr32 模块格式迁移期间暂时禁用编译输出；当前 CLI 支持源码执行与 REPL。
+- 编译为可执行 Instr32 模块产物：`lk compile [FILE]` -> `FILE.lkm`
+- 执行 Instr32 模块产物：`lk FILE.lkm`
 - 只允许相对且经过清洗的路径。
 - CLI 只在结果非 `nil` 时打印。
 

@@ -6,12 +6,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use super::values::{ChannelValue, ShortStr, StreamCursorValue, StreamValue, TaskValue};
 use anyhow::Result;
-use arcstr::ArcStr;
-
-use crate::util::fast_map::FastHashMap;
-
-use super::values::{AotFunction, ChannelValue, ShortStr, StreamCursorValue, StreamValue, TaskValue, Val};
 
 mod heap;
 
@@ -119,7 +115,6 @@ pub enum CallableValue {
         function: crate::vm::NativeFunction32,
     },
     Runtime32(Arc<crate::vm::RuntimeCallable32>),
-    Aot(AotFunction),
 }
 
 #[derive(Clone, Debug)]
@@ -144,16 +139,6 @@ pub enum TypedList {
 }
 
 impl TypedList {
-    pub fn to_val_values(&self) -> Vec<Val> {
-        match self {
-            Self::Mixed(values) => values.iter().map(Val::object_field_to_val).collect(),
-            Self::Int(values) => values.iter().copied().map(Val::Int).collect(),
-            Self::Float(values) => values.iter().copied().map(Val::Float).collect(),
-            Self::Bool(values) => values.iter().copied().map(Val::Bool).collect(),
-            Self::String(values) => values.iter().map(|value| Val::from(value.as_ref())).collect(),
-        }
-    }
-
     pub fn from_runtime_values(values: Vec<RuntimeVal>, heap: &HeapStore) -> Self {
         if values.is_empty() {
             return Self::Mixed(values);
@@ -296,6 +281,19 @@ impl TypedList {
         })
     }
 
+    fn runtime_values_no_heap(&self) -> Option<Vec<RuntimeVal>> {
+        Some(match self {
+            Self::Mixed(values) => values.clone(),
+            Self::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            Self::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            Self::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            Self::String(values) => values
+                .iter()
+                .map(|value| ShortStr::new(value).map(RuntimeVal::ShortStr))
+                .collect::<Option<Vec<_>>>()?,
+        })
+    }
+
     pub fn slice_from(&self, start: usize) -> Self {
         match self {
             Self::Mixed(values) => Self::Mixed(values.get(start..).unwrap_or(&[]).to_vec()),
@@ -315,7 +313,10 @@ impl PartialEq for TypedList {
             (Self::Float(left), Self::Float(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::String(left), Self::String(right)) => left == right,
-            _ => self.to_val_values() == other.to_val_values(),
+            _ => match (self.runtime_values_no_heap(), other.runtime_values_no_heap()) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            },
         }
     }
 }
@@ -330,17 +331,6 @@ pub enum TypedMap {
 }
 
 impl TypedMap {
-    pub fn to_val_entries(&self) -> FastHashMap<ArcStr, Val> {
-        let mut out = FastHashMap::default();
-        for (key, value) in self.entries() {
-            let Some(key) = key.as_str() else {
-                continue;
-            };
-            out.insert(ArcStr::from(key), Val::object_field_to_val(&value));
-        }
-        out
-    }
-
     pub fn from_runtime_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> Self {
         if entries.is_empty() {
             return Self::Mixed(entries);
@@ -627,7 +617,7 @@ impl PartialEq for TypedMap {
             (Self::StringInt(left), Self::StringInt(right)) => left == right,
             (Self::StringFloat(left), Self::StringFloat(right)) => left == right,
             (Self::StringBool(left), Self::StringBool(right)) => left == right,
-            _ => self.to_val_entries() == other.to_val_entries(),
+            _ => self.entries() == other.entries(),
         }
     }
 }

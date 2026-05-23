@@ -4,7 +4,7 @@ use crate::{expr::Pattern, stmt::Stmt, val::Val};
 
 use super::{
     Compiler32, Instr32, Opcode32,
-    support::{checked_u8, pattern_kind},
+    support::{ast_literal_kind, checked_u8, pattern_kind},
 };
 
 impl Compiler32 {
@@ -363,7 +363,7 @@ impl Compiler32 {
             value if value.as_str().is_some() => self.lower_val(value),
             other => bail!(
                 "Compiler32 cannot lower pattern literal with AST value kind {}",
-                other.type_name()
+                ast_literal_kind(other)
             ),
         }
     }

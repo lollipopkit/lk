@@ -1,5 +1,4 @@
 use super::*;
-use crate::val::Val;
 use once_cell::sync::Lazy;
 use std::{ffi::CString, sync::Mutex};
 
@@ -12,8 +11,11 @@ fn reset_runtime_state() {
     }
 }
 
-fn decode_for_tests(value: i64) -> Val {
-    with_state(|state| state.decode_value(value))
+fn runtime_string_for_tests(value: i64) -> Option<String> {
+    with_state(|state| {
+        let decoded = state.decode_value(value);
+        state.runtime_string(&decoded).map(ToOwned::to_owned)
+    })
 }
 
 #[test]
@@ -24,71 +26,7 @@ fn intern_string_roundtrips() {
     let handle = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
     let handle_again = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
     assert_eq!(handle, handle_again);
-    assert!(matches!(decode_for_tests(handle), ref v if v.as_str() == Some("hello")));
-}
-
-#[test]
-fn build_list_and_len() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-    let values = [encoding::BOOL_TRUE_VALUE, 42, encoding::NIL_VALUE];
-    let list_handle = lk_rt_build_list(values.as_ptr(), values.len() as i64);
-    let len = lk_rt_len(list_handle);
-    assert_eq!(len, 3);
-    match decode_for_tests(list_handle) {
-        value if value.as_list().is_some() => {
-            let list = value.as_list().expect("checked list");
-            assert_eq!(list.len(), 3);
-            assert!(matches!(list[0], Val::Bool(true)));
-            assert!(matches!(list[1], Val::Int(42)));
-            assert!(matches!(list[2], Val::Nil));
-        }
-        other => panic!("unexpected value: {other:?}"),
-    }
-}
-
-#[test]
-fn list_push_str_int_matches_dynamic_push() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-
-    let list_handle = lk_rt_build_list(std::ptr::null(), 0);
-    assert_eq!(
-        lk_rt_list_push_str_int(list_handle, c"sku-".as_ptr().cast(), 4, 7),
-        list_handle
-    );
-    assert_eq!(lk_rt_len(list_handle), 1);
-    assert!(matches!(decode_for_tests(lk_rt_index(list_handle, 0)), ref v if v.as_str() == Some("sku-7")));
-}
-
-#[test]
-fn string_int_key_helpers_match_dynamic_map_access() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-
-    let prefix = c"b";
-    let key = lk_rt_add(lk_rt_intern_string(prefix.as_ptr().cast(), 1), 7);
-    let entries = [key, 41];
-    let map = lk_rt_build_map(entries.as_ptr(), 1);
-    assert_eq!(lk_rt_access_str_int(map, prefix.as_ptr().cast(), 1, 7), 41);
-    assert_eq!(lk_rt_map_get_str_int(map, prefix.as_ptr().cast(), 1, 7), 41);
-    assert_eq!(
-        lk_rt_map_get_const_str(map, prefix.as_ptr().cast(), 2),
-        encoding::NIL_VALUE
-    );
-    assert_eq!(lk_rt_map_set_str_int(map, prefix.as_ptr().cast(), 1, 7, 42), map);
-    assert_eq!(lk_rt_map_get_const_str(map, b"b7".as_ptr().cast(), 2), 42);
-    assert_eq!(
-        lk_rt_map_has_const_str(map, b"b7".as_ptr().cast(), 2),
-        encoding::BOOL_TRUE_VALUE
-    );
-    assert_eq!(
-        lk_rt_map_has_str_int(map, prefix.as_ptr().cast(), 1, 7),
-        encoding::BOOL_TRUE_VALUE
-    );
-    assert_eq!(lk_rt_map_set_const_str(map, b"b7".as_ptr().cast(), 2, 43), map);
-    assert_eq!(lk_rt_map_get_const_str(map, b"b7".as_ptr().cast(), 2), 43);
-    assert_eq!(lk_rt_access(map, key), 43);
+    assert_eq!(runtime_string_for_tests(handle).as_deref(), Some("hello"));
 }
 
 #[test]
@@ -105,97 +43,12 @@ fn arithmetic_helpers_preserve_dynamic_semantics() {
 }
 
 #[test]
-fn access_list_by_immediate_index_uses_current_handle_contents() {
+fn to_string_uses_scalar_runtime_handles() {
     let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
     reset_runtime_state();
 
-    let values = [10, 20, 30];
-    let list_handle = lk_rt_build_list(values.as_ptr(), values.len() as i64);
-    assert_eq!(lk_rt_access(list_handle, 1), 20);
-    assert_eq!(lk_rt_add_access(5, list_handle, 1), 25);
-    assert_eq!(lk_rt_mul_access(5, list_handle, 1), 100);
-    assert_eq!(lk_rt_sub_access(50, list_handle, 2), 20);
-    assert!(matches!(decode_for_tests(lk_rt_access(list_handle, -1)), Val::Nil));
-    assert!(matches!(decode_for_tests(lk_rt_access(list_handle, 9)), Val::Nil));
-}
-
-#[test]
-fn add_map_get_const_str_matches_dynamic_add_access() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-
-    let key = lk_rt_intern_string(c"count".as_ptr().cast(), 5);
-    let entries = [key, 41];
-    let map = lk_rt_build_map(entries.as_ptr(), 1);
-    assert_eq!(lk_rt_add_map_get_const_str(1, map, c"count".as_ptr().cast(), 5), 42);
-    assert_eq!(
-        lk_rt_add_map_get_const_str(1, map, c"missing".as_ptr().cast(), 7),
-        encoding::NIL_VALUE
-    );
-    assert_eq!(
-        lk_rt_map_set_add_map_get_const_str(map, c"count".as_ptr().cast(), 5, 1),
-        map
-    );
-    assert_eq!(lk_rt_map_get_const_str(map, c"count".as_ptr().cast(), 5), 42);
-
-    let dyn_key = lk_rt_add(lk_rt_intern_string(c"b".as_ptr().cast(), 1), 7);
-    let dyn_entries = [dyn_key, 40];
-    let dyn_map = lk_rt_build_map(dyn_entries.as_ptr(), 1);
-    assert_eq!(lk_rt_add_map_get_str_int(2, dyn_map, c"b".as_ptr().cast(), 1, 7), 42);
-    assert_eq!(
-        lk_rt_map_set_add_map_get_str_int(dyn_map, c"b".as_ptr().cast(), 1, 7, 2),
-        dyn_map
-    );
-    assert_eq!(lk_rt_map_get_str_int(dyn_map, c"b".as_ptr().cast(), 1, 7), 42);
-    assert_eq!(
-        lk_rt_map_update_int_str_int(dyn_map, c"b".as_ptr().cast(), 1, 7, 10, 3),
-        dyn_map
-    );
-    assert_eq!(lk_rt_map_get_str_int(dyn_map, c"b".as_ptr().cast(), 1, 7), 45);
-    assert_eq!(
-        lk_rt_map_update_int_str_int(dyn_map, c"b".as_ptr().cast(), 1, 8, 10, 3),
-        dyn_map
-    );
-    assert_eq!(lk_rt_map_get_str_int(dyn_map, c"b".as_ptr().cast(), 1, 8), 10);
-}
-
-#[test]
-fn index_string_preserves_ascii_and_unicode_lengths() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-
-    let ascii = b"abc";
-    let ascii_handle = lk_rt_intern_string(ascii.as_ptr().cast(), ascii.len() as i64);
-    let ascii_char = lk_rt_index(ascii_handle, 1);
-    assert!(matches!(decode_for_tests(ascii_char), ref v if v.as_str() == Some("b")));
-    assert_eq!(lk_rt_len(ascii_char), 1);
-
-    let unicode = "éx";
-    let unicode_handle = lk_rt_intern_string(unicode.as_ptr().cast(), unicode.len() as i64);
-    let unicode_char = lk_rt_index(unicode_handle, 0);
-    assert!(matches!(decode_for_tests(unicode_char), ref v if v.as_str() == Some("é")));
-    assert_eq!(lk_rt_len(unicode_char), 2);
-    assert_eq!(lk_rt_index_len(unicode_handle, 0), 2);
-
-    let values = [ascii_handle];
-    let list_handle = lk_rt_build_list(values.as_ptr(), values.len() as i64);
-    assert_eq!(lk_rt_index_len(list_handle, 0), 3);
-}
-
-#[test]
-fn to_iter_reuses_string_handles_but_keeps_list_snapshot_handle() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-
-    let text = b"abc";
-    let string_handle = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
-    assert_eq!(lk_rt_to_iter(string_handle), string_handle);
-
-    let values = [1, 2, 3];
-    let list_handle = lk_rt_build_list(values.as_ptr(), values.len() as i64);
-    let iter_handle = lk_rt_to_iter(list_handle);
-    assert_ne!(iter_handle, list_handle);
-    assert_eq!(lk_rt_len(iter_handle), 3);
+    let rendered = lk_rt_to_string(42);
+    assert_eq!(runtime_string_for_tests(rendered).as_deref(), Some("42"));
 }
 
 #[test]

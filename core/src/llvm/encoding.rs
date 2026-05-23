@@ -9,7 +9,7 @@
 
 use anyhow::{Result, anyhow};
 
-use crate::val::Val;
+use crate::val::RuntimeVal;
 
 /// Encoded value representing `nil`.
 pub const NIL_VALUE: i64 = i64::MIN;
@@ -26,14 +26,14 @@ pub const fn is_reserved_sentinel(value: i64) -> bool {
     value <= BOOL_TRUE_VALUE
 }
 
-/// Convert a high-level `Val` into its raw encoded form. Currently supports
-/// immediates (`Int`, `Bool`, `Nil`). Higher-level handles (lists, maps, etc.)
-/// will be wired in once the runtime helper table is implemented.
-pub fn encode_immediate(val: &Val) -> Result<i64> {
+/// Convert a runtime value into its raw encoded form. Currently supports
+/// immediates (`Int`, `Bool`, `Nil`); heap and non-integer scalar values stay
+/// in the runtime helper handle table.
+pub fn encode_immediate(val: &RuntimeVal) -> Result<i64> {
     match val {
-        Val::Nil => Ok(NIL_VALUE),
-        Val::Bool(flag) => Ok(if *flag { BOOL_TRUE_VALUE } else { BOOL_FALSE_VALUE }),
-        Val::Int(int) => {
+        RuntimeVal::Nil => Ok(NIL_VALUE),
+        RuntimeVal::Bool(flag) => Ok(if *flag { BOOL_TRUE_VALUE } else { BOOL_FALSE_VALUE }),
+        RuntimeVal::Int(int) => {
             if is_reserved_sentinel(*int) {
                 Err(anyhow!(
                     "integer literal {} conflicts with reserved sentinel range [{}, {}]",
@@ -47,24 +47,34 @@ pub fn encode_immediate(val: &Val) -> Result<i64> {
         }
         other => Err(anyhow!(
             "value of type {} cannot be encoded as an immediate LLVM literal",
-            other.type_name()
+            runtime_type_name(other)
         )),
     }
 }
 
-/// Convert a raw encoded value produced by the LLVM backend back into a `Val`
+/// Convert a raw encoded value produced by the LLVM backend back into a `RuntimeVal`
 /// representing the corresponding immediate literal.
 #[inline]
-#[allow(dead_code)] // will be used by upcoming runtime glue translating back into Val
-pub fn decode_immediate(value: i64) -> Val {
+pub fn decode_immediate(value: i64) -> RuntimeVal {
     if value == NIL_VALUE {
-        Val::Nil
+        RuntimeVal::Nil
     } else if value == BOOL_FALSE_VALUE {
-        Val::Bool(false)
+        RuntimeVal::Bool(false)
     } else if value == BOOL_TRUE_VALUE {
-        Val::Bool(true)
+        RuntimeVal::Bool(true)
     } else {
-        Val::Int(value)
+        RuntimeVal::Int(value)
+    }
+}
+
+fn runtime_type_name(value: &RuntimeVal) -> &'static str {
+    match value {
+        RuntimeVal::Nil => "Nil",
+        RuntimeVal::Bool(_) => "Bool",
+        RuntimeVal::Int(_) => "Int",
+        RuntimeVal::Float(_) => "Float",
+        RuntimeVal::ShortStr(_) => "String",
+        RuntimeVal::Obj(_) => "Object",
     }
 }
 
@@ -74,30 +84,30 @@ mod tests {
 
     #[test]
     fn encodes_nil_and_bools() {
-        assert_eq!(encode_immediate(&Val::Nil).unwrap(), NIL_VALUE);
-        assert_eq!(encode_immediate(&Val::Bool(false)).unwrap(), BOOL_FALSE_VALUE);
-        assert_eq!(encode_immediate(&Val::Bool(true)).unwrap(), BOOL_TRUE_VALUE);
+        assert_eq!(encode_immediate(&RuntimeVal::Nil).unwrap(), NIL_VALUE);
+        assert_eq!(encode_immediate(&RuntimeVal::Bool(false)).unwrap(), BOOL_FALSE_VALUE);
+        assert_eq!(encode_immediate(&RuntimeVal::Bool(true)).unwrap(), BOOL_TRUE_VALUE);
     }
 
     #[test]
     fn rejects_reserved_integers() {
         for reserved in [NIL_VALUE, BOOL_FALSE_VALUE, BOOL_TRUE_VALUE] {
-            let err = encode_immediate(&Val::Int(reserved)).unwrap_err();
+            let err = encode_immediate(&RuntimeVal::Int(reserved)).unwrap_err();
             assert!(err.to_string().contains("conflicts with reserved sentinel"));
         }
     }
 
     #[test]
     fn encodes_regular_integers() {
-        assert_eq!(encode_immediate(&Val::Int(0)).unwrap(), 0);
-        assert_eq!(encode_immediate(&Val::Int(123)).unwrap(), 123);
+        assert_eq!(encode_immediate(&RuntimeVal::Int(0)).unwrap(), 0);
+        assert_eq!(encode_immediate(&RuntimeVal::Int(123)).unwrap(), 123);
     }
 
     #[test]
     fn decodes_immediates() {
-        assert!(matches!(decode_immediate(NIL_VALUE), Val::Nil));
-        assert!(matches!(decode_immediate(BOOL_FALSE_VALUE), Val::Bool(false)));
-        assert!(matches!(decode_immediate(BOOL_TRUE_VALUE), Val::Bool(true)));
-        assert!(matches!(decode_immediate(42), Val::Int(42)));
+        assert!(matches!(decode_immediate(NIL_VALUE), RuntimeVal::Nil));
+        assert!(matches!(decode_immediate(BOOL_FALSE_VALUE), RuntimeVal::Bool(false)));
+        assert!(matches!(decode_immediate(BOOL_TRUE_VALUE), RuntimeVal::Bool(true)));
+        assert!(matches!(decode_immediate(42), RuntimeVal::Int(42)));
     }
 }

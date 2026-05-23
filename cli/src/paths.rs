@@ -93,9 +93,9 @@ pub(crate) fn split_compile_args_with_cwd(
 fn parse_compile_mode(raw: &str) -> anyhow::Result<Option<CompileMode>> {
     let target = raw.to_ascii_lowercase();
     match target.as_str() {
-        "lkb" | "bytecode" => anyhow::bail!(
-            "LKB/bytecode output has been removed during the Instr32 VM migration; use the new module format when it lands"
-        ),
+        "lkb" | "bytecode" => {
+            anyhow::bail!("LKB/bytecode output has been removed; use `lk compile FILE` to emit an Instr32 .lkm module")
+        }
         #[cfg(feature = "llvm")]
         "llvm" => Ok(Some(CompileMode::Llvm)),
         #[cfg(feature = "llvm")]

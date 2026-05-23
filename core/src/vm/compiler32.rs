@@ -224,7 +224,7 @@ impl Compiler32 {
             other => {
                 bail!(
                     "Compiler32 cannot materialize AST literal value yet: {}",
-                    other.type_name()
+                    ast_literal_kind(other)
                 );
             }
         }

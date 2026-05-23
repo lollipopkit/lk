@@ -14,26 +14,23 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use arcstr::ArcStr;
 
 use crate::{
     llvm::encoding,
     module::ModuleRegistry,
     op::BinOp,
     stmt::{ImportSource, ImportStmt, ModuleResolver, deserialize_imports, execute_imports},
-    util::fast_map::{FastHashMap, fast_hash_map_new, fast_hash_map_with_capacity},
-    val::{AotFunction, CallableValue, HeapValue, Val},
+    util::fast_map::{FastHashMap, fast_hash_map_new},
+    val::{HeapStore, HeapValue, RuntimeVal, ShortStr},
     vm::VmContext,
 };
 
-mod collections;
 #[cfg(test)]
 mod imports;
 mod math;
 #[cfg(test)]
 mod tests;
 
-pub use collections::*;
 #[cfg(test)]
 use imports::{imports_need_concurrency_globals, stdlib_module_names_from_imports};
 pub use math::*;
@@ -207,40 +204,20 @@ pub extern "C" fn lk_rt_register_native_module_function(
     fn_ptr: *const (),
     arity: i64,
 ) -> i32 {
-    if fn_ptr.is_null() || arity < 0 || arity > u8::MAX as i64 {
-        return -1;
-    }
     let module = read_string(module_ptr, module_len);
     let name = read_string(name_ptr, name_len);
-    if module.is_empty() || name.is_empty() {
-        return -1;
-    }
-    let function = Val::aot_function(AotFunction {
-        ptr: fn_ptr as usize,
-        arity: arity as u8,
-    });
-    with_state(move |state| {
-        state
-            .pending_native_modules
-            .entry(module)
-            .or_insert_with(fast_hash_map_new)
-            .insert(ArcStr::from(name), function);
-        state.imports_applied = false;
-    });
-    0
+    let _ = (fn_ptr, arity);
+    eprintln!(
+        "lk_rt_register_native_module_function: AOT native module replay is disabled during the Instr32 VM migration: {module}.{name}"
+    );
+    -1
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_make_aot_function(fn_ptr: *const (), arity: i64) -> i64 {
-    if fn_ptr.is_null() || arity < 0 || arity > u8::MAX as i64 {
-        return encoding::NIL_VALUE;
-    }
-    with_state(|state| {
-        state.encode_value(Val::aot_function(AotFunction {
-            ptr: fn_ptr as usize,
-            arity: arity as u8,
-        }))
-    })
+    let _ = (fn_ptr, arity);
+    eprintln!("lk_rt_make_aot_function: AOT function handles are disabled during the Instr32 VM migration");
+    encoding::NIL_VALUE
 }
 
 #[unsafe(no_mangle)]
@@ -330,13 +307,14 @@ fn push_unique_registrar(registrars: &mut Vec<StdlibRegistrar>, registrar: Stdli
 
 struct RuntimeState {
     ctx: VmContext,
+    aot_globals: FastHashMap<String, RuntimeVal>,
     handles: HandleTable,
+    heap: HeapStore,
     interned_strings: FastHashMap<String, i64>,
     resolver: Arc<ModuleResolver>,
     pending_search_paths: Vec<String>,
     pending_imports: Vec<ImportStmt>,
     pending_package_modules: Vec<(String, String)>,
-    pending_native_modules: FastHashMap<String, FastHashMap<ArcStr, Val>>,
     pending_stdlib_registrars: Vec<StdlibRegistrar>,
     imports_applied: bool,
 }
@@ -354,13 +332,14 @@ impl RuntimeState {
         };
         Self {
             ctx,
+            aot_globals: fast_hash_map_new(),
             handles: HandleTable::default(),
+            heap: HeapStore::new(),
             interned_strings: fast_hash_map_new(),
             resolver,
             pending_search_paths: Vec::new(),
             pending_imports: Vec::new(),
             pending_package_modules: Vec::new(),
-            pending_native_modules: fast_hash_map_new(),
             pending_stdlib_registrars: Vec::new(),
             imports_applied: false,
         }
@@ -370,10 +349,11 @@ impl RuntimeState {
         self.pending_search_paths.clear();
         self.pending_imports.clear();
         self.pending_package_modules.clear();
-        self.pending_native_modules.clear();
         self.pending_stdlib_registrars.clear();
         self.imports_applied = false;
+        self.aot_globals.clear();
         self.handles = HandleTable::default();
+        self.heap = HeapStore::new();
         self.interned_strings.clear();
         match Self::build_native_context(&[], &[]) {
             Ok((ctx, resolver)) => {
@@ -401,58 +381,47 @@ impl RuntimeState {
         self.ctx = ctx;
         self.resolver = resolver;
         self.handles = HandleTable::default();
+        self.heap = HeapStore::new();
         self.interned_strings.clear();
         self.imports_applied = true;
         Ok(())
     }
 
     fn apply_pending_native_only(&mut self) -> Result<()> {
-        let (mut ctx, resolver) =
-            Self::build_native_context(&self.pending_search_paths, &self.pending_stdlib_registrars)?;
+        let (ctx, resolver) = Self::build_native_context(&self.pending_search_paths, &self.pending_stdlib_registrars)?;
         if !self.pending_imports.is_empty() {
-            let native_modules = self.pending_native_modules.clone();
-            Self::apply_native_imports(&self.pending_imports, &native_modules, resolver.as_ref(), &mut ctx)?;
+            let imports = self.pending_imports.clone();
+            Self::apply_native_imports(&imports, resolver.as_ref(), self)?;
         }
         self.ctx = ctx;
         self.resolver = resolver;
         self.handles = HandleTable::default();
+        self.heap = HeapStore::new();
         self.interned_strings.clear();
         self.imports_applied = true;
         Ok(())
     }
 
-    fn apply_native_imports(
-        imports: &[ImportStmt],
-        native_modules: &FastHashMap<String, FastHashMap<ArcStr, Val>>,
-        resolver: &ModuleResolver,
-        ctx: &mut VmContext,
-    ) -> Result<()> {
+    fn apply_native_imports(imports: &[ImportStmt], resolver: &ModuleResolver, state: &mut RuntimeState) -> Result<()> {
         for import in imports {
             match import {
                 ImportStmt::Module { module } => {
-                    let value = Self::resolve_native_import_module(module, native_modules, resolver)?;
-                    ctx.set_val_binding(module.clone(), value);
+                    let value = Self::resolve_native_import_module(module, resolver)?;
+                    state.aot_globals.insert(module.clone(), value);
                 }
                 ImportStmt::ModuleAlias { module, alias } => {
-                    let value = Self::resolve_native_import_module(module, native_modules, resolver)?;
-                    ctx.set_val_binding(alias.clone(), value);
+                    let value = Self::resolve_native_import_module(module, resolver)?;
+                    state.aot_globals.insert(alias.clone(), value);
                 }
                 ImportStmt::Items { items, source } => {
-                    let value = Self::resolve_native_import_source(source, native_modules, resolver)?;
-                    let Some(exports) = value.as_map() else {
-                        return Err(anyhow!("import source is not a module map"));
-                    };
-                    for item in items {
-                        let export_value = exports
-                            .get(item.name.as_str())
-                            .ok_or_else(|| anyhow!("Export '{}' not found in module", item.name))?;
-                        let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
-                        ctx.set_val_binding(symbol_name.clone(), export_value.clone());
-                    }
+                    let _ = (source, items, resolver);
+                    return Err(anyhow!(
+                        "AOT native item imports are disabled during the Instr32 VM migration"
+                    ));
                 }
                 ImportStmt::Namespace { alias, source } => {
-                    let value = Self::resolve_native_import_source(source, native_modules, resolver)?;
-                    ctx.set_val_binding(alias.clone(), value);
+                    let value = Self::resolve_native_import_source(source, resolver)?;
+                    state.aot_globals.insert(alias.clone(), value);
                 }
                 ImportStmt::File { path } => {
                     let module_name = std::path::Path::new(path)
@@ -460,41 +429,30 @@ impl RuntimeState {
                         .and_then(|s| s.to_str())
                         .unwrap_or("module")
                         .to_string();
-                    let value = Self::resolve_native_import_module(&module_name, native_modules, resolver)?;
-                    ctx.set_val_binding(module_name, value);
+                    let value = Self::resolve_native_import_module(&module_name, resolver)?;
+                    state.aot_globals.insert(module_name, value);
                 }
             }
         }
         Ok(())
     }
 
-    fn resolve_native_import_source(
-        source: &ImportSource,
-        native_modules: &FastHashMap<String, FastHashMap<ArcStr, Val>>,
-        resolver: &ModuleResolver,
-    ) -> Result<Val> {
+    fn resolve_native_import_source(source: &ImportSource, resolver: &ModuleResolver) -> Result<RuntimeVal> {
         match source {
-            ImportSource::Module(module) => Self::resolve_native_import_module(module, native_modules, resolver),
+            ImportSource::Module(module) => Self::resolve_native_import_module(module, resolver),
             ImportSource::File(path) => {
                 let module_name = std::path::Path::new(path)
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("module");
-                Self::resolve_native_import_module(module_name, native_modules, resolver)
+                Self::resolve_native_import_module(module_name, resolver)
             }
         }
     }
 
-    fn resolve_native_import_module(
-        module: &str,
-        native_modules: &FastHashMap<String, FastHashMap<ArcStr, Val>>,
-        _resolver: &ModuleResolver,
-    ) -> Result<Val> {
-        if let Some(exports) = native_modules.get(module) {
-            return Ok(Val::map(Arc::new(exports.clone())));
-        }
+    fn resolve_native_import_module(module: &str, _resolver: &ModuleResolver) -> Result<RuntimeVal> {
         Err(anyhow!(
-            "AOT native import replay no longer converts stdlib module '{}' through Val exports",
+            "AOT native import replay is disabled during the Instr32 VM migration: module '{}'",
             module
         ))
     }
@@ -553,18 +511,20 @@ impl RuntimeState {
         Ok((ctx, resolver_arc))
     }
 
-    fn encode_value(&mut self, value: Val) -> i64 {
+    fn encode_value(&mut self, value: RuntimeVal) -> i64 {
         if let Ok(immediate) = encoding::encode_immediate(&value) {
             immediate
         } else {
-            match value {
-                value if value.as_str().is_some() => self.intern_string(value.as_str().unwrap()),
-                other => self.handles.alloc(other),
+            if let Some(text) = self.runtime_string(&value) {
+                let owned = text.to_owned();
+                self.intern_string(owned.as_str())
+            } else {
+                self.handles.alloc(value)
             }
         }
     }
 
-    fn decode_value(&self, raw: i64) -> Val {
+    fn decode_value(&self, raw: i64) -> RuntimeVal {
         if let Some(val) = self.handles.get(raw) {
             val
         } else {
@@ -572,25 +532,52 @@ impl RuntimeState {
         }
     }
 
-    fn decode_values(&self, ptr: *const i64, len: usize) -> Vec<Val> {
-        if len == 0 || ptr.is_null() {
-            return Vec::new();
-        }
-        let values = unsafe { std::slice::from_raw_parts(ptr, len) };
-        values.iter().map(|&raw| self.decode_value(raw)).collect()
-    }
-
     fn intern_string(&mut self, value: &str) -> i64 {
         if let Some(&handle) = self.interned_strings.get(value) {
             return handle;
         }
-        let handle = self.handles.alloc(Val::from_str(value));
+        let string_value = self.runtime_string_value(value.to_owned());
+        let handle = self.handles.alloc(string_value);
         self.interned_strings.insert(value.to_owned(), handle);
         handle
     }
 
-    fn load_global(&mut self, name: &str) -> Val {
-        self.ctx.get_val_binding(name).cloned().unwrap_or(Val::Nil)
+    fn load_global(&mut self, name: &str) -> RuntimeVal {
+        self.aot_globals.get(name).cloned().unwrap_or(RuntimeVal::Nil)
+    }
+
+    fn runtime_string_value(&mut self, value: String) -> RuntimeVal {
+        if let Some(short) = ShortStr::new(value.as_str()) {
+            RuntimeVal::ShortStr(short)
+        } else {
+            RuntimeVal::Obj(self.heap.alloc(HeapValue::String(Arc::<str>::from(value))))
+        }
+    }
+
+    fn runtime_string<'a>(&'a self, value: &'a RuntimeVal) -> Option<&'a str> {
+        match value {
+            RuntimeVal::ShortStr(value) => Some(value.as_str()),
+            RuntimeVal::Obj(handle) => match self.heap.get(*handle) {
+                Some(HeapValue::String(value)) => Some(value.as_ref()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn runtime_value_to_string(&self, value: &RuntimeVal) -> String {
+        match value {
+            RuntimeVal::Nil => "nil".to_string(),
+            RuntimeVal::Bool(value) => value.to_string(),
+            RuntimeVal::Int(value) => value.to_string(),
+            RuntimeVal::Float(value) => value.to_string(),
+            RuntimeVal::ShortStr(value) => value.as_str().to_string(),
+            RuntimeVal::Obj(handle) => match self.heap.get(*handle) {
+                Some(HeapValue::String(value)) => value.to_string(),
+                Some(value) => format!("<{}>", value.type_name()),
+                None => "<dangling>".to_string(),
+            },
+        }
     }
 }
 
@@ -609,16 +596,6 @@ fn register_aot_stdlib_method_modules(registry: &mut ModuleRegistry) -> Result<(
     Ok(())
 }
 
-fn aot_function_from_val(value: Val) -> Option<AotFunction> {
-    match value {
-        Val::Obj(value) => match value.as_ref() {
-            HeapValue::Callable(CallableValue::Aot(function)) => Some(*function),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 impl Default for RuntimeState {
     fn default() -> Self {
         Self::new()
@@ -627,29 +604,24 @@ impl Default for RuntimeState {
 
 #[derive(Default)]
 struct HandleTable {
-    values: Vec<Val>,
+    values: Vec<RuntimeVal>,
 }
 
 impl HandleTable {
-    fn alloc(&mut self, value: Val) -> i64 {
+    fn alloc(&mut self, value: RuntimeVal) -> i64 {
         let index = self.values.len();
         self.values.push(value);
         i64::MAX - index as i64
     }
 
-    fn get(&self, handle: i64) -> Option<Val> {
+    fn get(&self, handle: i64) -> Option<RuntimeVal> {
         let index = usize::try_from(i64::MAX.checked_sub(handle)?).ok()?;
         self.values.get(index).cloned()
     }
 
-    fn get_ref(&self, handle: i64) -> Option<&Val> {
+    fn get_ref(&self, handle: i64) -> Option<&RuntimeVal> {
         let index = usize::try_from(i64::MAX.checked_sub(handle)?).ok()?;
         self.values.get(index)
-    }
-
-    fn get_mut(&mut self, handle: i64) -> Option<&mut Val> {
-        let index = usize::try_from(i64::MAX.checked_sub(handle)?).ok()?;
-        self.values.get_mut(index)
     }
 }
 
@@ -668,79 +640,6 @@ fn read_string(ptr: *const i8, len: i64) -> String {
     }
 }
 
-fn bool_to_str(value: bool) -> &'static str {
-    if value { "true" } else { "false" }
-}
-
-fn encode_map_key(value: &Val) -> Result<ArcStr> {
-    match value {
-        value if value.as_str().is_some() => Ok(Val::intern_str(value.as_str().expect("checked string"))),
-        Val::Int(i) => Ok(Val::intern_str(i.to_string().as_str())),
-        Val::Float(f) => Ok(Val::intern_str(f.to_string().as_str())),
-        Val::Bool(b) => Ok(Val::intern_str(bool_to_str(*b))),
-        other => Err(anyhow!("map key must be primitive, got {}", other.type_name())),
-    }
-}
-
-fn map_to_iterable(map: &FastHashMap<ArcStr, Val>) -> Val {
-    let mut keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
-    keys.sort();
-    let mut pairs = Vec::with_capacity(keys.len());
-    for key in keys {
-        if let Some(value) = map.get(key) {
-            let pair = Val::list(vec![Val::from_str(key), value.clone()].into());
-            pairs.push(pair);
-        }
-    }
-    Val::list(Arc::new(pairs))
-}
-
-fn list_slice(list: &Arc<Vec<Val>>, start: i64) -> Val {
-    if start <= 0 {
-        return Val::list(list.clone());
-    }
-    let idx = start as usize;
-    if idx >= list.len() {
-        Val::list(Arc::new(Vec::new()))
-    } else {
-        Val::list(list[idx..].to_vec().into())
-    }
-}
-
-fn index_value(base: &Val, idx: &Val) -> Val {
-    match (base, idx) {
-        (base, Val::Int(i)) if base.as_list().is_some() => {
-            let list = base.as_list().expect("checked list");
-            if *i < 0 {
-                Val::Nil
-            } else {
-                list.get(*i as usize).cloned().unwrap_or(Val::Nil)
-            }
-        }
-        (base, Val::Int(i)) if base.as_str().is_some() => {
-            let s = base.as_str().unwrap();
-            if *i < 0 {
-                Val::Nil
-            } else if s.is_ascii() {
-                let i = *i as usize;
-                let bytes = s.as_bytes();
-                if i < bytes.len() {
-                    let ch = bytes[i] as char;
-                    Val::from_str(&ch.to_string())
-                } else {
-                    Val::Nil
-                }
-            } else {
-                s.chars()
-                    .nth(*i as usize)
-                    .map(|ch| Val::from_str(&ch.to_string()))
-                    .unwrap_or(Val::Nil)
-            }
-        }
-        _ => Val::Nil,
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_intern_string(ptr: *const i8, len: i64) -> i64 {
     let text = read_string(ptr, len);
@@ -750,7 +649,8 @@ pub extern "C" fn lk_rt_intern_string(ptr: *const i8, len: i64) -> i64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_to_string(value: i64) -> i64 {
     with_state(|state| {
-        let rendered = state.decode_value(value).to_string();
+        let decoded = state.decode_value(value);
+        let rendered = state.runtime_value_to_string(&decoded);
         state.intern_string(rendered.as_str())
     })
 }
@@ -759,10 +659,10 @@ pub extern "C" fn lk_rt_to_string(value: i64) -> i64 {
 pub extern "C" fn lk_rt_load_global(name: i64) -> i64 {
     with_state(|state| {
         let key_val = state.decode_value(name);
-        let name_str = key_val
-            .as_str()
+        let name_str = state
+            .runtime_string(&key_val)
             .map(|s| s.to_owned())
-            .unwrap_or_else(|| key_val.to_string());
+            .unwrap_or_else(|| state.runtime_value_to_string(&key_val));
         let value = state.load_global(name_str.as_str());
         state.encode_value(value)
     })
@@ -772,255 +672,50 @@ pub extern "C" fn lk_rt_load_global(name: i64) -> i64 {
 pub extern "C" fn lk_rt_define_global(name: i64, value: i64) {
     with_state(|state| {
         let key_val = state.decode_value(name);
-        let name_str = key_val
-            .as_str()
+        let name_str = state
+            .runtime_string(&key_val)
             .map(|s| s.to_owned())
-            .unwrap_or_else(|| key_val.to_string());
+            .unwrap_or_else(|| state.runtime_value_to_string(&key_val));
         let val = state.decode_value(value);
-        state.ctx.set_val_binding(name_str, val);
+        state.aot_globals.insert(name_str, val);
     });
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_call(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
-    let argc_usize = argc.max(0) as usize;
-    let aot_function = with_state(|state| aot_function_from_val(state.decode_value(func)));
-    if let Some(function) = aot_function {
-        return match call_aot_function_raw(function, args_ptr, argc_usize) {
-            Ok(raw) => {
-                if retc <= 0 {
-                    encoding::NIL_VALUE
-                } else {
-                    raw
-                }
-            }
-            Err(err) => {
-                eprintln!("lk_rt_call error: {err}");
-                encoding::NIL_VALUE
-            }
-        };
-    }
-    with_state(|state| {
-        let callee = state.decode_value(func);
-        let args = state.decode_values(args_ptr, argc_usize);
-        let result: Result<i64> = callee.call(&args, &mut state.ctx).map(|val| {
-            if retc <= 0 {
-                encoding::NIL_VALUE
-            } else {
-                state.encode_value(val)
-            }
-        });
-        match result {
-            Ok(val) => {
-                if retc <= 0 {
-                    encoding::NIL_VALUE
-                } else {
-                    val
-                }
-            }
-            Err(err) => {
-                eprintln!("lk_rt_call error: {err}");
-                encoding::NIL_VALUE
-            }
-        }
-    })
+    let _ = (func, args_ptr, argc, retc);
+    eprintln!("lk_rt_call: AOT runtime call bridge is disabled during the Instr32 VM migration");
+    encoding::NIL_VALUE
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_call_method(receiver: i64, method: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
-    let argc_usize = argc.max(0) as usize;
-    let aot_function = with_state(|state| {
-        let receiver_val = state.decode_value(receiver);
-        let method_val = state.decode_value(method);
-        let method_name = method_val
-            .as_str()
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|| method_val.to_string());
-        aot_function_from_val(
-            receiver_val
-                .access(&Val::from_str(method_name.as_str()))
-                .unwrap_or(Val::Nil),
-        )
-    });
-    if let Some(function) = aot_function {
-        return match call_aot_function_raw(function, args_ptr, argc_usize) {
-            Ok(raw) => {
-                if retc <= 0 {
-                    encoding::NIL_VALUE
-                } else {
-                    raw
-                }
-            }
-            Err(err) => {
-                eprintln!("lk_rt_call_method error: {err}");
-                encoding::NIL_VALUE
-            }
-        };
-    }
-    with_state(|state| {
-        let receiver_val = state.decode_value(receiver);
-        let method_val = state.decode_value(method);
-        let method_name = method_val
-            .as_str()
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|| method_val.to_string());
-        let method_key = Val::from_str(method_name.as_str());
-        let args = state.decode_values(args_ptr, argc_usize);
-        if let Some(callee) = receiver_val.access(&method_key) {
-            let result: Result<i64> = callee.call(&args, &mut state.ctx).map(|val| {
-                if retc <= 0 {
-                    encoding::NIL_VALUE
-                } else {
-                    state.encode_value(val)
-                }
-            });
-            return match result {
-                Ok(val) => {
-                    if retc <= 0 {
-                        encoding::NIL_VALUE
-                    } else {
-                        val
-                    }
-                }
-                Err(err) => {
-                    eprintln!("lk_rt_call_method error: {err}");
-                    encoding::NIL_VALUE
-                }
-            };
-        }
-        let callee = receiver_val
-            .access(&Val::from_str(method_name.as_str()))
-            .unwrap_or(Val::Nil);
-        let result: Result<i64> = callee.call(&args, &mut state.ctx).map(|val| {
-            if retc <= 0 {
-                encoding::NIL_VALUE
-            } else {
-                state.encode_value(val)
-            }
-        });
-        match result {
-            Ok(val) => {
-                if retc <= 0 {
-                    encoding::NIL_VALUE
-                } else {
-                    val
-                }
-            }
-            Err(err) => {
-                eprintln!("lk_rt_call_method error: {err}");
-                encoding::NIL_VALUE
-            }
-        }
-    })
+    let _ = (receiver, method, args_ptr, argc, retc);
+    eprintln!("lk_rt_call_method: AOT method calls are disabled during the Instr32 VM migration");
+    encoding::NIL_VALUE
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_call_native(func: i64, args_ptr: *const i64, argc: i64, retc: i64) -> i64 {
-    let argc_usize = argc.max(0) as usize;
-    let aot_function = with_state(|state| aot_function_from_val(state.decode_value(func)));
-    if let Some(function) = aot_function {
-        return match call_aot_function_raw(function, args_ptr, argc_usize) {
-            Ok(raw) => {
-                if retc <= 0 {
-                    encoding::NIL_VALUE
-                } else {
-                    raw
-                }
-            }
-            Err(err) => {
-                eprintln!("lk_rt_call_native error: {err}");
-                encoding::NIL_VALUE
-            }
-        };
-    }
-
-    with_state(|state| {
-        let callee = state.decode_value(func);
-        let args = state.decode_values(args_ptr, argc_usize);
-        let result = callee.call(&args, &mut state.ctx);
-        match result {
-            Ok(val) => {
-                if retc <= 0 {
-                    encoding::NIL_VALUE
-                } else {
-                    state.encode_value(val)
-                }
-            }
-            Err(err) => {
-                eprintln!("lk_rt_call_native error: {err}");
-                encoding::NIL_VALUE
-            }
-        }
-    })
-}
-
-fn call_aot_function_raw(function: AotFunction, args_ptr: *const i64, argc: usize) -> Result<i64> {
-    if argc != function.arity as usize {
-        return Err(anyhow!(
-            "AOT function expects {} arguments, got {}",
-            function.arity,
-            argc
-        ));
-    }
-    if argc > 0 && args_ptr.is_null() {
-        return Err(anyhow!("AOT function arguments pointer is null"));
-    }
-    let raw = unsafe {
-        match argc {
-            0 => {
-                let f: extern "C" fn() -> i64 = std::mem::transmute(function.ptr);
-                f()
-            }
-            1 => {
-                let args = std::slice::from_raw_parts(args_ptr, 1);
-                let f: extern "C" fn(i64) -> i64 = std::mem::transmute(function.ptr);
-                f(args[0])
-            }
-            2 => {
-                let args = std::slice::from_raw_parts(args_ptr, 2);
-                let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(function.ptr);
-                f(args[0], args[1])
-            }
-            3 => {
-                let args = std::slice::from_raw_parts(args_ptr, 3);
-                let f: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(function.ptr);
-                f(args[0], args[1], args[2])
-            }
-            4 => {
-                let args = std::slice::from_raw_parts(args_ptr, 4);
-                let f: extern "C" fn(i64, i64, i64, i64) -> i64 = std::mem::transmute(function.ptr);
-                f(args[0], args[1], args[2], args[3])
-            }
-            5 => {
-                let args = std::slice::from_raw_parts(args_ptr, 5);
-                let f: extern "C" fn(i64, i64, i64, i64, i64) -> i64 = std::mem::transmute(function.ptr);
-                f(args[0], args[1], args[2], args[3], args[4])
-            }
-            _ => {
-                return Err(anyhow!(
-                    "AOT function arity {} exceeds runtime call bridge limit",
-                    function.arity
-                ));
-            }
-        }
-    };
-    Ok(raw)
+    let _ = (func, args_ptr, argc, retc);
+    eprintln!("lk_rt_call_native: AOT native call bridge is disabled during the Instr32 VM migration");
+    encoding::NIL_VALUE
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_float(value: f64) -> i64 {
-    with_state(|state| state.encode_value(Val::Float(value)))
+    with_state(|state| state.encode_value(RuntimeVal::Float(value)))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn lk_rt_floor(value: i64) -> i64 {
     with_state(|state| {
         let out = match state.decode_value(value) {
-            Val::Float(f) => f.floor() as i64,
-            Val::Int(i) => i,
+            RuntimeVal::Float(f) => f.floor() as i64,
+            RuntimeVal::Int(i) => i,
             _ => 0,
         };
-        state.encode_value(Val::Int(out))
+        state.encode_value(RuntimeVal::Int(out))
     })
 }
 
@@ -1031,15 +726,15 @@ pub extern "C" fn lk_rt_floor_div_imm(value: i64, divisor: i64) -> i64 {
             return encoding::NIL_VALUE;
         }
         let out = match state.decode_value(value) {
-            Val::Int(lhs) => {
+            RuntimeVal::Int(lhs) => {
                 let q = lhs / divisor;
                 let r = lhs % divisor;
                 if r != 0 && ((r < 0) != (divisor < 0)) { q - 1 } else { q }
             }
-            Val::Float(lhs) => (lhs / divisor as f64).floor() as i64,
+            RuntimeVal::Float(lhs) => (lhs / divisor as f64).floor() as i64,
             _ => 0,
         };
-        state.encode_value(Val::Int(out))
+        state.encode_value(RuntimeVal::Int(out))
     })
 }
 
@@ -1048,11 +743,11 @@ pub extern "C" fn lk_rt_starts_with(value: i64, prefix: i64) -> i64 {
     with_state(|state| {
         let value = state.decode_value(value);
         let prefix = state.decode_value(prefix);
-        let out = match (value.as_str(), prefix.as_str()) {
+        let out = match (state.runtime_string(&value), state.runtime_string(&prefix)) {
             (Some(value), Some(prefix)) => value.starts_with(prefix),
             _ => false,
         };
-        state.encode_value(Val::Bool(out))
+        state.encode_value(RuntimeVal::Bool(out))
     })
 }
 
@@ -1061,11 +756,11 @@ pub extern "C" fn lk_rt_contains(value: i64, needle: i64) -> i64 {
     with_state(|state| {
         let value = state.decode_value(value);
         let needle = state.decode_value(needle);
-        let out = match (value.as_str(), needle.as_str()) {
+        let out = match (state.runtime_string(&value), state.runtime_string(&needle)) {
             (Some(value), Some(needle)) => value.contains(needle),
             _ => false,
         };
-        state.encode_value(Val::Bool(out))
+        state.encode_value(RuntimeVal::Bool(out))
     })
 }
 
@@ -1086,12 +781,55 @@ pub extern "C" fn lk_rt_cmp(lhs: i64, rhs: i64, code: i64) -> i64 {
                 return encoding::NIL_VALUE;
             }
         };
-        match op.cmp(&left, &right) {
-            Ok(value) => state.encode_value(Val::Bool(value)),
+        match runtime_cmp(&left, &right, &op, state) {
+            Ok(value) => state.encode_value(RuntimeVal::Bool(value)),
             Err(err) => {
                 eprintln!("lk_rt_cmp error: {err}");
                 encoding::NIL_VALUE
             }
         }
     })
+}
+
+fn runtime_cmp(left: &RuntimeVal, right: &RuntimeVal, op: &BinOp, state: &RuntimeState) -> Result<bool> {
+    let ordering = match (left, right) {
+        (RuntimeVal::Int(a), RuntimeVal::Int(b)) => a.partial_cmp(b),
+        (RuntimeVal::Float(a), RuntimeVal::Float(b)) => a.partial_cmp(b),
+        (RuntimeVal::Int(a), RuntimeVal::Float(b)) => (*a as f64).partial_cmp(b),
+        (RuntimeVal::Float(a), RuntimeVal::Int(b)) => a.partial_cmp(&(*b as f64)),
+        _ => match (state.runtime_string(left), state.runtime_string(right)) {
+            (Some(a), Some(b)) => a.partial_cmp(b),
+            _ => None,
+        },
+    };
+    match op {
+        BinOp::Eq => Ok(runtime_eq(left, right, state)),
+        BinOp::Ne => Ok(!runtime_eq(left, right, state)),
+        BinOp::Lt => Ok(ordering == Some(std::cmp::Ordering::Less)),
+        BinOp::Le => Ok(matches!(
+            ordering,
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        )),
+        BinOp::Gt => Ok(ordering == Some(std::cmp::Ordering::Greater)),
+        BinOp::Ge => Ok(matches!(
+            ordering,
+            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+        )),
+        _ => Err(anyhow!("unsupported compare op {:?}", op)),
+    }
+}
+
+fn runtime_eq(left: &RuntimeVal, right: &RuntimeVal, state: &RuntimeState) -> bool {
+    match (left, right) {
+        (RuntimeVal::Nil, RuntimeVal::Nil) => true,
+        (RuntimeVal::Bool(a), RuntimeVal::Bool(b)) => a == b,
+        (RuntimeVal::Int(a), RuntimeVal::Int(b)) => a == b,
+        (RuntimeVal::Float(a), RuntimeVal::Float(b)) => a == b,
+        (RuntimeVal::Int(a), RuntimeVal::Float(b)) => *a as f64 == *b,
+        (RuntimeVal::Float(a), RuntimeVal::Int(b)) => *a == *b as f64,
+        _ => match (state.runtime_string(left), state.runtime_string(right)) {
+            (Some(a), Some(b)) => a == b,
+            _ => left == right,
+        },
+    }
 }

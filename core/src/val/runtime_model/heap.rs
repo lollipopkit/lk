@@ -141,7 +141,7 @@ impl HeapStore {
             HeapValue::Callable(CallableValue::Runtime32(function)) => {
                 let _ = function.collect_garbage();
             }
-            HeapValue::Callable(CallableValue::RuntimeNative32 { .. } | CallableValue::Aot(_)) => {}
+            HeapValue::Callable(CallableValue::RuntimeNative32 { .. }) => {}
             HeapValue::UpvalCell(value) => self.mark_runtime_value(&value),
             HeapValue::ErrorVal(error) => {
                 for value in &error.trace {

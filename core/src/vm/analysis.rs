@@ -624,6 +624,12 @@ pub(crate) fn record_register_write_known_enabled() {
     update_thread_runtime_metrics(|metrics| metrics.register_writes += 1);
 }
 
+#[cfg(not(test))]
+#[inline]
+pub(crate) fn record_register_write() {
+    increment(&REGISTER_WRITES);
+}
+
 #[cfg(test)]
 #[inline]
 pub(crate) fn record_register_write() {
@@ -810,20 +816,17 @@ pub fn vm_runtime_metrics_reset() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
-    fn perf_value_kind_from_val_keeps_containers_unknown() {
+    fn perf_value_kind_from_val_keeps_heap_values_unknown() {
         assert_eq!(PerfValueKind::from_val(&Val::Nil), PerfValueKind::Nil);
         assert_eq!(PerfValueKind::from_val(&Val::Bool(true)), PerfValueKind::Bool);
         assert_eq!(PerfValueKind::from_val(&Val::Int(42)), PerfValueKind::Int);
         assert_eq!(PerfValueKind::from_val(&Val::Float(1.5)), PerfValueKind::Float);
         assert_eq!(PerfValueKind::from_val(&Val::from_str("lk")), PerfValueKind::String);
-
-        let list = Val::test_list_from_values(vec![Val::Int(1)]);
-        let map = Val::test_string_map_from_hashmap(HashMap::from([("answer".to_string(), Val::Int(42))]));
-
-        assert_eq!(PerfValueKind::from_val(&list), PerfValueKind::Unknown);
-        assert_eq!(PerfValueKind::from_val(&map), PerfValueKind::Unknown);
+        assert_eq!(
+            PerfValueKind::from_val(&Val::from_str("longer-than-short")),
+            PerfValueKind::String
+        );
     }
 }

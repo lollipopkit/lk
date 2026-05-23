@@ -353,7 +353,6 @@ fn call_callable(
             }
             call_runtime_native_entry(&entry, args, runtime)
         }
-        _ => bail!("{context} must be a RuntimeNative32 or Runtime32 callable"),
     }
 }
 

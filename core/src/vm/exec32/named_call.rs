@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    val::{CallableValue, HeapValue, RuntimeVal, TypedMap},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedMap},
     vm::{CallWindow32, Function32, Module32, NativeArgs32, NativeEntry32, VmContext},
 };
 
@@ -18,7 +18,6 @@ use super::{
 /// This is the direct-writer variant — call from a code path where you already
 /// hold a `&TypedMap` reference (e.g. the dynamic `__lk_call_method_named` builtin).
 /// All typed-map variants are handled without requiring `&mut HeapStore`.
-#[allow(dead_code)]
 pub(crate) fn write_named_args32_to_frame_from_typed_map(
     function: &Function32,
     positional: &[RuntimeVal],
@@ -165,6 +164,90 @@ pub(super) fn write_named_args32_to_frame(
     Ok(())
 }
 
+pub(super) fn write_named_args32_to_frame_from_stack(
+    function: &Function32,
+    positional: &[RuntimeVal],
+    caller_stack: &[RuntimeVal],
+    named_start: usize,
+    named_count: u16,
+    heap: &HeapStore,
+    frame: &mut [RuntimeVal],
+) -> Result<()> {
+    if frame.len() < function.param_count as usize {
+        bail!(
+            "callee frame has {} slots, function requires {} params",
+            frame.len(),
+            function.param_count
+        );
+    }
+
+    if named_count == 0 {
+        if function.param_count != positional.len() as u16 {
+            bail!(
+                "Function expects {} positional arguments, got {}",
+                function.param_count,
+                positional.len()
+            );
+        }
+        frame[..positional.len()].clone_from_slice(positional);
+        return Ok(());
+    }
+
+    if function.param_names.len() != function.param_count as usize {
+        bail!("Function does not expose named parameter metadata");
+    }
+    let positional_count = function.positional_param_count as usize;
+    if positional.len() != positional_count {
+        bail!(
+            "Function expects {} positional arguments before named arguments, got {}",
+            positional_count,
+            positional.len()
+        );
+    }
+
+    frame[..positional_count].clone_from_slice(positional);
+    let mut seen = vec![false; function.param_count as usize - positional_count];
+    let named_end = named_start + named_count as usize * 2;
+    let Some(named_slots) = caller_stack.get(named_start..named_end) else {
+        bail!("CallNamed argument window {}..{} out of bounds", named_start, named_end);
+    };
+    for pair in named_slots.chunks_exact(2) {
+        let name = call_named_arg_name(&pair[0], heap)?;
+        let Some(offset) = function.param_names[positional_count..]
+            .iter()
+            .position(|param| param.as_ref() == name)
+        else {
+            bail!("unknown named argument `{name}`");
+        };
+        if std::mem::replace(&mut seen[offset], true) {
+            bail!("duplicate named argument `{name}`");
+        }
+        frame[positional_count + offset] = pair[1].clone();
+    }
+
+    if let Some(index) = seen.iter().position(|seen| !*seen) {
+        bail!(
+            "missing required named argument `{}`",
+            function.param_names[positional_count + index]
+        );
+    }
+    Ok(())
+}
+
+fn call_named_arg_name<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Result<&'a str> {
+    match value {
+        RuntimeVal::ShortStr(value) => Ok(value.as_str()),
+        RuntimeVal::Obj(handle) => match heap
+            .get(*handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::String(value) => Ok(value.as_ref()),
+            _ => bail!("CallNamed argument name must be a string"),
+        },
+        _ => bail!("CallNamed argument name must be a string"),
+    }
+}
+
 impl Executor32 {
     pub(super) fn call_function_named(
         &mut self,
@@ -232,10 +315,7 @@ impl Executor32 {
             CallableValue::Closure {
                 function_index,
                 captures,
-            } => {
-                let named = self.read_named_call_args(window, named_count)?;
-                self.call_closure_named_stack_args(module, function_index, captures, window, &named, ctx)
-            }
+            } => self.call_closure_named_stack_args(module, function_index, captures, window, named_count, ctx),
             CallableValue::Runtime32(function) => {
                 let named = self.read_named_call_args(window, named_count)?;
                 let args = self.call_args_stack_range(window)?;
@@ -247,9 +327,6 @@ impl Executor32 {
                     ctx.as_deref_mut(),
                 );
                 result.or_else(|error| self.handle_call_error(error))
-            }
-            CallableValue::Aot(_) => {
-                bail!("AOT callable is not implemented in Executor32 yet")
             }
         }
     }

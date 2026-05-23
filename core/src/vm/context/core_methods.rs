@@ -4,9 +4,9 @@ use anyhow::{anyhow, bail};
 use arcstr::ArcStr;
 
 use crate::{
-    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, Type, TypedList},
+    val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, Type, TypedList},
     vm::{
-        NativeArgs32, NativeRuntime32, call_runtime_value32_runtime, call_runtime_value32_runtime_named,
+        NativeArgs32, NativeRuntime32, call_runtime_value32_runtime, call_runtime_value32_runtime_named_map,
         call_runtime_value32_runtime_with_receiver,
     },
 };
@@ -68,12 +68,12 @@ pub(super) fn core_call_method_named_builtin32(
         args.get(2).expect("arity checked"),
         runtime.heap_mut(),
     )?;
-    let named = runtime_named_args(
+    let named = runtime_named_arg_map(
         "__lk_call_method_named",
         args.get(3).expect("arity checked"),
-        runtime.heap_mut(),
+        runtime.heap(),
     )?;
-    call_method_named_runtime(receiver, method, &positional, &named, runtime)
+    call_method_named_runtime(receiver, method, &positional, named, runtime)
 }
 
 fn call_method_positional_runtime(
@@ -109,7 +109,7 @@ fn call_method_named_runtime(
     receiver: RuntimeVal,
     method: ArcStr,
     positional: &[RuntimeVal],
-    named: &[(Arc<str>, RuntimeVal)],
+    named: Option<HeapRef>,
     runtime: &mut NativeRuntime32<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     if let Some(prop) = runtime_access(&receiver, method.as_str(), runtime.heap_mut())? {
@@ -117,13 +117,13 @@ fn call_method_named_runtime(
             let Some((state, ctx, module)) = runtime.parts_mut() else {
                 bail!("__lk_call_method_named requires full runtime state for callable receiver");
             };
-            return call_runtime_value32_runtime_named(prop, positional, named, state, module, ctx);
+            return call_runtime_value32_runtime_named_map(prop, positional, named, state, module, ctx);
         }
-        if positional.is_empty() && named.is_empty() {
+        if positional.is_empty() && named.is_none() {
             return Ok(prop);
         }
     }
-    if named.is_empty() {
+    if named.is_none() {
         if let Some(result) = dispatch_map_builtin_method(&receiver, method.as_str(), positional, runtime.heap_mut())? {
             return Ok(result);
         }
@@ -137,7 +137,7 @@ fn call_method_named_runtime(
             return Ok(result);
         }
     }
-    call_trait_method_runtime(receiver, method, positional, named, runtime)
+    bail!("Named arguments are not supported for trait methods")
 }
 
 /// Dispatch built-in map instance methods: set, get, has, len.
@@ -483,29 +483,20 @@ fn runtime_positional_args(helper: &str, value: &RuntimeVal, heap: &mut HeapStor
     Ok(list.materialize_mixed(heap))
 }
 
-fn runtime_named_args(
-    helper: &str,
-    value: &RuntimeVal,
-    heap: &mut HeapStore,
-) -> anyhow::Result<Vec<(Arc<str>, RuntimeVal)>> {
+fn runtime_named_arg_map(helper: &str, value: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<Option<HeapRef>> {
     let handle = match value {
-        RuntimeVal::Nil => return Ok(Vec::new()),
+        RuntimeVal::Nil => return Ok(None),
         RuntimeVal::Obj(h) => *h,
         other => bail!("{helper} expects named arguments as map, got {:?}", other.kind()),
     };
 
-    // Phase 1: immutable borrow without cloning TypedMap.
-    {
-        let heap_val = heap
-            .get(handle)
-            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-        let HeapValue::Map(map) = heap_val else {
-            bail!("{helper} expects named arguments as map, got {}", heap_val.type_name());
-        };
-        return map
-            .string_entries_no_heap()
-            .map_err(|e| anyhow!("{helper} named argument key must be a string: {e}"));
-    }
+    let heap_val = heap
+        .get(handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+    let HeapValue::Map(_) = heap_val else {
+        bail!("{helper} expects named arguments as map, got {}", heap_val.type_name());
+    };
+    Ok(Some(handle))
 }
 
 fn runtime_string_value(value: String, heap: &mut HeapStore) -> RuntimeVal {

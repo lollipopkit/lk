@@ -4,7 +4,7 @@ const zhCN: Translation = {
   meta: {
     lang: 'zh-CN',
     title: 'LK Lang',
-    description: 'LK 是 Rust 编写的 Rust 风格高性能轻量脚本语言，支持编译为ELF/LLVM IR/字节码, 包含丰富语法糖',
+    description: 'LK 是 Rust 编写的 Rust 风格高性能轻量脚本语言，支持 Instr32 VM、LLVM IR 和可执行文件路径，包含丰富语法糖',
   },
   nav: {
     spec: '规范',
@@ -15,7 +15,7 @@ const zhCN: Translation = {
     eyebrow: '用 Rust 编写的 Rust 风格脚本语言',
     title: '高性能 轻量 现代 脚本语言。',
     subtitle:
-      'LK 提供清晰的语法、确定性的字节码执行、结构化模式匹配和实用标准库，支持编译为ELF/LLVM IR/字节码, 包含丰富语法糖。',
+      'LK 提供清晰的语法、确定性的 Instr32 执行、结构化模式匹配和实用标准库，支持 Instr32 模块、LLVM IR 和可执行文件路径。',
     primaryAction: '开始',
     secondaryAction: '查看特性',
     previewLabel: '语法预览',
@@ -50,9 +50,9 @@ const zhCN: Translation = {
   },
   runtime: {
     kicker: '运行时与工具链',
-    title: '从脚本到字节码、诊断、LLVM IR 或可执行文件。',
+    title: '从脚本到 Instr32 模块、诊断、LLVM IR 或可执行文件。',
     subtitle:
-      'LK 可以运行 REPL、执行 `.lk` 文件、不执行只做类型检查、编译为 `.lkb`，并在工具可用时进入 LLVM 相关编译路径。',
+      'LK 可以运行 REPL、执行 `.lk` 文件、不执行只做类型检查、编译为可执行 `.lkm` Instr32 模块产物，并在工具可用时进入 LLVM 相关编译路径。',
     rows: {
       valueModel: '值模型',
       execution: '执行',

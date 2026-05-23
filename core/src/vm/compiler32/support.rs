@@ -181,7 +181,7 @@ fn const_heap_value_from_literal(value: &Val) -> Result<ConstHeapValue32> {
         return Ok(ConstHeapValue32::LongString(text.into()));
     }
 
-    bail!("Compiler32 cannot convert {} to heap const", value.type_name())
+    bail!("Compiler32 cannot convert {} to heap const", ast_literal_kind(value))
 }
 
 pub(super) fn const_heap_value_from_expr_literal(expr: &Expr) -> Result<Option<ConstHeapValue32>> {
@@ -233,7 +233,7 @@ fn const_runtime_value_from_literal(value: &Val) -> Result<ConstRuntimeValue32> 
         }
         other => bail!(
             "Compiler32 cannot convert AST literal value to ConstRuntimeValue32: {}",
-            other.type_name()
+            ast_literal_kind(other)
         ),
     })
 }
@@ -265,8 +265,18 @@ fn const_runtime_map_key_from_literal(value: &Val) -> Result<Option<RuntimeMapKe
             }
         }
         Val::Float(_) => return Ok(None),
-        other => bail!("Compiler32 cannot convert {} to const map key", other.type_name()),
+        other => bail!("Compiler32 cannot convert {} to const map key", ast_literal_kind(other)),
     }))
+}
+
+pub(super) fn ast_literal_kind(value: &Val) -> &'static str {
+    match value {
+        Val::Nil => "Nil",
+        Val::Bool(_) => "Bool",
+        Val::Int(_) => "Int",
+        Val::Float(_) => "Float",
+        Val::ShortStr(_) | Val::LongStr(_) => "String",
+    }
 }
 
 pub(super) fn expr_kind(expr: &Expr) -> &'static str {

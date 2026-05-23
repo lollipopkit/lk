@@ -131,7 +131,7 @@ match data.req {
 
   const runtimeRows: [string, string][] = [
     ['Value model', 'String, Int, Float, Bool, Nil, List, Map, Function, Object, Iterator, Stream, Task, Channel'],
-    ['Execution', 'REPL, source execution, bytecode compilation, type-check diagnostics, LLVM IR, and ELF output paths'],
+    ['Execution', 'REPL, source execution, Instr32 module output, type-check diagnostics, LLVM IR, and ELF output paths'],
     ['Imports', 'Stdlib modules, selected imports, aliases, namespace imports, sanitized relative file modules, and package workspaces'],
     ['Concurrency', 'Feature-gated spawn, channels, send, recv, select, task, stream, and blocking collection helpers'],
   ]
@@ -672,7 +672,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         <div class="compile-strip">
           <span><Terminal size={16} /> lk request.lk</span>
           <ChevronRight size={16} />
-          <span><Cpu size={16} /> bytecode VM</span>
+          <span><Cpu size={16} /> Instr32 VM</span>
           <ChevronRight size={16} />
           <span><Check size={16} /> diagnostics</span>
         </div>

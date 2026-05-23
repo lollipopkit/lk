@@ -5,7 +5,7 @@ const en: BaseTranslation = {
     lang: 'en',
     title: 'LK Lang',
     description:
-      'LK is a Rust-like scripting language with a bytecode VM, rich pattern matching, package imports, and a batteries-included standard library.',
+      'LK is a Rust-like scripting language with an Instr32 VM, rich pattern matching, package imports, and a batteries-included standard library.',
   },
   nav: {
     spec: 'Spec',
@@ -16,7 +16,7 @@ const en: BaseTranslation = {
     eyebrow: 'Rust-like scripting language written in Rust',
     title: 'Performant, lightweight, modern language.',
     subtitle:
-      'LK gives you clear syntax, deterministic bytecode execution, structured pattern matching, and a practical standard library for embedding logic in applications, writing automation scripts, and moving complex decisions out of host code.',
+      'LK gives you clear syntax, deterministic Instr32 execution, structured pattern matching, and a practical standard library for embedding logic in applications, writing automation scripts, and moving complex decisions out of host code.',
     primaryAction: 'Start',
     secondaryAction: 'Read features',
     previewLabel: 'LK syntax preview',
@@ -51,9 +51,9 @@ const en: BaseTranslation = {
   },
   runtime: {
     kicker: 'Runtime and Tooling',
-    title: 'From script to bytecode, diagnostics, LLVM IR, or executable.',
+    title: 'From script to Instr32 modules, diagnostics, LLVM IR, or executable.',
     subtitle:
-      'LK can run a REPL, execute `.lk` files, type-check without executing, compile to `.lkb`, and route deeper compilation through LLVM-backed paths when those tools are available.',
+      'LK can run a REPL, execute `.lk` files, type-check without executing, compile to executable `.lkm` Instr32 module artifacts, and route deeper compilation through LLVM-backed paths when those tools are available.',
     rows: {
       valueModel: 'Value model',
       execution: 'Execution',

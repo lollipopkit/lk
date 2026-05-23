@@ -8,6 +8,7 @@ pub(crate) mod alloc;
 pub(crate) mod analysis;
 #[allow(dead_code, unused_imports)]
 mod analysis_queries;
+mod artifact32;
 mod call_window32;
 mod compiler32;
 mod context;
@@ -18,6 +19,7 @@ mod runtime32;
 #[allow(dead_code)]
 pub(crate) mod ssa;
 
+pub use artifact32::*;
 pub use call_window32::*;
 pub use compiler32::*;
 pub use context::VmContext;
@@ -25,3 +27,5 @@ pub use exec32::*;
 pub use gc32::*;
 pub use ir32::*;
 pub use runtime32::*;
+
+pub use analysis::{VmRuntimeMetrics, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot};

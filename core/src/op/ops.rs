@@ -3,30 +3,11 @@ use core::fmt::Debug;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-use anyhow::{Result, anyhow};
-
-use crate::vm::analysis::vm_runtime_metrics_enabled;
-use crate::{expr::Expr, val::Val};
-
-pub(crate) fn err_op<T: Display, R>(l: &Val, op: T, r: &Val) -> Result<R> {
-    Err(anyhow!("Invalid op: {l} {op} {r}"))
-}
+use crate::val::Val;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum UnaryOp {
     Not,
-}
-
-impl UnaryOp {
-    pub(crate) fn eval_val(&self, val: &Val) -> Result<Val> {
-        match self {
-            UnaryOp::Not => match val {
-                Val::Bool(b) => Ok(Val::Bool(!b)),
-                Val::Nil => Ok(Val::Bool(true)),
-                _ => Err(anyhow!("Invalid operand: !{val}")),
-            },
-        }
-    }
 }
 
 impl Display for UnaryOp {
@@ -65,98 +46,41 @@ impl BinOp {
         )
     }
 
-    fn arith(&self, l: &Val, r: &Val) -> Result<Val> {
-        self.arith_with_metrics(l, r, vm_runtime_metrics_enabled())
-    }
-
-    fn arith_with_metrics(&self, l: &Val, r: &Val, collect_metrics: bool) -> Result<Val> {
-        let _ = collect_metrics;
+    pub(crate) fn cmp_literals(&self, l: &Val, r: &Val) -> Option<bool> {
         match self {
-            BinOp::Add => l + r,
-            BinOp::Sub => l - r,
-            BinOp::Mul => l * r,
-            BinOp::Div => l / r,
-            BinOp::Mod => l % r,
-            _ => err_op(l, self, r),
-        }
-    }
-
-    pub(crate) fn cmp(&self, l: &Val, r: &Val) -> Result<bool> {
-        match self {
-            BinOp::Eq => Ok(l == r),
-            BinOp::Ne => Ok(l != r),
+            BinOp::Eq => Some(l == r),
+            BinOp::Ne => Some(l != r),
             BinOp::In => match (l, r) {
                 (l, r) if l.as_str().is_some() && r.as_str().is_some() => {
-                    Ok(r.as_str().unwrap().contains(l.as_str().unwrap()))
+                    Some(r.as_str().unwrap().contains(l.as_str().unwrap()))
                 }
-                _ => err_op(l, self, r),
+                _ => None,
             },
             _ => {
-                // For other comparison operators, we need ordering
-                let ord = match l.partial_cmp(r) {
-                    Some(ord) => ord,
-                    None => return err_op(l, self, r),
-                };
+                let ord = cmp_literal_ordering(l, r)?;
 
                 match self {
-                    BinOp::Gt => Ok(ord == Ordering::Greater),
-                    BinOp::Lt => Ok(ord == Ordering::Less),
-                    BinOp::Ge => Ok(ord != Ordering::Less),
-                    BinOp::Le => Ok(ord != Ordering::Greater),
-                    _ => err_op(l, self, r),
+                    BinOp::Gt => Some(ord == Ordering::Greater),
+                    BinOp::Lt => Some(ord == Ordering::Less),
+                    BinOp::Ge => Some(ord != Ordering::Less),
+                    BinOp::Le => Some(ord != Ordering::Greater),
+                    _ => None,
                 }
             }
         }
     }
+}
 
-    #[allow(dead_code)]
-    pub(crate) fn eval(&self, l: &Expr, r: &Expr) -> Result<Val> {
-        // For comparison operators, we can optimize by only evaluating the left side first
-        if self.is_cmp() && matches!(self, BinOp::Eq | BinOp::Ne) {
-            let l_val = l.eval()?;
-
-            // Short-circuit for nil comparisons
-            match (&l_val, self) {
-                (Val::Nil, BinOp::Eq) => {
-                    let r_val = r.eval()?;
-                    return Ok(Val::Bool(matches!(r_val, Val::Nil)));
-                }
-                (Val::Nil, BinOp::Ne) => {
-                    let r_val = r.eval()?;
-                    return Ok(Val::Bool(!matches!(r_val, Val::Nil)));
-                }
-                _ => {}
-            }
-
-            let r_val = r.eval()?;
-            return Ok(Val::Bool(self.cmp(&l_val, &r_val)?));
-        }
-
-        // For arithmetic operations
-        let l_val = l.eval()?;
-        let r_val = r.eval()?;
-
-        if self.is_arith() {
-            self.arith(&l_val, &r_val)
-        } else if self.is_cmp() {
-            Ok(Val::Bool(self.cmp(&l_val, &r_val)?))
-        } else {
-            Err(anyhow!("Invalid eval: {l_val} {self:?} {r_val}"))
-        }
-    }
-
-    pub(crate) fn eval_vals(&self, l_val: &Val, r_val: &Val) -> Result<Val> {
-        self.eval_vals_with_metrics(l_val, r_val, vm_runtime_metrics_enabled())
-    }
-
-    pub(crate) fn eval_vals_with_metrics(&self, l_val: &Val, r_val: &Val, collect_metrics: bool) -> Result<Val> {
-        if self.is_arith() {
-            self.arith_with_metrics(l_val, r_val, collect_metrics)
-        } else if self.is_cmp() {
-            Ok(Val::Bool(self.cmp(l_val, r_val)?))
-        } else {
-            Err(anyhow!("Invalid eval: {l_val} {self:?} {r_val}"))
-        }
+fn cmp_literal_ordering(l: &Val, r: &Val) -> Option<Ordering> {
+    match (l, r) {
+        (Val::Int(a), Val::Int(b)) => a.partial_cmp(b),
+        (Val::Float(a), Val::Float(b)) => a.partial_cmp(b),
+        (Val::Int(a), Val::Float(b)) => (*a as f64).partial_cmp(b),
+        (Val::Float(a), Val::Int(b)) => a.partial_cmp(&(*b as f64)),
+        _ => match (l.as_str(), r.as_str()) {
+            (Some(a), Some(b)) => a.partial_cmp(b),
+            _ => None,
+        },
     }
 }
 

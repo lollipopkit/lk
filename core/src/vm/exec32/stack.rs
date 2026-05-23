@@ -4,6 +4,8 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::{val::RuntimeVal, vm::CallWindow32};
 
+use crate::vm::analysis::record_register_write;
+
 use super::Executor32;
 
 impl Executor32 {
@@ -20,6 +22,7 @@ impl Executor32 {
     pub(super) fn write(&mut self, register: u8, value: RuntimeVal) -> Result<()> {
         let index = self.stack_index(register)?;
         self.state.stack[index] = value;
+        record_register_write();
         Ok(())
     }
 

@@ -19,11 +19,14 @@ mod support;
 mod value_ops;
 
 pub use super::RuntimeCallable32;
-pub use program::{execute_program32, execute_program32_raw_with_ctx, execute_source32};
+pub use program::{
+    compile_program32_module_with_ctx, execute_compiled_module32_with_ctx, execute_module32_artifact_with_ctx,
+    execute_program32, execute_program32_raw_with_ctx, execute_source32,
+};
 pub use runtime_callable::{
     call_runtime_callable32_raw, call_runtime_callable32_runtime, call_runtime_value32_runtime,
-    call_runtime_value32_runtime_named, call_runtime_value32_runtime_with_receiver, copy_runtime_value,
-    runtime_value_to_callable32,
+    call_runtime_value32_runtime_named, call_runtime_value32_runtime_named_map,
+    call_runtime_value32_runtime_with_receiver, copy_runtime_value, runtime_value_to_callable32,
 };
 
 use std::collections::BTreeMap;
@@ -35,6 +38,10 @@ use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, Typ
 
 use super::{
     CallWindow32, Function32, Module32, Opcode32, RegisterIndex, RuntimeExport32, RuntimeModuleState32, VmContext,
+    analysis::{
+        VmCallMetric, VmContainerMetric, record_branch_op_known_enabled, record_call_op_known_enabled,
+        record_container_op_known_enabled, record_opcode_step_known_enabled, vm_runtime_metrics_enabled,
+    },
 };
 #[cfg(test)]
 use super::{Compiler32, GlobalSlot32};
@@ -376,7 +383,11 @@ impl Executor32 {
             );
         }
 
+        let collect_metrics = vm_runtime_metrics_enabled();
         while self.pc < function.code.len() {
+            if collect_metrics {
+                record_opcode_step_known_enabled();
+            }
             self.maybe_collect_garbage();
             let instr = function.code[self.pc];
             if self.try_load_const_instr(function, instr)? {
@@ -538,6 +549,9 @@ impl Executor32 {
                     self.end_try();
                 }
                 Opcode32::Test => {
+                    if collect_metrics {
+                        record_branch_op_known_enabled(true);
+                    }
                     let truthy = self.truthy(instr.a())?;
                     if truthy == (instr.b() != 0) {
                         self.pc += 1;
@@ -546,9 +560,15 @@ impl Executor32 {
                     }
                 }
                 Opcode32::Jmp => {
+                    if collect_metrics {
+                        record_branch_op_known_enabled(false);
+                    }
                     self.pc = self.relative_pc(instr.sj_arg())?;
                 }
                 Opcode32::NewList => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::List);
+                    }
                     let values = self.read_register_slice(instr.b(), instr.c())?;
                     let list = HeapValue::List(TypedList::from_runtime_slice(values, &self.state.heap));
                     let handle = self.state.heap.alloc(list);
@@ -556,6 +576,9 @@ impl Executor32 {
                     self.pc += 1;
                 }
                 Opcode32::NewMap => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::Map);
+                    }
                     let map = self.read_map_entries(instr.b(), instr.c())?;
                     let handle = self
                         .state
@@ -565,37 +588,58 @@ impl Executor32 {
                     self.pc += 1;
                 }
                 Opcode32::NewObject => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::Generic);
+                    }
                     let object = self.read_object_fields(instr.b(), instr.c())?;
                     let handle = self.state.heap.alloc(HeapValue::Object(object));
                     self.write(instr.a(), RuntimeVal::Obj(handle))?;
                     self.pc += 1;
                 }
                 Opcode32::NewRange => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::List);
+                    }
                     let list = self.build_int_range(instr.b(), instr.c() != 0)?;
                     let handle = self.state.heap.alloc(HeapValue::List(TypedList::Int(list)));
                     self.write(instr.a(), RuntimeVal::Obj(handle))?;
                     self.pc += 1;
                 }
                 Opcode32::Len => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::Generic);
+                    }
                     let len = self.len_value(instr.b())?;
                     self.write(instr.a(), RuntimeVal::Int(len as i64))?;
                     self.pc += 1;
                 }
                 Opcode32::ToIter => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::Generic);
+                    }
                     let iter = self.to_iter(instr.b())?;
                     self.write(instr.a(), iter)?;
                     self.pc += 1;
                 }
                 Opcode32::GetIndex => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::Generic);
+                    }
                     let value = self.get_index(instr.b(), instr.c())?;
                     self.write(instr.a(), value)?;
                     self.pc += 1;
                 }
                 Opcode32::SetIndex => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::Generic);
+                    }
                     self.set_index(instr.a(), instr.b(), instr.c())?;
                     self.pc += 1;
                 }
                 Opcode32::Call => {
+                    if collect_metrics {
+                        record_call_op_known_enabled(VmCallMetric::Generic);
+                    }
                     // A holds the call-window base (8-bit field; B is only 7 bits and would
                     // be truncated for call_base >= 128, so we ignore B here).
                     let window = CallWindow32::new(RegisterIndex::new(instr.a() as u16), instr.c() as u16, 1);
@@ -608,6 +652,9 @@ impl Executor32 {
                     self.pc += 1;
                 }
                 Opcode32::CallNamed => {
+                    if collect_metrics {
+                        record_call_op_known_enabled(VmCallMetric::Named);
+                    }
                     let payload = instr.bx();
                     let positional_count = (payload & 0x7f) as u16;
                     let named_count = (payload >> 7) as u16;

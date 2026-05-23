@@ -137,25 +137,6 @@ fn compiler32_lowers_literal_list_and_map_values_to_heap_consts() {
 }
 
 #[test]
-fn compiler32_rejects_val_container_literals() {
-    let list = compile_expr32(&Expr::Val(Val::test_list_from_values(vec![Val::Int(1)])));
-    let map = compile_expr32(&Expr::Val(Val::test_string_map_from_hashmap(
-        [("answer".to_string(), Val::Int(42))].into(),
-    )));
-
-    assert!(
-        list.expect_err("Val list literal should not compile")
-            .to_string()
-            .contains("List")
-    );
-    assert!(
-        map.expect_err("Val map literal should not compile")
-            .to_string()
-            .contains("Map")
-    );
-}
-
-#[test]
 fn compiler32_lowers_program_locals_and_assignment() {
     let function = compile_source32(
         r#"

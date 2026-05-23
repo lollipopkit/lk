@@ -1,11 +1,6 @@
-use arcstr::ArcStr;
-
-use std::sync::Arc;
-
 use super::{
-    HeapValue, Val,
+    Val,
     intern::{intern, intern_owned},
-    map_key_cache::cache_fresh_str_hash,
     types::ShortStr,
 };
 
@@ -16,7 +11,7 @@ impl Val {
         if let Some(short) = ShortStr::new(s) {
             Val::ShortStr(short)
         } else {
-            Val::Obj(Arc::new(HeapValue::String(intern(s).as_str().into())))
+            Val::LongStr(intern(s))
         }
     }
 
@@ -26,30 +21,7 @@ impl Val {
             Val::ShortStr(short)
         } else {
             let arc = intern_owned(s);
-            cache_fresh_str_hash(arc.as_str());
-            Val::Obj(Arc::new(HeapValue::String(arc.as_str().into())))
-        }
-    }
-
-    #[inline]
-    pub fn str_intern(s: &str) -> Val {
-        Val::Obj(Arc::new(HeapValue::String(intern(s).as_str().into())))
-    }
-
-    #[inline]
-    pub fn intern_str(s: &str) -> ArcStr {
-        intern(s)
-    }
-
-    #[inline]
-    pub fn string_key_arcstr(&self) -> Option<ArcStr> {
-        match self {
-            Val::ShortStr(s) => Some(intern(s.as_str())),
-            Val::Obj(value) => match value.as_ref() {
-                HeapValue::String(value) => Some(intern(value.as_ref())),
-                _ => None,
-            },
-            _ => None,
+            Val::LongStr(arc)
         }
     }
 
@@ -58,15 +30,12 @@ impl Val {
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Val::ShortStr(s) => Some(s.as_str()),
-            Val::Obj(value) => match value.as_ref() {
-                HeapValue::String(value) => Some(value.as_ref()),
-                _ => None,
-            },
+            Val::LongStr(value) => Some(value.as_ref()),
             _ => None,
         }
     }
 
-    /// Fast string concatenation — hot path for `s = s + "x"` loops.
+    /// String literal concatenation used by AST constant folding.
     #[inline]
     pub(crate) fn concat_strings(a: &str, b: &str) -> Val {
         if a.is_empty() {
@@ -80,11 +49,5 @@ impl Val {
         s.push_str(a);
         s.push_str(b);
         Val::from_concat_string(s)
-    }
-
-    #[inline]
-    pub(crate) fn ascii_char_value(byte: u8) -> Val {
-        debug_assert!(byte.is_ascii());
-        Val::ShortStr(ShortStr::from_char(byte as char))
     }
 }
