@@ -5,7 +5,7 @@ mod tests {
         stmt::{Program, Stmt, run_program, run_program_default, stmt_parser::StmtParser},
         token::Tokenizer,
         typ::TypeChecker,
-        val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedMap, Val},
+        val::{HeapStore, HeapValue, LiteralVal, RuntimeMapKey, RuntimeVal, ShortStr, TypedMap},
         vm::{NativeArgs32, Program32Result, VmContext, call_runtime_callable32_raw, call_runtime_callable32_runtime},
     };
     use anyhow::Result;
@@ -70,8 +70,8 @@ mod tests {
             if let Expr::Var(name) = *expr {
                 assert_eq!(name, "add");
                 assert_eq!(args.len(), 2);
-                assert_eq!(args[0].as_ref(), &Expr::Val(Val::Int(1)));
-                assert_eq!(args[1].as_ref(), &Expr::Val(Val::Int(2)));
+                assert_eq!(args[0].as_ref(), &Expr::Literal(LiteralVal::Int(1)));
+                assert_eq!(args[1].as_ref(), &Expr::Literal(LiteralVal::Int(2)));
             } else {
                 panic!("Expected variable as function target, got: {:?}", expr);
             }
@@ -445,7 +445,7 @@ mod tests {
             .globals
             .iter()
             .find_map(|value| {
-                crate::vm::runtime_value_to_callable32(
+                crate::vm::runtime_value_to_callable32_externalized(
                     value,
                     &result.state.heap,
                     &result.state.globals,
@@ -459,7 +459,7 @@ mod tests {
         env.define_runtime_value("offset", RuntimeVal::Int(100), HeapStore::new());
 
         let captured_result = call_runtime_callable32_raw(&outer, &[], &mut env)?;
-        let captured = crate::vm::runtime_value_to_callable32(
+        let captured = crate::vm::runtime_value_to_callable32_externalized(
             captured_result.returns.first().unwrap_or(&crate::val::RuntimeVal::Nil),
             &captured_result.state.heap,
             &captured_result.state.globals,
@@ -488,7 +488,7 @@ mod tests {
         let program = Program::new(vec![Box::new(stmt)])?;
         let result = program.execute32_raw_with_ctx(&mut env)?;
         let factorial = result.state.globals.iter().find_map(|value| {
-            crate::vm::runtime_value_to_callable32(
+            crate::vm::runtime_value_to_callable32_externalized(
                 value,
                 &result.state.heap,
                 &result.state.globals,
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn test_function_with_named_params_parsing() -> Result<()> {
-        let source = "fn draw_rect(x: Int, y: Int, {w: Int, h: ?Int = 100}) { return x; }";
+        let source = "fn draw_rect(x: Int, y: Int, {w: Int, h: Int? = 100}) { return x; }";
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let stmt = parser.parse_statement()?;
@@ -526,7 +526,10 @@ mod tests {
                 named_params[1].type_annotation,
                 Some(crate::val::Type::Optional(_))
             ));
-            assert!(matches!(named_params[1].default, Some(Expr::Val(Val::Int(100)))));
+            assert!(matches!(
+                named_params[1].default,
+                Some(Expr::Literal(LiteralVal::Int(100)))
+            ));
         } else {
             panic!("Expected Function statement with named params, got: {:?}", stmt);
         }
@@ -536,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_function_named_params_only() -> Result<()> {
-        let source = "fn configure({host: String, timeout_ms: ?Int = 1000}) { }";
+        let source = "fn configure({host: String, timeout_ms: Int? = 1000}) { }";
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let stmt = parser.parse_statement()?;

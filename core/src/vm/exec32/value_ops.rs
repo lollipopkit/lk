@@ -93,22 +93,6 @@ impl Executor32 {
         ))
     }
 
-    pub(super) fn runtime_value_to_list_values(&mut self, value: &RuntimeVal) -> Result<Option<Vec<RuntimeVal>>> {
-        let RuntimeVal::Obj(handle) = value else {
-            return Ok(None);
-        };
-        let list = match self
-            .state
-            .heap
-            .get(*handle)
-            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        {
-            HeapValue::List(list) => list.clone(),
-            _ => return Ok(None),
-        };
-        Ok(Some(list.materialize_mixed(&mut self.state.heap)))
-    }
-
     pub(super) fn runtime_value_display_string(&self, value: &RuntimeVal) -> Result<String> {
         match value {
             RuntimeVal::Nil => Ok("nil".to_string()),

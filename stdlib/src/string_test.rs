@@ -8,7 +8,7 @@ mod tests {
         module::ModuleRegistry,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+        val::{HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList},
         vm::{
             NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32,
             VmContext,
@@ -142,10 +142,13 @@ mod tests {
     fn test_string_replace_duplicate_named_argument_error() {
         let mut heap = HeapStore::new();
         let source = runtime_string_value("lol", &mut heap);
-        let named_args = vec![
-            (Arc::<str>::from("pattern"), runtime_string_value("l", &mut heap)),
-            (Arc::<str>::from("pattern"), runtime_string_value("x", &mut heap)),
-            (Arc::<str>::from("with"), runtime_string_value("a", &mut heap)),
+        let named_args = [
+            RuntimeVal::ShortStr(ShortStr::new("pattern").expect("short")),
+            runtime_string_value("l", &mut heap),
+            RuntimeVal::ShortStr(ShortStr::new("pattern").expect("short")),
+            runtime_string_value("x", &mut heap),
+            RuntimeVal::ShortStr(ShortStr::new("with").expect("short")),
+            runtime_string_value("a", &mut heap),
         ];
         let (_, function) = string_native("replace").expect("replace native");
         let NativeFunction32::Plain(function) = function else {
@@ -153,8 +156,11 @@ mod tests {
         };
         let mut state = RuntimeModuleState32::new(heap, Vec::new());
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let err = function(NativeArgs32::new_with_named(&[source], &named_args), &mut runtime)
-            .expect_err("duplicate named arguments should error");
+        let err = function(
+            NativeArgs32::new_with_named_stack(&[source], &named_args, 0, 3),
+            &mut runtime,
+        )
+        .expect_err("duplicate named arguments should error");
         assert!(err.to_string().contains("duplicate named argument"));
     }
 

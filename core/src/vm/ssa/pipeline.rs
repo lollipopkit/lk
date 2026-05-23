@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::op::BinOp;
+use crate::operator::BinOp;
 use crate::vm::alloc::{AllocationRegion, RegionPlan};
 use crate::vm::analysis::{FunctionAnalysis, PerfContainerFact, PerfValueFact, PerfValueKind, PerformanceFacts};
 
@@ -41,33 +41,48 @@ fn build_performance_facts(ssa: &SsaFunction, escape: &crate::vm::analysis::Esca
         for stmt in &block.statements {
             let value_id = stmt.result.index();
             facts.ensure_value(value_id);
-            let kind = infer_rvalue_kind(&stmt.value, &facts);
+            let value_facts = infer_rvalue_facts(&stmt.value, &facts);
             let escape_class = if escaping.get(value_id).copied().unwrap_or(false) {
                 crate::vm::analysis::EscapeClass::Escapes
             } else {
                 crate::vm::analysis::EscapeClass::Trivial
             };
             facts.values[value_id] = PerfValueFact {
-                kind,
+                kind: value_facts.kind,
                 escape: escape_class,
                 move_preferred: !escape_class.is_escaping(),
                 must_clone: escape_class.is_escaping(),
             };
+            if let Some(list) = value_facts.list {
+                facts.set_value_list_fact(value_id, list);
+            }
+            if let Some(map) = value_facts.map {
+                facts.set_value_map_fact(value_id, map);
+            }
         }
     }
 
     facts
 }
 
-fn infer_rvalue_kind(value: &SsaRvalue, facts: &PerformanceFacts) -> PerfValueKind {
+#[derive(Debug, Clone, Copy, Default)]
+struct InferredValueFacts {
+    kind: PerfValueKind,
+    list: Option<PerfContainerFact>,
+    map: Option<PerfContainerFact>,
+}
+
+fn infer_rvalue_facts(value: &SsaRvalue, facts: &PerformanceFacts) -> InferredValueFacts {
     match value {
-        SsaRvalue::Const(value) => PerfValueKind::from_val(value),
-        SsaRvalue::Param(_) => PerfValueKind::Unknown,
-        SsaRvalue::Unary { .. } => PerfValueKind::Unknown,
+        SsaRvalue::Const(value) => InferredValueFacts {
+            kind: PerfValueKind::from_literal(value),
+            ..InferredValueFacts::default()
+        },
+        SsaRvalue::Param(_) | SsaRvalue::Unary { .. } => InferredValueFacts::default(),
         SsaRvalue::Binary { op, lhs, rhs } => {
             let lhs = facts.value(lhs.index()).map(|fact| fact.kind).unwrap_or_default();
             let rhs = facts.value(rhs.index()).map(|fact| fact.kind).unwrap_or_default();
-            match op {
+            let kind = match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod
                     if lhs == PerfValueKind::Int && rhs == PerfValueKind::Int =>
                 {
@@ -78,10 +93,14 @@ fn infer_rvalue_kind(value: &SsaRvalue, facts: &PerformanceFacts) -> PerfValueKi
                 }
                 op if op.is_cmp() => PerfValueKind::Bool,
                 _ => PerfValueKind::Unknown,
+            };
+            InferredValueFacts {
+                kind,
+                ..InferredValueFacts::default()
             }
         }
         SsaRvalue::List(values) => {
-            let _container = PerfContainerFact {
+            let list = PerfContainerFact {
                 value_kind: join_value_kinds(
                     values
                         .iter()
@@ -90,10 +109,14 @@ fn infer_rvalue_kind(value: &SsaRvalue, facts: &PerformanceFacts) -> PerfValueKi
                 known_len: Some(values.len()),
                 adoptable: values.is_empty(),
             };
-            PerfValueKind::List
+            InferredValueFacts {
+                kind: PerfValueKind::List,
+                list: Some(list),
+                ..InferredValueFacts::default()
+            }
         }
         SsaRvalue::Map(entries) => {
-            let _container = PerfContainerFact {
+            let map = PerfContainerFact {
                 value_kind: join_value_kinds(
                     entries
                         .iter()
@@ -102,14 +125,21 @@ fn infer_rvalue_kind(value: &SsaRvalue, facts: &PerformanceFacts) -> PerfValueKi
                 known_len: Some(entries.len()),
                 adoptable: entries.is_empty(),
             };
-            PerfValueKind::Map
+            InferredValueFacts {
+                kind: PerfValueKind::Map,
+                map: Some(map),
+                ..InferredValueFacts::default()
+            }
         }
-        SsaRvalue::StructLiteral { .. } | SsaRvalue::Call { .. } => PerfValueKind::Unknown,
-        SsaRvalue::Phi { sources } => join_value_kinds(
-            sources
-                .iter()
-                .filter_map(|source| facts.value(source.value.index()).map(|fact| fact.kind)),
-        ),
+        SsaRvalue::StructLiteral { .. } | SsaRvalue::Call { .. } => InferredValueFacts::default(),
+        SsaRvalue::Phi { sources } => InferredValueFacts {
+            kind: join_value_kinds(
+                sources
+                    .iter()
+                    .filter_map(|source| facts.value(source.value.index()).map(|fact| fact.kind)),
+            ),
+            ..InferredValueFacts::default()
+        },
     }
 }
 
@@ -147,5 +177,62 @@ fn build_region_plan(summary: &crate::vm::analysis::EscapeSummary) -> RegionPlan
 fn ensure_len<T: Default>(vec: &mut Vec<T>, len: usize) {
     if vec.len() < len {
         vec.resize_with(len, Default::default);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{expr::Expr, val::LiteralVal, vm::analysis::PerfValueKind};
+
+    use super::analyze_expr;
+
+    #[test]
+    fn performance_facts_record_list_container_shape() {
+        let analysis = analyze_expr(&Expr::List(vec![
+            Box::new(Expr::Literal(LiteralVal::Int(1))),
+            Box::new(Expr::Literal(LiteralVal::Int(2))),
+        ]))
+        .expect("analysis");
+        let ssa = analysis.ssa.as_ref().expect("ssa");
+        let value_id = ssa.blocks[ssa.entry.index()]
+            .statements
+            .last()
+            .expect("list statement")
+            .result
+            .index();
+
+        assert_eq!(
+            analysis.perf.value(value_id).map(|fact| fact.kind),
+            Some(PerfValueKind::List)
+        );
+        let list = analysis.perf.value_list(value_id).expect("list fact");
+        assert_eq!(list.value_kind, PerfValueKind::Int);
+        assert_eq!(list.known_len, Some(2));
+        assert!(!list.adoptable);
+    }
+
+    #[test]
+    fn performance_facts_record_map_container_shape() {
+        let analysis = analyze_expr(&Expr::Map(vec![(
+            Box::new(Expr::Literal(LiteralVal::from_str("answer"))),
+            Box::new(Expr::Literal(LiteralVal::Int(42))),
+        )]))
+        .expect("analysis");
+        let ssa = analysis.ssa.as_ref().expect("ssa");
+        let value_id = ssa.blocks[ssa.entry.index()]
+            .statements
+            .last()
+            .expect("map statement")
+            .result
+            .index();
+
+        assert_eq!(
+            analysis.perf.value(value_id).map(|fact| fact.kind),
+            Some(PerfValueKind::Map)
+        );
+        let map = analysis.perf.value_map(value_id).expect("map fact");
+        assert_eq!(map.value_kind, PerfValueKind::Int);
+        assert_eq!(map.known_len, Some(1));
+        assert!(!map.adoptable);
     }
 }

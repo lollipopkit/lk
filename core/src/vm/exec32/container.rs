@@ -3,9 +3,18 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, TypedList, TypedMap};
+use crate::val::{HeapRef, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, TypedList, TypedMap};
 
 use super::{Executor32, heap_kind, remove_runtime_entry, set_list_value};
+use crate::vm::analysis::{PerfIndexFact, PerfIndexTargetKind, PerfValueKind};
+
+#[derive(Clone, Copy)]
+enum IndexTargetKind {
+    List,
+    Map,
+    Object,
+    String,
+}
 
 impl Executor32 {
     pub(super) fn build_int_range(&self, base: u8, inclusive: bool) -> Result<Vec<i64>> {
@@ -76,32 +85,90 @@ impl Executor32 {
         Ok(RuntimeObject { type_name, fields })
     }
 
-    pub(super) fn get_index(&mut self, target_reg: u8, key_reg: u8) -> Result<RuntimeVal> {
+    pub(super) fn get_index(
+        &mut self,
+        pc: usize,
+        target_reg: u8,
+        key_reg: u8,
+        known_string_key: Option<Arc<str>>,
+        index_fact: Option<PerfIndexFact>,
+    ) -> Result<RuntimeVal> {
         match self.read(target_reg)?.clone() {
             RuntimeVal::ShortStr(value) => {
                 let value = Arc::<str>::from(value.as_str());
                 self.index_string(&value, key_reg)
             }
-            RuntimeVal::Obj(handle) => match self
-                .state
-                .heap
-                .get(handle)
-                .cloned()
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-            {
-                HeapValue::List(list) => self.index_list(&list, key_reg),
-                HeapValue::Map(map) => {
-                    let key = self.map_key_from_register(key_reg)?;
-                    Ok(self.lookup_map(&map, &key)?.unwrap_or(RuntimeVal::Nil))
+            RuntimeVal::Obj(handle) => {
+                let index_fact = match index_fact {
+                    Some(fact) => Some(fact),
+                    None => {
+                        let fact = self.index_fact_from_heap(handle)?;
+                        self.state.inline_caches.set_index(pc, fact);
+                        Some(fact)
+                    }
+                };
+                let target_kind = match index_fact.map(|fact| fact.target_kind) {
+                    Some(PerfIndexTargetKind::List) => IndexTargetKind::List,
+                    Some(PerfIndexTargetKind::Map) => IndexTargetKind::Map,
+                    Some(PerfIndexTargetKind::Object) => IndexTargetKind::Object,
+                    Some(PerfIndexTargetKind::String) => IndexTargetKind::String,
+                    Some(PerfIndexTargetKind::Unknown) | None => self.index_target_kind(handle)?,
+                };
+
+                match target_kind {
+                    IndexTargetKind::List => {
+                        self.index_list_handle(handle, key_reg, index_fact.map(|fact| fact.value_kind))
+                    }
+                    IndexTargetKind::Map => {
+                        if let Some(key) = known_string_key.as_ref()
+                            && let Some(value) =
+                                self.lookup_string_map_handle(handle, key, index_fact.map(|fact| fact.value_kind))?
+                        {
+                            return Ok(value);
+                        }
+                        let key = match known_string_key.as_ref() {
+                            Some(key) => runtime_map_string_key(key.clone()),
+                            None => self.map_key_from_register(key_reg)?,
+                        };
+                        Ok(self.lookup_map_handle(handle, &key)?.unwrap_or(RuntimeVal::Nil))
+                    }
+                    IndexTargetKind::Object => {
+                        let key = match known_string_key {
+                            Some(key) => key,
+                            None => self.object_key_from_register(key_reg)?,
+                        };
+                        Ok(self.index_object_handle(handle, &key)?.unwrap_or(RuntimeVal::Nil))
+                    }
+                    IndexTargetKind::String => {
+                        let value = match self
+                            .state
+                            .heap
+                            .get(handle)
+                            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+                        {
+                            HeapValue::String(value) => value.clone(),
+                            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+                        };
+                        self.index_string(&value, key_reg)
+                    }
                 }
-                HeapValue::Object(object) => {
-                    let key = self.object_key_from_register(key_reg)?;
-                    Ok(object.fields.get(&key).cloned().unwrap_or(RuntimeVal::Nil))
-                }
-                HeapValue::String(value) => self.index_string(&value, key_reg),
-                other => bail!("GetIndex target object is not indexable: {:?}", heap_kind(&other)),
-            },
+            }
             other => bail!("GetIndex target expected Obj, got {:?}", other.kind()),
+        }
+    }
+
+    fn index_target_kind(&self, handle: HeapRef) -> Result<IndexTargetKind> {
+        match self
+            .state
+            .heap
+            .get(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::List(_) => Ok(IndexTargetKind::List),
+            HeapValue::Map(_) => Ok(IndexTargetKind::Map),
+            HeapValue::Object(_) => Ok(IndexTargetKind::Object),
+            HeapValue::String(_) => Ok(IndexTargetKind::String),
+            other => bail!("GetIndex target object is not indexable: {:?}", heap_kind(other)),
         }
     }
 
@@ -304,13 +371,70 @@ impl Executor32 {
         }
     }
 
-    pub(super) fn set_index(&mut self, target_reg: u8, key_reg: u8, value_reg: u8) -> Result<()> {
+    pub(super) fn set_index(
+        &mut self,
+        pc: usize,
+        target_reg: u8,
+        key_reg: u8,
+        value_reg: u8,
+        move_key: bool,
+        move_value: bool,
+        known_string_key: Option<Arc<str>>,
+        index_fact: Option<PerfIndexFact>,
+    ) -> Result<()> {
         let target = self.read(target_reg)?.clone();
-        let value = self.read(value_reg)?.clone();
+        let moved_key = if move_key && known_string_key.is_none() {
+            Some(self.take(key_reg)?)
+        } else {
+            None
+        };
+        let value = if move_value {
+            self.take(value_reg)?
+        } else {
+            self.read(value_reg)?.clone()
+        };
         let RuntimeVal::Obj(handle) = target else {
             bail!("SetIndex target expected Obj, got {:?}", target.kind());
         };
-        let key = self.map_key_from_register(key_reg)?;
+        let index_fact = match index_fact {
+            Some(fact) => Some(fact),
+            None => {
+                let fact = self.index_fact_from_heap(handle)?;
+                self.state.inline_caches.set_index(pc, fact);
+                Some(fact)
+            }
+        };
+
+        match index_fact.map(|fact| fact.target_kind) {
+            Some(PerfIndexTargetKind::List) => {
+                return self.set_list_index_handle(
+                    handle,
+                    key_reg,
+                    moved_key,
+                    value,
+                    index_fact.map(|fact| fact.value_kind),
+                );
+            }
+            Some(PerfIndexTargetKind::Map) => {
+                return self.set_map_index_handle(
+                    handle,
+                    key_reg,
+                    moved_key,
+                    value,
+                    known_string_key,
+                    index_fact.map(|fact| fact.value_kind),
+                );
+            }
+            Some(PerfIndexTargetKind::Object) => {
+                return self.set_object_index_handle(handle, key_reg, moved_key, value, known_string_key);
+            }
+            Some(PerfIndexTargetKind::String | PerfIndexTargetKind::Unknown) | None => {}
+        }
+
+        let key = match known_string_key {
+            Some(key) => runtime_map_string_key(key),
+            None => self.map_key_from_register_or_value(key_reg, moved_key)?,
+        };
 
         if let Some(done) = self.try_set_string_list(handle, &key, value.clone())? {
             return Ok(done);
@@ -344,8 +468,223 @@ impl Executor32 {
         }
     }
 
+    fn index_fact_from_heap(&self, handle: HeapRef) -> Result<PerfIndexFact> {
+        match self
+            .state
+            .heap
+            .get(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::List(list) => Ok(PerfIndexFact {
+                target_kind: PerfIndexTargetKind::List,
+                value_kind: list_value_kind(list),
+            }),
+            HeapValue::Map(map) => Ok(PerfIndexFact {
+                target_kind: PerfIndexTargetKind::Map,
+                value_kind: map_value_kind(map),
+            }),
+            HeapValue::Object(_) => Ok(PerfIndexFact {
+                target_kind: PerfIndexTargetKind::Object,
+                value_kind: PerfValueKind::Unknown,
+            }),
+            HeapValue::String(_) => Ok(PerfIndexFact {
+                target_kind: PerfIndexTargetKind::String,
+                value_kind: PerfValueKind::Unknown,
+            }),
+            other => bail!("index target object is not indexable: {:?}", heap_kind(other)),
+        }
+    }
+
+    fn set_list_index_handle(
+        &mut self,
+        handle: HeapRef,
+        key_reg: u8,
+        moved_key: Option<RuntimeVal>,
+        value: RuntimeVal,
+        known_value_kind: Option<PerfValueKind>,
+    ) -> Result<()> {
+        let index = self.int_key_from_register_or_value(key_reg, moved_key)?;
+        let key = RuntimeMapKey::Int(index);
+        if matches!(self.state.heap.get(handle), Some(HeapValue::List(TypedList::String(_)))) {
+            if let Some(done) = self.try_set_string_list(handle, &key, value.clone())? {
+                return Ok(done);
+            }
+        }
+        let index = usize::try_from(index).map_err(|_| anyhow!("list index must be non-negative"))?;
+        if self.try_set_typed_list_index(handle, index, &value, known_value_kind)? {
+            return Ok(());
+        }
+        match self
+            .state
+            .heap
+            .get_mut(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::List(list) => set_list_value(list, index, value),
+            other => bail!(
+                "SetIndex target object changed while writing list: {:?}",
+                heap_kind(other)
+            ),
+        }
+    }
+
+    fn try_set_typed_list_index(
+        &mut self,
+        handle: HeapRef,
+        index: usize,
+        value: &RuntimeVal,
+        known_value_kind: Option<PerfValueKind>,
+    ) -> Result<bool> {
+        match (
+            known_value_kind.unwrap_or_default(),
+            self.state
+                .heap
+                .get_mut(handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
+            value,
+        ) {
+            (PerfValueKind::Int, HeapValue::List(TypedList::Int(values)), RuntimeVal::Int(value)) => {
+                let Some(slot) = values.get_mut(index) else {
+                    bail!("list index {} out of bounds", index);
+                };
+                *slot = *value;
+                Ok(true)
+            }
+            (PerfValueKind::Float, HeapValue::List(TypedList::Float(values)), RuntimeVal::Float(value)) => {
+                let Some(slot) = values.get_mut(index) else {
+                    bail!("list index {} out of bounds", index);
+                };
+                *slot = *value;
+                Ok(true)
+            }
+            (PerfValueKind::Bool, HeapValue::List(TypedList::Bool(values)), RuntimeVal::Bool(value)) => {
+                let Some(slot) = values.get_mut(index) else {
+                    bail!("list index {} out of bounds", index);
+                };
+                *slot = *value;
+                Ok(true)
+            }
+            (PerfValueKind::Unknown, _, _) | (_, HeapValue::List(_), _) => Ok(false),
+            (_, other, _) => bail!(
+                "SetIndex target object changed while writing list: {:?}",
+                heap_kind(other)
+            ),
+        }
+    }
+
+    fn set_map_index_handle(
+        &mut self,
+        handle: HeapRef,
+        key_reg: u8,
+        moved_key: Option<RuntimeVal>,
+        value: RuntimeVal,
+        known_string_key: Option<Arc<str>>,
+        known_value_kind: Option<PerfValueKind>,
+    ) -> Result<()> {
+        let key = match known_string_key {
+            Some(key) => runtime_map_string_key(key),
+            None => self.map_key_from_register_or_value(key_reg, moved_key)?,
+        };
+        if self.try_set_typed_string_map_index(handle, &key, &value, known_value_kind)? {
+            return Ok(());
+        }
+        match self
+            .state
+            .heap
+            .get_mut(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::Map(map) => {
+                map.set(key, value);
+                Ok(())
+            }
+            other => bail!(
+                "SetIndex target object changed while writing map: {:?}",
+                heap_kind(other)
+            ),
+        }
+    }
+
+    fn try_set_typed_string_map_index(
+        &mut self,
+        handle: HeapRef,
+        key: &RuntimeMapKey,
+        value: &RuntimeVal,
+        known_value_kind: Option<PerfValueKind>,
+    ) -> Result<bool> {
+        let Some(key) = key.as_arc_str() else {
+            return Ok(false);
+        };
+        match (
+            known_value_kind.unwrap_or_default(),
+            self.state
+                .heap
+                .get_mut(handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
+            value,
+        ) {
+            (PerfValueKind::Int, HeapValue::Map(TypedMap::StringInt(values)), RuntimeVal::Int(value)) => {
+                values.insert(key, *value);
+                Ok(true)
+            }
+            (PerfValueKind::Float, HeapValue::Map(TypedMap::StringFloat(values)), RuntimeVal::Float(value)) => {
+                values.insert(key, *value);
+                Ok(true)
+            }
+            (PerfValueKind::Bool, HeapValue::Map(TypedMap::StringBool(values)), RuntimeVal::Bool(value)) => {
+                values.insert(key, *value);
+                Ok(true)
+            }
+            (PerfValueKind::Unknown, _, _) | (_, HeapValue::Map(_), _) => Ok(false),
+            (_, other, _) => bail!(
+                "SetIndex target object changed while writing map: {:?}",
+                heap_kind(other)
+            ),
+        }
+    }
+
+    fn set_object_index_handle(
+        &mut self,
+        handle: HeapRef,
+        key_reg: u8,
+        moved_key: Option<RuntimeVal>,
+        value: RuntimeVal,
+        known_string_key: Option<Arc<str>>,
+    ) -> Result<()> {
+        let key = match known_string_key {
+            Some(key) => key,
+            None => self.object_key_from_register_or_value(key_reg, moved_key)?,
+        };
+        match self
+            .state
+            .heap
+            .get_mut(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::Object(object) => {
+                object.fields.insert(key, value);
+                Ok(())
+            }
+            other => bail!(
+                "SetIndex target object changed while writing object: {:?}",
+                heap_kind(other)
+            ),
+        }
+    }
+
     fn object_key_from_register(&self, register: u8) -> Result<Arc<str>> {
-        match self.read(register)? {
+        self.object_key_from_value(self.read(register)?)
+    }
+
+    fn object_key_from_register_or_value(&self, register: u8, moved_key: Option<RuntimeVal>) -> Result<Arc<str>> {
+        match moved_key {
+            Some(value) => self.object_key_from_value(&value),
+            None => self.object_key_from_register(register),
+        }
+    }
+
+    fn object_key_from_value(&self, value: &RuntimeVal) -> Result<Arc<str>> {
+        match value {
             RuntimeVal::ShortStr(value) => Ok(Arc::<str>::from(value.as_str())),
             RuntimeVal::Obj(handle) => match self
                 .state
@@ -398,22 +737,107 @@ impl Executor32 {
         Ok(Some(()))
     }
 
-    fn index_list(&mut self, list: &TypedList, key_reg: u8) -> Result<RuntimeVal> {
+    fn index_list_handle(
+        &mut self,
+        handle: HeapRef,
+        key_reg: u8,
+        known_value_kind: Option<PerfValueKind>,
+    ) -> Result<RuntimeVal> {
         let index = usize::try_from(self.read_int(key_reg)?).map_err(|_| anyhow!("list index must be non-negative"))?;
-        Ok(match list {
-            TypedList::Mixed(values) => values.get(index).cloned(),
-            TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int),
-            TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float),
-            TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool),
-            TypedList::String(values) => values.get(index).map(|value| {
-                if let Some(short) = ShortStr::new(value) {
-                    RuntimeVal::ShortStr(short)
-                } else {
-                    RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(value.clone())))
-                }
-            }),
+        if let Some(value) = self.index_typed_list_handle(handle, index, known_value_kind)? {
+            return Ok(value);
         }
-        .unwrap_or(RuntimeVal::Nil))
+        let long_string = match self
+            .state
+            .heap
+            .get(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::List(TypedList::Mixed(values)) => {
+                return Ok(values.get(index).cloned().unwrap_or(RuntimeVal::Nil));
+            }
+            HeapValue::List(TypedList::Int(values)) => {
+                return Ok(values
+                    .get(index)
+                    .copied()
+                    .map(RuntimeVal::Int)
+                    .unwrap_or(RuntimeVal::Nil));
+            }
+            HeapValue::List(TypedList::Float(values)) => {
+                return Ok(values
+                    .get(index)
+                    .copied()
+                    .map(RuntimeVal::Float)
+                    .unwrap_or(RuntimeVal::Nil));
+            }
+            HeapValue::List(TypedList::Bool(values)) => {
+                return Ok(values
+                    .get(index)
+                    .copied()
+                    .map(RuntimeVal::Bool)
+                    .unwrap_or(RuntimeVal::Nil));
+            }
+            HeapValue::List(TypedList::String(values)) => {
+                let Some(value) = values.get(index) else {
+                    return Ok(RuntimeVal::Nil);
+                };
+                if let Some(short) = ShortStr::new(value) {
+                    return Ok(RuntimeVal::ShortStr(short));
+                }
+                value.clone()
+            }
+            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+        };
+        Ok(RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(long_string))))
+    }
+
+    fn index_typed_list_handle(
+        &mut self,
+        handle: HeapRef,
+        index: usize,
+        known_value_kind: Option<PerfValueKind>,
+    ) -> Result<Option<RuntimeVal>> {
+        match (
+            known_value_kind.unwrap_or_default(),
+            self.state
+                .heap
+                .get(handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
+        ) {
+            (PerfValueKind::Int, HeapValue::List(TypedList::Int(values))) => Ok(Some(
+                values
+                    .get(index)
+                    .copied()
+                    .map(RuntimeVal::Int)
+                    .unwrap_or(RuntimeVal::Nil),
+            )),
+            (PerfValueKind::Float, HeapValue::List(TypedList::Float(values))) => Ok(Some(
+                values
+                    .get(index)
+                    .copied()
+                    .map(RuntimeVal::Float)
+                    .unwrap_or(RuntimeVal::Nil),
+            )),
+            (PerfValueKind::Bool, HeapValue::List(TypedList::Bool(values))) => Ok(Some(
+                values
+                    .get(index)
+                    .copied()
+                    .map(RuntimeVal::Bool)
+                    .unwrap_or(RuntimeVal::Nil),
+            )),
+            (PerfValueKind::String, HeapValue::List(TypedList::String(values))) => {
+                let Some(value) = values.get(index) else {
+                    return Ok(Some(RuntimeVal::Nil));
+                };
+                if let Some(short) = ShortStr::new(value) {
+                    return Ok(Some(RuntimeVal::ShortStr(short)));
+                }
+                Ok(None)
+            }
+            (PerfValueKind::Unknown, _) => Ok(None),
+            (_, HeapValue::List(_)) => Ok(None),
+            (_, other) => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+        }
     }
 
     fn index_string(&self, value: &Arc<str>, key_reg: u8) -> Result<RuntimeVal> {
@@ -431,12 +855,87 @@ impl Executor32 {
         }
     }
 
-    fn lookup_map(&mut self, map: &TypedMap, key: &RuntimeMapKey) -> Result<Option<RuntimeVal>> {
-        map.get_into_heap(key, &mut self.state.heap)
+    fn lookup_map_handle(&self, handle: HeapRef, key: &RuntimeMapKey) -> Result<Option<RuntimeVal>> {
+        match self
+            .state
+            .heap
+            .get(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::Map(map) => Ok(map.get(key)),
+            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+        }
+    }
+
+    fn lookup_string_map_handle(
+        &self,
+        handle: HeapRef,
+        key: &Arc<str>,
+        known_value_kind: Option<PerfValueKind>,
+    ) -> Result<Option<RuntimeVal>> {
+        match (
+            known_value_kind.unwrap_or_default(),
+            self.state
+                .heap
+                .get(handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
+        ) {
+            (PerfValueKind::Int, HeapValue::Map(TypedMap::StringInt(values))) => Ok(Some(
+                values
+                    .get(key.as_ref())
+                    .copied()
+                    .map(RuntimeVal::Int)
+                    .unwrap_or(RuntimeVal::Nil),
+            )),
+            (PerfValueKind::Float, HeapValue::Map(TypedMap::StringFloat(values))) => Ok(Some(
+                values
+                    .get(key.as_ref())
+                    .copied()
+                    .map(RuntimeVal::Float)
+                    .unwrap_or(RuntimeVal::Nil),
+            )),
+            (PerfValueKind::Bool, HeapValue::Map(TypedMap::StringBool(values))) => Ok(Some(
+                values
+                    .get(key.as_ref())
+                    .copied()
+                    .map(RuntimeVal::Bool)
+                    .unwrap_or(RuntimeVal::Nil),
+            )),
+            (PerfValueKind::Unknown, _) => Ok(None),
+            (_, HeapValue::Map(_)) => Ok(None),
+            (_, other) => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+        }
+    }
+
+    fn index_object_handle(&self, handle: HeapRef, key: &Arc<str>) -> Result<Option<RuntimeVal>> {
+        match self
+            .state
+            .heap
+            .get(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::Object(object) => Ok(object.fields.get(key).cloned()),
+            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
+        }
     }
 
     fn map_key_from_register(&self, register: u8) -> Result<RuntimeMapKey> {
         self.runtime_map_key_from_value(self.read(register)?)
+    }
+
+    fn map_key_from_register_or_value(&self, register: u8, moved_key: Option<RuntimeVal>) -> Result<RuntimeMapKey> {
+        match moved_key {
+            Some(value) => self.runtime_map_key_from_value(&value),
+            None => self.map_key_from_register(register),
+        }
+    }
+
+    fn int_key_from_register_or_value(&self, register: u8, moved_key: Option<RuntimeVal>) -> Result<i64> {
+        match moved_key {
+            Some(RuntimeVal::Int(value)) => Ok(value),
+            Some(other) => bail!("SetIndex list key must be Int, got {:?}", other.kind()),
+            None => self.read_int(register),
+        }
     }
 
     pub(super) fn runtime_map_key_from_value(&self, value: &RuntimeVal) -> Result<RuntimeMapKey> {
@@ -482,5 +981,32 @@ impl Executor32 {
             return Ok(false);
         };
         Ok(values.contains_key(key.as_ref()))
+    }
+}
+
+fn runtime_map_string_key(value: Arc<str>) -> RuntimeMapKey {
+    if let Some(short) = ShortStr::new(&value) {
+        RuntimeMapKey::ShortStr(short)
+    } else {
+        RuntimeMapKey::String(value)
+    }
+}
+
+fn list_value_kind(list: &TypedList) -> PerfValueKind {
+    match list {
+        TypedList::Int(_) => PerfValueKind::Int,
+        TypedList::Float(_) => PerfValueKind::Float,
+        TypedList::Bool(_) => PerfValueKind::Bool,
+        TypedList::String(_) => PerfValueKind::String,
+        TypedList::Mixed(_) => PerfValueKind::Unknown,
+    }
+}
+
+fn map_value_kind(map: &TypedMap) -> PerfValueKind {
+    match map {
+        TypedMap::StringInt(_) => PerfValueKind::Int,
+        TypedMap::StringFloat(_) => PerfValueKind::Float,
+        TypedMap::StringBool(_) => PerfValueKind::Bool,
+        TypedMap::Mixed(_) | TypedMap::StringMixed(_) => PerfValueKind::Unknown,
     }
 }

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 
-use crate::val::{HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap};
+use crate::val::{HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap};
 use crate::vm::Instr32;
 
 use super::Executor32;
@@ -26,15 +26,9 @@ impl Executor32 {
                 )
             }
             _ if self.runtime_value_is_heap_list(&lhs)? || self.runtime_value_is_heap_list(&rhs)? => {
-                let mut values = match self.runtime_value_to_list_values(&lhs)? {
-                    Some(values) => values,
-                    None => vec![lhs.clone()],
-                };
-                match self.runtime_value_to_list_values(&rhs)? {
-                    Some(rhs) => values.extend(rhs),
-                    None => values.push(rhs.clone()),
-                }
-                let list = TypedList::from_runtime_values(values, &self.state.heap);
+                let lhs_list = self.runtime_value_to_typed_list(&lhs)?;
+                let rhs_list = self.runtime_value_to_typed_list(&rhs)?;
+                let list = self.add_list_values(lhs.clone(), lhs_list, rhs.clone(), rhs_list)?;
                 RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(list)))
             }
             _ if self.runtime_value_to_string(&lhs)?.is_some() || self.runtime_value_to_string(&rhs)?.is_some() => {
@@ -62,37 +56,15 @@ impl Executor32 {
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs - *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs - *rhs),
             _ if self.runtime_value_is_heap_list(&lhs)? && self.runtime_value_is_heap_list(&rhs)? => {
-                let lhs_values = self.runtime_value_to_list_values(&lhs)?.expect("checked list");
-                let rhs_values = self.runtime_value_to_list_values(&rhs)?.expect("checked list");
-                let mut values = Vec::with_capacity(lhs_values.len());
-                'outer: for lhs_value in lhs_values {
-                    for rhs_value in &rhs_values {
-                        if self.runtime_values_equal(&lhs_value, rhs_value)? {
-                            continue 'outer;
-                        }
-                    }
-                    values.push(lhs_value);
-                }
-                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(TypedList::from_runtime_values(
-                    values,
-                    &self.state.heap,
-                ))))
+                let lhs_values = self.runtime_value_to_typed_list(&lhs)?.expect("checked list");
+                let rhs_values = self.runtime_value_to_typed_list(&rhs)?.expect("checked list");
+                let values = self.remove_list_values(lhs_values, &rhs_values)?;
+                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(values)))
             }
             _ if self.runtime_value_is_heap_list(&lhs)? => {
-                let lhs_values = self.runtime_value_to_list_values(&lhs)?.expect("checked list");
-                let mut values = Vec::with_capacity(lhs_values.len());
-                let mut removed = false;
-                for lhs_value in lhs_values {
-                    if !removed && self.runtime_values_equal(&lhs_value, &rhs)? {
-                        removed = true;
-                        continue;
-                    }
-                    values.push(lhs_value);
-                }
-                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(TypedList::from_runtime_values(
-                    values,
-                    &self.state.heap,
-                ))))
+                let lhs_values = self.runtime_value_to_typed_list(&lhs)?.expect("checked list");
+                let values = self.remove_first_list_value(lhs_values, &rhs)?;
+                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(values)))
             }
             _ if self.runtime_value_is_map(&lhs)? && self.runtime_value_is_map(&rhs)? => {
                 let mut entries = self.runtime_value_to_map_entries(&lhs)?.expect("checked map");
@@ -203,6 +175,334 @@ impl Executor32 {
                 _ => false,
             },
         })
+    }
+
+    fn runtime_value_to_typed_list(&self, value: &RuntimeVal) -> Result<Option<TypedList>> {
+        let RuntimeVal::Obj(handle) = value else {
+            return Ok(None);
+        };
+        let Some(HeapValue::List(list)) = self.state.heap.get(*handle) else {
+            return Ok(None);
+        };
+        Ok(Some(list.clone()))
+    }
+
+    fn add_list_values(
+        &mut self,
+        lhs: RuntimeVal,
+        lhs_list: Option<TypedList>,
+        rhs: RuntimeVal,
+        rhs_list: Option<TypedList>,
+    ) -> Result<TypedList> {
+        Ok(match (lhs_list, rhs_list) {
+            (Some(lhs), Some(rhs)) => self.concat_typed_lists(lhs, rhs)?,
+            (Some(lhs), None) => self.push_typed_list(lhs, rhs)?,
+            (None, Some(rhs)) => self.prepend_typed_list(lhs, rhs)?,
+            (None, None) => unreachable!("list add branch requires at least one list"),
+        })
+    }
+
+    fn concat_typed_lists(&mut self, lhs: TypedList, rhs: TypedList) -> Result<TypedList> {
+        Ok(match (lhs, rhs) {
+            (TypedList::Int(mut lhs), TypedList::Int(rhs)) => {
+                lhs.extend(rhs);
+                TypedList::Int(lhs)
+            }
+            (TypedList::Float(mut lhs), TypedList::Float(rhs)) => {
+                lhs.extend(rhs);
+                TypedList::Float(lhs)
+            }
+            (TypedList::Bool(mut lhs), TypedList::Bool(rhs)) => {
+                lhs.extend(rhs);
+                TypedList::Bool(lhs)
+            }
+            (TypedList::String(mut lhs), TypedList::String(rhs)) => {
+                lhs.extend(rhs);
+                TypedList::String(lhs)
+            }
+            (lhs, rhs) => {
+                let mut values = self.typed_list_to_runtime_values(lhs)?;
+                values.extend(self.typed_list_to_runtime_values(rhs)?);
+                TypedList::from_runtime_values(values, &self.state.heap)
+            }
+        })
+    }
+
+    fn push_typed_list(&mut self, list: TypedList, value: RuntimeVal) -> Result<TypedList> {
+        Ok(match list {
+            TypedList::Int(mut values) => match value {
+                RuntimeVal::Int(value) => {
+                    values.push(value);
+                    TypedList::Int(values)
+                }
+                value => {
+                    let mut values = values.into_iter().map(RuntimeVal::Int).collect::<Vec<_>>();
+                    values.push(value);
+                    TypedList::from_runtime_values(values, &self.state.heap)
+                }
+            },
+            TypedList::Float(mut values) => match value {
+                RuntimeVal::Float(value) => {
+                    values.push(value);
+                    TypedList::Float(values)
+                }
+                value => {
+                    let mut values = values.into_iter().map(RuntimeVal::Float).collect::<Vec<_>>();
+                    values.push(value);
+                    TypedList::from_runtime_values(values, &self.state.heap)
+                }
+            },
+            TypedList::Bool(mut values) => match value {
+                RuntimeVal::Bool(value) => {
+                    values.push(value);
+                    TypedList::Bool(values)
+                }
+                value => {
+                    let mut values = values.into_iter().map(RuntimeVal::Bool).collect::<Vec<_>>();
+                    values.push(value);
+                    TypedList::from_runtime_values(values, &self.state.heap)
+                }
+            },
+            TypedList::String(mut values) => match self.runtime_string_value(&value)? {
+                Some(value) => {
+                    values.push(value);
+                    TypedList::String(values)
+                }
+                None => {
+                    let mut values = self.string_list_to_runtime_values(values);
+                    values.push(value);
+                    TypedList::Mixed(values)
+                }
+            },
+            TypedList::Mixed(mut values) => {
+                values.push(value);
+                TypedList::from_runtime_values(values, &self.state.heap)
+            }
+        })
+    }
+
+    fn prepend_typed_list(&mut self, value: RuntimeVal, list: TypedList) -> Result<TypedList> {
+        Ok(match list {
+            TypedList::Int(values) => match value {
+                RuntimeVal::Int(value) => {
+                    let mut out = Vec::with_capacity(values.len() + 1);
+                    out.push(value);
+                    out.extend(values);
+                    TypedList::Int(out)
+                }
+                value => self.prepend_runtime_values(value, values.into_iter().map(RuntimeVal::Int).collect()),
+            },
+            TypedList::Float(values) => match value {
+                RuntimeVal::Float(value) => {
+                    let mut out = Vec::with_capacity(values.len() + 1);
+                    out.push(value);
+                    out.extend(values);
+                    TypedList::Float(out)
+                }
+                value => self.prepend_runtime_values(value, values.into_iter().map(RuntimeVal::Float).collect()),
+            },
+            TypedList::Bool(values) => match value {
+                RuntimeVal::Bool(value) => {
+                    let mut out = Vec::with_capacity(values.len() + 1);
+                    out.push(value);
+                    out.extend(values);
+                    TypedList::Bool(out)
+                }
+                value => self.prepend_runtime_values(value, values.into_iter().map(RuntimeVal::Bool).collect()),
+            },
+            TypedList::String(values) => match self.runtime_string_value(&value)? {
+                Some(value) => {
+                    let mut out = Vec::with_capacity(values.len() + 1);
+                    out.push(value);
+                    out.extend(values);
+                    TypedList::String(out)
+                }
+                None => {
+                    let values = self.string_list_to_runtime_values(values);
+                    self.prepend_runtime_values(value, values)
+                }
+            },
+            TypedList::Mixed(values) => self.prepend_runtime_values(value, values),
+        })
+    }
+
+    fn prepend_runtime_values(&self, value: RuntimeVal, mut values: Vec<RuntimeVal>) -> TypedList {
+        values.insert(0, value);
+        TypedList::from_runtime_values(values, &self.state.heap)
+    }
+
+    fn remove_list_values(&mut self, lhs: TypedList, rhs: &TypedList) -> Result<TypedList> {
+        Ok(match (lhs, rhs) {
+            (TypedList::Int(lhs), TypedList::Int(rhs)) => {
+                TypedList::Int(lhs.into_iter().filter(|value| !rhs.contains(value)).collect())
+            }
+            (TypedList::Float(lhs), TypedList::Float(rhs)) => {
+                TypedList::Float(lhs.into_iter().filter(|value| !rhs.contains(value)).collect())
+            }
+            (TypedList::Bool(lhs), TypedList::Bool(rhs)) => {
+                TypedList::Bool(lhs.into_iter().filter(|value| !rhs.contains(value)).collect())
+            }
+            (TypedList::String(lhs), TypedList::String(rhs)) => TypedList::String(
+                lhs.into_iter()
+                    .filter(|value| !rhs.iter().any(|rhs| rhs.as_ref() == value.as_ref()))
+                    .collect(),
+            ),
+            (lhs, rhs) => {
+                let mut values = Vec::with_capacity(lhs.len());
+                'outer: for index in 0..lhs.len() {
+                    for rhs_index in 0..rhs.len() {
+                        if self.typed_list_items_equal(&lhs, index, rhs, rhs_index)? {
+                            continue 'outer;
+                        }
+                    }
+                    values.push(self.typed_list_item_to_runtime_value(&lhs, index)?);
+                }
+                TypedList::from_runtime_values(values, &self.state.heap)
+            }
+        })
+    }
+
+    fn remove_first_list_value(&mut self, lhs: TypedList, rhs: &RuntimeVal) -> Result<TypedList> {
+        Ok(match lhs {
+            TypedList::Int(values) => match rhs {
+                RuntimeVal::Int(rhs) => {
+                    let mut removed = false;
+                    TypedList::Int(
+                        values
+                            .into_iter()
+                            .filter(|value| {
+                                if !removed && value == rhs {
+                                    removed = true;
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
+                            .collect(),
+                    )
+                }
+                rhs => self.remove_first_runtime_value(TypedList::Int(values), rhs)?,
+            },
+            TypedList::Float(values) => match rhs {
+                RuntimeVal::Float(rhs) => {
+                    let mut removed = false;
+                    TypedList::Float(
+                        values
+                            .into_iter()
+                            .filter(|value| {
+                                if !removed && value == rhs {
+                                    removed = true;
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
+                            .collect(),
+                    )
+                }
+                rhs => self.remove_first_runtime_value(TypedList::Float(values), rhs)?,
+            },
+            TypedList::Bool(values) => match rhs {
+                RuntimeVal::Bool(rhs) => {
+                    let mut removed = false;
+                    TypedList::Bool(
+                        values
+                            .into_iter()
+                            .filter(|value| {
+                                if !removed && value == rhs {
+                                    removed = true;
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
+                            .collect(),
+                    )
+                }
+                rhs => self.remove_first_runtime_value(TypedList::Bool(values), rhs)?,
+            },
+            TypedList::String(values) => match self.runtime_string_value(rhs)? {
+                Some(rhs) => {
+                    let mut removed = false;
+                    TypedList::String(
+                        values
+                            .into_iter()
+                            .filter(|value| {
+                                if !removed && value.as_ref() == rhs.as_ref() {
+                                    removed = true;
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
+                            .collect(),
+                    )
+                }
+                None => TypedList::String(values),
+            },
+            TypedList::Mixed(values) => self.remove_first_runtime_value(TypedList::Mixed(values), rhs)?,
+        })
+    }
+
+    fn remove_first_runtime_value(&mut self, lhs: TypedList, rhs: &RuntimeVal) -> Result<TypedList> {
+        let mut values = Vec::with_capacity(lhs.len());
+        let mut removed = false;
+        for index in 0..lhs.len() {
+            let value = self.typed_list_item_to_runtime_value(&lhs, index)?;
+            if !removed && self.runtime_values_equal(&value, rhs)? {
+                removed = true;
+                continue;
+            }
+            values.push(value);
+        }
+        Ok(TypedList::from_runtime_values(values, &self.state.heap))
+    }
+
+    fn typed_list_to_runtime_values(&mut self, list: TypedList) -> Result<Vec<RuntimeVal>> {
+        let mut values = Vec::with_capacity(list.len());
+        for index in 0..list.len() {
+            values.push(self.typed_list_item_to_runtime_value(&list, index)?);
+        }
+        Ok(values)
+    }
+
+    fn typed_list_item_to_runtime_value(&mut self, list: &TypedList, index: usize) -> Result<RuntimeVal> {
+        Ok(match list {
+            TypedList::Mixed(values) => values[index].clone(),
+            TypedList::Int(values) => RuntimeVal::Int(values[index]),
+            TypedList::Float(values) => RuntimeVal::Float(values[index]),
+            TypedList::Bool(values) => RuntimeVal::Bool(values[index]),
+            TypedList::String(values) => match ShortStr::new(&values[index]) {
+                Some(short) => RuntimeVal::ShortStr(short),
+                None => RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(values[index].clone()))),
+            },
+        })
+    }
+
+    fn string_list_to_runtime_values(&mut self, values: Vec<Arc<str>>) -> Vec<RuntimeVal> {
+        values
+            .into_iter()
+            .map(|value| match ShortStr::new(&value) {
+                Some(short) => RuntimeVal::ShortStr(short),
+                None => RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(value))),
+            })
+            .collect()
+    }
+
+    fn runtime_string_value(&self, value: &RuntimeVal) -> Result<Option<Arc<str>>> {
+        match value {
+            RuntimeVal::ShortStr(value) => Ok(Some(Arc::<str>::from(value.as_str()))),
+            RuntimeVal::Obj(handle) => match self
+                .state
+                .heap
+                .get(*handle)
+                .ok_or_else(|| anyhow::anyhow!("heap object {} out of bounds", handle.index()))?
+            {
+                HeapValue::String(value) => Ok(Some(value.clone())),
+                _ => Ok(None),
+            },
+            _ => Ok(None),
+        }
     }
 
     fn heap_values_equal(&self, lhs: &HeapValue, rhs: &HeapValue) -> Result<bool> {

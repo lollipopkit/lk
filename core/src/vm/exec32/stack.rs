@@ -27,6 +27,12 @@ impl Executor32 {
     }
 
     #[inline]
+    pub(super) fn take(&mut self, register: u8) -> Result<RuntimeVal> {
+        let index = self.stack_index(register)?;
+        Ok(std::mem::take(&mut self.state.stack[index]))
+    }
+
+    #[inline]
     fn stack_index(&self, register: u8) -> Result<usize> {
         if register as u16 >= self.register_count {
             bail!("register {} out of bounds", register);

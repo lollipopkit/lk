@@ -375,7 +375,7 @@ impl ResolverCore {
 
     fn resolve_expr(&mut self, expr: &Expr) {
         match expr {
-            Expr::Val(_) => {}
+            Expr::Literal(_) => {}
             Expr::StructLiteral { fields, .. } => {
                 for (_k, v) in fields {
                     self.resolve_expr(v);

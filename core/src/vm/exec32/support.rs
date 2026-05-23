@@ -75,17 +75,30 @@ pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeV
 pub(super) fn call_native_entry(
     native: &NativeEntry32,
     args: &[RuntimeVal],
-    named: &[(Arc<str>, RuntimeVal)],
     state: &mut RuntimeModuleState32,
     module: Option<&Module32>,
+    shared_module: Option<Arc<Module32>>,
     ctx: Option<&mut VmContext>,
 ) -> Result<RuntimeVal> {
-    let native_args = NativeArgs32::new_with_named(args, named);
+    call_native_entry_with_args(native, NativeArgs32::new(args), state, module, shared_module, ctx)
+}
+
+pub(super) fn call_native_entry_with_args(
+    native: &NativeEntry32,
+    native_args: NativeArgs32<'_>,
+    state: &mut RuntimeModuleState32,
+    module: Option<&Module32>,
+    shared_module: Option<Arc<Module32>>,
+    ctx: Option<&mut VmContext>,
+) -> Result<RuntimeVal> {
     let result = match &native.function {
         NativeFunction32::Plain(function)
         | NativeFunction32::Context(function)
         | NativeFunction32::FullState(function) => {
-            let mut runtime = NativeRuntime32::new(state, ctx, module);
+            let mut runtime = match shared_module {
+                Some(module) => NativeRuntime32::new_with_shared_module(state, ctx, module),
+                None => NativeRuntime32::new(state, ctx, module),
+            };
             function(native_args, &mut runtime)
         }
         NativeFunction32::RuntimeCallable(function) => super::runtime_callable::call_runtime_callable32_runtime(
@@ -104,6 +117,10 @@ pub(super) enum InlineNativeArgs32 {
     Two([RuntimeVal; 2]),
     Three([RuntimeVal; 3]),
     Four([RuntimeVal; 4]),
+    Five([RuntimeVal; 5]),
+    Six([RuntimeVal; 6]),
+    Seven([RuntimeVal; 7]),
+    Eight([RuntimeVal; 8]),
 }
 
 impl InlineNativeArgs32 {
@@ -115,6 +132,10 @@ impl InlineNativeArgs32 {
             Self::Two(values) => values,
             Self::Three(values) => values,
             Self::Four(values) => values,
+            Self::Five(values) => values,
+            Self::Six(values) => values,
+            Self::Seven(values) => values,
+            Self::Eight(values) => values,
         }
     }
 }
@@ -124,8 +145,17 @@ pub(super) fn inline_native_args_from_stack(
     stack: &[RuntimeVal],
     args: Range<usize>,
 ) -> Result<InlineNativeArgs32> {
-    let Some(values) = stack.get(args.clone()) else {
-        bail!("{} argument window out of bounds", native.name);
+    inline_native_slots_from_stack(native, stack, args, "argument")
+}
+
+pub(super) fn inline_native_slots_from_stack(
+    native: &NativeEntry32,
+    stack: &[RuntimeVal],
+    slots: Range<usize>,
+    label: &str,
+) -> Result<InlineNativeArgs32> {
+    let Some(values) = stack.get(slots.clone()) else {
+        bail!("{} {} window out of bounds", native.name, label);
     };
     Ok(match values.len() {
         0 => InlineNativeArgs32::Zero,
@@ -138,9 +168,44 @@ pub(super) fn inline_native_args_from_stack(
             values[2].clone(),
             values[3].clone(),
         ]),
+        5 => InlineNativeArgs32::Five([
+            values[0].clone(),
+            values[1].clone(),
+            values[2].clone(),
+            values[3].clone(),
+            values[4].clone(),
+        ]),
+        6 => InlineNativeArgs32::Six([
+            values[0].clone(),
+            values[1].clone(),
+            values[2].clone(),
+            values[3].clone(),
+            values[4].clone(),
+            values[5].clone(),
+        ]),
+        7 => InlineNativeArgs32::Seven([
+            values[0].clone(),
+            values[1].clone(),
+            values[2].clone(),
+            values[3].clone(),
+            values[4].clone(),
+            values[5].clone(),
+            values[6].clone(),
+        ]),
+        8 => InlineNativeArgs32::Eight([
+            values[0].clone(),
+            values[1].clone(),
+            values[2].clone(),
+            values[3].clone(),
+            values[4].clone(),
+            values[5].clone(),
+            values[6].clone(),
+            values[7].clone(),
+        ]),
         len => bail!(
-            "{} FullState native arity {} exceeds inline argument buffer",
+            "{} FullState native {} count {} exceeds inline buffer",
             native.name,
+            label,
             len
         ),
     })
@@ -149,37 +214,37 @@ pub(super) fn inline_native_args_from_stack(
 pub(super) fn call_native_entry_parts(
     native: &NativeEntry32,
     args: NativeArgs32<'_>,
-    named: &[(Arc<str>, RuntimeVal)],
     heap: &mut HeapStore,
     globals: &[RuntimeVal],
     module: Option<&Module32>,
+    shared_module: Option<Arc<Module32>>,
     ctx: Option<&mut VmContext>,
 ) -> Result<RuntimeVal> {
-    let native_args = if named.is_empty() {
-        args
-    } else {
-        NativeArgs32::new_with_named(args.as_slice(), named)
-    };
+    call_native_entry_parts_with_args(native, args, heap, globals, module, shared_module, ctx)
+}
+
+pub(super) fn call_native_entry_parts_with_args(
+    native: &NativeEntry32,
+    native_args: NativeArgs32<'_>,
+    heap: &mut HeapStore,
+    globals: &[RuntimeVal],
+    module: Option<&Module32>,
+    shared_module: Option<Arc<Module32>>,
+    ctx: Option<&mut VmContext>,
+) -> Result<RuntimeVal> {
     let result = match &native.function {
         NativeFunction32::Plain(function) | NativeFunction32::Context(function) => {
-            let mut runtime = NativeRuntime32::from_parts(heap, globals, ctx, module);
+            let mut runtime = match shared_module {
+                Some(module) => NativeRuntime32::from_parts_with_shared_module(heap, globals, ctx, module),
+                None => NativeRuntime32::from_parts(heap, globals, ctx, module),
+            };
             function(native_args, &mut runtime)
         }
         NativeFunction32::FullState(_) => {
             bail!("{} requires full runtime state", native.name);
         }
         NativeFunction32::RuntimeCallable(function) => {
-            if named.is_empty() {
-                super::runtime_callable::call_runtime_callable32_runtime(function.as_ref(), native_args, heap, ctx)
-            } else {
-                super::runtime_callable::call_runtime_callable32_runtime_named(
-                    function.as_ref(),
-                    native_args,
-                    named,
-                    heap,
-                    ctx,
-                )
-            }
+            super::runtime_callable::call_runtime_callable32_runtime(function.as_ref(), native_args, heap, ctx)
         }
     };
     map_native_error(native, result)

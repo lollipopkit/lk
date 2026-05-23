@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::{
     val::{CallableValue, HeapValue, RuntimeVal},
-    vm::{CallWindow32, Module32, NativeArgs32, NativeEntry32, VmContext},
+    vm::{CallWindow32, Module32, NativeArgs32, NativeEntry32, VmContext, analysis::PerfCallTargetKind},
 };
 
 use super::{
@@ -13,6 +13,21 @@ use super::{
 };
 
 impl Executor32 {
+    pub(super) fn observe_call_target_kind(&self, callee: u16) -> PerfCallTargetKind {
+        let Ok(callee) = u8::try_from(callee) else {
+            return PerfCallTargetKind::Unknown;
+        };
+        let Ok(RuntimeVal::Obj(handle)) = self.read(callee) else {
+            return PerfCallTargetKind::Unknown;
+        };
+        match self.state.heap.get(*handle) {
+            Some(HeapValue::Callable(CallableValue::Closure { .. })) => PerfCallTargetKind::Closure,
+            Some(HeapValue::Callable(CallableValue::RuntimeNative32 { .. })) => PerfCallTargetKind::Native,
+            Some(HeapValue::Callable(CallableValue::Runtime32(_))) => PerfCallTargetKind::Runtime,
+            _ => PerfCallTargetKind::Unknown,
+        }
+    }
+
     pub(super) fn handle_call_error(&mut self, error: anyhow::Error) -> Result<RuntimeVal> {
         if let Some(raise) = error.downcast_ref::<super::LanguageRaise32>() {
             self.handle_language_raise(raise)?;
@@ -26,6 +41,7 @@ impl Executor32 {
         &mut self,
         module: Option<&Module32>,
         window: CallWindow32,
+        known_target_kind: Option<PerfCallTargetKind>,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<RuntimeVal> {
         let module = module.ok_or_else(|| anyhow!("Call requires Module32 execution"))?;
@@ -35,13 +51,33 @@ impl Executor32 {
         let RuntimeVal::Obj(handle) = callee else {
             bail!("{} is not a function", self.runtime_value_display_string(&callee)?);
         };
-        let callable = match self
-            .state
-            .heap
-            .get(handle)
-            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        {
-            HeapValue::Callable(callable) => callable.clone(),
+        let callable = match (
+            known_target_kind.unwrap_or_default(),
+            self.state
+                .heap
+                .get(handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
+        ) {
+            (
+                PerfCallTargetKind::Closure,
+                HeapValue::Callable(CallableValue::Closure {
+                    function_index,
+                    captures,
+                }),
+            ) => CallableValue::Closure {
+                function_index: *function_index,
+                captures: captures.clone(),
+            },
+            (PerfCallTargetKind::Native, HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })) => {
+                CallableValue::RuntimeNative32 {
+                    arity: *arity,
+                    function: function.clone(),
+                }
+            }
+            (PerfCallTargetKind::Runtime, HeapValue::Callable(CallableValue::Runtime32(function))) => {
+                CallableValue::Runtime32(function.clone())
+            }
+            (_, HeapValue::Callable(callable)) => callable.clone(),
             _ => bail!("Call callee is not callable"),
         };
 
@@ -69,9 +105,9 @@ impl Executor32 {
                     call_native_entry(
                         &native,
                         args.as_slice(),
-                        &[],
                         &mut self.state,
                         Some(module),
+                        self.shared_module.clone(),
                         ctx.as_deref_mut(),
                     )
                 } else {
@@ -79,10 +115,10 @@ impl Executor32 {
                     call_native_entry_parts(
                         &native,
                         NativeArgs32::new(&state.stack[args]),
-                        &[],
                         &mut state.heap,
                         &state.globals,
                         Some(module),
+                        self.shared_module.clone(),
                         ctx.as_deref_mut(),
                     )
                 };

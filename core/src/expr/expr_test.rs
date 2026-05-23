@@ -423,10 +423,10 @@ mod test {
         // Test that template strings with constant expressions are folded
         let expr = Expr::try_from("\"Hello \\\"World\\\"!\"").unwrap();
         // Should fold to a single string constant during parsing
-        if let Expr::Val(v) = expr {
+        if let Expr::Literal(v) = expr {
             assert_eq!(v.as_str(), Some("Hello \"World\"!"));
         } else {
-            panic!("Template string with constants should be folded to Val");
+            panic!("Template string with constants should be folded to LiteralVal");
         }
 
         // Test that template strings with variables are not folded

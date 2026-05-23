@@ -3,7 +3,7 @@
 pub mod ast;
 pub mod expr;
 pub mod module;
-mod op;
+mod operator;
 pub mod package;
 pub mod rt;
 pub mod stmt;

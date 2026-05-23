@@ -76,9 +76,6 @@ fn print_static_coverage(path: &Path, module: &lk_core::vm::Module32) {
 fn print_runtime_metrics(metrics: VmRuntimeMetrics) {
     println!("Runtime metrics:");
     println!("  opcode_steps: {}", metrics.opcode_steps);
-    println!("  val_clones: {}", metrics.val_clones);
-    println!("  immediate_val_clones: {}", metrics.immediate_val_clones);
-    println!("  heap_val_clones: {}", metrics.heap_val_clones);
     println!("  copy_policy_heap_clones: {}", metrics.copy_policy_heap_clones);
     println!("  register_copy_heap_clones: {}", metrics.register_copy_heap_clones);
     println!("  local_copy_heap_clones: {}", metrics.local_copy_heap_clones);

@@ -9,6 +9,7 @@ pub(crate) mod analysis;
 #[allow(dead_code, unused_imports)]
 mod analysis_queries;
 mod artifact32;
+mod cache32;
 mod call_window32;
 mod compiler32;
 mod context;
@@ -20,6 +21,7 @@ mod runtime32;
 pub(crate) mod ssa;
 
 pub use artifact32::*;
+pub use cache32::*;
 pub use call_window32::*;
 pub use compiler32::*;
 pub use context::VmContext;

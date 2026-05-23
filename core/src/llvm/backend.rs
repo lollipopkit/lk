@@ -1,11 +1,11 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 
-use crate::stmt::Program;
+use crate::{
+    stmt::Program,
+    vm::{Compiler32, Module32Artifact},
+};
 
 use super::options::{LlvmBackendOptions, OptLevel};
-
-const DISABLED_MESSAGE: &str =
-    "LLVM backend is disabled during the Instr32 VM migration; reintroduce it on top of Instr32, not old bytecode";
 
 pub type LlvmBackendError = anyhow::Error;
 
@@ -44,11 +44,76 @@ impl LlvmBackend {
         self
     }
 
-    pub fn compile_program(&self, _program: &Program) -> Result<LlvmModuleArtifact> {
-        bail!(DISABLED_MESSAGE)
+    pub fn compile_program(&self, program: &Program) -> Result<LlvmModuleArtifact> {
+        let module = Compiler32::compile_module(program)?;
+        let artifact = Module32Artifact::new(crate::stmt::import::collect_program_imports(program), &module)?;
+        compile_module32_artifact_to_llvm(&artifact, self.options.clone())
     }
 }
 
-pub fn compile_program_to_llvm(_program: &Program, _options: LlvmBackendOptions) -> Result<LlvmModuleArtifact> {
-    bail!(DISABLED_MESSAGE)
+pub fn compile_program_to_llvm(program: &Program, options: LlvmBackendOptions) -> Result<LlvmModuleArtifact> {
+    LlvmBackend::new(options).compile_program(program)
+}
+
+pub fn compile_module32_artifact_to_llvm(
+    artifact: &Module32Artifact,
+    options: LlvmBackendOptions,
+) -> Result<LlvmModuleArtifact> {
+    let artifact_json = artifact.to_json_string()?;
+    let escaped = llvm_escape_bytes(artifact_json.as_bytes());
+    let len = artifact_json.len();
+    let mut ir = String::new();
+    ir.push_str(&format!("; ModuleID = '{}'\n", options.module_name));
+    if let Some(triple) = &options.target_triple {
+        ir.push_str(&format!("target triple = \"{}\"\n", llvm_escape_string(triple)));
+    }
+    ir.push_str(&format!(
+        "@lk_module32_json = private unnamed_addr constant [{} x i8] c\"{}\", align 1\n\n",
+        len, escaped
+    ));
+    ir.push_str("declare i32 @lk_rt_run_module32_json(ptr, i64)\n\n");
+    ir.push_str("define i32 @main() {\n");
+    ir.push_str("entry:\n");
+    ir.push_str(&format!(
+        "  %status = call i32 @lk_rt_run_module32_json(ptr @lk_module32_json, i64 {})\n",
+        len
+    ));
+    ir.push_str("  ret i32 %status\n");
+    ir.push_str("}\n");
+
+    Ok(LlvmModuleArtifact {
+        module: LlvmModule {
+            name: options.module_name,
+            ir,
+            target_triple: options.target_triple,
+        },
+        optimised_ir: None,
+        opt_level: options.opt_level,
+    })
+}
+
+fn llvm_escape_string(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'\\' => out.push_str("\\5C"),
+            b'"' => out.push_str("\\22"),
+            0x20..=0x7e => out.push(byte as char),
+            _ => out.push_str(&format!("\\{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn llvm_escape_bytes(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for &byte in bytes {
+        match byte {
+            b'\\' => out.push_str("\\5C"),
+            b'"' => out.push_str("\\22"),
+            0x20..=0x7e => out.push(byte as char),
+            _ => out.push_str(&format!("\\{byte:02X}")),
+        }
+    }
+    out
 }

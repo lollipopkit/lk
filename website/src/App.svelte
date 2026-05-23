@@ -131,7 +131,10 @@ match data.req {
 
   const runtimeRows: [string, string][] = [
     ['Value model', 'String, Int, Float, Bool, Nil, List, Map, Function, Object, Iterator, Stream, Task, Channel'],
-    ['Execution', 'REPL, source execution, Instr32 module output, type-check diagnostics, LLVM IR, and ELF output paths'],
+    [
+      'Execution',
+      'REPL, source execution, Instr32 module output, type-check diagnostics, and LLVM IR shell output',
+    ],
     ['Imports', 'Stdlib modules, selected imports, aliases, namespace imports, sanitized relative file modules, and package workspaces'],
     ['Concurrency', 'Feature-gated spawn, channels, send, recv, select, task, stream, and blocking collection helpers'],
   ]

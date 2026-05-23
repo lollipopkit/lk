@@ -1,8 +1,8 @@
 use super::{NamedParamSig, TypeChecker};
 use crate::expr::{Expr, SelectCase, SelectPattern, TemplateStringPart};
-use crate::op::{BinOp, UnaryOp};
+use crate::operator::{BinOp, UnaryOp};
 use crate::typ::{NumericClass, NumericHierarchy};
-use crate::val::{FunctionNamedParamType, Type, Val};
+use crate::val::{FunctionNamedParamType, LiteralVal, Type};
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -40,18 +40,16 @@ impl TypeChecker {
         }
     }
 
-    /// Type check an expression and record its inferred type
+    /// Type check an expression.
     pub fn check_expr(&mut self, expr: &Expr) -> Result<Type> {
-        let ty = self.check_expr_inner(expr)?;
-        self.record_expr_type(expr, &ty);
-        Ok(ty)
+        self.check_expr_inner(expr)
     }
 
     /// Internal expression checker without recording.
     fn check_expr_inner(&mut self, expr: &Expr) -> Result<Type> {
         match expr {
-            // Literals (via Val enum)
-            Expr::Val(val) => self.check_literal(val),
+            // Literals (via LiteralVal enum)
+            Expr::Literal(val) => self.check_literal(val),
 
             // Variables
             Expr::Var(name) => self.check_identifier(name),
@@ -553,10 +551,9 @@ impl TypeChecker {
         }
 
         let mut acc_type = self.check_expr(current)?;
-        for (node_expr, left_expr, op, right_expr) in chain.into_iter().rev() {
+        for (_, left_expr, op, right_expr) in chain.into_iter().rev() {
             let right_type = self.check_expr(right_expr)?;
             acc_type = self.check_binary_op_with_types(left_expr, acc_type, op, right_expr, right_type)?;
-            self.record_expr_type(node_expr, &acc_type);
         }
         Ok(acc_type)
     }
@@ -827,8 +824,8 @@ impl TypeChecker {
         };
 
         let field_name = match field {
-            Expr::Val(val) if val.as_str().is_some() => val.as_str().unwrap().to_string(),
-            Expr::Val(Val::Int(idx)) => idx.to_string(),
+            Expr::Literal(val) if val.as_str().is_some() => val.as_str().unwrap().to_string(),
+            Expr::Literal(LiteralVal::Int(idx)) => idx.to_string(),
             _ => {
                 return Err(Self::type_err(
                     "Struct field access requires a literal field name",
@@ -885,7 +882,7 @@ impl TypeChecker {
                     ));
                 }
                 // Try literal extraction
-                if let Expr::Val(Val::Int(i)) = field {
+                if let Expr::Literal(LiteralVal::Int(i)) = field {
                     let idx = *i as usize;
                     if idx < elems.len() {
                         return Ok(elems[idx].clone());
@@ -979,7 +976,7 @@ impl TypeChecker {
                                 None,
                             ));
                         }
-                        if let Expr::Val(Val::Int(i)) = field {
+                        if let Expr::Literal(LiteralVal::Int(i)) = field {
                             let idx = *i as usize;
                             if idx < elems.len() {
                                 return Ok(Type::Optional(Box::new(elems[idx].clone())));
@@ -1008,7 +1005,7 @@ impl TypeChecker {
     fn check_function_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type> {
         if let Expr::Access(obj_expr, field_expr) = func {
             let receiver_ty = self.check_expr(obj_expr)?;
-            if let Expr::Val(field_val) = field_expr.as_ref()
+            if let Expr::Literal(field_val) = field_expr.as_ref()
                 && let Some(name) = field_val.as_str()
             {
                 if let Some(Type::Function {
@@ -1354,28 +1351,28 @@ impl TypeChecker {
     }
 
     /// Check literal value type
-    fn check_literal(&mut self, val: &Val) -> Result<Type> {
+    fn check_literal(&mut self, val: &LiteralVal) -> Result<Type> {
         match val {
-            Val::Nil => Ok(Type::Nil),
-            Val::Bool(_) => Ok(Type::Bool),
-            Val::Int(_) => Ok(Type::Int),
-            Val::Float(_) => Ok(Type::Float),
-            Val::ShortStr(_) => Ok(Type::String),
+            LiteralVal::Nil => Ok(Type::Nil),
+            LiteralVal::Bool(_) => Ok(Type::Bool),
+            LiteralVal::Int(_) => Ok(Type::Int),
+            LiteralVal::Float(_) => Ok(Type::Float),
+            LiteralVal::ShortStr(_) => Ok(Type::String),
             value if value.as_str().is_some() => Ok(Type::String),
-            Val::LongStr(_) => Ok(Type::String),
+            LiteralVal::String(_) => Ok(Type::String),
         }
     }
 
-    /// Infer type from a Val (for use in literal checking)
-    pub(super) fn infer_val_type(&mut self, val: &Val) -> Result<Type> {
+    /// Infer type from a LiteralVal (for use in literal checking)
+    pub(super) fn infer_val_type(&mut self, val: &LiteralVal) -> Result<Type> {
         match val {
-            Val::Nil => Ok(Type::Nil),
-            Val::Bool(_) => Ok(Type::Bool),
-            Val::Int(_) => Ok(Type::Int),
-            Val::Float(_) => Ok(Type::Float),
-            Val::ShortStr(_) => Ok(Type::String),
+            LiteralVal::Nil => Ok(Type::Nil),
+            LiteralVal::Bool(_) => Ok(Type::Bool),
+            LiteralVal::Int(_) => Ok(Type::Int),
+            LiteralVal::Float(_) => Ok(Type::Float),
+            LiteralVal::ShortStr(_) => Ok(Type::String),
             value if value.as_str().is_some() => Ok(Type::String),
-            Val::LongStr(_) => Ok(Type::String),
+            LiteralVal::String(_) => Ok(Type::String),
         }
     }
 }

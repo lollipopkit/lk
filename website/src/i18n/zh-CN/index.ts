@@ -50,9 +50,9 @@ const zhCN: Translation = {
   },
   runtime: {
     kicker: '运行时与工具链',
-    title: '从脚本到 Instr32 模块、诊断、LLVM IR 或可执行文件。',
+    title: '从脚本到 Instr32 模块、诊断和 LLVM IR。',
     subtitle:
-      'LK 可以运行 REPL、执行 `.lk` 文件、不执行只做类型检查、编译为可执行 `.lkm` Instr32 模块产物，并在工具可用时进入 LLVM 相关编译路径。',
+      'LK 可以运行 REPL、执行 `.lk` 文件、不执行只做类型检查、编译为可执行 `.lkm` Instr32 模块产物，并围绕同一个模块产物输出 LLVM IR 外壳和 host executable launcher。',
     rows: {
       valueModel: '值模型',
       execution: '执行',

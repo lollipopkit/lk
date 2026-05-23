@@ -53,6 +53,6 @@ fn type_from_value_kind(kind: PerfValueKind) -> Option<Type> {
         PerfValueKind::String => Some(Type::String),
         PerfValueKind::List => Some(Type::List(Box::new(Type::Any))),
         PerfValueKind::Map => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
-        PerfValueKind::Unknown => None,
+        PerfValueKind::Object | PerfValueKind::Unknown => None,
     }
 }

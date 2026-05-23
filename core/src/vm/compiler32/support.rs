@@ -4,9 +4,9 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::{
     expr::{Expr, Pattern},
-    op::BinOp,
+    operator::BinOp,
     stmt::{NamedParamDecl, Program, Stmt},
-    val::{RuntimeMapKey, ShortStr, Val},
+    val::{LiteralVal, RuntimeMapKey, ShortStr},
     vm::ConstRuntimeValue32,
 };
 
@@ -159,7 +159,7 @@ pub(super) fn numeric_flavor(lhs: &Expr, op: &BinOp, rhs: &Expr) -> NumericFlavo
 pub(super) fn expr_is_statically_float(expr: &Expr) -> bool {
     match expr {
         Expr::Paren(inner) => expr_is_statically_float(inner),
-        Expr::Val(Val::Float(_)) => true,
+        Expr::Literal(LiteralVal::Float(_)) => true,
         Expr::Bin(lhs, op, rhs) if op.is_arith() => expr_is_statically_float(lhs) || expr_is_statically_float(rhs),
         Expr::Conditional(_, then_expr, else_expr) => {
             expr_is_statically_float(then_expr) && expr_is_statically_float(else_expr)
@@ -173,7 +173,7 @@ pub(super) fn jump_offset(pc: usize, target: usize) -> Result<i32> {
     i32::try_from(offset).map_err(|_| anyhow!("Compiler32 jump offset {offset} exceeds i32"))
 }
 
-fn const_heap_value_from_literal(value: &Val) -> Result<ConstHeapValue32> {
+fn const_heap_value_from_literal(value: &LiteralVal) -> Result<ConstHeapValue32> {
     if let Some(text) = value.as_str() {
         if ShortStr::new(text).is_some() {
             bail!("Compiler32 short string does not require heap const");
@@ -186,7 +186,7 @@ fn const_heap_value_from_literal(value: &Val) -> Result<ConstHeapValue32> {
 
 pub(super) fn const_heap_value_from_expr_literal(expr: &Expr) -> Result<Option<ConstHeapValue32>> {
     match expr {
-        Expr::Val(value) => const_heap_value_from_literal(value).map(Some),
+        Expr::Literal(value) => const_heap_value_from_literal(value).map(Some),
         Expr::List(values) => {
             let mut const_values = Vec::with_capacity(values.len());
             for value in values {
@@ -200,7 +200,7 @@ pub(super) fn const_heap_value_from_expr_literal(expr: &Expr) -> Result<Option<C
         Expr::Map(entries) => {
             let mut const_entries = BTreeMap::new();
             for (key, value) in entries {
-                let Expr::Val(key) = &**key else {
+                let Expr::Literal(key) = &**key else {
                     return Ok(None);
                 };
                 let Some(key) = const_runtime_map_key_from_literal(key)? else {
@@ -217,12 +217,12 @@ pub(super) fn const_heap_value_from_expr_literal(expr: &Expr) -> Result<Option<C
     }
 }
 
-fn const_runtime_value_from_literal(value: &Val) -> Result<ConstRuntimeValue32> {
+fn const_runtime_value_from_literal(value: &LiteralVal) -> Result<ConstRuntimeValue32> {
     Ok(match value {
-        Val::Nil => ConstRuntimeValue32::Nil,
-        Val::Bool(value) => ConstRuntimeValue32::Bool(*value),
-        Val::Int(value) => ConstRuntimeValue32::Int(*value),
-        Val::Float(value) => ConstRuntimeValue32::Float(*value),
+        LiteralVal::Nil => ConstRuntimeValue32::Nil,
+        LiteralVal::Bool(value) => ConstRuntimeValue32::Bool(*value),
+        LiteralVal::Int(value) => ConstRuntimeValue32::Int(*value),
+        LiteralVal::Float(value) => ConstRuntimeValue32::Float(*value),
         value if value.as_str().is_some() => {
             let value = value.as_str().expect("checked string");
             if let Some(short) = ShortStr::new(value) {
@@ -240,7 +240,7 @@ fn const_runtime_value_from_literal(value: &Val) -> Result<ConstRuntimeValue32> 
 
 fn const_runtime_value_from_expr_literal(expr: &Expr) -> Result<Option<ConstRuntimeValue32>> {
     Ok(Some(match expr {
-        Expr::Val(value) => const_runtime_value_from_literal(value)?,
+        Expr::Literal(value) => const_runtime_value_from_literal(value)?,
         Expr::List(..) | Expr::Map(..) => {
             let Some(value) = const_heap_value_from_expr_literal(expr)? else {
                 return Ok(None);
@@ -251,11 +251,11 @@ fn const_runtime_value_from_expr_literal(expr: &Expr) -> Result<Option<ConstRunt
     }))
 }
 
-fn const_runtime_map_key_from_literal(value: &Val) -> Result<Option<RuntimeMapKey>> {
+fn const_runtime_map_key_from_literal(value: &LiteralVal) -> Result<Option<RuntimeMapKey>> {
     Ok(Some(match value {
-        Val::Nil => RuntimeMapKey::Nil,
-        Val::Bool(value) => RuntimeMapKey::Bool(*value),
-        Val::Int(value) => RuntimeMapKey::Int(*value),
+        LiteralVal::Nil => RuntimeMapKey::Nil,
+        LiteralVal::Bool(value) => RuntimeMapKey::Bool(*value),
+        LiteralVal::Int(value) => RuntimeMapKey::Int(*value),
         value if value.as_str().is_some() => {
             let value = value.as_str().expect("checked string");
             if let Some(short) = ShortStr::new(value) {
@@ -264,18 +264,18 @@ fn const_runtime_map_key_from_literal(value: &Val) -> Result<Option<RuntimeMapKe
                 RuntimeMapKey::String(value.into())
             }
         }
-        Val::Float(_) => return Ok(None),
+        LiteralVal::Float(_) => return Ok(None),
         other => bail!("Compiler32 cannot convert {} to const map key", ast_literal_kind(other)),
     }))
 }
 
-pub(super) fn ast_literal_kind(value: &Val) -> &'static str {
+pub(super) fn ast_literal_kind(value: &LiteralVal) -> &'static str {
     match value {
-        Val::Nil => "Nil",
-        Val::Bool(_) => "Bool",
-        Val::Int(_) => "Int",
-        Val::Float(_) => "Float",
-        Val::ShortStr(_) | Val::LongStr(_) => "String",
+        LiteralVal::Nil => "Nil",
+        LiteralVal::Bool(_) => "Bool",
+        LiteralVal::Int(_) => "Int",
+        LiteralVal::Float(_) => "Float",
+        LiteralVal::ShortStr(_) | LiteralVal::String(_) => "String",
     }
 }
 
@@ -303,7 +303,7 @@ pub(super) fn expr_kind(expr: &Expr) -> &'static str {
         Expr::Closure { .. } => "Closure",
         Expr::Block(..) => "Block",
         Expr::Match { .. } => "Match",
-        Expr::Val(..) => "Val",
+        Expr::Literal(..) => "LiteralVal",
     }
 }
 

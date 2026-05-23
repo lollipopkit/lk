@@ -1,4 +1,5 @@
 use super::*;
+use crate::vm::analysis::PerfGlobalFact;
 #[test]
 fn execute_module32_calls_native_function_with_same_call_opcode() {
     fn native_add(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -41,6 +42,79 @@ fn execute_module32_calls_native_function_with_same_call_opcode() {
     let result = execute_module32(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn execute_module32_calls_full_state_native_with_named_args() {
+    fn full_state_clamp(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        if runtime.state_ctx_module_mut().is_none() {
+            bail!("full_state_clamp requires active runtime state");
+        }
+        let [RuntimeVal::Int(value)] = args.as_slice() else {
+            bail!("full_state_clamp expects one positional int");
+        };
+        let mut min = 0;
+        let mut max = 100;
+        let mut saw_min = false;
+        let mut saw_max = false;
+        args.try_for_each_named(runtime.heap(), |name, value| {
+            let RuntimeVal::Int(value) = value else {
+                bail!("{name} must be int");
+            };
+            match name {
+                "min" if !saw_min => {
+                    saw_min = true;
+                    min = *value;
+                }
+                "max" if !saw_max => {
+                    saw_max = true;
+                    max = *value;
+                }
+                "min" | "max" => bail!("duplicate named argument {name}"),
+                other => bail!("unknown named argument {other}"),
+            }
+            Ok(())
+        })?;
+        Ok(RuntimeVal::Int((*value).clamp(min, max)))
+    }
+
+    let entry = Function32 {
+        consts: ConstPool32 {
+            ints: vec![52, 40, 50],
+            strings: vec!["min".to_string(), "max".to_string()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadNative, 0, 0),
+            Instr32::abx(Opcode32::LoadInt, 1, 0),
+            Instr32::abx(Opcode32::LoadString, 2, 0),
+            Instr32::abx(Opcode32::LoadInt, 3, 1),
+            Instr32::abx(Opcode32::LoadString, 4, 1),
+            Instr32::abx(Opcode32::LoadInt, 5, 2),
+            Instr32::abx(Opcode32::CallNamed, 0, (2 << 7) | 1),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 6,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let module = Module32 {
+        functions: vec![entry],
+        natives: vec![NativeEntry32 {
+            name: "full_state_clamp".to_string(),
+            arity: 1,
+            function: NativeFunction32::FullState(full_state_clamp),
+        }],
+        globals: Vec::new(),
+        entry: 0,
+    };
+
+    let result = execute_module32(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Int(50)]);
 }
 
 #[test]
@@ -97,6 +171,75 @@ fn execute_module32_calls_runtime32_callable_from_heap() {
         .expect("call runtime32");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn execute_module32_uses_global_slot_fact_for_get_and_set() {
+    let mut entry = Function32 {
+        consts: ConstPool32 {
+            ints: vec![42],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::GetGlobal, 0, 0),
+            Instr32::abx(Opcode32::LoadInt, 1, 0),
+            Instr32::abx(Opcode32::SetGlobal, 1, 0),
+            Instr32::abx(Opcode32::GetGlobal, 2, 0),
+            Instr32::abc(Opcode32::Return, 2, 1, 0),
+        ],
+        register_count: 3,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    entry.performance.set_global_fact(0, PerfGlobalFact { slot: 1 });
+    entry.performance.set_global_fact(2, PerfGlobalFact { slot: 1 });
+    entry.performance.set_global_fact(3, PerfGlobalFact { slot: 1 });
+    let module = Module32 {
+        functions: vec![entry],
+        natives: Vec::new(),
+        globals: vec![
+            GlobalSlot32 { name: "unused".into() },
+            GlobalSlot32 { name: "answer".into() },
+        ],
+        entry: 0,
+    };
+
+    let result =
+        execute_module32_with_globals(&module, vec![RuntimeVal::Int(0), RuntimeVal::Int(40)]).expect("execute module");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert_eq!(result.state.globals, vec![RuntimeVal::Int(0), RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn execute_module32_falls_back_to_instr_global_slot_without_fact() {
+    let entry = Function32 {
+        consts: ConstPool32::default(),
+        code: vec![
+            Instr32::abx(Opcode32::GetGlobal, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let module = Module32 {
+        functions: vec![entry],
+        natives: Vec::new(),
+        globals: vec![GlobalSlot32 { name: "answer".into() }],
+        entry: 0,
+    };
+
+    let result = execute_module32_with_globals(&module, vec![RuntimeVal::Int(42)]).expect("execute module");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert_eq!(result.state.inline_caches.global(0), Some(0));
 }
 
 #[test]

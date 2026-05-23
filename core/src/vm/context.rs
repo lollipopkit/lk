@@ -64,8 +64,8 @@ impl VmContext {
 
     /// Create an empty context without VM-only core builtins.
     ///
-    /// LLVM AOT executables use this to avoid linking method-dispatch and
-    /// trait-registration fallback paths when imports are replayed natively.
+    /// LLVM/runtime launchers use this to avoid linking method-dispatch and
+    /// trait-registration fallback paths when imports are replayed through artifacts.
     pub fn new_without_core_vm_builtins() -> Self {
         Self {
             runtime_globals: fast_hash_map_new(),
@@ -238,11 +238,6 @@ impl VmContext {
     /// 注册结构体模式
     pub fn register_struct_schema(&mut self, name: String, fields: FastHashMap<String, Type>) {
         self.structs.insert(name, fields);
-    }
-
-    /// 创建当前上下文的快照
-    pub fn snapshot(&self) -> Self {
-        self.clone()
     }
 
     #[cfg(not(feature = "aot-minimal-runtime"))]

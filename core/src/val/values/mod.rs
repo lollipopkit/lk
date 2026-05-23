@@ -1,11 +1,5 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
 
-// Using standard HashMap for maps and environments
-
-use arcstr::ArcStr;
-
-mod clone;
-mod intern;
 mod strings;
 mod types;
 
@@ -36,45 +30,42 @@ pub struct StreamCursorValue {
     pub stream_id: u64,
 }
 
-#[derive(Debug, Default)]
-pub enum Val {
-    /// 内联短字符串（≤7 字节），零堆分配，实现 Copy
+#[derive(Debug, Clone, Default)]
+pub enum LiteralVal {
+    /// AST inline short string literal.
     ShortStr(ShortStr),
     Int(i64),
     Float(f64),
     Bool(bool),
-    /// Long string retained for the old scalar value shell.
-    LongStr(ArcStr),
+    String(Arc<str>),
     #[default]
     Nil,
 }
 
-impl PartialEq for Val {
+impl PartialEq for LiteralVal {
     fn eq(&self, other: &Self) -> bool {
-        // Unify string comparisons across ShortStr and Str variants
         if let (Some(a), Some(b)) = (self.as_str(), other.as_str()) {
             return a == b;
         }
         match (self, other) {
-            (Val::Int(a), Val::Int(b)) => a == b,
-            (Val::Float(a), Val::Float(b)) => a == b,
-            (Val::Bool(a), Val::Bool(b)) => a == b,
-            (Val::LongStr(a), Val::LongStr(b)) => a == b,
-            (Val::Nil, Val::Nil) => true,
+            (LiteralVal::Int(a), LiteralVal::Int(b)) => a == b,
+            (LiteralVal::Float(a), LiteralVal::Float(b)) => a == b,
+            (LiteralVal::Bool(a), LiteralVal::Bool(b)) => a == b,
+            (LiteralVal::Nil, LiteralVal::Nil) => true,
             _ => false,
         }
     }
 }
 
-impl core::fmt::Display for Val {
+impl core::fmt::Display for LiteralVal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Val::Int(i) => write!(f, "{i}"),
-            Val::Float(fl) => write!(f, "{fl}"),
-            Val::Bool(b) => write!(f, "{b}"),
-            Val::ShortStr(s) => f.write_str(s.as_str()),
-            Val::LongStr(value) => f.write_str(value.as_ref()),
-            Val::Nil => write!(f, "nil"),
+            LiteralVal::Int(i) => write!(f, "{i}"),
+            LiteralVal::Float(fl) => write!(f, "{fl}"),
+            LiteralVal::Bool(b) => write!(f, "{b}"),
+            LiteralVal::ShortStr(s) => f.write_str(s.as_str()),
+            LiteralVal::String(value) => f.write_str(value.as_ref()),
+            LiteralVal::Nil => write!(f, "nil"),
         }
     }
 }

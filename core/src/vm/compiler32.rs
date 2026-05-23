@@ -7,6 +7,9 @@ mod assign;
 mod builder;
 mod call;
 mod entry;
+mod facts;
+#[cfg(test)]
+mod facts_tests;
 mod free_vars;
 mod match_expr;
 mod pattern_bind;
@@ -24,14 +27,16 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::{
     expr::{Expr, Pattern, TemplateStringPart},
-    op::{BinOp, UnaryOp},
+    operator::{BinOp, UnaryOp},
     stmt::{ForPattern, Program, Stmt},
-    val::{ShortStr, Val},
+    val::{LiteralVal, ShortStr},
 };
 
 use super::{
     ConstHeapValue32, ConstRuntimeValue32, Function32, GlobalSlot32, Instr32, Module32, NativeEntry32, Opcode32,
 };
+use crate::vm::analysis::{PerfCallTargetKind, PerfContainerFact, PerfGlobalFact, PerfRegisterFact, PerfValueKind};
+use facts::*;
 use free_vars::collect_expr_free_vars;
 use support::*;
 
@@ -60,7 +65,7 @@ impl Compiler32 {
         self.record_expr_analysis(expr);
         match expr {
             Expr::Paren(inner) => self.lower_expr(inner),
-            Expr::Val(value) => self.lower_val(value),
+            Expr::Literal(value) => self.lower_val(value),
             Expr::Var(name) => self.lower_var(name),
             Expr::List(elements) => self.lower_list(elements),
             Expr::Map(entries) => self.lower_map(entries),
@@ -104,7 +109,9 @@ impl Compiler32 {
             Stmt::Expr(expr) => {
                 let watermark = self.next_reg;
                 if !self.try_lower_rewritten_set_index_expr(expr)? {
-                    self.lower_expr(expr)?;
+                    if !self.try_lower_dead_literal_expr(expr)? {
+                        self.lower_expr(expr)?;
+                    }
                 }
                 self.next_reg = watermark;
             }
@@ -188,28 +195,33 @@ impl Compiler32 {
         {
             self.emit_set_global(slot, global_slot)?;
         }
-        self.locals.insert(name.to_string(), slot);
+        self.insert_local(name.to_string(), slot);
         self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
         Ok(())
     }
 
-    fn lower_val(&mut self, value: &Val) -> Result<u16> {
+    fn lower_val(&mut self, value: &LiteralVal) -> Result<u16> {
         let dst = self.alloc_reg();
         match value {
-            Val::Nil => self.emit(Instr32::abc(Opcode32::LoadNil, checked_u8("dst", dst)?, 0, 0)),
-            Val::Bool(value) => self.emit(Instr32::abc(
+            LiteralVal::Nil => {
+                self.emit(Instr32::abc(Opcode32::LoadNil, checked_u8("dst", dst)?, 0, 0));
+                self.set_register_kind(dst, PerfValueKind::Nil);
+            }
+            LiteralVal::Bool(value) => self.emit(Instr32::abc(
                 Opcode32::LoadBool,
                 checked_u8("dst", dst)?,
                 u8::from(*value),
                 0,
             )),
-            Val::Int(value) => {
+            LiteralVal::Int(value) => {
                 let k = self.push_int(*value)?;
                 self.emit(Instr32::abx(Opcode32::LoadInt, checked_u8("dst", dst)?, k));
+                self.set_register_kind(dst, PerfValueKind::Int);
             }
-            Val::Float(value) => {
+            LiteralVal::Float(value) => {
                 let k = self.push_float(*value)?;
                 self.emit(Instr32::abx(Opcode32::LoadFloat, checked_u8("dst", dst)?, k));
+                self.set_register_kind(dst, PerfValueKind::Float);
             }
             value if value.as_str().is_some() => {
                 let value = value.as_str().expect("checked string");
@@ -220,6 +232,7 @@ impl Compiler32 {
                     let k = self.push_heap_value(ConstHeapValue32::LongString(value.into()))?;
                     self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("dst", dst)?, k));
                 }
+                self.set_register_kind(dst, PerfValueKind::String);
             }
             other => {
                 bail!(
@@ -228,20 +241,65 @@ impl Compiler32 {
                 );
             }
         }
+        if matches!(value, LiteralVal::Bool(_)) {
+            self.set_register_kind(dst, PerfValueKind::Bool);
+        }
         Ok(dst)
+    }
+
+    fn try_lower_dead_literal_expr(&mut self, expr: &Expr) -> Result<bool> {
+        match expr {
+            Expr::Paren(inner) => self.try_lower_dead_literal_expr(inner),
+            Expr::Literal(value) if literal_dead_write_is_safe(value) => {
+                self.lower_val(value)?;
+                self.mark_last_dead_write();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     fn lower_access(&mut self, target: &Expr, key: &Expr) -> Result<u16> {
         let target = self.lower_expr(target)?;
-        let key = self.lower_expr(key)?;
+        let index_fact = index_fact_from_target(&self.function.performance, target);
+        let (key, key_fact) = self.lower_index_key(key)?;
         let dst = self.alloc_reg();
+        let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::GetIndex,
             checked_u8("index dst", dst)?,
             checked_u8("index target", target)?,
             checked_u8("index key", key)?,
         ));
+        self.function.performance.clear_register(dst);
+        if let Some(fact) = key_fact {
+            self.function.performance.set_key_fact(pc, fact);
+        }
+        if let Some(fact) = index_fact {
+            self.function.performance.set_index_fact(pc, fact);
+        }
         Ok(dst)
+    }
+
+    fn lower_index_key(&mut self, key: &Expr) -> Result<(u16, Option<crate::vm::analysis::PerfKeyFact>)> {
+        if let Some(text) = short_string_literal_key(key) {
+            let dst = self.alloc_reg();
+            let const_key = self.push_string(text)?;
+            self.emit(Instr32::abx(
+                Opcode32::LoadString,
+                checked_u8("index key", dst)?,
+                const_key,
+            ));
+            self.set_register_kind(dst, PerfValueKind::String);
+            return Ok((
+                dst,
+                Some(crate::vm::analysis::PerfKeyFact {
+                    const_key: Some(const_key),
+                    string_int: None,
+                }),
+            ));
+        }
+        Ok((self.lower_expr(key)?, None))
     }
 
     fn lower_optional_access(&mut self, target: &Expr, key: &Expr) -> Result<u16> {
@@ -258,13 +316,22 @@ impl Compiler32 {
         ));
         let skip_get = self.emit_test_placeholder(is_nil)?;
 
-        let key = self.lower_expr(key)?;
+        let index_fact = index_fact_from_target(&self.function.performance, target);
+        let (key, key_fact) = self.lower_index_key(key)?;
+        let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::GetIndex,
             checked_u8("optional get dst", dst)?,
             checked_u8("optional get target", target)?,
             checked_u8("optional get key", key)?,
         ));
+        self.function.performance.clear_register(dst);
+        if let Some(fact) = key_fact {
+            self.function.performance.set_key_fact(pc, fact);
+        }
+        if let Some(fact) = index_fact {
+            self.function.performance.set_index_fact(pc, fact);
+        }
         let end = self.function.code.len();
         self.patch_test_true_jump(skip_get, end)?;
         Ok(dst)
@@ -323,10 +390,10 @@ impl Compiler32 {
     }
 
     fn lower_template_string(&mut self, parts: &[TemplateStringPart]) -> Result<u16> {
-        let mut acc = self.lower_val(&Val::from_str(""))?;
+        let mut acc = self.lower_val(&LiteralVal::from_str(""))?;
         for part in parts {
             let part_reg = match part {
-                TemplateStringPart::Literal(value) => self.lower_val(&Val::from_str(value))?,
+                TemplateStringPart::Literal(value) => self.lower_val(&LiteralVal::from_str(value))?,
                 TemplateStringPart::Expr(expr) => {
                     let value = self.lower_expr(expr)?;
                     let dst = self.alloc_reg();
@@ -453,7 +520,7 @@ impl Compiler32 {
         compiler.next_reg = params.len() as u16;
         compiler.peak_reg = params.len() as u16;
         for (index, param) in params.iter().enumerate() {
-            compiler.locals.insert(param.clone(), index as u16);
+            compiler.insert_local(param.clone(), index as u16);
         }
         match body {
             Expr::Block(statements) => {
@@ -504,13 +571,16 @@ impl Compiler32 {
             let dst = self.alloc_reg();
             let k = self.push_heap_value(value)?;
             self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("list dst", dst)?, k));
+            self.set_register_list_fact(dst, list_fact_from_exprs(elements));
             return Ok(dst);
         }
         let mut values = Vec::with_capacity(elements.len());
         for element in elements {
             values.push(self.lower_expr(element)?);
         }
-        self.materialize_list(values)
+        let dst = self.materialize_list(values)?;
+        self.set_register_list_fact(dst, list_fact_from_exprs(elements));
+        Ok(dst)
     }
 
     fn lower_map(&mut self, entries: &[(Box<Expr>, Box<Expr>)]) -> Result<u16> {
@@ -518,19 +588,22 @@ impl Compiler32 {
             let dst = self.alloc_reg();
             let k = self.push_heap_value(value)?;
             self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("map dst", dst)?, k));
+            self.set_register_map_fact(dst, map_fact_from_exprs(entries));
             return Ok(dst);
         }
         let mut values = Vec::with_capacity(entries.len());
         for (key, value) in entries {
             values.push((self.lower_expr(key)?, self.lower_expr(value)?));
         }
-        self.materialize_map(values)
+        let dst = self.materialize_map(values)?;
+        self.set_register_map_fact(dst, map_fact_from_exprs(entries));
+        Ok(dst)
     }
 
     fn lower_struct_literal(&mut self, name: &str, fields: &[(String, Box<Expr>)]) -> Result<u16> {
         let mut values = Vec::with_capacity(fields.len());
         for (key, value) in fields {
-            let key = self.lower_val(&Val::from_str(key))?;
+            let key = self.lower_val(&LiteralVal::from_str(key))?;
             values.push((key, self.lower_expr(value)?));
         }
         self.materialize_object(name, values)
@@ -545,13 +618,13 @@ impl Compiler32 {
     ) -> Result<u16> {
         let start = match start {
             Some(start) => self.lower_expr(start)?,
-            None => self.lower_val(&Val::Int(0))?,
+            None => self.lower_val(&LiteralVal::Int(0))?,
         };
         let end = end.ok_or_else(|| anyhow!("Compiler32 open-ended range expression is not supported"))?;
         let end = self.lower_expr(end)?;
         let step = match step {
             Some(step) => self.lower_expr(step)?,
-            None => self.lower_val(&Val::Int(1))?,
+            None => self.lower_val(&LiteralVal::Int(1))?,
         };
 
         let base = self.alloc_regs(3)?;
@@ -566,6 +639,14 @@ impl Compiler32 {
             checked_u8("range base", base)?,
             u8::from(inclusive),
         ));
+        self.set_register_list_fact(
+            dst,
+            PerfContainerFact {
+                value_kind: PerfValueKind::Int,
+                known_len: None,
+                adoptable: false,
+            },
+        );
         Ok(dst)
     }
 
@@ -577,7 +658,7 @@ impl Compiler32 {
 
         let base = self.alloc_regs(len)?;
         for (offset, value) in values.into_iter().enumerate() {
-            self.emit_move(base + offset as u16, value, "list element")?;
+            self.emit_move_with_policy(base + offset as u16, value, "list element", true)?;
         }
 
         let dst = self.alloc_reg();
@@ -602,8 +683,8 @@ impl Compiler32 {
         )?;
         for (offset, (key, value)) in entries.into_iter().enumerate() {
             let key_dst = base + (offset as u16 * 2);
-            self.emit_move(key_dst, key, "map key")?;
-            self.emit_move(key_dst + 1, value, "map value")?;
+            self.emit_move_with_policy(key_dst, key, "map key", true)?;
+            self.emit_move_with_policy(key_dst + 1, value, "map value", true)?;
         }
 
         let dst = self.alloc_reg();
@@ -627,12 +708,12 @@ impl Compiler32 {
                 .and_then(|slots| slots.checked_add(1))
                 .ok_or_else(|| anyhow!("Compiler32 object field overflow"))?,
         )?;
-        let type_name = self.lower_val(&Val::from_str(type_name))?;
-        self.emit_move(base, type_name, "object type name")?;
+        let type_name = self.lower_val(&LiteralVal::from_str(type_name))?;
+        self.emit_move_with_policy(base, type_name, "object type name", true)?;
         for (offset, (key, value)) in fields.into_iter().enumerate() {
             let key_dst = base + 1 + (offset as u16 * 2);
-            self.emit_move(key_dst, key, "object key")?;
-            self.emit_move(key_dst + 1, value, "object value")?;
+            self.emit_move_with_policy(key_dst, key, "object key", true)?;
+            self.emit_move_with_policy(key_dst + 1, value, "object value", true)?;
         }
 
         let dst = self.alloc_reg();
@@ -642,6 +723,7 @@ impl Compiler32 {
             checked_u8("object base", base)?,
             checked_u8("object len", len as u16)?,
         ));
+        self.set_register_kind(dst, PerfValueKind::Object);
         Ok(dst)
     }
 
@@ -765,8 +847,8 @@ impl Compiler32 {
             checked_u8("for indexed iterable", iterable)?,
             0,
         ));
-        let index = self.lower_val(&Val::Int(0))?;
-        let step = self.lower_val(&Val::Int(1))?;
+        let index = self.lower_val(&LiteralVal::Int(0))?;
+        let step = self.lower_val(&LiteralVal::Int(1))?;
         let value = self.alloc_reg();
 
         let loop_start = self.function.code.len();
@@ -824,13 +906,13 @@ impl Compiler32 {
         let watermark = self.next_reg;
         let start = match start {
             Some(start) => self.lower_expr(start)?,
-            None => self.lower_val(&Val::Int(0))?,
+            None => self.lower_val(&LiteralVal::Int(0))?,
         };
         let end = end.ok_or_else(|| anyhow!("Compiler32 open-ended range for loop is not supported"))?;
         let end = self.lower_expr(end)?;
         let step = match step {
             Some(step) => self.lower_expr(step)?,
-            None => self.lower_val(&Val::Int(1))?,
+            None => self.lower_val(&LiteralVal::Int(1))?,
         };
 
         let index = self.alloc_reg();
@@ -838,7 +920,7 @@ impl Compiler32 {
         let previous_binding = self.bind_for_pattern(pattern, index)?;
 
         let loop_start = self.function.code.len();
-        let zero = self.lower_val(&Val::Int(0))?;
+        let zero = self.lower_val(&LiteralVal::Int(0))?;
         let is_positive = self.alloc_reg();
         self.emit(Instr32::abc(
             Opcode32::CmpGtInt,
@@ -918,7 +1000,7 @@ impl Compiler32 {
     ) -> Result<()> {
         match pattern {
             ForPattern::Variable(name) => {
-                previous.push((name.clone(), self.locals.insert(name.clone(), value)));
+                previous.push((name.clone(), self.insert_local(name.clone(), value)));
                 Ok(())
             }
             ForPattern::Ignore => Ok(()),
@@ -939,7 +1021,7 @@ impl Compiler32 {
                 let condition = self.lower_list_pattern_condition(value, patterns.len())?;
                 self.emit_pattern_assert(condition)?;
                 self.bind_for_sequence_pattern(patterns, value, previous)?;
-                let start = self.lower_val(&Val::Int(patterns.len() as i64))?;
+                let start = self.lower_val(&LiteralVal::Int(patterns.len() as i64))?;
                 let slice = self.alloc_reg();
                 self.emit(Instr32::abc(
                     Opcode32::SliceFrom,
@@ -947,7 +1029,7 @@ impl Compiler32 {
                     checked_u8("for rest value", value)?,
                     checked_u8("for rest start", start)?,
                 ));
-                previous.push((rest.clone(), self.locals.insert(rest.clone(), slice)));
+                previous.push((rest.clone(), self.insert_local(rest.clone(), slice)));
                 Ok(())
             }
             ForPattern::Object(entries) => {
@@ -958,7 +1040,7 @@ impl Compiler32 {
                 let condition = self.lower_map_pattern_condition(value, &map_patterns)?;
                 self.emit_pattern_assert(condition)?;
                 for (key, pattern) in entries {
-                    let key = self.lower_val(&Val::from_str(key))?;
+                    let key = self.lower_val(&LiteralVal::from_str(key))?;
                     let field = self.alloc_reg();
                     self.emit(Instr32::abc(
                         Opcode32::GetIndex,
@@ -981,7 +1063,7 @@ impl Compiler32 {
     ) -> Result<()> {
         for (index, pattern) in patterns.iter().enumerate() {
             let index = i64::try_from(index).map_err(|_| anyhow!("Compiler32 for pattern index overflow"))?;
-            let key = self.lower_val(&Val::Int(index))?;
+            let key = self.lower_val(&LiteralVal::Int(index))?;
             let field = self.alloc_reg();
             self.emit(Instr32::abc(
                 Opcode32::GetIndex,
@@ -997,7 +1079,7 @@ impl Compiler32 {
     fn restore_for_pattern(&mut self, previous: Vec<(String, Option<u16>)>) {
         for (name, old) in previous.into_iter().rev() {
             if let Some(old) = old {
-                self.locals.insert(name, old);
+                self.insert_local(name, old);
             } else {
                 self.locals.remove(&name);
             }
@@ -1029,7 +1111,7 @@ impl Compiler32 {
         {
             self.emit_set_global(function, slot)?;
         }
-        self.locals.insert(name.to_string(), function);
+        self.insert_local(name.to_string(), function);
         Ok(())
     }
 
@@ -1059,6 +1141,13 @@ impl Compiler32 {
             checked_u8("function dst", dst)?,
             function_index,
         ));
+        self.function.performance.set_register_fact(
+            dst,
+            PerfRegisterFact {
+                callable: PerfCallTargetKind::Closure,
+                ..PerfRegisterFact::default()
+            },
+        );
         Ok(dst)
     }
 
@@ -1075,13 +1164,23 @@ impl Compiler32 {
             checked_u8("native dst", dst)?,
             native_index,
         ));
+        self.function.performance.set_register_fact(
+            dst,
+            PerfRegisterFact {
+                callable: PerfCallTargetKind::Native,
+                ..PerfRegisterFact::default()
+            },
+        );
         Ok(dst)
     }
 
     fn emit_get_global(&mut self, slot: u32) -> Result<u16> {
         let dst = self.alloc_reg();
         let slot = u16::try_from(slot).map_err(|_| anyhow!("Compiler32 global slot {slot} exceeds u16"))?;
+        let pc = self.function.code.len();
         self.emit(Instr32::abx(Opcode32::GetGlobal, checked_u8("global dst", dst)?, slot));
+        self.function.performance.set_global_fact(pc, PerfGlobalFact { slot });
+        self.function.performance.clear_register(dst);
         Ok(dst)
     }
 
@@ -1092,6 +1191,7 @@ impl Compiler32 {
             checked_u8("capture dst", dst)?,
             capture,
         ));
+        self.function.performance.clear_register(dst);
         Ok(dst)
     }
 
@@ -1103,6 +1203,7 @@ impl Compiler32 {
             checked_u8("cell value src", cell)?,
             0,
         ));
+        self.function.performance.clear_register(dst);
         Ok(dst)
     }
 
@@ -1141,7 +1242,9 @@ impl Compiler32 {
 
     fn emit_set_global(&mut self, src: u16, slot: u32) -> Result<()> {
         let slot = u16::try_from(slot).map_err(|_| anyhow!("Compiler32 global slot {slot} exceeds u16"))?;
+        let pc = self.function.code.len();
         self.emit(Instr32::abx(Opcode32::SetGlobal, checked_u8("global src", src)?, slot));
+        self.function.performance.set_global_fact(pc, PerfGlobalFact { slot });
         Ok(())
     }
 
@@ -1163,15 +1266,19 @@ impl Compiler32 {
     }
 
     fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {
-        let flavor = numeric_flavor(lhs, op, rhs);
+        let static_flavor = numeric_flavor(lhs, op, rhs);
         let lhs = self.lower_expr(lhs)?;
         let rhs = self.lower_expr(rhs)?;
         let dst = self.alloc_reg();
+        let flavor =
+            numeric_flavor_from_register_facts(&self.function.performance, op, lhs, rhs).unwrap_or(static_flavor);
         self.emit_bin_op_to_register_with_flavor(dst, op, lhs, rhs, flavor)
     }
 
     fn emit_bin_op_to_register(&mut self, dst: u16, op: &BinOp, lhs: u16, rhs: u16) -> Result<u16> {
-        self.emit_bin_op_to_register_with_flavor(dst, op, lhs, rhs, NumericFlavor::Int)
+        let flavor =
+            numeric_flavor_from_register_facts(&self.function.performance, op, lhs, rhs).unwrap_or(NumericFlavor::Int);
+        self.emit_bin_op_to_register_with_flavor(dst, op, lhs, rhs, flavor)
     }
 
     fn emit_bin_op_to_register_with_flavor(
@@ -1217,6 +1324,7 @@ impl Compiler32 {
             checked_u8("lhs", lhs)?,
             checked_u8("rhs", rhs)?,
         ));
+        self.set_register_kind(dst, bin_op_result_kind(op, flavor));
         Ok(dst)
     }
 }

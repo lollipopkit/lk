@@ -1,6 +1,12 @@
 use super::*;
+use crate::{
+    stmt::{ImportItem, ImportSource, ImportStmt, stmt_parser::StmtParser},
+    token::Tokenizer,
+    val::{CallableValue, HeapValue, RuntimeMapKey},
+    vm::Compiler32,
+};
 use once_cell::sync::Lazy;
-use std::{ffi::CString, sync::Mutex};
+use std::sync::Mutex;
 
 static RUNTIME_TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
@@ -9,57 +15,6 @@ fn reset_runtime_state() {
         let mut guard = mutex.lock().unwrap();
         *guard = RuntimeState::default();
     }
-}
-
-fn runtime_string_for_tests(value: i64) -> Option<String> {
-    with_state(|state| {
-        let decoded = state.decode_value(value);
-        state.runtime_string(&decoded).map(ToOwned::to_owned)
-    })
-}
-
-#[test]
-fn intern_string_roundtrips() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-    let text = b"hello";
-    let handle = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
-    let handle_again = lk_rt_intern_string(text.as_ptr().cast(), text.len() as i64);
-    assert_eq!(handle, handle_again);
-    assert_eq!(runtime_string_for_tests(handle).as_deref(), Some("hello"));
-}
-
-#[test]
-fn arithmetic_helpers_preserve_dynamic_semantics() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-
-    assert_eq!(lk_rt_add(40, 2), 42);
-    assert_eq!(lk_rt_sub(40, 2), 38);
-    assert_eq!(lk_rt_mul(6, 7), 42);
-    assert_eq!(lk_rt_div(84, 2), 42);
-    assert_eq!(lk_rt_mod(85, 43), 42);
-    assert_eq!(lk_rt_add(encoding::BOOL_TRUE_VALUE, 2), encoding::NIL_VALUE);
-}
-
-#[test]
-fn to_string_uses_scalar_runtime_handles() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-
-    let rendered = lk_rt_to_string(42);
-    assert_eq!(runtime_string_for_tests(rendered).as_deref(), Some("42"));
-}
-
-#[test]
-fn define_and_load_global() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-    let name_bytes = b"g";
-    let name_handle = lk_rt_intern_string(name_bytes.as_ptr().cast(), 1);
-    lk_rt_define_global(name_handle, encoding::BOOL_TRUE_VALUE);
-    let loaded = lk_rt_load_global(name_handle);
-    assert_eq!(loaded, encoding::BOOL_TRUE_VALUE);
 }
 
 #[test]
@@ -99,18 +54,78 @@ fn concurrency_globals_are_registered_only_for_concurrency_imports() {
 }
 
 #[test]
-fn bundled_lkb_registration_is_disabled_during_instr32_migration() {
+fn module32_json_runtime_entry_executes_artifact() {
     let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
     reset_runtime_state();
     lk_rt_begin_session();
 
-    let fib_path_rel = CString::new("examples/fib.lk").unwrap();
-    let bytes = b"LKB";
-    let registered = lk_rt_register_bundled_module(
-        fib_path_rel.as_ptr(),
-        fib_path_rel.as_bytes().len() as i64,
-        bytes.as_ptr(),
-        bytes.len() as i64,
-    );
-    assert_eq!(registered, -1, "bundled LKB registration must stay disabled");
+    let tokens = Tokenizer::tokenize("return 42;").expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module = Compiler32::compile_module(&program).expect("compile module");
+    let artifact = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+    let json = artifact.to_json_string().expect("json");
+
+    let status = lk_rt_run_module32_json(json.as_ptr().cast(), json.len() as i64);
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn module32_json_runtime_entry_rejects_invalid_artifact() {
+    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+    reset_runtime_state();
+    lk_rt_begin_session();
+
+    let invalid = b"{\"format\":\"not.lk.module32\"}";
+    let status = lk_rt_run_module32_json(invalid.as_ptr().cast(), invalid.len() as i64);
+    assert_eq!(status, -1);
+}
+
+#[test]
+fn native_import_replay_imports_file_module_and_items() {
+    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
+    reset_runtime_state();
+
+    let mut state = RuntimeState::default();
+    state.pending_search_paths.push("..".to_string());
+    state.pending_imports = vec![
+        ImportStmt::File {
+            path: "examples/fib".to_string(),
+        },
+        ImportStmt::Items {
+            items: vec![ImportItem {
+                name: "iterative".to_string(),
+                alias: Some("fib_iter".to_string()),
+            }],
+            source: ImportSource::File("examples/fib".to_string()),
+        },
+    ];
+
+    state.apply_pending_native_only().expect("native imports");
+
+    let fib = state
+        .artifact_globals
+        .get("fib")
+        .expect("file module global is replayed");
+    let RuntimeVal::Obj(fib_handle) = fib else {
+        panic!("file module import should be a heap map");
+    };
+    let Some(HeapValue::Map(fib_map)) = state.heap.get(*fib_handle) else {
+        panic!("file module import should be a heap map");
+    };
+    assert!(matches!(
+        fib_map.get(&RuntimeMapKey::String("iterative".into())),
+        Some(RuntimeVal::Obj(_))
+    ));
+
+    let fib_iter = state
+        .artifact_globals
+        .get("fib_iter")
+        .expect("item import global is replayed");
+    let RuntimeVal::Obj(callable_handle) = fib_iter else {
+        panic!("item import should be a runtime callable object");
+    };
+    assert!(matches!(
+        state.heap.get(*callable_handle),
+        Some(HeapValue::Callable(CallableValue::Runtime32(_)))
+    ));
 }

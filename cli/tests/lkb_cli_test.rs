@@ -110,35 +110,53 @@ fn test_compile_with_import_writes_instr32_module_output() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_targets_are_disabled_during_instr32_migration() {
-    let dir = unique_tmp_dir("llvm_disabled");
+fn test_llvm_compile_emits_instr32_runtime_shell() {
+    let dir = unique_tmp_dir("llvm_shell");
     ensure_clean_dir(&dir);
     write_file(&dir, "a.lk", "return 123;\n");
 
     let llvm = run_cli(&dir, ["compile", "llvm", "a.lk"])
         .output()
         .expect("spawn llvm compile");
-    assert!(!llvm.status.success(), "LLVM IR output should be disabled");
-    let stderr = String::from_utf8_lossy(&llvm.stderr);
     assert!(
-        stderr.contains("LLVM IR output is disabled during the Instr32 VM migration"),
-        "expected LLVM migration error, got: {stderr}"
+        llvm.status.success(),
+        "LLVM IR compile failed: {}",
+        String::from_utf8_lossy(&llvm.stderr)
     );
-    assert!(!dir.join("a.ll").exists(), "disabled LLVM output must not emit IR");
+    let stdout = String::from_utf8_lossy(&llvm.stdout);
+    assert!(stdout.contains("a.ll"), "expected output path, got: {stdout}");
+    let ir = fs::read_to_string(dir.join("a.ll")).expect("read LLVM IR");
+    assert!(
+        ir.contains("@lk_module32_json"),
+        "expected embedded module artifact, got: {ir}"
+    );
+    assert!(
+        ir.contains("lk_rt_run_module32_json"),
+        "expected runtime entry declaration, got: {ir}"
+    );
+    assert!(
+        ir.contains("lk.module32"),
+        "expected Module32 artifact payload, got: {ir}"
+    );
 
     let exe = run_cli(&dir, ["compile", "exe", "a.lk"])
         .output()
         .expect("spawn exe compile");
-    assert!(!exe.status.success(), "native executable output should be disabled");
-    let stderr = String::from_utf8_lossy(&exe.stderr);
     assert!(
-        stderr.contains("native executable output is disabled during the Instr32 VM migration"),
-        "expected native migration error, got: {stderr}"
+        exe.status.success(),
+        "native executable compile failed: {}",
+        String::from_utf8_lossy(&exe.stderr)
     );
+    let stdout = String::from_utf8_lossy(&exe.stdout);
+    assert!(stdout.contains("a"), "expected executable output path, got: {stdout}");
+    assert!(dir.join("a").exists(), "native executable output should be emitted");
+    let run_exe = Command::new(dir.join("a")).output().expect("spawn compiled executable");
     assert!(
-        !dir.join("a").exists(),
-        "disabled native output must not emit executable"
+        run_exe.status.success(),
+        "compiled executable failed: {}",
+        String::from_utf8_lossy(&run_exe.stderr)
     );
+    assert_eq!(String::from_utf8(run_exe.stdout).expect("utf8 stdout").trim(), "123");
 
     let _ = fs::remove_dir_all(&dir);
 }

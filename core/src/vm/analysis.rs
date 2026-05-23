@@ -2,7 +2,7 @@ use std::sync::Arc;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::val::{Type, Val};
+use crate::val::{LiteralVal, Type};
 use crate::vm::alloc::RegionPlan;
 use crate::vm::ssa::SsaFunction;
 
@@ -60,6 +60,7 @@ pub enum PerfValueKind {
     String,
     List,
     Map,
+    Object,
 }
 
 impl PerfValueKind {
@@ -76,17 +77,18 @@ impl PerfValueKind {
             Type::String => Self::String,
             Type::List(_) => Self::List,
             Type::Map(_, _) => Self::Map,
+            Type::Named(_) => Self::Object,
             Type::Optional(inner) => Self::from_type(inner).join(Self::Nil),
             _ => Self::Unknown,
         }
     }
 
-    pub fn from_val(value: &Val) -> Self {
+    pub fn from_literal(value: &LiteralVal) -> Self {
         match value {
-            Val::Nil => Self::Nil,
-            Val::Bool(_) => Self::Bool,
-            Val::Int(_) => Self::Int,
-            Val::Float(_) => Self::Float,
+            LiteralVal::Nil => Self::Nil,
+            LiteralVal::Bool(_) => Self::Bool,
+            LiteralVal::Int(_) => Self::Int,
+            LiteralVal::Float(_) => Self::Float,
             value if value.as_str().is_some() => Self::String,
             _ => Self::Unknown,
         }
@@ -124,15 +126,21 @@ pub struct PerfRegisterFact {
     pub value: PerfValueFact,
     pub list: Option<PerfContainerFact>,
     pub map: Option<PerfContainerFact>,
+    pub callable: PerfCallTargetKind,
     pub live_after: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct PerformanceFacts {
     pub values: Vec<PerfValueFact>,
+    pub value_lists: Vec<Option<PerfContainerFact>>,
+    pub value_maps: Vec<Option<PerfContainerFact>>,
     pub registers: Vec<Option<PerfRegisterFact>>,
     pub local_slots: Vec<bool>,
     pub key_ops: Vec<Option<PerfKeyFact>>,
+    pub index_ops: Vec<Option<PerfIndexFact>>,
+    pub call_sites: Vec<Option<PerfCallFact>>,
+    pub global_ops: Vec<Option<PerfGlobalFact>>,
     pub dead_writes: Vec<bool>,
     pub register_copies: Vec<Option<PerfRegisterCopyFact>>,
     pub local_copies: Vec<Option<PerfLocalCopyFact>>,
@@ -158,6 +166,44 @@ pub struct PerfStringIntKeyFact {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfIndexFact {
+    pub target_kind: PerfIndexTargetKind,
+    pub value_kind: PerfValueKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PerfIndexTargetKind {
+    #[default]
+    Unknown,
+    List,
+    Map,
+    Object,
+    String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfCallFact {
+    pub call_base: u16,
+    pub positional_count: u16,
+    pub named_count: u16,
+    pub target_kind: PerfCallTargetKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PerfCallTargetKind {
+    #[default]
+    Unknown,
+    Closure,
+    Native,
+    Runtime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfGlobalFact {
+    pub slot: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PerfRegisterCopyFact {
     pub move_source: bool,
 }
@@ -177,6 +223,14 @@ pub struct PerfControlFlowFacts {
 impl PerformanceFacts {
     pub fn value(&self, value_id: usize) -> Option<&PerfValueFact> {
         self.values.get(value_id)
+    }
+
+    pub fn value_list(&self, value_id: usize) -> Option<&PerfContainerFact> {
+        self.value_lists.get(value_id).and_then(Option::as_ref)
+    }
+
+    pub fn value_map(&self, value_id: usize) -> Option<&PerfContainerFact> {
+        self.value_maps.get(value_id).and_then(Option::as_ref)
     }
 
     pub fn register(&self, reg: u16) -> Option<&PerfRegisterFact> {
@@ -201,6 +255,24 @@ impl PerformanceFacts {
 
     pub fn container_move(&self, pc: usize) -> Option<&PerfContainerMoveFact> {
         self.container_moves.get(pc).and_then(Option::as_ref)
+    }
+
+    pub fn call_site(&self, pc: usize) -> Option<&PerfCallFact> {
+        self.call_sites.get(pc).and_then(Option::as_ref)
+    }
+
+    pub fn index_op(&self, pc: usize) -> Option<&PerfIndexFact> {
+        self.index_ops.get(pc).and_then(Option::as_ref)
+    }
+
+    pub fn global_op(&self, pc: usize) -> Option<&PerfGlobalFact> {
+        self.global_ops.get(pc).and_then(Option::as_ref)
+    }
+
+    pub fn callable_kind(&self, reg: u16) -> PerfCallTargetKind {
+        self.register(reg)
+            .map(|fact| fact.callable)
+            .unwrap_or(PerfCallTargetKind::Unknown)
     }
 
     pub fn block_id(&self, pc: usize) -> Option<u32> {
@@ -228,6 +300,34 @@ impl PerformanceFacts {
             self.local_copies.resize_with(pc + 1, Option::default);
         }
         self.local_copies[pc] = Some(fact);
+    }
+
+    pub fn set_key_fact(&mut self, pc: usize, fact: PerfKeyFact) {
+        if self.key_ops.len() <= pc {
+            self.key_ops.resize_with(pc + 1, Option::default);
+        }
+        self.key_ops[pc] = Some(fact);
+    }
+
+    pub fn set_index_fact(&mut self, pc: usize, fact: PerfIndexFact) {
+        if self.index_ops.len() <= pc {
+            self.index_ops.resize_with(pc + 1, Option::default);
+        }
+        self.index_ops[pc] = Some(fact);
+    }
+
+    pub fn set_call_fact(&mut self, pc: usize, fact: PerfCallFact) {
+        if self.call_sites.len() <= pc {
+            self.call_sites.resize_with(pc + 1, Option::default);
+        }
+        self.call_sites[pc] = Some(fact);
+    }
+
+    pub fn set_global_fact(&mut self, pc: usize, fact: PerfGlobalFact) {
+        if self.global_ops.len() <= pc {
+            self.global_ops.resize_with(pc + 1, Option::default);
+        }
+        self.global_ops[pc] = Some(fact);
     }
 
     pub fn set_register_copy_fact(&mut self, pc: usize, fact: PerfRegisterCopyFact) {
@@ -260,6 +360,22 @@ impl PerformanceFacts {
         self.values[value_id].kind = kind;
     }
 
+    pub fn set_value_list_fact(&mut self, value_id: usize, fact: PerfContainerFact) {
+        self.ensure_value(value_id);
+        if self.value_lists.len() <= value_id {
+            self.value_lists.resize_with(value_id + 1, Option::default);
+        }
+        self.value_lists[value_id] = Some(fact);
+    }
+
+    pub fn set_value_map_fact(&mut self, value_id: usize, fact: PerfContainerFact) {
+        self.ensure_value(value_id);
+        if self.value_maps.len() <= value_id {
+            self.value_maps.resize_with(value_id + 1, Option::default);
+        }
+        self.value_maps[value_id] = Some(fact);
+    }
+
     pub fn set_register_kind(&mut self, reg: u16, kind: PerfValueKind) {
         let fact = self.ensure_register(reg);
         fact.value.kind = kind;
@@ -269,6 +385,13 @@ impl PerformanceFacts {
         let idx = reg as usize;
         self.ensure_register_len(idx);
         self.registers[idx] = Some(fact);
+    }
+
+    pub fn copy_register_fact(&mut self, dst: u16, src: u16) {
+        let src_fact = self.register(src).copied();
+        let dst_idx = dst as usize;
+        self.ensure_register_len(dst_idx);
+        self.registers[dst_idx] = src_fact;
     }
 
     pub fn clear_register(&mut self, reg: u16) {
@@ -289,6 +412,12 @@ impl PerformanceFacts {
     pub fn ensure_value(&mut self, value_id: usize) {
         if self.values.len() <= value_id {
             self.values.resize_with(value_id + 1, PerfValueFact::default);
+        }
+        if self.value_lists.len() <= value_id {
+            self.value_lists.resize_with(value_id + 1, Option::default);
+        }
+        if self.value_maps.len() <= value_id {
+            self.value_maps.resize_with(value_id + 1, Option::default);
         }
     }
 
@@ -320,9 +449,6 @@ pub struct FunctionAnalysis {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VmRuntimeMetrics {
     pub opcode_steps: u64,
-    pub val_clones: u64,
-    pub immediate_val_clones: u64,
-    pub heap_val_clones: u64,
     pub copy_policy_heap_clones: u64,
     pub register_copy_heap_clones: u64,
     pub local_copy_heap_clones: u64,
@@ -351,9 +477,6 @@ pub struct VmRuntimeMetrics {
 impl VmRuntimeMetrics {
     const ZERO: Self = Self {
         opcode_steps: 0,
-        val_clones: 0,
-        immediate_val_clones: 0,
-        heap_val_clones: 0,
         copy_policy_heap_clones: 0,
         register_copy_heap_clones: 0,
         local_copy_heap_clones: 0,
@@ -395,12 +518,6 @@ fn update_thread_runtime_metrics(update: impl FnOnce(&mut VmRuntimeMetrics)) {
     });
 }
 
-#[cfg(not(test))]
-static VAL_CLONES: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static IMMEDIATE_VAL_CLONES: AtomicU64 = AtomicU64::new(0);
-#[cfg(not(test))]
-static HEAP_VAL_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(not(test))]
 static COPY_POLICY_HEAP_CLONES: AtomicU64 = AtomicU64::new(0);
 #[cfg(not(test))]
@@ -522,33 +639,6 @@ pub(crate) fn record_opcode_step_known_enabled() {
 #[inline]
 pub(crate) fn record_opcode_step_known_enabled() {
     increment_thread(|metrics| metrics.opcode_steps += 1);
-}
-
-#[cfg(not(test))]
-#[inline]
-pub(crate) fn record_val_clone(heap_backed: bool) {
-    if !runtime_metrics_enabled() {
-        return;
-    }
-    VAL_CLONES.fetch_add(1, Ordering::Relaxed);
-    if heap_backed {
-        HEAP_VAL_CLONES.fetch_add(1, Ordering::Relaxed);
-    } else {
-        IMMEDIATE_VAL_CLONES.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-#[cfg(test)]
-#[inline]
-pub(crate) fn record_val_clone(heap_backed: bool) {
-    update_thread_runtime_metrics(|metrics| {
-        metrics.val_clones += 1;
-        if heap_backed {
-            metrics.heap_val_clones += 1;
-        } else {
-            metrics.immediate_val_clones += 1;
-        }
-    });
 }
 
 #[cfg(not(test))]
@@ -744,9 +834,6 @@ pub(crate) fn record_container_op_known_enabled(kind: VmContainerMetric) {
 pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
     VmRuntimeMetrics {
         opcode_steps: OPCODE_STEPS.load(Ordering::Relaxed),
-        val_clones: VAL_CLONES.load(Ordering::Relaxed),
-        immediate_val_clones: IMMEDIATE_VAL_CLONES.load(Ordering::Relaxed),
-        heap_val_clones: HEAP_VAL_CLONES.load(Ordering::Relaxed),
         copy_policy_heap_clones: COPY_POLICY_HEAP_CLONES.load(Ordering::Relaxed),
         register_copy_heap_clones: REGISTER_COPY_HEAP_CLONES.load(Ordering::Relaxed),
         local_copy_heap_clones: LOCAL_COPY_HEAP_CLONES.load(Ordering::Relaxed),
@@ -781,9 +868,6 @@ pub fn vm_runtime_metrics_snapshot() -> VmRuntimeMetrics {
 pub fn vm_runtime_metrics_reset() {
     RUNTIME_METRICS_ENABLED.store(true, Ordering::Relaxed);
     OPCODE_STEPS.store(0, Ordering::Relaxed);
-    VAL_CLONES.store(0, Ordering::Relaxed);
-    IMMEDIATE_VAL_CLONES.store(0, Ordering::Relaxed);
-    HEAP_VAL_CLONES.store(0, Ordering::Relaxed);
     COPY_POLICY_HEAP_CLONES.store(0, Ordering::Relaxed);
     REGISTER_COPY_HEAP_CLONES.store(0, Ordering::Relaxed);
     LOCAL_COPY_HEAP_CLONES.store(0, Ordering::Relaxed);
@@ -818,14 +902,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn perf_value_kind_from_val_keeps_heap_values_unknown() {
-        assert_eq!(PerfValueKind::from_val(&Val::Nil), PerfValueKind::Nil);
-        assert_eq!(PerfValueKind::from_val(&Val::Bool(true)), PerfValueKind::Bool);
-        assert_eq!(PerfValueKind::from_val(&Val::Int(42)), PerfValueKind::Int);
-        assert_eq!(PerfValueKind::from_val(&Val::Float(1.5)), PerfValueKind::Float);
-        assert_eq!(PerfValueKind::from_val(&Val::from_str("lk")), PerfValueKind::String);
+    fn perf_value_kind_from_literal_classifies_ast_literals() {
+        assert_eq!(PerfValueKind::from_literal(&LiteralVal::Nil), PerfValueKind::Nil);
         assert_eq!(
-            PerfValueKind::from_val(&Val::from_str("longer-than-short")),
+            PerfValueKind::from_literal(&LiteralVal::Bool(true)),
+            PerfValueKind::Bool
+        );
+        assert_eq!(PerfValueKind::from_literal(&LiteralVal::Int(42)), PerfValueKind::Int);
+        assert_eq!(
+            PerfValueKind::from_literal(&LiteralVal::Float(1.5)),
+            PerfValueKind::Float
+        );
+        assert_eq!(
+            PerfValueKind::from_literal(&LiteralVal::from_str("lk")),
+            PerfValueKind::String
+        );
+        assert_eq!(
+            PerfValueKind::from_literal(&LiteralVal::from_str("longer-than-short")),
             PerfValueKind::String
         );
     }

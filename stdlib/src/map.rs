@@ -30,11 +30,7 @@ impl MapModule {
 
     fn keys32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let map = one_map(args, runtime, "keys()")?;
-        let keys = map
-            .entries_into_heap(runtime.heap_mut())?
-            .into_iter()
-            .filter_map(|(key, _)| key.as_arc_str())
-            .collect::<Vec<_>>();
+        let keys = map_keys_list(map);
         Ok(RuntimeVal::Obj(
             runtime.heap_mut().alloc(HeapValue::List(TypedList::String(keys))),
         ))
@@ -42,12 +38,7 @@ impl MapModule {
 
     fn values32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let map = one_map(args, runtime, "values()")?;
-        let values = map
-            .entries_into_heap(runtime.heap_mut())?
-            .into_iter()
-            .map(|(_, value)| value)
-            .collect::<Vec<_>>();
-        let list = TypedList::from_runtime_values(values, runtime.heap());
+        let list = map_values_list(map, runtime.heap());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
 
@@ -164,6 +155,26 @@ fn map_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedM
 fn string_key_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<RuntimeMapKey> {
     let key = runtime_string_arg(value, heap, context)?;
     Ok(RuntimeMapKey::String(key))
+}
+
+fn map_keys_list(map: TypedMap) -> Vec<std::sync::Arc<str>> {
+    match map {
+        TypedMap::Mixed(entries) => entries.into_keys().filter_map(|key| key.as_arc_str()).collect(),
+        TypedMap::StringMixed(entries) => entries.into_keys().collect(),
+        TypedMap::StringInt(entries) => entries.into_keys().collect(),
+        TypedMap::StringFloat(entries) => entries.into_keys().collect(),
+        TypedMap::StringBool(entries) => entries.into_keys().collect(),
+    }
+}
+
+fn map_values_list(map: TypedMap, heap: &HeapStore) -> TypedList {
+    match map {
+        TypedMap::Mixed(entries) => TypedList::from_runtime_values(entries.into_values().collect(), heap),
+        TypedMap::StringMixed(entries) => TypedList::from_runtime_values(entries.into_values().collect(), heap),
+        TypedMap::StringInt(entries) => TypedList::Int(entries.into_values().collect()),
+        TypedMap::StringFloat(entries) => TypedList::Float(entries.into_values().collect()),
+        TypedMap::StringBool(entries) => TypedList::Bool(entries.into_values().collect()),
+    }
 }
 
 #[cfg(test)]
@@ -309,6 +320,60 @@ mod tests {
         };
         assert_eq!(map.get_str("a"), Some(RuntimeVal::Int(1)));
         assert_eq!(map.get_str("b"), Some(RuntimeVal::Int(2)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_values_reads_typed_map_backing_directly() -> Result<()> {
+        let (_, function) = map_native("values")?;
+        let NativeFunction32::Plain(function) = function else {
+            panic!("values should use plain RuntimeNative32");
+        };
+        let mut entries = BTreeMap::new();
+        entries.insert(Arc::<str>::from("a"), 1);
+        entries.insert(Arc::<str>::from("b"), 2);
+        let mut state = RuntimeModuleState32::default();
+        let map = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(entries))));
+        let args = [map];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+
+        let RuntimeVal::Obj(handle) = result else {
+            panic!("values should return list object");
+        };
+        let Some(HeapValue::List(TypedList::Int(values))) = runtime.heap().get(handle) else {
+            panic!("values should preserve typed int list backing");
+        };
+        assert_eq!(values, &vec![1, 2]);
+        assert_eq!(runtime.heap().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_keys_reads_string_key_backing_directly() -> Result<()> {
+        let (_, function) = map_native("keys")?;
+        let NativeFunction32::Plain(function) = function else {
+            panic!("keys should use plain RuntimeNative32");
+        };
+        let mut entries = BTreeMap::new();
+        entries.insert(Arc::<str>::from("long-key-one"), true);
+        entries.insert(Arc::<str>::from("long-key-two"), false);
+        let mut state = RuntimeModuleState32::default();
+        let map = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringBool(entries))));
+        let args = [map];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+
+        let RuntimeVal::Obj(handle) = result else {
+            panic!("keys should return list object");
+        };
+        let Some(HeapValue::List(TypedList::String(values))) = runtime.heap().get(handle) else {
+            panic!("keys should preserve typed string list backing");
+        };
+        assert_eq!(values.len(), 2);
+        assert_eq!(runtime.heap().len(), 2);
         Ok(())
     }
 }

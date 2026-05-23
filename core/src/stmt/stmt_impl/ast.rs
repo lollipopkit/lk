@@ -1,6 +1,6 @@
 use crate::{
     expr::{Expr, Pattern},
-    op::BinOp,
+    operator::BinOp,
     stmt::ImportStmt,
     token::Span,
     typ::TypeChecker,

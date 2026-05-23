@@ -175,7 +175,7 @@ impl<'a> Parser<'a> {
 
         let mut inner = self.tokens[start..end].to_vec();
         if inner.is_empty() {
-            return Ok(Expr::Val(crate::val::Val::Nil));
+            return Ok(Expr::Literal(crate::val::LiteralVal::Nil));
         }
         if !matches!(inner.last(), Some(Token::Semicolon)) {
             inner.push(Token::Semicolon);

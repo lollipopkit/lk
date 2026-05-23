@@ -3,7 +3,7 @@ use core::fmt::Debug;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-use crate::val::Val;
+use crate::val::LiteralVal;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum UnaryOp {
@@ -46,7 +46,7 @@ impl BinOp {
         )
     }
 
-    pub(crate) fn cmp_literals(&self, l: &Val, r: &Val) -> Option<bool> {
+    pub(crate) fn cmp_literals(&self, l: &LiteralVal, r: &LiteralVal) -> Option<bool> {
         match self {
             BinOp::Eq => Some(l == r),
             BinOp::Ne => Some(l != r),
@@ -71,12 +71,12 @@ impl BinOp {
     }
 }
 
-fn cmp_literal_ordering(l: &Val, r: &Val) -> Option<Ordering> {
+fn cmp_literal_ordering(l: &LiteralVal, r: &LiteralVal) -> Option<Ordering> {
     match (l, r) {
-        (Val::Int(a), Val::Int(b)) => a.partial_cmp(b),
-        (Val::Float(a), Val::Float(b)) => a.partial_cmp(b),
-        (Val::Int(a), Val::Float(b)) => (*a as f64).partial_cmp(b),
-        (Val::Float(a), Val::Int(b)) => a.partial_cmp(&(*b as f64)),
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => a.partial_cmp(b),
+        (LiteralVal::Float(a), LiteralVal::Float(b)) => a.partial_cmp(b),
+        (LiteralVal::Int(a), LiteralVal::Float(b)) => (*a as f64).partial_cmp(b),
+        (LiteralVal::Float(a), LiteralVal::Int(b)) => a.partial_cmp(&(*b as f64)),
         _ => match (l.as_str(), r.as_str()) {
             (Some(a), Some(b)) => a.partial_cmp(b),
             _ => None,

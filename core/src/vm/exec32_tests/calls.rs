@@ -1,4 +1,6 @@
 use super::*;
+use crate::vm::analysis::{PerfCallFact, PerfCallTargetKind};
+
 #[test]
 fn execute_module32_calls_closure_function() {
     let callee = Function32 {
@@ -43,6 +45,173 @@ fn execute_module32_calls_closure_function() {
     let result = execute_module32(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn execute_module32_uses_call_shape_fact_for_call_window() {
+    let callee = Function32 {
+        consts: ConstPool32::default(),
+        code: vec![
+            Instr32::abc(Opcode32::AddInt, 2, 0, 1),
+            Instr32::abc(Opcode32::Return, 2, 1, 0),
+        ],
+        register_count: 3,
+        param_count: 2,
+        positional_param_count: 2,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let mut entry = Function32 {
+        consts: ConstPool32 {
+            ints: vec![11, 31],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadFunction, 0, 1),
+            Instr32::abx(Opcode32::LoadInt, 1, 0),
+            Instr32::abx(Opcode32::LoadInt, 2, 1),
+            Instr32::abc(Opcode32::Call, 0, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 3,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    entry.performance.set_call_fact(
+        3,
+        PerfCallFact {
+            call_base: 0,
+            positional_count: 2,
+            named_count: 0,
+            target_kind: crate::vm::analysis::PerfCallTargetKind::Closure,
+        },
+    );
+    let module = Module32 {
+        functions: vec![entry, callee],
+        natives: Vec::new(),
+        globals: Vec::new(),
+        entry: 0,
+    };
+
+    let result = execute_module32(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn execute_module32_caches_call_shape_without_static_fact() {
+    let callee = Function32 {
+        consts: ConstPool32::default(),
+        code: vec![
+            Instr32::abc(Opcode32::AddInt, 2, 0, 1),
+            Instr32::abc(Opcode32::Return, 2, 1, 0),
+        ],
+        register_count: 3,
+        param_count: 2,
+        positional_param_count: 2,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let entry = Function32 {
+        consts: ConstPool32 {
+            ints: vec![11, 31],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadFunction, 0, 1),
+            Instr32::abx(Opcode32::LoadInt, 1, 0),
+            Instr32::abx(Opcode32::LoadInt, 2, 1),
+            Instr32::abc(Opcode32::Call, 0, 0, 2),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 3,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let module = Module32 {
+        functions: vec![entry, callee],
+        natives: Vec::new(),
+        globals: Vec::new(),
+        entry: 0,
+    };
+
+    let result = execute_module32(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert_eq!(
+        result.state.inline_caches.call(3),
+        Some(PerfCallFact {
+            call_base: 0,
+            positional_count: 2,
+            named_count: 0,
+            target_kind: PerfCallTargetKind::Closure,
+        })
+    );
+}
+
+#[test]
+fn execute_module32_caches_named_call_shape_without_static_fact() {
+    let callee = Function32 {
+        consts: ConstPool32::default(),
+        code: vec![
+            Instr32::abc(Opcode32::AddInt, 2, 0, 1),
+            Instr32::abc(Opcode32::Return, 2, 1, 0),
+        ],
+        register_count: 3,
+        param_count: 2,
+        positional_param_count: 1,
+        param_names: vec![Arc::<str>::from("x"), Arc::<str>::from("y")],
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let entry = Function32 {
+        consts: ConstPool32 {
+            ints: vec![40, 2],
+            strings: vec!["y".to_string()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadFunction, 0, 1),
+            Instr32::abx(Opcode32::LoadInt, 1, 0),
+            Instr32::abx(Opcode32::LoadString, 2, 0),
+            Instr32::abx(Opcode32::LoadInt, 3, 1),
+            Instr32::abx(Opcode32::CallNamed, 0, (1 << 7) | 1),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 4,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let module = Module32 {
+        functions: vec![entry, callee],
+        natives: Vec::new(),
+        globals: Vec::new(),
+        entry: 0,
+    };
+
+    let result = execute_module32(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert_eq!(
+        result.state.inline_caches.call(4),
+        Some(PerfCallFact {
+            call_base: 0,
+            positional_count: 1,
+            named_count: 1,
+            target_kind: PerfCallTargetKind::Closure,
+        })
+    );
 }
 
 #[test]

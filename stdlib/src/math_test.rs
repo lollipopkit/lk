@@ -8,7 +8,7 @@ mod tests {
         module::ModuleRegistry,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+        val::{HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList},
         vm::{
             NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32,
             VmContext,
@@ -31,14 +31,28 @@ mod tests {
         crate::runtime_native::runtime_native_export(&MathModule::new(), name)
     }
 
-    fn call_math(name: &str, args: &[RuntimeVal], named: &[(Arc<str>, RuntimeVal)]) -> Result<RuntimeVal> {
+    fn call_math(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {
+        call_math_named_stack(name, args, &[], 0)
+    }
+
+    fn call_math_named_stack(
+        name: &str,
+        args: &[RuntimeVal],
+        named_stack: &[RuntimeVal],
+        named_count: u16,
+    ) -> Result<RuntimeVal> {
         let (_, function) = math_native(name)?;
         let NativeFunction32::Plain(function) = function else {
             return Err(anyhow!("{name} must use plain RuntimeNative32"));
         };
         let mut state = RuntimeModuleState32::default();
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        function(NativeArgs32::new_with_named(args, named), &mut runtime)
+        let args = if named_count == 0 {
+            NativeArgs32::new(args)
+        } else {
+            NativeArgs32::new_with_named_stack(args, named_stack, 0, named_count)
+        };
+        function(args, &mut runtime)
     }
 
     fn runtime_list<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> &'a TypedList {
@@ -108,30 +122,32 @@ mod tests {
 
     #[test]
     fn test_math_clamp_duplicate_named_argument_error() {
-        let named_args = vec![
-            (Arc::<str>::from("min"), RuntimeVal::Int(0)),
-            (Arc::<str>::from("min"), RuntimeVal::Int(1)),
+        let named_args = [
+            RuntimeVal::ShortStr(ShortStr::new("min").expect("short")),
+            RuntimeVal::Int(0),
+            RuntimeVal::ShortStr(ShortStr::new("min").expect("short")),
+            RuntimeVal::Int(1),
         ];
-        let err =
-            call_math("clamp", &[RuntimeVal::Int(5)], &named_args).expect_err("duplicate named arguments should error");
+        let err = call_math_named_stack("clamp", &[RuntimeVal::Int(5)], &named_args, 2)
+            .expect_err("duplicate named arguments should error");
         assert!(err.to_string().contains("duplicate named argument"));
     }
 
     #[test]
     fn test_math_sqrt_negative_error() {
-        let err = call_math("sqrt", &[RuntimeVal::Int(-1)], &[]).expect_err("negative input should fail");
+        let err = call_math("sqrt", &[RuntimeVal::Int(-1)]).expect_err("negative input should fail");
         assert!(err.to_string().contains("must be non-negative"));
     }
 
     #[test]
     fn test_math_log_non_positive_error() {
-        let err = call_math("log", &[RuntimeVal::Int(0)], &[]).expect_err("non-positive input should fail");
+        let err = call_math("log", &[RuntimeVal::Int(0)]).expect_err("non-positive input should fail");
         assert!(err.to_string().contains("must be positive"));
     }
 
     #[test]
     fn test_math_atan2_mixed_numeric_types() -> Result<()> {
-        let result = call_math("atan2", &[RuntimeVal::Int(1), RuntimeVal::Float(0.0)], &[])?;
+        let result = call_math("atan2", &[RuntimeVal::Int(1), RuntimeVal::Float(0.0)])?;
         let RuntimeVal::Float(angle) = result else {
             panic!("atan2 should return float");
         };
@@ -165,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_math_runtime_result_preserves_runtime_value() -> Result<()> {
-        let result = call_math("min", &[RuntimeVal::Float(2.5), RuntimeVal::Int(3)], &[])?;
+        let result = call_math("min", &[RuntimeVal::Float(2.5), RuntimeVal::Int(3)])?;
         assert_eq!(result, RuntimeVal::Float(2.5));
         Ok(())
     }

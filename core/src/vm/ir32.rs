@@ -1,7 +1,7 @@
 //! Canonical 32-bit VM instruction model for the VM rewrite.
 //!
-//! This module is intentionally independent from the previous `Op` enum. New
-//! compiler and executor work should target this representation directly.
+//! Compiler and executor work should target this representation directly; the
+//! removed bytecode instruction model must not be reintroduced.
 
 use std::{collections::BTreeMap, fmt::Write as _, mem::size_of, sync::Arc};
 
@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     val::{RuntimeMapKey, ShortStr},
-    vm::analysis::FunctionAnalysis,
+    vm::analysis::{FunctionAnalysis, PerformanceFacts},
 };
 
 use super::runtime32::NativeEntry32;
@@ -414,7 +414,7 @@ pub fn encode_instr32(code: &[Instr32]) -> Vec<u8> {
 
 pub fn decode_instr32(bytes: &[u8]) -> Result<Vec<Instr32>> {
     if bytes.len() % size_of::<u32>() != 0 {
-        bail!("Instr32 bytecode length {} is not 4-byte aligned", bytes.len());
+        bail!("Instr32 encoded length {} is not 4-byte aligned", bytes.len());
     }
     bytes
         .chunks_exact(size_of::<u32>())
@@ -430,6 +430,7 @@ pub struct Function32 {
     pub consts: ConstPool32,
     pub code: Vec<Instr32>,
     pub analyses: Vec<FunctionAnalysis>,
+    pub performance: PerformanceFacts,
     pub register_count: u16,
     pub param_count: u16,
     pub positional_param_count: u16,

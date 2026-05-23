@@ -1,4 +1,5 @@
 use super::*;
+use crate::vm::analysis::{PerfIndexTargetKind, PerfValueKind};
 #[test]
 fn execute32_returns_int_arithmetic_result() {
     let function = Function32 {
@@ -307,6 +308,9 @@ fn execute32_allocates_typed_string_int_map_and_reads_string_key() {
         panic!("expected typed string-int map");
     };
     assert_eq!(values.get("answer"), Some(&42));
+    let cache = result.state.inline_caches.index(4).expect("index cache");
+    assert_eq!(cache.target_kind, PerfIndexTargetKind::Map);
+    assert_eq!(cache.value_kind, PerfValueKind::Int);
 }
 
 #[test]
@@ -506,6 +510,44 @@ fn execute32_updates_typed_string_list_without_materializing() {
 
     assert_eq!(values[0].as_ref(), "a");
     assert_eq!(values[1].as_ref(), "c");
+}
+
+#[test]
+fn execute32_adds_typed_string_lists_without_materializing_items() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![
+                ConstHeapValue32::LongString(Arc::<str>::from("long-left-value")),
+                ConstHeapValue32::LongString(Arc::<str>::from("long-right-value")),
+            ],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadHeapConst, 0, 0),
+            Instr32::abc(Opcode32::NewList, 1, 0, 1),
+            Instr32::abx(Opcode32::LoadHeapConst, 2, 1),
+            Instr32::abc(Opcode32::NewList, 3, 2, 1),
+            Instr32::abc(Opcode32::AddInt, 4, 1, 3),
+            Instr32::abc(Opcode32::Return, 4, 1, 0),
+        ],
+        register_count: 5,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+    let RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list object");
+    };
+    let HeapValue::List(TypedList::String(values)) = result.state.heap.get(handle).expect("heap object") else {
+        panic!("expected typed string list");
+    };
+
+    assert_eq!(values.len(), 2);
+    assert_eq!(result.state.heap.len(), 5);
 }
 
 #[test]

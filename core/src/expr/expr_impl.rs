@@ -1,9 +1,9 @@
 use crate::{
     ast::Parser,
-    op::{BinOp, UnaryOp},
+    operator::{BinOp, UnaryOp},
     token::Tokenizer,
     typ::TypeChecker,
-    val::{Type, Val},
+    val::{LiteralVal, Type},
 };
 use anyhow::Result;
 use dashmap::DashMap;
@@ -63,7 +63,7 @@ impl Expr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     /// Literal pattern: matches exact values (1, "hello", true)
-    Literal(Val),
+    Literal(LiteralVal),
     /// Variable pattern: binds any value to a variable (x)
     Variable(String),
     /// Wildcard pattern: matches anything, no binding (_)
@@ -181,7 +181,7 @@ pub enum Expr {
         value: Box<Expr>,
         arms: Vec<MatchArm>,
     },
-    Val(Val),
+    Literal(LiteralVal),
 }
 impl Expr {
     /// Get the identifier roots referenced by the expression.
@@ -320,7 +320,7 @@ impl Expr {
                 }
             }
             // Only collect string values when they are actual identifier roots, not field names
-            Expr::Val(_) => {} // Receive operator: collect from inner expression
+            Expr::Literal(_) => {} // Receive operator: collect from inner expression
         }
     }
     /// Cached parsing: parse expression string and return a shared Arc<Expr>.
@@ -350,23 +350,23 @@ impl Expr {
     pub fn parse_cached(expression: &str) -> Result<Expr> {
         Ok(Self::parse_cached_arc(expression)?.as_ref().clone())
     }
-    /// Constant folding: calculate pure constant sub-expressions as Val constants
+    /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants
     pub(crate) fn fold_constants(self) -> Expr {
         match self {
-            Expr::Val(_) => self, // Constant value, return directly
+            Expr::Literal(_) => self, // Constant value, return directly
             Expr::Bin(l_box, op, r_box) => {
                 // Recursively fold left and right sub-expressions
                 let left = (*l_box).fold_constants();
                 let right = (*r_box).fold_constants();
                 // Try to calculate binary expression as constant
-                if let (Expr::Val(lval), Expr::Val(rval)) = (&left, &right) {
+                if let (Expr::Literal(lval), Expr::Literal(rval)) = (&left, &right) {
                     if op.is_arith() {
                         if let Some(result_val) = fold_literal_arith(lval, &op, rval) {
-                            return Expr::Val(result_val);
+                            return Expr::Literal(result_val);
                         }
                     } else if op.is_cmp() {
                         if let Some(res_bool) = op.cmp_literals(lval, rval) {
-                            return Expr::Val(Val::Bool(res_bool));
+                            return Expr::Literal(LiteralVal::Bool(res_bool));
                         }
                     }
                     // Other cases (like type mismatch) don't fold, keep expression form
@@ -378,7 +378,7 @@ impl Expr {
                 let c = (*c_box).fold_constants();
                 let t = (*t_box).fold_constants();
                 let e = (*e_box).fold_constants();
-                if let Expr::Val(Val::Bool(b)) = c {
+                if let Expr::Literal(LiteralVal::Bool(b)) = c {
                     return if b { t } else { e };
                 }
                 Expr::Conditional(Box::new(c), Box::new(t), Box::new(e))
@@ -386,55 +386,55 @@ impl Expr {
             Expr::Unary(op, expr_box) => {
                 let inner = (*expr_box).fold_constants();
                 // Constant folding: !expr, if expr is boolean constant then calculate result
-                if let Expr::Val(Val::Bool(b)) = &inner {
-                    return Expr::Val(Val::Bool(!*b));
+                if let Expr::Literal(LiteralVal::Bool(b)) = &inner {
+                    return Expr::Literal(LiteralVal::Bool(!*b));
                 }
                 Expr::Unary(op, Box::new(inner))
             }
             Expr::And(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
                 // Short-circuit constant false: left side constant false, then entire AND is constant false
-                if let Expr::Val(Val::Bool(false)) = e1 {
-                    return Expr::Val(Val::Bool(false));
+                if let Expr::Literal(LiteralVal::Bool(false)) = e1 {
+                    return Expr::Literal(LiteralVal::Bool(false));
                 }
                 let e2 = (*e2_box).fold_constants();
                 // Short-circuit constant true: left side constant true, then return right side expression result
-                if let Expr::Val(Val::Bool(true)) = e1 {
+                if let Expr::Literal(LiteralVal::Bool(true)) = e1 {
                     return e2;
                 }
                 // Both folded, if both are boolean constants then can further fold
-                if let (Expr::Val(Val::Bool(b1)), Expr::Val(Val::Bool(b2))) = (&e1, &e2) {
-                    return Expr::Val(Val::Bool(*b1 && *b2));
+                if let (Expr::Literal(LiteralVal::Bool(b1)), Expr::Literal(LiteralVal::Bool(b2))) = (&e1, &e2) {
+                    return Expr::Literal(LiteralVal::Bool(*b1 && *b2));
                 }
                 Expr::And(Box::new(e1), Box::new(e2))
             }
             Expr::Or(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
-                if let Expr::Val(Val::Bool(true)) = e1 {
+                if let Expr::Literal(LiteralVal::Bool(true)) = e1 {
                     // Left side constant true, OR expression is constant true
-                    return Expr::Val(Val::Bool(true));
+                    return Expr::Literal(LiteralVal::Bool(true));
                 }
                 let e2 = (*e2_box).fold_constants();
-                if let Expr::Val(Val::Bool(false)) = e1 {
+                if let Expr::Literal(LiteralVal::Bool(false)) = e1 {
                     // Left side constant false, OR result depends on right side
                     return e2;
                 }
-                if let (Expr::Val(Val::Bool(b1)), Expr::Val(Val::Bool(b2))) = (&e1, &e2) {
-                    return Expr::Val(Val::Bool(*b1 || *b2));
+                if let (Expr::Literal(LiteralVal::Bool(b1)), Expr::Literal(LiteralVal::Bool(b2))) = (&e1, &e2) {
+                    return Expr::Literal(LiteralVal::Bool(*b1 || *b2));
                 }
                 Expr::Or(Box::new(e1), Box::new(e2))
             }
             Expr::NullishCoalescing(e1_box, e2_box) => {
                 let e1 = (*e1_box).fold_constants();
                 // If left side is constant not nil, return it
-                if let Expr::Val(v) = &e1
-                    && *v != Val::Nil
+                if let Expr::Literal(v) = &e1
+                    && *v != LiteralVal::Nil
                 {
                     return e1;
                 }
                 let e2 = (*e2_box).fold_constants();
                 // If left side is constant nil, return right side
-                if let Expr::Val(Val::Nil) = e1 {
+                if let Expr::Literal(LiteralVal::Nil) = e1 {
                     return e2;
                 }
                 Expr::NullishCoalescing(Box::new(e1), Box::new(e2))
@@ -443,7 +443,7 @@ impl Expr {
             Expr::Access(base_box, field_box) => {
                 let base = (*base_box).fold_constants();
                 let field = (*field_box).fold_constants();
-                if let (Expr::Val(base_val), Expr::Val(field_val)) = (&base, &field) {
+                if let (Expr::Literal(base_val), Expr::Literal(field_val)) = (&base, &field) {
                     // Important: preserve Access when the field is a string literal so that
                     // subsequent call syntax (e.g. foo.bar()) can be intercepted for meta-method dispatch.
                     // This avoids turning `foo.bar` into a concrete value (e.g. Int), which would
@@ -458,14 +458,14 @@ impl Expr {
             Expr::OptionalAccess(base_box, field_box) => {
                 let base = (*base_box).fold_constants();
                 let field = (*field_box).fold_constants();
-                if let (Expr::Val(base_val), Expr::Val(field_val)) = (&base, &field) {
+                if let (Expr::Literal(base_val), Expr::Literal(field_val)) = (&base, &field) {
                     // Preserve OptionalAccess when field is a string literal to allow potential
                     // optional method-call sugar like `obj?.method()` to be handled later.
                     if field_val.as_str().is_some() {
                         return Expr::OptionalAccess(Box::new(base.clone()), Box::new(field.clone()));
                     }
-                    if base_val == &Val::Nil {
-                        return Expr::Val(Val::Nil);
+                    if base_val == &LiteralVal::Nil {
+                        return Expr::Literal(LiteralVal::Nil);
                     }
                     let _ = field_val;
                 }
@@ -560,17 +560,17 @@ impl Expr {
                         TemplateStringPart::Literal(s) => TemplateStringPart::Literal(s),
                         TemplateStringPart::Expr(expr) => {
                             let folded_expr = expr.fold_constants();
-                            if let Expr::Val(val) = folded_expr {
+                            if let Expr::Literal(val) = folded_expr {
                                 // Convert constant value to string
                                 let str_val = match val.as_str() {
                                     Some(s) => s.to_string(),
                                     None => match val {
-                                        Val::Int(i) => i.to_string(),
-                                        Val::Float(f) => f.to_string(),
-                                        Val::Bool(b) => b.to_string(),
-                                        Val::Nil => "nil".to_string(),
-                                        Val::LongStr(_) => format!("{:?}", val),
-                                        Val::ShortStr(_) => unreachable!("string handled above"),
+                                        LiteralVal::Int(i) => i.to_string(),
+                                        LiteralVal::Float(f) => f.to_string(),
+                                        LiteralVal::Bool(b) => b.to_string(),
+                                        LiteralVal::Nil => "nil".to_string(),
+                                        LiteralVal::String(_) => format!("{:?}", val),
+                                        LiteralVal::ShortStr(_) => unreachable!("string handled above"),
                                     },
                                 };
                                 TemplateStringPart::Literal(str_val)
@@ -595,7 +595,7 @@ impl Expr {
                             }
                         })
                         .collect::<String>();
-                    return Expr::Val(Val::from_str(&result));
+                    return Expr::Literal(LiteralVal::from_str(&result));
                 }
                 Expr::TemplateString(folded_parts)
             }
@@ -787,12 +787,12 @@ impl Display for Expr {
                 }
                 write!(f, "}}")
             }
-            Expr::Val(val) => write!(f, "{}", val),
+            Expr::Literal(val) => write!(f, "{}", val),
         }
     }
 }
 
-fn fold_literal_arith(lhs: &Val, op: &BinOp, rhs: &Val) -> Option<Val> {
+fn fold_literal_arith(lhs: &LiteralVal, op: &BinOp, rhs: &LiteralVal) -> Option<LiteralVal> {
     match op {
         BinOp::Add => fold_literal_add(lhs, rhs),
         BinOp::Sub => fold_literal_numeric(lhs, rhs, |a, b| a - b, |a, b| a - b),
@@ -803,40 +803,40 @@ fn fold_literal_arith(lhs: &Val, op: &BinOp, rhs: &Val) -> Option<Val> {
     }
 }
 
-fn fold_literal_add(lhs: &Val, rhs: &Val) -> Option<Val> {
+fn fold_literal_add(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     match (lhs, rhs) {
-        (Val::Int(a), Val::Int(b)) => Some(Val::Int(a + b)),
-        (Val::Float(a), Val::Float(b)) => Some(Val::Float(a + b)),
-        (Val::Float(a), Val::Int(b)) => Some(Val::Float(a + *b as f64)),
-        (Val::Int(a), Val::Float(b)) => Some(Val::Float(*a as f64 + b)),
-        (lhs, rhs) if lhs.as_str().is_some() && rhs.as_str().is_some() => Some(Val::concat_strings(
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Int(a + b)),
+        (LiteralVal::Float(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(a + b)),
+        (LiteralVal::Float(a), LiteralVal::Int(b)) => Some(LiteralVal::Float(a + *b as f64)),
+        (LiteralVal::Int(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(*a as f64 + b)),
+        (lhs, rhs) if lhs.as_str().is_some() && rhs.as_str().is_some() => Some(LiteralVal::concat_strings(
             lhs.as_str().expect("checked string"),
             rhs.as_str().expect("checked string"),
         )),
-        (lhs, Val::Int(value)) if lhs.as_str().is_some() => {
+        (lhs, LiteralVal::Int(value)) if lhs.as_str().is_some() => {
             let mut buf = itoa::Buffer::new();
-            Some(Val::concat_strings(
+            Some(LiteralVal::concat_strings(
                 lhs.as_str().expect("checked string"),
                 buf.format(*value),
             ))
         }
-        (lhs, Val::Float(value)) if lhs.as_str().is_some() => {
+        (lhs, LiteralVal::Float(value)) if lhs.as_str().is_some() => {
             let mut buf = ryu::Buffer::new();
-            Some(Val::concat_strings(
+            Some(LiteralVal::concat_strings(
                 lhs.as_str().expect("checked string"),
                 buf.format(*value),
             ))
         }
-        (Val::Int(value), rhs) if rhs.as_str().is_some() => {
+        (LiteralVal::Int(value), rhs) if rhs.as_str().is_some() => {
             let mut buf = itoa::Buffer::new();
-            Some(Val::concat_strings(
+            Some(LiteralVal::concat_strings(
                 buf.format(*value),
                 rhs.as_str().expect("checked string"),
             ))
         }
-        (Val::Float(value), rhs) if rhs.as_str().is_some() => {
+        (LiteralVal::Float(value), rhs) if rhs.as_str().is_some() => {
             let mut buf = ryu::Buffer::new();
-            Some(Val::concat_strings(
+            Some(LiteralVal::concat_strings(
                 buf.format(*value),
                 rhs.as_str().expect("checked string"),
             ))
@@ -845,30 +845,34 @@ fn fold_literal_add(lhs: &Val, rhs: &Val) -> Option<Val> {
     }
 }
 
-fn fold_literal_mul(lhs: &Val, rhs: &Val) -> Option<Val> {
+fn fold_literal_mul(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     match (lhs, rhs) {
-        (left, Val::Int(count)) if left.as_str().is_some() => Some(repeat_literal_string(left.as_str()?, *count)),
-        (Val::Int(count), right) if right.as_str().is_some() => Some(repeat_literal_string(right.as_str()?, *count)),
+        (left, LiteralVal::Int(count)) if left.as_str().is_some() => {
+            Some(repeat_literal_string(left.as_str()?, *count))
+        }
+        (LiteralVal::Int(count), right) if right.as_str().is_some() => {
+            Some(repeat_literal_string(right.as_str()?, *count))
+        }
         _ => fold_literal_numeric(lhs, rhs, |a, b| a * b, |a, b| a * b),
     }
 }
 
-fn repeat_literal_string(value: &str, count: i64) -> Val {
+fn repeat_literal_string(value: &str, count: i64) -> LiteralVal {
     if count <= 0 {
-        Val::from_str("")
+        LiteralVal::from_str("")
     } else {
-        Val::from_str(&value.repeat(count as usize))
+        LiteralVal::from_str(&value.repeat(count as usize))
     }
 }
 
-fn fold_literal_div(lhs: &Val, rhs: &Val) -> Option<Val> {
+fn fold_literal_div(lhs: &LiteralVal, rhs: &LiteralVal) -> Option<LiteralVal> {
     match (lhs, rhs) {
-        (Val::Int(a), Val::Int(b)) => {
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => {
             let result = (*a as f64) / (*b as f64);
             if result.fract() == 0.0 {
-                Some(Val::Int(result as i64))
+                Some(LiteralVal::Int(result as i64))
             } else {
-                Some(Val::Float(result))
+                Some(LiteralVal::Float(result))
             }
         }
         _ => fold_literal_numeric(lhs, rhs, |a, b| a / b, |a, b| a / b),
@@ -876,16 +880,16 @@ fn fold_literal_div(lhs: &Val, rhs: &Val) -> Option<Val> {
 }
 
 fn fold_literal_numeric(
-    lhs: &Val,
-    rhs: &Val,
+    lhs: &LiteralVal,
+    rhs: &LiteralVal,
     int_op: fn(i64, i64) -> i64,
     float_op: fn(f64, f64) -> f64,
-) -> Option<Val> {
+) -> Option<LiteralVal> {
     match (lhs, rhs) {
-        (Val::Int(a), Val::Int(b)) => Some(Val::Int(int_op(*a, *b))),
-        (Val::Float(a), Val::Float(b)) => Some(Val::Float(float_op(*a, *b))),
-        (Val::Float(a), Val::Int(b)) => Some(Val::Float(float_op(*a, *b as f64))),
-        (Val::Int(a), Val::Float(b)) => Some(Val::Float(float_op(*a as f64, *b))),
+        (LiteralVal::Int(a), LiteralVal::Int(b)) => Some(LiteralVal::Int(int_op(*a, *b))),
+        (LiteralVal::Float(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(float_op(*a, *b))),
+        (LiteralVal::Float(a), LiteralVal::Int(b)) => Some(LiteralVal::Float(float_op(*a, *b as f64))),
+        (LiteralVal::Int(a), LiteralVal::Float(b)) => Some(LiteralVal::Float(float_op(*a as f64, *b))),
         _ => None,
     }
 }

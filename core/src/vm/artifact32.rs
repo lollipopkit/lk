@@ -140,6 +140,7 @@ impl Function32Data {
                 .map(Instr32::try_from_raw)
                 .collect::<Result<Vec<_>>>()?,
             analyses: Vec::new(),
+            performance: Default::default(),
             register_count: self.register_count,
             param_count: self.param_count,
             positional_param_count: self.positional_param_count,

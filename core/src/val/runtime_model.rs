@@ -1,6 +1,6 @@
 //! New runtime value model for the VM rewrite.
 //!
-//! The `Val` enum remains active while the compiler and executor are migrated.
+//! The `LiteralVal` enum remains active while the compiler and executor are migrated.
 //! New VM code should target these types first.
 
 use std::collections::BTreeMap;
@@ -241,25 +241,6 @@ impl TypedList {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    pub fn materialize_mixed(self, heap: &mut HeapStore) -> Vec<RuntimeVal> {
-        match self {
-            Self::Mixed(values) => values,
-            Self::Int(values) => values.into_iter().map(RuntimeVal::Int).collect(),
-            Self::Float(values) => values.into_iter().map(RuntimeVal::Float).collect(),
-            Self::Bool(values) => values.into_iter().map(RuntimeVal::Bool).collect(),
-            Self::String(values) => values
-                .into_iter()
-                .map(|value| {
-                    if let Some(short) = ShortStr::new(&value) {
-                        RuntimeVal::ShortStr(short)
-                    } else {
-                        RuntimeVal::Obj(heap.alloc(HeapValue::String(value)))
-                    }
-                })
-                .collect(),
-        }
     }
 
     pub fn runtime_values_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<RuntimeVal>> {
@@ -530,60 +511,6 @@ impl TypedMap {
         Ok(self.entries())
     }
 
-    /// Collect all entries as `(Arc<str>, RuntimeVal)` pairs without needing `&mut HeapStore`.
-    pub fn string_entries_no_heap(&self) -> Result<Vec<(Arc<str>, RuntimeVal)>> {
-        Ok(match self {
-            Self::StringMixed(values) => values.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
-            Self::StringInt(values) => values
-                .iter()
-                .map(|(key, value)| (key.clone(), RuntimeVal::Int(*value)))
-                .collect(),
-            Self::StringFloat(values) => values
-                .iter()
-                .map(|(key, value)| (key.clone(), RuntimeVal::Float(*value)))
-                .collect(),
-            Self::StringBool(values) => values
-                .iter()
-                .map(|(key, value)| (key.clone(), RuntimeVal::Bool(*value)))
-                .collect(),
-            Self::Mixed(values) => values
-                .iter()
-                .map(|(key, value)| {
-                    key.as_arc_str()
-                        .map(|key| (key, value.clone()))
-                        .ok_or_else(|| anyhow::anyhow!("map contains non-string key"))
-                })
-                .collect::<Result<_>>()?,
-        })
-    }
-
-    pub fn string_entries_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<(Arc<str>, RuntimeVal)>> {
-        let _ = heap;
-        Ok(match self {
-            Self::StringMixed(values) => values.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
-            Self::StringInt(values) => values
-                .iter()
-                .map(|(key, value)| (key.clone(), RuntimeVal::Int(*value)))
-                .collect(),
-            Self::StringFloat(values) => values
-                .iter()
-                .map(|(key, value)| (key.clone(), RuntimeVal::Float(*value)))
-                .collect(),
-            Self::StringBool(values) => values
-                .iter()
-                .map(|(key, value)| (key.clone(), RuntimeVal::Bool(*value)))
-                .collect(),
-            Self::Mixed(values) => values
-                .iter()
-                .map(|(key, value)| {
-                    key.as_arc_str()
-                        .map(|key| (key, value.clone()))
-                        .ok_or_else(|| anyhow::anyhow!("map contains non-string key"))
-                })
-                .collect::<Result<_>>()?,
-        })
-    }
-
     fn materialize_string_map_to_mixed(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
         let mut mixed = match std::mem::replace(self, Self::Mixed(BTreeMap::new())) {
             Self::Mixed(values) => values,
@@ -668,7 +595,9 @@ mod tests {
     #[test]
     fn typed_int_list_materializes_to_runtime_values() {
         let mut heap = HeapStore::new();
-        let values = TypedList::Int(vec![1, 2, 3]).materialize_mixed(&mut heap);
+        let values = TypedList::Int(vec![1, 2, 3])
+            .runtime_values_into_heap(&mut heap)
+            .expect("runtime values");
 
         assert_eq!(values.len(), 3);
         assert_eq!(values[0].as_int(), Some(1));
@@ -680,7 +609,8 @@ mod tests {
     fn long_string_list_materialization_allocates_heap_object() {
         let mut heap = HeapStore::new();
         let values = TypedList::String(vec![Arc::<str>::from("short"), Arc::<str>::from("longer-than-seven")])
-            .materialize_mixed(&mut heap);
+            .runtime_values_into_heap(&mut heap)
+            .expect("runtime values");
 
         assert_eq!(values[0].kind(), RuntimeValKind::ShortStr);
         assert_eq!(values[1].kind(), RuntimeValKind::Obj);
@@ -765,19 +695,6 @@ mod tests {
         let mut entries = BTreeMap::new();
         entries.insert(RuntimeMapKey::Int(1), RuntimeVal::Int(42));
         assert!(matches!(TypedMap::from_runtime_entries(entries), TypedMap::Mixed(_)));
-    }
-
-    #[test]
-    fn typed_map_string_entries_into_heap_rejects_non_string_keys_without_materializing_twice() {
-        let mut heap = HeapStore::new();
-        let entries = TypedMap::StringInt(BTreeMap::from([(Arc::<str>::from("answer"), 42)]))
-            .string_entries_into_heap(&mut heap)
-            .expect("string entries");
-        assert_eq!(entries, vec![(Arc::<str>::from("answer"), RuntimeVal::Int(42))]);
-        assert!(heap.is_empty());
-
-        let mixed = TypedMap::Mixed(BTreeMap::from([(RuntimeMapKey::Int(1), RuntimeVal::Bool(true))]));
-        assert!(mixed.string_entries_into_heap(&mut heap).is_err());
     }
 
     #[test]

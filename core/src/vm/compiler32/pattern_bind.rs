@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     expr::{Expr, Pattern},
-    val::Val,
+    val::LiteralVal,
 };
 
 use super::{Compiler32, Instr32, Opcode32, support::checked_u8};
@@ -23,7 +23,7 @@ impl Compiler32 {
             {
                 self.emit_set_global(slot, global_slot)?;
             }
-            self.locals.insert(name.clone(), slot);
+            self.insert_local(name.clone(), slot);
             self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
             return Ok(());
         }
@@ -45,7 +45,7 @@ impl Compiler32 {
                         self.emit_set_global(value, slot)?;
                     }
                 }
-                self.locals.insert(name.clone(), value);
+                self.insert_local(name.clone(), value);
                 Ok(())
             }
             Pattern::Wildcard => Ok(()),
@@ -54,7 +54,7 @@ impl Compiler32 {
                 self.emit_pattern_assert(condition)?;
                 self.bind_let_sequence(patterns, value)?;
                 if let Some(rest) = rest {
-                    let start = self.lower_val(&Val::Int(patterns.len() as i64))?;
+                    let start = self.lower_val(&LiteralVal::Int(patterns.len() as i64))?;
                     let slice = self.alloc_reg();
                     self.emit(Instr32::abc(
                         Opcode32::SliceFrom,
@@ -62,7 +62,7 @@ impl Compiler32 {
                         checked_u8("let rest value", value)?,
                         checked_u8("let rest start", start)?,
                     ));
-                    self.locals.insert(rest.clone(), slice);
+                    self.insert_local(rest.clone(), slice);
                 }
                 Ok(())
             }
@@ -70,7 +70,7 @@ impl Compiler32 {
                 let condition = self.lower_map_pattern_condition(value, patterns)?;
                 self.emit_pattern_assert(condition)?;
                 for (key, pattern) in patterns {
-                    let key = self.lower_val(&Val::from_str(key))?;
+                    let key = self.lower_val(&LiteralVal::from_str(key))?;
                     let field = self.alloc_reg();
                     self.emit(Instr32::abc(
                         Opcode32::GetIndex,
@@ -82,7 +82,7 @@ impl Compiler32 {
                 }
                 if let Some(rest) = rest {
                     let map = self.lower_map_rest(value, patterns)?;
-                    self.locals.insert(rest.clone(), map);
+                    self.insert_local(rest.clone(), map);
                 }
                 Ok(())
             }
@@ -104,7 +104,7 @@ impl Compiler32 {
         let base = self.alloc_regs(patterns.len() + 1)?;
         self.emit_move(base, value, "map rest source")?;
         for (offset, (key, _)) in patterns.iter().enumerate() {
-            let key_reg = self.lower_val(&Val::from_str(key))?;
+            let key_reg = self.lower_val(&LiteralVal::from_str(key))?;
             self.emit_move(base + 1 + offset as u16, key_reg, "map rest key")?;
         }
         let dst = self.alloc_reg();
@@ -120,7 +120,7 @@ impl Compiler32 {
     fn bind_let_sequence(&mut self, patterns: &[Pattern], value: u16) -> Result<()> {
         for (index, pattern) in patterns.iter().enumerate() {
             let index = i64::try_from(index).map_err(|_| anyhow::anyhow!("Compiler32 let pattern index overflow"))?;
-            let key = self.lower_val(&Val::Int(index))?;
+            let key = self.lower_val(&LiteralVal::Int(index))?;
             let field = self.alloc_reg();
             self.emit(Instr32::abc(
                 Opcode32::GetIndex,

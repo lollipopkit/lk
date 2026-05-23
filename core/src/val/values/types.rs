@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::typ::{NumericClass, NumericHierarchy};
 
-/// 内联短字符串：0–7 字节 UTF-8，完全存储在 Val 内（零堆分配）。
+/// 内联短字符串：0–7 字节 UTF-8，完全存储在 LiteralVal 内（零堆分配）。
 /// 实现了 Copy，克隆无需原子操作。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ShortStr {
@@ -124,7 +124,7 @@ pub enum Type {
     /// Union types: Int | String
     Union(Vec<Type>),
 
-    /// Optional types: ?Int (sugar for Int | Nil)
+    /// Optional types: Int? (sugar for Int | Nil)
     Optional(Box<Type>),
 
     /// Type variables for inference (prefixed with ')
@@ -161,12 +161,7 @@ impl Type {
             _ => {}
         }
 
-        // Handle optional types: ?Int or Int?
-        // Prefix form
-        if let Some(inner) = s.strip_prefix('?') {
-            return Type::parse(inner).map(|t| Type::Optional(Box::new(t)));
-        }
-        // Suffix form (allow trailing whitespace before '?')
+        // Handle optional types: Int? (allow trailing whitespace before '?').
         let s_no_ws = s.trim_end();
         if let Some(inner) = s_no_ws.strip_suffix('?') {
             let inner = inner.trim_end();
@@ -193,13 +188,20 @@ impl Type {
             && let Some(close) = s.rfind('>')
         {
             let base = &s[..open];
+            if !is_type_name(base) {
+                return None;
+            }
             let params_str = &s[open + 1..close];
 
             // Parse type parameters
             let params: Vec<Type> = if params_str.is_empty() {
                 vec![]
             } else {
-                params_str.split(',').map(str::trim).filter_map(Type::parse).collect()
+                let mut params = Vec::new();
+                for param in params_str.split(',').map(str::trim) {
+                    params.push(Type::parse(param)?);
+                }
+                params
             };
 
             // Handle specific generic types
@@ -275,7 +277,7 @@ impl Type {
             "Map" => Some(Type::Map(Box::new(Type::Any), Box::new(Type::Any))),
             _ => {
                 // Assume it's a named custom type
-                if s.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                if is_type_name(s) {
                     Some(Type::Named(s.to_string()))
                 } else {
                     None
@@ -501,4 +503,10 @@ impl Type {
             _ => self.clone(),
         }
     }
+}
+
+fn is_type_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }

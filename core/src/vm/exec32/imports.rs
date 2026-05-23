@@ -4,19 +4,17 @@ use anyhow::{Result, anyhow};
 
 use crate::val::{CallableValue, HeapStore, HeapValue, RuntimeObject, RuntimeVal, TypedList, TypedMap};
 
-use super::RuntimeCallable32;
+use super::{RuntimeCallable32, runtime_value_to_callable32_shared};
 use crate::vm::{Module32, RuntimeExport32};
 
-pub(super) fn import_runtime_export(export: &RuntimeExport32, dest_heap: &mut HeapStore) -> Result<RuntimeVal> {
+pub fn import_runtime_export(export: &RuntimeExport32, dest_heap: &mut HeapStore) -> Result<RuntimeVal> {
     let state = export
         .state
         .lock()
-        .map_err(|_| anyhow!("RuntimeExport32 state lock poisoned"))?
-        .clone();
-    let mut source_heap = state.heap;
+        .map_err(|_| anyhow!("RuntimeExport32 state lock poisoned"))?;
     import_runtime_value(
         &export.value,
-        &mut source_heap,
+        &state.heap,
         dest_heap,
         Arc::clone(&export.module),
         export.state.clone(),
@@ -25,7 +23,7 @@ pub(super) fn import_runtime_export(export: &RuntimeExport32, dest_heap: &mut He
 
 fn import_runtime_value(
     value: &RuntimeVal,
-    source_heap: &mut HeapStore,
+    source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module32>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
@@ -37,6 +35,21 @@ fn import_runtime_value(
         RuntimeVal::Float(value) => Ok(RuntimeVal::Float(*value)),
         RuntimeVal::ShortStr(value) => Ok(RuntimeVal::ShortStr(*value)),
         RuntimeVal::Obj(handle) => {
+            if matches!(
+                source_heap.get(*handle),
+                Some(HeapValue::Callable(CallableValue::Closure { .. }))
+            ) {
+                let callable = runtime_value_to_callable32_shared(
+                    value,
+                    source_heap,
+                    Arc::clone(&source_module),
+                    source_state.clone(),
+                )
+                .ok_or_else(|| anyhow!("closure import could not be materialized"))?;
+                return Ok(RuntimeVal::Obj(
+                    dest_heap.alloc(HeapValue::Callable(CallableValue::Runtime32(Arc::new(callable)))),
+                ));
+            }
             let value = source_heap
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
@@ -49,7 +62,7 @@ fn import_runtime_value(
 
 fn import_heap_value(
     value: HeapValue,
-    source_heap: &mut HeapStore,
+    source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module32>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
@@ -138,7 +151,7 @@ fn import_heap_value(
 
 fn import_typed_list(
     values: TypedList,
-    source_heap: &mut HeapStore,
+    source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module32>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
@@ -167,7 +180,7 @@ fn import_typed_list(
 
 fn import_typed_map(
     values: TypedMap,
-    source_heap: &mut HeapStore,
+    source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module32>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,

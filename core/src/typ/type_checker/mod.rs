@@ -66,8 +66,6 @@ pub struct TypeChecker {
     function_sigs: HashMap<String, FunctionSig>,
     /// Behaviour options
     options: TypeCheckerOptions,
-    /// Optional cache of inferred expression types keyed by Expr pointer
-    expr_types: HashMap<usize, Type>,
     /// Active `impl` target type for the current method being checked
     impl_self_type: Option<Type>,
     /// Recorded method signatures keyed by (receiver_type, method_name)
@@ -124,7 +122,6 @@ impl TypeChecker {
             const_stack: Vec::new(),
             function_sigs: HashMap::new(),
             options,
-            expr_types: HashMap::new(),
             impl_self_type: None,
             method_sigs: HashMap::new(),
         }
@@ -133,15 +130,6 @@ impl TypeChecker {
     /// Return true when implicit Any fallbacks should be treated strictly
     pub fn strict_any(&self) -> bool {
         self.options.strict_any
-    }
-
-    fn record_expr_type(&mut self, expr: &Expr, ty: &Type) {
-        let key = expr as *const Expr as usize;
-        self.expr_types.insert(key, ty.clone());
-    }
-
-    pub fn take_expr_types(&mut self) -> HashMap<usize, Type> {
-        std::mem::take(&mut self.expr_types)
     }
 
     /// Get the active impl `self` type when type-checking trait implementations.

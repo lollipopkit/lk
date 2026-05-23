@@ -20,7 +20,7 @@ impl MathModule {
         Self
     }
 
-    fn clamp32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn clamp32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let pos = args.as_slice();
         if pos.is_empty() {
             bail!("clamp() requires at least the value argument");
@@ -41,17 +41,18 @@ impl MathModule {
             100
         };
 
-        let mut seen = HashSet::with_capacity(args.named().len());
-        for (name, value) in args.named() {
-            if !seen.insert(name.as_ref()) {
+        let mut seen = HashSet::with_capacity(args.named_len());
+        args.try_for_each_named(runtime.heap(), |name, value| {
+            if !seen.insert(name.to_string()) {
                 bail!("clamp() received duplicate named argument '{}'", name);
             }
-            match name.as_ref() {
+            match name {
                 "min" => min = int_arg(value, "clamp() named 'min'")?,
                 "max" => max = int_arg(value, "clamp() named 'max'")?,
                 other => bail!("clamp() does not accept named argument '{}'", other),
             }
-        }
+            Ok(())
+        })?;
 
         if min > max {
             bail!("clamp() requires 'min' to be less than or equal to 'max'");

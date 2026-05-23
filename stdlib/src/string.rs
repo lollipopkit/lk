@@ -92,12 +92,12 @@ impl StringModule {
             all_flag = Some(bool_arg(&pos[3], "replace() fourth argument (all flag)")?);
         }
 
-        let mut seen = HashSet::with_capacity(args.named().len());
-        for (name, value) in args.named() {
-            if !seen.insert(name.as_ref()) {
+        let mut seen = HashSet::with_capacity(args.named_len());
+        args.try_for_each_named(runtime.heap(), |name, value| {
+            if !seen.insert(name.to_string()) {
                 bail!("replace() received duplicate named argument '{}'", name);
             }
-            match name.as_ref() {
+            match name {
                 "pattern" => {
                     pattern = Some(runtime_string_arg(value, runtime.heap(), "replace() named 'pattern'")?);
                     used_named_core = true;
@@ -109,7 +109,8 @@ impl StringModule {
                 "all" => all_flag = Some(bool_arg(value, "replace() named 'all'")?),
                 other => bail!("replace() does not accept named argument '{}'", other),
             }
-        }
+            Ok(())
+        })?;
 
         let pattern = pattern.ok_or_else(|| {
             anyhow!("replace() requires a pattern string (provide it positionally or via named 'pattern')")

@@ -5,7 +5,7 @@ mod tests {
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
         val::{HeapStore, HeapValue, RuntimeVal, TypedList},
-        vm::{Program32Result, VmContext},
+        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32, VmContext},
     };
     use std::sync::Arc;
 
@@ -20,6 +20,10 @@ mod tests {
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
         program.execute32_with_ctx(&mut env)
+    }
+
+    fn stream_native(name: &str) -> Result<(u16, NativeFunction32)> {
+        crate::runtime_native::runtime_native_export(&crate::stream::StreamModule::new(), name)
     }
 
     fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
@@ -93,8 +97,12 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_module_exports_use_runtime_native32_abi() {
+    fn test_stream_module_exports_use_runtime_native32_abi() -> Result<()> {
         let module = crate::stream::StreamModule::new();
+        for name in ["next", "collect", "next_block", "collect_block"] {
+            let (_, function) = crate::runtime_native::runtime_native_export(&module, name)?;
+            assert!(matches!(function, NativeFunction32::FullState(_)));
+        }
         for name in [
             "from_list",
             "range",
@@ -107,12 +115,67 @@ mod tests {
             "skip",
             "chain",
             "subscribe",
-            "next",
-            "collect",
-            "next_block",
-            "collect_block",
         ] {
-            crate::runtime_native::runtime_native_export(&module, name).expect("stream function export present");
+            let (_, function) = crate::runtime_native::runtime_native_export(&module, name)?;
+            assert!(matches!(function, NativeFunction32::Plain(_)));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn stream_from_list_preserves_typed_string_backing_without_materializing_items() -> Result<()> {
+        let (_, function) = stream_native("from_list")?;
+        let NativeFunction32::Plain(function) = function else {
+            panic!("from_list must use plain RuntimeNative32");
+        };
+        let mut state = RuntimeModuleState32::default();
+        let input = state.heap.alloc(HeapValue::List(TypedList::String(vec![
+            Arc::<str>::from("long-stream-one"),
+            Arc::<str>::from("long-stream-two"),
+        ])));
+        let args = [RuntimeVal::Obj(input)];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+
+        assert!(matches!(result, RuntimeVal::Obj(_)));
+        assert_eq!(runtime.heap().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn stream_collect_preserves_typed_string_backing_without_materializing_items() -> Result<()> {
+        let (_, from_list) = stream_native("from_list")?;
+        let NativeFunction32::Plain(from_list) = from_list else {
+            panic!("from_list must use plain RuntimeNative32");
+        };
+        let (_, collect) = stream_native("collect")?;
+        let NativeFunction32::FullState(collect) = collect else {
+            panic!("collect must use full-state RuntimeNative32");
+        };
+        let mut state = RuntimeModuleState32::default();
+        let input = state.heap.alloc(HeapValue::List(TypedList::String(vec![
+            Arc::<str>::from("long-stream-one"),
+            Arc::<str>::from("long-stream-two"),
+        ])));
+        let stream = {
+            let args = [RuntimeVal::Obj(input)];
+            let mut runtime = NativeRuntime32::new(&mut state, None, None);
+            from_list(NativeArgs32::new(&args), &mut runtime)?
+        };
+        let args = [stream];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+
+        let result = collect(NativeArgs32::new(&args), &mut runtime)?;
+
+        let RuntimeVal::Obj(handle) = result else {
+            panic!("expected list result");
+        };
+        let Some(HeapValue::List(TypedList::String(values))) = runtime.heap().get(handle) else {
+            panic!("expected typed string list result");
+        };
+        assert_eq!(values.len(), 2);
+        assert_eq!(runtime.heap().len(), 4);
+        Ok(())
     }
 }

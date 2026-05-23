@@ -1,6 +1,6 @@
 use super::{ForPattern, Stmt};
 use crate::{
-    op::BinOp,
+    operator::BinOp,
     stmt::{ImportSource, ImportStmt},
 };
 use std::fmt::{self, Display};

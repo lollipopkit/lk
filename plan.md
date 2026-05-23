@@ -13,12 +13,11 @@ benchmark 只在新 VM 闭环后恢复。
 ## 当前基线
 
 - 最新性能基线记录在 `bench/README.md`。
-- 当前已知主要成本来自旧数据模型和旧执行模型：大 `Val` enum、`Vec<Op>` + optional
-  `code32` 双轨、opcode/packed/quickening 多执行路径、call 参数物化、container COW/clone、
-  global/context 字符串映射。
-- 继续减少几条 bytecode 或新增 benchmark-shaped fused op 不是主线。
-- 当前 `Executor32` closure call 仍会为 callee 创建新 `Frame32`/`Vec<RuntimeVal>`；新 VM
-  必须把这类 per-call allocation 移出热路径。
+- 当前已知主要成本来自 runtime call/stack、heap-value movement、container backing、
+  string/global/context 映射和通用 dispatch 成本。
+- 继续减少几条 Instr32 指令或新增 benchmark-shaped fused op 不是主线。
+- `Executor32` closure call 已迁到共享 stack window；后续 call 工作继续收窄跨 runtime/module
+  边界的必要复制，而不是恢复独立 `Frame32` 热路径。
 
 ## 硬规则
 
@@ -33,9 +32,9 @@ benchmark 只在新 VM 闭环后恢复。
 
 ### 1. Runtime Value Model
 
-- `Val` 收敛为 immediate + heap object：
+- runtime value model 收敛为 immediate + heap object：
   `Nil`、`Bool`、`Int(i64)`、`Float(f64)`、`ShortStr`、`Obj(HeapRef)`。
-- `HeapValue` 承载 long string、list、map、closure、native callable、AOT callable、
+- `HeapValue` 承载 long string、list、map、closure、native callable、runtime callable、
   task/channel/stream/object、upvalue cell、VM error value。
 - 函数类统一到 `Callable`，不再在 `Val` 顶层保留多种函数 variant。
 - list/map 使用 typed backing：`Mixed`、`Int`、`Float`、`Bool`、必要 string/object backing；
@@ -73,7 +72,7 @@ benchmark 只在新 VM 闭环后恢复。
 - 新 runtime IR 是唯一的 `Vec<Instr32>`。
 - 指令固定 32-bit，支持 `ABC`、`ABx`、`AsBx`、`Ax`、`sJ`，超限用 `EXTRA/WIDE`。
 - 常量池拆成 typed const pool：int、float、string、heap value。
-- `Op` 只允许短期作为 builder/debug 过渡结构；最终 runtime 不 match `Op` enum。
+- AST operator 只保留语法层 `BinOp` / `UnaryOp`；runtime 不恢复旧 `Op` instruction enum。
 - 删除 workload-shaped opcode，例如 `ListFoldAdd`、`MapValuesFoldAdd`、`AddRangeCountImm`。
 - 新增 VM 语义指令只进入 `Instr32`：
   `LoadCellVal(dst, cell)`、`StoreCellVal(cell, src)`、`TryBegin(catch_reg, catch_offset)`、
@@ -84,15 +83,17 @@ benchmark 只在新 VM 闭环后恢复。
 ### 4. Compiler Pipeline
 
 - 新链路：AST/HIR -> SSA/MIR facts -> register allocation -> `Instr32`。
-- `PerformanceFacts` 是纯静态编译期产物，只由 SSA/MIR、type facts、escape/liveness 分析生成。
-  Executor 不读取 facts，facts 也不是 profile-guided runtime feedback。
+- `PerformanceFacts` 是纯静态编译期产物，只由 SSA/MIR、type facts、escape/liveness 分析和
+  lowering 生成；executor 只可读取随 `Function32` 固化的 lowering facts，不允许读取 runtime
+  profiler 或 feedback。
 - `PerformanceFacts` 是布局决策源：register kind、container kind、escape、call shape、
   branch/test shape、move/clone 偏好、dead write。
 - typed lowering 直接产出 typed IR 和 typed register plan，不再堆 peephole/fusion。
 - register allocation 面向连续 frame window。
 - facts 查不到或为 `Unknown` 时必须 emit 通用 fallback；只有确定的 Int/Float/Bool/container
   facts 才 emit typed opcode。
-- dead write、move-preferred、container move 只能消除语义等价的写入或 clone，不能改变错误时机。
+- dead write、move-preferred、container move 和 const-key facts 只能消除语义等价的写入、
+  clone 或 lookup，不能改变错误时机。
 
 ### 5. Execution Model
 
@@ -107,9 +108,9 @@ benchmark 只在新 VM 闭环后恢复。
   `r0..rN`。
 - return 后把返回值写回 caller call window 的 callee slot，恢复 caller `frame_base` 和
   `stack_top`；弹帧不释放 capacity。
-- closure/native/AOT 共用同一 call ABI，避免参数 `Vec<Val>` materialization。native 边界可借用
+- closure/native/artifact runtime 共用同一 call ABI，避免参数 `Vec<RuntimeVal>` materialization。native 边界可借用
   caller stack slice；只有跨 runtime heap/module 边界才复制必要对象。
-- typed arithmetic/comparison/branch 直接读写紧凑 `Val` 或 typed backing，不走 quickening。
+- typed arithmetic/comparison/branch 直接读写紧凑 `RuntimeVal` 或 typed backing，不走 quickening。
 - inline cache 只保留动态边界：call、global slot、map/list shape、access。
 - `Frame32` 可短期保留为测试辅助或旧路径对照，但不能再作为新 executor 热路径的数据结构。
 
@@ -150,7 +151,7 @@ benchmark 只在新 VM 闭环后恢复。
 
 ## 执行顺序
 
-1. 建立新 `Val`/`HeapValue`/`Callable`/typed container 模型及单测，包含 `UpvalCell` 和
+1. 建立新 `RuntimeVal`/`HeapValue`/`Callable`/typed container 模型及单测，包含 `UpvalCell` 和
    `ErrorVal`。
 2. 建立 slot-based `HeapStore`、GC 标记遍历 helper、root collection helper 及单测。
 3. 建立 `Instr32`、typed const pool、encoder/decoder/disassembler 单测，加入 cell/handler 指令。
@@ -158,15 +159,18 @@ benchmark 只在新 VM 闭环后恢复。
    `Instr32`。每迁移一个 feature，都同步扩展 compiler、executor 和端到端单测。
 5. 最小可运行路径必须覆盖 literal/load、move、int/float arithmetic、branch、closure call、
    return。之后依次恢复 container、index、string、global、named call、native call。
-6. 重构 shared stack call ABI，移除 closure call 中 per-call `Frame32`/`Vec` 分配。
+6. 重构 shared stack call ABI，移除 closure call 中 per-call `Frame32`/`Vec` 分配，并继续收窄跨
+   runtime/module 边界复制。
 7. 实现 closure upvalue cell，恢复可变捕获语义。
 8. 实现 per-task STW GC 触发点和 root collection。
 9. 实现 VM handler stack、`TryBegin`/`TryEnd`、`Raise` handler 路径。
 10. 重构 global/context slot、typed container fast path。
-11. 新 VM 的 call ABI、global slot、typed container、GC root、upvalue 全部验证后，再删除旧
-    `Op` runtime、BC32、packed executor、quickening、旧 fused op。删除前旧路径只允许
-    `#[deprecated]` 对照，不允许继续扩展。
-12. 新 VM 闭环后恢复 CLI、coverage、bench、AOT、LKB，并更新 `bench/README.md` 性能记录。
+11. 新 VM 的 call ABI、global slot、typed container、GC root、upvalue 全部验证后，继续确认旧
+    `Op` runtime、BC32、packed executor、quickening、旧 fused op 无源码残留，且不得作为
+    compatibility layer 恢复。
+12. 新 VM 闭环后继续恢复 CLI、coverage、bench、LLVM shell 和 host executable launcher；真正
+    native AOT 只能基于 `Module32Artifact` / `RuntimeVal` / `HeapStore` 重新设计，不恢复 LKB 或旧
+    AOT callable bridge。
 
 ## 测试策略
 
@@ -194,7 +198,8 @@ benchmark 只在新 VM 闭环后恢复。
 - recursive closure call 不随调用次数分配新 frame `Vec`。
 - mutable closure capture：外层写入、闭包读写、多个闭包共享同一 cell。
 - `Raise` 无 handler 仍返回 `anyhow::Error`；有 handler 时跳转并写入 `ErrorVal`。
-- `PerformanceFacts` 只改变 emitted opcode，不改变 executor 行为。
+- `PerformanceFacts` 可改变 emitted opcode 和 executor 对静态 lowering facts 的只读执行策略；
+  不允许变成 runtime profiler、feedback loop 或语义条件。
 
 最终收口时再恢复完整验证和 `bench/README.md` 性能记录。
 
@@ -204,5 +209,5 @@ benchmark 只在新 VM 闭环后恢复。
 - 不用旧 VM 局部 hack 掩盖新模型缺口。
 - 不因为 CLI/bench 暂时不可用而跳过当前模块单测。
 - 不把 `plan.md` 重新变成工作日志。
-- 不把 `PerformanceFacts` 变成 runtime profiler 或 executor 依赖。
+- 不把 `PerformanceFacts` 变成 runtime profiler、feedback loop 或可变 executor state。
 - 不为了实现 GC/upvalue/handler stack 在 LLVM 外引入 `unsafe`。

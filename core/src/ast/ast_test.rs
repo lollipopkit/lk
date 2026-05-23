@@ -3,9 +3,9 @@ mod test {
     use crate::{
         ast::Parser,
         expr::Expr,
-        op::BinOp,
+        operator::BinOp,
         token::{Token, Tokenizer},
-        val::Val,
+        val::LiteralVal,
     };
 
     fn list_expr(values: Vec<Expr>) -> Expr {
@@ -36,12 +36,12 @@ mod test {
             Box::new(Expr::Access(
                 Box::new(Expr::Access(
                     Box::new(Expr::Var("req".to_string())),
-                    Box::new(Expr::Val(Val::from_str("user"))),
+                    Box::new(Expr::Literal(LiteralVal::from_str("user"))),
                 )),
-                Box::new(Expr::Val(Val::from_str("age"))),
+                Box::new(Expr::Literal(LiteralVal::from_str("age"))),
             )),
             BinOp::Gt,
-            Box::new(Expr::Val(Val::Int(18))),
+            Box::new(Expr::Literal(LiteralVal::Int(18))),
         );
         let parsed = Parser::new(&tokens).parse().unwrap();
         assert_eq!(parsed, expr);
@@ -59,7 +59,7 @@ mod test {
 
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
-        let expected = Expr::Paren(Box::new(Expr::Val(Val::Bool(true))));
+        let expected = Expr::Paren(Box::new(Expr::Literal(LiteralVal::Bool(true))));
         assert_eq!(parsed, expected);
     }
 
@@ -82,21 +82,21 @@ mod test {
                 Box::new(Expr::Bin(
                     Box::new(Expr::Var("time".to_string())),
                     BinOp::Ne,
-                    Box::new(Expr::Val(Val::Int(0))),
+                    Box::new(Expr::Literal(LiteralVal::Int(0))),
                 )),
                 Box::new(Expr::Bin(
                     Box::new(Expr::Access(
                         Box::new(Expr::Var("col".to_string())),
-                        Box::new(Expr::Val(Val::from_str("pub"))),
+                        Box::new(Expr::Literal(LiteralVal::from_str("pub"))),
                     )),
                     BinOp::Eq,
-                    Box::new(Expr::Val(Val::Bool(true))),
+                    Box::new(Expr::Literal(LiteralVal::Bool(true))),
                 )),
             )))),
             Box::new(Expr::Bin(
                 Box::new(Expr::Var("random".to_string())),
                 BinOp::Gt,
-                Box::new(Expr::Val(Val::Float(0.5))),
+                Box::new(Expr::Literal(LiteralVal::Float(0.5))),
             )),
         );
         assert_eq!(parsed, expected);
@@ -111,9 +111,9 @@ mod test {
         let expected = Expr::Access(
             Box::new(Expr::Access(
                 Box::new(Expr::Var("list".to_string())),
-                Box::new(Expr::Val(Val::Int(0))),
+                Box::new(Expr::Literal(LiteralVal::Int(0))),
             )),
-            Box::new(Expr::Val(Val::from_str("name"))),
+            Box::new(Expr::Literal(LiteralVal::from_str("name"))),
         );
         assert_eq!(parsed, expected);
     }
@@ -144,9 +144,9 @@ mod test {
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = list_expr(vec![
-            Expr::Val(Val::Int(1)),
-            Expr::Val(Val::Int(2)),
-            Expr::Val(Val::Int(3)),
+            Expr::Literal(LiteralVal::Int(1)),
+            Expr::Literal(LiteralVal::Int(2)),
+            Expr::Literal(LiteralVal::Int(3)),
         ]);
         assert_eq!(parsed, expected);
     }
@@ -158,9 +158,9 @@ mod test {
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = list_expr(vec![
-            Expr::Val(Val::Int(1)),
-            Expr::Val(Val::from_str("hello")),
-            Expr::Val(Val::Bool(true)),
+            Expr::Literal(LiteralVal::Int(1)),
+            Expr::Literal(LiteralVal::from_str("hello")),
+            Expr::Literal(LiteralVal::Bool(true)),
         ]);
         assert_eq!(parsed, expected);
     }
@@ -171,7 +171,10 @@ mod test {
 
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
-        let expected = list_expr(vec![Expr::Val(Val::Int(3)), Expr::Val(Val::Int(12))]);
+        let expected = list_expr(vec![
+            Expr::Literal(LiteralVal::Int(3)),
+            Expr::Literal(LiteralVal::Int(12)),
+        ]);
         assert_eq!(parsed, expected);
     }
 
@@ -182,8 +185,14 @@ mod test {
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = list_expr(vec![
-            list_expr(vec![Expr::Val(Val::Int(1)), Expr::Val(Val::Int(2))]),
-            list_expr(vec![Expr::Val(Val::Int(3)), Expr::Val(Val::Int(4))]),
+            list_expr(vec![
+                Expr::Literal(LiteralVal::Int(1)),
+                Expr::Literal(LiteralVal::Int(2)),
+            ]),
+            list_expr(vec![
+                Expr::Literal(LiteralVal::Int(3)),
+                Expr::Literal(LiteralVal::Int(4)),
+            ]),
         ]);
         assert_eq!(parsed, expected);
     }
@@ -195,9 +204,9 @@ mod test {
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = list_expr(vec![
-            Expr::Val(Val::Int(1)),
-            Expr::Val(Val::Int(2)),
-            Expr::Val(Val::Int(3)),
+            Expr::Literal(LiteralVal::Int(1)),
+            Expr::Literal(LiteralVal::Int(2)),
+            Expr::Literal(LiteralVal::Int(3)),
         ]);
         assert_eq!(parsed, expected);
     }
@@ -219,8 +228,14 @@ mod test {
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = map_expr(vec![
-            (Expr::Val(Val::from_str("name")), Expr::Val(Val::from_str("Alice"))),
-            (Expr::Val(Val::from_str("age")), Expr::Val(Val::Int(30))),
+            (
+                Expr::Literal(LiteralVal::from_str("name")),
+                Expr::Literal(LiteralVal::from_str("Alice")),
+            ),
+            (
+                Expr::Literal(LiteralVal::from_str("age")),
+                Expr::Literal(LiteralVal::Int(30)),
+            ),
         ]);
         assert_eq!(parsed, expected);
     }
@@ -232,8 +247,14 @@ mod test {
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = map_expr(vec![
-            (Expr::Val(Val::from_str("sum")), Expr::Val(Val::Int(3))),
-            (Expr::Val(Val::from_str("product")), Expr::Val(Val::Int(12))),
+            (
+                Expr::Literal(LiteralVal::from_str("sum")),
+                Expr::Literal(LiteralVal::Int(3)),
+            ),
+            (
+                Expr::Literal(LiteralVal::from_str("product")),
+                Expr::Literal(LiteralVal::Int(12)),
+            ),
         ]);
         assert_eq!(parsed, expected);
     }
@@ -260,9 +281,18 @@ mod test {
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = map_expr(vec![
-            (Expr::Val(Val::Int(42)), Expr::Val(Val::from_str("number"))),
-            (Expr::Val(Val::Bool(true)), Expr::Val(Val::from_str("bool"))),
-            (Expr::Val(Val::from_str("key")), Expr::Val(Val::from_str("string"))),
+            (
+                Expr::Literal(LiteralVal::Int(42)),
+                Expr::Literal(LiteralVal::from_str("number")),
+            ),
+            (
+                Expr::Literal(LiteralVal::Bool(true)),
+                Expr::Literal(LiteralVal::from_str("bool")),
+            ),
+            (
+                Expr::Literal(LiteralVal::from_str("key")),
+                Expr::Literal(LiteralVal::from_str("string")),
+            ),
         ]);
         assert_eq!(parsed, expected);
     }
@@ -274,10 +304,16 @@ mod test {
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = map_expr(vec![(
-            Expr::Val(Val::from_str("user")),
+            Expr::Literal(LiteralVal::from_str("user")),
             map_expr(vec![
-                (Expr::Val(Val::from_str("name")), Expr::Val(Val::from_str("Alice"))),
-                (Expr::Val(Val::from_str("age")), Expr::Val(Val::Int(30))),
+                (
+                    Expr::Literal(LiteralVal::from_str("name")),
+                    Expr::Literal(LiteralVal::from_str("Alice")),
+                ),
+                (
+                    Expr::Literal(LiteralVal::from_str("age")),
+                    Expr::Literal(LiteralVal::Int(30)),
+                ),
             ]),
         )]);
         assert_eq!(parsed, expected);
@@ -290,8 +326,14 @@ mod test {
         let ts = Tokenizer::tokenize(r).unwrap();
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = map_expr(vec![
-            (Expr::Val(Val::from_str("a")), Expr::Val(Val::Int(1))),
-            (Expr::Val(Val::from_str("b")), Expr::Val(Val::Int(2))),
+            (
+                Expr::Literal(LiteralVal::from_str("a")),
+                Expr::Literal(LiteralVal::Int(1)),
+            ),
+            (
+                Expr::Literal(LiteralVal::from_str("b")),
+                Expr::Literal(LiteralVal::Int(2)),
+            ),
         ]);
         assert_eq!(parsed, expected);
     }
@@ -305,17 +347,29 @@ mod test {
 
         let expected = list_expr(vec![
             map_expr(vec![
-                (Expr::Val(Val::from_str("name")), Expr::Val(Val::from_str("Alice"))),
                 (
-                    Expr::Val(Val::from_str("scores")),
-                    list_expr(vec![Expr::Val(Val::Int(90)), Expr::Val(Val::Int(85))]),
+                    Expr::Literal(LiteralVal::from_str("name")),
+                    Expr::Literal(LiteralVal::from_str("Alice")),
+                ),
+                (
+                    Expr::Literal(LiteralVal::from_str("scores")),
+                    list_expr(vec![
+                        Expr::Literal(LiteralVal::Int(90)),
+                        Expr::Literal(LiteralVal::Int(85)),
+                    ]),
                 ),
             ]),
             map_expr(vec![
-                (Expr::Val(Val::from_str("name")), Expr::Val(Val::from_str("Bob"))),
                 (
-                    Expr::Val(Val::from_str("scores")),
-                    list_expr(vec![Expr::Val(Val::Int(88)), Expr::Val(Val::Int(92))]),
+                    Expr::Literal(LiteralVal::from_str("name")),
+                    Expr::Literal(LiteralVal::from_str("Bob")),
+                ),
+                (
+                    Expr::Literal(LiteralVal::from_str("scores")),
+                    list_expr(vec![
+                        Expr::Literal(LiteralVal::Int(88)),
+                        Expr::Literal(LiteralVal::Int(92)),
+                    ]),
                 ),
             ]),
         ]);
@@ -331,11 +385,11 @@ mod test {
         let expected = Expr::List(vec![
             Box::new(Expr::Access(
                 Box::new(Expr::Var("user".to_string())),
-                Box::new(Expr::Val(Val::from_str("name"))),
+                Box::new(Expr::Literal(LiteralVal::from_str("name"))),
             )),
             Box::new(Expr::Access(
                 Box::new(Expr::Var("user".to_string())),
-                Box::new(Expr::Val(Val::from_str("age"))),
+                Box::new(Expr::Literal(LiteralVal::from_str("age"))),
             )),
         ]);
         assert_eq!(parsed, expected);
@@ -385,7 +439,7 @@ mod test {
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = Expr::Access(
             Box::new(Expr::Var("data".to_string())),
-            Box::new(Expr::Val(Val::from_str("with.&="))),
+            Box::new(Expr::Literal(LiteralVal::from_str("with.&="))),
         );
         assert_eq!(parsed, expected);
     }
@@ -399,9 +453,9 @@ mod test {
         let expected = Expr::Access(
             Box::new(Expr::Access(
                 Box::new(Expr::Var("req".to_string())),
-                Box::new(Expr::Val(Val::from_str("user"))),
+                Box::new(Expr::Literal(LiteralVal::from_str("user"))),
             )),
-            Box::new(Expr::Val(Val::from_str("name"))),
+            Box::new(Expr::Literal(LiteralVal::from_str("name"))),
         );
         assert_eq!(parsed, expected);
     }
@@ -416,11 +470,11 @@ mod test {
             Box::new(Expr::Access(
                 Box::new(Expr::Access(
                     Box::new(Expr::Var("req".to_string())),
-                    Box::new(Expr::Val(Val::from_str("user"))),
+                    Box::new(Expr::Literal(LiteralVal::from_str("user"))),
                 )),
-                Box::new(Expr::Val(Val::from_str("special-field"))),
+                Box::new(Expr::Literal(LiteralVal::from_str("special-field"))),
             )),
-            Box::new(Expr::Val(Val::from_str("data"))),
+            Box::new(Expr::Literal(LiteralVal::from_str("data"))),
         );
         assert_eq!(parsed, expected);
     }
@@ -433,7 +487,7 @@ mod test {
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = Expr::Access(
             Box::new(Expr::Var("data".to_string())),
-            Box::new(Expr::Val(Val::from_str("field-with@special#chars$"))),
+            Box::new(Expr::Literal(LiteralVal::from_str("field-with@special#chars$"))),
         );
         assert_eq!(parsed, expected);
     }
@@ -448,11 +502,11 @@ mod test {
             Box::new(Expr::Access(
                 Box::new(Expr::Access(
                     Box::new(Expr::Var("files".to_string())),
-                    Box::new(Expr::Val(Val::Int(0))),
+                    Box::new(Expr::Literal(LiteralVal::Int(0))),
                 )),
-                Box::new(Expr::Val(Val::from_str("name"))),
+                Box::new(Expr::Literal(LiteralVal::from_str("name"))),
             )),
-            Box::new(Expr::Val(Val::from_str("value"))),
+            Box::new(Expr::Literal(LiteralVal::from_str("value"))),
         );
         assert_eq!(parsed, expected);
     }
@@ -466,10 +520,10 @@ mod test {
         let expected = Expr::Bin(
             Box::new(Expr::Access(
                 Box::new(Expr::Var("config".to_string())),
-                Box::new(Expr::Val(Val::from_str("debug-mode"))),
+                Box::new(Expr::Literal(LiteralVal::from_str("debug-mode"))),
             )),
             BinOp::Eq,
-            Box::new(Expr::Val(Val::Bool(true))),
+            Box::new(Expr::Literal(LiteralVal::Bool(true))),
         );
         assert_eq!(parsed, expected);
     }
@@ -482,7 +536,7 @@ mod test {
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = Expr::Access(
             Box::new(Expr::Var("data".to_string())),
-            Box::new(Expr::Val(Val::from_str("field with spaces"))),
+            Box::new(Expr::Literal(LiteralVal::from_str("field with spaces"))),
         );
         assert_eq!(parsed, expected);
     }
@@ -495,7 +549,7 @@ mod test {
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = Expr::Access(
             Box::new(Expr::Var("data".to_string())),
-            Box::new(Expr::Val(Val::from_str("field's name"))),
+            Box::new(Expr::Literal(LiteralVal::from_str("field's name"))),
         );
         assert_eq!(parsed, expected);
     }
@@ -508,7 +562,7 @@ mod test {
         let parsed = Parser::new(&ts).parse().unwrap();
         let expected = Expr::Access(
             Box::new(Expr::Var("data".to_string())),
-            Box::new(Expr::Val(Val::from_str("special-field"))),
+            Box::new(Expr::Literal(LiteralVal::from_str("special-field"))),
         );
         assert_eq!(parsed, expected);
     }
@@ -523,17 +577,17 @@ mod test {
             Box::new(Expr::Access(
                 Box::new(Expr::Access(
                     Box::new(Expr::Var("req".to_string())),
-                    Box::new(Expr::Val(Val::from_str("user-data"))),
+                    Box::new(Expr::Literal(LiteralVal::from_str("user-data"))),
                 )),
-                Box::new(Expr::Val(Val::from_str("is-active"))),
+                Box::new(Expr::Literal(LiteralVal::from_str("is-active"))),
             )),
             Box::new(Expr::Bin(
                 Box::new(Expr::Access(
                     Box::new(Expr::Var("config".to_string())),
-                    Box::new(Expr::Val(Val::from_str("debug-enabled"))),
+                    Box::new(Expr::Literal(LiteralVal::from_str("debug-enabled"))),
                 )),
                 BinOp::Eq,
-                Box::new(Expr::Val(Val::Bool(false))),
+                Box::new(Expr::Literal(LiteralVal::Bool(false))),
             )),
         );
         assert_eq!(parsed, expected);

@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::{expr::Pattern, stmt::Stmt, val::Val};
+use crate::{expr::Pattern, stmt::Stmt, val::LiteralVal};
 
 use super::{
     Compiler32, Instr32, Opcode32,
@@ -110,7 +110,7 @@ impl Compiler32 {
         let mut previous = Vec::new();
         let condition = match pattern {
             Pattern::Variable(name) => {
-                previous.push((name.clone(), self.locals.insert(name.clone(), value)));
+                previous.push((name.clone(), self.insert_local(name.clone(), value)));
                 let is_nil = self.alloc_reg();
                 self.emit(Instr32::abc(
                     Opcode32::IsNil,
@@ -127,7 +127,7 @@ impl Compiler32 {
                 ));
                 condition
             }
-            Pattern::Wildcard => self.lower_val(&Val::Bool(true))?,
+            Pattern::Wildcard => self.lower_val(&LiteralVal::Bool(true))?,
             Pattern::List { patterns, .. } => {
                 let condition = self.lower_list_pattern_condition(value, patterns.len())?;
                 self.bind_irrefutable_pattern(pattern, value, &mut previous)?;
@@ -200,7 +200,7 @@ impl Compiler32 {
             checked_u8("pattern list shape value", value)?,
             0,
         ));
-        let result = self.lower_val(&Val::Bool(false))?;
+        let result = self.lower_val(&LiteralVal::Bool(false))?;
         let skip_len = self.emit_test_placeholder(is_list)?;
         let len = self.alloc_reg();
         self.emit(Instr32::abc(
@@ -209,7 +209,7 @@ impl Compiler32 {
             checked_u8("pattern list value", value)?,
             0,
         ));
-        let expected = self.lower_val(&Val::Int(fixed_len as i64))?;
+        let expected = self.lower_val(&LiteralVal::Int(fixed_len as i64))?;
         let condition = self.alloc_reg();
         self.emit(Instr32::abc(
             Opcode32::CmpGeInt,
@@ -231,11 +231,11 @@ impl Compiler32 {
             checked_u8("pattern map shape value", value)?,
             0,
         ));
-        let result = self.lower_val(&Val::Bool(false))?;
+        let result = self.lower_val(&LiteralVal::Bool(false))?;
         let skip_contains = self.emit_test_placeholder(is_map)?;
-        let mut condition = self.lower_val(&Val::Bool(true))?;
+        let mut condition = self.lower_val(&LiteralVal::Bool(true))?;
         for (key, _) in patterns {
-            let key = self.lower_val(&Val::from_str(key))?;
+            let key = self.lower_val(&LiteralVal::from_str(key))?;
             let contains = self.alloc_reg();
             self.emit(Instr32::abc(
                 Opcode32::Contains,
@@ -252,7 +252,7 @@ impl Compiler32 {
     }
 
     fn lower_guard_condition(&mut self, pattern_condition: u16, guard: &crate::expr::Expr) -> Result<u16> {
-        let result = self.lower_val(&Val::Bool(false))?;
+        let result = self.lower_val(&LiteralVal::Bool(false))?;
         let skip_guard = self.emit_test_placeholder(pattern_condition)?;
         let guard = self.lower_expr(guard)?;
         self.emit_move(result, guard, "pattern guard condition")?;
@@ -262,8 +262,8 @@ impl Compiler32 {
     }
 
     fn lower_or_pattern_condition(&mut self, patterns: &[Pattern], value: u16) -> Result<u16> {
-        let result = self.lower_val(&Val::Bool(false))?;
-        let true_value = self.lower_val(&Val::Bool(true))?;
+        let result = self.lower_val(&LiteralVal::Bool(false))?;
+        let true_value = self.lower_val(&LiteralVal::Bool(true))?;
         let mut end_jumps = Vec::with_capacity(patterns.len());
         for pattern in patterns {
             let (condition, previous) = self.lower_pattern_match(pattern, value)?;
@@ -285,7 +285,7 @@ impl Compiler32 {
     }
 
     fn lower_and_condition(&mut self, lhs: u16, rhs: u16) -> Result<u16> {
-        let result = self.lower_val(&Val::Bool(false))?;
+        let result = self.lower_val(&LiteralVal::Bool(false))?;
         let skip_rhs = self.emit_test_placeholder(lhs)?;
         self.emit_move(result, rhs, "and-pattern condition")?;
         let end = self.function.code.len();
@@ -301,7 +301,7 @@ impl Compiler32 {
     ) -> Result<()> {
         match pattern {
             Pattern::Variable(name) => {
-                previous.push((name.clone(), self.locals.insert(name.clone(), value)));
+                previous.push((name.clone(), self.insert_local(name.clone(), value)));
                 Ok(())
             }
             Pattern::Wildcard => Ok(()),
@@ -309,7 +309,7 @@ impl Compiler32 {
                 for (index, pattern) in patterns.iter().enumerate() {
                     let index =
                         i64::try_from(index).map_err(|_| anyhow::anyhow!("Compiler32 pattern index overflow"))?;
-                    let key = self.lower_val(&Val::Int(index))?;
+                    let key = self.lower_val(&LiteralVal::Int(index))?;
                     let field = self.alloc_reg();
                     self.emit(Instr32::abc(
                         Opcode32::GetIndex,
@@ -320,7 +320,7 @@ impl Compiler32 {
                     self.bind_irrefutable_pattern(pattern, field, previous)?;
                 }
                 if let Some(rest) = rest {
-                    let start = self.lower_val(&Val::Int(patterns.len() as i64))?;
+                    let start = self.lower_val(&LiteralVal::Int(patterns.len() as i64))?;
                     let slice = self.alloc_reg();
                     self.emit(Instr32::abc(
                         Opcode32::SliceFrom,
@@ -328,13 +328,13 @@ impl Compiler32 {
                         checked_u8("pattern rest value", value)?,
                         checked_u8("pattern rest start", start)?,
                     ));
-                    previous.push((rest.clone(), self.locals.insert(rest.clone(), slice)));
+                    previous.push((rest.clone(), self.insert_local(rest.clone(), slice)));
                 }
                 Ok(())
             }
             Pattern::Map { patterns, rest } => {
                 for (key, pattern) in patterns {
-                    let key = self.lower_val(&Val::from_str(key))?;
+                    let key = self.lower_val(&LiteralVal::from_str(key))?;
                     let field = self.alloc_reg();
                     self.emit(Instr32::abc(
                         Opcode32::GetIndex,
@@ -346,7 +346,7 @@ impl Compiler32 {
                 }
                 if let Some(rest) = rest {
                     let map = self.lower_map_rest(value, patterns)?;
-                    previous.push((rest.clone(), self.locals.insert(rest.clone(), map)));
+                    previous.push((rest.clone(), self.insert_local(rest.clone(), map)));
                 }
                 Ok(())
             }
@@ -357,9 +357,13 @@ impl Compiler32 {
         }
     }
 
-    fn lower_pattern_literal(&mut self, literal: &Val) -> Result<u16> {
+    fn lower_pattern_literal(&mut self, literal: &LiteralVal) -> Result<u16> {
         match literal {
-            Val::Nil | Val::Bool(_) | Val::Int(_) | Val::Float(_) | Val::ShortStr(_) => self.lower_val(literal),
+            LiteralVal::Nil
+            | LiteralVal::Bool(_)
+            | LiteralVal::Int(_)
+            | LiteralVal::Float(_)
+            | LiteralVal::ShortStr(_) => self.lower_val(literal),
             value if value.as_str().is_some() => self.lower_val(value),
             other => bail!(
                 "Compiler32 cannot lower pattern literal with AST value kind {}",
@@ -371,7 +375,7 @@ impl Compiler32 {
     pub(super) fn restore_pattern_bindings(&mut self, previous: Vec<(String, Option<u16>)>) {
         for (name, old) in previous.into_iter().rev() {
             if let Some(old) = old {
-                self.locals.insert(name, old);
+                self.insert_local(name, old);
             } else {
                 self.locals.remove(&name);
             }

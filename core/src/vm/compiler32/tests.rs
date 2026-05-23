@@ -11,9 +11,9 @@ fn parse_program32(source: &str) -> crate::stmt::Program {
 #[test]
 fn compiler32_lowers_int_arithmetic_to_executable_function32() {
     let expr = Expr::Bin(
-        Box::new(Expr::Val(Val::Int(8))),
+        Box::new(Expr::Literal(LiteralVal::Int(8))),
         BinOp::Mul,
-        Box::new(Expr::Val(Val::Int(7))),
+        Box::new(Expr::Literal(LiteralVal::Int(7))),
     );
 
     let function = compile_expr32(&expr).expect("compile");
@@ -46,12 +46,12 @@ fn compiler32_lowers_float_arithmetic_to_typed_instr32() {
 
     let mul_expr = Expr::Bin(
         Box::new(Expr::Bin(
-            Box::new(Expr::Val(Val::Float(1.5))),
+            Box::new(Expr::Literal(LiteralVal::Float(1.5))),
             BinOp::Mul,
-            Box::new(Expr::Val(Val::Float(4.0))),
+            Box::new(Expr::Literal(LiteralVal::Float(4.0))),
         )),
         BinOp::Div,
-        Box::new(Expr::Val(Val::Float(2.0))),
+        Box::new(Expr::Literal(LiteralVal::Float(2.0))),
     );
     let function = compile_expr32(&mul_expr).expect("compile mul/div");
 
@@ -72,9 +72,54 @@ fn compiler32_lowers_float_arithmetic_to_typed_instr32() {
 }
 
 #[test]
+fn compiler32_uses_register_facts_for_compound_float_arithmetic() {
+    let function = compile_source32(
+        r#"
+        let x = 1.5;
+        x += 2.0;
+        return x;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode32::AddFloat),
+        "expected register facts to select AddFloat in {:?}",
+        function.code
+    );
+
+    let result = execute32(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Float(3.5)]);
+}
+
+#[test]
+fn compiler32_records_local_slots_and_local_copy_facts() {
+    let function = compile_source32(
+        r#"
+        let x = 1;
+        x = x + 1;
+        return x;
+        "#,
+    )
+    .expect("compile source");
+
+    let local_move = function
+        .code
+        .iter()
+        .enumerate()
+        .find(|(pc, instr)| instr.opcode() == Opcode32::Move && function.performance.local_copy(*pc).is_some())
+        .expect("local copy move");
+
+    assert!(function.performance.is_local_slot(local_move.1.a() as u16));
+
+    let result = execute32(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2)]);
+}
+
+#[test]
 fn compiler32_lowers_short_and_long_strings() {
-    let short = compile_expr32(&Expr::Val(Val::from_str("short"))).expect("compile short");
-    let long = compile_expr32(&Expr::Val(Val::from_str("longer-than-seven"))).expect("compile long");
+    let short = compile_expr32(&Expr::Literal(LiteralVal::from_str("short"))).expect("compile short");
+    let long = compile_expr32(&Expr::Literal(LiteralVal::from_str("longer-than-seven"))).expect("compile long");
 
     let short_result = execute32(&short).expect("execute short");
     let long_result = execute32(&long).expect("execute long");
@@ -89,13 +134,13 @@ fn compiler32_lowers_short_and_long_strings() {
 #[test]
 fn compiler32_lowers_literal_list_and_map_values_to_heap_consts() {
     let list = compile_expr32(&Expr::List(vec![
-        Box::new(Expr::Val(Val::Int(1))),
-        Box::new(Expr::Val(Val::from_str("longer-than-seven"))),
+        Box::new(Expr::Literal(LiteralVal::Int(1))),
+        Box::new(Expr::Literal(LiteralVal::from_str("longer-than-seven"))),
     ]))
     .expect("compile list");
     let map = compile_expr32(&Expr::Map(vec![(
-        Box::new(Expr::Val(Val::from_str("answer"))),
-        Box::new(Expr::Val(Val::Int(42))),
+        Box::new(Expr::Literal(LiteralVal::from_str("answer"))),
+        Box::new(Expr::Literal(LiteralVal::Int(42))),
     )]))
     .expect("compile map");
 
@@ -294,6 +339,87 @@ fn compiler32_lowers_list_literal_to_heap_list() {
 }
 
 #[test]
+fn compiler32_marks_container_materialization_moves_as_source_moves() {
+    let function = compile_source32(
+        r#"
+        let a = 1;
+        let b = 2;
+        return [a + 1, b + 2];
+        "#,
+    )
+    .expect("compile source");
+
+    let move_facts = function
+        .code
+        .iter()
+        .enumerate()
+        .filter(|(_, instr)| instr.opcode() == Opcode32::Move)
+        .filter_map(|(pc, _)| function.performance.register_copy(pc))
+        .collect::<Vec<_>>();
+
+    assert!(
+        move_facts.iter().any(|fact| fact.move_source),
+        "expected container materialization to mark source moves in {:?}",
+        function.code
+    );
+
+    let result = execute32(&function).expect("execute");
+    let crate::val::RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list object");
+    };
+    let crate::val::HeapValue::List(crate::val::TypedList::Int(values)) =
+        result.state.heap.get(handle).expect("heap object")
+    else {
+        panic!("expected typed int list");
+    };
+    assert_eq!(values, &vec![2, 4]);
+}
+
+#[test]
+fn compiler32_records_register_performance_facts_for_literals_and_containers() {
+    let list_expr = Expr::List(vec![
+        Box::new(Expr::Literal(LiteralVal::Int(1))),
+        Box::new(Expr::Literal(LiteralVal::Int(2))),
+    ]);
+    let list_function = compile_expr32(&list_expr).expect("compile list");
+    let list_reg = list_function
+        .code
+        .iter()
+        .find(|instr| instr.opcode() == Opcode32::LoadHeapConst || instr.opcode() == Opcode32::NewList)
+        .expect("list-producing instruction")
+        .a() as u16;
+    assert_eq!(
+        list_function.performance.value_kind(list_reg),
+        crate::vm::analysis::PerfValueKind::List
+    );
+    assert_eq!(
+        list_function.performance.list_value_kind(list_reg),
+        Some(crate::vm::analysis::PerfValueKind::Int)
+    );
+    assert_eq!(list_function.performance.list_known_len(list_reg), Some(2));
+
+    let map_expr = Expr::Map(vec![(
+        Box::new(Expr::Literal(LiteralVal::from_str("answer"))),
+        Box::new(Expr::Literal(LiteralVal::Int(42))),
+    )]);
+    let map_function = compile_expr32(&map_expr).expect("compile map");
+    let map_reg = map_function
+        .code
+        .iter()
+        .find(|instr| instr.opcode() == Opcode32::LoadHeapConst || instr.opcode() == Opcode32::NewMap)
+        .expect("map-producing instruction")
+        .a() as u16;
+    assert_eq!(
+        map_function.performance.value_kind(map_reg),
+        crate::vm::analysis::PerfValueKind::Map
+    );
+    assert_eq!(
+        map_function.performance.map_value_kind(map_reg),
+        Some(crate::vm::analysis::PerfValueKind::Int)
+    );
+}
+
+#[test]
 fn compiler32_lowers_range_expression_to_typed_int_list() {
     let function = compile_source32("return 5..=1..0 - 2;").expect("compile source");
 
@@ -388,6 +514,24 @@ fn compiler32_dynamic_method_helper_calls_runtime_callable_property() {
         }
         let table = {"add": add};
         return table.add(40, 2);
+        "#,
+    );
+    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
+
+    let result = program.execute32_with_ctx(&mut ctx).expect("execute program");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler32_dynamic_method_helper_calls_runtime_callable_property_with_named_args() {
+    let program = parse_program32(
+        r#"
+        fn add(a, {b: Int}) {
+            return a + b;
+        }
+        let table = {"add": add};
+        return table.add(40, b: 2);
         "#,
     );
     let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
@@ -944,7 +1088,7 @@ fn compiler32_lowers_named_args_to_normal_call_window() {
 fn compiler32_lowers_default_named_args_in_plain_call() {
     let module = compile_source_module32(
         r#"
-        fn answer({x: ?Int = 42}) {
+        fn answer({x: Int? = 42}) {
             return x;
         }
 
@@ -962,7 +1106,7 @@ fn compiler32_lowers_default_named_args_in_plain_call() {
 fn compiler32_lowers_named_default_that_references_positional_param() {
     let module = compile_source_module32(
         r#"
-        fn add(a, {b: ?Int = a + 2}) {
+        fn add(a, {b: Int? = a + 2}) {
             return b;
         }
 
@@ -980,7 +1124,7 @@ fn compiler32_lowers_named_default_that_references_positional_param() {
 fn compiler32_lowers_named_default_that_references_earlier_named_param() {
     let module = compile_source_module32(
         r#"
-        fn add({a: ?Int = 40, b: ?Int = a + 2}) {
+        fn add({a: Int? = 40, b: Int? = a + 2}) {
             return b;
         }
 

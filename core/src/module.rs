@@ -1,6 +1,9 @@
 use crate::{
     val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedMap},
-    vm::{Module32, NativeFunction32, PlainNativeFunction32, RuntimeExport32, RuntimeModuleState32},
+    vm::{
+        ContextNativeFunction32, Module32, NativeFunction32, PlainNativeFunction32, RuntimeExport32,
+        RuntimeModuleState32,
+    },
 };
 use anyhow::{Result, anyhow};
 use std::{
@@ -151,16 +154,28 @@ pub trait Module: Send + Sync + std::fmt::Debug {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RuntimeNativeExport32 {
     pub name: &'static str,
-    pub function: PlainNativeFunction32,
+    pub function: NativeFunction32,
     pub arity: u16,
 }
 
 impl RuntimeNativeExport32 {
     pub const fn plain(name: &'static str, function: PlainNativeFunction32, arity: u16) -> Self {
-        Self { name, function, arity }
+        Self {
+            name,
+            function: NativeFunction32::Plain(function),
+            arity,
+        }
+    }
+
+    pub const fn full_state(name: &'static str, function: ContextNativeFunction32, arity: u16) -> Self {
+        Self {
+            name,
+            function: NativeFunction32::FullState(function),
+            arity,
+        }
     }
 }
 
@@ -185,7 +200,7 @@ pub fn runtime_export_from_plain_native_entries(
     for native in natives {
         let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
             arity: native.arity,
-            function: NativeFunction32::Plain(native.function),
+            function: native.function.clone(),
         })));
         entries.insert(RuntimeMapKey::String(Arc::<str>::from(native.name)), value);
     }

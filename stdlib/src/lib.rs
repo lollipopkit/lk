@@ -16,6 +16,9 @@ pub mod time;
 pub mod toml;
 pub mod yaml;
 
+#[cfg(feature = "llvm-bridge")]
+mod llvm_bridge;
+
 #[cfg(test)]
 mod datetime_test;
 #[cfg(test)]
@@ -39,10 +42,7 @@ use lk_core::{
     rt::{self, RuntimePayload},
     val,
     val::{CallableValue, ChannelValue, HeapStore, HeapValue, RuntimeVal, TaskValue, TypedList},
-    vm::{
-        NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
-        runtime_value_to_callable32,
-    },
+    vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime},
 };
 use std::sync::Arc;
 
@@ -321,10 +321,10 @@ fn select_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
 
     expect_runtime_arity(args, 5, "select$block")?;
     let args = args.as_slice();
-    let types = list_items(&args[0], runtime.heap_mut(), "select$block types")?;
-    let channels = list_items(&args[1], runtime.heap_mut(), "select$block channels")?;
-    let values = list_items(&args[2], runtime.heap_mut(), "select$block values")?;
-    let guards = list_items(&args[3], runtime.heap_mut(), "select$block guards")?;
+    let types = list_arg(&args[0], runtime.heap(), "select$block types")?;
+    let channels = list_arg(&args[1], runtime.heap(), "select$block channels")?;
+    let values = list_arg(&args[2], runtime.heap(), "select$block values")?;
+    let guards = list_arg(&args[3], runtime.heap(), "select$block guards")?;
     let RuntimeVal::Bool(has_default) = args[4] else {
         return Err(anyhow!("select$block: has_default must be a Bool"));
     };
@@ -335,17 +335,20 @@ fn select_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
 
     let mut select = SelectOperation::new();
     for index in 0..len {
-        if !matches!(guards[index], RuntimeVal::Bool(true)) {
+        if typed_list_bool_item(&guards, index) != Some(true) {
             continue;
         }
-        let RuntimeVal::Int(kind) = types[index] else {
-            return Err(anyhow!("select$block: invalid arm entry types"));
-        };
-        let channel_id = channel_id_arg(&channels[index], runtime.heap(), "select$block channel")?;
+        let kind =
+            typed_list_int_item(&types, index).ok_or_else(|| anyhow!("select$block: invalid arm entry types"))?;
+        let channel = typed_list_item(&channels, index, runtime.heap_mut())
+            .ok_or_else(|| anyhow!("select$block: missing channel arm"))?;
+        let channel_id = channel_id_arg(&channel, runtime.heap(), "select$block channel")?;
         match kind {
             0 => select.add_recv(index, channel_id),
             1 => {
-                let value = RuntimePayload::copy_from_value(&values[index], runtime.heap())?;
+                let value = typed_list_item(&values, index, runtime.heap_mut())
+                    .ok_or_else(|| anyhow!("select$block: missing send value"))?;
+                let value = RuntimePayload::copy_from_value(&value, runtime.heap())?;
                 select.add_send(index, channel_id, value);
             }
             _ => return Err(anyhow!("select$block: invalid arm entry types")),
@@ -459,11 +462,7 @@ fn runtime_callable_arg(
     match callable {
         HeapValue::Callable(CallableValue::Runtime32(function)) => Ok(function.as_ref().clone()),
         HeapValue::Callable(CallableValue::Closure { .. }) => {
-            let module = runtime
-                .module()
-                .ok_or_else(|| anyhow!("{context} requires Module32 execution context"))?;
-            runtime_value_to_callable32(value, runtime.heap(), &runtime.globals(), Arc::new((*module).clone()))
-                .ok_or_else(|| anyhow!("{context} closure could not be materialized"))
+            Err(anyhow!("{context} closure requires active RuntimeModuleState32"))
         }
         _ => Err(anyhow!("{context} must be a runtime callable")),
     }
@@ -482,17 +481,55 @@ fn channel_id_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result
     }
 }
 
-fn list_items(value: &RuntimeVal, heap: &mut HeapStore, context: &str) -> Result<Vec<RuntimeVal>> {
+fn list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedList> {
     let RuntimeVal::Obj(handle) = value else {
         return Err(anyhow!("{context} must be a List"));
     };
     let value = heap
         .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        .clone();
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match value {
-        HeapValue::List(list) => Ok(list.materialize_mixed(heap)),
+        HeapValue::List(list) => Ok(list.clone()),
         other => Err(anyhow!("{context} must be a List, got {}", other.type_name())),
+    }
+}
+
+fn typed_list_int_item(list: &TypedList, index: usize) -> Option<i64> {
+    match list {
+        TypedList::Mixed(values) => match values.get(index) {
+            Some(RuntimeVal::Int(value)) => Some(*value),
+            _ => None,
+        },
+        TypedList::Int(values) => values.get(index).copied(),
+        _ => None,
+    }
+}
+
+fn typed_list_bool_item(list: &TypedList, index: usize) -> Option<bool> {
+    match list {
+        TypedList::Mixed(values) => match values.get(index) {
+            Some(RuntimeVal::Bool(value)) => Some(*value),
+            _ => None,
+        },
+        TypedList::Bool(values) => values.get(index).copied(),
+        _ => None,
+    }
+}
+
+fn typed_list_item(list: &TypedList, index: usize, heap: &mut HeapStore) -> Option<RuntimeVal> {
+    match list {
+        TypedList::Mixed(values) => values.get(index).cloned(),
+        TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int),
+        TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float),
+        TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool),
+        TypedList::String(values) => {
+            let value = values.get(index)?;
+            if let Some(short) = val::ShortStr::new(value) {
+                Some(RuntimeVal::ShortStr(short))
+            } else {
+                Some(RuntimeVal::Obj(heap.alloc(HeapValue::String(value.clone()))))
+            }
+        }
     }
 }
 
@@ -529,55 +566,10 @@ pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
     register_stdlib_concurrency_globals(registry);
 }
 
-#[unsafe(no_mangle)]
-pub extern "Rust" fn lk_stdlib_register_globals(registry: &mut ModuleRegistry) {
-    register_stdlib_globals(registry);
-}
-
-#[unsafe(no_mangle)]
-pub extern "Rust" fn lk_stdlib_register_core_globals(registry: &mut ModuleRegistry) {
-    register_stdlib_core_globals(registry);
-}
-
-#[unsafe(no_mangle)]
-pub extern "Rust" fn lk_stdlib_register_concurrency_globals(registry: &mut ModuleRegistry) {
-    register_stdlib_concurrency_globals(registry);
-}
-
-#[unsafe(no_mangle)]
-pub extern "Rust" fn lk_stdlib_register_modules(registry: &mut ModuleRegistry) -> Result<()> {
-    register_stdlib_modules(registry)
-}
-
-macro_rules! export_stdlib_module_registrar {
-    ($export:ident, $register:ident) => {
-        #[unsafe(no_mangle)]
-        pub extern "Rust" fn $export(registry: &mut ModuleRegistry) -> Result<()> {
-            $register(registry)
-        }
-    };
-}
-
-export_stdlib_module_registrar!(lk_stdlib_register_module_io, register_stdlib_module_io);
-export_stdlib_module_registrar!(lk_stdlib_register_module_json, register_stdlib_module_json);
-export_stdlib_module_registrar!(lk_stdlib_register_module_yaml, register_stdlib_module_yaml);
-export_stdlib_module_registrar!(lk_stdlib_register_module_toml, register_stdlib_module_toml);
-export_stdlib_module_registrar!(lk_stdlib_register_module_iter, register_stdlib_module_iter);
-export_stdlib_module_registrar!(lk_stdlib_register_module_math, register_stdlib_module_math);
-export_stdlib_module_registrar!(lk_stdlib_register_module_string, register_stdlib_module_string);
-export_stdlib_module_registrar!(lk_stdlib_register_module_list, register_stdlib_module_list);
-export_stdlib_module_registrar!(lk_stdlib_register_module_map, register_stdlib_module_map);
-export_stdlib_module_registrar!(lk_stdlib_register_module_datetime, register_stdlib_module_datetime);
-export_stdlib_module_registrar!(lk_stdlib_register_module_os, register_stdlib_module_os);
-export_stdlib_module_registrar!(lk_stdlib_register_module_tcp, register_stdlib_module_tcp);
-export_stdlib_module_registrar!(lk_stdlib_register_module_stream, register_stdlib_module_stream);
-export_stdlib_module_registrar!(lk_stdlib_register_module_task, register_stdlib_module_task);
-export_stdlib_module_registrar!(lk_stdlib_register_module_chan, register_stdlib_module_chan);
-export_stdlib_module_registrar!(lk_stdlib_register_module_time, register_stdlib_module_time);
-
 #[cfg(test)]
-mod aot_registration_tests {
+mod runtime_registration_tests {
     use super::*;
+    use lk_core::{val::Type, vm::RuntimeModuleState32};
 
     #[test]
     fn named_registration_includes_only_requested_modules() {
@@ -596,5 +588,37 @@ mod aot_registration_tests {
         assert!(registry.get_runtime_builtin("println").is_some());
         assert!(registry.get_runtime_builtin("spawn").is_none());
         assert!(registry.get_runtime_builtin("select$block").is_none());
+    }
+
+    #[test]
+    fn select_block_reads_typed_control_lists_without_materializing_inactive_values() -> Result<()> {
+        let mut state = RuntimeModuleState32::default();
+        let channel_id = rt::with_runtime(|runtime| runtime.create_channel(Some(1)))?;
+        let channel = RuntimeVal::Obj(state.heap.alloc(HeapValue::Channel(Arc::new(ChannelValue {
+            id: channel_id,
+            capacity: Some(1),
+            inner_type: Type::Nil,
+        }))));
+        let types = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::Int(vec![1]))));
+        let channels = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::Mixed(vec![channel]))));
+        let values = RuntimeVal::Obj(
+            state
+                .heap
+                .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from(
+                    "long-select-send-value",
+                )]))),
+        );
+        let guards = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::Bool(vec![false]))));
+        let args = [types, channels, values, guards, RuntimeVal::Bool(true)];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+
+        let result = select_block32(NativeArgs32::new(&args), &mut runtime)?;
+
+        let RuntimeVal::Obj(handle) = result else {
+            panic!("select$block should return list object");
+        };
+        assert!(matches!(runtime.heap().get(handle), Some(HeapValue::List(_))));
+        assert_eq!(runtime.heap().len(), 6);
+        Ok(())
     }
 }

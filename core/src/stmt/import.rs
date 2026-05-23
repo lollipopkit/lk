@@ -53,8 +53,7 @@ pub struct ImportItem {
     pub alias: Option<String>,
 }
 
-// Note: The Module trait and related functionality have been moved to module.rs
-// This file now provides compatibility layer and file-based import functionality
+// Note: The Module trait and registry live in module.rs; this file owns source import resolution.
 
 /// Module resolver - handles finding and loading modules
 #[derive(Debug, Clone)]
@@ -307,7 +306,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
                 let module = resolver.resolve_runtime_file(path)?;
                 env.define_runtime_global(module_name, module);
             }
-            ImportStmt::Items { .. } => unreachable!("items imports are handled before Val import context"),
+            ImportStmt::Items { .. } => unreachable!("items imports are handled before runtime import binding"),
             ImportStmt::Namespace { alias, source } => {
                 let module = resolve_runtime_import_source(source, resolver)?;
                 env.define_runtime_global(alias.clone(), module);

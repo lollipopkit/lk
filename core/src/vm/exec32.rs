@@ -19,14 +19,15 @@ mod support;
 mod value_ops;
 
 pub use super::RuntimeCallable32;
+pub use imports::import_runtime_export;
 pub use program::{
     compile_program32_module_with_ctx, execute_compiled_module32_with_ctx, execute_module32_artifact_with_ctx,
     execute_program32, execute_program32_raw_with_ctx, execute_source32,
 };
 pub use runtime_callable::{
     call_runtime_callable32_raw, call_runtime_callable32_runtime, call_runtime_value32_runtime,
-    call_runtime_value32_runtime_named, call_runtime_value32_runtime_named_map,
-    call_runtime_value32_runtime_with_receiver, copy_runtime_value, runtime_value_to_callable32,
+    call_runtime_value32_runtime_named_map, call_runtime_value32_runtime_with_receiver, copy_runtime_value,
+    runtime_value_to_callable32_externalized, runtime_value_to_callable32_shared,
 };
 
 use std::collections::BTreeMap;
@@ -37,10 +38,12 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap};
 
 use super::{
-    CallWindow32, Function32, Module32, Opcode32, RegisterIndex, RuntimeExport32, RuntimeModuleState32, VmContext,
+    CallWindow32, Function32, Instr32, Module32, Opcode32, RegisterIndex, RuntimeExport32, RuntimeModuleState32,
+    VmContext,
     analysis::{
-        VmCallMetric, VmContainerMetric, record_branch_op_known_enabled, record_call_op_known_enabled,
-        record_container_op_known_enabled, record_opcode_step_known_enabled, vm_runtime_metrics_enabled,
+        PerfCallFact, PerfIndexFact, VmCallMetric, VmContainerMetric, record_branch_op_known_enabled,
+        record_call_op_known_enabled, record_container_op_known_enabled, record_opcode_step_known_enabled,
+        vm_runtime_metrics_enabled,
     },
 };
 #[cfg(test)]
@@ -95,7 +98,7 @@ impl Program32Result {
     }
 
     pub fn first_return_function(&self) -> Option<RuntimeCallable32> {
-        runtime_value_to_callable32(
+        runtime_value_to_callable32_externalized(
             self.first_return(),
             &self.state.heap,
             &self.state.globals,
@@ -215,6 +218,7 @@ pub struct Executor32 {
     frame_base: usize,
     register_count: u16,
     pc: usize,
+    shared_module: Option<Arc<Module32>>,
 }
 
 impl Executor32 {
@@ -227,6 +231,7 @@ impl Executor32 {
             frame_base: 0,
             register_count,
             pc: 0,
+            shared_module: None,
         };
         this.reset_entry_frame(register_count);
         this
@@ -305,9 +310,21 @@ impl Executor32 {
         Ok(self.finish(returns))
     }
 
+    pub fn run_shared_module_with_globals_and_heap_and_ctx(
+        mut self,
+        module: Arc<Module32>,
+        globals: Vec<RuntimeVal>,
+        heap: HeapStore,
+        ctx: &mut VmContext,
+    ) -> Result<Exec32Result> {
+        self.shared_module = Some(Arc::clone(&module));
+        self.run_module_with_globals_and_ctx(module.as_ref(), globals, heap, ctx)
+    }
+
     pub(crate) fn run_module_function_with_state_recoverable<F>(
         mut self,
         module: &Module32,
+        shared_module: Option<Arc<Module32>>,
         function_index: u32,
         captures: Vec<RuntimeVal>,
         state: RuntimeModuleState32,
@@ -337,6 +354,7 @@ impl Executor32 {
         }
         self.state = state;
         self.captures = captures;
+        self.shared_module = shared_module;
         self.reset_entry_frame(function.register_count);
         let arg_count = seed_args(&mut self).map_err(|error| Exec32Failure {
             error,
@@ -396,7 +414,15 @@ impl Executor32 {
             match instr.opcode() {
                 Opcode32::Nop => self.pc += 1,
                 Opcode32::Move => {
-                    let value = self.read(instr.b())?.clone();
+                    let value = if function
+                        .performance
+                        .register_copy(self.pc)
+                        .is_some_and(|fact| fact.move_source)
+                    {
+                        self.take(instr.b())?
+                    } else {
+                        self.read(instr.b())?.clone()
+                    };
                     self.write(instr.a(), value)?;
                     self.pc += 1;
                 }
@@ -625,7 +651,14 @@ impl Executor32 {
                     if collect_metrics {
                         record_container_op_known_enabled(VmContainerMetric::Generic);
                     }
-                    let value = self.get_index(instr.b(), instr.c())?;
+                    let known_string_key = function
+                        .performance
+                        .known_key(self.pc)
+                        .and_then(|fact| fact.const_key)
+                        .and_then(|index| function.consts.string(index))
+                        .map(Arc::<str>::from);
+                    let index_fact = self.index_fact_from_static_or_cache(function);
+                    let value = self.get_index(self.pc, instr.b(), instr.c(), known_string_key, index_fact)?;
                     self.write(instr.a(), value)?;
                     self.pc += 1;
                 }
@@ -633,18 +666,42 @@ impl Executor32 {
                     if collect_metrics {
                         record_container_op_known_enabled(VmContainerMetric::Generic);
                     }
-                    self.set_index(instr.a(), instr.b(), instr.c())?;
+                    let move_value = function
+                        .performance
+                        .container_move(self.pc)
+                        .is_some_and(|fact| fact.move_value);
+                    let move_key = function
+                        .performance
+                        .container_move(self.pc)
+                        .is_some_and(|fact| fact.move_key);
+                    let known_string_key = function
+                        .performance
+                        .known_key(self.pc)
+                        .and_then(|fact| fact.const_key)
+                        .and_then(|index| function.consts.string(index))
+                        .map(Arc::<str>::from);
+                    let index_fact = self.index_fact_from_static_or_cache(function);
+                    self.set_index(
+                        self.pc,
+                        instr.a(),
+                        instr.b(),
+                        instr.c(),
+                        move_key,
+                        move_value,
+                        known_string_key,
+                        index_fact,
+                    )?;
                     self.pc += 1;
                 }
                 Opcode32::Call => {
                     if collect_metrics {
                         record_call_op_known_enabled(VmCallMetric::Generic);
                     }
-                    // A holds the call-window base (8-bit field; B is only 7 bits and would
-                    // be truncated for call_base >= 128, so we ignore B here).
-                    let window = CallWindow32::new(RegisterIndex::new(instr.a() as u16), instr.c() as u16, 1);
+                    let call_fact = self.call_fact_from_static_cache_or_instr(function, instr, false);
+                    let window =
+                        CallWindow32::new(RegisterIndex::new(call_fact.call_base), call_fact.positional_count, 1);
                     let call_pc = self.pc;
-                    let value = self.call_function(module, window, ctx)?;
+                    let value = self.call_function(module, window, Some(call_fact.target_kind), ctx)?;
                     if self.pc != call_pc {
                         continue;
                     }
@@ -655,12 +712,17 @@ impl Executor32 {
                     if collect_metrics {
                         record_call_op_known_enabled(VmCallMetric::Named);
                     }
-                    let payload = instr.bx();
-                    let positional_count = (payload & 0x7f) as u16;
-                    let named_count = (payload >> 7) as u16;
-                    let window = CallWindow32::new(RegisterIndex::new(instr.a() as u16), positional_count, 1);
+                    let call_fact = self.call_fact_from_static_cache_or_instr(function, instr, true);
+                    let window =
+                        CallWindow32::new(RegisterIndex::new(call_fact.call_base), call_fact.positional_count, 1);
                     let call_pc = self.pc;
-                    let value = self.call_function_named(module, window, named_count, ctx)?;
+                    let value = self.call_function_named(
+                        module,
+                        window,
+                        call_fact.named_count,
+                        Some(call_fact.target_kind),
+                        ctx,
+                    )?;
                     if self.pc != call_pc {
                         continue;
                     }
@@ -668,13 +730,15 @@ impl Executor32 {
                     self.pc += 1;
                 }
                 Opcode32::GetGlobal => {
-                    let value = self.read_global(instr.bx())?;
+                    let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
+                    let value = self.read_global(slot)?;
                     self.write(instr.a(), value)?;
                     self.pc += 1;
                 }
                 Opcode32::SetGlobal => {
                     let value = self.read(instr.a())?.clone();
-                    self.write_global(instr.bx(), value)?;
+                    let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
+                    self.write_global(slot, value)?;
                     self.pc += 1;
                 }
                 Opcode32::Return => {
@@ -691,11 +755,6 @@ impl Executor32 {
         }
 
         Ok(ReturnValues32::None)
-    }
-
-    #[inline]
-    pub(crate) fn heap_mut(&mut self) -> &mut HeapStore {
-        &mut self.state.heap
     }
 
     #[inline]
@@ -741,6 +800,59 @@ impl Executor32 {
             bail!("jump before start of function");
         }
         Ok(next as usize)
+    }
+
+    #[inline]
+    fn call_fact_from_static_cache_or_instr(
+        &mut self,
+        function: &Function32,
+        instr: Instr32,
+        named: bool,
+    ) -> PerfCallFact {
+        if let Some(fact) = function.performance.call_site(self.pc).copied()
+            && (named || fact.named_count == 0)
+        {
+            self.state.inline_caches.set_call(self.pc, fact);
+            return fact;
+        }
+        if let Some(fact) = self.state.inline_caches.call(self.pc) {
+            return fact;
+        }
+        let (positional_count, named_count) = if named {
+            let payload = instr.bx();
+            ((payload & 0x7f) as u16, (payload >> 7) as u16)
+        } else {
+            (instr.c() as u16, 0)
+        };
+        let fact = PerfCallFact {
+            // A holds the call-window base. B is only 7 bits and would truncate call_base >= 128.
+            call_base: instr.a() as u16,
+            positional_count,
+            named_count,
+            target_kind: self.observe_call_target_kind(instr.a() as u16),
+        };
+        self.state.inline_caches.set_call(self.pc, fact);
+        fact
+    }
+
+    #[inline]
+    fn global_slot_from_fact_cache_or_instr(&mut self, function: &Function32, instr: Instr32) -> u16 {
+        let slot = function
+            .performance
+            .global_op(self.pc)
+            .map(|fact| fact.slot)
+            .or_else(|| self.state.inline_caches.global(self.pc))
+            .unwrap_or_else(|| instr.bx());
+        self.state.inline_caches.set_global(self.pc, slot);
+        slot
+    }
+
+    fn index_fact_from_static_or_cache(&self, function: &Function32) -> Option<PerfIndexFact> {
+        function
+            .performance
+            .index_op(self.pc)
+            .copied()
+            .or_else(|| self.state.inline_caches.index(self.pc))
     }
 }
 

@@ -130,11 +130,11 @@ type RootTranslation = {
 		 */
 		kicker: string
 		/**
-		 * F​r​o​m​ ​s​c​r​i​p​t​ ​t​o​ ​I​n​s​t​r​3​2​ ​m​o​d​u​l​e​s​,​ ​d​i​a​g​n​o​s​t​i​c​s​,​ ​L​L​V​M​ ​I​R​,​ ​o​r​ ​e​x​e​c​u​t​a​b​l​e​.
+		 * F​r​o​m​ ​s​c​r​i​p​t​ ​t​o​ ​I​n​s​t​r​3​2​ ​m​o​d​u​l​e​s​,​ ​d​i​a​g​n​o​s​t​i​c​s​,​ ​a​n​d​ ​L​L​V​M​ ​I​R​.
 		 */
 		title: string
 		/**
-		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​c​o​m​p​i​l​e​ ​t​o​ ​e​x​e​c​u​t​a​b​l​e​ ​`​.​l​k​m​`​ ​I​n​s​t​r​3​2​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​r​o​u​t​e​ ​d​e​e​p​e​r​ ​c​o​m​p​i​l​a​t​i​o​n​ ​t​h​r​o​u​g​h​ ​L​L​V​M​-​b​a​c​k​e​d​ ​p​a​t​h​s​ ​w​h​e​n​ ​t​h​o​s​e​ ​t​o​o​l​s​ ​a​r​e​ ​a​v​a​i​l​a​b​l​e​.
+		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​c​o​m​p​i​l​e​ ​t​o​ ​e​x​e​c​u​t​a​b​l​e​ ​`​.​l​k​m​`​ ​I​n​s​t​r​3​2​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​e​m​i​t​ ​L​L​V​M​ ​I​R​ ​s​h​e​l​l​s​,​ ​a​n​d​ ​b​u​i​l​d​ ​h​o​s​t​ ​e​x​e​c​u​t​a​b​l​e​ ​l​a​u​n​c​h​e​r​s​ ​a​r​o​u​n​d​ ​t​h​e​ ​s​a​m​e​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​.
 		 */
 		subtitle: string
 		rows: {
@@ -349,11 +349,11 @@ export type TranslationFunctions = {
 		 */
 		kicker: () => LocalizedString
 		/**
-		 * From script to Instr32 modules, diagnostics, LLVM IR, or executable.
+		 * From script to Instr32 modules, diagnostics, and LLVM IR.
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK can run a REPL, execute `.lk` files, type-check without executing, compile to executable `.lkm` Instr32 module artifacts, and route deeper compilation through LLVM-backed paths when those tools are available.
+		 * LK can run a REPL, execute `.lk` files, type-check without executing, compile to executable `.lkm` Instr32 module artifacts, emit LLVM IR shells, and build host executable launchers around the same module artifact.
 		 */
 		subtitle: () => LocalizedString
 		rows: {

@@ -4,7 +4,7 @@ mod tests {
         ast::Parser,
         expr::{Expr, Pattern},
         token::Tokenizer,
-        val::Val,
+        val::LiteralVal,
     };
 
     fn parse_expr(input: &str) -> Expr {
@@ -24,15 +24,15 @@ mod tests {
             assert_eq!(arms.len(), 3);
 
             // Check first arm: 1 => "one"
-            assert!(matches!(arms[0].pattern, Pattern::Literal(Val::Int(1))));
-            if let Expr::Val(v) = &*arms[0].body {
+            assert!(matches!(arms[0].pattern, Pattern::Literal(LiteralVal::Int(1))));
+            if let Expr::Literal(v) = &*arms[0].body {
                 assert_eq!(v.as_str(), Some("one"));
             } else {
                 panic!("Expected string literal");
             }
 
             // Check second arm: 2 => "two"
-            assert!(matches!(arms[1].pattern, Pattern::Literal(Val::Int(2))));
+            assert!(matches!(arms[1].pattern, Pattern::Literal(LiteralVal::Int(2))));
 
             // Check third arm: _ => "other"
             assert!(matches!(arms[2].pattern, Pattern::Wildcard));
@@ -124,9 +124,9 @@ mod tests {
             // Check or pattern: 1 | 2 | 3
             if let Pattern::Or(patterns) = &arms[0].pattern {
                 assert_eq!(patterns.len(), 3);
-                assert!(matches!(patterns[0], Pattern::Literal(Val::Int(1))));
-                assert!(matches!(patterns[1], Pattern::Literal(Val::Int(2))));
-                assert!(matches!(patterns[2], Pattern::Literal(Val::Int(3))));
+                assert!(matches!(patterns[0], Pattern::Literal(LiteralVal::Int(1))));
+                assert!(matches!(patterns[1], Pattern::Literal(LiteralVal::Int(2))));
+                assert!(matches!(patterns[2], Pattern::Literal(LiteralVal::Int(3))));
             } else {
                 panic!("Expected or pattern");
             }
@@ -149,8 +149,8 @@ mod tests {
                 // Check guard expression: n > 10
                 if let Expr::Bin(left, op, right) = guard.as_ref() {
                     assert!(matches!(left.as_ref(), Expr::Var(name) if name == "n"));
-                    assert!(matches!(op, crate::op::BinOp::Gt));
-                    assert!(matches!(right.as_ref(), Expr::Val(Val::Int(10))));
+                    assert!(matches!(op, crate::operator::BinOp::Gt));
+                    assert!(matches!(right.as_ref(), Expr::Literal(LiteralVal::Int(10))));
                 } else {
                     panic!("Expected binary expression in guard");
                 }
@@ -172,8 +172,8 @@ mod tests {
             // Check range pattern: 0..18
             if let Pattern::Range { start, end, inclusive } = &arms[0].pattern {
                 assert!(!inclusive);
-                assert!(matches!(start.as_ref(), Expr::Val(Val::Int(0))));
-                assert!(matches!(end.as_ref(), Expr::Val(Val::Int(18))));
+                assert!(matches!(start.as_ref(), Expr::Literal(LiteralVal::Int(0))));
+                assert!(matches!(end.as_ref(), Expr::Literal(LiteralVal::Int(18))));
             } else {
                 panic!("Expected range pattern");
             }
@@ -181,8 +181,8 @@ mod tests {
             // Check inclusive range pattern: 18..=64
             if let Pattern::Range { start, end, inclusive } = &arms[1].pattern {
                 assert!(*inclusive);
-                assert!(matches!(start.as_ref(), Expr::Val(Val::Int(18))));
-                assert!(matches!(end.as_ref(), Expr::Val(Val::Int(64))));
+                assert!(matches!(start.as_ref(), Expr::Literal(LiteralVal::Int(18))));
+                assert!(matches!(end.as_ref(), Expr::Literal(LiteralVal::Int(64))));
             } else {
                 panic!("Expected inclusive range pattern");
             }

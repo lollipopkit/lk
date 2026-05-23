@@ -1,8 +1,8 @@
 use crate::{
     expr::{Expr, MatchArm, Pattern, SelectCase, SelectPattern, TemplateStringPart},
-    op::{BinOp, UnaryOp},
+    operator::{BinOp, UnaryOp},
     token::{ParseError, Span, Token, Tokenizer, offset_to_position},
-    val::Val,
+    val::LiteralVal,
 };
 use anyhow::{Result, anyhow};
 
@@ -23,7 +23,7 @@ struct StructLiteralParts {
 impl<'a> Parser<'a> {
     pub fn parse(&mut self) -> Result<Expr> {
         if self.eof() {
-            return Ok(Expr::Val(Val::Nil));
+            return Ok(Expr::Literal(LiteralVal::Nil));
         }
 
         let exp = self.parse_expr()?;
@@ -39,7 +39,7 @@ impl<'a> Parser<'a> {
     /// Parse with enhanced error information that includes position
     pub fn parse_with_enhanced_errors(&mut self, input: &str) -> std::result::Result<Expr, ParseError> {
         if self.eof() {
-            return Ok(Expr::Val(Val::Nil));
+            return Ok(Expr::Literal(LiteralVal::Nil));
         }
 
         let exp = match self.parse_expr() {
@@ -493,13 +493,13 @@ impl<'a> Parser<'a> {
                 parts
                     .fields
                     .into_iter()
-                    .map(|(key, value)| (Box::new(Expr::Val(Val::from_str(&key))), value))
+                    .map(|(key, value)| (Box::new(Expr::Literal(LiteralVal::from_str(&key))), value))
                     .collect(),
             );
             let fields = Self::builtin_call("__lk_merge_fields", vec![*base, overlay]);
             Ok(Self::builtin_call(
                 "__lk_make_struct",
-                vec![Expr::Val(Val::from_str(&name)), fields],
+                vec![Expr::Literal(LiteralVal::from_str(&name)), fields],
             ))
         } else {
             Ok(Expr::StructLiteral {
@@ -621,23 +621,23 @@ impl<'a> Parser<'a> {
         match &self.tokens[self.pos] {
             Token::Nil => {
                 self.pos += 1;
-                Ok(Expr::Val(Val::Nil))
+                Ok(Expr::Literal(LiteralVal::Nil))
             }
             Token::Bool(b) => {
                 self.pos += 1;
-                Ok(Expr::Val(Val::Bool(*b)))
+                Ok(Expr::Literal(LiteralVal::Bool(*b)))
             }
             Token::Int(i) => {
                 self.pos += 1;
-                Ok(Expr::Val(Val::Int(*i)))
+                Ok(Expr::Literal(LiteralVal::Int(*i)))
             }
             Token::Float(f) => {
                 self.pos += 1;
-                Ok(Expr::Val(Val::Float(*f)))
+                Ok(Expr::Literal(LiteralVal::Float(*f)))
             }
             Token::Str(s) => {
                 self.pos += 1;
-                Ok(Expr::Val(Val::from_str(s.as_str())))
+                Ok(Expr::Literal(LiteralVal::from_str(s.as_str())))
             }
             Token::TemplateString(content) => {
                 self.pos += 1;
@@ -877,12 +877,12 @@ impl<'a> Parser<'a> {
                     let end_expr = Box::new(self.parse_conditional()?);
 
                     Ok(Pattern::Range {
-                        start: Box::new(Expr::Val(Val::Int(start_val))),
+                        start: Box::new(Expr::Literal(LiteralVal::Int(start_val))),
                         end: end_expr,
                         inclusive,
                     })
                 } else {
-                    Ok(Pattern::Literal(Val::Int(start_val)))
+                    Ok(Pattern::Literal(LiteralVal::Int(start_val)))
                 }
             }
             Token::Float(f) => {
@@ -896,27 +896,27 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     let end_expr = Box::new(self.parse_conditional()?);
                     Ok(Pattern::Range {
-                        start: Box::new(Expr::Val(Val::Float(start_val))),
+                        start: Box::new(Expr::Literal(LiteralVal::Float(start_val))),
                         end: end_expr,
                         inclusive,
                     })
                 } else {
-                    Ok(Pattern::Literal(Val::Float(start_val)))
+                    Ok(Pattern::Literal(LiteralVal::Float(start_val)))
                 }
             }
             Token::Str(s) => {
-                let val = Val::from_str(s.as_str());
+                let val = LiteralVal::from_str(s.as_str());
                 self.pos += 1;
                 Ok(Pattern::Literal(val))
             }
             Token::Bool(b) => {
-                let val = Val::Bool(*b);
+                let val = LiteralVal::Bool(*b);
                 self.pos += 1;
                 Ok(Pattern::Literal(val))
             }
             Token::Nil => {
                 self.pos += 1;
-                Ok(Pattern::Literal(Val::Nil))
+                Ok(Pattern::Literal(LiteralVal::Nil))
             }
 
             // Wildcard pattern
@@ -1464,7 +1464,7 @@ impl<'a> Parser<'a> {
             && matches!(self.tokens[self.pos + 1], Token::Colon)
             && let Token::Id(id) = &self.tokens[self.pos]
         {
-            let key = Expr::Val(Val::from_str(id.as_str()));
+            let key = Expr::Literal(LiteralVal::from_str(id.as_str()));
             self.pos += 1;
             return Ok(key);
         }
@@ -1476,17 +1476,17 @@ impl<'a> Parser<'a> {
         match &self.tokens[self.pos] {
             Token::Id(id) => {
                 // For field access, treat identifiers as literal strings
-                let expr = Expr::Val(Val::from_str(id.as_str()));
+                let expr = Expr::Literal(LiteralVal::from_str(id.as_str()));
                 self.pos += 1;
                 Ok(expr)
             }
             Token::Str(s) => {
-                let expr = Expr::Val(Val::from_str(s.as_str()));
+                let expr = Expr::Literal(LiteralVal::from_str(s.as_str()));
                 self.pos += 1;
                 Ok(expr)
             }
             Token::Int(i) => {
-                let expr = Expr::Val(Val::Int(*i));
+                let expr = Expr::Literal(LiteralVal::Int(*i));
                 self.pos += 1;
                 Ok(expr)
             }

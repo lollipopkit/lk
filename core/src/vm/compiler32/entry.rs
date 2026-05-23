@@ -160,7 +160,7 @@ impl Compiler32 {
         compiler.next_reg = compiler.function.param_count;
         compiler.peak_reg = compiler.function.param_count;
         for (index, param) in frame_params.iter().enumerate() {
-            compiler.locals.insert(param.clone(), index as u16);
+            compiler.insert_local(param.clone(), index as u16);
         }
         compiler.lower_stmt(body)?;
         if !compiler.emitted_return {

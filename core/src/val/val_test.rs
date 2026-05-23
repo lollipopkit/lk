@@ -1,14 +1,17 @@
 #[cfg(test)]
 mod tests {
-    use crate::{val::Val, vm::execute_source32};
+    use crate::{
+        val::{LiteralVal, RuntimeVal},
+        vm::execute_source32,
+    };
     use std::mem::size_of;
 
     #[test]
-    fn val_stays_within_two_words() {
+    fn runtime_val_stays_within_two_words() {
         assert!(
-            size_of::<Val>() <= 16,
-            "Val grew to {} bytes; keep it within two machine words for register density",
-            size_of::<Val>()
+            size_of::<RuntimeVal>() <= 16,
+            "RuntimeVal grew to {} bytes; keep it within two machine words for register density",
+            size_of::<RuntimeVal>()
         );
     }
 
@@ -31,9 +34,18 @@ mod tests {
 
     #[test]
     fn string_concat_preserves_short_and_heap_string_shapes() {
-        assert!(matches!(Val::concat_strings("ab", "cd"), Val::ShortStr(_)));
-        assert!(matches!(Val::concat_strings("longer-", "than-short"), Val::LongStr(_)));
-        assert_eq!(Val::concat_strings("prefix-", "suffix").as_str(), Some("prefix-suffix"));
+        assert!(matches!(
+            LiteralVal::concat_strings("ab", "cd"),
+            LiteralVal::ShortStr(_)
+        ));
+        assert!(matches!(
+            LiteralVal::concat_strings("longer-", "than-short"),
+            LiteralVal::String(_)
+        ));
+        assert_eq!(
+            LiteralVal::concat_strings("prefix-", "suffix").as_str(),
+            Some("prefix-suffix")
+        );
     }
 
     #[test]

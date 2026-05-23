@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use crate::{
-    val::{HeapStore, RuntimeVal},
+    val::{HeapStore, HeapValue, RuntimeVal, TypedMap},
     vm::VmContext,
 };
 
-use super::ir32::Module32;
+use super::{cache32::InlineCaches32, ir32::Module32};
 
 pub type PlainNativeFunction32 = fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>;
 pub type ContextNativeFunction32 = fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>;
@@ -26,6 +26,7 @@ pub struct RuntimeModuleState32 {
     pub globals: Vec<RuntimeVal>,
     pub stack: Vec<RuntimeVal>,
     pub stack_top: usize,
+    pub inline_caches: InlineCaches32,
 }
 
 impl RuntimeModuleState32 {
@@ -37,6 +38,7 @@ impl RuntimeModuleState32 {
             globals,
             stack: Vec::with_capacity(Self::INITIAL_STACK_CAPACITY),
             stack_top: 0,
+            inline_caches: InlineCaches32::default(),
         }
     }
 
@@ -126,6 +128,7 @@ pub struct NativeRuntime32<'a> {
     storage: NativeRuntimeStorage32<'a>,
     ctx: Option<&'a mut VmContext>,
     module: Option<&'a Module32>,
+    shared_module: Option<Arc<Module32>>,
 }
 
 impl<'a> NativeRuntime32<'a> {
@@ -139,6 +142,21 @@ impl<'a> NativeRuntime32<'a> {
             storage: NativeRuntimeStorage32::State(state),
             ctx,
             module,
+            shared_module: None,
+        }
+    }
+
+    #[inline]
+    pub fn new_with_shared_module(
+        state: &'a mut RuntimeModuleState32,
+        ctx: Option<&'a mut VmContext>,
+        module: Arc<Module32>,
+    ) -> Self {
+        Self {
+            storage: NativeRuntimeStorage32::State(state),
+            ctx,
+            module: None,
+            shared_module: Some(module),
         }
     }
 
@@ -153,6 +171,33 @@ impl<'a> NativeRuntime32<'a> {
             storage: NativeRuntimeStorage32::Parts { heap, globals },
             ctx,
             module,
+            shared_module: None,
+        }
+    }
+
+    #[inline]
+    pub fn from_parts_with_shared_module(
+        heap: &'a mut HeapStore,
+        globals: &'a [RuntimeVal],
+        ctx: Option<&'a mut VmContext>,
+        module: Arc<Module32>,
+    ) -> Self {
+        Self {
+            storage: NativeRuntimeStorage32::Parts { heap, globals },
+            ctx,
+            module: None,
+            shared_module: Some(module),
+        }
+    }
+
+    #[inline]
+    pub fn state_ctx_module_mut(
+        &mut self,
+    ) -> Option<(&mut RuntimeModuleState32, Option<&mut VmContext>, Option<&Module32>)> {
+        let module = self.shared_module.as_deref().or(self.module);
+        match &mut self.storage {
+            NativeRuntimeStorage32::State(state) => Some((*state, self.ctx.as_deref_mut(), module)),
+            NativeRuntimeStorage32::Parts { .. } => None,
         }
     }
 
@@ -160,10 +205,7 @@ impl<'a> NativeRuntime32<'a> {
     pub(crate) fn parts_mut(
         &mut self,
     ) -> Option<(&mut RuntimeModuleState32, Option<&mut VmContext>, Option<&Module32>)> {
-        match &mut self.storage {
-            NativeRuntimeStorage32::State(state) => Some((*state, self.ctx.as_deref_mut(), self.module)),
-            NativeRuntimeStorage32::Parts { .. } => None,
-        }
+        self.state_ctx_module_mut()
     }
 
     #[inline]
@@ -201,7 +243,12 @@ impl<'a> NativeRuntime32<'a> {
 
     #[inline]
     pub fn module(&self) -> Option<&Module32> {
-        self.module
+        self.shared_module.as_deref().or(self.module)
+    }
+
+    #[inline]
+    pub fn shared_module(&self) -> Option<Arc<Module32>> {
+        self.shared_module.as_ref().map(Arc::clone)
     }
 
     #[inline]
@@ -218,18 +265,48 @@ impl<'a> NativeRuntime32<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct NativeArgs32<'a> {
     values: &'a [RuntimeVal],
-    named: &'a [(Arc<str>, RuntimeVal)],
+    named: NativeNamedArgs32<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum NativeNamedArgs32<'a> {
+    Empty,
+    Stack {
+        stack: &'a [RuntimeVal],
+        start: usize,
+        count: u16,
+    },
+    Map(&'a TypedMap),
 }
 
 impl<'a> NativeArgs32<'a> {
     #[inline]
     pub const fn new(values: &'a [RuntimeVal]) -> Self {
-        Self { values, named: &[] }
+        Self {
+            values,
+            named: NativeNamedArgs32::Empty,
+        }
     }
 
     #[inline]
-    pub const fn new_with_named(values: &'a [RuntimeVal], named: &'a [(Arc<str>, RuntimeVal)]) -> Self {
-        Self { values, named }
+    pub const fn new_with_named_stack(
+        values: &'a [RuntimeVal],
+        stack: &'a [RuntimeVal],
+        start: usize,
+        count: u16,
+    ) -> Self {
+        Self {
+            values,
+            named: NativeNamedArgs32::Stack { stack, start, count },
+        }
+    }
+
+    #[inline]
+    pub const fn new_with_named_map(values: &'a [RuntimeVal], named: &'a TypedMap) -> Self {
+        Self {
+            values,
+            named: NativeNamedArgs32::Map(named),
+        }
     }
 
     #[inline]
@@ -248,13 +325,100 @@ impl<'a> NativeArgs32<'a> {
     }
 
     #[inline]
-    pub const fn named(self) -> &'a [(Arc<str>, RuntimeVal)] {
-        self.named
+    pub fn named_len(self) -> usize {
+        match self.named {
+            NativeNamedArgs32::Empty => 0,
+            NativeNamedArgs32::Stack { count, .. } => count as usize,
+            NativeNamedArgs32::Map(map) => map.len(),
+        }
+    }
+
+    pub fn has_named(self) -> bool {
+        self.named_len() != 0
+    }
+
+    pub fn try_for_each_named(
+        self,
+        heap: &HeapStore,
+        mut f: impl FnMut(&str, &RuntimeVal) -> Result<()>,
+    ) -> Result<()> {
+        match self.named {
+            NativeNamedArgs32::Empty => Ok(()),
+            NativeNamedArgs32::Stack { stack, start, count } => {
+                let end = start + count as usize * 2;
+                let Some(named_slots) = stack.get(start..end) else {
+                    anyhow::bail!("native named argument window {start}..{end} out of bounds");
+                };
+                for pair in named_slots.chunks_exact(2) {
+                    let name = runtime_named_arg_name(&pair[0], heap)?;
+                    f(name, &pair[1])?;
+                }
+                Ok(())
+            }
+            NativeNamedArgs32::Map(map) => {
+                for_each_typed_map_named_arg(map, &mut f)?;
+                Ok(())
+            }
+        }
     }
 
     #[inline]
     pub fn get(self, index: usize) -> Option<&'a RuntimeVal> {
         self.values.get(index)
+    }
+}
+
+fn for_each_typed_map_named_arg<'a>(
+    map: &'a TypedMap,
+    f: &mut impl FnMut(&'a str, &RuntimeVal) -> Result<()>,
+) -> Result<()> {
+    match map {
+        TypedMap::StringMixed(values) => {
+            for (name, value) in values {
+                f(name.as_ref(), value)?;
+            }
+        }
+        TypedMap::StringInt(values) => {
+            for (name, value) in values {
+                let value = RuntimeVal::Int(*value);
+                f(name.as_ref(), &value)?;
+            }
+        }
+        TypedMap::StringFloat(values) => {
+            for (name, value) in values {
+                let value = RuntimeVal::Float(*value);
+                f(name.as_ref(), &value)?;
+            }
+        }
+        TypedMap::StringBool(values) => {
+            for (name, value) in values {
+                let value = RuntimeVal::Bool(*value);
+                f(name.as_ref(), &value)?;
+            }
+        }
+        TypedMap::Mixed(values) => {
+            for (key, value) in values {
+                let Some(name) = key.as_str() else {
+                    anyhow::bail!("native named argument key must be a string");
+                };
+                f(name, value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn runtime_named_arg_name<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Result<&'a str> {
+    match value {
+        RuntimeVal::ShortStr(value) => Ok(value.as_str()),
+        RuntimeVal::Obj(handle) => match heap
+            .get(*handle)
+            .ok_or_else(|| anyhow::anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::String(value) => Ok(value.as_ref()),
+            _ => anyhow::bail!("native named argument name must be a string"),
+        },
+        _ => anyhow::bail!("native named argument name must be a string"),
     }
 }
 
@@ -338,12 +502,24 @@ mod tests {
     #[test]
     fn native_args_and_runtime_parts_borrow_heap_and_globals_without_state() {
         let args = [RuntimeVal::Int(1), RuntimeVal::Bool(true)];
-        let named = [(Arc::<str>::from("flag"), RuntimeVal::Bool(false))];
-        let native_args = NativeArgs32::new_with_named(&args, &named);
+        let named = [
+            RuntimeVal::ShortStr(crate::val::ShortStr::new("flag").expect("short")),
+            RuntimeVal::Bool(false),
+        ];
+        let native_args = NativeArgs32::new_with_named_stack(&args, &named, 0, 1);
 
         assert_eq!(native_args.len(), 2);
         assert_eq!(native_args.get(0), Some(&RuntimeVal::Int(1)));
-        assert_eq!(native_args.named()[0].0.as_ref(), "flag");
+        assert_eq!(native_args.named_len(), 1);
+        let mut seen = Vec::new();
+        let heap = HeapStore::new();
+        native_args
+            .try_for_each_named(&heap, |name, value| {
+                seen.push((name.to_string(), value.clone()));
+                Ok(())
+            })
+            .expect("iterate named");
+        assert_eq!(seen, vec![("flag".to_string(), RuntimeVal::Bool(false))]);
 
         let mut heap = HeapStore::new();
         let globals = [RuntimeVal::Int(9)];
@@ -356,5 +532,19 @@ mod tests {
         ));
         assert_eq!(runtime.globals(), &globals);
         assert!(runtime.parts_mut().is_none());
+    }
+
+    #[test]
+    fn shared_module_only_reports_arc_backed_module() {
+        let mut state = RuntimeModuleState32::default();
+        let borrowed_module = Module32::default();
+        let borrowed_runtime = NativeRuntime32::new(&mut state, None, Some(&borrowed_module));
+        assert!(borrowed_runtime.module().is_some());
+        assert!(borrowed_runtime.shared_module().is_none());
+
+        let shared = Arc::new(Module32::default());
+        let shared_runtime = NativeRuntime32::new_with_shared_module(&mut state, None, Arc::clone(&shared));
+        let observed = shared_runtime.shared_module().expect("shared module");
+        assert!(Arc::ptr_eq(&observed, &shared));
     }
 }

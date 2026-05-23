@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
 
-use crate::{expr::Expr, val::Val};
+use crate::{expr::Expr, val::LiteralVal, vm::analysis::PerfCallFact};
 
 use super::{
     Compiler32, Instr32, Opcode32,
@@ -74,7 +74,7 @@ impl Compiler32 {
                 let arg = self.lower_expr(&args[0])?;
                 let one = self.materialize_list(vec![arg])?;
                 let dst = self.alloc_reg();
-                self.emit_bin_op_to_register(dst, &crate::op::BinOp::Add, target_reg, one)?;
+                self.emit_bin_op_to_register(dst, &crate::operator::BinOp::Add, target_reg, one)?;
                 if let Expr::Var(name) = target {
                     if let Some(local) = self.locals.get(name).copied() {
                         self.emit_move(local, dst, "method push writeback")?;
@@ -95,7 +95,7 @@ impl Compiler32 {
     fn lower_dynamic_method_call(&mut self, target: &Expr, method: &str, args: &[Box<Expr>]) -> Result<u16> {
         let helper = self.load_callable_by_name("__lk_call_method")?;
         let receiver = self.lower_expr(target)?;
-        let method = self.lower_val(&Val::from_str(method))?;
+        let method = self.lower_val(&LiteralVal::from_str(method))?;
         let mut arg_regs = Vec::with_capacity(args.len());
         for arg in args {
             arg_regs.push(self.lower_expr(arg)?);
@@ -173,7 +173,7 @@ impl Compiler32 {
         }
         let mut named_regs = Vec::with_capacity(named.len());
         for (name, value) in named {
-            let name_reg = self.lower_val(&Val::from_str(name))?;
+            let name_reg = self.lower_val(&LiteralVal::from_str(name))?;
             let value_reg = self.lower_expr(value)?;
             named_regs.push((name_reg, value_reg));
         }
@@ -191,11 +191,23 @@ impl Compiler32 {
         }
 
         let payload = (u16::try_from(named.len())? << 7) | u16::try_from(positional.len())?;
+        let pc = self.function.code.len();
         self.emit(Instr32::abx(
             Opcode32::CallNamed,
             checked_u8("named call return base", call_base)?,
             payload,
         ));
+        let target_kind = self.function.performance.callable_kind(call_base);
+        self.function.performance.clear_register(call_base);
+        self.function.performance.set_call_fact(
+            pc,
+            PerfCallFact {
+                call_base,
+                positional_count: positional.len() as u16,
+                named_count: named.len() as u16,
+                target_kind,
+            },
+        );
         Ok(call_base)
     }
 
@@ -285,13 +297,13 @@ impl Compiler32 {
     }
 
     fn bind_call_param(&mut self, name: &str, reg: u16, previous: &mut Vec<(String, Option<u16>)>) {
-        previous.push((name.to_string(), self.locals.insert(name.to_string(), reg)));
+        previous.push((name.to_string(), self.insert_local(name.to_string(), reg)));
     }
 
     fn restore_call_params(&mut self, previous: Vec<(String, Option<u16>)>) {
         for (name, old) in previous.into_iter().rev() {
             if let Some(old) = old {
-                self.locals.insert(name, old);
+                self.insert_local(name, old);
             } else {
                 self.locals.remove(&name);
             }
@@ -324,12 +336,24 @@ impl Compiler32 {
             self.emit_move(call_base + 1 + offset as u16, arg, "call arg")?;
         }
 
+        let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::Call,
             checked_u8("call return base", call_base)?,
             checked_u8("call base", call_base)?,
             checked_u8("call argc", arg_regs.len() as u16)?,
         ));
+        let target_kind = self.function.performance.callable_kind(call_base);
+        self.function.performance.clear_register(call_base);
+        self.function.performance.set_call_fact(
+            pc,
+            PerfCallFact {
+                call_base,
+                positional_count: arg_regs.len() as u16,
+                named_count: 0,
+                target_kind,
+            },
+        );
         Ok(call_base)
     }
 }
@@ -337,7 +361,7 @@ impl Compiler32 {
 fn method_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Var(name) => Some(name.as_str()),
-        Expr::Val(value) => value.as_str(),
+        Expr::Literal(value) => value.as_str(),
         _ => None,
     }
 }

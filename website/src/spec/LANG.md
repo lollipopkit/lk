@@ -257,7 +257,7 @@ Import as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`,
 - `List<T>`, `Map<K, V>`
 - `Task<T>`, `Channel<T>` (concurrency)
 - Function types: `(T1, T2) -> R`
-- Union: `A | B | Nil`; Optional: `T?` (sugar for `T | Nil`; prefix form `?T` is accepted for compatibility)
+- Union: `A | B | Nil`; Optional: `T?` (sugar for `T | Nil`)
 - Named and generic types are parsed (e.g., `List<Int>`, `Map<String, Int>`)
 
 ### Annotations
@@ -364,6 +364,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - Execute a file (statements): `lk FILE`
 - Compile to an executable Instr32 module artifact: `lk compile [FILE]` -> `FILE.lkm`
 - Execute an Instr32 module artifact: `lk FILE.lkm`
+- Compile to a host executable launcher embedding the same artifact: `lk compile exe [FILE]`
 - Only relative, sanitized paths are allowed
 - CLI prints a result only when it is not `nil`
 

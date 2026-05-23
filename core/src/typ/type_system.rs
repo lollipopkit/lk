@@ -163,7 +163,7 @@ impl TypeRegistry {
                 let type_names: Vec<String> = types.iter().map(Self::type_to_string).collect();
                 format!("({})", type_names.join(" | "))
             }
-            Type::Optional(inner) => format!("?{}", Self::type_to_string(inner)),
+            Type::Optional(inner) => format!("{}?", Self::type_to_string(inner)),
             Type::Variable(name) => format!("'{}", name),
             Type::Generic { name, params } => {
                 if params.is_empty() {

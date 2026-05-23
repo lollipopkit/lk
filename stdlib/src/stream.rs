@@ -8,10 +8,10 @@ use dashmap::DashMap;
 use lk_core::{
     module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
     rt::{self, RuntimePayload},
-    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, StreamCursorValue, StreamValue, Type, TypedList},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, ShortStr, StreamCursorValue, StreamValue, Type, TypedList},
     vm::{
         NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32, call_runtime_callable32_runtime,
-        runtime_value_to_callable32,
+        call_runtime_value32_runtime,
     },
 };
 use once_cell::sync::Lazy;
@@ -41,7 +41,7 @@ struct CursorInfo {
 
 #[derive(Debug, Clone)]
 enum StreamSpec {
-    FromList(Vec<RuntimeVal>),
+    FromList(TypedList),
     Range {
         start: i64,
         end: Option<i64>,
@@ -79,6 +79,24 @@ enum StreamSpec {
 
 trait StreamCursor {
     fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>>;
+
+    fn collect_remaining(&mut self, limit: Option<i64>, runtime: &mut NativeRuntime32<'_>) -> Result<TypedList> {
+        let mut out = Vec::new();
+        let mut taken = 0i64;
+        loop {
+            if let Some(limit) = limit
+                && taken >= limit
+            {
+                break;
+            }
+            let Some(value) = self.next(runtime)? else {
+                break;
+            };
+            out.push(value);
+            taken += 1;
+        }
+        Ok(TypedList::from_runtime_values(out, runtime.heap()))
+    }
 }
 
 impl StreamSpec {
@@ -124,17 +142,29 @@ impl StreamSpec {
 
 #[derive(Debug)]
 struct FromListCursor {
-    data: Vec<RuntimeVal>,
+    data: TypedList,
     index: usize,
 }
 
 impl StreamCursor for FromListCursor {
-    fn next(&mut self, _runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
-        let Some(value) = self.data.get(self.index).cloned() else {
+    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+        let Some(value) = typed_list_item(&self.data, self.index, runtime.heap_mut()) else {
             return Ok(None);
         };
         self.index += 1;
         Ok(Some(value))
+    }
+
+    fn collect_remaining(&mut self, limit: Option<i64>, _runtime: &mut NativeRuntime32<'_>) -> Result<TypedList> {
+        let start = self.index;
+        let limit = match limit {
+            Some(limit) if limit <= 0 => Some(0),
+            Some(limit) => Some(limit as usize),
+            None => None,
+        };
+        let out = typed_list_slice(&self.data, start, limit);
+        self.index = start.saturating_add(out.len()).min(self.data.len());
+        Ok(out)
     }
 }
 
@@ -329,10 +359,10 @@ impl Module for StreamModule {
                 RuntimeNativeExport32::plain("skip", skip32, 2),
                 RuntimeNativeExport32::plain("chain", chain32, 2),
                 RuntimeNativeExport32::plain("subscribe", subscribe32, 1),
-                RuntimeNativeExport32::plain("next", next32, 1),
-                RuntimeNativeExport32::plain("collect", collect32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("next_block", next_block32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("collect_block", collect_block32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::full_state("next", next32, 1),
+                RuntimeNativeExport32::full_state("collect", collect32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::full_state("next_block", next_block32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::full_state("collect_block", collect_block32, NativeEntry32::VARIADIC),
             ],
             &[],
         ))
@@ -341,7 +371,7 @@ impl Module for StreamModule {
 
 fn from_list32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.from_list")?;
-    let values = list_items(&args.as_slice()[0], runtime.heap_mut(), "stream.from_list argument")?;
+    let values = list_arg(&args.as_slice()[0], runtime.heap(), "stream.from_list argument")?;
     create_stream(StreamSpec::FromList(values), Type::Any, runtime.heap_mut())
 }
 
@@ -532,25 +562,11 @@ fn next_cursor(cursor_id: u64, runtime: &mut NativeRuntime32<'_>) -> Result<Runt
 
 fn collect_cursor(cursor_id: u64, limit: Option<i64>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     let cursor = cursor_handle(cursor_id)?;
-    let mut out = Vec::new();
-    let mut taken = 0i64;
-    loop {
-        if let Some(limit) = limit
-            && taken >= limit
-        {
-            break;
-        }
-        let value = {
-            let mut guard = cursor.lock().map_err(|_| anyhow!("cursor mutex poisoned"))?;
-            guard.next(runtime)?
-        };
-        let Some(value) = value else {
-            break;
-        };
-        out.push(value);
-        taken += 1;
-    }
-    runtime_list(out, runtime.heap_mut())
+    let out = {
+        let mut guard = cursor.lock().map_err(|_| anyhow!("cursor mutex poisoned"))?;
+        guard.collect_remaining(limit, runtime)?
+    };
+    Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(out))))
 }
 
 fn next_block_cursor(cursor_id: u64, timeout_ms: Option<i64>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -715,17 +731,46 @@ fn is_cursor(value: &RuntimeVal, heap: &HeapStore) -> bool {
     matches!(value, RuntimeVal::Obj(handle) if matches!(heap.get(*handle), Some(HeapValue::StreamCursor(_))))
 }
 
-fn list_items(value: &RuntimeVal, heap: &mut HeapStore, context: &str) -> Result<Vec<RuntimeVal>> {
+fn list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedList> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("{context} must be a List");
     };
     let value = heap
         .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        .clone();
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match value {
-        HeapValue::List(list) => Ok(list.materialize_mixed(heap)),
+        HeapValue::List(list) => Ok(list.clone()),
         other => Err(anyhow!("{context} must be a List, got {}", other.type_name())),
+    }
+}
+
+fn typed_list_item(list: &TypedList, index: usize, heap: &mut HeapStore) -> Option<RuntimeVal> {
+    match list {
+        TypedList::Mixed(values) => values.get(index).cloned(),
+        TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int),
+        TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float),
+        TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool),
+        TypedList::String(values) => {
+            let value = values.get(index)?;
+            if let Some(short) = ShortStr::new(value) {
+                Some(RuntimeVal::ShortStr(short))
+            } else {
+                Some(RuntimeVal::Obj(heap.alloc(HeapValue::String(value.clone()))))
+            }
+        }
+    }
+}
+
+fn typed_list_slice(list: &TypedList, start: usize, limit: Option<usize>) -> TypedList {
+    let len = list.len();
+    let start = start.min(len);
+    let end = limit.map_or(len, |limit| start.saturating_add(limit).min(len));
+    match list {
+        TypedList::Mixed(values) => TypedList::Mixed(values[start..end].to_vec()),
+        TypedList::Int(values) => TypedList::Int(values[start..end].to_vec()),
+        TypedList::Float(values) => TypedList::Float(values[start..end].to_vec()),
+        TypedList::Bool(values) => TypedList::Bool(values[start..end].to_vec()),
+        TypedList::String(values) => TypedList::String(values[start..end].to_vec()),
     }
 }
 
@@ -758,7 +803,17 @@ fn truthy(value: &RuntimeVal) -> bool {
 }
 
 fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, context: &str) -> Result<()> {
-    runtime_callable(value, runtime, context).map(|_| ())
+    let RuntimeVal::Obj(handle) = value else {
+        bail!("{context} must be a runtime callable");
+    };
+    match runtime
+        .heap()
+        .get(*handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+    {
+        HeapValue::Callable(_) => Ok(()),
+        _ => bail!("{context} must be a runtime callable"),
+    }
 }
 
 fn call_runtime_callable_value(
@@ -767,32 +822,47 @@ fn call_runtime_callable_value(
     runtime: &mut NativeRuntime32<'_>,
     context: &str,
 ) -> Result<RuntimeVal> {
-    let callable = runtime_callable(callable, runtime, context)?;
-    let (heap, ctx) = runtime.heap_ctx_mut();
-    call_runtime_callable32_runtime(&callable, NativeArgs32::new(args), heap, ctx)
-}
-
-fn runtime_callable(
-    value: &RuntimeVal,
-    runtime: &NativeRuntime32<'_>,
-    context: &str,
-) -> Result<lk_core::vm::RuntimeCallable32> {
-    let RuntimeVal::Obj(handle) = value else {
+    let RuntimeVal::Obj(handle) = callable else {
         bail!("{context} must be a runtime callable");
     };
-    let callable = runtime
+    let value = runtime
         .heap()
         .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-    match callable {
-        HeapValue::Callable(CallableValue::Runtime32(function)) => Ok(function.as_ref().clone()),
-        HeapValue::Callable(CallableValue::Closure { .. }) => {
-            let module = runtime
-                .module()
-                .ok_or_else(|| anyhow!("{context} requires Module32 execution context"))?;
-            runtime_value_to_callable32(value, runtime.heap(), &runtime.globals(), Arc::new((*module).clone()))
-                .ok_or_else(|| anyhow!("{context} closure could not be materialized"))
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        .clone();
+    let HeapValue::Callable(callable_value) = value else {
+        bail!("{context} must be a runtime callable");
+    };
+
+    match callable_value {
+        CallableValue::Runtime32(function) => {
+            let (heap, ctx) = runtime.heap_ctx_mut();
+            call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
         }
-        _ => bail!("{context} must be a runtime callable"),
+        CallableValue::Closure { .. } => {
+            if let Some((state, ctx, module)) = runtime.state_ctx_module_mut() {
+                return call_runtime_value32_runtime(callable.clone(), args, state, module, ctx);
+            }
+            bail!("{context} closure requires active RuntimeModuleState32")
+        }
+        CallableValue::RuntimeNative32 { arity, function } => {
+            let entry = NativeEntry32 {
+                name: context.to_string(),
+                arity,
+                function,
+            };
+            if !entry.accepts_arity(args.len() as u16) {
+                bail!("{context} expects {arity} arguments, got {}", args.len());
+            }
+            match &entry.function {
+                lk_core::vm::NativeFunction32::Plain(function)
+                | lk_core::vm::NativeFunction32::Context(function)
+                | lk_core::vm::NativeFunction32::FullState(function) => function(NativeArgs32::new(args), runtime),
+                lk_core::vm::NativeFunction32::RuntimeCallable(function) => {
+                    let (heap, ctx) = runtime.heap_ctx_mut();
+                    call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
+                }
+            }
+        }
     }
 }

@@ -5,8 +5,8 @@ pub mod pipeline;
 
 use crate::{
     expr::Expr,
-    op::{BinOp, UnaryOp},
-    val::Val,
+    operator::{BinOp, UnaryOp},
+    val::LiteralVal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -88,7 +88,7 @@ pub struct PhiOperand {
 
 #[derive(Debug, Clone)]
 pub enum SsaRvalue {
-    Const(Val),
+    Const(LiteralVal),
     Param(ParamId),
     Binary {
         op: BinOp,
@@ -231,7 +231,7 @@ impl LoweringContext {
 
     fn lower_expr(&mut self, expr: &Expr) -> Result<ValueId, SsaLoweringError> {
         match expr {
-            Expr::Val(v) => Ok(self.emit_const(v.clone())),
+            Expr::Literal(v) => Ok(self.emit_const(v.clone())),
             Expr::Var(name) => Ok(self.emit_param(name.clone())),
             Expr::Unary(op, inner) => {
                 let operand = self.lower_expr(inner)?;
@@ -392,7 +392,7 @@ impl LoweringContext {
         Ok(lowered)
     }
 
-    fn emit_const(&mut self, value: Val) -> ValueId {
+    fn emit_const(&mut self, value: LiteralVal) -> ValueId {
         let id = self.alloc_value();
         self.current_block_mut().statements.push(SsaStatement {
             result: id,
@@ -507,14 +507,14 @@ impl LoweringContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{expr::Expr, op::BinOp, val::Val};
+    use crate::{expr::Expr, operator::BinOp, val::LiteralVal};
 
     #[test]
     fn lowers_simple_binary_expression() {
         let expr = Expr::Bin(
             Box::new(Expr::Var("a".into())),
             BinOp::Add,
-            Box::new(Expr::Val(Val::Int(1))),
+            Box::new(Expr::Literal(LiteralVal::Int(1))),
         );
 
         let func = lower_expr_to_ssa(&expr).expect("lowering should succeed");
@@ -565,8 +565,8 @@ mod tests {
     fn lowers_conditional_expression_into_multiple_blocks() {
         let expr = Expr::Conditional(
             Box::new(Expr::Var("flag".into())),
-            Box::new(Expr::Val(Val::Int(1))),
-            Box::new(Expr::Val(Val::Int(2))),
+            Box::new(Expr::Literal(LiteralVal::Int(1))),
+            Box::new(Expr::Literal(LiteralVal::Int(2))),
         );
 
         let func = lower_expr_to_ssa(&expr).expect("lowering should succeed");
@@ -589,13 +589,13 @@ mod tests {
         let then_block_data = &func.blocks[then_block.index()];
         assert!(matches!(
             then_block_data.statements.first().map(|stmt| &stmt.value),
-            Some(SsaRvalue::Const(Val::Int(1)))
+            Some(SsaRvalue::Const(LiteralVal::Int(1)))
         ));
 
         let else_block_data = &func.blocks[else_block.index()];
         assert!(matches!(
             else_block_data.statements.first().map(|stmt| &stmt.value),
-            Some(SsaRvalue::Const(Val::Int(2)))
+            Some(SsaRvalue::Const(LiteralVal::Int(2)))
         ));
 
         let merge_block = func.blocks.last().expect("expected merge block");
@@ -618,12 +618,12 @@ mod tests {
             "combine".into(),
             vec![
                 Box::new(Expr::List(vec![
-                    Box::new(Expr::Val(Val::Int(1))),
-                    Box::new(Expr::Val(Val::Int(2))),
+                    Box::new(Expr::Literal(LiteralVal::Int(1))),
+                    Box::new(Expr::Literal(LiteralVal::Int(2))),
                 ])),
                 Box::new(Expr::Map(vec![(
-                    Box::new(Expr::Val(Val::Int(0))),
-                    Box::new(Expr::Val(Val::Int(42))),
+                    Box::new(Expr::Literal(LiteralVal::Int(0))),
+                    Box::new(Expr::Literal(LiteralVal::Int(42))),
                 )])),
             ],
         );

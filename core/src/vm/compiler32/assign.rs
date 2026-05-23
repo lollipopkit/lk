@@ -1,8 +1,10 @@
 use anyhow::{Result, bail};
 
-use crate::{expr::Expr, op::BinOp, val::Val};
+use crate::{expr::Expr, operator::BinOp, val::LiteralVal};
 
-use super::{Compiler32, Instr32, Opcode32, checked_u8};
+use crate::vm::analysis::{PerfContainerMoveFact, PerfIndexTargetKind};
+
+use super::{Compiler32, Instr32, Opcode32, checked_u8, facts::index_fact_from_target};
 
 impl Compiler32 {
     pub(super) fn lower_assign(&mut self, name: &str, value: &Expr) -> Result<()> {
@@ -20,12 +22,7 @@ impl Compiler32 {
                     0,
                 ));
             } else {
-                self.emit(Instr32::abc(
-                    Opcode32::Move,
-                    checked_u8("assign dst", dst)?,
-                    checked_u8("assign src", src)?,
-                    0,
-                ));
+                self.emit_move(dst, src, "assign local")?;
             }
         } else if let Some(capture) = self.capture_names.get(name).copied()
             && self.capture_cells.contains(name)
@@ -109,14 +106,31 @@ impl Compiler32 {
 
     fn emit_set_index_expr(&mut self, target: &Expr, key: &Expr, value: &Expr) -> Result<()> {
         let target = self.lower_expr(target)?;
-        let key = self.lower_expr(key)?;
+        let index_fact = index_fact_from_target(&self.function.performance, target)
+            .filter(|fact| fact.target_kind != PerfIndexTargetKind::String);
+        let move_key = set_index_key_move_preferred(key);
+        let (key, key_fact) = self.lower_index_key(key)?;
         let value = self.lower_expr(value)?;
+        let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::SetIndex,
             checked_u8("set index target", target)?,
             checked_u8("set index key", key)?,
             checked_u8("set index value", value)?,
         ));
+        self.function.performance.set_container_move_fact(
+            pc,
+            PerfContainerMoveFact {
+                move_key,
+                move_value: true,
+            },
+        );
+        if let Some(fact) = index_fact {
+            self.function.performance.set_index_fact(pc, fact);
+        }
+        if let Some(fact) = key_fact {
+            self.function.performance.set_key_fact(pc, fact);
+        }
         Ok(())
     }
 }
@@ -125,7 +139,7 @@ fn rewritten_list_set_assign<'a>(name: &str, expr: &'a Expr) -> Option<(&'a Expr
     let Expr::Access(list_set, index) = expr else {
         return None;
     };
-    if !matches!(index.as_ref(), Expr::Val(Val::Int(0))) {
+    if !matches!(index.as_ref(), Expr::Literal(LiteralVal::Int(0))) {
         return None;
     }
     let Expr::CallExpr(callee, args) = list_set.as_ref() else {
@@ -168,9 +182,17 @@ fn is_var(expr: &Expr, expected: &str) -> bool {
     matches!(expr, Expr::Var(name) if name == expected)
 }
 
+fn set_index_key_move_preferred(expr: &Expr) -> bool {
+    match expr {
+        Expr::Paren(inner) => set_index_key_move_preferred(inner),
+        Expr::Var(_) => false,
+        _ => true,
+    }
+}
+
 fn is_string_literal(expr: &Expr, expected: &str) -> bool {
     match expr {
-        Expr::Val(value) => value.as_str() == Some(expected),
+        Expr::Literal(value) => value.as_str() == Some(expected),
         _ => false,
     }
 }

@@ -10,6 +10,10 @@ license = "Apache-2.0"
 name = "lk_stdlib"
 crate-type = ["rlib", "staticlib"]
 
+[features]
+default = []
+llvm-bridge = []
+
 [dependencies]
 lk-core = { path = "../core", default-features = false }
 anyhow = { workspace = true }

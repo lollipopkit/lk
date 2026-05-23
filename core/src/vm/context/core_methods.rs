@@ -102,7 +102,7 @@ fn call_method_positional_runtime(
     if let Some(result) = dispatch_list_builtin_method(&receiver, method.as_str(), positional, runtime.heap_mut())? {
         return Ok(result);
     }
-    call_trait_method_runtime(receiver, method, positional, &[], runtime)
+    call_trait_method_runtime(receiver, method, positional, runtime)
 }
 
 fn call_method_named_runtime(
@@ -366,7 +366,6 @@ fn call_trait_method_runtime(
     receiver: RuntimeVal,
     method: ArcStr,
     positional: &[RuntimeVal],
-    named: &[(Arc<str>, RuntimeVal)],
     runtime: &mut NativeRuntime32<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     let receiver_type = runtime_dispatch_type(&receiver, runtime.heap());
@@ -384,10 +383,6 @@ fn call_trait_method_runtime(
     else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    if !named.is_empty() {
-        bail!("Named arguments are not supported for trait methods");
-    }
-
     call_runtime_value32_runtime_with_receiver(method_val, &receiver, positional, state, module, Some(ctx))
 }
 
@@ -408,12 +403,7 @@ fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> a
                     let Some(value) = &task.value else {
                         return Ok(Some(RuntimeVal::Nil));
                     };
-                    let mut source_heap = value.heap.clone();
-                    Ok(Some(crate::vm::copy_runtime_value(
-                        &value.value,
-                        &mut source_heap,
-                        heap,
-                    )?))
+                    Ok(Some(crate::vm::copy_runtime_value(&value.value, &value.heap, heap)?))
                 }
                 HeapValue::Channel(channel) => match field {
                     "capacity" => Ok(Some(RuntimeVal::Int(channel.capacity.unwrap_or(0) as i64))),
@@ -480,7 +470,7 @@ fn runtime_positional_args(helper: &str, value: &RuntimeVal, heap: &mut HeapStor
         HeapValue::List(l) => l,
         _ => unreachable!("already verified as List in phase 1"),
     };
-    Ok(list.materialize_mixed(heap))
+    list.runtime_values_into_heap(heap)
 }
 
 fn runtime_named_arg_map(helper: &str, value: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<Option<HeapRef>> {

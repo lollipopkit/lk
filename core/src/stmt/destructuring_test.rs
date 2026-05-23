@@ -4,7 +4,7 @@ mod tests {
         expr::{Expr, Pattern},
         stmt::{Program, Stmt, run_program_default, stmt_parser::StmtParser},
         token::Tokenizer,
-        val::{RuntimeVal, ShortStr, Val},
+        val::{LiteralVal, RuntimeVal, ShortStr},
         vm::Program32Result,
     };
 
@@ -226,9 +226,9 @@ mod tests {
             },
             type_annotation: None,
             value: Box::new(list_expr(vec![
-                Expr::Val(Val::Int(1)),
-                Expr::Val(Val::Int(2)),
-                Expr::Val(Val::Int(3)),
+                Expr::Literal(LiteralVal::Int(1)),
+                Expr::Literal(LiteralVal::Int(2)),
+                Expr::Literal(LiteralVal::Int(3)),
             ])),
             span: None,
             is_const: false,
@@ -256,8 +256,8 @@ mod tests {
                     (
                         "age".to_string(),
                         Pattern::Range {
-                            start: Box::new(Expr::Val(Val::Int(0))),
-                            end: Box::new(Expr::Val(Val::Int(120))),
+                            start: Box::new(Expr::Literal(LiteralVal::Int(0))),
+                            end: Box::new(Expr::Literal(LiteralVal::Int(120))),
                             inclusive: true,
                         },
                     ),

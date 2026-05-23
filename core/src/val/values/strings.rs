@@ -1,53 +1,49 @@
-use super::{
-    Val,
-    intern::{intern, intern_owned},
-    types::ShortStr,
-};
+use std::sync::Arc;
 
-impl Val {
-    /// 从 &str 构造 Val，≤7 字节走 ShortStr（零分配），更长走 heap string。
+use super::{LiteralVal, types::ShortStr};
+
+impl LiteralVal {
+    /// Build an AST literal string. Runtime long strings are materialized as heap strings during lowering.
     #[inline]
-    pub fn from_str(s: &str) -> Val {
+    pub fn from_str(s: &str) -> Self {
         if let Some(short) = ShortStr::new(s) {
-            Val::ShortStr(short)
+            Self::ShortStr(short)
         } else {
-            Val::LongStr(intern(s))
+            Self::String(Arc::<str>::from(s))
         }
     }
 
     #[inline]
-    fn from_concat_string(s: String) -> Val {
+    fn from_concat_string(s: String) -> Self {
         if let Some(short) = ShortStr::new(s.as_str()) {
-            Val::ShortStr(short)
+            Self::ShortStr(short)
         } else {
-            let arc = intern_owned(s);
-            Val::LongStr(arc)
+            Self::String(Arc::<str>::from(s))
         }
     }
 
-    /// 若 Val 是字符串变体，返回 &str；否则返回 None。
     #[inline]
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Val::ShortStr(s) => Some(s.as_str()),
-            Val::LongStr(value) => Some(value.as_ref()),
+            Self::ShortStr(s) => Some(s.as_str()),
+            Self::String(value) => Some(value.as_ref()),
             _ => None,
         }
     }
 
     /// String literal concatenation used by AST constant folding.
     #[inline]
-    pub(crate) fn concat_strings(a: &str, b: &str) -> Val {
+    pub(crate) fn concat_strings(a: &str, b: &str) -> Self {
         if a.is_empty() {
-            return Val::from_str(b);
+            return Self::from_str(b);
         }
         if b.is_empty() {
-            return Val::from_str(a);
+            return Self::from_str(a);
         }
         let total = a.len() + b.len();
         let mut s = String::with_capacity(total);
         s.push_str(a);
         s.push_str(b);
-        Val::from_concat_string(s)
+        Self::from_concat_string(s)
     }
 }

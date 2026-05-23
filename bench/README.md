@@ -30,8 +30,8 @@ RUNS=10 EXTRA_RUNS=20 bench/run_workload_bench.sh
 ```
 
 For VM-side diagnostics, enable one extra filtered LK run per workload. This
-prints opcode, call, branch, container, BC32 fallback-reason, clone counters,
-and copy-policy heap-clone source counters after the timing table:
+prints Instr32 opcode, call, branch, container, copy-policy, and heap-value
+movement counters after the timing table:
 
 ```bash
 PROFILE_WORKLOADS=1 bench/run_workload_bench.sh
@@ -141,7 +141,9 @@ Date: 2026-05-23
 
 Samples reported: 6 per engine.
 Geometric mean VM/Lua ratio: **17.648x**.
-AOT was disabled for this Instr32 validation run.
+Native executable output now uses the same Instr32 `Module32Artifact` payload
+through a host launcher; this validation run measures the VM artifact path, not
+native AOT.
 
 ## Current Bottlenecks
 
@@ -153,7 +155,7 @@ are not considered sufficient evidence.
 Primary bottlenecks:
 - General VM overhead in realistic while loops and function calls
 - Integer comparison/modulo dispatch in branch-heavy loops
-- `Val` clone/refcount overhead in list/map mutation and iteration
+- Runtime heap-value copy pressure in list/map mutation and iteration
 - Local-slot copies are now measured separately (`LocalHeap`) so alias-safe
   ownership work can target them without hiding them inside generic register
   copies

@@ -1,5 +1,5 @@
 use super::StmtParser;
-use crate::{ast::Parser as ExprParser, expr::Expr, op::BinOp, stmt::Stmt, token::Token, val::Val};
+use crate::{ast::Parser as ExprParser, expr::Expr, operator::BinOp, stmt::Stmt, token::Token, val::LiteralVal};
 use anyhow::{Result, anyhow};
 
 impl<'a> StmtParser<'a> {
@@ -185,8 +185,8 @@ impl<'a> StmtParser<'a> {
             parser.parse()?
         } else if self.tokens.get(start + 1) == Some(&Token::Dot) {
             match self.tokens.get(start + 2) {
-                Some(Token::Id(field)) => Expr::Val(Val::from_str(field.as_str())),
-                Some(Token::Str(field)) => Expr::Val(Val::from_str(field.as_str())),
+                Some(Token::Id(field)) => Expr::Literal(LiteralVal::from_str(field.as_str())),
+                Some(Token::Str(field)) => Expr::Literal(LiteralVal::from_str(field.as_str())),
                 other => {
                     return Err(anyhow!(
                         self.err(&format!("Expected field name in assignment target, found {:?}", other))
@@ -212,15 +212,15 @@ impl<'a> StmtParser<'a> {
             _ => unreachable!(),
         };
 
-        if self.tokens.get(start + 1) == Some(&Token::LBracket) && matches!(key, Expr::Val(Val::Int(_))) {
+        if self.tokens.get(start + 1) == Some(&Token::LBracket) && matches!(key, Expr::Literal(LiteralVal::Int(_))) {
             let list_set = Expr::CallExpr(
                 Box::new(Expr::Access(
                     Box::new(Expr::Var("list".to_string())),
-                    Box::new(Expr::Val(Val::from_str("set"))),
+                    Box::new(Expr::Literal(LiteralVal::from_str("set"))),
                 )),
                 vec![Box::new(Expr::Var(name.clone())), Box::new(key), Box::new(value)],
             );
-            let updated = Expr::Access(Box::new(list_set), Box::new(Expr::Val(Val::Int(0))));
+            let updated = Expr::Access(Box::new(list_set), Box::new(Expr::Literal(LiteralVal::Int(0))));
             Ok(Some(Stmt::Assign {
                 name,
                 value: Box::new(updated),

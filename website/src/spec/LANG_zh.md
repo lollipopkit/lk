@@ -258,7 +258,7 @@ import "d/d1";    // c/d/d1.lk，导出名为 d1
 - `List<T>`、`Map<K, V>`
 - `Task<T>`、`Channel<T>`（并发）
 - 函数类型：`(T1, T2) -> R`
-- 联合类型：`A | B | Nil`；可选类型：`T?`（`T | Nil` 的语法糖；兼容性保留了前缀形式 `?T`）
+- 联合类型：`A | B | Nil`；可选类型：`T?`（`T | Nil` 的语法糖）
 - 支持命名与泛型类型（如 `List<Int>`、`Map<String, Int>`）
 
 ### 注解
@@ -365,6 +365,7 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - 执行文件（语句）：`lk FILE`
 - 编译为可执行 Instr32 模块产物：`lk compile [FILE]` -> `FILE.lkm`
 - 执行 Instr32 模块产物：`lk FILE.lkm`
+- 编译为内嵌同一产物的 host executable launcher：`lk compile exe [FILE]`
 - 只允许相对且经过清洗的路径。
 - CLI 只在结果非 `nil` 时打印。
 

@@ -9,26 +9,35 @@ use super::Executor32;
 
 impl Executor32 {
     pub(super) fn try_load_const_instr(&mut self, function: &Function32, instr: Instr32) -> Result<bool> {
+        let dead_write = function.performance.is_dead_write(self.pc);
         match instr.opcode() {
             Opcode32::LoadNil => {
-                self.write(instr.a(), RuntimeVal::Nil)?;
+                if !dead_write {
+                    self.write(instr.a(), RuntimeVal::Nil)?;
+                }
             }
             Opcode32::LoadBool => {
-                self.write(instr.a(), RuntimeVal::Bool(instr.b() != 0))?;
+                if !dead_write {
+                    self.write(instr.a(), RuntimeVal::Bool(instr.b() != 0))?;
+                }
             }
             Opcode32::LoadInt => {
                 let value = function
                     .consts
                     .int(instr.bx())
                     .ok_or_else(|| anyhow!("LoadInt const index {} out of bounds", instr.bx()))?;
-                self.write(instr.a(), RuntimeVal::Int(value))?;
+                if !dead_write {
+                    self.write(instr.a(), RuntimeVal::Int(value))?;
+                }
             }
             Opcode32::LoadFloat => {
                 let value = function
                     .consts
                     .float(instr.bx())
                     .ok_or_else(|| anyhow!("LoadFloat const index {} out of bounds", instr.bx()))?;
-                self.write(instr.a(), RuntimeVal::Float(value))?;
+                if !dead_write {
+                    self.write(instr.a(), RuntimeVal::Float(value))?;
+                }
             }
             Opcode32::LoadString => {
                 let value = function
@@ -40,7 +49,9 @@ impl Executor32 {
                 } else {
                     RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(value.into())))
                 };
-                self.write(instr.a(), value)?;
+                if !dead_write {
+                    self.write(instr.a(), value)?;
+                }
             }
             Opcode32::LoadHeapConst => {
                 let value = function
@@ -48,8 +59,10 @@ impl Executor32 {
                     .heap_value(instr.bx())
                     .ok_or_else(|| anyhow!("LoadHeapConst const index {} out of bounds", instr.bx()))?;
                 let value = self.materialize_heap_const(value.clone())?;
-                let handle = self.state.heap.alloc(value);
-                self.write(instr.a(), RuntimeVal::Obj(handle))?;
+                if !dead_write {
+                    let handle = self.state.heap.alloc(value);
+                    self.write(instr.a(), RuntimeVal::Obj(handle))?;
+                }
             }
             _ => return Ok(false),
         }

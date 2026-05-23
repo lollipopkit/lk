@@ -295,12 +295,12 @@ fn mark_slot(classes: &mut [EscapeClass], slot: usize, target: EscapeClass) -> b
 mod tests {
     use super::*;
     use crate::expr::Expr;
-    use crate::val::Val;
+    use crate::val::LiteralVal;
     use crate::vm::ssa::lower_expr_to_ssa;
 
     #[test]
     fn constant_expression_stays_trivial() {
-        let expr = Expr::Val(Val::Int(42));
+        let expr = Expr::Literal(LiteralVal::Int(42));
         let func = lower_expr_to_ssa(&expr).expect("lowering");
         let summary = analyze(&func);
         assert_eq!(summary.return_class, EscapeClass::Trivial);
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn returning_list_marks_escape() {
-        let expr = Expr::List(vec![Box::new(Expr::Val(Val::Int(1)))]);
+        let expr = Expr::List(vec![Box::new(Expr::Literal(LiteralVal::Int(1)))]);
         let func = lower_expr_to_ssa(&expr).expect("lowering");
         let summary = analyze(&func);
         assert_eq!(summary.return_class, EscapeClass::Escapes);
@@ -329,8 +329,8 @@ mod tests {
     fn phi_joins_escape_information() {
         let expr = Expr::Conditional(
             Box::new(Expr::Var("flag".to_string())),
-            Box::new(Expr::List(vec![Box::new(Expr::Val(Val::Int(1)))])),
-            Box::new(Expr::Val(Val::Int(0))),
+            Box::new(Expr::List(vec![Box::new(Expr::Literal(LiteralVal::Int(1)))])),
+            Box::new(Expr::Literal(LiteralVal::Int(0))),
         );
         let func = lower_expr_to_ssa(&expr).expect("lowering");
         let summary = analyze(&func);

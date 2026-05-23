@@ -1,5 +1,10 @@
 use anyhow::{Result, anyhow, bail};
 
+use crate::vm::analysis::{
+    PerfContainerFact, PerfControlFlowFacts, PerfLocalCopyFact, PerfRegisterCopyFact, PerfRegisterFact, PerfValueFact,
+    PerfValueKind,
+};
+
 use super::{Compiler32, ConstHeapValue32, Function32, Instr32, Opcode32, support::*};
 
 impl Compiler32 {
@@ -41,13 +46,38 @@ impl Compiler32 {
     }
 
     pub(super) fn emit_move(&mut self, dst: u16, src: u16, context: &str) -> Result<()> {
+        self.emit_move_with_policy(dst, src, context, false)
+    }
+
+    pub(super) fn emit_move_with_policy(&mut self, dst: u16, src: u16, context: &str, move_source: bool) -> Result<()> {
+        let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::Move,
             checked_u8(&format!("{context} dst"), dst)?,
             checked_u8(&format!("{context} src"), src)?,
             0,
         ));
+        self.function
+            .performance
+            .set_register_copy_fact(pc, PerfRegisterCopyFact { move_source });
+        if self.function.performance.is_local_slot(dst) {
+            self.function
+                .performance
+                .set_local_copy_fact(pc, PerfLocalCopyFact { move_source });
+        }
+        self.function.performance.copy_register_fact(dst, src);
         Ok(())
+    }
+
+    pub(super) fn insert_local(&mut self, name: impl Into<String>, reg: u16) -> Option<u16> {
+        self.function.performance.mark_local_slot(reg);
+        self.locals.insert(name.into(), reg)
+    }
+
+    pub(super) fn mark_last_dead_write(&mut self) {
+        if let Some(pc) = self.function.code.len().checked_sub(1) {
+            self.function.performance.set_dead_write_fact(pc);
+        }
     }
 
     pub(super) fn emit_test_placeholder(&mut self, condition: u16) -> Result<usize> {
@@ -153,8 +183,128 @@ impl Compiler32 {
         Ok(())
     }
 
+    pub(super) fn set_register_kind(&mut self, reg: u16, kind: PerfValueKind) {
+        self.function.performance.set_register_kind(reg, kind);
+    }
+
+    pub(super) fn set_register_list_fact(&mut self, reg: u16, fact: PerfContainerFact) {
+        let register = PerfRegisterFact {
+            value: PerfValueFact {
+                kind: PerfValueKind::List,
+                ..PerfValueFact::default()
+            },
+            list: Some(fact),
+            ..PerfRegisterFact::default()
+        };
+        self.function.performance.set_register_fact(reg, register);
+    }
+
+    pub(super) fn set_register_map_fact(&mut self, reg: u16, fact: PerfContainerFact) {
+        let register = PerfRegisterFact {
+            value: PerfValueFact {
+                kind: PerfValueKind::Map,
+                ..PerfValueFact::default()
+            },
+            map: Some(fact),
+            ..PerfRegisterFact::default()
+        };
+        self.function.performance.set_register_fact(reg, register);
+    }
+
     pub(super) fn finish(&mut self) -> Result<Function32> {
         self.function.register_count = self.peak_reg;
+        let control_flow = build_control_flow_facts(&self.function.code)?;
+        self.function.performance.set_control_flow_facts(control_flow);
         Ok(std::mem::take(&mut self.function))
+    }
+}
+
+fn build_control_flow_facts(code: &[Instr32]) -> Result<PerfControlFlowFacts> {
+    if code.is_empty() {
+        return Ok(PerfControlFlowFacts::default());
+    }
+
+    let mut branch_targets = vec![false; code.len()];
+    let mut block_starts = vec![false; code.len()];
+    block_starts[0] = true;
+
+    for (pc, instr) in code.iter().copied().enumerate() {
+        match instr.opcode() {
+            Opcode32::Test => {
+                mark_target(pc + 1, code.len(), &mut branch_targets, &mut block_starts)?;
+                mark_relative_target(
+                    pc,
+                    instr.c() as i8 as i32,
+                    code.len(),
+                    &mut branch_targets,
+                    &mut block_starts,
+                )?;
+            }
+            Opcode32::Jmp => {
+                mark_relative_target(pc, instr.sj_arg(), code.len(), &mut branch_targets, &mut block_starts)?;
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            Opcode32::TryBegin => {
+                mark_relative_target(
+                    pc,
+                    instr.sbx() as i32,
+                    code.len(),
+                    &mut branch_targets,
+                    &mut block_starts,
+                )?;
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            Opcode32::Return | Opcode32::Raise => {
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            _ => {}
+        }
+    }
+
+    let mut block_ids = vec![0; code.len()];
+    let mut current_block = 0_u32;
+    for pc in 0..code.len() {
+        if block_starts[pc] && pc != 0 {
+            current_block = current_block
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("Compiler32 control-flow block id overflow"))?;
+        }
+        block_ids[pc] = current_block;
+    }
+
+    Ok(PerfControlFlowFacts {
+        block_ids,
+        branch_targets,
+    })
+}
+
+fn mark_relative_target(
+    pc: usize,
+    offset: i32,
+    len: usize,
+    branch_targets: &mut [bool],
+    block_starts: &mut [bool],
+) -> Result<()> {
+    let target = pc as i64 + 1 + offset as i64;
+    if target < 0 || target > len as i64 {
+        bail!("Compiler32 branch target {target} out of bounds at pc {pc}");
+    }
+    mark_target(target as usize, len, branch_targets, block_starts)
+}
+
+fn mark_target(target: usize, len: usize, branch_targets: &mut [bool], block_starts: &mut [bool]) -> Result<()> {
+    if target > len {
+        bail!("Compiler32 branch target {target} out of bounds");
+    }
+    if target < len {
+        branch_targets[target] = true;
+        block_starts[target] = true;
+    }
+    Ok(())
+}
+
+fn mark_block_start(pc: usize, len: usize, block_starts: &mut [bool]) {
+    if pc < len {
+        block_starts[pc] = true;
     }
 }

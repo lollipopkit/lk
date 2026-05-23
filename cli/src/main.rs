@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Once};
 
 static PERF_TRACE_INIT: Once = Once::new();
@@ -6,6 +7,7 @@ const DEFAULT_TRACE_FILTER: &str = "lk::vm::alloc=trace,lk::vm::slowpath=debug,l
 
 use clap::{Parser, Subcommand, ValueEnum};
 use lk_core::{
+    llvm::{LlvmBackendOptions, OptLevel},
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
     rt,
@@ -56,6 +58,18 @@ enum OptLevelCli {
     O1,
     O2,
     O3,
+}
+
+#[cfg(feature = "llvm")]
+impl From<OptLevelCli> for OptLevel {
+    fn from(value: OptLevelCli) -> Self {
+        match value {
+            OptLevelCli::O0 => Self::None,
+            OptLevelCli::O1 => Self::O1,
+            OptLevelCli::O2 => Self::O2,
+            OptLevelCli::O3 => Self::O3,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -205,11 +219,11 @@ fn main() -> anyhow::Result<()> {
             Commands::Compile {
                 positional,
                 #[cfg(feature = "llvm")]
-                    opt_level: _opt_level_cli,
+                    opt_level: opt_level_cli,
                 #[cfg(feature = "llvm")]
-                    skip_opt: _skip_opt,
+                skip_opt,
                 #[cfg(feature = "llvm")]
-                    target_triple: _target_triple,
+                target_triple,
                 #[cfg(feature = "llvm")]
                     output: output_arg,
             } => {
@@ -232,8 +246,6 @@ fn main() -> anyhow::Result<()> {
                     anyhow::bail!("--output is only supported for `lk compile exe <FILE>`");
                 }
 
-                let src_path_str = safe.to_string_lossy().to_string();
-
                 match compile_mode {
                     None => {
                         compile_instr32_module(&safe)?;
@@ -241,17 +253,19 @@ fn main() -> anyhow::Result<()> {
                     }
                     #[cfg(feature = "llvm")]
                     Some(CompileMode::Llvm) => {
-                        anyhow::bail!(
-                            "LLVM IR output is disabled during the Instr32 VM migration: {}",
-                            src_path_str
-                        );
+                        let options = LlvmBackendOptions {
+                            module_name: module_name_from_path(&safe),
+                            target_triple,
+                            run_optimizations: !skip_opt,
+                            opt_level: opt_level_cli.into(),
+                        };
+                        compile_llvm_ir(&safe, options)?;
+                        return Ok(());
                     }
                     #[cfg(feature = "llvm")]
                     Some(CompileMode::Exe) => {
-                        anyhow::bail!(
-                            "native executable output is disabled during the Instr32 VM migration: {}",
-                            src_path_str
-                        );
+                        compile_host_executable_launcher(&safe, output.as_deref())?;
+                        return Ok(());
                     }
                 }
             }
@@ -362,16 +376,170 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
 }
 
 fn compile_instr32_module(path: &Path) -> anyhow::Result<()> {
-    let program = parse_program_file(path)?;
-    let mut ctx = build_vm_context(path)?;
-    let module = compile_program32_module_with_ctx(&program, &mut ctx)
-        .with_context(|| format!("compile Instr32 module for {}", path.display()))?;
-    let artifact = Module32Artifact::new(collect_program_imports(&program), &module)?;
+    let artifact = compile_instr32_artifact(path)?;
     let output = path.with_extension("lkm");
     std::fs::write(&output, artifact.to_json_string()?)
         .with_context(|| format!("write Instr32 module {}", output.display()))?;
     println!("{}", output.display());
     Ok(())
+}
+
+fn compile_instr32_artifact(path: &Path) -> anyhow::Result<Module32Artifact> {
+    let program = parse_program_file(path)?;
+    let mut ctx = build_vm_context(path)?;
+    let module = compile_program32_module_with_ctx(&program, &mut ctx)
+        .with_context(|| format!("compile Instr32 module for {}", path.display()))?;
+    Module32Artifact::new(collect_program_imports(&program), &module)
+}
+
+#[cfg(feature = "llvm")]
+fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
+    let artifact = compile_instr32_artifact(path)?;
+    let llvm = lk_core::llvm::compile_module32_artifact_to_llvm(&artifact, options)
+        .with_context(|| format!("compile LLVM IR for {}", path.display()))?;
+    let output = path.with_extension("ll");
+    std::fs::write(&output, llvm.module.ir).with_context(|| format!("write LLVM IR {}", output.display()))?;
+    println!("{}", output.display());
+    Ok(())
+}
+
+#[cfg(feature = "llvm")]
+fn compile_host_executable_launcher(path: &Path, output: Option<&Path>) -> anyhow::Result<()> {
+    let artifact = compile_instr32_artifact(path)?;
+    let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
+    let deps_dir = current_target_deps_dir()?;
+    let lk_core = latest_rlib(&deps_dir, "lk_core")?;
+    let lk_stdlib = latest_rlib(&deps_dir, "lk_stdlib")?;
+    let source = host_executable_launcher_source(&artifact.to_json_string()?);
+    let source_path = temp_host_launcher_source_path(path)?;
+    std::fs::write(&source_path, source)
+        .with_context(|| format!("write host executable launcher source {}", source_path.display()))?;
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let output_status = Command::new(&rustc)
+        .arg("--edition=2024")
+        .arg(&source_path)
+        .arg("-L")
+        .arg(format!("dependency={}", deps_dir.display()))
+        .arg("--extern")
+        .arg(format!("lk_core={}", lk_core.display()))
+        .arg("--extern")
+        .arg(format!("lk_stdlib={}", lk_stdlib.display()))
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .with_context(|| format!("spawn rustc to build host executable launcher {}", output.display()))?;
+    let _ = std::fs::remove_file(&source_path);
+    if !output_status.status.success() {
+        anyhow::bail!(
+            "host executable launcher build failed for {}:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&output_status.stderr)
+        );
+    }
+    println!("{}", output.display());
+    Ok(())
+}
+
+#[cfg(feature = "llvm")]
+fn host_executable_launcher_source(artifact_json: &str) -> String {
+    format!(
+        r#"use std::sync::Arc;
+
+use lk_core::{{
+    module::ModuleRegistry,
+    rt,
+    stmt::ModuleResolver,
+    typ::TypeChecker,
+    vm::{{execute_module32_artifact_with_ctx, Module32Artifact, VmContext}},
+}};
+
+const LK_MODULE32_JSON: &str = {artifact_json:?};
+
+fn build_vm_context() -> Result<VmContext, Box<dyn std::error::Error>> {{
+    let mut registry = ModuleRegistry::new();
+    lk_stdlib::register_stdlib_globals(&mut registry);
+    lk_stdlib::register_stdlib_modules(&mut registry)?;
+    let resolver = Arc::new(ModuleResolver::with_registry(registry));
+    Ok(VmContext::new()
+        .with_resolver(resolver)
+        .with_type_checker(Some(TypeChecker::new_strict())))
+}}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {{
+    let _ = rt::init_runtime();
+    let artifact = Module32Artifact::from_json_str(LK_MODULE32_JSON)?;
+    let mut ctx = build_vm_context()?;
+    let result = execute_module32_artifact_with_ctx(artifact, &mut ctx)?;
+    rt::shutdown_runtime();
+    if !result.first_return_is_nil() {{
+        println!("{{}}", result.display_first_return());
+    }}
+    Ok(())
+}}
+"#
+    )
+}
+
+#[cfg(feature = "llvm")]
+fn temp_host_launcher_source_path(path: &Path) -> anyhow::Result<PathBuf> {
+    let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("lk");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    Ok(std::env::temp_dir().join(format!("lk-{stem}-{}-{nanos}.rs", std::process::id())))
+}
+
+#[cfg(feature = "llvm")]
+fn current_target_deps_dir() -> anyhow::Result<PathBuf> {
+    let exe = std::env::current_exe().context("locate current lk executable")?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("current executable has no parent: {}", exe.display()))?;
+    if dir.file_name().and_then(|name| name.to_str()) == Some("deps") {
+        Ok(dir.to_path_buf())
+    } else {
+        Ok(dir.join("deps"))
+    }
+}
+
+#[cfg(feature = "llvm")]
+fn latest_rlib(deps_dir: &Path, crate_name: &str) -> anyhow::Result<PathBuf> {
+    let prefix = format!("lib{crate_name}-");
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(deps_dir).with_context(|| format!("read {}", deps_dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with(&prefix) || path.extension().and_then(|ext| ext.to_str()) != Some("rlib") {
+            continue;
+        }
+        let modified = entry
+            .metadata()?
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if newest.as_ref().is_none_or(|(existing, _)| modified > *existing) {
+            newest = Some((modified, path));
+        }
+    }
+    newest
+        .map(|(_, path)| path)
+        .ok_or_else(|| anyhow::anyhow!("could not find {crate_name} rlib in {}", deps_dir.display()))
+}
+
+#[cfg(feature = "llvm")]
+fn module_name_from_path(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| {
+            stem.chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                .collect::<String>()
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "lk_module".to_string())
 }
 
 pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {

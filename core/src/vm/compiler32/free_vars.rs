@@ -110,7 +110,7 @@ pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, f
                 collect_expr_free_vars(&arm.body, &mut arm_bound, free);
             }
         }
-        Expr::Val(_) => {}
+        Expr::Literal(_) => {}
     }
 }
 

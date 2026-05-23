@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -12,9 +11,7 @@ use crate::{
     vm::{Compiler32, GlobalSlot32, Module32Artifact, VmContext},
 };
 
-use super::{
-    Program32Result, execute_module32, execute_module32_with_globals_heap_and_ctx, imports::import_runtime_export,
-};
+use super::{Executor32, Program32Result, execute_module32, imports::import_runtime_export};
 
 pub fn execute_program32(program: &Program) -> Result<Program32Result> {
     let mut ctx = VmContext::new_without_core_vm_builtins();
@@ -56,14 +53,17 @@ pub fn execute_compiled_module32_with_ctx(
     ctx: &mut VmContext,
 ) -> Result<Program32Result> {
     let mut seed_heap = HeapStore::new();
-    let mut external_values = BTreeMap::new();
-    for (name, value) in ctx.runtime_globals_iter() {
-        let value = import_runtime_export(value, &mut seed_heap)?;
-        external_values.insert(name.clone(), value);
-    }
-
-    let globals = seed_module_globals(&module.globals, external_values);
-    let result = execute_module32_with_globals_heap_and_ctx(module.as_ref(), globals, seed_heap, ctx)?;
+    let globals = seed_module_globals(&module.globals, ctx, &mut seed_heap)?;
+    let register_count = module
+        .entry_function()
+        .map(|function| function.register_count)
+        .unwrap_or_default();
+    let result = Executor32::new(register_count).run_shared_module_with_globals_and_heap_and_ctx(
+        Arc::clone(&module),
+        globals,
+        seed_heap,
+        ctx,
+    )?;
     Ok(Program32Result {
         returns: result.returns,
         state: result.state,
@@ -81,9 +81,59 @@ pub fn execute_source32(source: &str) -> Result<Program32Result> {
     })
 }
 
-fn seed_module_globals(slots: &[GlobalSlot32], values: BTreeMap<Arc<str>, RuntimeVal>) -> Vec<RuntimeVal> {
+fn seed_module_globals(slots: &[GlobalSlot32], ctx: &VmContext, heap: &mut HeapStore) -> Result<Vec<RuntimeVal>> {
     slots
         .iter()
-        .map(|slot| values.get(&slot.name).cloned().unwrap_or(RuntimeVal::Nil))
+        .map(|slot| match ctx.get_runtime_global(slot.name.as_ref()) {
+            Some(export) => import_runtime_export(export, heap),
+            None => Ok(RuntimeVal::Nil),
+        })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::{
+        val::{HeapStore, HeapValue, RuntimeVal},
+        vm::{GlobalSlot32, RuntimeExport32, RuntimeModuleState32, VmContext},
+    };
+
+    use super::seed_module_globals;
+
+    #[test]
+    fn seed_module_globals_imports_by_module_slot_order_without_name_map() {
+        let mut source_heap = HeapStore::new();
+        let source_string = source_heap.alloc(HeapValue::String(Arc::<str>::from("external")));
+        let mut ctx = VmContext::new_without_core_vm_builtins();
+        ctx.define_runtime_global(
+            "external",
+            RuntimeExport32 {
+                value: RuntimeVal::Obj(source_string),
+                state: Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
+                    source_heap,
+                    Vec::new(),
+                ))),
+                module: Arc::new(crate::vm::Module32::default()),
+            },
+        );
+        let slots = vec![
+            GlobalSlot32 {
+                name: Arc::<str>::from("missing"),
+            },
+            GlobalSlot32 {
+                name: Arc::<str>::from("external"),
+            },
+        ];
+        let mut dest_heap = HeapStore::new();
+
+        let globals = seed_module_globals(&slots, &ctx, &mut dest_heap).expect("seed globals");
+
+        assert_eq!(globals[0], RuntimeVal::Nil);
+        let RuntimeVal::Obj(imported) = globals[1] else {
+            panic!("external global should import as heap object");
+        };
+        assert!(matches!(dest_heap.get(imported), Some(HeapValue::String(value)) if value.as_ref() == "external"));
+    }
 }
