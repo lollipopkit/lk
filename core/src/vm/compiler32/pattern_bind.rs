@@ -9,6 +9,30 @@ use super::{Compiler32, Instr32, Opcode32, support::checked_u8};
 
 impl Compiler32 {
     pub(super) fn lower_let(&mut self, pattern: &Pattern, value: &Expr) -> Result<()> {
+        if let Pattern::Variable(name) = pattern {
+            let watermark = self.next_reg;
+            let slot = if let Some(slot) = self.locals.get(name).copied() {
+                slot
+            } else {
+                self.alloc_reg()
+            };
+            let value = self.lower_expr(value)?;
+            self.emit_move(slot, value, "let local")?;
+            if self.top_level
+                && let Some(global_slot) = self.global_names.get(name).copied()
+            {
+                self.emit_set_global(slot, global_slot)?;
+            }
+            self.locals.insert(name.clone(), slot);
+            self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
+            return Ok(());
+        }
+        if matches!(pattern, Pattern::Wildcard) {
+            let watermark = self.next_reg;
+            self.lower_expr(value)?;
+            self.next_reg = watermark;
+            return Ok(());
+        }
         let value = self.lower_expr(value)?;
         self.bind_let_pattern(pattern, value)
     }

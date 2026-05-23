@@ -163,7 +163,6 @@ fn import_typed_list(
         TypedList::Float(values) => TypedList::Float(values),
         TypedList::Bool(values) => TypedList::Bool(values),
         TypedList::String(values) => TypedList::String(values),
-        TypedList::OwnedRuntime(values) => values.copy_into_typed_list(dest_heap)?,
     })
 }
 
@@ -212,6 +211,5 @@ fn import_typed_map(
         TypedMap::StringInt(values) => TypedMap::StringInt(values),
         TypedMap::StringFloat(values) => TypedMap::StringFloat(values),
         TypedMap::StringBool(values) => TypedMap::StringBool(values),
-        TypedMap::OwnedRuntime(values) => values.copy_into_typed_map(dest_heap)?,
     })
 }

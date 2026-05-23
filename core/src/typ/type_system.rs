@@ -1,4 +1,4 @@
-use crate::val::{RuntimeVal, Type, Val};
+use crate::val::{RuntimeVal, Type};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 
@@ -22,44 +22,7 @@ pub struct TraitImpl {
     pub trait_name: String,
     pub target_type: Type,
     // method_name -> (function_value, declared_type)
-    pub methods: HashMap<String, (TraitMethodValue, Option<Type>)>,
-}
-
-/// Callable implementation stored by the trait registry.
-///
-/// New VM registrations store runtime values directly; the legacy variant only
-/// exists for the old AST evaluator while it is being removed.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TraitMethodValue {
-    Legacy(Val),
-    Runtime(RuntimeVal),
-}
-
-impl TraitMethodValue {
-    #[inline]
-    pub fn legacy(&self) -> Option<&Val> {
-        match self {
-            Self::Legacy(value) => Some(value),
-            Self::Runtime(_) => None,
-        }
-    }
-
-    #[inline]
-    pub fn runtime(&self) -> Option<&RuntimeVal> {
-        match self {
-            Self::Runtime(value) => Some(value),
-            Self::Legacy(_) => None,
-        }
-    }
-
-    #[inline]
-    fn is_callable_for_validation(&self) -> bool {
-        match self {
-            Self::Legacy(value) => value.is_callable(),
-            Self::Runtime(RuntimeVal::Obj(_)) => true,
-            Self::Runtime(_) => false,
-        }
-    }
+    pub methods: HashMap<String, (RuntimeVal, Option<Type>)>,
 }
 
 /// Type alias definition
@@ -155,7 +118,7 @@ impl TypeRegistry {
     }
 
     /// Get the method implementation for a type and method name
-    pub fn get_method(&self, typ: &Type, method_name: &str) -> Option<&TraitMethodValue> {
+    pub fn get_method(&self, typ: &Type, method_name: &str) -> Option<&RuntimeVal> {
         let type_name = Self::type_to_string(typ);
         if let Some(impls) = self.implementations.get(&type_name) {
             for impl_def in impls {
@@ -165,10 +128,6 @@ impl TypeRegistry {
             }
         }
         None
-    }
-
-    pub fn get_legacy_method(&self, typ: &Type, method_name: &str) -> Option<&Val> {
-        self.get_method(typ, method_name).and_then(TraitMethodValue::legacy)
     }
 
     /// Generate a fresh type variable
@@ -240,7 +199,7 @@ impl TypeRegistry {
 
             // Only function values are valid implementations
             let mut actual_ty = match val {
-                value if value.is_callable_for_validation() => {
+                RuntimeVal::Obj(_) => {
                     // Runtime callable type info is validated elsewhere during the Instr32 migration.
                     Type::Function {
                         params: Vec::new(),

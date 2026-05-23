@@ -2,9 +2,15 @@ use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry},
     val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap},
-    vm::{Module32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, PlainNativeFunction32, RuntimeExport32, RuntimeModuleState32},
+    vm::{
+        Module32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, PlainNativeFunction32,
+        RuntimeExport32, RuntimeModuleState32,
+    },
 };
-use std::{collections::BTreeMap, sync::{Arc, Mutex}};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 

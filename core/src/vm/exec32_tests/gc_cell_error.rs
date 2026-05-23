@@ -207,4 +207,3 @@ fn execute32_caller_handler_catches_raise_from_callee() {
 
     assert_eq!(error.message.as_ref(), "boom");
 }
-

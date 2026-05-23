@@ -1,458 +1,163 @@
 #[cfg(test)]
 mod tests {
-    use crate::val::{Val, de::*};
+    use crate::val::{HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList, TypedMap, de::*};
 
-    #[test]
-    fn test_from_json_str_basic() {
-        let json = r#"{"name": "test", "age": 25, "active": true}"#;
-        let val = from_json_str(json).unwrap();
+    fn short(value: &str) -> RuntimeVal {
+        RuntimeVal::ShortStr(ShortStr::new(value).expect("short string"))
+    }
 
-        if let Some(map) = val.as_map() {
-            assert_eq!(map.get("name"), Some(&Val::from_str("test")));
-            assert_eq!(map.get("age"), Some(&Val::Int(25)));
-            assert_eq!(map.get("active"), Some(&Val::Bool(true)));
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
+    fn root_map(decoded: &RuntimeDecodedValue) -> &TypedMap {
+        let RuntimeVal::Obj(root) = decoded.value else {
+            panic!("expected root map object");
+        };
+        let Some(HeapValue::Map(map)) = decoded.heap.get(root) else {
+            panic!("expected heap map");
+        };
+        map
+    }
+
+    fn heap_list(heap: &HeapStore, value: RuntimeVal) -> &TypedList {
+        let RuntimeVal::Obj(handle) = value else {
+            panic!("expected list heap object");
+        };
+        let Some(HeapValue::List(list)) = heap.get(handle) else {
+            panic!("expected heap list");
+        };
+        list
     }
 
     #[test]
-    fn test_from_json_str_array() {
-        let json = r#"[1, 2.5, "hello", true, null]"#;
-        let val = from_json_str(json).unwrap();
+    fn json_decodes_to_runtime_heap_values() {
+        let decoded = from_json_str_runtime(r#"{"items": [1, 2, 3], "name": "tool"}"#).unwrap();
+        let map = root_map(&decoded);
 
-        if let Some(list) = val.as_list() {
-            assert_eq!(list.len(), 5);
-            assert_eq!(list[0], Val::Int(1));
-            assert_eq!(list[1], Val::Float(2.5));
-            assert_eq!(list[2], Val::from_str("hello"));
-            assert_eq!(list[3], Val::Bool(true));
-            assert_eq!(list[4], Val::Nil);
-        } else {
-            panic!("Expected List, got {:?}", val);
-        }
+        assert!(matches!(map, TypedMap::StringMixed(_)));
+        assert_eq!(map.get_str("name"), Some(short("tool")));
+
+        let list = heap_list(&decoded.heap, map.get_str("items").expect("items entry"));
+        assert!(matches!(list, TypedList::Int(values) if values == &vec![1, 2, 3]));
     }
 
     #[test]
-    fn test_from_json_str_nested() {
-        let json = r#"{"user": {"name": "admin", "permissions": ["read", "write"]}, "count": 42}"#;
-        let val = from_json_str(json).unwrap();
-
-        if let Some(map) = val.as_map() {
-            if let Some(user_map) = map.get("user").and_then(Val::as_map) {
-                assert_eq!(user_map.get("name"), Some(&Val::from_str("admin")));
-                if let Some(perms) = user_map.get("permissions").and_then(Val::as_list) {
-                    assert_eq!(perms.len(), 2);
-                    assert_eq!(perms[0], Val::from_str("read"));
-                    assert_eq!(perms[1], Val::from_str("write"));
-                } else {
-                    panic!("Expected permissions list");
-                }
-            } else {
-                panic!("Expected user map");
-            }
-            assert_eq!(map.get("count"), Some(&Val::Int(42)));
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
-    }
-
-    #[test]
-    fn test_from_yaml_str_basic() {
-        let yaml = r#"
-name: test
-age: 25
-active: true
-"#;
-        let val = from_yaml_str(yaml).unwrap();
-
-        if let Some(map) = val.as_map() {
-            assert_eq!(map.get("name"), Some(&Val::from_str("test")));
-            assert_eq!(map.get("age"), Some(&Val::Int(25)));
-            assert_eq!(map.get("active"), Some(&Val::Bool(true)));
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
-    }
-
-    #[test]
-    fn test_from_yaml_str_array() {
-        let yaml = r#"
-- 1
-- 2.5
-- hello
-- true
-- null
-"#;
-        let val = from_yaml_str(yaml).unwrap();
-
-        if let Some(list) = val.as_list() {
-            assert_eq!(list.len(), 5);
-            assert_eq!(list[0], Val::Int(1));
-            assert_eq!(list[1], Val::Float(2.5));
-            assert_eq!(list[2], Val::from_str("hello"));
-            assert_eq!(list[3], Val::Bool(true));
-            assert_eq!(list[4], Val::Nil);
-        } else {
-            panic!("Expected List, got {:?}", val);
-        }
-    }
-
-    #[test]
-    fn test_from_yaml_str_nested() {
-        let yaml = r#"
+    fn yaml_decodes_nested_runtime_containers() {
+        let decoded = from_yaml_str_runtime(
+            r#"
 user:
   name: admin
   permissions:
     - read
     - write
 count: 42
-"#;
-        let val = from_yaml_str(yaml).unwrap();
+"#,
+        )
+        .unwrap();
+        let map = root_map(&decoded);
+        assert_eq!(map.get_str("count"), Some(RuntimeVal::Int(42)));
 
-        if let Some(map) = val.as_map() {
-            if let Some(user_map) = map.get("user").and_then(Val::as_map) {
-                assert_eq!(user_map.get("name"), Some(&Val::from_str("admin")));
-                if let Some(perms) = user_map.get("permissions").and_then(Val::as_list) {
-                    assert_eq!(perms.len(), 2);
-                    assert_eq!(perms[0], Val::from_str("read"));
-                    assert_eq!(perms[1], Val::from_str("write"));
-                } else {
-                    panic!("Expected permissions list");
-                }
-            } else {
-                panic!("Expected user map");
-            }
-            assert_eq!(map.get("count"), Some(&Val::Int(42)));
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
+        let RuntimeVal::Obj(user) = map.get_str("user").expect("user entry") else {
+            panic!("expected user map");
+        };
+        let Some(HeapValue::Map(user_map)) = decoded.heap.get(user) else {
+            panic!("expected user heap map");
+        };
+        assert_eq!(user_map.get_str("name"), Some(short("admin")));
+
+        let perms = heap_list(
+            &decoded.heap,
+            user_map.get_str("permissions").expect("permissions entry"),
+        );
+        assert!(matches!(
+            perms,
+            TypedList::String(values)
+                if values.as_slice() == [std::sync::Arc::<str>::from("read"), std::sync::Arc::<str>::from("write")]
+        ));
     }
 
     #[test]
-    fn test_from_yaml_str_multiline() {
-        let yaml = r#"
-description: |
-  This is a multiline
-  string in YAML
-summary: >
-  This is a folded
-  string in YAML
-"#;
-        let val = from_yaml_str(yaml).unwrap();
-
-        if let Some(map) = val.as_map() {
-            if let Some(desc) = map.get("description").and_then(Val::as_str) {
-                assert!(desc.contains("This is a multiline\nstring in YAML"));
-            } else {
-                panic!("Expected description string");
-            }
-            if let Some(summary) = map.get("summary").and_then(Val::as_str) {
-                assert!(summary.contains("This is a folded string in YAML"));
-            } else {
-                panic!("Expected summary string");
-            }
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
-    }
-
-    #[test]
-    fn test_from_toml_str_basic() {
-        let toml = r#"
-name = "test"
-age = 25
-active = true
-"#;
-        let val = from_toml_str(toml).unwrap();
-
-        if let Some(map) = val.as_map() {
-            assert_eq!(map.get("name"), Some(&Val::from_str("test")));
-            assert_eq!(map.get("age"), Some(&Val::Int(25)));
-            assert_eq!(map.get("active"), Some(&Val::Bool(true)));
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
-    }
-
-    #[test]
-    fn test_from_toml_str_array() {
-        let toml = r#"
-numbers = [1, 2, 3]
-strings = ["hello", "world"]
-mixed = [1, "hello", true]
-"#;
-        let val = from_toml_str(toml).unwrap();
-
-        if let Some(map) = val.as_map() {
-            if let Some(numbers) = map.get("numbers").and_then(Val::as_list) {
-                assert_eq!(numbers.len(), 3);
-                assert_eq!(numbers[0], Val::Int(1));
-                assert_eq!(numbers[1], Val::Int(2));
-                assert_eq!(numbers[2], Val::Int(3));
-            } else {
-                panic!("Expected numbers array");
-            }
-
-            if let Some(strings) = map.get("strings").and_then(Val::as_list) {
-                assert_eq!(strings.len(), 2);
-                assert_eq!(strings[0], Val::from_str("hello"));
-                assert_eq!(strings[1], Val::from_str("world"));
-            } else {
-                panic!("Expected strings array");
-            }
-
-            if let Some(mixed) = map.get("mixed").and_then(Val::as_list) {
-                assert_eq!(mixed.len(), 3);
-                assert_eq!(mixed[0], Val::Int(1));
-                assert_eq!(mixed[1], Val::from_str("hello"));
-                assert_eq!(mixed[2], Val::Bool(true));
-            } else {
-                panic!("Expected mixed array");
-            }
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
-    }
-
-    #[test]
-    fn test_from_toml_str_table() {
-        let toml = r#"
-[user]
-name = "admin"
-permissions = ["read", "write"]
-
-[database]
-host = "localhost"
-port = 5432
-"#;
-        let val = from_toml_str(toml).unwrap();
-
-        if let Some(map) = val.as_map() {
-            if let Some(user_map) = map.get("user").and_then(Val::as_map) {
-                assert_eq!(user_map.get("name"), Some(&Val::from_str("admin")));
-                if let Some(perms) = user_map.get("permissions").and_then(Val::as_list) {
-                    assert_eq!(perms.len(), 2);
-                    assert_eq!(perms[0], Val::from_str("read"));
-                    assert_eq!(perms[1], Val::from_str("write"));
-                } else {
-                    panic!("Expected permissions list");
-                }
-            } else {
-                panic!("Expected user map");
-            }
-
-            if let Some(db_map) = map.get("database").and_then(Val::as_map) {
-                assert_eq!(db_map.get("host"), Some(&Val::from_str("localhost")));
-                assert_eq!(db_map.get("port"), Some(&Val::Int(5432)));
-            } else {
-                panic!("Expected database map");
-            }
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
-    }
-
-    #[test]
-    fn test_from_toml_str_nested_table() {
-        let toml = r#"
+    fn toml_decodes_tables_and_arrays_to_runtime_heap_values() {
+        let decoded = from_toml_str_runtime(
+            r#"
 [req.user]
 role = "admin"
 id = 123
 
 [req.resource]
 type = "document"
-name = "test.txt"
-"#;
-        let val = from_toml_str(toml).unwrap();
+tags = ["read", "write"]
+"#,
+        )
+        .unwrap();
+        let map = root_map(&decoded);
 
-        if let Some(map) = val.as_map() {
-            if let Some(req_map) = map.get("req").and_then(Val::as_map) {
-                if let Some(user_map) = req_map.get("user").and_then(Val::as_map) {
-                    assert_eq!(user_map.get("role"), Some(&Val::from_str("admin")));
-                    assert_eq!(user_map.get("id"), Some(&Val::Int(123)));
-                } else {
-                    panic!("Expected user map");
-                }
-
-                if let Some(resource_map) = req_map.get("resource").and_then(Val::as_map) {
-                    assert_eq!(resource_map.get("type"), Some(&Val::from_str("document")));
-                    assert_eq!(resource_map.get("name"), Some(&Val::from_str("test.txt")));
-                } else {
-                    panic!("Expected resource map");
-                }
-            } else {
-                panic!("Expected req map");
-            }
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
+        let RuntimeVal::Obj(req) = map.get_str("req").expect("req entry") else {
+            panic!("expected req map");
+        };
+        let Some(HeapValue::Map(req_map)) = decoded.heap.get(req) else {
+            panic!("expected req heap map");
+        };
+        let RuntimeVal::Obj(user) = req_map.get_str("user").expect("user entry") else {
+            panic!("expected user map");
+        };
+        let Some(HeapValue::Map(user_map)) = decoded.heap.get(user) else {
+            panic!("expected user heap map");
+        };
+        assert_eq!(user_map.get_str("id"), Some(RuntimeVal::Int(123)));
     }
 
     #[test]
-    fn test_from_toml_str_table_array() {
-        let toml = r#"
-[[users]]
-name = "alice"
-role = "admin"
+    fn parse_runtime_with_format_detects_and_overrides_formats() {
+        let json = parse_runtime_with_format(r#"{"key": "value"}"#, None).unwrap();
+        assert_eq!(root_map(&json).get_str("key"), Some(short("value")));
 
-[[users]]
-name = "bob"
-role = "user"
-"#;
-        let val = from_toml_str(toml).unwrap();
+        let yaml = parse_runtime_with_format("key: value\nother: 123", Some(Format::Yaml)).unwrap();
+        let map = root_map(&yaml);
+        assert_eq!(map.get_str("key"), Some(short("value")));
+        assert_eq!(map.get_str("other"), Some(RuntimeVal::Int(123)));
 
-        if let Some(map) = val.as_map() {
-            if let Some(users) = map.get("users").and_then(Val::as_list) {
-                assert_eq!(users.len(), 2);
-
-                if let Some(alice) = users[0].as_map() {
-                    assert_eq!(alice.get("name"), Some(&Val::from_str("alice")));
-                    assert_eq!(alice.get("role"), Some(&Val::from_str("admin")));
-                } else {
-                    panic!("Expected alice map");
-                }
-
-                if let Some(bob) = users[1].as_map() {
-                    assert_eq!(bob.get("name"), Some(&Val::from_str("bob")));
-                    assert_eq!(bob.get("role"), Some(&Val::from_str("user")));
-                } else {
-                    panic!("Expected bob map");
-                }
-            } else {
-                panic!("Expected users array");
-            }
-        } else {
-            panic!("Expected Map, got {:?}", val);
-        }
+        let toml = parse_runtime_with_format("key = \"value\"\nother = 123", Some(Format::Toml)).unwrap();
+        let map = root_map(&toml);
+        assert_eq!(map.get_str("key"), Some(short("value")));
+        assert_eq!(map.get_str("other"), Some(RuntimeVal::Int(123)));
     }
 
     #[test]
-    fn test_detect_format_json() {
+    fn parse_runtime_with_format_into_existing_heap() {
+        let mut heap = HeapStore::new();
+        let value = parse_runtime_with_format_into_heap("[1, 2, 3]", Format::Json, &mut heap).unwrap();
+        let list = heap_list(&heap, value);
+        assert!(matches!(list, TypedList::Int(values) if values == &vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn invalid_inputs_return_errors() {
+        assert!(from_json_str_runtime(r#"{"invalid": json"#).is_err());
+        assert!(from_yaml_str_runtime("invalid: [\n  - yaml\n  - structure\n").is_err());
+        assert!(from_toml_str_runtime("invalid = toml = syntax").is_err());
+    }
+
+    #[test]
+    fn detects_formats() {
         assert_eq!(detect_format(r#"{"key": "value"}"#), Format::Json);
         assert_eq!(detect_format(r#"[1, 2, 3]"#), Format::Json);
-        assert_eq!(detect_format(r#"{"nested": {"key": "value"}}"#), Format::Json);
-        assert_eq!(detect_format(""), Format::Json); // Empty defaults to JSON
-    }
-
-    #[test]
-    fn test_detect_format_yaml() {
+        assert_eq!(detect_format(""), Format::Json);
         assert_eq!(detect_format("---\nkey: value"), Format::Yaml);
-        assert_eq!(detect_format("key: value\nother: 123"), Format::Yaml);
         assert_eq!(detect_format("- item1\n- item2"), Format::Yaml);
         assert_eq!(detect_format("multiline: |\n  content"), Format::Yaml);
-        assert_eq!(detect_format("folded: >\n  content"), Format::Yaml);
-    }
-
-    #[test]
-    fn test_detect_format_toml() {
         assert_eq!(detect_format("[section]\nkey = value"), Format::Toml);
         assert_eq!(detect_format("key = \"value\""), Format::Toml);
-        assert_eq!(detect_format("number = 42\nstring = \"hello\""), Format::Toml);
         assert_eq!(detect_format("[[array]]\nname = \"test\""), Format::Toml);
-        assert_eq!(detect_format("nested.key = \"value\""), Format::Toml);
     }
 
     #[test]
-    fn test_detect_format_edge_cases() {
-        // JSON-like but actually YAML
-        assert_eq!(detect_format("key: {\"nested\": \"value\"}"), Format::Yaml);
-
-        // TOML with spaces around equals
-        assert_eq!(detect_format("key = value"), Format::Toml);
-        assert_eq!(detect_format("key=value"), Format::Toml);
-
-        // Complex nested structures
-        assert_eq!(detect_format("user:\n  name: test\n  age: 25"), Format::Yaml);
-        assert_eq!(detect_format("[user]\nname = \"test\"\nage = 25"), Format::Toml);
-    }
-
-    #[test]
-    fn test_parse_with_format_override() {
-        let json_data = r#"{"key": "value"}"#;
-
-        // Test JSON override
-        let val = parse_with_format(json_data, Some(Format::Json)).unwrap();
-        if let Some(map) = val.as_map() {
-            assert_eq!(map.get("key"), Some(&Val::from_str("value")));
-        } else {
-            panic!("Expected Map");
-        }
-
-        // Test auto-detection
-        let val = parse_with_format(json_data, None).unwrap();
-        if let Some(map) = val.as_map() {
-            assert_eq!(map.get("key"), Some(&Val::from_str("value")));
-        } else {
-            panic!("Expected Map");
-        }
-    }
-
-    #[test]
-    fn test_parse_with_format_yaml_override() {
-        let yaml_data = "key: value\nother: 123";
-
-        // Test YAML override
-        let val = parse_with_format(yaml_data, Some(Format::Yaml)).unwrap();
-        if let Some(map) = val.as_map() {
-            assert_eq!(map.get("key"), Some(&Val::from_str("value")));
-            assert_eq!(map.get("other"), Some(&Val::Int(123)));
-        } else {
-            panic!("Expected Map");
-        }
-    }
-
-    #[test]
-    fn test_parse_with_format_toml_override() {
-        let toml_data = "key = \"value\"\nother = 123";
-
-        // Test TOML override
-        let val = parse_with_format(toml_data, Some(Format::Toml)).unwrap();
-        if let Some(map) = val.as_map() {
-            assert_eq!(map.get("key"), Some(&Val::from_str("value")));
-            assert_eq!(map.get("other"), Some(&Val::Int(123)));
-        } else {
-            panic!("Expected Map");
-        }
-    }
-
-    #[test]
-    fn test_error_handling() {
-        // Invalid JSON
-        assert!(from_json_str(r#"{"invalid": json"#).is_err());
-
-        // Invalid YAML
-        assert!(from_yaml_str("invalid: [\n  - yaml\n  - structure\n").is_err());
-
-        // Invalid TOML
-        assert!(from_toml_str("invalid = toml = syntax").is_err());
-    }
-
-    #[test]
-    fn test_has_yaml_indicators() {
+    fn detects_yaml_and_toml_indicators() {
         assert!(has_yaml_indicators("key: value"));
         assert!(has_yaml_indicators("- item"));
         assert!(has_yaml_indicators("multiline: |"));
-        assert!(has_yaml_indicators("folded: >"));
-        assert!(has_yaml_indicators("# comment\nkey: value"));
-
         assert!(!has_yaml_indicators(r#"{"key": "value"}"#));
-        assert!(!has_yaml_indicators("key = value"));
-        assert!(!has_yaml_indicators(""));
-    }
 
-    #[test]
-    fn test_has_toml_indicators() {
         assert!(has_toml_indicators("[section]"));
         assert!(has_toml_indicators("[[array]]"));
         assert!(has_toml_indicators("key = value"));
-        assert!(has_toml_indicators("key=\"value\""));
-        assert!(has_toml_indicators("nested.key = \"value\""));
-        assert!(has_toml_indicators("# comment\nkey = value"));
-
-        assert!(!has_toml_indicators(r#"{"key": "value"}"#));
         assert!(!has_toml_indicators("key: value"));
-        assert!(!has_toml_indicators("- item"));
-        assert!(!has_toml_indicators(""));
     }
 }

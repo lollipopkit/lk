@@ -1,7 +1,7 @@
 //! Minimal compiler for the new `Function32` IR.
 //!
 //! This is the first migration point from AST to the new VM path. It is
-//! deliberately small and independent from the legacy `FunctionBuilder`.
+//! deliberately small and independent from the previous `FunctionBuilder`.
 
 mod assign;
 mod builder;
@@ -102,9 +102,11 @@ impl Compiler32 {
         match stmt {
             Stmt::Empty => {}
             Stmt::Expr(expr) => {
+                let watermark = self.next_reg;
                 if !self.try_lower_rewritten_set_index_expr(expr)? {
                     self.lower_expr(expr)?;
                 }
+                self.next_reg = watermark;
             }
             Stmt::Return { value } => {
                 let value = match value {
@@ -119,8 +121,16 @@ impl Compiler32 {
             }
             Stmt::Let { pattern, value, .. } => self.lower_let(pattern, value)?,
             Stmt::Define { name, value } => self.lower_define(name, value)?,
-            Stmt::Assign { name, value, .. } => self.lower_assign(name, value)?,
-            Stmt::CompoundAssign { name, op, value, .. } => self.lower_compound_assign(name, op, value)?,
+            Stmt::Assign { name, value, .. } => {
+                let watermark = self.next_reg;
+                self.lower_assign(name, value)?;
+                self.next_reg = watermark;
+            }
+            Stmt::CompoundAssign { name, op, value, .. } => {
+                let watermark = self.next_reg;
+                self.lower_compound_assign(name, op, value)?;
+                self.next_reg = watermark;
+            }
             Stmt::If {
                 condition,
                 then_stmt,
@@ -145,11 +155,19 @@ impl Compiler32 {
             }
             Stmt::Function { name, .. } => self.lower_function_decl(name)?,
             Stmt::Block { statements } => {
+                let watermark = self.next_reg;
+                let locals = self.locals.clone();
+                let cell_locals = self.cell_locals.clone();
                 for stmt in statements {
                     self.lower_stmt(stmt)?;
                     if self.emitted_return {
                         break;
                     }
+                }
+                self.locals = locals;
+                self.cell_locals = cell_locals;
+                if !self.emitted_return {
+                    self.next_reg = self.live_register_floor().max(watermark);
                 }
             }
         }
@@ -157,13 +175,21 @@ impl Compiler32 {
     }
 
     fn lower_define(&mut self, name: &str, value: &Expr) -> Result<()> {
+        let watermark = self.next_reg;
+        let slot = if let Some(slot) = self.locals.get(name).copied() {
+            slot
+        } else {
+            self.alloc_reg()
+        };
         let value = self.lower_expr(value)?;
+        self.emit_move(slot, value, "define local")?;
         if self.top_level
-            && let Some(slot) = self.global_names.get(name).copied()
+            && let Some(global_slot) = self.global_names.get(name).copied()
         {
-            self.emit_set_global(value, slot)?;
+            self.emit_set_global(slot, global_slot)?;
         }
-        self.locals.insert(name.to_string(), value);
+        self.locals.insert(name.to_string(), slot);
+        self.next_reg = self.live_register_floor().max(watermark).max(slot + 1);
         Ok(())
     }
 
@@ -195,16 +221,11 @@ impl Compiler32 {
                     self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("dst", dst)?, k));
                 }
             }
-            value if value.as_list().is_some() => {
-                let k = self.push_heap_value(const_heap_value_from_legacy(value)?)?;
-                self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("dst", dst)?, k));
-            }
-            value if value.as_map().is_some() => {
-                let k = self.push_heap_value(const_heap_value_from_legacy(value)?)?;
-                self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("dst", dst)?, k));
-            }
             other => {
-                bail!("Compiler32 cannot materialize legacy value yet: {}", other.type_name());
+                bail!(
+                    "Compiler32 cannot materialize AST literal value yet: {}",
+                    other.type_name()
+                );
             }
         }
         Ok(dst)
@@ -479,6 +500,12 @@ impl Compiler32 {
     }
 
     fn lower_list(&mut self, elements: &[Box<Expr>]) -> Result<u16> {
+        if let Some(value) = const_heap_value_from_expr_literal(&Expr::List(elements.to_vec()))? {
+            let dst = self.alloc_reg();
+            let k = self.push_heap_value(value)?;
+            self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("list dst", dst)?, k));
+            return Ok(dst);
+        }
         let mut values = Vec::with_capacity(elements.len());
         for element in elements {
             values.push(self.lower_expr(element)?);
@@ -487,6 +514,12 @@ impl Compiler32 {
     }
 
     fn lower_map(&mut self, entries: &[(Box<Expr>, Box<Expr>)]) -> Result<u16> {
+        if let Some(value) = const_heap_value_from_expr_literal(&Expr::Map(entries.to_vec()))? {
+            let dst = self.alloc_reg();
+            let k = self.push_heap_value(value)?;
+            self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("map dst", dst)?, k));
+            return Ok(dst);
+        }
         let mut values = Vec::with_capacity(entries.len());
         for (key, value) in entries {
             values.push((self.lower_expr(key)?, self.lower_expr(value)?));

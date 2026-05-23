@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use crate::val::Val;
+    use crate::{
+        val::{Type, Val},
+        vm::execute_source32,
+    };
     use std::collections::HashMap;
     use std::mem::size_of;
 
@@ -17,12 +20,21 @@ mod tests {
         ($name:ident, $op:tt, $l:expr, $r:expr, $res:expr) => {
             #[test]
             fn $name() {
-                let l: Val = $l.into();
-                let r: Val = $r.into();
-                let res: Val = $res.into();
+                let l = Val::test_from($l);
+                let r = Val::test_from($r);
+                let res = Val::test_from($res);
                 assert_eq!((&l $op &r).unwrap(), res);
             }
         };
+    }
+
+    fn expect_expr(expr: &str, expected: &str) {
+        let result = execute_source32(&format!("return {expr};")).expect("execute source");
+        assert_eq!(result.display_first_return(), expected);
+    }
+
+    fn panic_expr(expr: &str) {
+        assert!(execute_source32(&format!("return {expr};")).is_err());
     }
 
     test_op!(add, +, 1, 2, 3);
@@ -31,10 +43,32 @@ mod tests {
 
     test_op!(mul, *, 2, 3, 6);
     test_op!(div, /, 3, 2, 1.5);
-    test_op!(list_add_val, +, vec![1], 2, vec![1, 2]);
-    test_op!(list_add_list, +, vec![1], vec![2], vec![1, 2]);
-    test_op!(list_sub_val, -, vec![1, 2], 2, vec![1]);
-    test_op!(list_sub_list, -, vec![1, 2], vec![2], vec![1]);
+
+    #[test]
+    fn old_val_container_arithmetic_is_not_supported() {
+        let list = Val::test_from(vec![1]);
+        let map = Val::test_string_map_from_hashmap(HashMap::from([("answer", 42)]));
+
+        assert!((&list + &Val::Int(2)).is_err());
+        assert!((&list - &Val::Int(1)).is_err());
+        assert!((&map + &map).is_err());
+        assert!((&map - &Val::from_str("answer")).is_err());
+    }
+
+    #[test]
+    fn heap_val_containers_satisfy_container_types() {
+        let list = Val::test_list_from_values(vec![Val::Int(1)]);
+        let map = Val::test_string_map_from_hashmap(HashMap::from([("answer".to_string(), Val::Int(42))]));
+
+        assert_eq!(list.dispatch_type(), Type::List(Box::new(Type::Any)));
+        assert_eq!(map.dispatch_type(), Type::Map(Box::new(Type::Any), Box::new(Type::Any)));
+        assert!(Type::List(Box::new(Type::Int)).validate(&list).is_ok());
+        assert!(
+            Type::Map(Box::new(Type::String), Box::new(Type::Int))
+                .validate(&map)
+                .is_ok()
+        );
+    }
 
     #[test]
     fn string_concat_preserves_short_and_heap_string_shapes() {
@@ -57,90 +91,17 @@ mod tests {
         test_op!(str_add_float, +, "hello", 12.34, "hello12.34");
         test_op!(int_add_str, +, 123, "hello", "123hello");
         test_op!(float_add_str, +, 12.34, "hello", "12.34hello");
-
-        // Map operations
-        #[test]
-        fn map_add_map() {
-            let mut map1 = HashMap::new();
-            map1.insert("a", 1);
-            map1.insert("b", 2);
-
-            let mut map2 = HashMap::new();
-            map2.insert("c", 3);
-            map2.insert("a", 4); // This should override map1's "a"
-
-            let mut expected = HashMap::new();
-            expected.insert("a".to_string(), Val::Int(4));
-            expected.insert("b".to_string(), Val::Int(2));
-            expected.insert("c".to_string(), Val::Int(3));
-
-            let l: Val = map1.into();
-            let r: Val = map2.into();
-            let result = (&l + &r).unwrap();
-
-            assert_eq!(result, expected.into());
-        }
-
-        #[test]
-        fn map_sub_keys() {
-            let mut map1 = HashMap::new();
-            map1.insert("a", 1);
-            map1.insert("b", 2);
-            map1.insert("c", 3);
-
-            let mut map2 = HashMap::new();
-            map2.insert("a", 10); // Value doesn't matter, only key is used in subtraction
-
-            let mut expected = HashMap::new();
-            expected.insert("b".to_string(), Val::Int(2));
-            expected.insert("c".to_string(), Val::Int(3));
-
-            let l: Val = map1.into();
-            let r: Val = map2.into();
-            let result = (&l - &r).unwrap();
-
-            assert_eq!(result, expected.into());
-        }
-
-        #[test]
-        fn map_sub_str_key() {
-            let mut map1 = HashMap::new();
-            map1.insert("a", 1);
-            map1.insert("b", 2);
-
-            let key = "a";
-
-            let mut expected = HashMap::new();
-            expected.insert("b".to_string(), Val::Int(2));
-
-            let l: Val = map1.into();
-            let r: Val = key.into();
-            let result = (&l - &r).unwrap();
-
-            assert_eq!(result, expected.into());
-        }
     }
 
     // Access tests
     #[test]
     fn test_map_access() {
-        let mut map = HashMap::new();
-        map.insert("name", "alice".to_string());
-        map.insert("age", 30.to_string());
-
-        let val: Val = map.into();
-        let field = Val::from_str("name");
-
-        assert_eq!(val.access(&field), Some(Val::from_str("alice")));
+        expect_expr(r#"{"name": "alice", "age": "30"}.name"#, "alice");
     }
 
     #[test]
     fn test_list_access() {
-        let list = vec![10, 20, 30];
-        let val: Val = list.into();
-        let index = Val::Int(1);
-
-        assert_eq!(val.access(&index), Some(Val::Int(20)));
+        expect_expr("[10, 20, 30].1", "20");
     }
 
     #[test]
@@ -157,71 +118,37 @@ mod tests {
 
     #[test]
     fn test_access_out_of_bounds() {
-        let list = vec![10, 20, 30];
-        let val: Val = list.into();
-        let index = Val::Int(5);
-
-        assert_eq!(val.access(&index), None);
+        expect_expr("[10, 20, 30].5 == nil", "true");
     }
 
     #[test]
     fn test_access_negative_index() {
-        let list = vec![10, 20, 30];
-        let val: Val = list.into();
-        let index = Val::Int(-1);
-
-        assert_eq!(val.access(&index), Some(Val::Int(30)));
+        panic_expr("[10, 20, 30][-1]");
     }
 
     // Literal creation tests
     #[test]
     fn test_literal_list_creation() {
-        let list = vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)];
-        let val = Val::list(list.clone().into());
-
-        // Test access
-        assert_eq!(val.access(&Val::Int(0)), Some(Val::Int(1)));
-        assert_eq!(val.access(&Val::Int(1)), Some(Val::from_str("hello")));
-        assert_eq!(val.access(&Val::Int(2)), Some(Val::Bool(true)));
-        assert_eq!(val.access(&Val::Int(3)), None);
+        expect_expr(r#"[1, "hello", true].0"#, "1");
+        expect_expr(r#"[1, "hello", true].1"#, "hello");
+        expect_expr(r#"[1, "hello", true].2"#, "true");
+        expect_expr(r#"[1, "hello", true].3 == nil"#, "true");
     }
 
     #[test]
     fn test_literal_map_creation() {
-        let mut map = HashMap::new();
-        map.insert("name".to_string(), Val::from_str("Alice"));
-        map.insert("age".to_string(), Val::Int(30));
-        map.insert("active".to_string(), Val::Bool(true));
-
-        let val = Val::from(map);
-
-        // Test access
-        assert_eq!(val.access(&Val::from_str("name")), Some(Val::from_str("Alice")));
-        assert_eq!(val.access(&Val::from_str("age")), Some(Val::Int(30)));
-        assert_eq!(val.access(&Val::from_str("active")), Some(Val::Bool(true)));
-        assert_eq!(val.access(&Val::from_str("nonexistent")), None);
+        expect_expr(r#"{"name": "Alice", "age": 30, "active": true}.name"#, "Alice");
+        expect_expr(r#"{"name": "Alice", "age": 30, "active": true}.age"#, "30");
+        expect_expr(r#"{"name": "Alice", "age": 30, "active": true}.active"#, "true");
+        expect_expr(
+            r#"{"name": "Alice", "age": 30, "active": true}.nonexistent == nil"#,
+            "true",
+        );
     }
 
     #[test]
     fn test_nested_literal_access() {
-        // Create nested structure: {"users": [{"name": "Alice", "age": 30}]}
-        let mut inner_map = HashMap::new();
-        inner_map.insert("name".to_string(), Val::from_str("Alice"));
-        inner_map.insert("age".to_string(), Val::Int(30));
-
-        let users_list = vec![Val::from(inner_map)];
-
-        let mut outer_map = HashMap::new();
-        outer_map.insert("users".to_string(), Val::list(users_list.into()));
-
-        let val = Val::from(outer_map);
-
-        // Test nested access
-        let users = val.access(&Val::from_str("users")).unwrap();
-        let first_user = users.access(&Val::Int(0)).unwrap();
-        let name = first_user.access(&Val::from_str("name")).unwrap();
-
-        assert_eq!(name, Val::from_str("Alice"));
+        expect_expr(r#"{"users": [{"name": "Alice", "age": 30}]}.users.0.name"#, "Alice");
     }
 
     // Comparison tests
@@ -267,124 +194,16 @@ mod tests {
 
     #[test]
     fn test_literal_equality() {
-        // Test list equality
-        let list1 = Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into());
-        let list2 = Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(3)].into());
-        let list3 = Val::list(vec![Val::Int(1), Val::Int(2), Val::Int(4)].into());
-
-        assert_eq!(list1, list2);
-        assert_ne!(list1, list3);
-
-        // Test map equality
-        let mut map1 = HashMap::new();
-        map1.insert("a".to_string(), Val::Int(1));
-        map1.insert("b".to_string(), Val::Int(2));
-
-        let mut map2 = HashMap::new();
-        map2.insert("a".to_string(), Val::Int(1));
-        map2.insert("b".to_string(), Val::Int(2));
-
-        let mut map3 = HashMap::new();
-        map3.insert("a".to_string(), Val::Int(1));
-        map3.insert("b".to_string(), Val::Int(3));
-
-        let val1 = Val::from(map1);
-        let val2 = Val::from(map2);
-        let val3 = Val::from(map3);
-
-        assert_eq!(val1, val2);
-        assert_ne!(val1, val3);
+        expect_expr("[1, 2, 3] == [1, 2, 3]", "true");
+        expect_expr("[1, 2, 3] != [1, 2, 4]", "true");
+        expect_expr(r#"{"a": 1, "b": 2} == {"a": 1, "b": 2}"#, "true");
+        expect_expr(r#"{"a": 1, "b": 2} != {"a": 1, "b": 3}"#, "true");
     }
 
     #[test]
     fn test_display_formatting() {
-        // Test list display
-        let list = Val::list(vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)].into());
-        let display = format!("{}", list);
-        assert!(display.contains("1") && display.contains("hello") && display.contains("true"));
-
-        // Test map display
-        let mut map = HashMap::new();
-        map.insert("name".to_string(), Val::from_str("Alice"));
-        map.insert("age".to_string(), Val::Int(30));
-        let val = Val::from(map);
-        let display = format!("{}", val);
-        assert!(
-            display.contains("name") && display.contains("Alice") && display.contains("age") && display.contains("30")
-        );
-    }
-
-    #[test]
-    fn test_from_yaml_value() {
-        // Test basic YAML value conversions
-        let yaml_str = serde_yaml::Value::String("hello".to_string());
-        let val: Val = yaml_str.into();
-        assert_eq!(val, Val::from_str("hello"));
-
-        let yaml_int = serde_yaml::Value::Number(serde_yaml::Number::from(42));
-        let val: Val = yaml_int.into();
-        assert_eq!(val, Val::Int(42));
-
-        let yaml_float = serde_yaml::Value::Number(serde_yaml::Number::from(std::f64::consts::PI));
-        let val: Val = yaml_float.into();
-        assert_eq!(val, Val::Float(std::f64::consts::PI));
-
-        let yaml_bool = serde_yaml::Value::Bool(true);
-        let val: Val = yaml_bool.into();
-        assert_eq!(val, Val::Bool(true));
-
-        let yaml_null = serde_yaml::Value::Null;
-        let val: Val = yaml_null.into();
-        assert_eq!(val, Val::Nil);
-    }
-
-    #[test]
-    fn test_yaml_sequence() {
-        let yaml_seq = serde_yaml::Value::Sequence(vec![
-            serde_yaml::Value::Number(serde_yaml::Number::from(1)),
-            serde_yaml::Value::String("hello".to_string()),
-            serde_yaml::Value::Bool(true),
-        ]);
-        let val: Val = yaml_seq.into();
-
-        let expected = Val::list(vec![Val::Int(1), Val::from_str("hello"), Val::Bool(true)].into());
-
-        assert_eq!(val, expected);
-    }
-
-    #[test]
-    fn test_yaml_mapping() {
-        let mut yaml_map = serde_yaml::Mapping::new();
-        yaml_map.insert(
-            serde_yaml::Value::String("name".to_string()),
-            serde_yaml::Value::String("Alice".to_string()),
-        );
-        yaml_map.insert(
-            serde_yaml::Value::String("age".to_string()),
-            serde_yaml::Value::Number(serde_yaml::Number::from(30)),
-        );
-
-        let yaml_mapping = serde_yaml::Value::Mapping(yaml_map);
-        let val: Val = yaml_mapping.into();
-
-        let mut expected_map = HashMap::new();
-        expected_map.insert("name".to_string(), Val::from_str("Alice"));
-        expected_map.insert("age".to_string(), Val::Int(30));
-        let expected = Val::from(expected_map);
-
-        assert_eq!(val, expected);
-    }
-
-    #[test]
-    fn test_yaml_tagged_value() {
-        use serde_yaml::value::{Tag, TaggedValue};
-
-        let tagged = serde_yaml::Value::Tagged(Box::new(TaggedValue {
-            tag: Tag::new("!custom"),
-            value: serde_yaml::Value::String("tagged_value".to_string()),
-        }));
-        let val: Val = tagged.into();
-        assert_eq!(val, Val::from_str("tagged_value"));
+        expect_expr(r#"[1, "hello", true]"#, "[1, hello, true]");
+        expect_expr(r#"{"name": "Alice", "age": 30}.name"#, "Alice");
     }
 
     #[test]
@@ -448,64 +267,5 @@ mod tests {
         assert_eq!(detect_format("null"), Format::Json); // Valid JSON
         assert_eq!(detect_format("true"), Format::Json); // Valid JSON
         assert_eq!(detect_format("42"), Format::Json); // Valid JSON
-    }
-
-    #[test]
-    fn test_parse_with_format_json() {
-        use crate::val::de::{Format, parse_with_format};
-
-        // Auto-detect JSON
-        let json_input = r#"{"name": "Alice", "age": 30}"#;
-        let result = parse_with_format(json_input, None).unwrap();
-        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Alice")));
-        assert_eq!(result.access(&Val::from_str("age")), Some(Val::Int(30)));
-
-        // Force JSON format
-        let json_input2 = r#"{"name": "Charlie", "age": 35}"#;
-        let result = parse_with_format(json_input2, Some(Format::Json)).unwrap();
-        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Charlie")));
-    }
-
-    #[test]
-    fn test_parse_with_format_yaml() {
-        use crate::val::de::{Format, parse_with_format};
-
-        // Auto-detect YAML
-        let yaml_input = "name: Bob\nage: 25";
-        let result = parse_with_format(yaml_input, None).unwrap();
-        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Bob")));
-        assert_eq!(result.access(&Val::from_str("age")), Some(Val::Int(25)));
-
-        // Force YAML format
-        let yaml_input2 = "name: Dave\nage: 40";
-        let result = parse_with_format(yaml_input2, Some(Format::Yaml)).unwrap();
-        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Dave")));
-    }
-
-    #[test]
-    fn test_parse_with_format_all() {
-        use crate::val::de::{Format, parse_with_format};
-
-        // Auto-detect JSON
-        let json_input = r#"{"name": "Alice", "age": 30}"#;
-        let result = parse_with_format(json_input, None).unwrap();
-        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Alice")));
-        assert_eq!(result.access(&Val::from_str("age")), Some(Val::Int(30)));
-
-        // Auto-detect YAML
-        let yaml_input = "name: Bob\nage: 25";
-        let result = parse_with_format(yaml_input, None).unwrap();
-        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Bob")));
-        assert_eq!(result.access(&Val::from_str("age")), Some(Val::Int(25)));
-
-        // Force JSON format
-        let yaml_as_json = r#"{"name": "Charlie", "age": 35}"#;
-        let result = parse_with_format(yaml_as_json, Some(Format::Json)).unwrap();
-        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Charlie")));
-
-        // Force YAML format
-        let json_as_yaml = "name: Dave\nage: 40";
-        let result = parse_with_format(json_as_yaml, Some(Format::Yaml)).unwrap();
-        assert_eq!(result.access(&Val::from_str("name")), Some(Val::from_str("Dave")));
     }
 }

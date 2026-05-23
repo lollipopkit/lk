@@ -1,22 +1,20 @@
 use anyhow::{Result, anyhow};
 
 use crate::{
-    util::fast_map::{FastHashMap, FastHashSet, fast_hash_map_new, fast_hash_set_new},
+    util::fast_map::{FastHashMap, fast_hash_map_new},
     val::Val,
 };
 
 #[derive(Debug, Clone)]
-pub(super) struct LegacyValContext {
+pub(super) struct ValBindingContext {
     globals: FastHashMap<String, Val>,
-    const_globals: FastHashSet<String>,
     locals: Vec<FastHashMap<String, Val>>,
 }
 
-impl LegacyValContext {
+impl ValBindingContext {
     pub(super) fn new() -> Self {
         Self {
             globals: fast_hash_map_new(),
-            const_globals: fast_hash_set_new(),
             locals: Vec::new(),
         }
     }
@@ -34,7 +32,6 @@ impl LegacyValContext {
         if let Some(scope) = self.locals.last_mut() {
             scope.insert(name, value)
         } else {
-            self.const_globals.remove(name.as_str());
             self.globals.insert(name, value)
         }
     }
@@ -45,9 +42,6 @@ impl LegacyValContext {
                 *slot = value;
                 return Ok(());
             }
-        }
-        if self.const_globals.contains(name) {
-            return Err(anyhow!("Cannot assign to const variable '{}'", name));
         }
         if let Some(slot) = self.globals.get_mut(name) {
             *slot = value;
@@ -63,13 +57,11 @@ impl LegacyValContext {
         {
             return Some(prev);
         }
-        self.const_globals.remove(name);
         self.globals.remove(name)
     }
 
     pub(super) fn remove_global(&mut self, name: &str) {
         self.globals.remove(name);
-        self.const_globals.remove(name);
     }
 
     pub(super) fn push_scope(&mut self) {
@@ -78,11 +70,6 @@ impl LegacyValContext {
 
     pub(super) fn pop_scope(&mut self) -> bool {
         self.locals.pop().is_some()
-    }
-
-    pub(super) fn define_const(&mut self, name: String, value: Val) {
-        self.globals.insert(name.clone(), value);
-        self.const_globals.insert(name);
     }
 
     pub(super) fn has_local_scope(&self) -> bool {
@@ -99,7 +86,7 @@ impl LegacyValContext {
     }
 }
 
-impl Default for LegacyValContext {
+impl Default for ValBindingContext {
     fn default() -> Self {
         Self::new()
     }

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::typ::{NumericClass, NumericHierarchy};
 
-use super::Val;
+use super::{HeapValue, Val};
 
 /// 内联短字符串：0–7 字节 UTF-8，完全存储在 Val 内（零堆分配）。
 /// 实现了 Copy，克隆无需原子操作。
@@ -165,32 +165,41 @@ impl Type {
                 }
             }
             (Type::Any, _) => Ok(()),
-            (Type::List(elem_type), value) if value.as_list().is_some() => {
-                let list = value.as_list().expect("checked list");
-                for item in list.iter() {
+            (Type::List(elem_type), Val::Obj(value)) if matches!(value.as_ref(), HeapValue::List(_)) => {
+                let HeapValue::List(list) = value.as_ref() else {
+                    unreachable!("checked list")
+                };
+                let items = list.to_val_values();
+                for item in &items {
                     elem_type.validate(item)?;
                 }
                 Ok(())
             }
-            (Type::Map(key_type, val_type), value) if value.as_map().is_some() => {
-                let map = value.as_map().expect("checked map");
-                for (key, value) in map.iter() {
+            (Type::Map(key_type, val_type), Val::Obj(value)) if matches!(value.as_ref(), HeapValue::Map(_)) => {
+                let HeapValue::Map(map) = value.as_ref() else {
+                    unreachable!("checked map")
+                };
+                let entries = map.to_val_entries();
+                for (key, value) in &entries {
                     let key_val = Val::from_str(key.as_str());
                     key_type.validate(&key_val)?;
                     val_type.validate(value)?;
                 }
                 Ok(())
             }
-            (Type::Tuple(elems), value) if value.as_list().is_some() => {
-                let list = value.as_list().expect("checked list");
-                if list.len() != elems.len() {
+            (Type::Tuple(elems), Val::Obj(value)) if matches!(value.as_ref(), HeapValue::List(_)) => {
+                let HeapValue::List(list) = value.as_ref() else {
+                    unreachable!("checked tuple list")
+                };
+                let items = list.to_val_values();
+                if items.len() != elems.len() {
                     return Err(anyhow!(
                         "Tuple length mismatch: expected {}, got {}",
                         elems.len(),
-                        list.len()
+                        items.len()
                     ));
                 }
-                for (idx, (expected, value)) in elems.iter().zip(list.iter()).enumerate() {
+                for (idx, (expected, value)) in elems.iter().zip(items.iter()).enumerate() {
                     expected
                         .validate(value)
                         .map_err(|err| anyhow!("Tuple element {}: {}", idx, err))?;

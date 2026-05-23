@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
-    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, TypedMap},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList},
     vm::{
         NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeExport32,
         call_runtime_callable32_runtime, runtime_value_to_callable32,
@@ -387,9 +387,6 @@ fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore)
         (HeapValue::String(left), HeapValue::String(right)) => left == right,
         (HeapValue::List(left), HeapValue::List(right)) => runtime_lists_equal(left, right, heap),
         (HeapValue::Map(left), HeapValue::Map(right)) => {
-            if matches!(left, TypedMap::OwnedRuntime(_)) || matches!(right, TypedMap::OwnedRuntime(_)) {
-                return left.to_legacy_entries() == right.to_legacy_entries();
-            }
             let left = left.entries();
             let right = right.entries();
             left.len() == right.len()
@@ -428,7 +425,6 @@ fn runtime_list_items(list: &TypedList) -> Option<Vec<RuntimeVal>> {
             .iter()
             .map(|value| lk_core::val::ShortStr::new(value).map(RuntimeVal::ShortStr))
             .collect(),
-        TypedList::OwnedRuntime(values) => Some(values.values.clone()),
     }
 }
 
@@ -474,7 +470,6 @@ mod tests {
                 .iter()
                 .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
                 .collect(),
-            TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 

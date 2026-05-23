@@ -217,7 +217,6 @@ mod tests {
                 .iter()
                 .map(|value| RuntimeVal::ShortStr(lk_core::val::ShortStr::new(value).expect("short test string")))
                 .collect(),
-            lk_core::val::TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 

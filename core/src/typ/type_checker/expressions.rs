@@ -484,7 +484,7 @@ impl TypeChecker {
         Ok(var_type)
     }
 
-    // Legacy '@' context access removed
+    // Removed '@' context access.
 
     /// Check binary operation types
     fn check_binary_op_with_types(
@@ -1362,30 +1362,6 @@ impl TypeChecker {
             Val::Float(_) => Ok(Type::Float),
             Val::ShortStr(_) => Ok(Type::String),
             value if value.as_str().is_some() => Ok(Type::String),
-            value if value.as_list().is_some() => {
-                let items = value.as_list().expect("checked list");
-                if items.is_empty() {
-                    let elem_type = self.registry.fresh_type_var();
-                    Ok(Type::List(Box::new(elem_type)))
-                } else {
-                    let first_type = self.infer_list_element_type(&items[0])?;
-                    Ok(Type::List(Box::new(first_type)))
-                }
-            }
-            value if value.as_map().is_some() => {
-                let map = value.as_map().expect("checked map");
-                if map.is_empty() {
-                    let key_type = self.registry.fresh_type_var();
-                    let value_type = self.registry.fresh_type_var();
-                    Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                } else {
-                    let (_first_key, first_value) = map.iter().next().unwrap();
-                    let key_type = Type::String; // Map keys are always strings
-                    let value_type = self.infer_val_type(first_value)?;
-                    Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                }
-            }
-            // Other types return Any for now
             value if value.is_callable() => Ok(Type::Any),
             Val::Obj(_) => Ok(Type::Any),
         }
@@ -1400,36 +1376,8 @@ impl TypeChecker {
             Val::Float(_) => Ok(Type::Float),
             Val::ShortStr(_) => Ok(Type::String),
             value if value.as_str().is_some() => Ok(Type::String),
-            value if value.as_list().is_some() => {
-                let items = value.as_list().expect("checked list");
-                if items.is_empty() {
-                    let elem_type = self.registry.fresh_type_var();
-                    Ok(Type::List(Box::new(elem_type)))
-                } else {
-                    let elem_type = self.infer_list_element_type(&items[0])?;
-                    Ok(Type::List(Box::new(elem_type)))
-                }
-            }
-            value if value.as_map().is_some() => {
-                let map = value.as_map().expect("checked map");
-                if map.is_empty() {
-                    let key_type = self.registry.fresh_type_var();
-                    let value_type = self.registry.fresh_type_var();
-                    Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                } else {
-                    let (_first_key, first_value) = map.iter().next().unwrap();
-                    let key_type = Type::String; // Map keys are always strings
-                    let value_type = self.infer_val_type(first_value)?;
-                    Ok(Type::Map(Box::new(key_type), Box::new(value_type)))
-                }
-            }
             value if value.is_callable() => Ok(Type::Any),
             Val::Obj(_) => Ok(Type::Any),
         }
-    }
-
-    /// Infer list element type from a Val
-    fn infer_list_element_type(&mut self, item: &Val) -> Result<Type> {
-        self.infer_val_type(item)
     }
 }

@@ -60,14 +60,14 @@ fn call_callable(
     };
     match function {
         CallableValue::Runtime32(_) => Err(anyhow!(
-            "Runtime32 callable cannot be called through legacy Val::call; execute it in Executor32"
+            "Runtime32 callable cannot be called through Val::call; execute it in Executor32"
         )),
         CallableValue::RuntimeNative32 { .. } => Err(anyhow!(
-            "RuntimeNative32 callable cannot be called through legacy Val::call; execute it in Executor32"
+            "RuntimeNative32 callable cannot be called through Val::call; execute it in Executor32"
         )),
         CallableValue::Aot(_) => Err(anyhow!("AOT callable is disabled during the Instr32 VM migration")),
         CallableValue::Closure { .. } => Err(anyhow!(
-            "Instr32 callable cannot be called through legacy Val::call; execute it in Executor32"
+            "Instr32 callable cannot be called through Val::call; execute it in Executor32"
         )),
     }
 }

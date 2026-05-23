@@ -70,9 +70,10 @@ impl BinOp {
     }
 
     fn arith_with_metrics(&self, l: &Val, r: &Val, collect_metrics: bool) -> Result<Val> {
+        let _ = collect_metrics;
         match self {
-            BinOp::Add => l.add_with_metrics(r, collect_metrics),
-            BinOp::Sub => l.sub_with_metrics(r, collect_metrics),
+            BinOp::Add => l + r,
+            BinOp::Sub => l - r,
             BinOp::Mul => l * r,
             BinOp::Div => l / r,
             BinOp::Mod => l % r,
@@ -88,47 +89,6 @@ impl BinOp {
                 (l, r) if l.as_str().is_some() && r.as_str().is_some() => {
                     Ok(r.as_str().unwrap().contains(l.as_str().unwrap()))
                 }
-
-                // All elements in l must be in r
-                (l, r) if l.as_list().is_some() && r.as_list().is_some() => Ok(Val::list_contains_all(
-                    &r.as_list().expect("checked list"),
-                    &l.as_list().expect("checked list"),
-                )),
-                (l, r) if r.as_list().is_some() => Ok(Val::list_contains(&r.as_list().expect("checked list"), l)),
-
-                (l, r) if l.as_str().is_some() && r.as_map().is_some() => {
-                    Ok(r.as_map().expect("checked map").contains_key(l.as_str().unwrap()))
-                }
-                // For non-string keys, convert to string key with fast path when enabled
-                (Val::Int(i), r) if r.as_map().is_some() => {
-                    let m = r.as_map().expect("checked map");
-                    let mut buf = itoa::Buffer::new();
-                    let s = buf.format(*i);
-                    Ok(Val::map_contains_str(&m, s))
-                }
-                (Val::Float(f), r) if r.as_map().is_some() => {
-                    let m = r.as_map().expect("checked map");
-                    let mut buf = ryu::Buffer::new();
-                    let s = buf.format(*f);
-                    Ok(Val::map_contains_str(&m, s))
-                }
-                (Val::Bool(b), r) if r.as_map().is_some() => {
-                    let m = r.as_map().expect("checked map");
-                    // Avoid allocation for boolean conversion
-                    if *b {
-                        Ok(m.contains_key("true"))
-                    } else {
-                        Ok(m.contains_key("false"))
-                    }
-                }
-                // Other types return false (Nil or complex structures can't be keys)
-                (_, r) if r.as_map().is_some() => Ok(false),
-
-                (Val::Float(l), Val::Float(r)) => Ok(l < r),
-                (Val::Int(l), Val::Int(r)) => Ok(l < r),
-                (Val::Bool(l), Val::Bool(r)) => Ok(l == r),
-                (Val::Nil, Val::Nil) => Ok(true),
-
                 _ => err_op(l, self, r),
             },
             _ => {

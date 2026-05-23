@@ -222,4 +222,3 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
     assert_eq!(result.state.stack_top, 4);
     assert_eq!(result.state.stack.len(), 7);
 }
-

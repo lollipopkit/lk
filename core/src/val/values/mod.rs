@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt::Debug,
+    sync::Arc,
+};
 
 use arcstr::ArcStr;
 
@@ -6,14 +10,12 @@ use crate::util::fast_map::FastHashMap;
 
 // Using standard HashMap for maps and environments
 
-use super::runtime_model::{CallableValue, HeapValue, RuntimeObject, RuntimeVal};
+use super::runtime_model::{CallableValue, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, TypedList, TypedMap};
 
-use crate::val::legacy_registers::copy_container_value_for_register_with_metrics;
 #[cfg(test)]
 use crate::vm::NativeFunction32;
-use crate::vm::{RuntimeCallable32, VmContext, analysis::vm_runtime_metrics_enabled};
+use crate::vm::{RuntimeCallable32, VmContext};
 
-mod cache;
 mod call;
 mod clone;
 mod convert;
@@ -23,8 +25,6 @@ mod ops;
 mod serde_impl;
 mod strings;
 mod types;
-
-use cache::cached_list_contains;
 
 pub use types::{FunctionNamedParamType, ShortStr, Type};
 
@@ -92,16 +92,19 @@ impl Val {
 
     #[inline]
     pub fn list(values: Arc<Vec<Val>>) -> Self {
-        Self::Obj(Arc::new(HeapValue::List(
-            super::runtime_model::TypedList::from_legacy_values(values.as_ref()),
-        )))
+        let values = values
+            .iter()
+            .cloned()
+            .map(Self::val_to_object_field)
+            .collect::<Vec<_>>();
+        Self::Obj(Arc::new(HeapValue::List(TypedList::Mixed(values))))
     }
 
     #[inline]
     pub fn as_list(&self) -> Option<Arc<Vec<Val>>> {
         match self {
             Self::Obj(value) => match value.as_ref() {
-                HeapValue::List(value) => Some(Arc::new(value.to_legacy_values())),
+                HeapValue::List(value) => Some(Arc::new(value.to_val_values())),
                 _ => None,
             },
             _ => None,
@@ -110,16 +113,59 @@ impl Val {
 
     #[inline]
     pub fn map(values: Arc<FastHashMap<ArcStr, Val>>) -> Self {
-        Self::Obj(Arc::new(HeapValue::Map(
-            super::runtime_model::TypedMap::from_legacy_entries(values.as_ref()),
-        )))
+        let mut entries = BTreeMap::new();
+        for (key, value) in values.iter() {
+            entries.insert(
+                RuntimeMapKey::String(Arc::<str>::from(key.as_str())),
+                Self::val_to_object_field(value.clone()),
+            );
+        }
+        Self::Obj(Arc::new(HeapValue::Map(TypedMap::from_runtime_entries(entries))))
+    }
+
+    pub fn string_map_from_hashmap(values: HashMap<String, Val>) -> Self {
+        let mut out = crate::util::fast_map::fast_hash_map_with_capacity(values.len());
+        for (key, value) in values {
+            out.insert(Self::intern_str(&key), value);
+        }
+        Self::map(Arc::new(out))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_list_from_values<T>(values: Vec<T>) -> Self
+    where
+        T: Into<Val>,
+    {
+        Self::list(Arc::new(values.into_iter().map(Into::into).collect()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_string_map_from_hashmap<S, V, H>(values: HashMap<S, V, H>) -> Self
+    where
+        S: AsRef<str>,
+        V: TestIntoVal,
+        H: core::hash::BuildHasher,
+    {
+        let mut out = crate::util::fast_map::fast_hash_map_with_capacity(values.len());
+        for (key, value) in values {
+            out.insert(Self::intern_str(key.as_ref()), value.into_test_val());
+        }
+        Self::map(Arc::new(out))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_from<T>(value: T) -> Self
+    where
+        T: TestIntoVal,
+    {
+        value.into_test_val()
     }
 
     #[inline]
     pub fn as_map(&self) -> Option<Arc<FastHashMap<ArcStr, Val>>> {
         match self {
             Self::Obj(value) => match value.as_ref() {
-                HeapValue::Map(value) => Some(Arc::new(value.to_legacy_entries())),
+                HeapValue::Map(value) => Some(Arc::new(value.to_val_entries())),
                 _ => None,
             },
             _ => None,
@@ -203,7 +249,7 @@ impl Val {
 
     #[inline]
     #[cfg(test)]
-    pub(crate) fn legacy_runtime_native32(function: NativeFunction32, arity: u16) -> Self {
+    pub(crate) fn runtime_native32_for_test(function: NativeFunction32, arity: u16) -> Self {
         Self::Obj(Arc::new(HeapValue::Callable(CallableValue::RuntimeNative32 {
             arity,
             function,
@@ -220,23 +266,9 @@ impl Val {
         Self::Obj(Arc::new(HeapValue::Callable(CallableValue::Aot(function))))
     }
 
-    #[inline]
-    pub(crate) fn list_contains(list: &Arc<Vec<Val>>, needle: &Val) -> bool {
-        if let Some(result) = cached_list_contains(list, needle) {
-            result
-        } else {
-            (**list).contains(needle)
-        }
-    }
-
-    #[inline]
-    pub(crate) fn list_contains_all(list: &Arc<Vec<Val>>, subset: &Arc<Vec<Val>>) -> bool {
-        subset.iter().all(|item| Val::list_contains(list, item))
-    }
-
     /// Construct a runtime object of a named custom type.
     ///
-    /// This is now backed by `RuntimeObject`; heap-backed legacy field values
+    /// This is now backed by `RuntimeObject`; heap-backed field values
     /// are intentionally not preserved through this old constructor.
     #[inline]
     pub fn object<T: AsRef<str>>(type_name: T, fields: HashMap<String, Val>) -> Val {
@@ -294,39 +326,9 @@ impl Val {
     }
 
     #[inline]
-    fn access_copy_value(value: &Val, collect_metrics: Option<bool>) -> Val {
-        match collect_metrics {
-            Some(collect_metrics) => copy_container_value_for_register_with_metrics(value, collect_metrics),
-            None => value.clone(),
-        }
-    }
-
-    #[inline]
-    fn access_copy_slice(slice: &[Val], collect_metrics: Option<bool>) -> Arc<Vec<Val>> {
-        if slice.is_empty() {
-            return Arc::new(Vec::new());
-        }
-        match collect_metrics {
-            Some(collect_metrics) => {
-                let mut out = Vec::with_capacity(slice.len());
-                for value in slice {
-                    out.push(copy_container_value_for_register_with_metrics(value, collect_metrics));
-                }
-                Arc::new(out)
-            }
-            None => Arc::new(slice.to_vec()),
-        }
-    }
-
-    #[inline]
     fn access_impl(&self, field: &Val, collect_metrics: Option<bool>) -> Option<Val> {
+        let _ = collect_metrics;
         match (self, field) {
-            // Map: field lookup by key only (do not shadow keys with synthetic fields)
-            (value, key) if value.as_map().is_some() && key.as_str().is_some() => {
-                let m = value.as_map().expect("checked map");
-                Self::map_get_str(&m, key.as_str().unwrap())
-                    .map(|value| Self::access_copy_value(value, collect_metrics))
-            }
             // String indexing and metadata
             (lhs, Val::Int(i)) if lhs.as_str().is_some() => {
                 let s_str = lhs.as_str().unwrap();
@@ -352,68 +354,8 @@ impl Val {
                     Some(Val::from_str(&ch.to_string()))
                 }
             }
-            (value, Val::Int(i)) if value.as_list().is_some() => {
-                let l = value.as_list().expect("checked list");
-                let idx = if *i < 0 {
-                    l.len().checked_sub(i.unsigned_abs() as usize)?
-                } else {
-                    *i as usize
-                };
-                l.get(idx).map(|value| Self::access_copy_value(value, collect_metrics))
-            }
-            (value, key_value) if value.as_list().is_some() && key_value.as_list().is_some() => {
-                let l = value.as_list().expect("checked list");
-                let key = key_value.as_list().expect("checked list key");
-                let (start, end) = range_key_bounds(&key, l.len())?;
-                Some(Val::list(Self::access_copy_slice(&l[start..end], collect_metrics)))
-            }
-            (lhs, key_value) if lhs.as_str().is_some() && key_value.as_list().is_some() => {
-                let key = key_value.as_list().expect("checked list key");
-                let text = lhs.as_str().unwrap();
-                let len = if text.is_ascii() {
-                    text.len()
-                } else {
-                    text.chars().count()
-                };
-                let (start, end) = range_key_bounds(&key, len)?;
-                if text.is_ascii() {
-                    Some(Val::from_str(&text[start..end]))
-                } else {
-                    Some(Val::from_str(
-                        &text
-                            .chars()
-                            .skip(start)
-                            .take(end.saturating_sub(start))
-                            .collect::<String>(),
-                    ))
-                }
-            }
-            (value, key) if value.as_list().is_some() && key.as_str() == Some("len") => {
-                Some(Val::Int(value.as_list().expect("checked list").len() as i64))
-            }
             (lhs, key) if lhs.as_str().is_some() && key.as_str() == Some("len") => {
                 Some(Val::Int(lhs.as_str().unwrap().len() as i64))
-            }
-            // Map index -> [key, value]
-            (value, Val::Int(i)) if value.as_map().is_some() => {
-                let m = value.as_map().expect("checked map");
-                if *i < 0 {
-                    return None;
-                }
-                let mut entries: Vec<_> = m.iter().collect();
-                entries.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
-                let idx = *i as usize;
-                if idx >= entries.len() {
-                    return None;
-                }
-                let (key, value) = entries[idx];
-                Some(Val::list(
-                    vec![
-                        Val::from_str(key.as_str()),
-                        Self::access_copy_value(value, collect_metrics),
-                    ]
-                    .into(),
-                ))
             }
             (value, key) if value.as_object().is_some() && key.as_str().is_some() => {
                 let key = Arc::<str>::from(key.as_str().unwrap());
@@ -436,63 +378,6 @@ impl Val {
             },
             _ => None,
         }
-    }
-
-    #[inline]
-    pub(crate) fn clone_list_slice_with_metrics(slice: &[Val], collect_metrics: bool) -> Arc<Vec<Val>> {
-        if slice.is_empty() {
-            return Arc::new(Vec::new());
-        }
-        if !collect_metrics {
-            return Arc::new(slice.to_vec());
-        }
-        let mut vec = Vec::with_capacity(slice.len());
-        for value in slice {
-            vec.push(copy_container_value_for_register_with_metrics(value, collect_metrics));
-        }
-        Arc::new(vec)
-    }
-
-    #[inline]
-    pub(crate) fn concat_lists_with_metrics(left: &[Val], right: &[Val], collect_metrics: bool) -> Arc<Vec<Val>> {
-        if left.is_empty() {
-            return Self::clone_list_slice_with_metrics(right, collect_metrics);
-        }
-        if right.is_empty() {
-            return Self::clone_list_slice_with_metrics(left, collect_metrics);
-        }
-        if !collect_metrics {
-            let mut vec = Vec::with_capacity(left.len() + right.len());
-            vec.extend_from_slice(left);
-            vec.extend_from_slice(right);
-            return Arc::new(vec);
-        }
-        let mut vec = Vec::with_capacity(left.len() + right.len());
-        for value in left.iter().chain(right.iter()) {
-            vec.push(copy_container_value_for_register_with_metrics(value, collect_metrics));
-        }
-        Arc::new(vec)
-    }
-
-    #[inline(always)]
-    pub fn append_to_list(list: &[Val], value: &Val) -> Arc<Vec<Val>> {
-        Self::append_to_list_with_metrics(list, value, vm_runtime_metrics_enabled())
-    }
-
-    #[inline(always)]
-    pub fn append_to_list_with_metrics(list: &[Val], value: &Val, collect_metrics: bool) -> Arc<Vec<Val>> {
-        if !collect_metrics {
-            let mut vec = Vec::with_capacity(list.len() + 1);
-            vec.extend_from_slice(list);
-            vec.push(value.clone());
-            return Arc::new(vec);
-        }
-        let mut vec = Vec::with_capacity(list.len() + 1);
-        for item in list {
-            vec.push(copy_container_value_for_register_with_metrics(item, collect_metrics));
-        }
-        vec.push(copy_container_value_for_register_with_metrics(value, collect_metrics));
-        Arc::new(vec)
     }
 }
 
@@ -530,8 +415,8 @@ mod callable_model_tests {
     }
 
     #[test]
-    fn legacy_runtime_native32_is_stored_as_callable_heap_value() {
-        let value = Val::legacy_runtime_native32(crate::vm::NativeFunction32::Plain(dummy_native32), 0);
+    fn runtime_native32_for_test_is_stored_as_callable_heap_value() {
+        let value = Val::runtime_native32_for_test(crate::vm::NativeFunction32::Plain(dummy_native32), 0);
 
         assert!(value.is_callable());
         assert!(matches!(
@@ -540,24 +425,6 @@ mod callable_model_tests {
                 if matches!(object.as_ref(), HeapValue::Callable(CallableValue::RuntimeNative32 { arity: 0, .. }))
         ));
         assert!(value.as_runtime_callable32().is_none());
-    }
-
-    #[test]
-    fn legacy_val_containers_are_materialized_as_typed_heap_values() {
-        let list = Val::list(Arc::new(vec![Val::Int(1), Val::Int(2)]));
-        assert!(matches!(
-            list,
-            Val::Obj(ref object) if matches!(object.as_ref(), HeapValue::List(crate::val::TypedList::Int(values)) if values == &vec![1, 2])
-        ));
-
-        let mut map_items = FastHashMap::default();
-        map_items.insert(ArcStr::from("answer"), Val::Int(42));
-        let map = Val::map(Arc::new(map_items));
-        assert!(matches!(
-            map,
-            Val::Obj(ref object)
-                if matches!(object.as_ref(), HeapValue::Map(crate::val::TypedMap::StringInt(values)) if values.get("answer") == Some(&42))
-        ));
     }
 }
 
@@ -571,9 +438,6 @@ impl PartialEq for Val {
             (Val::Int(a), Val::Int(b)) => a == b,
             (Val::Float(a), Val::Float(b)) => a == b,
             (Val::Bool(a), Val::Bool(b)) => a == b,
-            (a, b) if a.as_map().is_some() && b.as_map().is_some() => {
-                a.as_map().expect("checked map") == b.as_map().expect("checked map")
-            }
             (Val::Obj(a), Val::Obj(b)) => heap_values_eq(a.as_ref(), b.as_ref()),
             (Val::Nil, Val::Nil) => true,
             _ => false,
@@ -596,6 +460,99 @@ impl PartialOrd for Val {
     }
 }
 
+#[cfg(test)]
+pub(crate) trait TestIntoVal {
+    fn into_test_val(self) -> Val;
+}
+
+#[cfg(test)]
+impl TestIntoVal for Val {
+    fn into_test_val(self) -> Val {
+        self
+    }
+}
+
+#[cfg(test)]
+impl TestIntoVal for i64 {
+    fn into_test_val(self) -> Val {
+        Val::Int(self)
+    }
+}
+
+#[cfg(test)]
+impl TestIntoVal for i32 {
+    fn into_test_val(self) -> Val {
+        Val::Int(i64::from(self))
+    }
+}
+
+#[cfg(test)]
+impl TestIntoVal for f64 {
+    fn into_test_val(self) -> Val {
+        Val::Float(self)
+    }
+}
+
+#[cfg(test)]
+impl TestIntoVal for bool {
+    fn into_test_val(self) -> Val {
+        Val::Bool(self)
+    }
+}
+
+#[cfg(test)]
+impl TestIntoVal for &str {
+    fn into_test_val(self) -> Val {
+        Val::from_str(self)
+    }
+}
+
+#[cfg(test)]
+impl TestIntoVal for String {
+    fn into_test_val(self) -> Val {
+        Val::from_str(&self)
+    }
+}
+
+#[cfg(test)]
+impl<T> TestIntoVal for Vec<T>
+where
+    T: TestIntoVal,
+{
+    fn into_test_val(self) -> Val {
+        Val::list(Arc::new(self.into_iter().map(TestIntoVal::into_test_val).collect()))
+    }
+}
+
+#[cfg(test)]
+impl<T> TestIntoVal for Option<T>
+where
+    T: TestIntoVal,
+{
+    fn into_test_val(self) -> Val {
+        match self {
+            Some(value) => value.into_test_val(),
+            None => Val::Nil,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<S, V, H> TestIntoVal for HashMap<S, V, H>
+where
+    S: AsRef<str>,
+    V: TestIntoVal,
+    H: core::hash::BuildHasher,
+{
+    fn into_test_val(self) -> Val {
+        let mut out = crate::util::fast_map::fast_hash_map_with_capacity(self.len());
+        for (key, value) in self {
+            out.insert(Val::intern_str(key.as_ref()), value.into_test_val());
+        }
+        Val::map(Arc::new(out))
+    }
+}
+
 impl core::fmt::Display for Val {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -603,50 +560,23 @@ impl core::fmt::Display for Val {
             Val::Float(fl) => write!(f, "{fl}"),
             Val::Bool(b) => write!(f, "{b}"),
             Val::ShortStr(s) => f.write_str(s.as_str()),
-            value if value.as_map().is_some() => {
-                let m = value.as_map().expect("checked map");
-                // Avoid serialization errors by using debug fallback
-                match serde_json::to_string(m.as_ref()) {
+            Val::Obj(value) => match value.as_ref() {
+                HeapValue::List(values) => match serde_json::to_string(&values.to_val_values()) {
                     Ok(s) => write!(f, "{}", s),
-                    Err(_) => write!(f, "{:?}", m),
-                }
-            }
-            Val::Obj(value) => display_heap_value(value.as_ref(), f),
+                    Err(_) => write!(f, "{:?}", values),
+                },
+                HeapValue::Map(values) => match serde_json::to_string(&values.to_val_entries()) {
+                    Ok(s) => write!(f, "{}", s),
+                    Err(_) => write!(f, "{:?}", values),
+                },
+                value => display_heap_value(value, f),
+            },
             Val::Nil => write!(f, "nil"),
         }
     }
 }
 
 #[inline]
-fn range_key_bounds(key: &[Val], len: usize) -> Option<(usize, usize)> {
-    let Val::Int(first) = key.first()? else {
-        return None;
-    };
-    let mut previous = *first;
-    for item in key.iter().skip(1) {
-        let Val::Int(current) = item else {
-            return None;
-        };
-        if *current != previous + 1 {
-            return None;
-        }
-        previous = *current;
-    }
-
-    let start = normalize_slice_bound(*first, len);
-    let end = normalize_slice_bound(previous + 1, len);
-    Some((start.min(end), end))
-}
-
-#[inline]
-fn normalize_slice_bound(index: i64, len: usize) -> usize {
-    if index < 0 {
-        len.saturating_sub(index.unsigned_abs() as usize)
-    } else {
-        (index as usize).min(len)
-    }
-}
-
 fn heap_value_type_name(value: &HeapValue) -> &'static str {
     match value {
         HeapValue::String(_) => "String",
@@ -690,11 +620,11 @@ fn heap_values_eq(left: &HeapValue, right: &HeapValue) -> bool {
 fn display_heap_value(value: &HeapValue, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     match value {
         HeapValue::String(value) => f.write_str(value.as_ref()),
-        HeapValue::List(values) => match serde_json::to_string(&values.to_legacy_values()) {
+        HeapValue::List(values) => match serde_json::to_string(&values.to_val_values()) {
             Ok(s) => write!(f, "{}", s),
             Err(_) => write!(f, "{:?}", values),
         },
-        HeapValue::Map(values) => match serde_json::to_string(&values.to_legacy_entries()) {
+        HeapValue::Map(values) => match serde_json::to_string(&values.to_val_entries()) {
             Ok(s) => write!(f, "{}", s),
             Err(_) => write!(f, "{:?}", values),
         },
@@ -756,18 +686,14 @@ impl Val {
             Val::Float(_) => Type::Float,
             Val::Bool(_) => Type::Bool,
             Val::ShortStr(_) => Type::String,
-            value if value.as_map().is_some() => Type::Map(Box::new(Type::Any), Box::new(Type::Any)),
             Val::Obj(value) => dispatch_type_for_heap_value(value.as_ref()),
             Val::Nil => Type::Nil,
         }
     }
 
-    /// Format the value into a String, preferring a user-defined Display-like
-    /// trait method when available in the provided environment. This enables
-    /// automatically using `impl Display for Type { fn display(self) -> String }`
-    /// or a legacy `show(self) -> String` method if present via the trait/impl
-    /// registry. Falls back to the built-in Display for Val.
+    /// Format the value into a String using the built-in display implementation.
     pub fn display_string(&self, ctx: Option<&VmContext>) -> String {
+        let _ = ctx;
         // Fast path for primitives that don't need trait lookup
         match self {
             Val::ShortStr(s) => return s.as_str().to_string(),
@@ -781,29 +707,6 @@ impl Val {
             _ => {}
         }
 
-        if let Some(ctx_ref) = ctx
-            && let Some(tc) = ctx_ref.type_checker()
-        {
-            let method_val = tc
-                .registry()
-                .get_legacy_method(&self.dispatch_type(), "to_string")
-                .or_else(|| tc.registry().get_legacy_method(&self.dispatch_type(), "show"));
-
-            if let Some(fun_val) = method_val {
-                // Create a temporary mutable context for method calls
-                let mut temp_ctx = ctx_ref.clone();
-                let call_res = fun_val.call(std::slice::from_ref(self), &mut temp_ctx);
-                if let Ok(v) = call_res {
-                    // If the method returned a string, use it directly; otherwise use default formatting of returned value
-                    return match v.as_str() {
-                        Some(s) => s.to_string(),
-                        None => format!("{}", v),
-                    };
-                }
-            }
-        }
-
-        // Fallback to default Display implementation for Val
         format!("{}", self)
     }
 }

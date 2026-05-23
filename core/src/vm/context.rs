@@ -10,7 +10,7 @@ use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal,
 use crate::vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32, collect_runtime_export32};
 
 #[cfg(not(feature = "aot-minimal-runtime"))]
-use crate::typ::{TraitDef, TraitImpl, TraitMethodValue};
+use crate::typ::{TraitDef, TraitImpl};
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use std::collections::HashMap;
 
@@ -18,17 +18,18 @@ mod core_methods;
 #[cfg(not(feature = "aot-minimal-runtime"))]
 use core_methods::{core_call_method_builtin32, core_call_method_named_builtin32};
 
-mod legacy;
-use legacy::LegacyValContext;
+mod val_bindings;
+use val_bindings::ValBindingContext;
 
 /// VM runtime context.
 ///
-/// New VM-visible globals live in `runtime_globals`. The `legacy_*` Val tables
-/// are retained only for legacy expression eval and LLVM AOT compatibility.
+/// New VM-visible globals live in `runtime_globals`. The `Val` binding table is
+/// retained only for expression-level compatibility and LLVM AOT replay while
+/// those paths move onto runtime values.
 #[derive(Debug, Clone)]
 pub struct VmContext {
-    // Legacy Val symbol table; do not add new VM runtime behavior here.
-    legacy: LegacyValContext,
+    // Val symbol table; do not add new VM runtime behavior here.
+    val_bindings: ValBindingContext,
     runtime_globals: FastHashMap<Arc<str>, RuntimeExport32>,
     // Cache generation for invalidation
     generation: u64,
@@ -73,7 +74,7 @@ impl VmContext {
     /// trait-registration fallback paths when imports are replayed natively.
     pub fn new_without_core_vm_builtins() -> Self {
         Self {
-            legacy: LegacyValContext::new(),
+            val_bindings: ValBindingContext::new(),
             runtime_globals: fast_hash_map_new(),
             generation: 0,
             resolver: Arc::new(ModuleResolver::default()),
@@ -106,33 +107,33 @@ impl VmContext {
         self.generation = generation;
     }
 
-    /// Legacy Val lookup path for old eval/AOT compatibility.
+    /// Val lookup path for expression eval/AOT compatibility.
     #[inline]
-    pub fn legacy_get(&self, name: &str) -> Option<&Val> {
-        self.legacy.get(name)
+    pub fn get_val_binding(&self, name: &str) -> Option<&Val> {
+        self.val_bindings.get(name)
     }
 
-    /// Legacy Val define path for old eval/AOT compatibility.
-    pub fn legacy_set<S: Into<String>>(&mut self, name: S, value: Val) -> Option<Val> {
+    /// Val define path for expression eval/AOT compatibility.
+    pub fn set_val_binding<S: Into<String>>(&mut self, name: S, value: Val) -> Option<Val> {
         let name_str = name.into();
         self.runtime_globals.remove(name_str.as_str());
-        let prev = self.legacy.set(name_str, value);
+        let prev = self.val_bindings.set(name_str, value);
         self.bump_generation();
         prev
     }
 
-    /// Legacy Val assign path for old eval/AOT compatibility.
-    pub fn legacy_assign(&mut self, name: &str, value: Val) -> anyhow::Result<()> {
+    /// Val assign path for expression eval/AOT compatibility.
+    pub fn assign_val_binding(&mut self, name: &str, value: Val) -> anyhow::Result<()> {
         self.runtime_globals.remove(name);
-        self.legacy.assign(name, value)?;
+        self.val_bindings.assign(name, value)?;
         self.bump_generation();
         Ok(())
     }
 
-    /// Legacy Val removal path for old eval/AOT compatibility.
-    pub fn legacy_remove(&mut self, name: &str) -> Option<Val> {
+    /// Val removal path for expression eval/AOT compatibility.
+    pub fn remove_val_binding(&mut self, name: &str) -> Option<Val> {
         self.runtime_globals.remove(name);
-        let prev = self.legacy.remove(name);
+        let prev = self.val_bindings.remove(name);
         if prev.is_some() {
             self.bump_generation();
         }
@@ -176,7 +177,7 @@ impl VmContext {
     pub fn define_runtime_global(&mut self, name: impl Into<Arc<str>>, value: RuntimeExport32) {
         let name = name.into();
         let name_str = name.as_ref();
-        self.legacy.remove_global(name_str);
+        self.val_bindings.remove_global(name_str);
         self.runtime_globals.insert(name, value);
         self.bump_generation();
     }
@@ -271,21 +272,16 @@ impl VmContext {
         &self.structs
     }
 
-    /// Enter a legacy Val lexical scope.
+    /// Enter a Val lexical scope.
     pub fn push_scope(&mut self) {
-        self.legacy.push_scope();
+        self.val_bindings.push_scope();
     }
 
-    /// Exit a legacy Val lexical scope.
+    /// Exit a Val lexical scope.
     pub fn pop_scope(&mut self) {
-        if self.legacy.pop_scope() {
+        if self.val_bindings.pop_scope() {
             self.bump_generation();
         }
-    }
-
-    /// Legacy Val lookup path for old eval/AOT compatibility.
-    pub fn legacy_get_value(&self, name: &str) -> Option<Val> {
-        self.legacy_get(name).cloned()
     }
 
     /// 获取类型检查器的可变引用
@@ -298,25 +294,14 @@ impl VmContext {
         self.structs.insert(name, fields);
     }
 
-    /// Legacy Val define path for old eval/AOT compatibility.
-    pub fn legacy_define<S: Into<String>>(&mut self, name: S, value: Val) -> Option<Val> {
-        self.legacy_set(name, value)
-    }
-
-    /// Legacy Val const define path for old eval/AOT compatibility.
-    pub fn legacy_define_const<S: Into<String>>(&mut self, name: S, value: Val) {
-        self.legacy.define_const(name.into(), value);
-        self.bump_generation();
-    }
-
     /// 创建当前上下文的快照
     pub fn snapshot(&self) -> Self {
         self.clone()
     }
 
-    /// Check whether legacy Val lexical scopes are active.
+    /// Check whether Val lexical scopes are active.
     pub fn is_local_name(&self, _name: &str) -> bool {
-        self.legacy.has_local_scope()
+        self.val_bindings.has_local_scope()
     }
 
     /// Bind a parameter into the current lexical scope.
@@ -324,7 +309,7 @@ impl VmContext {
     /// The old context-owned slot cache has been removed; executable frame
     /// windows now live in `RuntimeModuleState32.stack`.
     pub fn bind_param_at_slot(&mut self, name: String, _slot: u16, value: Val) {
-        self.legacy.bind_param_at_slot(name, value);
+        self.val_bindings.bind_param_at_slot(name, value);
         self.bump_generation();
     }
 
@@ -451,8 +436,7 @@ fn core_register_trait_impl_builtin32(
         runtime,
         "__lk_register_trait_impl methods",
     )?;
-    let mut method_map: HashMap<String, (TraitMethodValue, Option<Type>)> =
-        HashMap::with_capacity(method_entries.len());
+    let mut method_map: HashMap<String, (RuntimeVal, Option<Type>)> = HashMap::with_capacity(method_entries.len());
     for entry in method_entries {
         let inner = runtime_list_values(&entry, runtime, "trait impl entry")?;
         if inner.len() != 3 {
@@ -473,7 +457,7 @@ fn core_register_trait_impl_builtin32(
                 )
             }
         };
-        method_map.insert(method_name, (TraitMethodValue::Runtime(inner[1].clone()), signature_ty));
+        method_map.insert(method_name, (inner[1].clone(), signature_ty));
     }
     let ctx = runtime
         .ctx_mut()
@@ -517,7 +501,6 @@ fn runtime_list_values(
             .iter()
             .map(|value| runtime_string_value(value, runtime.heap_mut()))
             .collect(),
-        TypedList::OwnedRuntime(values) => values.copy_values_into(runtime.heap_mut()),
     })
 }
 
@@ -801,7 +784,7 @@ mod tests {
     fn test_bind_param_at_slot_binds_only_locals() {
         let mut ctx = VmContext::new();
         ctx.bind_param_at_slot("p".to_string(), 1, Val::Int(42));
-        assert_eq!(ctx.legacy_get("p"), Some(&Val::Int(42)));
+        assert_eq!(ctx.get_val_binding("p"), Some(&Val::Int(42)));
     }
 
     #[test]
@@ -809,15 +792,15 @@ mod tests {
         let mut ctx = VmContext::new();
         ctx.push_scope();
 
-        ctx.legacy_set("x".to_string(), Val::Int(7));
-        assert_eq!(ctx.legacy_get("x"), Some(&Val::Int(7)));
+        ctx.set_val_binding("x".to_string(), Val::Int(7));
+        assert_eq!(ctx.get_val_binding("x"), Some(&Val::Int(7)));
 
-        ctx.legacy_assign("x", Val::Int(9)).expect("assign x");
-        assert_eq!(ctx.legacy_get("x"), Some(&Val::Int(9)));
+        ctx.assign_val_binding("x", Val::Int(9)).expect("assign x");
+        assert_eq!(ctx.get_val_binding("x"), Some(&Val::Int(9)));
 
-        let prev = ctx.legacy_remove("x");
+        let prev = ctx.remove_val_binding("x");
         assert_eq!(prev, Some(Val::Int(9)));
-        assert_eq!(ctx.legacy_get("x"), None);
+        assert_eq!(ctx.get_val_binding("x"), None);
     }
 
     #[test]

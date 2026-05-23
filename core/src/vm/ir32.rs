@@ -1,6 +1,6 @@
 //! Canonical 32-bit VM instruction model for the VM rewrite.
 //!
-//! This module is intentionally independent from the legacy `Op` enum. New
+//! This module is intentionally independent from the previous `Op` enum. New
 //! compiler and executor work should target this representation directly.
 
 use std::{collections::BTreeMap, fmt::Write as _, mem::size_of, sync::Arc};

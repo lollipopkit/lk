@@ -172,8 +172,7 @@ impl HeapStore {
                     self.mark_runtime_value(value);
                 }
             }
-            TypedMap::StringInt(_) | TypedMap::StringFloat(_) | TypedMap::StringBool(_) | TypedMap::OwnedRuntime(_) => {
-            }
+            TypedMap::StringInt(_) | TypedMap::StringFloat(_) | TypedMap::StringBool(_) => {}
         }
     }
 

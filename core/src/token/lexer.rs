@@ -484,7 +484,7 @@ impl<'a> Tokenizer<'a> {
 
     // Note: backtick-delimited template strings are not supported anymore.
 
-    /// Note: legacy '@' context access has been removed.
+    /// Note: '@' context access has been removed.
     fn parse_num(&mut self) -> Result<()> {
         let mut num = String::new();
         let start_pos = self.current_position();
@@ -708,7 +708,7 @@ impl<'a> Tokenizer<'a> {
         self.parse_id()
     }
 
-    // legacy '@' list parser removed
+    // Removed '@' list parser.
 
     fn parse_int(&mut self) -> Result<()> {
         // Record span for integers parsed in contexts like a.0 or .123
@@ -1012,7 +1012,7 @@ impl<'a> Tokenizer<'a> {
                     Ok(())
                 }
             }
-            // '@' legacy context access removed; treat as unknown punctuation
+            // Removed '@' context access; treat as unknown punctuation.
             '=' => {
                 let start = self.current_position();
                 if self.expect("==") {

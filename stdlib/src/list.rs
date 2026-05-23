@@ -173,7 +173,6 @@ fn list_get(list: &TypedList, index: usize, heap: &mut HeapStore) -> Option<Runt
         TypedList::String(values) => values
             .get(index)
             .map(|value| runtime_string_value(value.as_ref(), heap)),
-        TypedList::OwnedRuntime(values) => values.values.get(index).cloned(),
     }
 }
 

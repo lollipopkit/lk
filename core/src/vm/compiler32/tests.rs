@@ -87,15 +87,17 @@ fn compiler32_lowers_short_and_long_strings() {
 }
 
 #[test]
-fn compiler32_lowers_legacy_list_and_map_values_to_heap_consts() {
-    use std::collections::HashMap;
-
-    let list = compile_expr32(&Expr::Val(Val::from(vec![
-        Val::Int(1),
-        Val::from_str("longer-than-seven"),
-    ])))
+fn compiler32_lowers_literal_list_and_map_values_to_heap_consts() {
+    let list = compile_expr32(&Expr::List(vec![
+        Box::new(Expr::Val(Val::Int(1))),
+        Box::new(Expr::Val(Val::from_str("longer-than-seven"))),
+    ]))
     .expect("compile list");
-    let map = compile_expr32(&Expr::Val(Val::from(HashMap::from([("answer", Val::Int(42))])))).expect("compile map");
+    let map = compile_expr32(&Expr::Map(vec![(
+        Box::new(Expr::Val(Val::from_str("answer"))),
+        Box::new(Expr::Val(Val::Int(42))),
+    )]))
+    .expect("compile map");
 
     assert_eq!(list.consts.heap_values.len(), 1);
     assert_eq!(map.consts.heap_values.len(), 1);
@@ -132,6 +134,25 @@ fn compiler32_lowers_legacy_list_and_map_values_to_heap_consts() {
         panic!("expected string-int map");
     };
     assert_eq!(values.get("answer"), Some(&42));
+}
+
+#[test]
+fn compiler32_rejects_val_container_literals() {
+    let list = compile_expr32(&Expr::Val(Val::test_list_from_values(vec![Val::Int(1)])));
+    let map = compile_expr32(&Expr::Val(Val::test_string_map_from_hashmap(
+        [("answer".to_string(), Val::Int(42))].into(),
+    )));
+
+    assert!(
+        list.expect_err("Val list literal should not compile")
+            .to_string()
+            .contains("List")
+    );
+    assert!(
+        map.expect_err("Val map literal should not compile")
+            .to_string()
+            .contains("Map")
+    );
 }
 
 #[test]
@@ -759,13 +780,15 @@ fn compiler32_keeps_top_level_let_in_entry_frame() {
     )
     .expect("compile module");
 
-    assert_eq!(module.globals.len(), 1);
-    assert_eq!(module.globals[0].name.as_ref(), "answer");
+    assert_eq!(module.globals.len(), 2);
+    assert_eq!(module.globals[0].name.as_ref(), "local");
+    assert_eq!(module.globals[1].name.as_ref(), "answer");
 
     let result = execute_module32(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
-    assert_eq!(result.state.globals[0], crate::val::RuntimeVal::Int(42));
+    assert_eq!(result.state.globals[0], crate::val::RuntimeVal::Int(40));
+    assert_eq!(result.state.globals[1], crate::val::RuntimeVal::Int(42));
 }
 
 #[test]

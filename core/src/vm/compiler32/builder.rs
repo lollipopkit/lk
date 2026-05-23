@@ -26,6 +26,15 @@ impl Compiler32 {
         Ok(base)
     }
 
+    pub(super) fn live_register_floor(&self) -> u16 {
+        self.locals
+            .values()
+            .copied()
+            .max()
+            .map_or(self.function.param_count, |reg| reg + 1)
+            .max(self.function.param_count)
+    }
+
     #[inline]
     pub(super) fn emit(&mut self, instr: Instr32) {
         self.function.code.push(instr);

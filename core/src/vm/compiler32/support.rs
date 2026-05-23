@@ -173,7 +173,7 @@ pub(super) fn jump_offset(pc: usize, target: usize) -> Result<i32> {
     i32::try_from(offset).map_err(|_| anyhow!("Compiler32 jump offset {offset} exceeds i32"))
 }
 
-pub(super) fn const_heap_value_from_legacy(value: &Val) -> Result<ConstHeapValue32> {
+fn const_heap_value_from_literal(value: &Val) -> Result<ConstHeapValue32> {
     if let Some(text) = value.as_str() {
         if ShortStr::new(text).is_some() {
             bail!("Compiler32 short string does not require heap const");
@@ -181,32 +181,43 @@ pub(super) fn const_heap_value_from_legacy(value: &Val) -> Result<ConstHeapValue
         return Ok(ConstHeapValue32::LongString(text.into()));
     }
 
-    if let Some(values) = value.as_list() {
-        return Ok(ConstHeapValue32::List(
-            values
-                .iter()
-                .map(const_runtime_value_from_legacy)
-                .collect::<Result<Vec<_>>>()?,
-        ));
-    }
-
-    if let Some(values) = value.as_map() {
-        let mut entries = BTreeMap::new();
-        for (key, value) in values.iter() {
-            let key = if let Some(short) = ShortStr::new(key.as_str()) {
-                RuntimeMapKey::ShortStr(short)
-            } else {
-                RuntimeMapKey::String(key.as_str().into())
-            };
-            entries.insert(key, const_runtime_value_from_legacy(value)?);
-        }
-        return Ok(ConstHeapValue32::Map(entries));
-    }
-
     bail!("Compiler32 cannot convert {} to heap const", value.type_name())
 }
 
-fn const_runtime_value_from_legacy(value: &Val) -> Result<ConstRuntimeValue32> {
+pub(super) fn const_heap_value_from_expr_literal(expr: &Expr) -> Result<Option<ConstHeapValue32>> {
+    match expr {
+        Expr::Val(value) => const_heap_value_from_literal(value).map(Some),
+        Expr::List(values) => {
+            let mut const_values = Vec::with_capacity(values.len());
+            for value in values {
+                let Some(value) = const_runtime_value_from_expr_literal(value)? else {
+                    return Ok(None);
+                };
+                const_values.push(value);
+            }
+            Ok(Some(ConstHeapValue32::List(const_values)))
+        }
+        Expr::Map(entries) => {
+            let mut const_entries = BTreeMap::new();
+            for (key, value) in entries {
+                let Expr::Val(key) = &**key else {
+                    return Ok(None);
+                };
+                let Some(key) = const_runtime_map_key_from_literal(key)? else {
+                    return Ok(None);
+                };
+                let Some(value) = const_runtime_value_from_expr_literal(value)? else {
+                    return Ok(None);
+                };
+                const_entries.insert(key, value);
+            }
+            Ok(Some(ConstHeapValue32::Map(const_entries)))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn const_runtime_value_from_literal(value: &Val) -> Result<ConstRuntimeValue32> {
     Ok(match value {
         Val::Nil => ConstRuntimeValue32::Nil,
         Val::Bool(value) => ConstRuntimeValue32::Bool(*value),
@@ -220,14 +231,42 @@ fn const_runtime_value_from_legacy(value: &Val) -> Result<ConstRuntimeValue32> {
                 ConstRuntimeValue32::Heap(Box::new(ConstHeapValue32::LongString(value.into())))
             }
         }
-        value if value.as_list().is_some() || value.as_map().is_some() => {
-            ConstRuntimeValue32::Heap(Box::new(const_heap_value_from_legacy(value)?))
-        }
         other => bail!(
-            "Compiler32 cannot convert legacy value to ConstRuntimeValue32: {}",
+            "Compiler32 cannot convert AST literal value to ConstRuntimeValue32: {}",
             other.type_name()
         ),
     })
+}
+
+fn const_runtime_value_from_expr_literal(expr: &Expr) -> Result<Option<ConstRuntimeValue32>> {
+    Ok(Some(match expr {
+        Expr::Val(value) => const_runtime_value_from_literal(value)?,
+        Expr::List(..) | Expr::Map(..) => {
+            let Some(value) = const_heap_value_from_expr_literal(expr)? else {
+                return Ok(None);
+            };
+            ConstRuntimeValue32::Heap(Box::new(value))
+        }
+        _ => return Ok(None),
+    }))
+}
+
+fn const_runtime_map_key_from_literal(value: &Val) -> Result<Option<RuntimeMapKey>> {
+    Ok(Some(match value {
+        Val::Nil => RuntimeMapKey::Nil,
+        Val::Bool(value) => RuntimeMapKey::Bool(*value),
+        Val::Int(value) => RuntimeMapKey::Int(*value),
+        value if value.as_str().is_some() => {
+            let value = value.as_str().expect("checked string");
+            if let Some(short) = ShortStr::new(value) {
+                RuntimeMapKey::ShortStr(short)
+            } else {
+                RuntimeMapKey::String(value.into())
+            }
+        }
+        Val::Float(_) => return Ok(None),
+        other => bail!("Compiler32 cannot convert {} to const map key", other.type_name()),
+    }))
 }
 
 pub(super) fn expr_kind(expr: &Expr) -> &'static str {

@@ -14,7 +14,6 @@ mod context;
 mod exec32;
 mod gc32;
 mod ir32;
-// legacy_registers has moved to val::legacy_registers
 mod runtime32;
 #[allow(dead_code)]
 pub(crate) mod ssa;

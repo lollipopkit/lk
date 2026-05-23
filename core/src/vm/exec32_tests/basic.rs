@@ -544,4 +544,3 @@ fn execute32_materializes_typed_string_list_on_non_string_write() {
     assert_eq!(values[0], RuntimeVal::Int(42));
     assert_eq!(values[1].kind(), crate::val::RuntimeValKind::Obj);
 }
-

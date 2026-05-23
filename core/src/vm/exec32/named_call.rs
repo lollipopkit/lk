@@ -17,7 +17,8 @@ use super::{
 ///
 /// This is the direct-writer variant — call from a code path where you already
 /// hold a `&TypedMap` reference (e.g. the dynamic `__lk_call_method_named` builtin).
-/// All variants except `OwnedRuntime` are handled without requiring `&mut HeapStore`.
+/// All typed-map variants are handled without requiring `&mut HeapStore`.
+#[allow(dead_code)]
 pub(crate) fn write_named_args32_to_frame_from_typed_map(
     function: &Function32,
     positional: &[RuntimeVal],
@@ -90,9 +91,6 @@ pub(crate) fn write_named_args32_to_frame_from_typed_map(
                 };
                 place_named!(name, value.clone());
             }
-        }
-        TypedMap::OwnedRuntime(_) => {
-            bail!("OwnedRuntime map cannot appear in exec32 active heap — bridge conversion missing")
         }
     }
 

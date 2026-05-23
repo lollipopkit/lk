@@ -1,8 +1,3 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
-
 use anyhow::{Result, anyhow};
 
 use super::expr_impl::Pattern;
@@ -86,57 +81,7 @@ impl Pattern {
                 Ok(true)
             }
             Pattern::Wildcard => Ok(true),
-            Pattern::List { patterns, rest } => {
-                let list_items: Vec<Val> = match value {
-                    value if value.as_list().is_some() => value.as_list().expect("checked list").as_ref().clone(),
-                    _ if value.as_str().is_some() => value
-                        .as_str()
-                        .unwrap()
-                        .chars()
-                        .map(|character| Val::from_str(&character.to_string()))
-                        .collect(),
-                    _ => return Ok(false),
-                };
-                if patterns.len() > list_items.len() && rest.is_none() {
-                    return Ok(false);
-                }
-                for (index, pattern) in patterns.iter().enumerate() {
-                    if index >= list_items.len() || !pattern.matches_impl(&list_items[index], bindings, ctx)? {
-                        return Ok(false);
-                    }
-                }
-                if let Some(rest_name) = rest {
-                    let rest_items: Vec<Val> = list_items.iter().skip(patterns.len()).cloned().collect();
-                    bindings.push((rest_name.clone(), Val::list(Arc::from(rest_items))));
-                } else if patterns.len() != list_items.len() {
-                    return Ok(false);
-                }
-                Ok(true)
-            }
-            Pattern::Map { patterns, rest } => {
-                let Some(map) = value.as_map() else {
-                    return Ok(false);
-                };
-                let map_ref = map.as_ref();
-                for (key, pattern) in patterns {
-                    let Some(field_val) = map_ref.get(key.as_str()) else {
-                        return Ok(false);
-                    };
-                    if !pattern.matches_impl(field_val, bindings, ctx)? {
-                        return Ok(false);
-                    }
-                }
-                if let Some(rest_name) = rest {
-                    let matched_keys: HashSet<&str> = patterns.iter().map(|(key, _)| key.as_str()).collect();
-                    let rest_map: HashMap<String, Val> = map_ref
-                        .iter()
-                        .filter(|(key, _)| !matched_keys.contains(key.as_str()))
-                        .map(|(key, value)| (key.to_string(), value.clone()))
-                        .collect();
-                    bindings.push((rest_name.clone(), rest_map.into()));
-                }
-                Ok(true)
-            }
+            Pattern::List { .. } | Pattern::Map { .. } => Ok(false),
             Pattern::Or(patterns) => {
                 for pattern in patterns {
                     let mut temp_bindings = Vec::new();
@@ -156,7 +101,7 @@ impl Pattern {
                     let mut temp_ctx = ctx_ref.clone();
                     temp_ctx.push_scope();
                     for (name, value) in &temp_bindings {
-                        temp_ctx.legacy_set(name.clone(), value.clone());
+                        temp_ctx.set_val_binding(name.clone(), value.clone());
                     }
                     let guard_result = guard.eval_with_ctx(&mut temp_ctx)?;
                     temp_ctx.pop_scope();

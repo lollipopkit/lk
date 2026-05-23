@@ -431,11 +431,11 @@ impl RuntimeState {
             match import {
                 ImportStmt::Module { module } => {
                     let value = Self::resolve_native_import_module(module, native_modules, resolver)?;
-                    ctx.legacy_define(module.clone(), value);
+                    ctx.set_val_binding(module.clone(), value);
                 }
                 ImportStmt::ModuleAlias { module, alias } => {
                     let value = Self::resolve_native_import_module(module, native_modules, resolver)?;
-                    ctx.legacy_define(alias.clone(), value);
+                    ctx.set_val_binding(alias.clone(), value);
                 }
                 ImportStmt::Items { items, source } => {
                     let value = Self::resolve_native_import_source(source, native_modules, resolver)?;
@@ -447,12 +447,12 @@ impl RuntimeState {
                             .get(item.name.as_str())
                             .ok_or_else(|| anyhow!("Export '{}' not found in module", item.name))?;
                         let symbol_name = item.alias.as_ref().unwrap_or(&item.name);
-                        ctx.legacy_define(symbol_name.clone(), export_value.clone());
+                        ctx.set_val_binding(symbol_name.clone(), export_value.clone());
                     }
                 }
                 ImportStmt::Namespace { alias, source } => {
                     let value = Self::resolve_native_import_source(source, native_modules, resolver)?;
-                    ctx.legacy_define(alias.clone(), value);
+                    ctx.set_val_binding(alias.clone(), value);
                 }
                 ImportStmt::File { path } => {
                     let module_name = std::path::Path::new(path)
@@ -461,7 +461,7 @@ impl RuntimeState {
                         .unwrap_or("module")
                         .to_string();
                     let value = Self::resolve_native_import_module(&module_name, native_modules, resolver)?;
-                    ctx.legacy_define(module_name, value);
+                    ctx.set_val_binding(module_name, value);
                 }
             }
         }
@@ -494,7 +494,7 @@ impl RuntimeState {
             return Ok(Val::map(Arc::new(exports.clone())));
         }
         Err(anyhow!(
-            "AOT native import replay no longer converts stdlib module '{}' through legacy Val exports",
+            "AOT native import replay no longer converts stdlib module '{}' through Val exports",
             module
         ))
     }
@@ -590,7 +590,7 @@ impl RuntimeState {
     }
 
     fn load_global(&mut self, name: &str) -> Val {
-        self.ctx.legacy_get(name).cloned().unwrap_or(Val::Nil)
+        self.ctx.get_val_binding(name).cloned().unwrap_or(Val::Nil)
     }
 }
 
@@ -777,7 +777,7 @@ pub extern "C" fn lk_rt_define_global(name: i64, value: i64) {
             .map(|s| s.to_owned())
             .unwrap_or_else(|| key_val.to_string());
         let val = state.decode_value(value);
-        state.ctx.legacy_set(name_str, val);
+        state.ctx.set_val_binding(name_str, val);
     });
 }
 

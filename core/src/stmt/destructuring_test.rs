@@ -7,7 +7,10 @@ mod tests {
         val::{RuntimeVal, ShortStr, Val},
         vm::Program32Result,
     };
-    use std::sync::Arc;
+
+    fn list_expr(values: Vec<Expr>) -> Expr {
+        Expr::List(values.into_iter().map(Box::new).collect())
+    }
 
     fn parse_program(source: &str) -> Program {
         let tokens = Tokenizer::tokenize(source).expect("Failed to tokenize");
@@ -222,11 +225,11 @@ mod tests {
                 rest: Some("rest".to_string()),
             },
             type_annotation: None,
-            value: Box::new(Expr::Val(Val::list(Arc::from(vec![
-                Val::Int(1),
-                Val::Int(2),
-                Val::Int(3),
-            ])))),
+            value: Box::new(list_expr(vec![
+                Expr::Val(Val::Int(1)),
+                Expr::Val(Val::Int(2)),
+                Expr::Val(Val::Int(3)),
+            ])),
             span: None,
             is_const: false,
         };
@@ -262,7 +265,7 @@ mod tests {
                 rest: None,
             },
             type_annotation: None,
-            value: Box::new(Expr::Val(Val::map(Arc::new(Default::default())))),
+            value: Box::new(Expr::Map(vec![])),
             span: None,
             is_const: false,
         };

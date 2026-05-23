@@ -116,33 +116,32 @@ is not a replacement for the documented baseline above.
 Command:
 
 ```bash
-RUNS=10 EXTRA_RUNS=20 PROFILE_WORKLOADS=1 bench/run_workload_bench.sh
+RUN_AOT=0 RUNS=3 EXTRA_RUNS=3 bash bench/run_workload_bench.sh
 ```
 
-Date: 2026-05-22
+Date: 2026-05-23
 
-| Workload | LK VM (ms) | LK AOT (ms) | Lua (ms) | VM/Lua | AOT/Lua | AOT/VM | Conf. | Status |
-|----------|------------|-------------|----------|--------|---------|--------|-------|--------|
-| gcd_batch | 8.288 | 7.740 | 8.558 | 0.968x | 0.904x | 0.934x | low | close |
-| prime_trial_division | 0.432 | 1.841 | 0.599 | 0.721x | 3.073x | 4.262x | low | ahead |
-| binary_search | 14.041 | 11.127 | 50.263 | 0.279x | 0.221x | 0.792x | low | ahead |
-| two_sum_map | 51.854 | 121.828 | 43.313 | 1.197x | 2.813x | 2.349x | low | behind |
-| sliding_window_sum | 55.794 | 95.149 | 23.014 | 2.424x | 4.134x | 1.705x | low | behind |
-| matrix_3x3_multiply | 4.269 | 5.773 | 1.536 | 2.779x | 3.758x | 1.352x | low | behind |
-| stock_max_profit | 37.312 | 24.659 | 10.005 | 3.729x | 2.465x | 0.661x | low | behind |
-| histogram_group_count | 69.318 | 112.626 | 45.932 | 1.509x | 2.452x | 1.625x | low | behind |
-| string_key_hash | 19.822 | 30.215 | 7.275 | 2.725x | 4.153x | 1.524x | low | behind |
-| order_score_pipeline | 9.016 | 7.715 | 3.350 | 2.691x | 2.303x | 0.856x | low | behind |
-| log_parse_filter | 73.520 | 102.906 | 219.221 | 0.335x | 0.469x | 1.400x | low | ahead |
-| cart_pricing_rules | 5.400 | 5.677 | 2.270 | 2.379x | 2.501x | 1.051x | low | behind |
-| route_permission_check | 10.755 | 11.708 | 3.314 | 3.245x | 3.533x | 1.089x | low | behind |
-| inventory_reorder | 68.505 | 85.283 | 29.202 | 2.346x | 2.920x | 1.245x | low | behind |
-| fraud_rule_scoring | 29.841 | 32.511 | 12.242 | 2.438x | 2.656x | 1.089x | low | behind |
+| Workload | LK VM (ms) | Lua (ms) | VM/Lua | Conf. | Status |
+|----------|------------|----------|--------|-------|--------|
+| gcd_batch | 145.162 | 8.033 | 18.071x | medium | behind |
+| prime_trial_division | 9.599 | 0.593 | 16.187x | low | behind |
+| binary_search | 1226.532 | 49.207 | 24.926x | medium | behind |
+| two_sum_map | 858.071 | 41.795 | 20.530x | high | behind |
+| sliding_window_sum | 699.602 | 22.045 | 31.735x | high | behind |
+| matrix_3x3_multiply | 20.675 | 1.471 | 14.055x | low | behind |
+| stock_max_profit | 202.318 | 9.773 | 20.702x | low | behind |
+| histogram_group_count | 1056.039 | 44.648 | 23.653x | medium | behind |
+| string_key_hash | 63.804 | 7.137 | 8.940x | high | behind |
+| order_score_pipeline | 56.584 | 3.352 | 16.881x | low | behind |
+| log_parse_filter | 964.967 | 224.930 | 4.290x | medium | behind |
+| cart_pricing_rules | 57.223 | 2.280 | 25.098x | high | behind |
+| route_permission_check | 82.670 | 3.221 | 25.666x | medium | behind |
+| inventory_reorder | 591.418 | 29.356 | 20.146x | high | behind |
+| fraud_rule_scoring | 213.840 | 11.705 | 18.269x | high | behind |
 
-Samples reported: 30 per engine.
-Geometric mean VM/Lua ratio: **1.580x**.
-AOT geometric mean ratio: **2.057x** vs Lua.
-AOT/VM geometric mean ratio: **1.301x**.
+Samples reported: 6 per engine.
+Geometric mean VM/Lua ratio: **17.648x**.
+AOT was disabled for this Instr32 validation run.
 
 ## Current Bottlenecks
 

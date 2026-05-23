@@ -5,6 +5,7 @@ use crate::{
     stmt::{ForPattern, Stmt},
     val::Val,
 };
+use std::collections::HashMap;
 
 #[test]
 fn test_literal_types() {
@@ -23,6 +24,20 @@ fn test_literal_types() {
         checker.check_expr(&Expr::Val(Val::from_str("hello"))).unwrap(),
         Type::String
     );
+}
+
+#[test]
+fn test_val_container_literals_are_not_typed_as_containers() {
+    let mut checker = TypeChecker::new();
+
+    let list = Expr::Val(Val::test_list_from_values(vec![Val::Int(1)]));
+    let map = Expr::Val(Val::test_string_map_from_hashmap(HashMap::from([(
+        "answer".to_string(),
+        Val::Int(42),
+    )])));
+
+    assert_eq!(checker.check_expr(&list).unwrap(), Type::Any);
+    assert_eq!(checker.check_expr(&map).unwrap(), Type::Any);
 }
 
 #[test]

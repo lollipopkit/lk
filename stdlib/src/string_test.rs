@@ -120,8 +120,8 @@ mod tests {
             import string;
             let named = string.replace("lollipop", pattern: "l", with: "x");
             let named_all = string.replace("lollipop", pattern: "l", with: "x", all: true);
-            let legacy = string.replace("lollipop", "l", "x");
-            return [named, named_all, legacy];
+            let positional = string.replace("lollipop", "l", "x");
+            return [named, named_all, positional];
         "#;
         let result = execute_string32(source)?;
         let TypedList::String(values) = runtime_list(result.first_return(), &result.state.heap) else {

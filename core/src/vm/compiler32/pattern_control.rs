@@ -362,7 +362,7 @@ impl Compiler32 {
             Val::Nil | Val::Bool(_) | Val::Int(_) | Val::Float(_) | Val::ShortStr(_) => self.lower_val(literal),
             value if value.as_str().is_some() => self.lower_val(value),
             other => bail!(
-                "Compiler32 cannot lower pattern literal with legacy value kind {}",
+                "Compiler32 cannot lower pattern literal with AST value kind {}",
                 other.type_name()
             ),
         }

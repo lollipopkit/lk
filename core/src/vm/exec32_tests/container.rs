@@ -149,4 +149,3 @@ fn execute32_builds_map_rest_without_removed_keys() {
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(2), RuntimeVal::Nil]);
 }
-

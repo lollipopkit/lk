@@ -307,7 +307,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
                 let module = resolver.resolve_runtime_file(path)?;
                 env.define_runtime_global(module_name, module);
             }
-            ImportStmt::Items { .. } => unreachable!("items imports are handled before legacy import context"),
+            ImportStmt::Items { .. } => unreachable!("items imports are handled before Val import context"),
             ImportStmt::Namespace { alias, source } => {
                 let module = resolve_runtime_import_source(source, resolver)?;
                 env.define_runtime_global(alias.clone(), module);

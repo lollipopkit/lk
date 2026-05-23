@@ -5,7 +5,7 @@ use crate::stmt::Program;
 use super::options::{LlvmBackendOptions, OptLevel};
 
 const DISABLED_MESSAGE: &str =
-    "LLVM backend is disabled during the Instr32 VM migration; reintroduce it on top of Instr32, not legacy bytecode";
+    "LLVM backend is disabled during the Instr32 VM migration; reintroduce it on top of Instr32, not old bytecode";
 
 pub type LlvmBackendError = anyhow::Error;
 

@@ -27,8 +27,8 @@ where
 {
     match value {
         HeapValue::String(value) => serializer.serialize_str(value.as_ref()),
-        HeapValue::List(values) => values.to_legacy_values().serialize(serializer),
-        HeapValue::Map(values) => values.to_legacy_entries().serialize(serializer),
+        HeapValue::List(values) => values.to_val_values().serialize(serializer),
+        HeapValue::Map(values) => values.to_val_entries().serialize(serializer),
         HeapValue::Callable(_) => serializer.serialize_str("<function>"),
         HeapValue::Task(task) => {
             let mut map = serializer.serialize_map(Some(2))?;

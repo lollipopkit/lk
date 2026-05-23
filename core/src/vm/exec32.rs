@@ -168,7 +168,6 @@ fn format_typed_list(list: &TypedList, heap: &HeapStore, depth: usize) -> String
         TypedList::Bool(v) => v.iter().map(|x| x.to_string()).collect(),
         TypedList::String(v) => v.iter().map(|x| x.to_string()).collect(),
         TypedList::Mixed(v) => v.iter().map(|x| format_runtime_val(x, heap, depth)).collect(),
-        TypedList::OwnedRuntime(_) => return "[<legacy>]".to_string(),
     };
     format!("[{}]", parts.join(", "))
 }
@@ -186,7 +185,6 @@ fn format_typed_map(map: &TypedMap, heap: &HeapStore, depth: usize) -> String {
         TypedMap::StringInt(m) => m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect(),
         TypedMap::StringFloat(m) => m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect(),
         TypedMap::StringBool(m) => m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect(),
-        TypedMap::OwnedRuntime(_) => return "{<legacy>}".to_string(),
     };
     format!("{{{}}}", parts.join(", "))
 }
@@ -422,9 +420,7 @@ impl Executor32 {
                     self.pc += 1;
                 }
                 Opcode32::AddInt => self.dynamic_add(instr)?,
-                Opcode32::SubInt => {
-                    self.dynamic_numeric_binary(instr, |lhs, rhs| lhs.wrapping_sub(rhs), |lhs, rhs| lhs - rhs)?
-                }
+                Opcode32::SubInt => self.dynamic_sub(instr)?,
                 Opcode32::MulInt => {
                     self.dynamic_numeric_binary(instr, |lhs, rhs| lhs.wrapping_mul(rhs), |lhs, rhs| lhs * rhs)?
                 }

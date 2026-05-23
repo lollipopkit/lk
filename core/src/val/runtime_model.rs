@@ -1,7 +1,7 @@
 //! New runtime value model for the VM rewrite.
 //!
-//! The legacy `Val` enum remains active while the compiler and executor are
-//! migrated. New VM code should target these types first.
+//! The `Val` enum remains active while the compiler and executor are migrated.
+//! New VM code should target these types first.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -14,7 +14,6 @@ use crate::util::fast_map::FastHashMap;
 use super::values::{AotFunction, ChannelValue, ShortStr, StreamCursorValue, StreamValue, TaskValue, Val};
 
 mod heap;
-mod legacy;
 
 pub use heap::{HeapRef, HeapStore};
 
@@ -142,61 +141,16 @@ pub enum TypedList {
     Float(Vec<f64>),
     Bool(Vec<bool>),
     String(Vec<Arc<str>>),
-    OwnedRuntime(OwnedRuntimeList),
-}
-
-#[derive(Clone, Debug)]
-pub struct OwnedRuntimeList {
-    pub values: Vec<RuntimeVal>,
-    pub heap: HeapStore,
 }
 
 impl TypedList {
-    pub fn from_legacy_values(values: &[Val]) -> Self {
-        if values.is_empty() {
-            return Self::Mixed(Vec::new());
-        }
-
-        let mut ints = Vec::with_capacity(values.len());
-        let mut floats = Vec::with_capacity(values.len());
-        let mut bools = Vec::with_capacity(values.len());
-        let mut strings = Vec::with_capacity(values.len());
-        for value in values {
-            match value {
-                Val::Int(value) if floats.is_empty() && bools.is_empty() && strings.is_empty() => ints.push(*value),
-                Val::Float(value) if ints.is_empty() && bools.is_empty() && strings.is_empty() => floats.push(*value),
-                Val::Bool(value) if ints.is_empty() && floats.is_empty() && strings.is_empty() => bools.push(*value),
-                value if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
-                    let Some(value) = value.as_str() else {
-                        return legacy::owned_runtime_list_from_legacy(values);
-                    };
-                    strings.push(Arc::<str>::from(value));
-                }
-                _ => return legacy::owned_runtime_list_from_legacy(values),
-            }
-        }
-
-        if !ints.is_empty() {
-            Self::Int(ints)
-        } else if !floats.is_empty() {
-            Self::Float(floats)
-        } else if !bools.is_empty() {
-            Self::Bool(bools)
-        } else if !strings.is_empty() {
-            Self::String(strings)
-        } else {
-            legacy::owned_runtime_list_from_legacy(values)
-        }
-    }
-
-    pub fn to_legacy_values(&self) -> Vec<Val> {
+    pub fn to_val_values(&self) -> Vec<Val> {
         match self {
             Self::Mixed(values) => values.iter().map(Val::object_field_to_val).collect(),
             Self::Int(values) => values.iter().copied().map(Val::Int).collect(),
             Self::Float(values) => values.iter().copied().map(Val::Float).collect(),
             Self::Bool(values) => values.iter().copied().map(Val::Bool).collect(),
             Self::String(values) => values.iter().map(|value| Val::from(value.as_ref())).collect(),
-            Self::OwnedRuntime(values) => values.to_legacy_values(),
         }
     }
 
@@ -296,7 +250,6 @@ impl TypedList {
             Self::Float(values) => values.len(),
             Self::Bool(values) => values.len(),
             Self::String(values) => values.len(),
-            Self::OwnedRuntime(values) => values.values.len(),
         }
     }
 
@@ -321,8 +274,26 @@ impl TypedList {
                     }
                 })
                 .collect(),
-            Self::OwnedRuntime(values) => values.copy_values_into(heap),
         }
+    }
+
+    pub fn runtime_values_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<RuntimeVal>> {
+        Ok(match self {
+            Self::Mixed(values) => values.clone(),
+            Self::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
+            Self::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
+            Self::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
+            Self::String(values) => values
+                .iter()
+                .map(|value| {
+                    if let Some(short) = ShortStr::new(value) {
+                        RuntimeVal::ShortStr(short)
+                    } else {
+                        RuntimeVal::Obj(heap.alloc(HeapValue::String(value.clone())))
+                    }
+                })
+                .collect(),
+        })
     }
 
     pub fn slice_from(&self, start: usize) -> Self {
@@ -332,7 +303,6 @@ impl TypedList {
             Self::Float(values) => Self::Float(values.get(start..).unwrap_or(&[]).to_vec()),
             Self::Bool(values) => Self::Bool(values.get(start..).unwrap_or(&[]).to_vec()),
             Self::String(values) => Self::String(values.get(start..).unwrap_or(&[]).to_vec()),
-            Self::OwnedRuntime(values) => Self::OwnedRuntime(values.slice_from(start)),
         }
     }
 }
@@ -345,7 +315,7 @@ impl PartialEq for TypedList {
             (Self::Float(left), Self::Float(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::String(left), Self::String(right)) => left == right,
-            _ => self.to_legacy_values() == other.to_legacy_values(),
+            _ => self.to_val_values() == other.to_val_values(),
         }
     }
 }
@@ -357,31 +327,10 @@ pub enum TypedMap {
     StringInt(BTreeMap<Arc<str>, i64>),
     StringFloat(BTreeMap<Arc<str>, f64>),
     StringBool(BTreeMap<Arc<str>, bool>),
-    OwnedRuntime(OwnedRuntimeMap),
-}
-
-#[derive(Clone, Debug)]
-pub struct OwnedRuntimeMap {
-    pub entries: BTreeMap<RuntimeMapKey, RuntimeVal>,
-    pub heap: HeapStore,
 }
 
 impl TypedMap {
-    pub fn from_legacy_entries(values: &FastHashMap<ArcStr, Val>) -> Self {
-        let mut entries = BTreeMap::new();
-        for (key, value) in values {
-            let Some(value) = legacy::legacy_val_to_inline_runtime(value) else {
-                return legacy::owned_runtime_map_from_legacy(values);
-            };
-            entries.insert(RuntimeMapKey::String(Arc::<str>::from(key.as_str())), value);
-        }
-        Self::from_runtime_entries(entries)
-    }
-
-    pub fn to_legacy_entries(&self) -> FastHashMap<ArcStr, Val> {
-        if let Self::OwnedRuntime(values) = self {
-            return values.to_legacy_entries();
-        }
+    pub fn to_val_entries(&self) -> FastHashMap<ArcStr, Val> {
         let mut out = FastHashMap::default();
         for (key, value) in self.entries() {
             let Some(key) = key.as_str() else {
@@ -441,7 +390,6 @@ impl TypedMap {
             Self::StringInt(values) => values.len(),
             Self::StringFloat(values) => values.len(),
             Self::StringBool(values) => values.len(),
-            Self::OwnedRuntime(values) => values.entries.len(),
         }
     }
 
@@ -463,15 +411,12 @@ impl TypedMap {
             Self::StringBool(values) => key
                 .as_str()
                 .and_then(|key| values.get(key).copied().map(RuntimeVal::Bool)),
-            Self::OwnedRuntime(values) => values.get(key),
         }
     }
 
     pub fn get_into_heap(&self, key: &RuntimeMapKey, heap: &mut HeapStore) -> Result<Option<RuntimeVal>> {
-        Ok(match self {
-            Self::OwnedRuntime(values) => values.copy_value_into(key, heap)?,
-            _ => self.get(key),
-        })
+        let _ = heap;
+        Ok(self.get(key))
     }
 
     pub fn get_str(&self, key: &str) -> Option<RuntimeVal> {
@@ -488,15 +433,12 @@ impl TypedMap {
             Self::StringInt(values) => values.get(key).copied().map(RuntimeVal::Int),
             Self::StringFloat(values) => values.get(key).copied().map(RuntimeVal::Float),
             Self::StringBool(values) => values.get(key).copied().map(RuntimeVal::Bool),
-            Self::OwnedRuntime(values) => values.get_str(key),
         }
     }
 
     pub fn get_str_into_heap(&self, key: &str, heap: &mut HeapStore) -> Result<Option<RuntimeVal>> {
-        Ok(match self {
-            Self::OwnedRuntime(values) => values.copy_str_value_into(key, heap)?,
-            _ => self.get_str(key),
-        })
+        let _ = heap;
+        Ok(self.get_str(key))
     }
 
     pub fn set(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
@@ -568,7 +510,6 @@ impl TypedMap {
                     self.materialize_string_map_to_mixed(key, value);
                 }
             }
-            Self::OwnedRuntime(values) => values.set(key, value),
         }
     }
 
@@ -591,19 +532,15 @@ impl TypedMap {
                 .iter()
                 .map(|(key, value)| (RuntimeMapKey::String(key.clone()), RuntimeVal::Bool(*value)))
                 .collect(),
-            Self::OwnedRuntime(values) => values.inline_entries(),
         }
     }
 
     pub fn entries_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<(RuntimeMapKey, RuntimeVal)>> {
-        Ok(match self {
-            Self::OwnedRuntime(values) => values.copy_entries_into(heap)?.into_iter().collect(),
-            _ => self.entries(),
-        })
+        let _ = heap;
+        Ok(self.entries())
     }
 
     /// Collect all entries as `(Arc<str>, RuntimeVal)` pairs without needing `&mut HeapStore`.
-    /// Returns an error for `OwnedRuntime` — use `string_entries_into_heap` in that case.
     pub fn string_entries_no_heap(&self) -> Result<Vec<(Arc<str>, RuntimeVal)>> {
         Ok(match self {
             Self::StringMixed(values) => values.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
@@ -627,13 +564,11 @@ impl TypedMap {
                         .ok_or_else(|| anyhow::anyhow!("map contains non-string key"))
                 })
                 .collect::<Result<_>>()?,
-            Self::OwnedRuntime(_) => {
-                anyhow::bail!("OwnedRuntime map requires heap access — use string_entries_into_heap")
-            }
         })
     }
 
     pub fn string_entries_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<(Arc<str>, RuntimeVal)>> {
+        let _ = heap;
         Ok(match self {
             Self::StringMixed(values) => values.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
             Self::StringInt(values) => values
@@ -653,15 +588,6 @@ impl TypedMap {
                 .map(|(key, value)| {
                     key.as_arc_str()
                         .map(|key| (key, value.clone()))
-                        .ok_or_else(|| anyhow::anyhow!("map contains non-string key"))
-                })
-                .collect::<Result<_>>()?,
-            Self::OwnedRuntime(values) => values
-                .copy_entries_into(heap)?
-                .into_iter()
-                .map(|(key, value)| {
-                    key.as_arc_str()
-                        .map(|key| (key, value))
                         .ok_or_else(|| anyhow::anyhow!("map contains non-string key"))
                 })
                 .collect::<Result<_>>()?,
@@ -687,7 +613,6 @@ impl TypedMap {
                 .into_iter()
                 .map(|(key, value)| (RuntimeMapKey::String(key), RuntimeVal::Bool(value)))
                 .collect(),
-            Self::OwnedRuntime(values) => values.inline_entries_map(),
         };
         mixed.insert(key, value);
         *self = Self::Mixed(mixed);
@@ -702,7 +627,7 @@ impl PartialEq for TypedMap {
             (Self::StringInt(left), Self::StringInt(right)) => left == right,
             (Self::StringFloat(left), Self::StringFloat(right)) => left == right,
             (Self::StringBool(left), Self::StringBool(right)) => left == right,
-            _ => self.to_legacy_entries() == other.to_legacy_entries(),
+            _ => self.to_val_entries() == other.to_val_entries(),
         }
     }
 }
@@ -825,39 +750,6 @@ mod tests {
             TypedList::from_runtime_slice(&[RuntimeVal::Int(1), RuntimeVal::Bool(true)], &heap),
             TypedList::Mixed(_)
         ));
-    }
-
-    #[test]
-    fn owned_runtime_containers_copy_into_destination_heap() {
-        let nested = Val::from(vec![Val::Int(1), Val::from_str("longer-than-seven")]);
-        let list = TypedList::from_legacy_values(&[nested]);
-        let mut dest_heap = HeapStore::new();
-        let copied = match list {
-            TypedList::OwnedRuntime(values) => values.copy_into_typed_list(&mut dest_heap).expect("copy list"),
-            other => panic!("expected owned runtime list, got {:?}", other),
-        };
-
-        let TypedList::Mixed(values) = copied else {
-            panic!("expected mixed list after owned runtime copy");
-        };
-        let RuntimeVal::Obj(handle) = values[0] else {
-            panic!("expected nested list object");
-        };
-        assert!(matches!(dest_heap.get(handle), Some(HeapValue::List(_))));
-
-        let mut legacy_map = FastHashMap::default();
-        legacy_map.insert(ArcStr::from("items"), Val::from(vec![Val::Int(2)]));
-        let map = TypedMap::from_legacy_entries(&legacy_map);
-        let mut dest_heap = HeapStore::new();
-        let copied = match map {
-            TypedMap::OwnedRuntime(values) => values.copy_into_typed_map(&mut dest_heap).expect("copy map"),
-            other => panic!("expected owned runtime map, got {:?}", other),
-        };
-
-        let Some(RuntimeVal::Obj(handle)) = copied.get_str("items") else {
-            panic!("expected copied nested map value");
-        };
-        assert!(matches!(dest_heap.get(handle), Some(HeapValue::List(_))));
     }
 
     #[test]

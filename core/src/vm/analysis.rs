@@ -88,8 +88,6 @@ impl PerfValueKind {
             Val::Int(_) => Self::Int,
             Val::Float(_) => Self::Float,
             value if value.as_str().is_some() => Self::String,
-            value if value.as_list().is_some() => Self::List,
-            value if value.as_map().is_some() => Self::Map,
             _ => Self::Unknown,
         }
     }
@@ -807,4 +805,25 @@ pub fn vm_runtime_metrics_reset() {
 #[cfg(test)]
 pub fn vm_runtime_metrics_reset() {
     THREAD_RUNTIME_METRICS.with(|cell| cell.set(VmRuntimeMetrics::default()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn perf_value_kind_from_val_keeps_containers_unknown() {
+        assert_eq!(PerfValueKind::from_val(&Val::Nil), PerfValueKind::Nil);
+        assert_eq!(PerfValueKind::from_val(&Val::Bool(true)), PerfValueKind::Bool);
+        assert_eq!(PerfValueKind::from_val(&Val::Int(42)), PerfValueKind::Int);
+        assert_eq!(PerfValueKind::from_val(&Val::Float(1.5)), PerfValueKind::Float);
+        assert_eq!(PerfValueKind::from_val(&Val::from_str("lk")), PerfValueKind::String);
+
+        let list = Val::test_list_from_values(vec![Val::Int(1)]);
+        let map = Val::test_string_map_from_hashmap(HashMap::from([("answer".to_string(), Val::Int(42))]));
+
+        assert_eq!(PerfValueKind::from_val(&list), PerfValueKind::Unknown);
+        assert_eq!(PerfValueKind::from_val(&map), PerfValueKind::Unknown);
+    }
 }

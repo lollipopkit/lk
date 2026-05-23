@@ -68,9 +68,6 @@ pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeV
             }
         },
         TypedList::String(_) => bail!("internal error: typed string list write must be handled before mutable borrow"),
-        TypedList::OwnedRuntime(_) => {
-            bail!("OwnedRuntime list cannot appear in exec32 active heap — bridge conversion missing");
-        }
     }
     Ok(())
 }

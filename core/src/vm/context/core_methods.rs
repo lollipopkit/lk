@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail};
 use arcstr::ArcStr;
 
 use crate::{
-    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, Type, TypedList, TypedMap},
+    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, Type, TypedList},
     vm::{
         NativeArgs32, NativeRuntime32, call_runtime_value32_runtime, call_runtime_value32_runtime_named,
         call_runtime_value32_runtime_with_receiver,
@@ -388,14 +388,7 @@ fn call_trait_method_runtime(
         bail!("Named arguments are not supported for trait methods");
     }
 
-    match method_val {
-        crate::typ::TraitMethodValue::Runtime(callee) => {
-            call_runtime_value32_runtime_with_receiver(callee, &receiver, positional, state, module, Some(ctx))
-        }
-        crate::typ::TraitMethodValue::Legacy(_) => {
-            bail!("legacy trait methods cannot be called from Executor32")
-        }
-    }
+    call_runtime_value32_runtime_with_receiver(method_val, &receiver, positional, state, module, Some(ctx))
 }
 
 fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> anyhow::Result<Option<RuntimeVal>> {
@@ -471,14 +464,14 @@ fn runtime_positional_args(helper: &str, value: &RuntimeVal, heap: &mut HeapStor
             TypedList::Int(values) => Some(values.iter().copied().map(RuntimeVal::Int).collect()),
             TypedList::Float(values) => Some(values.iter().copied().map(RuntimeVal::Float).collect()),
             TypedList::Bool(values) => Some(values.iter().copied().map(RuntimeVal::Bool).collect()),
-            TypedList::String(_) | TypedList::OwnedRuntime(_) => None,
+            TypedList::String(_) => None,
         };
         if let Some(v) = result {
             return Ok(v);
         }
     }
 
-    // Phase 2: String (may allocate long strings into heap) or OwnedRuntime (bridge).
+    // Phase 2: String may allocate long strings into heap.
     let list = match heap
         .get(handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
@@ -501,7 +494,7 @@ fn runtime_named_args(
         other => bail!("{helper} expects named arguments as map, got {:?}", other.kind()),
     };
 
-    // Phase 1: immutable borrow — handles all non-OwnedRuntime variants without cloning TypedMap.
+    // Phase 1: immutable borrow without cloning TypedMap.
     {
         let heap_val = heap
             .get(handle)
@@ -509,23 +502,10 @@ fn runtime_named_args(
         let HeapValue::Map(map) = heap_val else {
             bail!("{helper} expects named arguments as map, got {}", heap_val.type_name());
         };
-        if !matches!(map, TypedMap::OwnedRuntime(_)) {
-            return map
-                .string_entries_no_heap()
-                .map_err(|e| anyhow!("{helper} named argument key must be a string: {e}"));
-        }
+        return map
+            .string_entries_no_heap()
+            .map_err(|e| anyhow!("{helper} named argument key must be a string: {e}"));
     }
-
-    // Phase 2: OwnedRuntime only — needs &mut heap to copy values across heap boundaries.
-    let value = heap
-        .get(handle)
-        .cloned()
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-    let HeapValue::Map(map) = &value else {
-        unreachable!("already verified as Map in phase 1")
-    };
-    map.string_entries_into_heap(heap)
-        .map_err(|e| anyhow!("{helper} named argument key must be a string: {e}"))
 }
 
 fn runtime_string_value(value: String, heap: &mut HeapStore) -> RuntimeVal {

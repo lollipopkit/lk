@@ -208,7 +208,7 @@ impl Expr {
                 t.collect_ctx_names(names);
                 e.collect_ctx_names(names);
             }
-            // legacy '@' context access removed
+            // Removed '@' context access.
             Expr::Access(expr, field) => {
                 expr.collect_ctx_names(names);
                 field.collect_ctx_names(names);
@@ -457,7 +457,7 @@ impl Expr {
                 }
                 Expr::NullishCoalescing(Box::new(e1), Box::new(e2))
             }
-            // legacy '@' context access removed
+            // Removed '@' context access.
             Expr::Access(base_box, field_box) => {
                 let base = (*base_box).fold_constants();
                 let field = (*field_box).fold_constants();
@@ -500,53 +500,14 @@ impl Expr {
                 Expr::OptionalAccess(Box::new(base), Box::new(field))
             }
             Expr::List(exprs) => {
-                // List constant folding: if all elements are constants then fold to one list value.
                 let folded_elems: Vec<Expr> = exprs.into_iter().map(|e| e.fold_constants()).collect();
-                if folded_elems
-                    .iter()
-                    .all(|e| matches!(e, Expr::Val(value) if value_can_fold_into_legacy_container(value)))
-                {
-                    // Extract all constant values as new list elements
-                    let const_vals: Vec<Val> = folded_elems
-                        .into_iter()
-                        .map(|e| if let Expr::Val(v) = e { v } else { unreachable!() })
-                        .collect();
-                    return Expr::Val(Val::list(Arc::from(const_vals)));
-                }
                 Expr::List(folded_elems.into_iter().map(Box::new).collect())
             }
             Expr::Map(pairs) => {
-                // Map constant folding: if all keys and values are constants, then construct constant Map
                 let folded_pairs: Vec<(Box<Expr>, Box<Expr>)> = pairs
                     .into_iter()
                     .map(|(k, v)| (Box::new(k.fold_constants()), Box::new(v.fold_constants())))
                     .collect();
-                if folded_pairs
-                    .iter()
-                    .all(|(k, v)| matches!(&**k, Expr::Val(_)) && matches!(&**v, Expr::Val(_)))
-                {
-                    let mut const_map = HashMap::with_capacity(folded_pairs.len());
-                    for (k_expr, v_expr) in &folded_pairs {
-                        if let (Expr::Val(k_val), Expr::Val(v_val)) = (&**k_expr, &**v_expr) {
-                            if !value_can_fold_into_legacy_container(v_val) {
-                                return Expr::Map(folded_pairs);
-                            }
-                            // Convert key to string (only allow basic type keys)
-                            let key_str = match k_val {
-                                val if val.as_str().is_some() => val.as_str().unwrap().to_string(),
-                                Val::Int(i) => i.to_string(),
-                                Val::Float(f) => f.to_string(),
-                                Val::Bool(b) => b.to_string(),
-                                _ => {
-                                    // Map key must be basic type, if Nil/List/Map appears, don't fold entire Map
-                                    return Expr::Map(folded_pairs);
-                                }
-                            };
-                            const_map.insert(key_str, v_val.clone());
-                        }
-                    }
-                    return Expr::Val(Val::from(const_map));
-                }
                 Expr::Map(folded_pairs)
             }
             Expr::Paren(expr_box) => {
@@ -636,12 +597,6 @@ impl Expr {
                                         Val::Float(f) => f.to_string(),
                                         Val::Bool(b) => b.to_string(),
                                         Val::Nil => "nil".to_string(),
-                                        value if value.as_list().is_some() => {
-                                            format!("{:?}", value.as_list().expect("checked list"))
-                                        }
-                                        value if value.as_map().is_some() => {
-                                            format!("{:?}", value.as_map().expect("checked map"))
-                                        }
                                         value if value.is_callable() => "[Function]".to_string(),
                                         Val::Obj(_) => format!("{:?}", val),
                                         Val::ShortStr(_) => unreachable!("string handled above"),
@@ -711,15 +666,6 @@ impl Expr {
     }
 }
 
-fn value_can_fold_into_legacy_container(value: &Val) -> bool {
-    match value {
-        Val::Nil | Val::Bool(_) | Val::Int(_) | Val::Float(_) | Val::ShortStr(_) => true,
-        Val::Obj(value) => matches!(
-            value.as_ref(),
-            crate::val::HeapValue::String(_) | crate::val::HeapValue::List(_) | crate::val::HeapValue::Map(_)
-        ),
-    }
-}
 impl TryInto<Val> for &Expr {
     type Error = anyhow::Error;
     fn try_into(self) -> Result<Val> {
@@ -758,7 +704,7 @@ impl Display for Expr {
             Expr::And(left, right) => write!(f, "{left} && {right}"),
             Expr::Or(left, right) => write!(f, "{left} || {right}"),
             Expr::NullishCoalescing(left, right) => write!(f, "{left} ?? {right}"),
-            // legacy '@' context access removed
+            // Removed '@' context access.
             Expr::Access(expr, field) => write!(f, "{}.{}", expr, field),
             Expr::OptionalAccess(expr, field) => write!(f, "{}?.{}", expr, field),
             Expr::List(exprs) => {
@@ -905,7 +851,7 @@ impl Expr {
             // 1) 本地/全局作用域
             // 2) 模块解析器注册的内置函数（如测试环境中的 spawn/chan）
             Expr::Var(name) => {
-                if let Some(v) = ctx.legacy_get(name).cloned() {
+                if let Some(v) = ctx.get_val_binding(name).cloned() {
                     Ok(v)
                 } else {
                     Err(anyhow!("Undefined variable: {}", name))
@@ -913,31 +859,12 @@ impl Expr {
             }
             // 括号表达式
             Expr::Paren(expr) => expr.eval_with_ctx(ctx),
-            // 字面量列表
-            Expr::List(items) => {
-                let mut out = Vec::with_capacity(items.len());
-                for e in items {
-                    out.push(e.eval_with_ctx(ctx)?);
-                }
-                Ok(Val::list(Arc::from(out)))
-            }
-            // 字面量 Map（键统一为字符串）
-            Expr::Map(pairs) => {
-                let mut map = HashMap::with_capacity(pairs.len());
-                for (k, v) in pairs {
-                    let key_val = k.eval_with_ctx(ctx)?;
-                    let val_val = v.eval_with_ctx(ctx)?;
-                    let key_str = match key_val {
-                        val if val.as_str().is_some() => val.as_str().unwrap().to_string(),
-                        Val::Int(i) => i.to_string(),
-                        Val::Float(f) => f.to_string(),
-                        Val::Bool(b) => b.to_string(),
-                        other => return Err(anyhow!("Map key must be primitive, got: {:?}", other)),
-                    };
-                    map.insert(key_str, val_val);
-                }
-                Ok(Val::from(map))
-            }
+            Expr::List(_) => Err(anyhow!(
+                "Expr::eval_with_ctx does not evaluate list literals; use Executor32"
+            )),
+            Expr::Map(_) => Err(anyhow!(
+                "Expr::eval_with_ctx does not evaluate map literals; use Executor32"
+            )),
             // 结构体字面量（字段求值）
             Expr::StructLiteral { name, fields } => {
                 let mut hm = HashMap::with_capacity(fields.len());
@@ -1011,7 +938,7 @@ impl Expr {
             // 函数调用：按名称
             Expr::Call(func_name, args) => {
                 // Resolve callee with same fallback strategy as variable lookup
-                let func_val = if let Some(v) = ctx.legacy_get(func_name).cloned() {
+                let func_val = if let Some(v) = ctx.get_val_binding(func_name).cloned() {
                     v
                 } else {
                     return Err(anyhow!("Undefined function: {}", func_name));
@@ -1044,18 +971,14 @@ impl Expr {
                             }
                             // fall through to meta-method lookup for non-empty args
                         }
-                        // 2) 检查 trait 实现 - 先评估参数再检查 trait 以避免借用冲突
-                        let mut full_args = Vec::with_capacity(args.len() + 1);
-                        full_args.push(obj_val.clone());
-                        for a in args {
-                            full_args.push(a.eval_with_ctx(ctx)?);
-                        }
-
-                        // 优先检查 trait 实现
+                        // 2) Trait methods are registered as RuntimeVal callables and execute through Executor32.
                         if let Some(tc) = ctx.type_checker() {
                             let obj_type = obj_val.dispatch_type();
-                            if let Some(method_val) = tc.registry().get_legacy_method(&obj_type, method_name) {
-                                return method_val.clone().call(&full_args, ctx);
+                            if tc.registry().get_method(&obj_type, method_name).is_some() {
+                                return Err(anyhow!(
+                                    "trait method '{}' requires Executor32; Expr::eval_with_ctx cannot call runtime trait methods",
+                                    method_name
+                                ));
                             }
                         }
 
@@ -1111,18 +1034,14 @@ impl Expr {
                             }
                         }
 
-                        // 评估所有参数
-                        let mut full_args = Vec::with_capacity(pos_args.len() + 1);
-                        full_args.push(obj_val.clone());
-                        for a in pos_args {
-                            full_args.push(a.eval_with_ctx(ctx)?);
-                        }
-
-                        // 检查 trait 实现
+                        // Trait methods are registered as RuntimeVal callables and execute through Executor32.
                         if let Some(tc) = ctx.type_checker() {
                             let obj_type = obj_val.dispatch_type();
-                            if let Some(method_val) = tc.registry().get_legacy_method(&obj_type, method_name) {
-                                return method_val.clone().call(&full_args, ctx);
+                            if tc.registry().get_method(&obj_type, method_name).is_some() {
+                                return Err(anyhow!(
+                                    "trait method '{}' requires Executor32; Expr::eval_with_ctx cannot call runtime trait methods",
+                                    method_name
+                                ));
                             }
                         }
 
@@ -1141,71 +1060,12 @@ impl Expr {
                 }
                 callee_val.call_named(&pos, &named, ctx)
             }
-            // 范围表达式：生成列表值
-            Expr::Range {
-                start,
-                end,
-                inclusive,
-                step,
-            } => {
-                let start_val = match start {
-                    Some(expr) => expr.eval_with_ctx(ctx)?,
-                    None => Val::Int(0),
-                };
-                let end_val = match end {
-                    Some(expr) => expr.eval_with_ctx(ctx)?,
-                    None => return Err(anyhow!("Open-ended ranges not supported in for loops")),
-                };
-                let step_val = match step {
-                    Some(expr) => Some(expr.eval_with_ctx(ctx)?),
-                    None => None,
-                };
-                match (start_val, end_val, step_val) {
-                    (Val::Int(s), Val::Int(e), None) => {
-                        let range: Vec<Val> = if *inclusive {
-                            (s..=e).map(Val::Int).collect()
-                        } else {
-                            (s..e).map(Val::Int).collect()
-                        };
-                        Ok(Val::list(range.into()))
-                    }
-                    (Val::Int(mut i), Val::Int(e), Some(Val::Int(st))) => {
-                        if st == 0 {
-                            return Err(anyhow!("Range step cannot be zero"));
-                        }
-                        let mut out: Vec<Val> = Vec::new();
-                        if st > 0 {
-                            if *inclusive {
-                                while i <= e {
-                                    out.push(Val::Int(i));
-                                    i += st;
-                                }
-                            } else {
-                                while i < e {
-                                    out.push(Val::Int(i));
-                                    i += st;
-                                }
-                            }
-                        } else if *inclusive {
-                            while i >= e {
-                                out.push(Val::Int(i));
-                                i += st;
-                            }
-                        } else {
-                            while i > e {
-                                out.push(Val::Int(i));
-                                i += st;
-                            }
-                        }
-                        Ok(Val::list(out.into()))
-                    }
-                    (_, _, Some(_)) => Err(anyhow!("Range step must be an integer")),
-                    _ => Err(anyhow!("Range bounds must be integers")),
-                }
-            }
+            Expr::Range { .. } => Err(anyhow!(
+                "Expr::eval_with_ctx does not evaluate range expressions; use Executor32"
+            )),
             // select 表达式
             Expr::Select { .. } => Err(anyhow!(
-                "legacy Expr::eval_with_ctx does not execute select; use the RuntimeNative32 select$block path"
+                "Expr::eval_with_ctx does not execute select; use the RuntimeNative32 select$block path"
             )),
             // 匹配表达式
             Expr::Match { value, arms } => {
@@ -1214,7 +1074,7 @@ impl Expr {
                     if let Some(bindings) = Pattern::matches(&arm.pattern, &match_val, Some(ctx))? {
                         ctx.push_scope();
                         for (name, val) in bindings {
-                            ctx.legacy_set(name, val);
+                            ctx.set_val_binding(name, val);
                         }
                         let result = arm.body.eval_with_ctx(ctx);
                         ctx.pop_scope();
@@ -1241,7 +1101,7 @@ impl Expr {
             Expr::Closure { params, body } => {
                 let _ = (params, body);
                 Err(anyhow!(
-                    "legacy closure evaluation is disabled during the Instr32 VM migration; use compiler32"
+                    "closure evaluation through Expr::eval_with_ctx is disabled during the Instr32 VM migration; use compiler32"
                 ))
             }
             Expr::Block(_) => Err(anyhow!("Block expression can only be used as a closure body")),

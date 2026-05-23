@@ -193,7 +193,6 @@ mod tests {
                 .iter()
                 .map(|value| RuntimeVal::ShortStr(ShortStr::new(value).expect("short test string")))
                 .collect(),
-            TypedList::OwnedRuntime(values) => values.values.clone(),
         }
     }
 
