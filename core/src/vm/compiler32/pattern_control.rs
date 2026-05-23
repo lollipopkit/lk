@@ -15,6 +15,7 @@ impl Compiler32 {
         then_stmt: &Stmt,
         else_stmt: Option<&Stmt>,
     ) -> Result<()> {
+        let watermark = self.next_reg;
         let value = self.lower_expr(value)?;
         let (condition, previous) = self.lower_pattern_match(pattern, value)?;
         let test_pc = self.emit_test_placeholder(condition)?;
@@ -23,6 +24,7 @@ impl Compiler32 {
         self.lower_stmt(then_stmt)?;
         let then_returns = self.emitted_return;
         self.restore_pattern_bindings(previous);
+        self.next_reg = watermark; // recycle registers from then-branch
 
         if let Some(else_stmt) = else_stmt {
             let jmp_end = (!then_returns).then(|| self.emit_jmp_placeholder());
@@ -32,6 +34,7 @@ impl Compiler32 {
             self.emitted_return = false;
             self.lower_stmt(else_stmt)?;
             let else_returns = self.emitted_return;
+            self.next_reg = watermark; // recycle registers from else-branch
 
             if let Some(jmp_end) = jmp_end {
                 let end = self.function.code.len();
@@ -48,6 +51,7 @@ impl Compiler32 {
     }
 
     pub(super) fn lower_while_let(&mut self, pattern: &Pattern, value: &crate::expr::Expr, body: &Stmt) -> Result<()> {
+        let watermark = self.next_reg;
         let loop_start = self.function.code.len();
         let value = self.lower_expr(value)?;
         let (condition, previous) = match pattern {
@@ -94,6 +98,7 @@ impl Compiler32 {
             self.patch_jmp(pc, loop_start)?;
         }
         self.emitted_return = false;
+        self.next_reg = watermark; // recycle all while-let loop registers
         Ok(())
     }
 

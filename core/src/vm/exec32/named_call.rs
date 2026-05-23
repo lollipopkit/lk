@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    val::{CallableValue, HeapValue, RuntimeVal},
+    val::{CallableValue, HeapValue, RuntimeVal, TypedMap},
     vm::{CallWindow32, Function32, Module32, NativeArgs32, NativeEntry32, VmContext},
 };
 
@@ -11,6 +11,99 @@ use super::{
     Executor32, runtime_callable,
     support::{call_native_entry, call_native_entry_parts, inline_native_args_from_stack},
 };
+
+/// Write named arguments from a `&TypedMap` directly into a callee frame,
+/// bypassing the intermediate `Vec<(Arc<str>, RuntimeVal)>`.
+///
+/// This is the direct-writer variant — call from a code path where you already
+/// hold a `&TypedMap` reference (e.g. the dynamic `__lk_call_method_named` builtin).
+/// All variants except `OwnedRuntime` are handled without requiring `&mut HeapStore`.
+pub(crate) fn write_named_args32_to_frame_from_typed_map(
+    function: &Function32,
+    positional: &[RuntimeVal],
+    named: &TypedMap,
+    frame: &mut [RuntimeVal],
+) -> Result<()> {
+    if frame.len() < function.param_count as usize {
+        bail!(
+            "callee frame has {} slots, function requires {} params",
+            frame.len(),
+            function.param_count
+        );
+    }
+    if function.param_names.len() != function.param_count as usize {
+        bail!("Function does not expose named parameter metadata");
+    }
+    let positional_count = function.positional_param_count as usize;
+    if positional.len() != positional_count {
+        bail!(
+            "Function expects {} positional arguments before named arguments, got {}",
+            positional_count,
+            positional.len()
+        );
+    }
+    frame[..positional_count].clone_from_slice(positional);
+    let named_slot_count = function.param_count as usize - positional_count;
+    let mut seen = vec![false; named_slot_count];
+
+    macro_rules! place_named {
+        ($name:expr, $value:expr) => {{
+            let name_str: &str = ($name).as_ref();
+            let Some(offset) = function.param_names[positional_count..]
+                .iter()
+                .position(|p| p.as_ref() == name_str)
+            else {
+                bail!("unknown named argument `{name_str}`");
+            };
+            if std::mem::replace(&mut seen[offset], true) {
+                bail!("duplicate named argument `{name_str}`");
+            }
+            frame[positional_count + offset] = $value;
+        }};
+    }
+
+    match named {
+        TypedMap::StringMixed(values) => {
+            for (name, value) in values {
+                place_named!(name, value.clone());
+            }
+        }
+        TypedMap::StringInt(values) => {
+            for (name, &value) in values {
+                place_named!(name, RuntimeVal::Int(value));
+            }
+        }
+        TypedMap::StringFloat(values) => {
+            for (name, &value) in values {
+                place_named!(name, RuntimeVal::Float(value));
+            }
+        }
+        TypedMap::StringBool(values) => {
+            for (name, &value) in values {
+                place_named!(name, RuntimeVal::Bool(value));
+            }
+        }
+        TypedMap::Mixed(values) => {
+            for (key, value) in values {
+                let Some(name) = key.as_arc_str() else {
+                    bail!("named argument key must be a string");
+                };
+                place_named!(name, value.clone());
+            }
+        }
+        TypedMap::OwnedRuntime(_) => {
+            bail!("OwnedRuntime map cannot appear in exec32 active heap — bridge conversion missing")
+        }
+    }
+
+    if let Some(index) = seen.iter().position(|seen| !*seen) {
+        bail!(
+            "missing required named argument `{}`",
+            function.param_names[positional_count + index]
+        );
+    }
+    Ok(())
+}
 
 pub(super) fn write_named_args32_to_frame(
     function: &Function32,

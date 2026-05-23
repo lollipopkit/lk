@@ -1,10 +1,10 @@
 use crate::val::Val;
 
 #[cfg(test)]
-use super::analysis::record_register_write;
+use crate::vm::analysis::record_register_write;
 #[cfg(test)]
-use super::analysis::vm_runtime_metrics_enabled;
-use super::analysis::{
+use crate::vm::analysis::vm_runtime_metrics_enabled;
+use crate::vm::analysis::{
     VmValueCopyMetric, record_copy_policy_clone, record_register_write_known_enabled, record_return_value_move,
     record_val_clone,
 };

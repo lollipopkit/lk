@@ -7,6 +7,9 @@ impl Compiler32 {
     pub(super) fn alloc_reg(&mut self) -> u16 {
         let reg = self.next_reg;
         self.next_reg = self.next_reg.checked_add(1).expect("Compiler32 register overflow");
+        if self.next_reg > self.peak_reg {
+            self.peak_reg = self.next_reg;
+        }
         reg
     }
 
@@ -17,6 +20,9 @@ impl Compiler32 {
             .next_reg
             .checked_add(count)
             .ok_or_else(|| anyhow!("Compiler32 register overflow"))?;
+        if self.next_reg > self.peak_reg {
+            self.peak_reg = self.next_reg;
+        }
         Ok(base)
     }
 
@@ -37,12 +43,17 @@ impl Compiler32 {
 
     pub(super) fn emit_test_placeholder(&mut self, condition: u16) -> Result<usize> {
         let pc = self.function.code.len();
+        // Trampoline pair: Test (c=1 skips the Jmp when condition matches) + Jmp to the real target.
+        // patch_test_false/true_jump fills in the Jmp offset; the Test field B is set to the
+        // inverted sense so that a matching condition falls through to the Jmp.
         self.emit(Instr32::abc(
             Opcode32::Test,
             checked_u8("test condition", condition)?,
-            1,
-            0,
+            1, // placeholder; overwritten by patch_test_jump
+            1, // C=1: jump to pc+2 (body) when condition does NOT match the Jmp path
         ));
+        // Always emit a Jmp placeholder immediately after; patch_test_jump will set its offset.
+        self.emit(Instr32::sj(Opcode32::Jmp, 0));
         Ok(pc)
     }
 
@@ -74,6 +85,15 @@ impl Compiler32 {
     }
 
     fn patch_test_jump(&mut self, pc: usize, target: usize, expected: u8) -> Result<()> {
+        // Trampoline scheme: the Test instruction (at `pc`) skips 1 ahead (c=1) when the
+        // condition does NOT satisfy the exit path, landing at pc+2 (body/continuation).
+        // When the condition DOES satisfy the exit path, it falls through to pc+1 (the Jmp)
+        // which carries the potentially-large offset to `target`.
+        //
+        // expected=1 (patch_test_false_jump): we want to jump to `target` when FALSY.
+        //   Test B=0, c=1: TRUTHY → jump to pc+2 (body); FALSY → fallthrough to Jmp[target].
+        // expected=0 (patch_test_true_jump): we want to jump to `target` when TRUTHY.
+        //   Test B=1, c=1: FALSY → jump to pc+2 (continuation); TRUTHY → fallthrough to Jmp[target].
         let instr = *self
             .function
             .code
@@ -82,12 +102,11 @@ impl Compiler32 {
         if instr.opcode() != Opcode32::Test {
             bail!("Compiler32 expected Test at patch pc {pc}");
         }
-        let offset = jump_offset(pc, target)?;
-        if !(0..=i8::MAX as i32).contains(&offset) {
-            bail!("Compiler32 Test jump offset {offset} exceeds 7-bit branch field");
-        }
-        self.function.code[pc] = Instr32::abc(Opcode32::Test, instr.a(), expected, offset as u8);
-        Ok(())
+        // Inverted B: when expected=1, we set B=0 (jump to pc+2 on truthy, fallthrough on falsy).
+        let test_b: u8 = 1 - expected;
+        self.function.code[pc] = Instr32::abc(Opcode32::Test, instr.a(), test_b, 1);
+        // Patch the Jmp placeholder at pc+1 to jump to `target`.
+        self.patch_jmp(pc + 1, target)
     }
 
     pub(super) fn patch_jmp(&mut self, pc: usize, target: usize) -> Result<()> {
@@ -126,7 +145,7 @@ impl Compiler32 {
     }
 
     pub(super) fn finish(&mut self) -> Result<Function32> {
-        self.function.register_count = self.next_reg;
+        self.function.register_count = self.peak_reg;
         Ok(std::mem::take(&mut self.function))
     }
 }

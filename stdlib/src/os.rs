@@ -1,9 +1,10 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
-    val::{HeapValue, RuntimeVal, TypedList},
-    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
+    module::{Module, ModuleRegistry},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap},
+    vm::{Module32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, PlainNativeFunction32, RuntimeExport32, RuntimeModuleState32},
 };
+use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
 
@@ -36,25 +37,49 @@ impl Module for OsModule {
     }
 
     fn runtime_exports(&self) -> Result<RuntimeExport32> {
-        Ok(runtime_export_from_plain_native_entries(
-            &[
-                RuntimeNativeExport32::plain("hostname", hostname32, 0),
-                RuntimeNativeExport32::plain("arch", arch32, 0),
-                RuntimeNativeExport32::plain("os", os32, 0),
-                RuntimeNativeExport32::plain("exit", exit32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("exec", exec32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("clock", clock32, 0),
-                RuntimeNativeExport32::plain("time", time32, 0),
-                RuntimeNativeExport32::plain("epoch", epoch32, 0),
-                RuntimeNativeExport32::plain("env_get", env_get32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("env_set", env_set32, 2),
-                RuntimeNativeExport32::plain("env_unset", env_unset32, 1),
-                RuntimeNativeExport32::plain("dir_list", dir_list32, 1),
-                RuntimeNativeExport32::plain("dir_temp", dir_temp32, 0),
-                RuntimeNativeExport32::plain("dir_current", dir_current32, 0),
-            ],
-            &[],
-        ))
+        fn callable(heap: &mut HeapStore, f: PlainNativeFunction32, arity: u16) -> RuntimeVal {
+            RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+                arity,
+                function: NativeFunction32::Plain(f),
+            })))
+        }
+        fn key(s: &str) -> RuntimeMapKey {
+            RuntimeMapKey::String(Arc::<str>::from(s))
+        }
+
+        let mut heap = HeapStore::new();
+
+        // Build os.env sub-namespace
+        let mut env_entries: BTreeMap<RuntimeMapKey, RuntimeVal> = BTreeMap::new();
+        env_entries.insert(key("get"), callable(&mut heap, env_get32, NativeEntry32::VARIADIC));
+        env_entries.insert(key("set"), callable(&mut heap, env_set32, 2));
+        env_entries.insert(key("unset"), callable(&mut heap, env_unset32, 1));
+        let env_val = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(env_entries))));
+
+        // Build outer module map
+        let mut entries: BTreeMap<RuntimeMapKey, RuntimeVal> = BTreeMap::new();
+        entries.insert(key("hostname"), callable(&mut heap, hostname32, 0));
+        entries.insert(key("arch"), callable(&mut heap, arch32, 0));
+        entries.insert(key("os"), callable(&mut heap, os32, 0));
+        entries.insert(key("exit"), callable(&mut heap, exit32, NativeEntry32::VARIADIC));
+        entries.insert(key("exec"), callable(&mut heap, exec32, NativeEntry32::VARIADIC));
+        entries.insert(key("clock"), callable(&mut heap, clock32, 0));
+        entries.insert(key("time"), callable(&mut heap, time32, 0));
+        entries.insert(key("epoch"), callable(&mut heap, epoch32, 0));
+        entries.insert(key("env_get"), callable(&mut heap, env_get32, NativeEntry32::VARIADIC));
+        entries.insert(key("env_set"), callable(&mut heap, env_set32, 2));
+        entries.insert(key("env_unset"), callable(&mut heap, env_unset32, 1));
+        entries.insert(key("dir_list"), callable(&mut heap, dir_list32, 1));
+        entries.insert(key("dir_temp"), callable(&mut heap, dir_temp32, 0));
+        entries.insert(key("dir_current"), callable(&mut heap, dir_current32, 0));
+        entries.insert(key("env"), env_val);
+
+        let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))));
+        Ok(RuntimeExport32 {
+            value,
+            state: Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new()))),
+            module: Arc::new(Module32::default()),
+        })
     }
 }
 

@@ -602,6 +602,37 @@ impl TypedMap {
         })
     }
 
+    /// Collect all entries as `(Arc<str>, RuntimeVal)` pairs without needing `&mut HeapStore`.
+    /// Returns an error for `OwnedRuntime` — use `string_entries_into_heap` in that case.
+    pub fn string_entries_no_heap(&self) -> Result<Vec<(Arc<str>, RuntimeVal)>> {
+        Ok(match self {
+            Self::StringMixed(values) => values.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
+            Self::StringInt(values) => values
+                .iter()
+                .map(|(key, value)| (key.clone(), RuntimeVal::Int(*value)))
+                .collect(),
+            Self::StringFloat(values) => values
+                .iter()
+                .map(|(key, value)| (key.clone(), RuntimeVal::Float(*value)))
+                .collect(),
+            Self::StringBool(values) => values
+                .iter()
+                .map(|(key, value)| (key.clone(), RuntimeVal::Bool(*value)))
+                .collect(),
+            Self::Mixed(values) => values
+                .iter()
+                .map(|(key, value)| {
+                    key.as_arc_str()
+                        .map(|key| (key, value.clone()))
+                        .ok_or_else(|| anyhow::anyhow!("map contains non-string key"))
+                })
+                .collect::<Result<_>>()?,
+            Self::OwnedRuntime(_) => {
+                anyhow::bail!("OwnedRuntime map requires heap access — use string_entries_into_heap")
+            }
+        })
+    }
+
     pub fn string_entries_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<(Arc<str>, RuntimeVal)>> {
         Ok(match self {
             Self::StringMixed(values) => values.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),

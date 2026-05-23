@@ -461,6 +461,11 @@ impl Type {
             (Type::Any, _) => true,
             // Same types are assignable
             (a, b) if a == b => true,
+            // Boxed types act as transparent wrappers — must come before numeric hierarchy
+            // so that Box<Any> unwraps to Any before numeric ordering is applied.
+            (Type::Boxed(inner), Type::Boxed(expected)) => inner.is_assignable_to(expected),
+            (Type::Boxed(inner), expected) => inner.is_assignable_to(expected),
+            (actual, Type::Boxed(expected)) => actual.is_assignable_to(expected),
             // Numeric hierarchy: allow Int -> Float, Float -> Boxed, etc.
             (lhs, rhs) if lhs.numeric_class().is_some() && rhs.numeric_class().is_some() => {
                 let lhs_class = lhs.numeric_class().unwrap();
@@ -473,10 +478,6 @@ impl Type {
             (t, Type::Union(union_types)) => union_types.iter().any(|ut| t.is_assignable_to(ut)),
             // Union member is assignable to union
             (Type::Union(union_types), target) => union_types.iter().all(|ut| ut.is_assignable_to(target)),
-            // Boxed types act as transparent wrappers
-            (Type::Boxed(inner), Type::Boxed(expected)) => inner.is_assignable_to(expected),
-            (Type::Boxed(inner), expected) => inner.is_assignable_to(expected),
-            (actual, Type::Boxed(expected)) => actual.is_assignable_to(expected),
             // Generic containers with covariant element types
             (Type::List(a), Type::List(b)) => a.is_assignable_to(b),
             (Type::Map(ak, av), Type::Map(bk, bv)) => ak.is_assignable_to(bk) && av.is_assignable_to(bv),

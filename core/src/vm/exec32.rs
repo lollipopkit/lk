@@ -112,6 +112,94 @@ impl Program32Result {
             module: Arc::clone(&self.module),
         }
     }
+
+    /// Returns `true` if the first return value is `nil`.
+    pub fn first_return_is_nil(&self) -> bool {
+        matches!(self.first_return(), RuntimeVal::Nil)
+    }
+
+    /// Format the first return value as a human-readable string for REPL/CLI display.
+    pub fn display_first_return(&self) -> String {
+        format_runtime_val(self.first_return(), &self.state.heap, 0)
+    }
+}
+
+fn format_runtime_val(value: &RuntimeVal, heap: &HeapStore, depth: usize) -> String {
+    const MAX_DEPTH: usize = 8;
+    match value {
+        RuntimeVal::Nil => "nil".to_string(),
+        RuntimeVal::Bool(b) => b.to_string(),
+        RuntimeVal::Int(i) => i.to_string(),
+        RuntimeVal::Float(f) => f.to_string(),
+        RuntimeVal::ShortStr(s) => s.as_str().to_string(),
+        RuntimeVal::Obj(handle) => {
+            let Some(heap_val) = heap.get(*handle) else {
+                return "<invalid ref>".to_string();
+            };
+            match heap_val {
+                HeapValue::String(s) => s.to_string(),
+                HeapValue::List(list) if depth < MAX_DEPTH => format_typed_list(list, heap, depth + 1),
+                HeapValue::List(_) => "[...]".to_string(),
+                HeapValue::Map(map) if depth < MAX_DEPTH => format_typed_map(map, heap, depth + 1),
+                HeapValue::Map(_) => "{...}".to_string(),
+                HeapValue::Callable(_) => "<function>".to_string(),
+                HeapValue::Object(obj) => {
+                    if depth < MAX_DEPTH {
+                        let fields: Vec<String> = obj
+                            .fields
+                            .iter()
+                            .map(|(k, v)| format!("{}: {}", k, format_runtime_val(v, heap, depth + 1)))
+                            .collect();
+                        format!("<{} {{{}}}>", obj.type_name, fields.join(", "))
+                    } else {
+                        format!("<{} {{...}}>", obj.type_name)
+                    }
+                }
+                _ => "<value>".to_string(),
+            }
+        }
+    }
+}
+
+fn format_typed_list(list: &TypedList, heap: &HeapStore, depth: usize) -> String {
+    let parts: Vec<String> = match list {
+        TypedList::Int(v) => v.iter().map(|x| x.to_string()).collect(),
+        TypedList::Float(v) => v.iter().map(|x| x.to_string()).collect(),
+        TypedList::Bool(v) => v.iter().map(|x| x.to_string()).collect(),
+        TypedList::String(v) => v.iter().map(|x| x.to_string()).collect(),
+        TypedList::Mixed(v) => v.iter().map(|x| format_runtime_val(x, heap, depth)).collect(),
+        TypedList::OwnedRuntime(_) => return "[<legacy>]".to_string(),
+    };
+    format!("[{}]", parts.join(", "))
+}
+
+fn format_typed_map(map: &TypedMap, heap: &HeapStore, depth: usize) -> String {
+    let parts: Vec<String> = match map {
+        TypedMap::Mixed(m) => m
+            .iter()
+            .map(|(k, v)| format!("{}: {}", format_map_key(k), format_runtime_val(v, heap, depth)))
+            .collect(),
+        TypedMap::StringMixed(m) => m
+            .iter()
+            .map(|(k, v)| format!("{}: {}", k, format_runtime_val(v, heap, depth)))
+            .collect(),
+        TypedMap::StringInt(m) => m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect(),
+        TypedMap::StringFloat(m) => m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect(),
+        TypedMap::StringBool(m) => m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect(),
+        TypedMap::OwnedRuntime(_) => return "{<legacy>}".to_string(),
+    };
+    format!("{{{}}}", parts.join(", "))
+}
+
+fn format_map_key(key: &RuntimeMapKey) -> String {
+    match key {
+        RuntimeMapKey::Nil => "nil".to_string(),
+        RuntimeMapKey::Bool(b) => b.to_string(),
+        RuntimeMapKey::Int(i) => i.to_string(),
+        RuntimeMapKey::ShortStr(s) => s.as_str().to_string(),
+        RuntimeMapKey::String(s) => s.to_string(),
+        RuntimeMapKey::Obj(h) => format!("<obj:{}>", h.index()),
+    }
 }
 
 #[derive(Debug)]
@@ -512,14 +600,9 @@ impl Executor32 {
                     self.pc += 1;
                 }
                 Opcode32::Call => {
-                    if instr.a() != instr.b() {
-                        bail!(
-                            "Call return base {} must match call window base {}",
-                            instr.a(),
-                            instr.b()
-                        );
-                    }
-                    let window = CallWindow32::new(RegisterIndex::new(instr.b() as u16), instr.c() as u16, 1);
+                    // A holds the call-window base (8-bit field; B is only 7 bits and would
+                    // be truncated for call_base >= 128, so we ignore B here).
+                    let window = CallWindow32::new(RegisterIndex::new(instr.a() as u16), instr.c() as u16, 1);
                     let call_pc = self.pc;
                     let value = self.call_function(module, window, ctx)?;
                     if self.pc != call_pc {
@@ -660,5 +743,5 @@ pub fn execute_module32_with_globals_heap_and_ctx(
 }
 
 #[cfg(test)]
-#[path = "exec32_tests.rs"]
+#[path = "exec32_tests/mod.rs"]
 mod exec32_tests;

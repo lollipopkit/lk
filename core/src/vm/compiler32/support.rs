@@ -103,6 +103,11 @@ where
             Stmt::Define { name, .. } | Stmt::Function { name, .. } => {
                 insert_global_name(&mut names, name.clone())?;
             }
+            Stmt::Let { pattern, .. } => {
+                if let Pattern::Variable(name) = pattern {
+                    insert_global_name(&mut names, name.clone())?;
+                }
+            }
             _ => {}
         }
     }

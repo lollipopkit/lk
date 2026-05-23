@@ -39,6 +39,7 @@ use support::*;
 pub struct Compiler32 {
     function: Function32,
     next_reg: u16,
+    peak_reg: u16, // highest next_reg ever reached — used for register_count
     locals: HashMap<String, u16>,
     function_names: HashMap<String, u32>,
     function_signatures: HashMap<String, FunctionSignature32>,
@@ -429,6 +430,7 @@ impl Compiler32 {
         compiler.function.param_names = params.iter().map(|name| Arc::<str>::from(name.as_str())).collect();
         compiler.function.capture_count = compiler.capture_names.len() as u16;
         compiler.next_reg = params.len() as u16;
+        compiler.peak_reg = params.len() as u16;
         for (index, param) in params.iter().enumerate() {
             compiler.locals.insert(param.clone(), index as u16);
         }
@@ -633,12 +635,14 @@ impl Compiler32 {
     }
 
     fn lower_if(&mut self, condition: &Expr, then_stmt: &Stmt, else_stmt: Option<&Stmt>) -> Result<()> {
+        let watermark = self.next_reg;
         let condition = self.lower_expr(condition)?;
         let test_pc = self.emit_test_placeholder(condition)?;
 
         self.emitted_return = false;
         self.lower_stmt(then_stmt)?;
         let then_returns = self.emitted_return;
+        self.next_reg = watermark; // recycle registers from then-branch
 
         if let Some(else_stmt) = else_stmt {
             let jmp_end = (!then_returns).then(|| self.emit_jmp_placeholder());
@@ -648,6 +652,7 @@ impl Compiler32 {
             self.emitted_return = false;
             self.lower_stmt(else_stmt)?;
             let else_returns = self.emitted_return;
+            self.next_reg = watermark; // recycle registers from else-branch
 
             if let Some(jmp_end) = jmp_end {
                 let end = self.function.code.len();
@@ -664,6 +669,7 @@ impl Compiler32 {
     }
 
     fn lower_while(&mut self, condition: &Expr, body: &Stmt) -> Result<()> {
+        let watermark = self.next_reg;
         let loop_start = self.function.code.len();
         let condition = self.lower_expr(condition)?;
         let test_pc = self.emit_test_placeholder(condition)?;
@@ -686,6 +692,7 @@ impl Compiler32 {
             self.patch_jmp(pc, loop_start)?;
         }
         self.emitted_return = false;
+        self.next_reg = watermark; // recycle all loop registers
         Ok(())
     }
 
@@ -709,6 +716,7 @@ impl Compiler32 {
     }
 
     fn lower_for_indexed(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> Result<()> {
+        let watermark = self.next_reg;
         let iterable_value = self.lower_expr(iterable)?;
         let iterable = self.alloc_reg();
         self.emit(Instr32::abc(
@@ -767,6 +775,7 @@ impl Compiler32 {
         }
         self.restore_for_pattern(previous_binding);
         self.emitted_return = false;
+        self.next_reg = watermark; // recycle all loop registers
         Ok(())
     }
 
@@ -779,6 +788,7 @@ impl Compiler32 {
         step: Option<&Expr>,
         body: &Stmt,
     ) -> Result<()> {
+        let watermark = self.next_reg;
         let start = match start {
             Some(start) => self.lower_expr(start)?,
             None => self.lower_val(&Val::Int(0))?,
@@ -857,6 +867,7 @@ impl Compiler32 {
         }
         self.restore_for_pattern(previous_binding);
         self.emitted_return = false;
+        self.next_reg = watermark; // recycle all loop registers
         Ok(())
     }
 

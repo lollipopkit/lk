@@ -226,7 +226,9 @@ impl Executor32 {
                 };
                 values.iter().any(|value| value.as_ref() == needle.as_ref())
             }
-            TypedList::OwnedRuntime(values) => values.values.iter().any(|value| value == needle),
+            TypedList::OwnedRuntime(_) => {
+                bail!("OwnedRuntime list cannot appear in exec32 active heap — bridge conversion missing")
+            }
         })
     }
 
@@ -240,9 +242,8 @@ impl Executor32 {
             TypedMap::StringInt(values) => self.string_map_contains_key(values, needle)?,
             TypedMap::StringFloat(values) => self.string_map_contains_key(values, needle)?,
             TypedMap::StringBool(values) => self.string_map_contains_key(values, needle)?,
-            TypedMap::OwnedRuntime(values) => {
-                let key = self.runtime_map_key_from_value(needle)?;
-                values.entries.contains_key(&key)
+            TypedMap::OwnedRuntime(_) => {
+                bail!("OwnedRuntime map cannot appear in exec32 active heap — bridge conversion missing")
             }
         })
     }
@@ -417,7 +418,9 @@ impl Executor32 {
                     RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(value.clone())))
                 }
             }),
-            TypedList::OwnedRuntime(values) => values.values.get(index).cloned(),
+            TypedList::OwnedRuntime(_) => {
+                bail!("OwnedRuntime list cannot appear in exec32 active heap — bridge conversion missing")
+            }
         }
         .unwrap_or(RuntimeVal::Nil))
     }

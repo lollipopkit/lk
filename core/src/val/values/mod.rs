@@ -8,12 +8,10 @@ use crate::util::fast_map::FastHashMap;
 
 use super::runtime_model::{CallableValue, HeapValue, RuntimeObject, RuntimeVal};
 
+use crate::val::legacy_registers::copy_container_value_for_register_with_metrics;
 #[cfg(test)]
 use crate::vm::NativeFunction32;
-use crate::vm::{
-    RuntimeCallable32, VmContext, analysis::vm_runtime_metrics_enabled,
-    legacy_registers::copy_container_value_for_register_with_metrics,
-};
+use crate::vm::{RuntimeCallable32, VmContext, analysis::vm_runtime_metrics_enabled};
 
 mod cache;
 mod call;

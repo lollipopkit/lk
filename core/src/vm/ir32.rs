@@ -28,7 +28,7 @@ pub struct ConstPool32 {
 }
 
 impl ConstPool32 {
-    const MAX_ABX_CONSTS: usize = 1 << 14;
+    const MAX_ABX_CONSTS: usize = 1 << 15;
 
     pub fn push_int(&mut self, value: i64) -> Result<u16> {
         push_const32(&mut self.ints, value, "int")
@@ -178,8 +178,8 @@ pub enum Opcode32 {
     CmpLeInt = 25,
     CmpGtInt = 26,
     CmpGeInt = 27,
-    Extra = 126,
-    Wide = 127,
+    Extra = 62,
+    Wide = 63,
 }
 
 impl Opcode32 {
@@ -243,8 +243,8 @@ impl Opcode32 {
             25 => Some(Self::CmpLeInt),
             26 => Some(Self::CmpGtInt),
             27 => Some(Self::CmpGeInt),
-            126 => Some(Self::Extra),
-            127 => Some(Self::Wide),
+            62 => Some(Self::Extra),
+            63 => Some(Self::Wide),
             _ => None,
         }
     }
@@ -254,21 +254,21 @@ impl Opcode32 {
 pub struct Instr32(u32);
 
 impl Instr32 {
-    const OPCODE_BITS: u32 = 7;
+    const OPCODE_BITS: u32 = 6;
     const FORMAT_BITS: u32 = 3;
     const OP_SHIFT: u32 = 0;
     const FORMAT_SHIFT: u32 = Self::OP_SHIFT + Self::OPCODE_BITS;
     const A_SHIFT: u32 = Self::FORMAT_SHIFT + Self::FORMAT_BITS;
     const B_SHIFT: u32 = Self::A_SHIFT + 8;
-    const C_SHIFT: u32 = Self::B_SHIFT + 7;
+    const C_SHIFT: u32 = Self::B_SHIFT + 8; // B is now 8 bits wide
     const AX_SHIFT: u32 = Self::A_SHIFT;
     const OP_MASK: u32 = (1 << Self::OPCODE_BITS) - 1;
     const FORMAT_MASK: u32 = (1 << Self::FORMAT_BITS) - 1;
     const BYTE_MASK: u32 = 0xFF;
-    const B_MASK: u32 = 0x7F;
+    const B_MASK: u32 = 0xFF;
     const C_MASK: u32 = 0x7F;
-    const BX_MASK: u32 = 0x3FFF;
-    const AX_MASK: u32 = (1 << 22) - 1;
+    const BX_MASK: u32 = 0x7FFF;
+    const AX_MASK: u32 = (1 << 23) - 1;
     const SJ_MASK: u32 = Self::AX_MASK;
     const SBX_BIAS: i32 = (Self::BX_MASK as i32) >> 1;
     const SJ_BIAS: i32 = (Self::SJ_MASK as i32) >> 1;
@@ -304,7 +304,6 @@ impl Instr32 {
 
     #[inline]
     pub const fn abc(op: Opcode32, a: u8, b: u8, c: u8) -> Self {
-        debug_assert!(b < 128);
         debug_assert!(c < 128);
         Self(
             ((op as u32) << Self::OP_SHIFT)
@@ -317,7 +316,7 @@ impl Instr32 {
 
     #[inline]
     pub const fn abx(op: Opcode32, a: u8, bx: u16) -> Self {
-        debug_assert!(bx < (1 << 14));
+        debug_assert!(bx < (1 << 15));
         Self(
             ((op as u32) << Self::OP_SHIFT)
                 | ((InstrFormat::Abx as u32) << Self::FORMAT_SHIFT)

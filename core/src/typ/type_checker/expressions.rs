@@ -27,6 +27,10 @@ impl TypeChecker {
                     Ok(())
                 }
             }
+            // Box<T> from numeric-hierarchy arithmetic on Any values — unwrap and re-check inner.
+            // Box<Any> results from arithmetic like `native_fn() - native_fn()` where the native
+            // return type is unresolvable at compile time; treat it the same as Any.
+            Type::Boxed(inner) => self.enforce_int_type(expr, *inner, context),
             other => Err(Self::type_err(
                 &format!("{context} must be Int"),
                 Some(Type::Int),
@@ -859,8 +863,8 @@ impl TypeChecker {
 
         match &resolved_expr_type {
             Type::List(elem_type) => {
-                // Field must be integer index
-                if field_type != Type::Int {
+                // Field must be integer index (Any/Box<Any> accepted for dynamic dispatch)
+                if !self.is_assignable(&field_type, &Type::Int) {
                     return Err(Self::type_err(
                         "List index must be integer",
                         Some(Type::Int),
@@ -872,7 +876,7 @@ impl TypeChecker {
             }
             Type::Tuple(elems) => {
                 // Field must be integer index; if it's a literal index, pick that element
-                if field_type != Type::Int {
+                if !self.is_assignable(&field_type, &Type::Int) {
                     return Err(Self::type_err(
                         "Tuple index must be integer",
                         Some(Type::Int),
@@ -950,7 +954,7 @@ impl TypeChecker {
                 match resolved_inner {
                     Type::List(elem_type) => {
                         let field_ty = self.check_expr(field)?;
-                        if field_ty != Type::Int {
+                        if !self.is_assignable(&field_ty, &Type::Int) {
                             return Err(Self::type_err(
                                 "List index must be integer",
                                 Some(Type::Int),
@@ -967,7 +971,7 @@ impl TypeChecker {
                     }
                     Type::Tuple(elems) => {
                         let field_ty = self.check_expr(field)?;
-                        if field_ty != Type::Int {
+                        if !self.is_assignable(&field_ty, &Type::Int) {
                             return Err(Self::type_err(
                                 "Tuple index must be integer",
                                 Some(Type::Int),

@@ -12,7 +12,6 @@ use lk_core::{
     stmt::{ModuleResolver, stmt_parser::StmtParser},
     token::Tokenizer,
     typ::TypeChecker,
-    val::Val,
     vm::VmContext,
 };
 
@@ -337,21 +336,17 @@ fn main() -> anyhow::Result<()> {
         .with_resolver(Arc::clone(&resolver))
         .with_type_checker(Some(TypeChecker::new_strict()));
 
-    let exec_result: anyhow::Result<(Val, VmContext)> = {
-        let val = program
-            .execute32_with_ctx(&mut base_env)
-            .with_context(|| "VM32 execution failed")?;
-        let env_after = base_env.snapshot();
-        Ok((val, env_after))
-    };
+    let exec_result = program
+        .execute32_with_ctx(&mut base_env)
+        .with_context(|| "VM32 execution failed");
 
     // Shutdown runtime after execution
     rt::shutdown_runtime();
 
-    let (result, env) = exec_result?;
+    let result = exec_result?;
 
-    if !matches!(result, Val::Nil) {
-        println!("{}", result.display_string(Some(&env)));
+    if !result.first_return_is_nil() {
+        println!("{}", result.display_first_return());
     }
 
     Ok(())
@@ -377,7 +372,7 @@ fn configure_package_resolver(resolver: &mut ModuleResolver, path: &Path) -> any
 
 fn register_package_modules(resolver: &ModuleResolver, modules: &[PackageModule]) -> anyhow::Result<()> {
     for module in modules {
-        if resolver.resolve_module(&module.name).is_ok() {
+        if resolver.resolve_runtime_module(&module.name).is_ok() {
             anyhow::bail!("Package module '{}' conflicts with a stdlib module", module.name);
         }
         resolver.register_package_module(module.name.clone(), module.root.clone());

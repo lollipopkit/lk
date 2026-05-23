@@ -161,7 +161,11 @@ impl Stmt {
                     }
                     // 检查操作类型兼容性 (var_type op expr_type -> var_type)
                     // 简化：假设所有算术操作都是类型兼容的
-                    if !type_checker.is_assignable(&expr_type, var_type)
+                    // Unresolved type variables are deferred to runtime — skip static check.
+                    if expr_type.contains_variables() {
+                        // Type variable not yet resolved; skip check. The variable will be
+                        // narrowed by call-site argument constraints and the function body.
+                    } else if !type_checker.is_assignable(&expr_type, var_type)
                         && !type_checker.is_assignable(var_type, &expr_type)
                     {
                         let error_msg = format!(

@@ -16,6 +16,11 @@ impl Compiler32 {
     fn bind_let_pattern(&mut self, pattern: &Pattern, value: u16) -> Result<()> {
         match pattern {
             Pattern::Variable(name) => {
+                if self.top_level {
+                    if let Some(slot) = self.global_names.get(name).copied() {
+                        self.emit_set_global(value, slot)?;
+                    }
+                }
                 self.locals.insert(name.clone(), value);
                 Ok(())
             }

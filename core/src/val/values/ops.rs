@@ -4,8 +4,8 @@ use anyhow::Result;
 
 use crate::op::{BinOp, err_op};
 use crate::util::fast_map::{fast_hash_map_with_capacity, fast_hash_set_with_capacity};
+use crate::val::legacy_registers::copy_container_value_for_register_with_metrics;
 use crate::vm::analysis::vm_runtime_metrics_enabled;
-use crate::vm::legacy_registers::copy_container_value_for_register_with_metrics;
 
 use super::Val;
 

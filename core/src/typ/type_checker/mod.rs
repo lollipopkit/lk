@@ -273,6 +273,11 @@ impl TypeChecker {
         self.inference_engine.solve_constraints()
     }
 
+    /// Add a type constraint via the inference engine (for use by external type-checking passes).
+    pub fn add_constraint(&mut self, a: Type, b: Type) {
+        self.inference_engine.add_constraint(a, b);
+    }
+
     /// Get the inferred type for a local variable
     pub fn get_local_type(&self, name: &str) -> Option<&Type> {
         self.local_types.get(name)

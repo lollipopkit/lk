@@ -7,7 +7,6 @@ use lk_core::{
     stmt::{ModuleResolver, StmtParser},
     token::Tokenizer,
     typ::TypeChecker,
-    val::Val,
     vm::VmContext,
 };
 
@@ -243,8 +242,8 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
 
         match result {
             Ok(res) => {
-                if !matches!(res, Val::Nil) {
-                    println!("{}", res.display_string(Some(&env)));
+                if !res.first_return_is_nil() {
+                    println!("{}", res.display_first_return());
                 }
             }
             Err(e) => eprintln!("Error: {}", e),
