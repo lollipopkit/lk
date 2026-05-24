@@ -74,12 +74,12 @@ impl VmContext {
     }
 
     pub fn shallow_clone_shared_runtime(&self) -> Self {
+        let mut runtime_globals = fast_hash_map_new();
+        for (name, value) in &self.runtime_globals {
+            runtime_globals.insert(Arc::clone(name), value.shallow_clone_shared());
+        }
         Self {
-            runtime_globals: self
-                .runtime_globals
-                .iter()
-                .map(|(name, value)| (Arc::clone(name), value.shallow_clone_shared()))
-                .collect(),
+            runtime_globals,
             generation: self.generation,
             resolver: Arc::clone(&self.resolver),
             type_checker: self.type_checker.clone(),
@@ -633,12 +633,12 @@ fn core_merge_fields_builtin32(
 }
 
 fn set_string_field_on_object(object: &RuntimeObject, key: Arc<str>, value: RuntimeVal) -> RuntimeObject {
-    let mut fields = object
-        .fields
-        .iter()
-        .filter(|(field_key, _)| field_key.as_ref() != key.as_ref())
-        .map(|(field_key, field_value)| (Arc::clone(field_key), field_value.clone()))
-        .collect::<BTreeMap<_, _>>();
+    let mut fields = BTreeMap::new();
+    for (field_key, field_value) in &object.fields {
+        if field_key.as_ref() != key.as_ref() {
+            fields.insert(Arc::clone(field_key), field_value.clone());
+        }
+    }
     fields.insert(Arc::clone(&key), value);
 
     let mut field_slots = object.field_slots.clone();
@@ -657,74 +657,82 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
     match (map, value) {
         (TypedMap::Mixed(entries), value) => {
             let runtime_key = RuntimeMapKey::String(key);
-            let mut out = entries
-                .iter()
-                .filter(|(entry_key, _)| **entry_key != runtime_key)
-                .map(|(entry_key, entry_value)| (entry_key.clone(), entry_value.clone()))
-                .collect::<BTreeMap<_, _>>();
+            let mut out = BTreeMap::new();
+            for (entry_key, entry_value) in entries {
+                if *entry_key != runtime_key {
+                    out.insert(entry_key.clone(), entry_value.clone());
+                }
+            }
             out.insert(runtime_key, value);
             TypedMap::Mixed(out)
         }
         (TypedMap::StringMixed(entries), value) => {
-            let mut out = entries
-                .iter()
-                .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                .map(|(entry_key, entry_value)| (Arc::clone(entry_key), entry_value.clone()))
-                .collect::<BTreeMap<_, _>>();
+            let mut out = BTreeMap::new();
+            for (entry_key, entry_value) in entries {
+                if entry_key.as_ref() != key.as_ref() {
+                    out.insert(Arc::clone(entry_key), entry_value.clone());
+                }
+            }
             out.insert(key, value);
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringInt(entries), RuntimeVal::Int(value)) => {
-            let mut out = entries
-                .iter()
-                .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                .map(|(entry_key, entry_value)| (Arc::clone(entry_key), *entry_value))
-                .collect::<BTreeMap<_, _>>();
+            let mut out = BTreeMap::new();
+            for (entry_key, entry_value) in entries {
+                if entry_key.as_ref() != key.as_ref() {
+                    out.insert(Arc::clone(entry_key), *entry_value);
+                }
+            }
             out.insert(key, value);
             TypedMap::StringInt(out)
         }
         (TypedMap::StringFloat(entries), RuntimeVal::Float(value)) => {
-            let mut out = entries
-                .iter()
-                .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                .map(|(entry_key, entry_value)| (Arc::clone(entry_key), *entry_value))
-                .collect::<BTreeMap<_, _>>();
+            let mut out = BTreeMap::new();
+            for (entry_key, entry_value) in entries {
+                if entry_key.as_ref() != key.as_ref() {
+                    out.insert(Arc::clone(entry_key), *entry_value);
+                }
+            }
             out.insert(key, value);
             TypedMap::StringFloat(out)
         }
         (TypedMap::StringBool(entries), RuntimeVal::Bool(value)) => {
-            let mut out = entries
-                .iter()
-                .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                .map(|(entry_key, entry_value)| (Arc::clone(entry_key), *entry_value))
-                .collect::<BTreeMap<_, _>>();
+            let mut out = BTreeMap::new();
+            for (entry_key, entry_value) in entries {
+                if entry_key.as_ref() != key.as_ref() {
+                    out.insert(Arc::clone(entry_key), *entry_value);
+                }
+            }
             out.insert(key, value);
             TypedMap::StringBool(out)
         }
         (TypedMap::StringInt(entries), value) => {
-            let mut out = entries
-                .iter()
-                .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                .map(|(entry_key, entry_value)| (Arc::clone(entry_key), RuntimeVal::Int(*entry_value)))
-                .collect::<BTreeMap<_, _>>();
+            let mut out = BTreeMap::new();
+            for (entry_key, entry_value) in entries {
+                if entry_key.as_ref() != key.as_ref() {
+                    out.insert(Arc::clone(entry_key), RuntimeVal::Int(*entry_value));
+                }
+            }
             out.insert(key, value);
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringFloat(entries), value) => {
-            let mut out = entries
-                .iter()
-                .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                .map(|(entry_key, entry_value)| (Arc::clone(entry_key), RuntimeVal::Float(*entry_value)))
-                .collect::<BTreeMap<_, _>>();
+            let mut out = BTreeMap::new();
+            for (entry_key, entry_value) in entries {
+                if entry_key.as_ref() != key.as_ref() {
+                    out.insert(Arc::clone(entry_key), RuntimeVal::Float(*entry_value));
+                }
+            }
             out.insert(key, value);
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringBool(entries), value) => {
-            let mut out = entries
-                .iter()
-                .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                .map(|(entry_key, entry_value)| (Arc::clone(entry_key), RuntimeVal::Bool(*entry_value)))
-                .collect::<BTreeMap<_, _>>();
+            let mut out = BTreeMap::new();
+            for (entry_key, entry_value) in entries {
+                if entry_key.as_ref() != key.as_ref() {
+                    out.insert(Arc::clone(entry_key), RuntimeVal::Bool(*entry_value));
+                }
+            }
             out.insert(key, value);
             TypedMap::StringMixed(out)
         }
@@ -739,14 +747,13 @@ enum FieldMergeBase<'a> {
 fn merge_field_maps(base: FieldMergeBase<'_>, overlay: &TypedMap) -> TypedMap {
     match base {
         FieldMergeBase::Object(object) => {
-            let mut out = TypedMap::StringMixed(
-                object
-                    .fields
-                    .iter()
-                    .filter(|(key, _)| !typed_map_contains_str(overlay, key.as_ref()))
-                    .map(|(key, value)| (Arc::clone(key), value.clone()))
-                    .collect(),
-            );
+            let mut entries = BTreeMap::new();
+            for (key, value) in &object.fields {
+                if !typed_map_contains_str(overlay, key.as_ref()) {
+                    entries.insert(Arc::clone(key), value.clone());
+                }
+            }
+            let mut out = TypedMap::StringMixed(entries);
             extend_typed_map(&mut out, overlay);
             out
         }
@@ -760,52 +767,77 @@ fn merge_field_maps(base: FieldMergeBase<'_>, overlay: &TypedMap) -> TypedMap {
 
 fn copy_typed_map(map: &TypedMap) -> TypedMap {
     match map {
-        TypedMap::Mixed(entries) => TypedMap::Mixed(entries.clone()),
-        TypedMap::StringMixed(entries) => TypedMap::StringMixed(entries.clone()),
-        TypedMap::StringInt(entries) => TypedMap::StringInt(entries.clone()),
-        TypedMap::StringFloat(entries) => TypedMap::StringFloat(entries.clone()),
-        TypedMap::StringBool(entries) => TypedMap::StringBool(entries.clone()),
+        TypedMap::Mixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                out.insert(key.clone(), value.clone());
+            }
+            TypedMap::Mixed(out)
+        }
+        TypedMap::StringMixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                out.insert(Arc::clone(key), value.clone());
+            }
+            TypedMap::StringMixed(out)
+        }
+        TypedMap::StringInt(entries) => TypedMap::StringInt(copy_string_map_entries(entries)),
+        TypedMap::StringFloat(entries) => TypedMap::StringFloat(copy_string_map_entries(entries)),
+        TypedMap::StringBool(entries) => TypedMap::StringBool(copy_string_map_entries(entries)),
     }
 }
 
 fn copy_typed_map_without_overlay_keys(map: &TypedMap, overlay: &TypedMap) -> TypedMap {
     match map {
-        TypedMap::Mixed(entries) => TypedMap::Mixed(
-            entries
-                .iter()
-                .filter(|(key, _)| !typed_map_contains(overlay, key))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
-        TypedMap::StringMixed(entries) => TypedMap::StringMixed(
-            entries
-                .iter()
-                .filter(|(key, _)| !typed_map_contains_str(overlay, key.as_ref()))
-                .map(|(key, value)| (Arc::clone(key), value.clone()))
-                .collect(),
-        ),
-        TypedMap::StringInt(entries) => TypedMap::StringInt(
-            entries
-                .iter()
-                .filter(|(key, _)| !typed_map_contains_str(overlay, key.as_ref()))
-                .map(|(key, value)| (Arc::clone(key), *value))
-                .collect(),
-        ),
-        TypedMap::StringFloat(entries) => TypedMap::StringFloat(
-            entries
-                .iter()
-                .filter(|(key, _)| !typed_map_contains_str(overlay, key.as_ref()))
-                .map(|(key, value)| (Arc::clone(key), *value))
-                .collect(),
-        ),
-        TypedMap::StringBool(entries) => TypedMap::StringBool(
-            entries
-                .iter()
-                .filter(|(key, _)| !typed_map_contains_str(overlay, key.as_ref()))
-                .map(|(key, value)| (Arc::clone(key), *value))
-                .collect(),
-        ),
+        TypedMap::Mixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !typed_map_contains(overlay, key) {
+                    out.insert(key.clone(), value.clone());
+                }
+            }
+            TypedMap::Mixed(out)
+        }
+        TypedMap::StringMixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !typed_map_contains_str(overlay, key.as_ref()) {
+                    out.insert(Arc::clone(key), value.clone());
+                }
+            }
+            TypedMap::StringMixed(out)
+        }
+        TypedMap::StringInt(entries) => {
+            TypedMap::StringInt(copy_string_map_entries_without_overlay_keys(entries, overlay))
+        }
+        TypedMap::StringFloat(entries) => {
+            TypedMap::StringFloat(copy_string_map_entries_without_overlay_keys(entries, overlay))
+        }
+        TypedMap::StringBool(entries) => {
+            TypedMap::StringBool(copy_string_map_entries_without_overlay_keys(entries, overlay))
+        }
     }
+}
+
+fn copy_string_map_entries<T: Copy>(entries: &BTreeMap<Arc<str>, T>) -> BTreeMap<Arc<str>, T> {
+    let mut out = BTreeMap::new();
+    for (key, value) in entries {
+        out.insert(Arc::clone(key), *value);
+    }
+    out
+}
+
+fn copy_string_map_entries_without_overlay_keys<T: Copy>(
+    entries: &BTreeMap<Arc<str>, T>,
+    overlay: &TypedMap,
+) -> BTreeMap<Arc<str>, T> {
+    let mut out = BTreeMap::new();
+    for (key, value) in entries {
+        if !typed_map_contains_str(overlay, key.as_ref()) {
+            out.insert(Arc::clone(key), *value);
+        }
+    }
+    out
 }
 
 fn typed_map_contains(map: &TypedMap, key: &RuntimeMapKey) -> bool {

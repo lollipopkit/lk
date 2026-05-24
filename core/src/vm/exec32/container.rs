@@ -294,7 +294,10 @@ impl Executor32 {
     }
 
     fn slice_string_from(&mut self, value: Arc<str>, start: usize) -> Result<RuntimeVal> {
-        let suffix = value.chars().skip(start).collect::<String>();
+        let mut suffix = String::new();
+        for ch in value.chars().skip(start) {
+            suffix.push(ch);
+        }
         Ok(self.runtime_value_from_string(Arc::<str>::from(suffix)))
     }
 
@@ -355,11 +358,7 @@ impl Executor32 {
     pub(super) fn to_iter(&mut self, register: u8) -> Result<RuntimeVal> {
         match self.read(register)?.clone() {
             RuntimeVal::ShortStr(value) => {
-                let list = value
-                    .as_str()
-                    .chars()
-                    .map(|ch| Arc::<str>::from(ch.to_string()))
-                    .collect();
+                let list = string_chars_to_list(value.as_str());
                 self.finish_to_iter_plan(ToIterPlan::StringChars(list))
             }
             RuntimeVal::Obj(handle) => {
@@ -370,9 +369,7 @@ impl Executor32 {
                     .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
                 {
                     HeapValue::List(_) => ToIterPlan::ExistingList(handle),
-                    HeapValue::String(value) => {
-                        ToIterPlan::StringChars(value.chars().map(|ch| Arc::<str>::from(ch.to_string())).collect())
-                    }
+                    HeapValue::String(value) => ToIterPlan::StringChars(string_chars_to_list(value)),
                     HeapValue::Map(map) => ToIterPlan::Map(typed_map_iter_snapshot(map)),
                     other => bail!("ToIter target object is not iterable: {:?}", heap_kind(other)),
                 };
@@ -1156,41 +1153,51 @@ fn list_value_kind(list: &TypedList) -> PerfValueKind {
 
 fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> TypedMap {
     match map {
-        TypedMap::Mixed(entries) => TypedMap::Mixed(
-            entries
-                .iter()
-                .filter(|(key, _)| !typed_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
-        TypedMap::StringMixed(entries) => TypedMap::StringMixed(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
-        TypedMap::StringInt(entries) => TypedMap::StringInt(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), *value))
-                .collect(),
-        ),
-        TypedMap::StringFloat(entries) => TypedMap::StringFloat(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), *value))
-                .collect(),
-        ),
-        TypedMap::StringBool(entries) => TypedMap::StringBool(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), *value))
-                .collect(),
-        ),
+        TypedMap::Mixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !typed_map_key_removed(key, removed_keys) {
+                    out.insert(key.clone(), value.clone());
+                }
+            }
+            TypedMap::Mixed(out)
+        }
+        TypedMap::StringMixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, removed_keys) {
+                    out.insert(Arc::clone(key), value.clone());
+                }
+            }
+            TypedMap::StringMixed(out)
+        }
+        TypedMap::StringInt(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, removed_keys) {
+                    out.insert(Arc::clone(key), *value);
+                }
+            }
+            TypedMap::StringInt(out)
+        }
+        TypedMap::StringFloat(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, removed_keys) {
+                    out.insert(Arc::clone(key), *value);
+                }
+            }
+            TypedMap::StringFloat(out)
+        }
+        TypedMap::StringBool(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, removed_keys) {
+                    out.insert(Arc::clone(key), *value);
+                }
+            }
+            TypedMap::StringBool(out)
+        }
     }
 }
 
@@ -1214,28 +1221,50 @@ fn runtime_map_keys_match(left: &RuntimeMapKey, right: &RuntimeMapKey) -> bool {
 
 fn typed_map_iter_snapshot(map: &TypedMap) -> TypedMapIterSnapshot {
     match map {
-        TypedMap::Mixed(entries) => TypedMapIterSnapshot::Mixed(
-            entries
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
-        TypedMap::StringMixed(entries) => TypedMapIterSnapshot::StringMixed(
-            entries
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
+        TypedMap::Mixed(entries) => {
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                out.push((key.clone(), value.clone()));
+            }
+            TypedMapIterSnapshot::Mixed(out)
+        }
+        TypedMap::StringMixed(entries) => {
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                out.push((Arc::clone(key), value.clone()));
+            }
+            TypedMapIterSnapshot::StringMixed(out)
+        }
         TypedMap::StringInt(entries) => {
-            TypedMapIterSnapshot::StringInt(entries.iter().map(|(key, value)| (key.clone(), *value)).collect())
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                out.push((Arc::clone(key), *value));
+            }
+            TypedMapIterSnapshot::StringInt(out)
         }
         TypedMap::StringFloat(entries) => {
-            TypedMapIterSnapshot::StringFloat(entries.iter().map(|(key, value)| (key.clone(), *value)).collect())
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                out.push((Arc::clone(key), *value));
+            }
+            TypedMapIterSnapshot::StringFloat(out)
         }
         TypedMap::StringBool(entries) => {
-            TypedMapIterSnapshot::StringBool(entries.iter().map(|(key, value)| (key.clone(), *value)).collect())
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
+                out.push((Arc::clone(key), *value));
+            }
+            TypedMapIterSnapshot::StringBool(out)
         }
     }
+}
+
+fn string_chars_to_list(value: &str) -> Vec<Arc<str>> {
+    let mut out = Vec::new();
+    for ch in value.chars() {
+        out.push(Arc::<str>::from(ch.to_string()));
+    }
+    out
 }
 
 impl TypedMapIterSnapshot {

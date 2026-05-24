@@ -63,13 +63,8 @@ impl TypeChecker {
             Expr::Unary(op, expr) => self.check_unary_op(op, expr),
 
             // Collections
-            Expr::List(items) => self.check_list(&items.iter().map(|i| i.as_ref().clone()).collect::<Vec<_>>()),
-            Expr::Map(pairs) => self.check_map(
-                &pairs
-                    .iter()
-                    .map(|(k, v)| (k.as_ref().clone(), v.as_ref().clone()))
-                    .collect::<Vec<_>>(),
-            ),
+            Expr::List(items) => self.check_list(items),
+            Expr::Map(pairs) => self.check_map(pairs),
             Expr::StructLiteral { name, fields } => {
                 // If struct is known, enforce field presence and types; otherwise, accept as named type
                 if let Some(sd) = self.registry.get_struct(name) {
@@ -142,11 +137,9 @@ impl TypeChecker {
             Expr::Call(func, args) => {
                 // For Call with string name, create a variable expression for the function
                 let func_expr = Expr::Var(func.clone());
-                self.check_function_call(&func_expr, &args.iter().map(|a| a.as_ref().clone()).collect::<Vec<_>>())
+                self.check_function_call(&func_expr, args)
             }
-            Expr::CallExpr(func_expr, args) => {
-                self.check_function_call(func_expr, &args.iter().map(|a| a.as_ref().clone()).collect::<Vec<_>>())
-            }
+            Expr::CallExpr(func_expr, args) => self.check_function_call(func_expr, args),
             Expr::CallNamed(callee, pos_args, named_args) => {
                 // Struct constructor sugar: TypeName(field: expr, ...)
                 if let Expr::Var(name) = callee.as_ref()
@@ -728,7 +721,7 @@ impl TypeChecker {
     }
 
     /// Check list literal type
-    fn check_list(&mut self, items: &[Expr]) -> Result<Type> {
+    fn check_list(&mut self, items: &[Box<Expr>]) -> Result<Type> {
         if items.is_empty() {
             // Empty list, infer element type later
             let elem_type = self.inference_engine.fresh_type_var();
@@ -762,7 +755,7 @@ impl TypeChecker {
     }
 
     /// Check map literal type
-    fn check_map(&mut self, pairs: &[(Expr, Expr)]) -> Result<Type> {
+    fn check_map(&mut self, pairs: &[(Box<Expr>, Box<Expr>)]) -> Result<Type> {
         if pairs.is_empty() {
             // Empty map, infer key/value types later
             let key_type = self.inference_engine.fresh_type_var();
@@ -889,7 +882,7 @@ impl TypeChecker {
                     }
                 }
                 // Fallback: unknown index -> union of all element types
-                let u = Type::Union(elems.to_vec());
+                let u = Type::Union(elems.iter().cloned().collect());
                 Ok(u)
             }
             Type::Map(key_type, value_type) => {
@@ -1002,7 +995,7 @@ impl TypeChecker {
     }
 
     /// Check function call type
-    fn check_function_call(&mut self, func: &Expr, args: &[Expr]) -> Result<Type> {
+    fn check_function_call(&mut self, func: &Expr, args: &[Box<Expr>]) -> Result<Type> {
         if let Expr::Access(obj_expr, field_expr) = func {
             let receiver_ty = self.check_expr(obj_expr)?;
             if let Expr::Literal(field_val) = field_expr.as_ref()
@@ -1076,7 +1069,7 @@ impl TypeChecker {
                                 "chan() type hint must be String when provided",
                                 Some(Type::String),
                                 Some(type_arg_ty),
-                                Some(args[1].clone()),
+                                Some(args[1].as_ref().clone()),
                             ));
                         }
                     }
@@ -1098,7 +1091,7 @@ impl TypeChecker {
                                 "send() pattern requires a channel",
                                 Some(Type::Channel(Box::new(Type::Any))),
                                 Some(other),
-                                Some(args[0].clone()),
+                                Some(args[0].as_ref().clone()),
                             ));
                         }
                     }
@@ -1114,7 +1107,7 @@ impl TypeChecker {
                             "recv() pattern requires a channel",
                             Some(Type::Channel(Box::new(Type::Any))),
                             Some(other),
-                            Some(args[0].clone()),
+                            Some(args[0].as_ref().clone()),
                         )),
                     };
                 }
@@ -1138,7 +1131,7 @@ impl TypeChecker {
                                 "spawn() expects a function or closure",
                                 None,
                                 Some(other),
-                                Some(args[0].clone()),
+                                Some(args[0].as_ref().clone()),
                             ));
                         }
                     }

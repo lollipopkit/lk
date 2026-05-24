@@ -252,7 +252,7 @@ fn list_push_preserving_backing(list: &TypedList, value: RuntimeVal, heap: &Heap
         TypedList::String(values) => match runtime_string_value_arg(&value, heap) {
             Some(value) => ListPushPlan::Ready(TypedList::String(copy_with_extra_item(values, value))),
             None => ListPushPlan::MaterializeString {
-                values: values.clone(),
+                values: copy_slice(values),
                 value,
             },
         },
@@ -270,11 +270,11 @@ enum RuntimeListSnapshot {
 impl RuntimeListSnapshot {
     fn from_typed(list: &TypedList) -> Self {
         match list {
-            TypedList::Mixed(values) => Self::Mixed(values.clone()),
-            TypedList::Int(values) => Self::Int(values.clone()),
-            TypedList::Float(values) => Self::Float(values.clone()),
-            TypedList::Bool(values) => Self::Bool(values.clone()),
-            TypedList::String(values) => Self::String(values.clone()),
+            TypedList::Mixed(values) => Self::Mixed(copy_slice(values)),
+            TypedList::Int(values) => Self::Int(copy_slice(values)),
+            TypedList::Float(values) => Self::Float(copy_slice(values)),
+            TypedList::Bool(values) => Self::Bool(copy_slice(values)),
+            TypedList::String(values) => Self::String(copy_slice(values)),
         }
     }
 
@@ -479,7 +479,7 @@ fn list_set_preserving_backing(
                     bail!("list index {} out of bounds", index);
                 }
                 Ok(ListSetPlan::MaterializeString {
-                    values: values.clone(),
+                    values: copy_slice(values),
                     index,
                     value,
                 })
@@ -501,6 +501,12 @@ fn set_polluted_list(
     };
     let old = std::mem::replace(slot, value);
     Ok((TypedList::Mixed(values), old))
+}
+
+fn copy_slice<T: Clone>(values: &[T]) -> Vec<T> {
+    let mut out = Vec::with_capacity(values.len());
+    out.extend_from_slice(values);
+    out
 }
 
 fn append_string_values(values: Vec<Arc<str>>, out: &mut Vec<RuntimeVal>, heap: &mut HeapStore) {
@@ -532,15 +538,24 @@ fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
 fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Vec<String>> {
     let list = list_arg(value, heap, context)?;
     match list {
-        TypedList::String(values) => Ok(values.iter().map(ToString::to_string).collect()),
-        TypedList::Mixed(values) => values
-            .iter()
-            .map(|value| {
-                runtime_string_arg(value, heap, context)
-                    .map(|value| value.to_string())
-                    .map_err(|_| anyhow!("join() list must contain only strings"))
-            })
-            .collect(),
+        TypedList::String(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(value.to_string());
+            }
+            Ok(out)
+        }
+        TypedList::Mixed(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(
+                    runtime_string_arg(value, heap, context)
+                        .map(|value| value.to_string())
+                        .map_err(|_| anyhow!("join() list must contain only strings"))?,
+                );
+            }
+            Ok(out)
+        }
         _ => Err(anyhow!("join() list must contain only strings")),
     }
 }

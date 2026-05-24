@@ -589,7 +589,7 @@ pub(super) fn native_static_slice_from(
             })
         }
         NativeStraightlineValue::List { elements, .. } => {
-            let elements = elements.get(start..).unwrap_or(&[]).to_vec();
+            let elements = elements.into_iter().skip(start).collect::<Vec<_>>();
             Some(NativeStraightlineValue::List {
                 symbol,
                 value: native_const_list_display(&elements)?,
@@ -726,12 +726,16 @@ fn native_runtime_const_value(value: &NativeStraightlineValue) -> Option<ConstRu
                 )))
             }
         }
-        NativeStraightlineValue::List { elements, .. } => Some(ConstRuntimeValue32Data::Heap(Box::new(
-            ConstHeapValue32Data::List(elements.clone()),
-        ))),
-        NativeStraightlineValue::Map { entries, .. } => Some(ConstRuntimeValue32Data::Heap(Box::new(
-            ConstHeapValue32Data::Map(entries.clone()),
-        ))),
+        NativeStraightlineValue::List { elements, .. } => {
+            let mut out = Vec::with_capacity(elements.len());
+            out.extend(elements.iter().cloned());
+            Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(out))))
+        }
+        NativeStraightlineValue::Map { entries, .. } => {
+            let mut out = Vec::with_capacity(entries.len());
+            out.extend(entries.iter().cloned());
+            Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::Map(out))))
+        }
         NativeStraightlineValue::Object { .. }
         | NativeStraightlineValue::Cell { .. }
         | NativeStraightlineValue::Error { .. }

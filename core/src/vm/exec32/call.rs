@@ -160,7 +160,7 @@ impl Executor32 {
                 let args = self.call_args_stack_range(window)?;
                 let result = runtime_callable::call_runtime_callable32_runtime(
                     function.as_ref(),
-                    NativeArgs32::new(&self.state.stack[args]),
+                    &self.state.stack[args],
                     &mut self.state.heap,
                     ctx.as_deref_mut(),
                 );

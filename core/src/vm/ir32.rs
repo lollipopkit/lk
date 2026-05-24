@@ -416,13 +416,12 @@ pub fn decode_instr32(bytes: &[u8]) -> Result<Vec<Instr32>> {
     if bytes.len() % size_of::<u32>() != 0 {
         bail!("Instr32 encoded length {} is not 4-byte aligned", bytes.len());
     }
-    bytes
-        .chunks_exact(size_of::<u32>())
-        .map(|chunk| {
-            let raw = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            Instr32::try_from_raw(raw)
-        })
-        .collect()
+    let mut instrs = Vec::with_capacity(bytes.len() / size_of::<u32>());
+    for chunk in bytes.chunks_exact(size_of::<u32>()) {
+        let raw = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        instrs.push(Instr32::try_from_raw(raw)?);
+    }
+    Ok(instrs)
 }
 
 #[derive(Clone, Debug, Default)]

@@ -349,10 +349,11 @@ impl LoweringContext {
     }
 
     fn lower_expr_list(&mut self, exprs: &[Box<Expr>]) -> Result<Vec<ValueId>, SsaLoweringError> {
-        exprs
-            .iter()
-            .map(|expr| self.lower_expr(expr))
-            .collect::<Result<Vec<_>, _>>()
+        let mut lowered = Vec::with_capacity(exprs.len());
+        for expr in exprs {
+            lowered.push(self.lower_expr(expr)?);
+        }
+        Ok(lowered)
     }
 
     fn lower_named_args(
@@ -478,10 +479,10 @@ impl LoweringContext {
     }
 
     fn emit_phi(&mut self, sources: Vec<(BlockId, ValueId)>) -> ValueId {
-        let operands = sources
-            .into_iter()
-            .map(|(block, value)| PhiOperand { block, value })
-            .collect();
+        let mut operands = Vec::with_capacity(sources.len());
+        for (block, value) in sources {
+            operands.push(PhiOperand { block, value });
+        }
         let id = self.alloc_value();
         self.current_block_mut().statements.push(SsaStatement {
             result: id,

@@ -14,7 +14,10 @@ use lk_core::{
     stmt::{ModuleResolver, import::collect_program_imports, stmt_parser::StmtParser},
     token::Tokenizer,
     typ::TypeChecker,
-    vm::{Module32Artifact, VmContext, compile_program32_module_with_ctx, execute_module32_artifact_with_ctx},
+    vm::{
+        Module32Artifact, VmContext, VmRuntimeMetrics, compile_program32_module_with_ctx,
+        execute_module32_artifact_with_ctx, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+    },
 };
 
 use anyhow::Context;
@@ -205,6 +208,50 @@ fn maybe_init_perf_tracing() {
     });
 }
 
+fn vm_profile_enabled() -> bool {
+    std::env::var("LK_VM_PROFILE")
+        .map(|raw| env_toggle_enabled(&raw))
+        .unwrap_or(false)
+}
+
+fn maybe_start_vm_profile(enabled: bool) {
+    if enabled {
+        vm_runtime_metrics_reset();
+    }
+}
+
+fn maybe_print_vm_profile(enabled: bool) {
+    if !enabled {
+        return;
+    }
+    let metrics = vm_runtime_metrics_snapshot();
+    eprintln!("{}", vm_profile_line(metrics));
+}
+
+fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
+    format!(
+        "VM profile: opcode_steps={} calls={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} val_clones={} heap_clones={} copy_policy_heap_clones={} register_copy_heap_clones={} local_copy_heap_clones={} local_load_heap_clones={} local_store_heap_clones={} const_load_heap_clones={} call_arg_heap_clones={} container_copy_heap_clones={}",
+        metrics.opcode_steps,
+        metrics.call_ops,
+        metrics.branch_ops,
+        metrics.typed_branch_ops,
+        metrics.container_ops,
+        metrics.list_ops,
+        metrics.map_ops,
+        metrics.string_ops,
+        metrics.copy_policy_heap_clones,
+        metrics.copy_policy_heap_clones,
+        metrics.copy_policy_heap_clones,
+        metrics.register_copy_heap_clones,
+        metrics.local_copy_heap_clones,
+        metrics.local_load_heap_clones,
+        metrics.local_store_heap_clones,
+        metrics.const_load_heap_clones,
+        metrics.call_arg_heap_clones,
+        metrics.container_copy_heap_clones
+    )
+}
+
 fn main() -> anyhow::Result<()> {
     maybe_init_perf_tracing();
 
@@ -312,10 +359,13 @@ fn main() -> anyhow::Result<()> {
         let artifact = Module32Artifact::from_json_str(&input)
             .with_context(|| format!("decode Instr32 module {}", safe.display()))?;
         let mut base_env = build_vm_context(&safe)?;
+        let profile_enabled = vm_profile_enabled();
+        maybe_start_vm_profile(profile_enabled);
         let exec_result =
             execute_module32_artifact_with_ctx(artifact, &mut base_env).with_context(|| "VM32 module execution failed");
         rt::shutdown_runtime();
         let result = exec_result?;
+        maybe_print_vm_profile(profile_enabled);
         if !result.first_return_is_nil() {
             println!("{}", result.display_first_return());
         }
@@ -349,6 +399,8 @@ fn main() -> anyhow::Result<()> {
 
     let mut base_env = build_vm_context(&safe)?;
 
+    let profile_enabled = vm_profile_enabled();
+    maybe_start_vm_profile(profile_enabled);
     let exec_result = program
         .execute32_with_ctx(&mut base_env)
         .with_context(|| "VM32 execution failed");
@@ -357,6 +409,7 @@ fn main() -> anyhow::Result<()> {
     rt::shutdown_runtime();
 
     let result = exec_result?;
+    maybe_print_vm_profile(profile_enabled);
 
     if !result.first_return_is_nil() {
         println!("{}", result.display_first_return());

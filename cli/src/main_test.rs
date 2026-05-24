@@ -1,5 +1,6 @@
 mod tests {
     use crate::*;
+    use lk_core::vm::VmRuntimeMetrics;
 
     #[test]
     fn test_sanitize_path_allows_simple_relative() {
@@ -55,6 +56,39 @@ mod tests {
         } else {
             panic!("expected coverage command");
         }
+    }
+
+    #[test]
+    fn test_vm_profile_line_contains_benchmark_fields() {
+        let line = vm_profile_line(VmRuntimeMetrics {
+            opcode_steps: 11,
+            call_ops: 2,
+            branch_ops: 3,
+            typed_branch_ops: 4,
+            container_ops: 5,
+            list_ops: 6,
+            map_ops: 7,
+            string_ops: 8,
+            copy_policy_heap_clones: 9,
+            register_copy_heap_clones: 10,
+            local_copy_heap_clones: 12,
+            local_load_heap_clones: 13,
+            local_store_heap_clones: 14,
+            const_load_heap_clones: 15,
+            call_arg_heap_clones: 16,
+            container_copy_heap_clones: 17,
+            ..VmRuntimeMetrics::default()
+        });
+
+        assert!(line.starts_with("VM profile: "));
+        assert!(line.contains("opcode_steps=11"));
+        assert!(line.contains("calls=2"));
+        assert!(line.contains("branches=3"));
+        assert!(line.contains("typed_branches=4"));
+        assert!(line.contains("containers=5"));
+        assert!(line.contains("val_clones=9"));
+        assert!(line.contains("heap_clones=9"));
+        assert!(line.contains("container_copy_heap_clones=17"));
     }
 
     #[cfg(feature = "llvm")]

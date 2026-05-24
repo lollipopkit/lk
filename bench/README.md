@@ -23,6 +23,11 @@ cargo build --release -p lk-cli
 bench/run_workload_bench.sh
 ```
 
+By default the runner tries to compile and measure native AOT as an additional
+engine. If LLVM is disabled or the current workload artifact is not native
+lowerable yet, AOT is reported as skipped and the VM/Lua benchmark still runs.
+Use `RUN_AOT=0` to skip the compile attempt entirely.
+
 For a higher-confidence baseline refresh:
 
 ```bash

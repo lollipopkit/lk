@@ -1,7 +1,10 @@
 use anyhow::{Result, bail};
 
 use crate::{
-    stmt::Program,
+    stmt::{
+        Program,
+        import::{ImportSource, ImportStmt},
+    },
     vm::{Compiler32, ConstHeapValue32Data, Instr32, Module32Artifact, Opcode32},
 };
 
@@ -96,7 +99,71 @@ pub fn compile_module32_artifact_to_llvm(
         });
     }
 
-    bail!("LLVM native lowering does not support this Module32Artifact shape yet")
+    bail!(
+        "LLVM native lowering does not support this Module32Artifact shape yet: {}",
+        unsupported_module32_artifact_reason(artifact)
+    )
+}
+
+fn unsupported_module32_artifact_reason(artifact: &Module32Artifact) -> String {
+    if !artifact.imports.is_empty() {
+        return format!(
+            "imports are not native-lowerable yet ({})",
+            artifact
+                .imports
+                .iter()
+                .map(import_stmt_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    let Some(function) = artifact.module.functions.get(artifact.module.entry as usize) else {
+        return format!("entry function {} is out of bounds", artifact.module.entry);
+    };
+    if function.param_count != 0 {
+        return format!("entry function has {} parameters", function.param_count);
+    }
+    if function.capture_count != 0 {
+        return format!("entry function has {} captures", function.capture_count);
+    }
+
+    let code = match function
+        .code
+        .iter()
+        .copied()
+        .map(Instr32::try_from_raw)
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(code) => code,
+        Err(error) => return format!("entry bytecode decode failed: {error}"),
+    };
+    if native_scalar_function_needs_blocks(&code) && native_straightline_function_has_call(&code) {
+        return "control-flow lowering with direct calls is not native-lowerable yet".to_string();
+    }
+    if native_scalar_function_needs_blocks(&code)
+        && native_scalar_block_facts(function.register_count as usize, artifact.module.globals.len(), &code).is_none()
+    {
+        return "scalar block facts could not classify the entry function".to_string();
+    }
+    "entry function contains an unsupported Instr32/native value shape".to_string()
+}
+
+fn import_stmt_label(import: &ImportStmt) -> String {
+    match import {
+        ImportStmt::Module { module } => module.clone(),
+        ImportStmt::File { path } => format!("file:{path}"),
+        ImportStmt::Items { source, .. } => import_source_label(source),
+        ImportStmt::Namespace { alias, source } => format!("{} as {alias}", import_source_label(source)),
+        ImportStmt::ModuleAlias { module, alias } => format!("{module} as {alias}"),
+    }
+}
+
+fn import_source_label(source: &ImportSource) -> String {
+    match source {
+        ImportSource::Module(module) => module.clone(),
+        ImportSource::File(path) => format!("file:{path}"),
+    }
 }
 
 fn compile_native_scalar_main_artifact(

@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    stmt::import::ImportStmt,
     stmt::stmt_parser::StmtParser,
     token::Tokenizer,
     vm::{
@@ -7,6 +8,43 @@ use crate::{
         MODULE32_ARTIFACT_VERSION, Module32Artifact, Module32Data, Opcode32, RuntimeMapKeyData,
     },
 };
+
+#[test]
+fn llvm_backend_reports_imports_as_unsupported_native_shape() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: vec![ImportStmt::Module {
+            module: "os".to_string(),
+        }],
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![Function32Data {
+                consts: ConstPool32Data {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: Vec::new(),
+                },
+                code: vec![Instr32::abc(Opcode32::Return, 0, 0, 0).raw()],
+                register_count: 1,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let err = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default())
+        .expect_err("imports must be rejected without artifact shell fallback");
+
+    let message = err.to_string();
+    assert!(message.contains("imports are not native-lowerable yet"), "{message}");
+    assert!(message.contains("os"), "{message}");
+    assert!(!message.contains("lk_rt_run_module32_json"), "{message}");
+}
 
 #[test]
 fn llvm_backend_lowers_i64_instr32_arithmetic_ops_without_shell() {

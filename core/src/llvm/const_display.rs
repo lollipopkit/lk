@@ -11,36 +11,51 @@ pub(super) fn native_string_const_value(value: &str) -> Option<String> {
 }
 
 pub(super) fn native_const_list_display(values: &[ConstRuntimeValue32Data]) -> Option<String> {
-    let mut parts = Vec::with_capacity(values.len());
-    for value in values {
-        parts.push(native_const_runtime_display(value)?);
+    let mut out = String::from("[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&native_const_runtime_display(value)?);
     }
-    Some(format!("[{}]", parts.join(", ")))
+    out.push(']');
+    Some(out)
 }
 
 pub(super) fn native_const_map_display(values: &[(RuntimeMapKeyData, ConstRuntimeValue32Data)]) -> Option<String> {
-    let mut parts = Vec::with_capacity(values.len());
-    for (key, value) in values {
-        parts.push(format!(
-            "{}: {}",
-            native_const_map_key_display(key)?,
-            native_const_runtime_display(value)?
-        ));
+    let mut out = String::from("{");
+    for (index, (key, value)) in values.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&native_const_map_key_display(key)?);
+        out.push_str(": ");
+        out.push_str(&native_const_runtime_display(value)?);
     }
-    Some(format!("{{{}}}", parts.join(", ")))
+    out.push('}');
+    Some(out)
 }
 
 pub(super) fn native_const_object_display(
     type_name: &str,
     fields: &[(String, ConstRuntimeValue32Data)],
 ) -> Option<String> {
-    let mut fields = fields.to_vec();
+    let mut fields = fields.iter().collect::<Vec<_>>();
     fields.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
-    let mut parts = Vec::with_capacity(fields.len());
-    for (key, value) in fields {
-        parts.push(format!("{key}: {}", native_const_runtime_display(&value)?));
+    let mut out = String::with_capacity(type_name.len() + 4);
+    out.push('<');
+    out.push_str(type_name);
+    out.push_str(" {");
+    for (index, (key, value)) in fields.into_iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(key);
+        out.push_str(": ");
+        out.push_str(&native_const_runtime_display(value)?);
     }
-    Some(format!("<{type_name} {{{}}}>", parts.join(", ")))
+    out.push_str("}>");
+    Some(out)
 }
 
 fn native_const_map_key_display(key: &RuntimeMapKeyData) -> Option<String> {
@@ -70,7 +85,8 @@ fn native_const_runtime_display(value: &ConstRuntimeValue32Data) -> Option<Strin
 }
 
 pub(super) fn llvm_string_constant(symbol: &str, value: &str) -> String {
-    let mut bytes = value.as_bytes().to_vec();
+    let mut bytes = Vec::with_capacity(value.len() + 1);
+    bytes.extend_from_slice(value.as_bytes());
     bytes.push(0);
     format!(
         "{symbol} = private unnamed_addr constant [{} x i8] c\"{}\", align 1\n",

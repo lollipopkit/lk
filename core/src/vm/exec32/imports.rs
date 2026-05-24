@@ -80,22 +80,19 @@ fn import_heap_value(
             source_state,
         )?),
         HeapValue::Object(object) => {
-            let fields = object
-                .fields
-                .iter()
-                .map(|(key, value)| {
-                    Ok((
-                        key.clone(),
-                        import_runtime_value(
-                            value,
-                            source_heap,
-                            dest_heap,
-                            Arc::clone(&source_module),
-                            source_state.clone(),
-                        )?,
-                    ))
-                })
-                .collect::<Result<_>>()?;
+            let mut fields = std::collections::BTreeMap::new();
+            for (key, value) in &object.fields {
+                fields.insert(
+                    Arc::clone(key),
+                    import_runtime_value(
+                        value,
+                        source_heap,
+                        dest_heap,
+                        Arc::clone(&source_module),
+                        source_state.clone(),
+                    )?,
+                );
+            }
             HeapValue::Object(RuntimeObject::new(object.type_name.clone(), fields))
         }
         HeapValue::Callable(CallableValue::RuntimeNative32 { name, arity, function }) => {
@@ -133,19 +130,19 @@ fn import_heap_value(
         )?),
         HeapValue::ErrorVal(error) => HeapValue::ErrorVal(crate::val::ErrorVal {
             message: error.message.clone(),
-            trace: error
-                .trace
-                .iter()
-                .map(|value| {
-                    import_runtime_value(
+            trace: {
+                let mut trace = Vec::with_capacity(error.trace.len());
+                for value in &error.trace {
+                    trace.push(import_runtime_value(
                         value,
                         source_heap,
                         dest_heap,
                         Arc::clone(&source_module),
                         source_state.clone(),
-                    )
-                })
-                .collect::<Result<_>>()?,
+                    )?);
+                }
+                trace
+            },
         }),
     })
 }
@@ -158,24 +155,23 @@ fn import_typed_list(
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
 ) -> Result<TypedList> {
     Ok(match values {
-        TypedList::Mixed(values) => TypedList::Mixed(
-            values
-                .iter()
-                .map(|value| {
-                    import_runtime_value(
-                        value,
-                        source_heap,
-                        dest_heap,
-                        Arc::clone(&source_module),
-                        source_state.clone(),
-                    )
-                })
-                .collect::<Result<_>>()?,
-        ),
-        TypedList::Int(values) => TypedList::Int(values.clone()),
-        TypedList::Float(values) => TypedList::Float(values.clone()),
-        TypedList::Bool(values) => TypedList::Bool(values.clone()),
-        TypedList::String(values) => TypedList::String(values.clone()),
+        TypedList::Mixed(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(import_runtime_value(
+                    value,
+                    source_heap,
+                    dest_heap,
+                    Arc::clone(&source_module),
+                    source_state.clone(),
+                )?);
+            }
+            TypedList::Mixed(out)
+        }
+        TypedList::Int(values) => TypedList::Int(copy_slice(values)),
+        TypedList::Float(values) => TypedList::Float(copy_slice(values)),
+        TypedList::Bool(values) => TypedList::Bool(copy_slice(values)),
+        TypedList::String(values) => TypedList::String(copy_slice(values)),
     })
 }
 
@@ -187,42 +183,56 @@ fn import_typed_map(
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
 ) -> Result<TypedMap> {
     Ok(match values {
-        TypedMap::Mixed(values) => TypedMap::Mixed(
-            values
-                .iter()
-                .map(|(key, value)| {
-                    Ok((
-                        key.clone(),
-                        import_runtime_value(
-                            value,
-                            source_heap,
-                            dest_heap,
-                            Arc::clone(&source_module),
-                            source_state.clone(),
-                        )?,
-                    ))
-                })
-                .collect::<Result<_>>()?,
-        ),
-        TypedMap::StringMixed(values) => TypedMap::StringMixed(
-            values
-                .iter()
-                .map(|(key, value)| {
-                    Ok((
-                        key.clone(),
-                        import_runtime_value(
-                            value,
-                            source_heap,
-                            dest_heap,
-                            Arc::clone(&source_module),
-                            source_state.clone(),
-                        )?,
-                    ))
-                })
-                .collect::<Result<_>>()?,
-        ),
-        TypedMap::StringInt(values) => TypedMap::StringInt(values.clone()),
-        TypedMap::StringFloat(values) => TypedMap::StringFloat(values.clone()),
-        TypedMap::StringBool(values) => TypedMap::StringBool(values.clone()),
+        TypedMap::Mixed(values) => {
+            let mut out = std::collections::BTreeMap::new();
+            for (key, value) in values {
+                out.insert(
+                    key.clone(),
+                    import_runtime_value(
+                        value,
+                        source_heap,
+                        dest_heap,
+                        Arc::clone(&source_module),
+                        source_state.clone(),
+                    )?,
+                );
+            }
+            TypedMap::Mixed(out)
+        }
+        TypedMap::StringMixed(values) => {
+            let mut out = std::collections::BTreeMap::new();
+            for (key, value) in values {
+                out.insert(
+                    Arc::clone(key),
+                    import_runtime_value(
+                        value,
+                        source_heap,
+                        dest_heap,
+                        Arc::clone(&source_module),
+                        source_state.clone(),
+                    )?,
+                );
+            }
+            TypedMap::StringMixed(out)
+        }
+        TypedMap::StringInt(values) => TypedMap::StringInt(copy_string_map_values(values)),
+        TypedMap::StringFloat(values) => TypedMap::StringFloat(copy_string_map_values(values)),
+        TypedMap::StringBool(values) => TypedMap::StringBool(copy_string_map_values(values)),
     })
+}
+
+fn copy_slice<T: Clone>(values: &[T]) -> Vec<T> {
+    let mut out = Vec::with_capacity(values.len());
+    out.extend_from_slice(values);
+    out
+}
+
+fn copy_string_map_values<T: Copy>(
+    values: &std::collections::BTreeMap<Arc<str>, T>,
+) -> std::collections::BTreeMap<Arc<str>, T> {
+    let mut out = std::collections::BTreeMap::new();
+    for (key, value) in values {
+        out.insert(Arc::clone(key), *value);
+    }
+    out
 }

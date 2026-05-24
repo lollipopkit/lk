@@ -517,7 +517,10 @@ impl Compiler32 {
         compiler.dynamic_function_base = dynamic_function_base;
         compiler.function.param_count = params.len() as u16;
         compiler.function.positional_param_count = params.len() as u16;
-        compiler.function.param_names = params.iter().map(|name| Arc::<str>::from(name.as_str())).collect();
+        compiler.function.param_names = Vec::with_capacity(params.len());
+        for name in params {
+            compiler.function.param_names.push(Arc::<str>::from(name.as_str()));
+        }
         compiler.function.capture_count = compiler.capture_names.len() as u16;
         compiler.next_reg = params.len() as u16;
         compiler.peak_reg = params.len() as u16;
@@ -1274,20 +1277,26 @@ impl Compiler32 {
     }
 
     fn collect_closure_captures(&self, params: &[String], body: &Expr) -> Vec<String> {
-        let mut bound: HashSet<String> = params.iter().cloned().collect();
+        let mut bound = HashSet::with_capacity(params.len());
+        for param in params {
+            bound.insert(param.clone());
+        }
         let mut free = Vec::new();
         collect_expr_free_vars(body, &mut bound, &mut free);
         let mut seen = HashSet::new();
-        free.into_iter()
-            .filter(|name| {
-                let captures_local = self.locals.contains_key(name);
-                let captures_outer = self.capture_names.contains_key(name) && !self.global_names.contains_key(name);
-                (captures_local || captures_outer)
-                    && !self.function_names.contains_key(name)
-                    && !self.native_names.contains_key(name)
-                    && seen.insert(name.clone())
-            })
-            .collect()
+        let mut captures = Vec::new();
+        for name in free {
+            let captures_local = self.locals.contains_key(&name);
+            let captures_outer = self.capture_names.contains_key(&name) && !self.global_names.contains_key(&name);
+            if (captures_local || captures_outer)
+                && !self.function_names.contains_key(&name)
+                && !self.native_names.contains_key(&name)
+                && seen.insert(name.clone())
+            {
+                captures.push(name);
+            }
+        }
+        captures
     }
 
     fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {

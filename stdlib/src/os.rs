@@ -297,10 +297,10 @@ fn exec32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
         .map_err(|err| anyhow!("failed to execute '{cmd}': {err}"))?;
     let stdout = String::from_utf8(output.stdout).map_err(|_| anyhow!("command stdout is not valid UTF-8"))?;
     if stream {
-        let lines = stdout
-            .lines()
-            .map(|line| std::sync::Arc::<str>::from(line.trim_end_matches('\r')))
-            .collect::<Vec<_>>();
+        let mut lines = Vec::new();
+        for line in stdout.lines() {
+            lines.push(std::sync::Arc::<str>::from(line.trim_end_matches('\r')));
+        }
         return Ok(RuntimeVal::Obj(
             runtime.heap_mut().alloc(HeapValue::List(TypedList::String(lines))),
         ));
@@ -320,11 +320,20 @@ fn string_list_arg(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, context: &
         bail!("{context} must be a list, got {}", value.type_name());
     };
     match list {
-        TypedList::String(values) => Ok(values.iter().map(ToString::to_string).collect()),
-        TypedList::Mixed(values) => values
-            .iter()
-            .map(|value| runtime_string_arg(value, runtime.heap(), context).map(|value| value.to_string()))
-            .collect(),
+        TypedList::String(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(value.to_string());
+            }
+            Ok(out)
+        }
+        TypedList::Mixed(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(runtime_string_arg(value, runtime.heap(), context)?.to_string());
+            }
+            Ok(out)
+        }
         _ => bail!("{context} must contain only strings"),
     }
 }

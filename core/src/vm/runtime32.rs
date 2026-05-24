@@ -130,16 +130,19 @@ impl RuntimeCallable32 {
         let Some(function) = self.module.functions.get(self.function_index as usize) else {
             return format!("#{}", self.function_index);
         };
-        let mut params = function
-            .param_names
-            .iter()
-            .take(function.param_count as usize)
-            .map(|name| name.as_ref().to_string())
-            .collect::<Vec<_>>();
-        if params.len() < function.param_count as usize {
-            params.extend((params.len()..function.param_count as usize).map(|index| format!("arg{index}")));
+        let mut params = String::new();
+        let param_count = function.param_count as usize;
+        for index in 0..param_count {
+            if index > 0 {
+                params.push_str(", ");
+            }
+            if let Some(name) = function.param_names.get(index) {
+                params.push_str(name.as_ref());
+            } else {
+                params.push_str(&format!("arg{index}"));
+            }
         }
-        format!("({})", params.join(", "))
+        format!("({params})")
     }
 }
 
@@ -517,7 +520,6 @@ pub enum NativeFunction32 {
     Plain(PlainNativeFunction32),
     Context(ContextNativeFunction32),
     FullState(ContextNativeFunction32),
-    RuntimeCallable(Arc<RuntimeCallable32>),
 }
 
 impl NativeFunction32 {

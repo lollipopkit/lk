@@ -84,81 +84,91 @@ impl MapModule {
 fn set_map_entry(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut entries = entries
-                .iter()
-                .filter(|(entry_key, _)| **entry_key != RuntimeMapKey::String(Arc::clone(&key)))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect::<BTreeMap<_, _>>();
+            let mut out = BTreeMap::new();
+            let inserted_key = RuntimeMapKey::String(Arc::clone(&key));
+            for (entry_key, entry_value) in entries {
+                if *entry_key != inserted_key {
+                    out.insert(entry_key.clone(), entry_value.clone());
+                }
+            }
+            let mut entries = out;
             entries.insert(RuntimeMapKey::String(key), value);
             TypedMap::Mixed(entries)
         }
         TypedMap::StringMixed(entries) => {
-            let mut entries = entries
-                .iter()
-                .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect::<BTreeMap<_, _>>();
-            entries.insert(key, value);
-            TypedMap::StringMixed(entries)
+            let mut out = BTreeMap::new();
+            for (entry_key, entry_value) in entries.iter() {
+                if entry_key.as_ref() != key.as_ref() {
+                    out.insert(Arc::clone(entry_key), entry_value.clone());
+                }
+            }
+            out.insert(key, value);
+            TypedMap::StringMixed(out)
         }
         TypedMap::StringInt(entries) => match value {
             RuntimeVal::Int(value) => {
-                let mut entries = entries
-                    .iter()
-                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                    .map(|(key, value)| (key.clone(), *value))
-                    .collect::<BTreeMap<_, _>>();
-                entries.insert(key, value);
-                TypedMap::StringInt(entries)
+                let mut out = BTreeMap::new();
+                for (entry_key, entry_value) in entries.iter() {
+                    if entry_key.as_ref() != key.as_ref() {
+                        out.insert(Arc::clone(entry_key), *entry_value);
+                    }
+                }
+                out.insert(key, value);
+                TypedMap::StringInt(out)
             }
             value => {
-                let mut entries = entries
-                    .iter()
-                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                    .map(|(key, value)| (key.clone(), RuntimeVal::Int(*value)))
-                    .collect::<BTreeMap<_, _>>();
-                entries.insert(key, value);
-                TypedMap::StringMixed(entries)
+                let mut out = BTreeMap::new();
+                for (entry_key, entry_value) in entries.iter() {
+                    if entry_key.as_ref() != key.as_ref() {
+                        out.insert(Arc::clone(entry_key), RuntimeVal::Int(*entry_value));
+                    }
+                }
+                out.insert(key, value);
+                TypedMap::StringMixed(out)
             }
         },
         TypedMap::StringFloat(entries) => match value {
             RuntimeVal::Float(value) => {
-                let mut entries = entries
-                    .iter()
-                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                    .map(|(key, value)| (key.clone(), *value))
-                    .collect::<BTreeMap<_, _>>();
-                entries.insert(key, value);
-                TypedMap::StringFloat(entries)
+                let mut out = BTreeMap::new();
+                for (entry_key, entry_value) in entries.iter() {
+                    if entry_key.as_ref() != key.as_ref() {
+                        out.insert(Arc::clone(entry_key), *entry_value);
+                    }
+                }
+                out.insert(key, value);
+                TypedMap::StringFloat(out)
             }
             value => {
-                let mut entries = entries
-                    .iter()
-                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                    .map(|(key, value)| (key.clone(), RuntimeVal::Float(*value)))
-                    .collect::<BTreeMap<_, _>>();
-                entries.insert(key, value);
-                TypedMap::StringMixed(entries)
+                let mut out = BTreeMap::new();
+                for (entry_key, entry_value) in entries.iter() {
+                    if entry_key.as_ref() != key.as_ref() {
+                        out.insert(Arc::clone(entry_key), RuntimeVal::Float(*entry_value));
+                    }
+                }
+                out.insert(key, value);
+                TypedMap::StringMixed(out)
             }
         },
         TypedMap::StringBool(entries) => match value {
             RuntimeVal::Bool(value) => {
-                let mut entries = entries
-                    .iter()
-                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                    .map(|(key, value)| (key.clone(), *value))
-                    .collect::<BTreeMap<_, _>>();
-                entries.insert(key, value);
-                TypedMap::StringBool(entries)
+                let mut out = BTreeMap::new();
+                for (entry_key, entry_value) in entries.iter() {
+                    if entry_key.as_ref() != key.as_ref() {
+                        out.insert(Arc::clone(entry_key), *entry_value);
+                    }
+                }
+                out.insert(key, value);
+                TypedMap::StringBool(out)
             }
             value => {
-                let mut entries = entries
-                    .iter()
-                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
-                    .map(|(key, value)| (key.clone(), RuntimeVal::Bool(*value)))
-                    .collect::<BTreeMap<_, _>>();
-                entries.insert(key, value);
-                TypedMap::StringMixed(entries)
+                let mut out = BTreeMap::new();
+                for (entry_key, entry_value) in entries.iter() {
+                    if entry_key.as_ref() != key.as_ref() {
+                        out.insert(Arc::clone(entry_key), RuntimeVal::Bool(*entry_value));
+                    }
+                }
+                out.insert(key, value);
+                TypedMap::StringMixed(out)
             }
         },
     }
@@ -224,11 +234,19 @@ fn map_arg<'a>(value: &RuntimeVal, heap: &'a HeapStore, context: &str) -> Result
 
 fn map_keys_list(map: &TypedMap) -> Vec<std::sync::Arc<str>> {
     match map {
-        TypedMap::Mixed(entries) => entries.keys().filter_map(RuntimeMapKey::as_arc_str).collect(),
-        TypedMap::StringMixed(entries) => entries.keys().cloned().collect(),
-        TypedMap::StringInt(entries) => entries.keys().cloned().collect(),
-        TypedMap::StringFloat(entries) => entries.keys().cloned().collect(),
-        TypedMap::StringBool(entries) => entries.keys().cloned().collect(),
+        TypedMap::Mixed(entries) => {
+            let mut keys = Vec::new();
+            for key in entries.keys() {
+                if let Some(key) = key.as_arc_str() {
+                    keys.push(key);
+                }
+            }
+            keys
+        }
+        TypedMap::StringMixed(entries) => copy_string_map_keys(entries),
+        TypedMap::StringInt(entries) => copy_string_map_keys(entries),
+        TypedMap::StringFloat(entries) => copy_string_map_keys(entries),
+        TypedMap::StringBool(entries) => copy_string_map_keys(entries),
     }
 }
 
@@ -236,10 +254,36 @@ fn map_values_list(map: &TypedMap, heap: &HeapStore) -> TypedList {
     match map {
         TypedMap::Mixed(entries) => map_runtime_values_to_list(entries.values(), heap),
         TypedMap::StringMixed(entries) => map_runtime_values_to_list(entries.values(), heap),
-        TypedMap::StringInt(entries) => TypedList::Int(entries.values().copied().collect()),
-        TypedMap::StringFloat(entries) => TypedList::Float(entries.values().copied().collect()),
-        TypedMap::StringBool(entries) => TypedList::Bool(entries.values().copied().collect()),
+        TypedMap::StringInt(entries) => {
+            let mut values = Vec::with_capacity(entries.len());
+            for value in entries.values() {
+                values.push(*value);
+            }
+            TypedList::Int(values)
+        }
+        TypedMap::StringFloat(entries) => {
+            let mut values = Vec::with_capacity(entries.len());
+            for value in entries.values() {
+                values.push(*value);
+            }
+            TypedList::Float(values)
+        }
+        TypedMap::StringBool(entries) => {
+            let mut values = Vec::with_capacity(entries.len());
+            for value in entries.values() {
+                values.push(*value);
+            }
+            TypedList::Bool(values)
+        }
     }
+}
+
+fn copy_string_map_keys<T>(entries: &BTreeMap<Arc<str>, T>) -> Vec<Arc<str>> {
+    let mut keys = Vec::with_capacity(entries.len());
+    for key in entries.keys() {
+        keys.push(Arc::clone(key));
+    }
+    keys
 }
 
 enum RuntimeValueListShape {
@@ -283,7 +327,11 @@ fn map_runtime_values_to_list<'a>(values: impl IntoIterator<Item = &'a RuntimeVa
         RuntimeValueListShape::Float(values) => TypedList::Float(values),
         RuntimeValueListShape::Bool(values) => TypedList::Bool(values),
         RuntimeValueListShape::String(values) => {
-            TypedList::String(values.into_iter().map(MapStringValue::into_arc).collect())
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(value.into_arc());
+            }
+            TypedList::String(out)
         }
         RuntimeValueListShape::Mixed(values) => TypedList::Mixed(values),
     }
@@ -398,78 +446,63 @@ fn delete_map_entry(map: &TypedMap, key: &str) -> (TypedMap, RuntimeVal) {
         TypedMap::Mixed(entries) => {
             let removed_key = RuntimeMapKey::String(Arc::<str>::from(key));
             let mut removed = RuntimeVal::Nil;
-            let entries = entries
-                .iter()
-                .filter_map(|(entry_key, value)| {
-                    if *entry_key == removed_key {
-                        removed = value.clone();
-                        None
-                    } else {
-                        Some((entry_key.clone(), value.clone()))
-                    }
-                })
-                .collect();
-            (TypedMap::Mixed(entries), removed)
+            let mut out = BTreeMap::new();
+            for (entry_key, value) in entries {
+                if *entry_key == removed_key {
+                    removed = value.clone();
+                } else {
+                    out.insert(entry_key.clone(), value.clone());
+                }
+            }
+            (TypedMap::Mixed(out), removed)
         }
         TypedMap::StringMixed(entries) => {
             let mut removed = RuntimeVal::Nil;
-            let entries = entries
-                .iter()
-                .filter_map(|(entry_key, value)| {
-                    if entry_key.as_ref() == key {
-                        removed = value.clone();
-                        None
-                    } else {
-                        Some((entry_key.clone(), value.clone()))
-                    }
-                })
-                .collect();
-            (TypedMap::StringMixed(entries), removed)
+            let mut out = BTreeMap::new();
+            for (entry_key, value) in entries {
+                if entry_key.as_ref() == key {
+                    removed = value.clone();
+                } else {
+                    out.insert(Arc::clone(entry_key), value.clone());
+                }
+            }
+            (TypedMap::StringMixed(out), removed)
         }
         TypedMap::StringInt(entries) => {
             let mut removed = RuntimeVal::Nil;
-            let entries = entries
-                .iter()
-                .filter_map(|(entry_key, value)| {
-                    if entry_key.as_ref() == key {
-                        removed = RuntimeVal::Int(*value);
-                        None
-                    } else {
-                        Some((entry_key.clone(), *value))
-                    }
-                })
-                .collect();
-            (TypedMap::StringInt(entries), removed)
+            let mut out = BTreeMap::new();
+            for (entry_key, value) in entries {
+                if entry_key.as_ref() == key {
+                    removed = RuntimeVal::Int(*value);
+                } else {
+                    out.insert(Arc::clone(entry_key), *value);
+                }
+            }
+            (TypedMap::StringInt(out), removed)
         }
         TypedMap::StringFloat(entries) => {
             let mut removed = RuntimeVal::Nil;
-            let entries = entries
-                .iter()
-                .filter_map(|(entry_key, value)| {
-                    if entry_key.as_ref() == key {
-                        removed = RuntimeVal::Float(*value);
-                        None
-                    } else {
-                        Some((entry_key.clone(), *value))
-                    }
-                })
-                .collect();
-            (TypedMap::StringFloat(entries), removed)
+            let mut out = BTreeMap::new();
+            for (entry_key, value) in entries {
+                if entry_key.as_ref() == key {
+                    removed = RuntimeVal::Float(*value);
+                } else {
+                    out.insert(Arc::clone(entry_key), *value);
+                }
+            }
+            (TypedMap::StringFloat(out), removed)
         }
         TypedMap::StringBool(entries) => {
             let mut removed = RuntimeVal::Nil;
-            let entries = entries
-                .iter()
-                .filter_map(|(entry_key, value)| {
-                    if entry_key.as_ref() == key {
-                        removed = RuntimeVal::Bool(*value);
-                        None
-                    } else {
-                        Some((entry_key.clone(), *value))
-                    }
-                })
-                .collect();
-            (TypedMap::StringBool(entries), removed)
+            let mut out = BTreeMap::new();
+            for (entry_key, value) in entries {
+                if entry_key.as_ref() == key {
+                    removed = RuntimeVal::Bool(*value);
+                } else {
+                    out.insert(Arc::clone(entry_key), *value);
+                }
+            }
+            (TypedMap::StringBool(out), removed)
         }
     }
 }

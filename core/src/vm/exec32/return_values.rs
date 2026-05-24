@@ -22,7 +22,13 @@ impl ReturnValues32 {
                 std::mem::take(three),
                 std::mem::take(four),
             ]),
-            values => Self::Many(values.iter_mut().map(std::mem::take).collect()),
+            values => {
+                let mut out = Vec::with_capacity(values.len());
+                for value in values {
+                    out.push(std::mem::take(value));
+                }
+                Self::Many(out)
+            }
         }
     }
 

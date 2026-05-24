@@ -149,12 +149,22 @@ fn format_runtime_val(value: &RuntimeVal, heap: &HeapStore, depth: usize) -> Str
                 HeapValue::Callable(callable) => format_callable(callable),
                 HeapValue::Object(obj) => {
                     if depth < MAX_DEPTH {
-                        let fields: Vec<String> = obj
-                            .fields
-                            .iter()
-                            .map(|(k, v)| format!("{}: {}", k, format_runtime_val(v, heap, depth + 1)))
-                            .collect();
-                        format!("<{} {{{}}}>", obj.type_name, fields.join(", "))
+                        let mut out = String::new();
+                        out.push('<');
+                        out.push_str(&obj.type_name);
+                        out.push_str(" {");
+                        let mut first = true;
+                        for (key, value) in &obj.fields {
+                            if !first {
+                                out.push_str(", ");
+                            }
+                            first = false;
+                            out.push_str(key);
+                            out.push_str(": ");
+                            out.push_str(&format_runtime_val(value, heap, depth + 1));
+                        }
+                        out.push_str("}>");
+                        out
                     } else {
                         format!("<{} {{...}}>", obj.type_name)
                     }
@@ -189,31 +199,87 @@ fn format_callable(callable: &crate::val::CallableValue) -> String {
 }
 
 fn format_typed_list(list: &TypedList, heap: &HeapStore, depth: usize) -> String {
-    let parts: Vec<String> = match list {
-        TypedList::Int(v) => v.iter().map(|x| x.to_string()).collect(),
-        TypedList::Float(v) => v.iter().map(|x| x.to_string()).collect(),
-        TypedList::Bool(v) => v.iter().map(|x| x.to_string()).collect(),
-        TypedList::String(v) => v.iter().map(|x| x.to_string()).collect(),
-        TypedList::Mixed(v) => v.iter().map(|x| format_runtime_val(x, heap, depth)).collect(),
-    };
-    format!("[{}]", parts.join(", "))
+    let mut out = String::new();
+    out.push('[');
+    match list {
+        TypedList::Int(values) => append_display_items(&mut out, values.iter().copied()),
+        TypedList::Float(values) => append_display_items(&mut out, values.iter().copied()),
+        TypedList::Bool(values) => append_display_items(&mut out, values.iter().copied()),
+        TypedList::String(values) => append_display_items(&mut out, values.iter().map(|value| value.as_ref())),
+        TypedList::Mixed(values) => append_runtime_items(&mut out, values, heap, depth),
+    }
+    out.push(']');
+    out
 }
 
 fn format_typed_map(map: &TypedMap, heap: &HeapStore, depth: usize) -> String {
-    let parts: Vec<String> = match map {
-        TypedMap::Mixed(m) => m
-            .iter()
-            .map(|(k, v)| format!("{}: {}", format_map_key(k), format_runtime_val(v, heap, depth)))
-            .collect(),
-        TypedMap::StringMixed(m) => m
-            .iter()
-            .map(|(k, v)| format!("{}: {}", k, format_runtime_val(v, heap, depth)))
-            .collect(),
-        TypedMap::StringInt(m) => m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect(),
-        TypedMap::StringFloat(m) => m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect(),
-        TypedMap::StringBool(m) => m.iter().map(|(k, v)| format!("{}: {}", k, v)).collect(),
-    };
-    format!("{{{}}}", parts.join(", "))
+    let mut out = String::new();
+    out.push('{');
+    match map {
+        TypedMap::Mixed(entries) => {
+            let mut first = true;
+            for (key, value) in entries {
+                append_separator(&mut out, &mut first);
+                out.push_str(&format_map_key(key));
+                out.push_str(": ");
+                out.push_str(&format_runtime_val(value, heap, depth));
+            }
+        }
+        TypedMap::StringMixed(entries) => append_string_runtime_map_entries(&mut out, entries, heap, depth),
+        TypedMap::StringInt(entries) => append_string_display_map_entries(&mut out, entries),
+        TypedMap::StringFloat(entries) => append_string_display_map_entries(&mut out, entries),
+        TypedMap::StringBool(entries) => append_string_display_map_entries(&mut out, entries),
+    }
+    out.push('}');
+    out
+}
+
+fn append_separator(out: &mut String, first: &mut bool) {
+    if !*first {
+        out.push_str(", ");
+    }
+    *first = false;
+}
+
+fn append_display_items<T: std::fmt::Display>(out: &mut String, values: impl IntoIterator<Item = T>) {
+    let mut first = true;
+    for value in values {
+        append_separator(out, &mut first);
+        out.push_str(&value.to_string());
+    }
+}
+
+fn append_runtime_items(out: &mut String, values: &[RuntimeVal], heap: &HeapStore, depth: usize) {
+    let mut first = true;
+    for value in values {
+        append_separator(out, &mut first);
+        out.push_str(&format_runtime_val(value, heap, depth));
+    }
+}
+
+fn append_string_runtime_map_entries(
+    out: &mut String,
+    entries: &BTreeMap<Arc<str>, RuntimeVal>,
+    heap: &HeapStore,
+    depth: usize,
+) {
+    let mut first = true;
+    for (key, value) in entries {
+        append_separator(out, &mut first);
+        out.push_str(key);
+        out.push_str(": ");
+        out.push_str(&format_runtime_val(value, heap, depth));
+    }
+}
+
+fn append_string_display_map_entries<T: std::fmt::Display>(out: &mut String, entries: &BTreeMap<Arc<str>, T>) {
+    let mut first = true;
+    for (key, value) in entries {
+        append_separator(out, &mut first);
+        out.push_str(key);
+        out.push_str(": ");
+        out.push_str(&value.to_string());
+    }
 }
 
 fn format_map_key(key: &RuntimeMapKey) -> String {

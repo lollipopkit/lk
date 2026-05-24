@@ -152,10 +152,13 @@ impl Compiler32 {
         compiler.dynamic_function_base = dynamic_function_base;
         compiler.function.param_count = frame_params.len() as u16;
         compiler.function.positional_param_count = params.len() as u16;
-        compiler.function.param_names = frame_params
-            .iter()
-            .map(|name| std::sync::Arc::<str>::from(name.as_str()))
-            .collect();
+        compiler.function.param_names = Vec::with_capacity(frame_params.len());
+        for name in &frame_params {
+            compiler
+                .function
+                .param_names
+                .push(std::sync::Arc::<str>::from(name.as_str()));
+        }
         compiler.function.capture_count = compiler.capture_names.len() as u16;
         compiler.next_reg = compiler.function.param_count;
         compiler.peak_reg = compiler.function.param_count;

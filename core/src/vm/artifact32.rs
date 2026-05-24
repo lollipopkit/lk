@@ -72,19 +72,26 @@ pub struct Module32Data {
 
 impl Module32Data {
     fn from_module(module: &Module32) -> Self {
+        let mut globals = Vec::with_capacity(module.globals.len());
+        for slot in &module.globals {
+            globals.push(slot.name.to_string());
+        }
+        let mut functions = Vec::with_capacity(module.functions.len());
+        for function in &module.functions {
+            functions.push(Function32Data::from_function(function));
+        }
         Self {
             entry: module.entry,
-            globals: module.globals.iter().map(|slot| slot.name.to_string()).collect(),
-            functions: module.functions.iter().map(Function32Data::from_function).collect(),
+            globals,
+            functions,
         }
     }
 
     fn into_module(self) -> Result<Module32> {
-        let functions = self
-            .functions
-            .into_iter()
-            .map(Function32Data::into_function)
-            .collect::<Result<Vec<_>>>()?;
+        let mut functions = Vec::with_capacity(self.functions.len());
+        for function in self.functions {
+            functions.push(function.into_function()?);
+        }
         if self.entry as usize >= functions.len() {
             bail!(
                 "Module32 artifact entry {} out of bounds for {} functions",
@@ -95,13 +102,15 @@ impl Module32Data {
         Ok(Module32 {
             functions,
             natives: Vec::new(),
-            globals: self
-                .globals
-                .into_iter()
-                .map(|name| GlobalSlot32 {
-                    name: Arc::<str>::from(name),
-                })
-                .collect(),
+            globals: {
+                let mut globals = Vec::with_capacity(self.globals.len());
+                for name in self.globals {
+                    globals.push(GlobalSlot32 {
+                        name: Arc::<str>::from(name),
+                    });
+                }
+                globals
+            },
             entry: self.entry,
         })
     }
@@ -120,13 +129,21 @@ pub struct Function32Data {
 
 impl Function32Data {
     fn from_function(function: &Function32) -> Self {
+        let mut code = Vec::with_capacity(function.code.len());
+        for instr in &function.code {
+            code.push(instr.raw());
+        }
+        let mut param_names = Vec::with_capacity(function.param_names.len());
+        for name in &function.param_names {
+            param_names.push(name.to_string());
+        }
         Self {
             consts: ConstPool32Data::from_pool(&function.consts),
-            code: function.code.iter().map(|instr| instr.raw()).collect(),
+            code,
             register_count: function.register_count,
             param_count: function.param_count,
             positional_param_count: function.positional_param_count,
-            param_names: function.param_names.iter().map(|name| name.to_string()).collect(),
+            param_names,
             capture_count: function.capture_count,
         }
     }
@@ -134,21 +151,25 @@ impl Function32Data {
     fn into_function(self) -> Result<Function32> {
         Ok(Function32 {
             consts: self.consts.into_pool()?,
-            code: self
-                .code
-                .into_iter()
-                .map(Instr32::try_from_raw)
-                .collect::<Result<Vec<_>>>()?,
+            code: {
+                let mut code = Vec::with_capacity(self.code.len());
+                for raw in self.code {
+                    code.push(Instr32::try_from_raw(raw)?);
+                }
+                code
+            },
             analyses: Vec::new(),
             performance: Default::default(),
             register_count: self.register_count,
             param_count: self.param_count,
             positional_param_count: self.positional_param_count,
-            param_names: self
-                .param_names
-                .into_iter()
-                .map(|name| Arc::<str>::from(name))
-                .collect(),
+            param_names: {
+                let mut names = Vec::with_capacity(self.param_names.len());
+                for name in self.param_names {
+                    names.push(Arc::<str>::from(name));
+                }
+                names
+            },
             capture_count: self.capture_count,
         })
     }
@@ -164,15 +185,15 @@ pub struct ConstPool32Data {
 
 impl ConstPool32Data {
     fn from_pool(pool: &ConstPool32) -> Self {
+        let mut heap_values = Vec::with_capacity(pool.heap_values.len());
+        for value in &pool.heap_values {
+            heap_values.push(ConstHeapValue32Data::from_heap_value(value));
+        }
         Self {
             ints: pool.ints.clone(),
             floats: pool.floats.clone(),
             strings: pool.strings.clone(),
-            heap_values: pool
-                .heap_values
-                .iter()
-                .map(ConstHeapValue32Data::from_heap_value)
-                .collect(),
+            heap_values,
         }
     }
 
@@ -181,11 +202,13 @@ impl ConstPool32Data {
             ints: self.ints,
             floats: self.floats,
             strings: self.strings,
-            heap_values: self
-                .heap_values
-                .into_iter()
-                .map(ConstHeapValue32Data::into_heap_value)
-                .collect::<Result<Vec<_>>>()?,
+            heap_values: {
+                let mut values = Vec::with_capacity(self.heap_values.len());
+                for value in self.heap_values {
+                    values.push(value.into_heap_value()?);
+                }
+                values
+            },
         })
     }
 }
@@ -239,19 +262,22 @@ impl ConstHeapValue32Data {
         match value {
             ConstHeapValue32::LongString(value) => Self::LongString(value.to_string()),
             ConstHeapValue32::List(values) => {
-                Self::List(values.iter().map(ConstRuntimeValue32Data::from_runtime_value).collect())
+                let mut out = Vec::with_capacity(values.len());
+                for value in values {
+                    out.push(ConstRuntimeValue32Data::from_runtime_value(value));
+                }
+                Self::List(out)
             }
-            ConstHeapValue32::Map(values) => Self::Map(
-                values
-                    .iter()
-                    .map(|(key, value)| {
-                        (
-                            RuntimeMapKeyData::from_runtime_key(key),
-                            ConstRuntimeValue32Data::from_runtime_value(value),
-                        )
-                    })
-                    .collect(),
-            ),
+            ConstHeapValue32::Map(values) => {
+                let mut out = Vec::with_capacity(values.len());
+                for (key, value) in values {
+                    out.push((
+                        RuntimeMapKeyData::from_runtime_key(key),
+                        ConstRuntimeValue32Data::from_runtime_value(value),
+                    ));
+                }
+                Self::Map(out)
+            }
             ConstHeapValue32::UpvalCell(value) => {
                 Self::UpvalCell(Box::new(ConstRuntimeValue32Data::from_runtime_value(value)))
             }
@@ -261,12 +287,13 @@ impl ConstHeapValue32Data {
     fn into_heap_value(self) -> Result<ConstHeapValue32> {
         Ok(match self {
             Self::LongString(value) => ConstHeapValue32::LongString(Arc::<str>::from(value)),
-            Self::List(values) => ConstHeapValue32::List(
-                values
-                    .into_iter()
-                    .map(ConstRuntimeValue32Data::into_runtime_value)
-                    .collect::<Result<Vec<_>>>()?,
-            ),
+            Self::List(values) => {
+                let mut out = Vec::with_capacity(values.len());
+                for value in values {
+                    out.push(value.into_runtime_value()?);
+                }
+                ConstHeapValue32::List(out)
+            }
             Self::Map(values) => {
                 let mut map = BTreeMap::new();
                 for (key, value) in values {

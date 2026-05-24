@@ -142,11 +142,16 @@ impl StringModule {
 
     fn split32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let (value, delimiter) = two_strings(args, runtime, "split()")?;
-        let parts = if delimiter.is_empty() {
-            value.chars().map(|value| Arc::<str>::from(value.to_string())).collect()
+        let mut parts = Vec::new();
+        if delimiter.is_empty() {
+            for value in value.chars() {
+                parts.push(Arc::<str>::from(value.to_string()));
+            }
         } else {
-            value.split(delimiter.as_ref()).map(Arc::<str>::from).collect()
-        };
+            for value in value.split(delimiter.as_ref()) {
+                parts.push(Arc::<str>::from(value));
+            }
+        }
         Ok(RuntimeVal::Obj(
             runtime.heap_mut().alloc(HeapValue::List(TypedList::String(parts))),
         ))
@@ -165,10 +170,11 @@ impl StringModule {
 
     fn reverse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "reverse()")?;
-        Ok(runtime_string_value(
-            &value.chars().rev().collect::<String>(),
-            runtime.heap_mut(),
-        ))
+        let mut reversed = String::new();
+        for value in value.chars().rev() {
+            reversed.push(value);
+        }
+        Ok(runtime_string_value(&reversed, runtime.heap_mut()))
     }
 
     fn repeat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -205,7 +211,10 @@ impl StringModule {
 
     fn chars32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "chars()")?;
-        let chars = value.chars().map(|value| Arc::<str>::from(value.to_string())).collect();
+        let mut chars = Vec::new();
+        for value in value.chars() {
+            chars.push(Arc::<str>::from(value.to_string()));
+        }
         Ok(RuntimeVal::Obj(
             runtime.heap_mut().alloc(HeapValue::List(TypedList::String(chars))),
         ))
@@ -370,15 +379,24 @@ fn string_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Resul
         bail!("{context} must be a list");
     };
     match list {
-        TypedList::String(values) => Ok(values.iter().map(ToString::to_string).collect()),
-        TypedList::Mixed(values) => values
-            .iter()
-            .map(|value| {
-                runtime_string_arg(value, heap, context)
-                    .map(|value| value.to_string())
-                    .map_err(|_| anyhow!("join() list must contain only strings"))
-            })
-            .collect(),
+        TypedList::String(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(value.to_string());
+            }
+            Ok(out)
+        }
+        TypedList::Mixed(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(
+                    runtime_string_arg(value, heap, context)
+                        .map(|value| value.to_string())
+                        .map_err(|_| anyhow!("join() list must contain only strings"))?,
+                );
+            }
+            Ok(out)
+        }
         _ => Err(anyhow!("join() list must contain only strings")),
     }
 }

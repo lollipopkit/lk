@@ -9,7 +9,7 @@ mod tests {
         typ::TypeChecker,
         val::{HeapStore, HeapValue, LiteralVal, RuntimeVal, ShortStr, TypedMap},
         vm::{
-            NativeArgs32, Program32Result, VmContext, call_runtime_callable32_runtime, call_runtime_callable32_test,
+            Program32Result, VmContext, call_runtime_callable32_runtime, call_runtime_callable32_test,
             runtime_value_to_callable32_shared,
         },
     };
@@ -479,12 +479,7 @@ mod tests {
             .expect("outer returned runtime closure")
         };
         let mut heap = HeapStore::new();
-        let value = call_runtime_callable32_runtime(
-            &captured,
-            NativeArgs32::new(&[RuntimeVal::Int(0)]),
-            &mut heap,
-            Some(&mut env),
-        )?;
+        let value = call_runtime_callable32_runtime(&captured, &[RuntimeVal::Int(0)], &mut heap, Some(&mut env))?;
         assert_eq!(value, RuntimeVal::Int(2));
 
         Ok(())

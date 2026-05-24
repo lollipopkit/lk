@@ -281,7 +281,10 @@ fn dispatch_string_builtin_method(
                 );
             }
             let delim = extract_string_arc(&positional[0], heap, "string.split() delimiter")?;
-            let parts: Vec<Arc<str>> = s.split(delim.as_ref()).map(Arc::<str>::from).collect();
+            let mut parts = Vec::new();
+            for part in s.split(delim.as_ref()) {
+                parts.push(Arc::<str>::from(part));
+            }
             let handle = heap.alloc(HeapValue::List(TypedList::String(parts)));
             Ok(Some(RuntimeVal::Obj(handle)))
         }
@@ -359,19 +362,29 @@ fn dispatch_list_builtin_method(
 
 fn list_join_parts(list: &TypedList, heap: &HeapStore) -> anyhow::Result<Vec<String>> {
     match list {
-        TypedList::String(vals) => Ok(vals.iter().map(|s| s.to_string()).collect()),
-        TypedList::Mixed(vals) => vals
-            .iter()
-            .map(|v| match v {
-                RuntimeVal::ShortStr(s) => Ok(s.as_str().to_string()),
-                RuntimeVal::Obj(h) => match heap.get(*h) {
-                    Some(HeapValue::String(s)) => Ok(s.to_string()),
-                    Some(other) => bail!("list.join(): element is not a string ({})", other.type_name()),
-                    None => bail!("list.join(): heap object out of bounds"),
-                },
-                other => bail!("list.join(): element is not a string ({:?})", other.kind()),
-            })
-            .collect(),
+        TypedList::String(vals) => {
+            let mut out = Vec::with_capacity(vals.len());
+            for value in vals {
+                out.push(value.to_string());
+            }
+            Ok(out)
+        }
+        TypedList::Mixed(vals) => {
+            let mut out = Vec::with_capacity(vals.len());
+            for value in vals {
+                let string = match value {
+                    RuntimeVal::ShortStr(s) => s.as_str().to_string(),
+                    RuntimeVal::Obj(h) => match heap.get(*h) {
+                        Some(HeapValue::String(s)) => s.to_string(),
+                        Some(other) => bail!("list.join(): element is not a string ({})", other.type_name()),
+                        None => bail!("list.join(): heap object out of bounds"),
+                    },
+                    other => bail!("list.join(): element is not a string ({:?})", other.kind()),
+                };
+                out.push(string);
+            }
+            Ok(out)
+        }
         _ => bail!("list.join(): list must contain only strings"),
     }
 }

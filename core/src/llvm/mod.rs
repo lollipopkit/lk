@@ -9,7 +9,6 @@ mod callee_eval;
 mod const_display;
 mod ir_text;
 mod options;
-pub mod runtime;
 mod scalar_emit;
 mod scalar_facts;
 mod straightline_value;

@@ -167,11 +167,14 @@ fn default_workspace_compile_entry(manifest: &Manifest, cwd: &Path, manifest_pat
         ),
         _ => {
             entries.sort();
-            let candidates = entries
-                .iter()
-                .map(|entry| format!("  - {}", entry.display()))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let mut candidates = String::new();
+            for (index, entry) in entries.iter().enumerate() {
+                if index > 0 {
+                    candidates.push('\n');
+                }
+                candidates.push_str("  - ");
+                candidates.push_str(&entry.display().to_string());
+            }
             anyhow::bail!(
                 "{} has multiple workspace app entries; specify one explicitly:\n{}",
                 manifest_path.display(),

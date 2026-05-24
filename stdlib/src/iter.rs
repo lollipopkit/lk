@@ -310,12 +310,18 @@ fn list_snapshot_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Res
 
 fn copy_typed_list(list: &TypedList) -> TypedList {
     match list {
-        TypedList::Mixed(values) => TypedList::Mixed(values.clone()),
-        TypedList::Int(values) => TypedList::Int(values.clone()),
-        TypedList::Float(values) => TypedList::Float(values.clone()),
-        TypedList::Bool(values) => TypedList::Bool(values.clone()),
-        TypedList::String(values) => TypedList::String(values.clone()),
+        TypedList::Mixed(values) => TypedList::Mixed(copy_slice(values)),
+        TypedList::Int(values) => TypedList::Int(copy_slice(values)),
+        TypedList::Float(values) => TypedList::Float(copy_slice(values)),
+        TypedList::Bool(values) => TypedList::Bool(copy_slice(values)),
+        TypedList::String(values) => TypedList::String(copy_slice(values)),
     }
+}
+
+fn copy_slice<T: Clone>(values: &[T]) -> Vec<T> {
+    let mut out = Vec::with_capacity(values.len());
+    out.extend_from_slice(values);
+    out
 }
 
 fn first_list_item(value: &RuntimeVal, heap: &mut HeapStore, context: &str) -> Result<RuntimeVal> {
@@ -409,11 +415,11 @@ fn typed_list_slice(list: &TypedList, start: usize, limit: Option<usize>) -> Typ
     let start = start.min(len);
     let end = limit.map_or(len, |limit| start.saturating_add(limit).min(len));
     match list {
-        TypedList::Mixed(values) => TypedList::Mixed(values[start..end].iter().cloned().collect()),
-        TypedList::Int(values) => TypedList::Int(values[start..end].iter().copied().collect()),
-        TypedList::Float(values) => TypedList::Float(values[start..end].iter().copied().collect()),
-        TypedList::Bool(values) => TypedList::Bool(values[start..end].iter().copied().collect()),
-        TypedList::String(values) => TypedList::String(values[start..end].iter().cloned().collect()),
+        TypedList::Mixed(values) => TypedList::Mixed(copy_slice(&values[start..end])),
+        TypedList::Int(values) => TypedList::Int(copy_slice(&values[start..end])),
+        TypedList::Float(values) => TypedList::Float(copy_slice(&values[start..end])),
+        TypedList::Bool(values) => TypedList::Bool(copy_slice(&values[start..end])),
+        TypedList::String(values) => TypedList::String(copy_slice(&values[start..end])),
     }
 }
 
@@ -428,11 +434,11 @@ enum RuntimeListSnapshot {
 impl RuntimeListSnapshot {
     fn from_typed(list: &TypedList) -> Self {
         match list {
-            TypedList::Mixed(values) => Self::Mixed(values.clone()),
-            TypedList::Int(values) => Self::Int(values.clone()),
-            TypedList::Float(values) => Self::Float(values.clone()),
-            TypedList::Bool(values) => Self::Bool(values.clone()),
-            TypedList::String(values) => Self::String(values.clone()),
+            TypedList::Mixed(values) => Self::Mixed(copy_slice(values)),
+            TypedList::Int(values) => Self::Int(copy_slice(values)),
+            TypedList::Float(values) => Self::Float(copy_slice(values)),
+            TypedList::Bool(values) => Self::Bool(copy_slice(values)),
+            TypedList::String(values) => Self::String(copy_slice(values)),
         }
     }
 
@@ -763,7 +769,7 @@ fn call_callable(
     match target {
         IterCallableTarget::Runtime32(function) => {
             let (heap, ctx) = runtime.heap_ctx_mut();
-            call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
+            call_runtime_callable32_runtime(function.as_ref(), args, heap, ctx)
         }
         IterCallableTarget::Closure => {
             if let Some((state, ctx, module)) = runtime.state_ctx_module_mut() {
@@ -794,10 +800,6 @@ fn call_runtime_native_entry(
         NativeFunction32::Plain(function)
         | NativeFunction32::Context(function)
         | NativeFunction32::FullState(function) => function(NativeArgs32::new(args), runtime),
-        NativeFunction32::RuntimeCallable(function) => {
-            let (heap, ctx) = runtime.heap_ctx_mut();
-            call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
-        }
     }
 }
 

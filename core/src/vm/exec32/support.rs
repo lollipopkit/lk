@@ -111,12 +111,6 @@ pub(super) fn call_native_entry_with_args(
             };
             function(native_args, &mut runtime)
         }
-        NativeFunction32::RuntimeCallable(function) => super::runtime_callable::call_runtime_callable32_runtime(
-            function.as_ref(),
-            native_args,
-            &mut state.heap,
-            ctx,
-        ),
     };
     map_native_error(native, result)
 }
@@ -259,9 +253,6 @@ pub(super) fn call_native_entry_parts_with_args(
         }
         NativeFunction32::FullState(_) => {
             bail!("{} requires full runtime state", native.name);
-        }
-        NativeFunction32::RuntimeCallable(function) => {
-            super::runtime_callable::call_runtime_callable32_runtime(function.as_ref(), native_args, heap, ctx)
         }
     };
     map_native_error(native, result)

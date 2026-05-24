@@ -10,6 +10,7 @@ NOISE_MARGIN="${NOISE_MARGIN:-0.08}"
 LK_BIN="/Users/lk/proj/lk/target/release/lk"
 LUA_BIN="lua"
 RUN_AOT="${RUN_AOT:-1}"
+AOT_ENABLED=0
 PROFILE_WORKLOADS="${PROFILE_WORKLOADS:-0}"
 
 TMPDIR=$(mktemp -d)
@@ -277,15 +278,17 @@ echo "Lua: $($LUA_BIN -v 2>&1 | head -1)"
 if [ "$RUN_AOT" != "0" ]; then
   AOT_COMPILE_LOG="$TMPDIR/aot_compile.log"
   if "$LK_BIN" compile exe "$BENCH_DIR/workloads_business_algorithms.lk" --output "$AOT_BIN" > "$AOT_COMPILE_LOG" 2>&1; then
+    AOT_ENABLED=1
     AOT_BACKEND=$(sed -nE 's/.*backend ([^,]+),.*/\1/p' "$AOT_COMPILE_LOG" | tail -1)
     if [ -z "$AOT_BACKEND" ]; then
       AOT_BACKEND="unknown"
     fi
     echo "AOT: $AOT_BIN ($AOT_BACKEND)"
   else
-    echo "AOT compile failed:" >&2
+    AOT_BACKEND="skipped"
+    echo "AOT: skipped (compile failed)"
+    echo "AOT compile failed; continuing with LK VM and Lua only:" >&2
     sed 's/^/  /' "$AOT_COMPILE_LOG" >&2
-    exit 1
   fi
 else
   AOT_BACKEND="disabled"
@@ -307,7 +310,7 @@ done
 
 run_once() {
   "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk" 2>/dev/null | record_output lk
-  if [ "$RUN_AOT" != "0" ]; then
+  if [ "$AOT_ENABLED" = "1" ]; then
     "$AOT_BIN" | record_output aot
   fi
   "$LUA_BIN" "$BENCH_DIR/workloads_business_algorithms.lua" | record_output lua
@@ -333,7 +336,7 @@ fi
 
 TOTAL_RUNS=$(awk 'END { print NR }' "$TMPDIR/lk_${WORKLOADS[0]}.dat")
 
-if [ "$RUN_AOT" != "0" ]; then
+if [ "$AOT_ENABLED" = "1" ]; then
   table_widths=(28 10 10 10 10 10 10 8 10 11 8)
   printf "%-28s %10s %10s %10s %10s %10s %10s %8s %10s %11s %s\n" "Workload" "LK VM" "LK AOT" "Lua" "VM/Lua" "AOT/Lua" "AOT/VM" "Noise" "Conf." "Status" "Checksum"
   print_separator "${table_widths[@]}"
@@ -353,7 +356,7 @@ for name in "${WORKLOADS[@]}"; do
   lk_ms=$(median_of "$TMPDIR/lk_${name}.dat")
   lua_ms=$(median_of "$TMPDIR/lua_${name}.dat")
   ratio=$(ratio_of "$lk_ms" "$lua_ms")
-  if [ "$RUN_AOT" != "0" ]; then
+  if [ "$AOT_ENABLED" = "1" ]; then
     aot_ms=$(median_of "$TMPDIR/aot_${name}.dat")
     aot_lua_ratio=$(ratio_of "$aot_ms" "$lua_ms")
     aot_vm_ratio=$(ratio_of "$aot_ms" "$lk_ms")
@@ -372,10 +375,10 @@ for name in "${WORKLOADS[@]}"; do
   if [ "$ratio" != "?" ]; then
     echo "$ratio" >> "$ratio_file"
   fi
-  if [ "$RUN_AOT" != "0" ] && [ "$aot_lua_ratio" != "?" ]; then
+  if [ "$AOT_ENABLED" = "1" ] && [ "$aot_lua_ratio" != "?" ]; then
     echo "$aot_lua_ratio" >> "$aot_ratio_file"
   fi
-  if [ "$RUN_AOT" != "0" ] && [ "$aot_vm_ratio" != "?" ]; then
+  if [ "$AOT_ENABLED" = "1" ] && [ "$aot_vm_ratio" != "?" ]; then
     echo "$aot_vm_ratio" >> "$speedup_file"
   fi
   lk_sum=$(cat "$TMPDIR/lk_${name}.checksum")
@@ -385,7 +388,7 @@ for name in "${WORKLOADS[@]}"; do
     checksum="MISMATCH lk=$lk_sum lua=$lua_sum"
     mismatch_count=$((mismatch_count + 1))
   fi
-  if [ "$RUN_AOT" != "0" ]; then
+  if [ "$AOT_ENABLED" = "1" ]; then
     aot_sum=$(cat "$TMPDIR/aot_${name}.checksum")
     if [ "$aot_sum" != "$lua_sum" ] || [ "$aot_sum" != "$lk_sum" ]; then
       checksum="MISMATCH lk=$lk_sum aot=$aot_sum lua=$lua_sum"
@@ -402,10 +405,12 @@ aot_vm_geo_ratio=$(awk '{ sum += log($1); n++ } END { if (n > 0) { printf "%.3f"
 echo ""
 echo "Samples reported: $TOTAL_RUNS per engine"
 echo "Geometric mean ratio: ${geo_ratio}x"
-if [ "$RUN_AOT" != "0" ]; then
+if [ "$AOT_ENABLED" = "1" ]; then
   echo "AOT backend: $AOT_BACKEND"
   echo "AOT geometric mean ratio: ${aot_geo_ratio}x vs Lua"
   echo "AOT/VM geometric mean ratio: ${aot_vm_geo_ratio}x"
+elif [ "$RUN_AOT" != "0" ]; then
+  echo "AOT backend: skipped"
 fi
 echo "Status thresholds: ahead <=0.95x, close <=1.10x, behind >1.10x"
 echo "Confidence: high <=3% noise, medium <=${NOISE_MARGIN} noise, low above that."

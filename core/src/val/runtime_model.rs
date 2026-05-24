@@ -126,7 +126,10 @@ pub struct RuntimeObject {
 
 impl RuntimeObject {
     pub fn new(type_name: Arc<str>, fields: BTreeMap<Arc<str>, RuntimeVal>) -> Self {
-        let field_slots = fields.keys().cloned().collect();
+        let mut field_slots = Vec::with_capacity(fields.len());
+        for key in fields.keys() {
+            field_slots.push(Arc::clone(key));
+        }
         Self {
             type_name,
             fields,
@@ -193,13 +196,20 @@ impl TypedList {
 
     pub fn slice_from(&self, start: usize) -> Self {
         match self {
-            Self::Mixed(values) => Self::Mixed(values.get(start..).unwrap_or(&[]).iter().cloned().collect()),
-            Self::Int(values) => Self::Int(values.get(start..).unwrap_or(&[]).iter().copied().collect()),
-            Self::Float(values) => Self::Float(values.get(start..).unwrap_or(&[]).iter().copied().collect()),
-            Self::Bool(values) => Self::Bool(values.get(start..).unwrap_or(&[]).iter().copied().collect()),
-            Self::String(values) => Self::String(values.get(start..).unwrap_or(&[]).iter().cloned().collect()),
+            Self::Mixed(values) => Self::Mixed(copy_slice_tail(values, start)),
+            Self::Int(values) => Self::Int(copy_slice_tail(values, start)),
+            Self::Float(values) => Self::Float(copy_slice_tail(values, start)),
+            Self::Bool(values) => Self::Bool(copy_slice_tail(values, start)),
+            Self::String(values) => Self::String(copy_slice_tail(values, start)),
         }
     }
+}
+
+fn copy_slice_tail<T: Clone>(values: &[T], start: usize) -> Vec<T> {
+    let tail = values.get(start..).unwrap_or(&[]);
+    let mut out = Vec::with_capacity(tail.len());
+    out.extend_from_slice(tail);
+    out
 }
 
 impl PartialEq for TypedList {
@@ -320,10 +330,10 @@ impl TypedMap {
                             values.insert(key, value);
                         }
                         value => {
-                            let mut mixed = values
-                                .iter()
-                                .map(|(key, value)| (key.clone(), RuntimeVal::Int(*value)))
-                                .collect::<BTreeMap<_, _>>();
+                            let mut mixed = BTreeMap::new();
+                            for (key, value) in values.iter() {
+                                mixed.insert(key.clone(), RuntimeVal::Int(*value));
+                            }
                             mixed.insert(key, value);
                             *self = Self::StringMixed(mixed);
                         }
@@ -339,10 +349,10 @@ impl TypedMap {
                             values.insert(key, value);
                         }
                         value => {
-                            let mut mixed = values
-                                .iter()
-                                .map(|(key, value)| (key.clone(), RuntimeVal::Float(*value)))
-                                .collect::<BTreeMap<_, _>>();
+                            let mut mixed = BTreeMap::new();
+                            for (key, value) in values.iter() {
+                                mixed.insert(key.clone(), RuntimeVal::Float(*value));
+                            }
                             mixed.insert(key, value);
                             *self = Self::StringMixed(mixed);
                         }
@@ -358,10 +368,10 @@ impl TypedMap {
                             values.insert(key, value);
                         }
                         value => {
-                            let mut mixed = values
-                                .iter()
-                                .map(|(key, value)| (key.clone(), RuntimeVal::Bool(*value)))
-                                .collect::<BTreeMap<_, _>>();
+                            let mut mixed = BTreeMap::new();
+                            for (key, value) in values.iter() {
+                                mixed.insert(key.clone(), RuntimeVal::Bool(*value));
+                            }
                             mixed.insert(key, value);
                             *self = Self::StringMixed(mixed);
                         }
@@ -376,22 +386,34 @@ impl TypedMap {
     fn materialize_string_map_to_mixed(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
         let mut mixed = match std::mem::replace(self, Self::Mixed(BTreeMap::new())) {
             Self::Mixed(values) => values,
-            Self::StringMixed(values) => values
-                .into_iter()
-                .map(|(key, value)| (RuntimeMapKey::String(key), value))
-                .collect(),
-            Self::StringInt(values) => values
-                .into_iter()
-                .map(|(key, value)| (RuntimeMapKey::String(key), RuntimeVal::Int(value)))
-                .collect(),
-            Self::StringFloat(values) => values
-                .into_iter()
-                .map(|(key, value)| (RuntimeMapKey::String(key), RuntimeVal::Float(value)))
-                .collect(),
-            Self::StringBool(values) => values
-                .into_iter()
-                .map(|(key, value)| (RuntimeMapKey::String(key), RuntimeVal::Bool(value)))
-                .collect(),
+            Self::StringMixed(values) => {
+                let mut mixed = BTreeMap::new();
+                for (key, value) in values {
+                    mixed.insert(RuntimeMapKey::String(key), value);
+                }
+                mixed
+            }
+            Self::StringInt(values) => {
+                let mut mixed = BTreeMap::new();
+                for (key, value) in values {
+                    mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Int(value));
+                }
+                mixed
+            }
+            Self::StringFloat(values) => {
+                let mut mixed = BTreeMap::new();
+                for (key, value) in values {
+                    mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Float(value));
+                }
+                mixed
+            }
+            Self::StringBool(values) => {
+                let mut mixed = BTreeMap::new();
+                for (key, value) in values {
+                    mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Bool(value));
+                }
+                mixed
+            }
         };
         mixed.insert(key, value);
         *self = Self::Mixed(mixed);
@@ -429,60 +451,60 @@ pub(crate) fn typed_map_from_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal
             (Some(StringMapShape::Bool), StringMapShape::Bool) => Some(StringMapShape::Bool),
             (Some(StringMapShape::Mixed), StringMapShape::Mixed) => Some(StringMapShape::Mixed),
             _ => {
-                return TypedMap::StringMixed(
-                    entries
-                        .into_iter()
-                        .map(|(key, value)| (key.as_arc_str().expect("validated string key"), value))
-                        .collect(),
-                );
+                return TypedMap::StringMixed(string_mixed_entries_from_runtime_entries(entries));
             }
         };
     }
 
     match shape.expect("non-empty map has a shape") {
-        StringMapShape::Mixed => TypedMap::StringMixed(
-            entries
-                .into_iter()
-                .map(|(key, value)| (key.as_arc_str().expect("validated string key"), value))
-                .collect(),
-        ),
-        StringMapShape::Int => TypedMap::StringInt(
-            entries
-                .into_iter()
-                .map(|(key, value)| {
-                    let key = key.as_arc_str().expect("validated string key");
-                    let RuntimeVal::Int(value) = value else {
-                        unreachable!("validated int map value");
-                    };
-                    (key, value)
-                })
-                .collect(),
-        ),
-        StringMapShape::Float => TypedMap::StringFloat(
-            entries
-                .into_iter()
-                .map(|(key, value)| {
-                    let key = key.as_arc_str().expect("validated string key");
-                    let RuntimeVal::Float(value) = value else {
-                        unreachable!("validated float map value");
-                    };
-                    (key, value)
-                })
-                .collect(),
-        ),
-        StringMapShape::Bool => TypedMap::StringBool(
-            entries
-                .into_iter()
-                .map(|(key, value)| {
-                    let key = key.as_arc_str().expect("validated string key");
-                    let RuntimeVal::Bool(value) = value else {
-                        unreachable!("validated bool map value");
-                    };
-                    (key, value)
-                })
-                .collect(),
-        ),
+        StringMapShape::Mixed => TypedMap::StringMixed(string_mixed_entries_from_runtime_entries(entries)),
+        StringMapShape::Int => TypedMap::StringInt(string_int_entries_from_runtime_entries(entries)),
+        StringMapShape::Float => TypedMap::StringFloat(string_float_entries_from_runtime_entries(entries)),
+        StringMapShape::Bool => TypedMap::StringBool(string_bool_entries_from_runtime_entries(entries)),
     }
+}
+
+fn string_mixed_entries_from_runtime_entries(
+    entries: BTreeMap<RuntimeMapKey, RuntimeVal>,
+) -> BTreeMap<Arc<str>, RuntimeVal> {
+    let mut out = BTreeMap::new();
+    for (key, value) in entries {
+        out.insert(key.as_arc_str().expect("validated string key"), value);
+    }
+    out
+}
+
+fn string_int_entries_from_runtime_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> BTreeMap<Arc<str>, i64> {
+    let mut out = BTreeMap::new();
+    for (key, value) in entries {
+        let RuntimeVal::Int(value) = value else {
+            unreachable!("validated int map value");
+        };
+        out.insert(key.as_arc_str().expect("validated string key"), value);
+    }
+    out
+}
+
+fn string_float_entries_from_runtime_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> BTreeMap<Arc<str>, f64> {
+    let mut out = BTreeMap::new();
+    for (key, value) in entries {
+        let RuntimeVal::Float(value) = value else {
+            unreachable!("validated float map value");
+        };
+        out.insert(key.as_arc_str().expect("validated string key"), value);
+    }
+    out
+}
+
+fn string_bool_entries_from_runtime_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> BTreeMap<Arc<str>, bool> {
+    let mut out = BTreeMap::new();
+    for (key, value) in entries {
+        let RuntimeVal::Bool(value) = value else {
+            unreachable!("validated bool map value");
+        };
+        out.insert(key.as_arc_str().expect("validated string key"), value);
+    }
+    out
 }
 
 impl PartialEq for TypedMap {

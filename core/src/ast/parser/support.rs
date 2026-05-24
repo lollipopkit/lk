@@ -173,7 +173,8 @@ impl<'a> Parser<'a> {
         let end = self.pos;
         self.pos += 1;
 
-        let mut inner = self.tokens[start..end].to_vec();
+        let mut inner = Vec::with_capacity(end - start + 1);
+        inner.extend_from_slice(&self.tokens[start..end]);
         if inner.is_empty() {
             return Ok(Expr::Literal(crate::val::LiteralVal::Nil));
         }

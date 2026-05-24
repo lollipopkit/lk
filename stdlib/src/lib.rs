@@ -16,9 +16,6 @@ pub mod time;
 pub mod toml;
 pub mod yaml;
 
-#[cfg(feature = "llvm-bridge")]
-mod llvm_bridge;
-
 #[cfg(test)]
 mod datetime_test;
 #[cfg(test)]
@@ -217,8 +214,7 @@ fn spawn32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     let fut: core::pin::Pin<Box<dyn core::future::Future<Output = Result<RuntimePayload>> + Send>> =
         Box::pin(async move {
             let mut heap = HeapStore::new();
-            let result =
-                call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(&[]), &mut heap, Some(&mut ctx))?;
+            let result = call_runtime_callable32_runtime(function.as_ref(), &[], &mut heap, Some(&mut ctx))?;
             Ok(RuntimePayload::new(result, heap))
         });
 
@@ -392,21 +388,19 @@ fn format_variadic_runtime(args: &[RuntimeVal], heap: &HeapStore) -> Result<Stri
     };
     let rest = &args[1..];
     let mut out = String::with_capacity(format.len() + rest.len() * 8);
-    let chars: Vec<char> = format.chars().collect();
-    let mut index = 0usize;
+    let mut chars = format.chars().peekable();
     let mut arg_index = 0usize;
-    while index < chars.len() {
-        if chars[index] == '{' && index + 1 < chars.len() && chars[index + 1] == '}' {
+    while let Some(ch) = chars.next() {
+        if ch == '{' && chars.peek() == Some(&'}') {
+            chars.next();
             if let Some(value) = rest.get(arg_index) {
                 out.push_str(&runtime_display(value, heap)?);
                 arg_index += 1;
             } else {
                 out.push_str("{}");
             }
-            index += 2;
         } else {
-            out.push(chars[index]);
-            index += 1;
+            out.push(ch);
         }
     }
     if arg_index < rest.len() {

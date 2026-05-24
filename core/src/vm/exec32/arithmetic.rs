@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -18,11 +19,11 @@ enum RuntimeListSnapshot {
 impl RuntimeListSnapshot {
     fn from_typed(list: &TypedList) -> Self {
         match list {
-            TypedList::Mixed(values) => Self::Mixed(values.clone()),
-            TypedList::Int(values) => Self::Int(values.clone()),
-            TypedList::Float(values) => Self::Float(values.clone()),
-            TypedList::Bool(values) => Self::Bool(values.clone()),
-            TypedList::String(values) => Self::String(values.clone()),
+            TypedList::Mixed(values) => Self::Mixed(copy_slice(values)),
+            TypedList::Int(values) => Self::Int(copy_slice(values)),
+            TypedList::Float(values) => Self::Float(copy_slice(values)),
+            TypedList::Bool(values) => Self::Bool(copy_slice(values)),
+            TypedList::String(values) => Self::String(copy_slice(values)),
         }
     }
 
@@ -63,6 +64,12 @@ fn copy_concat_owned<T>(left: Vec<T>, right: Vec<T>) -> Vec<T> {
     let mut out = Vec::with_capacity(left.len() + right.len());
     out.extend(left);
     out.extend(right);
+    out
+}
+
+fn copy_slice<T: Clone>(values: &[T]) -> Vec<T> {
+    let mut out = Vec::with_capacity(values.len());
+    out.extend_from_slice(values);
     out
 }
 
@@ -400,19 +407,41 @@ impl Executor32 {
     fn remove_list_values(&mut self, lhs: RuntimeListSnapshot, rhs: &RuntimeListSnapshot) -> Result<TypedList> {
         Ok(match (lhs, rhs) {
             (RuntimeListSnapshot::Int(lhs), RuntimeListSnapshot::Int(rhs)) => {
-                TypedList::Int(lhs.into_iter().filter(|value| !rhs.contains(value)).collect())
+                let mut out = Vec::with_capacity(lhs.len());
+                for value in lhs {
+                    if !rhs.contains(&value) {
+                        out.push(value);
+                    }
+                }
+                TypedList::Int(out)
             }
             (RuntimeListSnapshot::Float(lhs), RuntimeListSnapshot::Float(rhs)) => {
-                TypedList::Float(lhs.into_iter().filter(|value| !rhs.contains(value)).collect())
+                let mut out = Vec::with_capacity(lhs.len());
+                for value in lhs {
+                    if !rhs.contains(&value) {
+                        out.push(value);
+                    }
+                }
+                TypedList::Float(out)
             }
             (RuntimeListSnapshot::Bool(lhs), RuntimeListSnapshot::Bool(rhs)) => {
-                TypedList::Bool(lhs.into_iter().filter(|value| !rhs.contains(value)).collect())
+                let mut out = Vec::with_capacity(lhs.len());
+                for value in lhs {
+                    if !rhs.contains(&value) {
+                        out.push(value);
+                    }
+                }
+                TypedList::Bool(out)
             }
-            (RuntimeListSnapshot::String(lhs), RuntimeListSnapshot::String(rhs)) => TypedList::String(
-                lhs.into_iter()
-                    .filter(|value| !rhs.iter().any(|rhs| rhs.as_ref() == value.as_ref()))
-                    .collect(),
-            ),
+            (RuntimeListSnapshot::String(lhs), RuntimeListSnapshot::String(rhs)) => {
+                let mut out = Vec::with_capacity(lhs.len());
+                for value in lhs {
+                    if !rhs.iter().any(|rhs| rhs.as_ref() == value.as_ref()) {
+                        out.push(value);
+                    }
+                }
+                TypedList::String(out)
+            }
             (lhs, rhs) => self.remove_list_values_preserving_lhs_backing(lhs, rhs)?,
         })
     }
@@ -422,76 +451,60 @@ impl Executor32 {
             RuntimeListSnapshot::Int(values) => match rhs {
                 RuntimeVal::Int(rhs) => {
                     let mut removed = false;
-                    TypedList::Int(
-                        values
-                            .into_iter()
-                            .filter(|value| {
-                                if !removed && value == rhs {
-                                    removed = true;
-                                    false
-                                } else {
-                                    true
-                                }
-                            })
-                            .collect(),
-                    )
+                    let mut out = Vec::with_capacity(values.len());
+                    for value in values {
+                        if !removed && value == *rhs {
+                            removed = true;
+                        } else {
+                            out.push(value);
+                        }
+                    }
+                    TypedList::Int(out)
                 }
                 rhs => self.remove_first_runtime_value(RuntimeListSnapshot::Int(values), rhs)?,
             },
             RuntimeListSnapshot::Float(values) => match rhs {
                 RuntimeVal::Float(rhs) => {
                     let mut removed = false;
-                    TypedList::Float(
-                        values
-                            .into_iter()
-                            .filter(|value| {
-                                if !removed && value == rhs {
-                                    removed = true;
-                                    false
-                                } else {
-                                    true
-                                }
-                            })
-                            .collect(),
-                    )
+                    let mut out = Vec::with_capacity(values.len());
+                    for value in values {
+                        if !removed && value == *rhs {
+                            removed = true;
+                        } else {
+                            out.push(value);
+                        }
+                    }
+                    TypedList::Float(out)
                 }
                 rhs => self.remove_first_runtime_value(RuntimeListSnapshot::Float(values), rhs)?,
             },
             RuntimeListSnapshot::Bool(values) => match rhs {
                 RuntimeVal::Bool(rhs) => {
                     let mut removed = false;
-                    TypedList::Bool(
-                        values
-                            .into_iter()
-                            .filter(|value| {
-                                if !removed && value == rhs {
-                                    removed = true;
-                                    false
-                                } else {
-                                    true
-                                }
-                            })
-                            .collect(),
-                    )
+                    let mut out = Vec::with_capacity(values.len());
+                    for value in values {
+                        if !removed && value == *rhs {
+                            removed = true;
+                        } else {
+                            out.push(value);
+                        }
+                    }
+                    TypedList::Bool(out)
                 }
                 rhs => self.remove_first_runtime_value(RuntimeListSnapshot::Bool(values), rhs)?,
             },
             RuntimeListSnapshot::String(values) => match self.runtime_string_value(rhs)? {
                 Some(rhs) => {
                     let mut removed = false;
-                    TypedList::String(
-                        values
-                            .into_iter()
-                            .filter(|value| {
-                                if !removed && value.as_ref() == rhs.as_ref() {
-                                    removed = true;
-                                    false
-                                } else {
-                                    true
-                                }
-                            })
-                            .collect(),
-                    )
+                    let mut out = Vec::with_capacity(values.len());
+                    for value in values {
+                        if !removed && value.as_ref() == rhs.as_ref() {
+                            removed = true;
+                        } else {
+                            out.push(value);
+                        }
+                    }
+                    TypedList::String(out)
                 }
                 None => TypedList::String(values),
             },
@@ -915,81 +928,101 @@ fn typed_map_without_key(map: &TypedMap, removed_key: &RuntimeMapKey) -> TypedMa
 
 fn typed_map_without_merge_keys(map: &TypedMap, replaced_keys: &[RuntimeMapKey]) -> TypedMap {
     match map {
-        TypedMap::Mixed(entries) => TypedMap::Mixed(
-            entries
-                .iter()
-                .filter(|(key, _)| !replaced_keys.contains(key))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
-        TypedMap::StringMixed(entries) => TypedMap::StringMixed(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, replaced_keys))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
-        TypedMap::StringInt(entries) => TypedMap::StringInt(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, replaced_keys))
-                .map(|(key, value)| (key.clone(), *value))
-                .collect(),
-        ),
-        TypedMap::StringFloat(entries) => TypedMap::StringFloat(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, replaced_keys))
-                .map(|(key, value)| (key.clone(), *value))
-                .collect(),
-        ),
-        TypedMap::StringBool(entries) => TypedMap::StringBool(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, replaced_keys))
-                .map(|(key, value)| (key.clone(), *value))
-                .collect(),
-        ),
+        TypedMap::Mixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !replaced_keys.contains(key) {
+                    out.insert(key.clone(), value.clone());
+                }
+            }
+            TypedMap::Mixed(out)
+        }
+        TypedMap::StringMixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, replaced_keys) {
+                    out.insert(key.clone(), value.clone());
+                }
+            }
+            TypedMap::StringMixed(out)
+        }
+        TypedMap::StringInt(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, replaced_keys) {
+                    out.insert(key.clone(), *value);
+                }
+            }
+            TypedMap::StringInt(out)
+        }
+        TypedMap::StringFloat(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, replaced_keys) {
+                    out.insert(key.clone(), *value);
+                }
+            }
+            TypedMap::StringFloat(out)
+        }
+        TypedMap::StringBool(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, replaced_keys) {
+                    out.insert(key.clone(), *value);
+                }
+            }
+            TypedMap::StringBool(out)
+        }
     }
 }
 
 fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> TypedMap {
     match map {
-        TypedMap::Mixed(entries) => TypedMap::Mixed(
-            entries
-                .iter()
-                .filter(|(key, _)| !runtime_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
-        TypedMap::StringMixed(entries) => TypedMap::StringMixed(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        ),
-        TypedMap::StringInt(entries) => TypedMap::StringInt(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), *value))
-                .collect(),
-        ),
-        TypedMap::StringFloat(entries) => TypedMap::StringFloat(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), *value))
-                .collect(),
-        ),
-        TypedMap::StringBool(entries) => TypedMap::StringBool(
-            entries
-                .iter()
-                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
-                .map(|(key, value)| (key.clone(), *value))
-                .collect(),
-        ),
+        TypedMap::Mixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !runtime_map_key_removed(key, removed_keys) {
+                    out.insert(key.clone(), value.clone());
+                }
+            }
+            TypedMap::Mixed(out)
+        }
+        TypedMap::StringMixed(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, removed_keys) {
+                    out.insert(key.clone(), value.clone());
+                }
+            }
+            TypedMap::StringMixed(out)
+        }
+        TypedMap::StringInt(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, removed_keys) {
+                    out.insert(key.clone(), *value);
+                }
+            }
+            TypedMap::StringInt(out)
+        }
+        TypedMap::StringFloat(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, removed_keys) {
+                    out.insert(key.clone(), *value);
+                }
+            }
+            TypedMap::StringFloat(out)
+        }
+        TypedMap::StringBool(entries) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in entries {
+                if !string_map_key_removed(key, removed_keys) {
+                    out.insert(key.clone(), *value);
+                }
+            }
+            TypedMap::StringBool(out)
+        }
     }
 }
 

@@ -82,13 +82,14 @@ pub fn execute_source32(source: &str) -> Result<Program32Result> {
 }
 
 fn seed_module_globals(slots: &[GlobalSlot32], ctx: &VmContext, heap: &mut HeapStore) -> Result<Vec<RuntimeVal>> {
-    slots
-        .iter()
-        .map(|slot| match ctx.get_runtime_global(slot.name.as_ref()) {
+    let mut globals = Vec::with_capacity(slots.len());
+    for slot in slots {
+        globals.push(match ctx.get_runtime_global(slot.name.as_ref()) {
             Some(export) => import_runtime_export(export, heap),
             None => Ok(RuntimeVal::Nil),
-        })
-        .collect()
+        }?);
+    }
+    Ok(globals)
 }
 
 #[cfg(test)]

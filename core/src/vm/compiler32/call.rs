@@ -141,7 +141,10 @@ impl Compiler32 {
             }
         }
 
-        let allowed: HashSet<&str> = signature.named_params.iter().map(|param| param.name.as_str()).collect();
+        let mut allowed = HashSet::with_capacity(signature.named_params.len());
+        for param in &signature.named_params {
+            allowed.insert(param.name.as_str());
+        }
         for name in provided.keys() {
             if !allowed.contains(name) {
                 bail!("Compiler32 unknown named argument `{name}` in call to `{function_name}`");
@@ -311,7 +314,10 @@ impl Compiler32 {
     }
 
     fn lower_call_window_boxes(&mut self, callee: u16, args: &[Box<Expr>]) -> Result<u16> {
-        let refs: Vec<&Expr> = args.iter().map(Box::as_ref).collect();
+        let mut refs = Vec::with_capacity(args.len());
+        for arg in args {
+            refs.push(arg.as_ref());
+        }
         self.lower_call_window_exprs(callee, &refs)
     }
 

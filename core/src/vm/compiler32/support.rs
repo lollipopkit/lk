@@ -130,7 +130,11 @@ pub(super) fn global_slots_from_names(names: &HashMap<String, u32>) -> Vec<Globa
             name: Arc::<str>::from(name.as_str()),
         });
     }
-    slots.into_iter().map(|slot| slot.expect("dense global slot")).collect()
+    let mut out = Vec::with_capacity(slots.len());
+    for slot in slots {
+        out.push(slot.expect("dense global slot"));
+    }
+    out
 }
 
 pub(super) fn collect_native_names(natives: &[NativeEntry32]) -> Result<HashMap<String, u32>> {

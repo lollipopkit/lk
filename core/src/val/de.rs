@@ -193,17 +193,17 @@ fn json_to_runtime(value: serde_json::Value, heap: &mut HeapStore) -> anyhow::Re
         serde_json::Value::Number(value) => number_to_runtime(value.as_i64(), value.as_f64()),
         serde_json::Value::String(value) => runtime_string_value(&value, heap),
         serde_json::Value::Array(values) => {
-            let values = values
-                .into_iter()
-                .map(|value| json_to_runtime(value, heap))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(values, heap))))
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(json_to_runtime(value, heap)?);
+            }
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(out, heap))))
         }
         serde_json::Value::Object(values) => {
-            let entries = values
-                .into_iter()
-                .map(|(key, value)| Ok((runtime_string_key(&key), json_to_runtime(value, heap)?)))
-                .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+            let mut entries = BTreeMap::new();
+            for (key, value) in values {
+                entries.insert(runtime_string_key(&key), json_to_runtime(value, heap)?);
+            }
             RuntimeVal::Obj(heap.alloc(HeapValue::Map(super::typed_map_from_entries(entries))))
         }
     })
@@ -216,17 +216,17 @@ fn yaml_to_runtime(value: serde_yaml::Value, heap: &mut HeapStore) -> anyhow::Re
         serde_yaml::Value::Number(value) => number_to_runtime(value.as_i64(), value.as_f64()),
         serde_yaml::Value::String(value) => runtime_string_value(&value, heap),
         serde_yaml::Value::Sequence(values) => {
-            let values = values
-                .into_iter()
-                .map(|value| yaml_to_runtime(value, heap))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(values, heap))))
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(yaml_to_runtime(value, heap)?);
+            }
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(out, heap))))
         }
         serde_yaml::Value::Mapping(values) => {
-            let entries = values
-                .into_iter()
-                .map(|(key, value)| Ok((yaml_key_to_runtime(key)?, yaml_to_runtime(value, heap)?)))
-                .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+            let mut entries = BTreeMap::new();
+            for (key, value) in values {
+                entries.insert(yaml_key_to_runtime(key)?, yaml_to_runtime(value, heap)?);
+            }
             RuntimeVal::Obj(heap.alloc(HeapValue::Map(super::typed_map_from_entries(entries))))
         }
         serde_yaml::Value::Tagged(value) => yaml_to_runtime(value.value, heap)?,
@@ -241,17 +241,17 @@ fn toml_to_runtime(value: toml::Value, heap: &mut HeapStore) -> anyhow::Result<R
         toml::Value::Boolean(value) => RuntimeVal::Bool(value),
         toml::Value::Datetime(value) => runtime_string_value(&value.to_string(), heap),
         toml::Value::Array(values) => {
-            let values = values
-                .into_iter()
-                .map(|value| toml_to_runtime(value, heap))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(values, heap))))
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                out.push(toml_to_runtime(value, heap)?);
+            }
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(out, heap))))
         }
         toml::Value::Table(values) => {
-            let entries = values
-                .into_iter()
-                .map(|(key, value)| Ok((runtime_string_key(&key), toml_to_runtime(value, heap)?)))
-                .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+            let mut entries = BTreeMap::new();
+            for (key, value) in values {
+                entries.insert(runtime_string_key(&key), toml_to_runtime(value, heap)?);
+            }
             RuntimeVal::Obj(heap.alloc(HeapValue::Map(super::typed_map_from_entries(entries))))
         }
     })

@@ -32,7 +32,9 @@ fn semantic_token_eq(a: &SemanticToken, b: &SemanticToken) -> bool {
 
 pub(crate) fn semantic_tokens_delta_edit(old: &[SemanticToken], new: &[SemanticToken]) -> Option<SemanticTokensEdit> {
     let (common_prefix, common_suffix, delete_tokens) = common_prefix_suffix_delete_count(old, new);
-    let insert_tokens = new[common_prefix..(new.len() - common_suffix)].to_vec();
+    let insert_slice = &new[common_prefix..(new.len() - common_suffix)];
+    let mut insert_tokens = Vec::with_capacity(insert_slice.len());
+    insert_tokens.extend_from_slice(insert_slice);
     if delete_tokens == 0 && insert_tokens.is_empty() {
         return None;
     }

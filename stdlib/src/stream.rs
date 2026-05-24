@@ -41,7 +41,7 @@ struct CursorInfo {
 
 #[derive(Debug, Clone)]
 enum StreamSpec {
-    FromList(TypedList),
+    FromList(Arc<TypedList>),
     Range {
         start: i64,
         end: Option<i64>,
@@ -105,7 +105,7 @@ impl StreamSpec {
     fn open_cursor(&self) -> Box<dyn StreamCursor + Send> {
         match self {
             StreamSpec::FromList(data) => Box::new(FromListCursor {
-                data: copy_typed_list(data),
+                data: Arc::clone(data),
                 index: 0,
             }),
             StreamSpec::Range { start, end, step } => Box::new(RangeCursor {
@@ -169,7 +169,7 @@ impl StreamSpec {
 
 #[derive(Debug)]
 struct FromListCursor {
-    data: TypedList,
+    data: Arc<TypedList>,
     index: usize,
 }
 
@@ -446,7 +446,7 @@ fn from_list32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Res
     expect_arity(args, 1, "stream.from_list")?;
     let values = list_arg_ref(&args.as_slice()[0], runtime.heap(), "stream.from_list argument")?;
     let values = copy_typed_list(values);
-    create_stream(StreamSpec::FromList(values), Type::Any, runtime.heap_mut())
+    create_stream(StreamSpec::FromList(Arc::new(values)), Type::Any, runtime.heap_mut())
 }
 
 fn range32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -824,12 +824,18 @@ fn list_arg_ref<'a>(value: &RuntimeVal, heap: &'a HeapStore, context: &str) -> R
 
 fn copy_typed_list(list: &TypedList) -> TypedList {
     match list {
-        TypedList::Mixed(values) => TypedList::Mixed(values.clone()),
-        TypedList::Int(values) => TypedList::Int(values.clone()),
-        TypedList::Float(values) => TypedList::Float(values.clone()),
-        TypedList::Bool(values) => TypedList::Bool(values.clone()),
-        TypedList::String(values) => TypedList::String(values.clone()),
+        TypedList::Mixed(values) => TypedList::Mixed(copy_slice(values)),
+        TypedList::Int(values) => TypedList::Int(copy_slice(values)),
+        TypedList::Float(values) => TypedList::Float(copy_slice(values)),
+        TypedList::Bool(values) => TypedList::Bool(copy_slice(values)),
+        TypedList::String(values) => TypedList::String(copy_slice(values)),
     }
+}
+
+fn copy_slice<T: Clone>(values: &[T]) -> Vec<T> {
+    let mut out = Vec::with_capacity(values.len());
+    out.extend_from_slice(values);
+    out
 }
 
 fn typed_list_item(list: &TypedList, index: usize, heap: &mut HeapStore) -> Option<RuntimeVal> {
@@ -854,17 +860,17 @@ fn typed_list_slice(list: &TypedList, start: usize, limit: Option<usize>) -> Typ
     let start = start.min(len);
     let end = limit.map_or(len, |limit| start.saturating_add(limit).min(len));
     match list {
-        TypedList::Mixed(values) => TypedList::Mixed(values[start..end].iter().cloned().collect()),
-        TypedList::Int(values) => TypedList::Int(values[start..end].iter().copied().collect()),
-        TypedList::Float(values) => TypedList::Float(values[start..end].iter().copied().collect()),
-        TypedList::Bool(values) => TypedList::Bool(values[start..end].iter().copied().collect()),
-        TypedList::String(values) => TypedList::String(values[start..end].iter().cloned().collect()),
+        TypedList::Mixed(values) => TypedList::Mixed(copy_slice(&values[start..end])),
+        TypedList::Int(values) => TypedList::Int(copy_slice(&values[start..end])),
+        TypedList::Float(values) => TypedList::Float(copy_slice(&values[start..end])),
+        TypedList::Bool(values) => TypedList::Bool(copy_slice(&values[start..end])),
+        TypedList::String(values) => TypedList::String(copy_slice(&values[start..end])),
     }
 }
 
 fn typed_list_roots(list: &TypedList) -> Vec<RuntimeVal> {
     match list {
-        TypedList::Mixed(values) => values.clone(),
+        TypedList::Mixed(values) => copy_slice(values),
         TypedList::Int(_) | TypedList::Float(_) | TypedList::Bool(_) | TypedList::String(_) => Vec::new(),
     }
 }
@@ -950,7 +956,7 @@ fn call_runtime_callable_value(
     match target {
         StreamCallableTarget::Runtime32(function) => {
             let (heap, ctx) = runtime.heap_ctx_mut();
-            call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
+            call_runtime_callable32_runtime(function.as_ref(), args, heap, ctx)
         }
         StreamCallableTarget::Closure => {
             if let Some((state, ctx, module)) = runtime.state_ctx_module_mut() {
@@ -971,10 +977,6 @@ fn call_runtime_callable_value(
                 lk_core::vm::NativeFunction32::Plain(function)
                 | lk_core::vm::NativeFunction32::Context(function)
                 | lk_core::vm::NativeFunction32::FullState(function) => function(NativeArgs32::new(args), runtime),
-                lk_core::vm::NativeFunction32::RuntimeCallable(function) => {
-                    let (heap, ctx) = runtime.heap_ctx_mut();
-                    call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
-                }
             }
         }
     }

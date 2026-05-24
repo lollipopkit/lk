@@ -177,7 +177,12 @@ impl Type {
 
         // Handle union types: Int | String | Nil
         if s.contains(" | ") {
-            let types: Vec<Type> = s.split(" | ").filter_map(Type::parse).collect();
+            let mut types = Vec::new();
+            for part in s.split(" | ") {
+                if let Some(ty) = Type::parse(part) {
+                    types.push(ty);
+                }
+            }
             if !types.is_empty() {
                 return Some(Type::Union(types));
             }
@@ -243,10 +248,9 @@ impl Type {
 
         // Handle function types: (Int, String) -> Bool
         if s.contains("->") {
-            let parts: Vec<&str> = s.splitn(2, "->").collect();
-            if parts.len() == 2 {
-                let params_str = parts[0].trim();
-                let return_str = parts[1].trim();
+            if let Some((params_str, return_str)) = s.split_once("->") {
+                let params_str = params_str.trim();
+                let return_str = return_str.trim();
 
                 // Parse parameters
                 let params = if params_str.starts_with('(') && params_str.ends_with(')') {
@@ -254,7 +258,13 @@ impl Type {
                     if inner.is_empty() {
                         vec![]
                     } else {
-                        inner.split(',').map(str::trim).filter_map(Type::parse).collect()
+                        let mut params = Vec::new();
+                        for param in inner.split(',').map(str::trim) {
+                            if let Some(ty) = Type::parse(param) {
+                                params.push(ty);
+                            }
+                        }
+                        params
                     }
                 } else {
                     vec![]
@@ -301,7 +311,10 @@ impl Type {
                 if elems.is_empty() {
                     "Tuple<>".to_string()
                 } else {
-                    let parts: Vec<String> = elems.iter().map(|t| t.display()).collect();
+                    let mut parts = Vec::with_capacity(elems.len());
+                    for elem in elems {
+                        parts.push(elem.display());
+                    }
                     format!("Tuple<{}>", parts.join(", "))
                 }
             }
@@ -312,19 +325,19 @@ impl Type {
             } => {
                 let mut segments: Vec<String> = Vec::new();
                 if !params.is_empty() {
-                    segments.extend(params.iter().map(|p| p.display()));
+                    for param in params {
+                        segments.push(param.display());
+                    }
                 }
                 if !named_params.is_empty() {
-                    let named_parts: Vec<String> = named_params
-                        .iter()
-                        .map(|np| {
-                            let mut s = format!("{}: {}", np.name, np.ty.display());
-                            if np.has_default {
-                                s.push_str(" = _");
-                            }
-                            s
-                        })
-                        .collect();
+                    let mut named_parts = Vec::with_capacity(named_params.len());
+                    for np in named_params {
+                        let mut s = format!("{}: {}", np.name, np.ty.display());
+                        if np.has_default {
+                            s.push_str(" = _");
+                        }
+                        named_parts.push(s);
+                    }
                     segments.push(format!("{{{}}}", named_parts.join(", ")));
                 }
                 format!("({}) -> {}", segments.join(", "), return_type.display())
@@ -332,7 +345,10 @@ impl Type {
             Type::Task(inner) => format!("Task<{}>", inner.display()),
             Type::Channel(inner) => format!("Channel<{}>", inner.display()),
             Type::Union(types) => {
-                let type_strs: Vec<String> = types.iter().map(|t| t.display()).collect();
+                let mut type_strs = Vec::with_capacity(types.len());
+                for ty in types {
+                    type_strs.push(ty.display());
+                }
                 type_strs.join(" | ")
             }
             Type::Optional(inner) => format!("{}?", inner.display()),
@@ -342,7 +358,10 @@ impl Type {
                 if params.is_empty() {
                     name.clone()
                 } else {
-                    let param_strs: Vec<String> = params.iter().map(|p| p.display()).collect();
+                    let mut param_strs = Vec::with_capacity(params.len());
+                    for param in params {
+                        param_strs.push(param.display());
+                    }
                     format!("{}<{}>", name, param_strs.join(", "))
                 }
             }
@@ -410,8 +429,11 @@ impl Type {
                     if a_named.len() != b_named.len() {
                         return false;
                     }
-                    let a_map: std::collections::HashMap<&str, &FunctionNamedParamType> =
-                        a_named.iter().map(|np| (np.name.as_str(), np)).collect();
+                    let mut a_map =
+                        std::collections::HashMap::<&str, &FunctionNamedParamType>::with_capacity(a_named.len());
+                    for np in a_named {
+                        a_map.insert(np.name.as_str(), np);
+                    }
                     let named_compatible = b_named.iter().all(|b_np| {
                         if let Some(a_np) = a_map.get(b_np.name.as_str()) {
                             b_np.has_default == a_np.has_default && b_np.ty.is_assignable_to(&a_np.ty)
@@ -479,25 +501,52 @@ impl Type {
                 named_params,
                 return_type,
             } => Type::Function {
-                params: params.iter().map(|p| p.substitute(substitutions)).collect(),
-                named_params: named_params
-                    .iter()
-                    .map(|np| FunctionNamedParamType {
-                        name: np.name.clone(),
-                        ty: np.ty.substitute(substitutions),
-                        has_default: np.has_default,
-                    })
-                    .collect(),
+                params: {
+                    let mut out = Vec::with_capacity(params.len());
+                    for param in params {
+                        out.push(param.substitute(substitutions));
+                    }
+                    out
+                },
+                named_params: {
+                    let mut out = Vec::with_capacity(named_params.len());
+                    for np in named_params {
+                        out.push(FunctionNamedParamType {
+                            name: np.name.clone(),
+                            ty: np.ty.substitute(substitutions),
+                            has_default: np.has_default,
+                        });
+                    }
+                    out
+                },
                 return_type: Box::new(return_type.substitute(substitutions)),
             },
-            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| e.substitute(substitutions)).collect()),
+            Type::Tuple(elems) => {
+                let mut out = Vec::with_capacity(elems.len());
+                for elem in elems {
+                    out.push(elem.substitute(substitutions));
+                }
+                Type::Tuple(out)
+            }
             Type::Optional(inner) => Type::Optional(Box::new(inner.substitute(substitutions))),
             Type::Task(inner) => Type::Task(Box::new(inner.substitute(substitutions))),
             Type::Channel(inner) => Type::Channel(Box::new(inner.substitute(substitutions))),
-            Type::Union(types) => Type::Union(types.iter().map(|t| t.substitute(substitutions)).collect()),
+            Type::Union(types) => {
+                let mut out = Vec::with_capacity(types.len());
+                for ty in types {
+                    out.push(ty.substitute(substitutions));
+                }
+                Type::Union(out)
+            }
             Type::Generic { name, params } => Type::Generic {
                 name: name.clone(),
-                params: params.iter().map(|p| p.substitute(substitutions)).collect(),
+                params: {
+                    let mut out = Vec::with_capacity(params.len());
+                    for param in params {
+                        out.push(param.substitute(substitutions));
+                    }
+                    out
+                },
             },
             Type::Boxed(inner) => Type::Boxed(Box::new(inner.substitute(substitutions))),
             _ => self.clone(),

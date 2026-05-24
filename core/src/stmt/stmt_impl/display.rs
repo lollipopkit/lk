@@ -223,17 +223,17 @@ fn format_import_stmt(import: &ImportStmt) -> String {
             format!("import \"{}\"", path)
         }
         ImportStmt::Items { items, source } => {
-            let items_str = items
-                .iter()
-                .map(|item| {
-                    if let Some(alias) = &item.alias {
-                        format!("{} as {}", item.name, alias)
-                    } else {
-                        item.name.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
+            let mut items_str = String::new();
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    items_str.push_str(", ");
+                }
+                items_str.push_str(&item.name);
+                if let Some(alias) = &item.alias {
+                    items_str.push_str(" as ");
+                    items_str.push_str(alias);
+                }
+            }
 
             let source_str = match source {
                 ImportSource::Module(name) => name.clone(),
@@ -261,25 +261,48 @@ fn format_pattern(pattern: &ForPattern) -> String {
         ForPattern::Variable(name) => name.clone(),
         ForPattern::Ignore => "_".to_string(),
         ForPattern::Tuple(patterns) => {
-            let patterns_str = patterns.iter().map(format_pattern).collect::<Vec<_>>().join(", ");
+            let patterns_str = join_patterns(patterns);
             format!("({})", patterns_str)
         }
         ForPattern::Array { patterns, rest } => {
-            let mut parts = patterns.iter().map(format_pattern).collect::<Vec<_>>();
+            let mut parts = join_patterns(patterns);
             if let Some(rest_var) = rest {
-                parts.push(format!("..{}", rest_var));
+                append_pattern_sep(&mut parts);
+                parts.push_str("..");
+                parts.push_str(rest_var);
             } else if rest.is_some() {
-                parts.push("..".to_string());
+                append_pattern_sep(&mut parts);
+                parts.push_str("..");
             }
-            format!("[{}]", parts.join(", "))
+            format!("[{}]", parts)
         }
         ForPattern::Object(entries) => {
-            let parts = entries
-                .iter()
-                .map(|(k, v)| format!("\"{}\": {}", k, format_pattern(v)))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let mut parts = String::new();
+            for (index, (key, value)) in entries.iter().enumerate() {
+                if index > 0 {
+                    parts.push_str(", ");
+                }
+                parts.push('"');
+                parts.push_str(key);
+                parts.push_str("\": ");
+                parts.push_str(&format_pattern(value));
+            }
             format!("{{{}}}", parts)
         }
+    }
+}
+
+fn join_patterns(patterns: &[ForPattern]) -> String {
+    let mut out = String::new();
+    for pattern in patterns {
+        append_pattern_sep(&mut out);
+        out.push_str(&format_pattern(pattern));
+    }
+    out
+}
+
+fn append_pattern_sep(out: &mut String) {
+    if !out.is_empty() {
+        out.push_str(", ");
     }
 }
