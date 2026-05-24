@@ -98,8 +98,9 @@ fn import_heap_value(
                 .collect::<Result<_>>()?;
             HeapValue::Object(RuntimeObject::new(object.type_name.clone(), fields))
         }
-        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
+        HeapValue::Callable(CallableValue::RuntimeNative32 { name, arity, function }) => {
             HeapValue::Callable(CallableValue::RuntimeNative32 {
+                name: name.clone(),
                 arity: *arity,
                 function: function.clone(),
             })

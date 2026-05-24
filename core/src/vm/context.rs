@@ -288,7 +288,7 @@ impl VmContext {
         if self.runtime_globals.contains_key(name) {
             return;
         }
-        let value = runtime_export_from_runtime_native(function, arity);
+        let value = runtime_export_from_runtime_native(name, function, arity);
         self.runtime_globals.insert(Arc::<str>::from(name), value);
     }
 }

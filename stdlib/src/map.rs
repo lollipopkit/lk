@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
-    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap},
+    val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap},
     vm::{NativeArgs32, NativeRuntime32, RuntimeExport32},
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -247,11 +247,29 @@ enum RuntimeValueListShape {
     Int(Vec<i64>),
     Float(Vec<f64>),
     Bool(Vec<bool>),
-    String {
-        values: Vec<Arc<str>>,
-        originals: Vec<RuntimeVal>,
-    },
+    String(Vec<MapStringValue>),
     Mixed(Vec<RuntimeVal>),
+}
+
+enum MapStringValue {
+    Short(ShortStr),
+    Heap { handle: HeapRef, value: Arc<str> },
+}
+
+impl MapStringValue {
+    fn into_arc(self) -> Arc<str> {
+        match self {
+            Self::Short(value) => Arc::<str>::from(value.as_str()),
+            Self::Heap { value, .. } => value,
+        }
+    }
+
+    fn into_runtime(self) -> RuntimeVal {
+        match self {
+            Self::Short(value) => RuntimeVal::ShortStr(value),
+            Self::Heap { handle, .. } => RuntimeVal::Obj(handle),
+        }
+    }
 }
 
 fn map_runtime_values_to_list<'a>(values: impl IntoIterator<Item = &'a RuntimeVal>, heap: &HeapStore) -> TypedList {
@@ -264,7 +282,9 @@ fn map_runtime_values_to_list<'a>(values: impl IntoIterator<Item = &'a RuntimeVa
         RuntimeValueListShape::Int(values) => TypedList::Int(values),
         RuntimeValueListShape::Float(values) => TypedList::Float(values),
         RuntimeValueListShape::Bool(values) => TypedList::Bool(values),
-        RuntimeValueListShape::String { values, .. } => TypedList::String(values),
+        RuntimeValueListShape::String(values) => {
+            TypedList::String(values.into_iter().map(MapStringValue::into_arc).collect())
+        }
         RuntimeValueListShape::Mixed(values) => TypedList::Mixed(values),
     }
 }
@@ -279,10 +299,7 @@ fn append_map_value_list_shape(
         (RuntimeValueListShape::Empty, RuntimeVal::Float(value)) => RuntimeValueListShape::Float(vec![*value]),
         (RuntimeValueListShape::Empty, RuntimeVal::Bool(value)) => RuntimeValueListShape::Bool(vec![*value]),
         (RuntimeValueListShape::Empty, value) => match runtime_string_from_map_value(value, heap) {
-            Some(string) => RuntimeValueListShape::String {
-                values: vec![string],
-                originals: vec![value.clone()],
-            },
+            Some(string) => RuntimeValueListShape::String(vec![string]),
             None => RuntimeValueListShape::Mixed(vec![value.clone()]),
         },
         (RuntimeValueListShape::Int(mut values), RuntimeVal::Int(value)) => {
@@ -297,21 +314,15 @@ fn append_map_value_list_shape(
             values.push(*value);
             RuntimeValueListShape::Bool(values)
         }
-        (
-            RuntimeValueListShape::String {
-                mut values,
-                mut originals,
-            },
-            value,
-        ) => match runtime_string_from_map_value(value, heap) {
+        (RuntimeValueListShape::String(mut values), value) => match runtime_string_from_map_value(value, heap) {
             Some(string) => {
                 values.push(string);
-                originals.push(value.clone());
-                RuntimeValueListShape::String { values, originals }
+                RuntimeValueListShape::String(values)
             }
             None => {
-                originals.push(value.clone());
-                RuntimeValueListShape::Mixed(originals)
+                let mut mixed = string_values_to_mixed(values, 1);
+                mixed.push(value.clone());
+                RuntimeValueListShape::Mixed(mixed)
             }
         },
         (RuntimeValueListShape::Mixed(mut values), value) => {
@@ -319,28 +330,63 @@ fn append_map_value_list_shape(
             RuntimeValueListShape::Mixed(values)
         }
         (RuntimeValueListShape::Int(values), value) => {
-            let mut mixed = values.into_iter().map(RuntimeVal::Int).collect::<Vec<_>>();
+            let mut mixed = int_values_to_mixed(values, 1);
             mixed.push(value.clone());
             RuntimeValueListShape::Mixed(mixed)
         }
         (RuntimeValueListShape::Float(values), value) => {
-            let mut mixed = values.into_iter().map(RuntimeVal::Float).collect::<Vec<_>>();
+            let mut mixed = float_values_to_mixed(values, 1);
             mixed.push(value.clone());
             RuntimeValueListShape::Mixed(mixed)
         }
         (RuntimeValueListShape::Bool(values), value) => {
-            let mut mixed = values.into_iter().map(RuntimeVal::Bool).collect::<Vec<_>>();
+            let mut mixed = bool_values_to_mixed(values, 1);
             mixed.push(value.clone());
             RuntimeValueListShape::Mixed(mixed)
         }
     }
 }
 
-fn runtime_string_from_map_value(value: &RuntimeVal, heap: &HeapStore) -> Option<Arc<str>> {
+fn string_values_to_mixed(values: Vec<MapStringValue>, extra: usize) -> Vec<RuntimeVal> {
+    let mut mixed = Vec::with_capacity(values.len() + extra);
+    for value in values {
+        mixed.push(value.into_runtime());
+    }
+    mixed
+}
+
+fn int_values_to_mixed(values: Vec<i64>, extra: usize) -> Vec<RuntimeVal> {
+    let mut mixed = Vec::with_capacity(values.len() + extra);
+    for value in values {
+        mixed.push(RuntimeVal::Int(value));
+    }
+    mixed
+}
+
+fn float_values_to_mixed(values: Vec<f64>, extra: usize) -> Vec<RuntimeVal> {
+    let mut mixed = Vec::with_capacity(values.len() + extra);
+    for value in values {
+        mixed.push(RuntimeVal::Float(value));
+    }
+    mixed
+}
+
+fn bool_values_to_mixed(values: Vec<bool>, extra: usize) -> Vec<RuntimeVal> {
+    let mut mixed = Vec::with_capacity(values.len() + extra);
+    for value in values {
+        mixed.push(RuntimeVal::Bool(value));
+    }
+    mixed
+}
+
+fn runtime_string_from_map_value(value: &RuntimeVal, heap: &HeapStore) -> Option<MapStringValue> {
     match value {
-        RuntimeVal::ShortStr(value) => Some(Arc::<str>::from(value.as_str())),
+        RuntimeVal::ShortStr(value) => Some(MapStringValue::Short(*value)),
         RuntimeVal::Obj(handle) => match heap.get(*handle) {
-            Some(HeapValue::String(value)) => Some(Arc::clone(value)),
+            Some(HeapValue::String(value)) => Some(MapStringValue::Heap {
+                handle: *handle,
+                value: Arc::clone(value),
+            }),
             _ => None,
         },
         _ => None,
@@ -458,6 +504,10 @@ mod tests {
 
     fn run32_return(source: &str) -> Result<RuntimeVal> {
         Ok(run32(source)?.first_return().clone())
+    }
+
+    fn runtime_short_string(value: &str) -> RuntimeVal {
+        RuntimeVal::ShortStr(ShortStr::new(value).expect("short test string"))
     }
 
     fn expect_list(result: &Program32Result) -> Vec<RuntimeVal> {
@@ -639,6 +689,34 @@ mod tests {
         assert_eq!(values.len(), 2);
         assert!(values.iter().any(|value| value.as_ref() == "short"));
         assert!(values.iter().any(|value| value.as_ref() == "long-map-value"));
+        assert_eq!(runtime.heap().len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_values_pollutes_numeric_shape_to_mixed_without_reclassifying() -> Result<()> {
+        let (_, function) = map_native("values")?;
+        let NativeFunction32::Plain(function) = function else {
+            panic!("values should use plain RuntimeNative32");
+        };
+        let mut entries = BTreeMap::new();
+        entries.insert(Arc::<str>::from("a"), RuntimeVal::Int(1));
+        entries.insert(Arc::<str>::from("b"), runtime_short_string("two"));
+        let mut state = RuntimeModuleState32::default();
+        let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
+        let args = [map];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+
+        let RuntimeVal::Obj(handle) = result else {
+            panic!("values should return list object");
+        };
+        let Some(HeapValue::List(TypedList::Mixed(values))) = runtime.heap().get(handle) else {
+            panic!("mixed map values should pollute numeric shape to mixed list backing");
+        };
+        assert_eq!(values, &vec![RuntimeVal::Int(1), runtime_short_string("two")]);
+        assert_eq!(runtime.heap().len(), 2);
         Ok(())
     }
 

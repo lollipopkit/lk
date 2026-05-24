@@ -85,7 +85,7 @@ impl ModuleRegistry {
 
     /// Register a VM-native builtin globally.
     pub fn register_runtime_builtin(&mut self, name: &str, function: NativeFunction32, arity: u16) {
-        let value = runtime_export_from_runtime_native(function.clone(), arity);
+        let value = runtime_export_from_runtime_native(name, function.clone(), arity);
         self.runtime_builtin_functions.insert(Arc::<str>::from(name), value);
     }
 
@@ -199,6 +199,7 @@ pub fn runtime_export_from_plain_native_entries(
     let mut entries = BTreeMap::new();
     for native in natives {
         let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+            name: Arc::<str>::from(native.name),
             arity: native.arity,
             function: native.function.clone(),
         })));
@@ -215,9 +216,13 @@ pub fn runtime_export_from_plain_native_entries(
     )
 }
 
-pub fn runtime_export_from_runtime_native(function: NativeFunction32, arity: u16) -> RuntimeExport32 {
+pub fn runtime_export_from_runtime_native(name: &str, function: NativeFunction32, arity: u16) -> RuntimeExport32 {
     let mut heap = HeapStore::new();
-    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })));
+    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+        name: Arc::<str>::from(name),
+        arity,
+        function,
+    })));
     RuntimeExport32::from_value(value, heap)
 }
 

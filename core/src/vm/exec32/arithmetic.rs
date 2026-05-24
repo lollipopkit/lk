@@ -59,6 +59,20 @@ fn append_string_list_to_mixed_output(values: Vec<Arc<str>>, out: &mut Vec<Runti
     }));
 }
 
+fn copy_concat_owned<T>(left: Vec<T>, right: Vec<T>) -> Vec<T> {
+    let mut out = Vec::with_capacity(left.len() + right.len());
+    out.extend(left);
+    out.extend(right);
+    out
+}
+
+fn copy_with_extra_owned<T>(values: Vec<T>, value: T) -> Vec<T> {
+    let mut out = Vec::with_capacity(values.len() + 1);
+    out.extend(values);
+    out.push(value);
+    out
+}
+
 impl Executor32 {
     pub(super) fn dynamic_add(&mut self, instr: Instr32) -> Result<()> {
         let lhs = self.read(instr.b())?.clone();
@@ -253,21 +267,17 @@ impl Executor32 {
 
     fn concat_list_snapshots(&mut self, lhs: RuntimeListSnapshot, rhs: RuntimeListSnapshot) -> Result<TypedList> {
         Ok(match (lhs, rhs) {
-            (RuntimeListSnapshot::Int(mut lhs), RuntimeListSnapshot::Int(rhs)) => {
-                lhs.extend(rhs);
-                TypedList::Int(lhs)
+            (RuntimeListSnapshot::Int(lhs), RuntimeListSnapshot::Int(rhs)) => {
+                TypedList::Int(copy_concat_owned(lhs, rhs))
             }
-            (RuntimeListSnapshot::Float(mut lhs), RuntimeListSnapshot::Float(rhs)) => {
-                lhs.extend(rhs);
-                TypedList::Float(lhs)
+            (RuntimeListSnapshot::Float(lhs), RuntimeListSnapshot::Float(rhs)) => {
+                TypedList::Float(copy_concat_owned(lhs, rhs))
             }
-            (RuntimeListSnapshot::Bool(mut lhs), RuntimeListSnapshot::Bool(rhs)) => {
-                lhs.extend(rhs);
-                TypedList::Bool(lhs)
+            (RuntimeListSnapshot::Bool(lhs), RuntimeListSnapshot::Bool(rhs)) => {
+                TypedList::Bool(copy_concat_owned(lhs, rhs))
             }
-            (RuntimeListSnapshot::String(mut lhs), RuntimeListSnapshot::String(rhs)) => {
-                lhs.extend(rhs);
-                TypedList::String(lhs)
+            (RuntimeListSnapshot::String(lhs), RuntimeListSnapshot::String(rhs)) => {
+                TypedList::String(copy_concat_owned(lhs, rhs))
             }
             (lhs, rhs) => {
                 let mut values = Vec::with_capacity(lhs.len() + rhs.len());
@@ -280,11 +290,8 @@ impl Executor32 {
 
     fn push_list_snapshot(&mut self, list: RuntimeListSnapshot, value: RuntimeVal) -> Result<TypedList> {
         Ok(match list {
-            RuntimeListSnapshot::Int(mut values) => match value {
-                RuntimeVal::Int(value) => {
-                    values.push(value);
-                    TypedList::Int(values)
-                }
+            RuntimeListSnapshot::Int(values) => match value {
+                RuntimeVal::Int(value) => TypedList::Int(copy_with_extra_owned(values, value)),
                 value => {
                     let mut mixed = Vec::with_capacity(values.len() + 1);
                     mixed.extend(values.into_iter().map(RuntimeVal::Int));
@@ -292,11 +299,8 @@ impl Executor32 {
                     TypedList::Mixed(mixed)
                 }
             },
-            RuntimeListSnapshot::Float(mut values) => match value {
-                RuntimeVal::Float(value) => {
-                    values.push(value);
-                    TypedList::Float(values)
-                }
+            RuntimeListSnapshot::Float(values) => match value {
+                RuntimeVal::Float(value) => TypedList::Float(copy_with_extra_owned(values, value)),
                 value => {
                     let mut mixed = Vec::with_capacity(values.len() + 1);
                     mixed.extend(values.into_iter().map(RuntimeVal::Float));
@@ -304,11 +308,8 @@ impl Executor32 {
                     TypedList::Mixed(mixed)
                 }
             },
-            RuntimeListSnapshot::Bool(mut values) => match value {
-                RuntimeVal::Bool(value) => {
-                    values.push(value);
-                    TypedList::Bool(values)
-                }
+            RuntimeListSnapshot::Bool(values) => match value {
+                RuntimeVal::Bool(value) => TypedList::Bool(copy_with_extra_owned(values, value)),
                 value => {
                     let mut mixed = Vec::with_capacity(values.len() + 1);
                     mixed.extend(values.into_iter().map(RuntimeVal::Bool));
@@ -316,11 +317,8 @@ impl Executor32 {
                     TypedList::Mixed(mixed)
                 }
             },
-            RuntimeListSnapshot::String(mut values) => match self.runtime_string_value(&value)? {
-                Some(value) => {
-                    values.push(value);
-                    TypedList::String(values)
-                }
+            RuntimeListSnapshot::String(values) => match self.runtime_string_value(&value)? {
+                Some(value) => TypedList::String(copy_with_extra_owned(values, value)),
                 None => {
                     let mut mixed = Vec::with_capacity(values.len() + 1);
                     append_string_list_to_mixed_output(values, &mut mixed, &mut self.state.heap);
@@ -328,10 +326,7 @@ impl Executor32 {
                     TypedList::Mixed(mixed)
                 }
             },
-            RuntimeListSnapshot::Mixed(mut values) => {
-                values.push(value);
-                TypedList::Mixed(values)
-            }
+            RuntimeListSnapshot::Mixed(values) => TypedList::Mixed(copy_with_extra_owned(values, value)),
         })
     }
 

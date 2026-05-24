@@ -220,52 +220,37 @@ impl ListPushPlan {
 fn list_push_preserving_backing(list: &TypedList, value: RuntimeVal, heap: &HeapStore) -> ListPushPlan {
     match list {
         TypedList::Mixed(values) => {
-            let mut values = values.clone();
-            values.push(value);
-            ListPushPlan::Ready(TypedList::Mixed(values))
+            let mut out = Vec::with_capacity(values.len() + 1);
+            out.extend_from_slice(values);
+            out.push(value);
+            ListPushPlan::Ready(TypedList::Mixed(out))
         }
         TypedList::Int(values) => match value {
-            RuntimeVal::Int(value) => {
-                let mut values = values.clone();
-                values.push(value);
-                ListPushPlan::Ready(TypedList::Int(values))
-            }
-            value => {
-                let mut mixed = values.iter().copied().map(RuntimeVal::Int).collect::<Vec<_>>();
-                mixed.push(value);
-                ListPushPlan::Ready(TypedList::Mixed(mixed))
-            }
+            RuntimeVal::Int(value) => ListPushPlan::Ready(TypedList::Int(copy_with_extra_item(values, value))),
+            value => ListPushPlan::Ready(TypedList::Mixed(copy_numeric_with_extra_mixed(
+                values,
+                value,
+                RuntimeVal::Int,
+            ))),
         },
         TypedList::Float(values) => match value {
-            RuntimeVal::Float(value) => {
-                let mut values = values.clone();
-                values.push(value);
-                ListPushPlan::Ready(TypedList::Float(values))
-            }
-            value => {
-                let mut mixed = values.iter().copied().map(RuntimeVal::Float).collect::<Vec<_>>();
-                mixed.push(value);
-                ListPushPlan::Ready(TypedList::Mixed(mixed))
-            }
+            RuntimeVal::Float(value) => ListPushPlan::Ready(TypedList::Float(copy_with_extra_item(values, value))),
+            value => ListPushPlan::Ready(TypedList::Mixed(copy_numeric_with_extra_mixed(
+                values,
+                value,
+                RuntimeVal::Float,
+            ))),
         },
         TypedList::Bool(values) => match value {
-            RuntimeVal::Bool(value) => {
-                let mut values = values.clone();
-                values.push(value);
-                ListPushPlan::Ready(TypedList::Bool(values))
-            }
-            value => {
-                let mut mixed = values.iter().copied().map(RuntimeVal::Bool).collect::<Vec<_>>();
-                mixed.push(value);
-                ListPushPlan::Ready(TypedList::Mixed(mixed))
-            }
+            RuntimeVal::Bool(value) => ListPushPlan::Ready(TypedList::Bool(copy_with_extra_item(values, value))),
+            value => ListPushPlan::Ready(TypedList::Mixed(copy_numeric_with_extra_mixed(
+                values,
+                value,
+                RuntimeVal::Bool,
+            ))),
         },
         TypedList::String(values) => match runtime_string_value_arg(&value, heap) {
-            Some(value) => {
-                let mut values = values.clone();
-                values.push(value);
-                ListPushPlan::Ready(TypedList::String(values))
-            }
+            Some(value) => ListPushPlan::Ready(TypedList::String(copy_with_extra_item(values, value))),
             None => ListPushPlan::MaterializeString {
                 values: values.clone(),
                 value,
@@ -343,30 +328,60 @@ impl ListConcatPlan {
 fn list_concat_preserving_backing(left: &TypedList, right: &TypedList) -> ListConcatPlan {
     match (left, right) {
         (TypedList::Int(left), TypedList::Int(right)) => {
-            let mut left = left.clone();
-            left.extend(right.iter().copied());
-            ListConcatPlan::Ready(TypedList::Int(left))
+            ListConcatPlan::Ready(TypedList::Int(copy_concat(left, right)))
         }
         (TypedList::Float(left), TypedList::Float(right)) => {
-            let mut left = left.clone();
-            left.extend(right.iter().copied());
-            ListConcatPlan::Ready(TypedList::Float(left))
+            ListConcatPlan::Ready(TypedList::Float(copy_concat(left, right)))
         }
         (TypedList::Bool(left), TypedList::Bool(right)) => {
-            let mut left = left.clone();
-            left.extend(right.iter().copied());
-            ListConcatPlan::Ready(TypedList::Bool(left))
+            ListConcatPlan::Ready(TypedList::Bool(copy_concat(left, right)))
         }
         (TypedList::String(left), TypedList::String(right)) => {
-            let mut left = left.clone();
-            left.extend(right.iter().cloned());
-            ListConcatPlan::Ready(TypedList::String(left))
+            ListConcatPlan::Ready(TypedList::String(copy_concat(left, right)))
         }
         (left, right) => ListConcatPlan::Mixed {
             left: RuntimeListSnapshot::from_typed(left),
             right: RuntimeListSnapshot::from_typed(right),
         },
     }
+}
+
+fn copy_with_extra_item<T: Clone>(values: &[T], value: T) -> Vec<T> {
+    let mut out = Vec::with_capacity(values.len() + 1);
+    out.extend_from_slice(values);
+    out.push(value);
+    out
+}
+
+fn copy_numeric_with_extra_mixed<T: Copy>(
+    values: &[T],
+    value: RuntimeVal,
+    wrap: impl Fn(T) -> RuntimeVal,
+) -> Vec<RuntimeVal> {
+    let mut out = Vec::with_capacity(values.len() + 1);
+    for value in values {
+        out.push(wrap(*value));
+    }
+    out.push(value);
+    out
+}
+
+fn copy_concat<T: Clone>(left: &[T], right: &[T]) -> Vec<T> {
+    let mut out = Vec::with_capacity(left.len() + right.len());
+    out.extend_from_slice(left);
+    out.extend_from_slice(right);
+    out
+}
+
+fn copy_replace<T: Clone>(values: &[T], index: usize, value: T) -> Result<(Vec<T>, T)> {
+    let Some(old) = values.get(index).cloned() else {
+        bail!("list index {} out of bounds", index);
+    };
+    let mut out = Vec::with_capacity(values.len());
+    out.extend_from_slice(&values[..index]);
+    out.push(value);
+    out.extend_from_slice(&values[index + 1..]);
+    Ok((out, old))
 }
 
 enum ListSetPlan {
@@ -407,11 +422,7 @@ fn list_set_preserving_backing(
 ) -> Result<ListSetPlan> {
     match list {
         TypedList::Mixed(values) => {
-            let Some(old) = values.get(index).cloned() else {
-                bail!("list index {} out of bounds", index);
-            };
-            let mut values = values.clone();
-            values[index] = value;
+            let (values, old) = copy_replace(values, index, value)?;
             Ok(ListSetPlan::Ready {
                 list: TypedList::Mixed(values),
                 old,
@@ -419,11 +430,7 @@ fn list_set_preserving_backing(
         }
         TypedList::Int(values) => match value {
             RuntimeVal::Int(value) => {
-                let Some(old) = values.get(index).copied() else {
-                    bail!("list index {} out of bounds", index);
-                };
-                let mut values = values.clone();
-                values[index] = value;
+                let (values, old) = copy_replace(values, index, value)?;
                 Ok(ListSetPlan::Ready {
                     list: TypedList::Int(values),
                     old: RuntimeVal::Int(old),
@@ -434,11 +441,7 @@ fn list_set_preserving_backing(
         },
         TypedList::Float(values) => match value {
             RuntimeVal::Float(value) => {
-                let Some(old) = values.get(index).copied() else {
-                    bail!("list index {} out of bounds", index);
-                };
-                let mut values = values.clone();
-                values[index] = value;
+                let (values, old) = copy_replace(values, index, value)?;
                 Ok(ListSetPlan::Ready {
                     list: TypedList::Float(values),
                     old: RuntimeVal::Float(old),
@@ -454,11 +457,7 @@ fn list_set_preserving_backing(
         },
         TypedList::Bool(values) => match value {
             RuntimeVal::Bool(value) => {
-                let Some(old) = values.get(index).copied() else {
-                    bail!("list index {} out of bounds", index);
-                };
-                let mut values = values.clone();
-                values[index] = value;
+                let (values, old) = copy_replace(values, index, value)?;
                 Ok(ListSetPlan::Ready {
                     list: TypedList::Bool(values),
                     old: RuntimeVal::Bool(old),
@@ -469,11 +468,7 @@ fn list_set_preserving_backing(
         },
         TypedList::String(values) => match runtime_string_value_arg(&value, heap) {
             Some(value) => {
-                let Some(old) = values.get(index).cloned() else {
-                    bail!("list index {} out of bounds", index);
-                };
-                let mut values = values.clone();
-                values[index] = value;
+                let (values, old) = copy_replace(values, index, value)?;
                 Ok(ListSetPlan::StringReady {
                     list: TypedList::String(values),
                     old,

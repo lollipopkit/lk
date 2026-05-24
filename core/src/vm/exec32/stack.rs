@@ -130,46 +130,52 @@ impl Executor32 {
 }
 
 fn typed_list_from_runtime_slots(values: &[RuntimeVal], heap: &HeapStore) -> TypedList {
-    if values.is_empty() {
-        return TypedList::Mixed(Vec::new());
-    }
-
-    let mut ints = Vec::with_capacity(values.len());
-    let mut floats = Vec::with_capacity(values.len());
-    let mut bools = Vec::with_capacity(values.len());
-    let mut strings = Vec::with_capacity(values.len());
-    for value in values {
-        match value {
-            RuntimeVal::Int(value) if floats.is_empty() && bools.is_empty() && strings.is_empty() => {
-                ints.push(*value);
-            }
-            RuntimeVal::Float(value) if ints.is_empty() && bools.is_empty() && strings.is_empty() => {
-                floats.push(*value);
-            }
-            RuntimeVal::Bool(value) if ints.is_empty() && floats.is_empty() && strings.is_empty() => {
-                bools.push(*value);
-            }
-            RuntimeVal::ShortStr(value) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
-                strings.push(Arc::<str>::from(value.as_str()));
-            }
-            RuntimeVal::Obj(handle) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
-                let Some(HeapValue::String(value)) = heap.get(*handle) else {
-                    return TypedList::Mixed(values.iter().cloned().collect());
+    match runtime_slot_list_shape(values, heap) {
+        RuntimeSlotListShape::Mixed => TypedList::Mixed(values.iter().cloned().collect()),
+        RuntimeSlotListShape::Int => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                let RuntimeVal::Int(value) = value else {
+                    unreachable!("shape scan only returns Int for int slots");
                 };
-                strings.push(Arc::clone(value));
+                out.push(*value);
             }
-            _ => return TypedList::Mixed(values.iter().cloned().collect()),
+            TypedList::Int(out)
         }
-    }
-
-    if !ints.is_empty() {
-        TypedList::Int(ints)
-    } else if !floats.is_empty() {
-        TypedList::Float(floats)
-    } else if !bools.is_empty() {
-        TypedList::Bool(bools)
-    } else {
-        TypedList::String(strings)
+        RuntimeSlotListShape::Float => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                let RuntimeVal::Float(value) = value else {
+                    unreachable!("shape scan only returns Float for float slots");
+                };
+                out.push(*value);
+            }
+            TypedList::Float(out)
+        }
+        RuntimeSlotListShape::Bool => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                let RuntimeVal::Bool(value) = value else {
+                    unreachable!("shape scan only returns Bool for bool slots");
+                };
+                out.push(*value);
+            }
+            TypedList::Bool(out)
+        }
+        RuntimeSlotListShape::String => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                match value {
+                    RuntimeVal::ShortStr(value) => out.push(Arc::<str>::from(value.as_str())),
+                    RuntimeVal::Obj(handle) => match heap.get(*handle) {
+                        Some(HeapValue::String(value)) => out.push(Arc::clone(value)),
+                        _ => unreachable!("shape scan only returns String for string slots"),
+                    },
+                    _ => unreachable!("shape scan only returns String for string slots"),
+                }
+            }
+            TypedList::String(out)
+        }
     }
 }
 

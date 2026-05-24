@@ -49,8 +49,8 @@ pub(super) fn callable_target32(
             function_index: *function_index,
             captures: Arc::clone(captures),
         }),
-        (PerfCallTargetKind::Native, HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }))
-        | (PerfCallTargetKind::Unknown, HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })) => {
+        (PerfCallTargetKind::Native, HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function, .. }))
+        | (PerfCallTargetKind::Unknown, HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function, .. })) => {
             Ok(CallableTarget32::RuntimeNative32 {
                 arity: *arity,
                 function: function.clone(),

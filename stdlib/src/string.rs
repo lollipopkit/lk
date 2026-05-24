@@ -244,21 +244,19 @@ impl StringModule {
         let fmt = runtime_string_arg(&values[0], runtime.heap(), "format() first argument")?;
         let rest = &values[1..];
         let mut out = String::with_capacity(fmt.len());
-        let chars = fmt.chars().collect::<Vec<_>>();
-        let mut i = 0usize;
+        let mut chars = fmt.chars().peekable();
         let mut arg_index = 0usize;
-        while i < chars.len() {
-            if chars[i] == '{' && i + 1 < chars.len() && chars[i + 1] == '}' {
+        while let Some(ch) = chars.next() {
+            if ch == '{' && chars.peek() == Some(&'}') {
+                chars.next();
                 if arg_index < rest.len() {
                     out.push_str(&runtime_display_value(&rest[arg_index], runtime.heap())?);
                     arg_index += 1;
                 } else {
                     out.push_str("{}");
                 }
-                i += 2;
             } else {
-                out.push(chars[i]);
-                i += 1;
+                out.push(ch);
             }
         }
         if arg_index < rest.len() {

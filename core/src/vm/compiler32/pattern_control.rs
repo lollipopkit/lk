@@ -224,6 +224,14 @@ impl Compiler32 {
     }
 
     pub(super) fn lower_map_pattern_condition(&mut self, value: u16, patterns: &[(String, Pattern)]) -> Result<u16> {
+        self.lower_map_pattern_key_condition(value, patterns.iter().map(|(key, _)| key.as_str()))
+    }
+
+    pub(super) fn lower_map_pattern_key_condition<'a>(
+        &mut self,
+        value: u16,
+        keys: impl IntoIterator<Item = &'a str>,
+    ) -> Result<u16> {
         let is_map = self.alloc_reg();
         self.emit(Instr32::abc(
             Opcode32::IsMap,
@@ -234,7 +242,7 @@ impl Compiler32 {
         let result = self.lower_val(&LiteralVal::Bool(false))?;
         let skip_contains = self.emit_test_placeholder(is_map)?;
         let mut condition = self.lower_val(&LiteralVal::Bool(true))?;
-        for (key, _) in patterns {
+        for key in keys {
             let key = self.lower_val(&LiteralVal::from_str(key))?;
             let contains = self.alloc_reg();
             self.emit(Instr32::abc(

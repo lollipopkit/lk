@@ -92,8 +92,10 @@
 - `CallNamed` 调用 `FullState` native 时已移除 named stack 的 `Vec` 中转，改为与 positional args 相同的 inline slot buffer，并新增 FullState named-call 覆盖。
 - `execute_compiled_module32_with_ctx` 已改为按 `Module32.globals` slot 顺序直接从 `VmContext` seed 外部 global，不再通过临时 name map 重建 globals；缺失 slot 保持 `Nil`，已覆盖不向 `VmContext` 同步回写。
 - `GetIndex` 读取 list/map/object/string heap object 时不再 clone 整个 `HeapValue`；typed list/map 读取按 handle 借用容器，只在返回 long string 元素时分配目标 heap object。
+- exec32 typed int/float/bool list 写入异类型值时已先校验 index，再按原长度一次性构造 mixed 输出，不再先 collect 整表 mixed 后二次覆盖目标 slot；新增 typed int list 污染覆盖。
 - exec32 `SliceFrom` / `ToIter` 读取 list/map/string heap object 时也不再 clone 整个 `HeapValue`；读取阶段只生成返回值构造计划，释放 heap borrow 后再分配新 list/string；map `ToIter` 已改为按 `TypedMap` variant 生成迭代 snapshot，不再先通过 `typed_map_entries()` 展开成通用 runtime-entry map。
 - exec32 dynamic list `+` / `-` 已按 `TypedList` backing 直读和构造结果；`+` 的异类型 fallback 已删除 `RuntimeListSnapshot::into_runtime_values()` / `string_list_to_runtime_values()` 批量展开 helper，`-` 的异形 list/list 和 remove-first fallback 也已改为按 lhs backing 过滤并保留 typed shape，不再把保留项转成 `Vec<RuntimeVal>` 后交给 `TypedList::from_runtime_values()` 重新分类；旧 `runtime_value_to_list_values` helper 已删除。
+- exec32 dynamic list `+` 的同类型 concat/push 输出已改为按目标容量一次性构造 `Vec`，不再在 snapshot backing 上直接 `extend` / `push` 触发潜在二次增长；typed int concat+push 和 typed string concat 都保留 typed backing。
 - exec32 dynamic map `+` / `-` 已按 `TypedMap` backing 借用合并/过滤构造结果；旧 `runtime_value_to_map_entries()` 通用展开 helper 已删除，typed string-int/float/bool map arithmetic 不再先 materialize 成 runtime-entry map。
 - exec32 dynamic map `+` / `-` 的 merge 和 single-key/map-key 删除路径已从 `clone_typed_map(lhs)` 后 mutating set/remove 改为按 `TypedMap` variant 过滤构造结果；被 RHS 覆盖或删除的 lhs entry 不再被复制到临时输出，string-int/float/bool map 仍继续保留 typed backing。
 - exec32 typed map equality 已改为按 `TypedMap` variant 迭代并用 `TypedMap::get()` 查 rhs；不再为了比较先构造 lhs/rhs runtime-entry map。
@@ -108,12 +110,15 @@
 - core method helper 的 `list.join()` 已改为借用 source list 生成 join parts，释放 heap borrow 后再创建返回 string；不再为避开 borrow conflict clone 整个 `TypedList`。
 - stdlib `list.push` / `list.concat` / `list.set` 已保留 typed backing；同类型写入和拼接不再 materialize 为 `Mixed`，只有异类型合并才降级。
 - stdlib `list.push` / `list.concat` / `list.set` 入口已从 whole `TypedList` clone 改为借用 source list 生成 typed build plan；`list.concat` 的异类型 fallback 已删除 list-local `RuntimeListSnapshot::into_runtime_values()` 批量展开 helper，结果显式构造 `TypedList::Mixed`；只有对应 backing 和必要返回值被复制，string-list 降级到 mixed 的 heap materialization 延迟到释放 source borrow 后执行。
-- stdlib `list.set` 同类型 typed backing 路径已把 bounds check 前置到复制前；越界错误路径不再先 clone 整个 backing，成功路径继续返回新 list 和 old value，并保留 `Int`/`Float`/`Bool`/`String` typed backing。
+- stdlib `list.push` / `list.concat` 的同类型 typed backing 输出已改为按目标容量一次性构造 `Vec`，不再 `clone` backing 后 `push` / `extend` 触发潜在二次增长。
+- stdlib `list.push` 的 int/float/bool typed backing 污染分支也改为按目标容量一次性构造 `Mixed` 输出，不再先 collect 数字项后单独 push 新值。
+- stdlib `list.set` 同类型 typed backing 路径已改为按原长度一次性构造 replacement 输出；越界错误路径不再先 clone 整个 backing，成功路径也不再 clone 后原地覆盖，并继续返回新 list 和 old value、保留 `Int`/`Float`/`Bool`/`String` typed backing。
 - stdlib `list.push` / `list.set` 的 string-list 污染和 typed-list 污染分支已删除 `materialize_string_values()` / `set_materialized_list()` 通用 helper，污染边界直接构造目标 `Mixed` 输出并保留 old value 返回语义。
 - stdlib `list.len` / `list.join` / `list.get` / `list.first` / `list.last` 已直接借用 list backing；只有 `list.push` / `list.concat` / `list.set` 这类返回修改后新 list 的路径复制 backing。
 - stdlib `iter.next` 已直接读取 typed list backing 的首元素，不再为了取首项把整个 list materialize 成 `Vec<RuntimeVal>`。
 - stdlib `iter.take` / `iter.skip` 已直接对 typed list backing 做 slice，不再为了切片把 long string list 元素 materialize 成 heap string 再重建 typed backing。
 - stdlib `iter.chain` 已对同类型 typed list backing 直接 concat；异类型才降级到 `Mixed`，避免 long string list chain 时额外 materialize heap strings。
+- stdlib `iter.chain` 和 `iter.flatten` 内部同类型 typed backing concat 已与 `list.concat` 对齐为按目标容量一次性构造输出 `Vec`，不再 clone 左侧 backing 后 extend 右侧。
 - stdlib `iter.chain` / `iter.flatten` 已从 by-value `TypedList` concat helper 改为借用 source list 生成 snapshot/plan，异类型 concat/flatten 降级时直接按 snapshot 追加到 Mixed 输出；旧 `maybe_typed_list_arg` / `typed_list_to_runtime_values` owned helper 和 iter-local `RuntimeListSnapshot::into_runtime_values()` 批量展开 helper 已删除。
 - stdlib `iter.chunk` 已按 typed list backing 直接切分 chunk，入口改为借用 source list 后只复制输出 chunks；输出 chunk 保留原 typed backing，避免 long string list chunk 时额外 materialize heap strings，也不再 clone 整个输入 `TypedList`。
 - stdlib `iter.zip` 已按索引从 typed list backing 读取元素，入口改为借用两侧 source list 并只 snapshot 实际 zip 到的元素；只 materialize 实际 zip 到的 long string 元素，不再先展开或 clone 两侧完整列表。
@@ -126,7 +131,7 @@
 - stdlib `stream.from_list` 已直接保存 typed list backing，不再把输入 list 预先展开成 `Vec<RuntimeVal>`。
 - stdlib `stream.collect` 对 `FromList` cursor 已直接返回 typed list slice；long string list 不再为了 collect 整表 materialize 成 heap strings。
 - stdlib `stream` 打开 cursor 已从 `match self.clone()` 改为按引用匹配，只 clone 当前 cursor 所需字段；map/filter/take/skip/chain 不再因为打开 cursor 先复制整棵 `StreamSpec` 树。
-- stdlib `map.keys` / `map.values` 已按 `TypedMap` backing 直读；string-key map 直接产出 typed string key list，typed int/float/bool map values 直接产出对应 typed list；`Mixed` / `StringMixed` values 也改为显式 shape builder，仍保留全 int/float/bool/string values 的 typed list 输出，但不再通过 `TypedList::from_runtime_values(entries.values().cloned().collect())` 通用分类边界。
+- stdlib `map.keys` / `map.values` 已按 `TypedMap` backing 直读；string-key map 直接产出 typed string key list，typed int/float/bool map values 直接产出对应 typed list；`Mixed` / `StringMixed` values 也改为显式 shape builder，仍保留全 int/float/bool/string values 的 typed list 输出，但不再通过 `TypedList::from_runtime_values(entries.values().cloned().collect())` 通用分类边界；string values 的 mixed originals 只在实际污染时构造。
 - stdlib `map.len` / `map.keys` / `map.values` / `map.has` / `map.get` 已直接借用 map backing；`map.set` / `map.delete` 也改为从借用的 `TypedMap` 按 variant 构造返回 map，不再通过 `map_arg(...).clone()` 复制整个 source map。
 - stdlib `map.set` / `map.delete` 的 string-key typed map 更新已继续从 whole `entries.clone()` 后 mutating insert/remove 改为按 key 过滤构造输出；被覆盖或删除的 entry 不再复制到临时 map，`StringInt`/`StringFloat`/`StringBool` 仍保留 typed backing。
 - stdlib `map.set` 私有 helper 已收窄到 public API 的 string-key 语义，删除不可达的 non-string key materialized mixed-map fallback；typed string-key map 不再保留 `set_materialized_string_map_entry` / `materialized_mixed_map_entries` 兼容面。
@@ -174,8 +179,8 @@
 - closure call window 到 callee frame 的参数传递已改为 consume caller call-window slot；普通 positional 和 dynamic named closure call 都不再通过 `clone_from_slice` 复制参数窗口，返回写回前参数槽会被置为 `Nil`。
 - runtime callable receiver/method 路径的 prefixed positional args 已从 heap `Vec` materialization 改为 inline call buffer；typed-map named closure 写 frame 也直接读取 `RuntimePositionalArgs`，不再为了 receiver + args 拼临时 slice。
 - core method helper 的 positional args 已从 `Vec<RuntimeVal>` 快照改为 `MethodPositionalArgs` list-handle source；callable 属性、named callable 和 trait method dispatch 直接把 list handle 传入 runtime callable ABI，builtin method 分支才按需用 inline buffer 展开，并新增源码级 `"red,green".split(",").join("|")` 覆盖。
-- core method helper 的 builtin inline positional 展开已同步收窄 typed string list 路径：短字符串直接写 `ShortStr`，长字符串逐项 clone `Arc<str>` 并延迟到释放 heap borrow 后分配，不再 clone 整个 string backing 或先转 `String`。
-- runtime callable list-handle positional 参数复制已收窄 typed string list 路径：短字符串直接生成 `ShortStr` 写入调用窗口，长字符串只逐项 clone 对应 `Arc<str>` 并在释放 heap borrow 后分配，不再为避开 borrow conflict 先 clone 整个 string backing。
+- core method helper 的 builtin inline positional 展开已同步收窄 typed string list 路径：短字符串直接写 `ShortStr`，长字符串逐项 clone `Arc<str>` 并延迟到释放 heap borrow 后分配，不再 clone 整个 string backing、先转 `String`，也不再为全量 string 参数构造中转 `Vec<MethodStringArg>`。
+- runtime callable list-handle positional 参数复制已收窄 typed string list 路径：短字符串直接生成 `ShortStr` 写入调用窗口，长字符串只逐项 clone 对应 `Arc<str>` 并在释放 heap borrow 后分配，不再为避开 borrow conflict 先 clone 整个 string backing，也不再为全量 string 参数构造中转 `Vec<RuntimeStringArg>`。
 - FullState native call 的 positional 和 named call-window slots 已改为 move 到 inline native args buffer；旧 clone-based `inline_native_args_from_stack` / `inline_native_slots_from_stack` helper 已删除，FullState native 返回前临时参数槽会被置为 `Nil`。
 - `Call` / `CallNamed` 返回写回前会统一清空 caller call-window 的 positional 和 named 临时参数槽；plain/context native、Runtime32 callable、closure 和 FullState native 都不再让参数窗口继续作为 GC root 存活。
 - `Call` / `CallNamed` dispatch 已从 clone 整个 `CallableValue` 收窄为抽取轻量 `CallableTarget32`；closure/native/Runtime32 callable 分支只 clone 必要的 `Arc` 或 native function handle，不再保留整 callable snapshot dispatch 边界。
@@ -194,6 +199,12 @@
 - exec32 dynamic list prepend 的异类型路径已删除 `prepend_runtime_values()` helper，改为按 list snapshot 直接构造 `TypedList::Mixed`，新增 typed string list 前置非字符串值覆盖。
 - core exec32、stdlib `list` 和 stdlib `iter` 的 mixed fallback 已删除旧 `append_runtime_values()` / `append_string_list_runtime_values()` helper 表面，改为只在 mixed-output 边界显式 `append_to_mixed_output()`。
 - stdlib `map.values` 已删除 decode 风格的 `runtime_values_list()` 整表备用 clone，改为 map-local 渐进 shape builder；typed 输出不再预先 clone mixed fallback，只有实际污染到 mixed 时才构造 mixed values。core JSON/YAML/TOML decode 边界也已改为 `decoded_values_to_typed_list()` 命名，避免继续暴露通用 runtime-values helper 表面。
+- stdlib `map.values` 的 numeric/string shape 污染边界已继续收窄：从 typed values 退到 `Mixed` 时改为 final-capacity 手动构造输出，不再通过 `into_iter().map(...).collect::<Vec<_>>()` 先生成中转；新增 numeric-to-mixed 污染覆盖。
+- `CallableValue::RuntimeNative32` 的 `name` 字段迁移已补齐到 call target、`LoadNative`、跨 heap/module callable copy 和 runtime display；native callable display name 不再在旧 pattern/initializer 中丢失，也不再阻断全包编译。
+- exec32 非 move-source `NewList` 的 register-window typed builder 已改为先扫描最终 shape，再只构造对应 typed backing；不再同时预分配 int/float/bool/string 四套候选 Vec，只有真正 mixed 时才 clone 源 slots。
+- stdlib `string.format` 已从 `chars().collect::<Vec<_>>()` 的全格式串 materialization 改为 `Peekable<char>` 单遍扫描；仅为识别 `{}` 占位符而存在的临时 char Vec 已删除。
+- compiler for-object pattern binding 已直接按 object field keys 生成 map contains 条件；不再为了复用 map pattern condition 先构造 `(key, Pattern::Wildcard)` 临时 Vec。
+- stdlib runtime display 已改为流式拼接 list/map/object 输出；不再先收集 `Vec<String>` / entry Vec 后 join，nested typed containers display 仍保持原格式。
 
 ## 最近验证
 
@@ -234,6 +245,14 @@ cargo test -p lk-core vm::exec32::exec32_tests::native::execute_program32_with_c
 cargo test -p lk-core execute32_ -- --nocapture
 cargo check -p lk-core --features llvm
 cargo test -p lk-core llvm --features llvm -- --nocapture
+cargo test -p lk-stdlib map -- --nocapture
+cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp
+cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp --features llvm
+cargo test -p lk-core vm::exec32::exec32_tests::basic -- --nocapture
+cargo test -p lk-stdlib string -- --nocapture
+cargo test -p lk-core vm::compiler32::tests -- --nocapture
+cargo test -p lk-core vm::compiler32::facts_tests -- --nocapture
+cargo test -p lk-stdlib runtime_native -- --nocapture
 ```
 
 `cargo test -p lk-cli` 曾暴露 `cli/src/coverage.rs` 仍打印已删除的 old `Val` clone metrics；该残留已修复并重跑通过。`lk compile exe` 的 CLI 集成测试现在会编译并运行生成的 executable。
@@ -264,6 +283,16 @@ cargo test -p lk-core llvm --features llvm -- --nocapture
 
 本轮收窄 `VmContext` core field helpers typed map backing 后已重跑 `cargo test -p lk-core vm::context -- --nocapture`。
 
+本轮继续收窄 `map.values` mixed 污染构造，并补齐 `RuntimeNative32.name` 字段迁移残留和 LLVM feature 下的 runtime callable display accessor。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-stdlib map -- --nocapture`、legacy/materialization grep、unsafe grep、单文件行数检查、`git diff --check`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp` 和 `cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp --features llvm`。
+
+本轮收窄非 move-source `NewList` register-window typed builder：先复用 runtime slot shape scan，再只分配最终 typed backing；mixed 路径保留语义所需 clone。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-core vm::exec32::exec32_tests::basic -- --nocapture`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp` 和 `cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp --features llvm`。
+
+本轮收窄 stdlib `string.format` format-string 扫描：删除整串 `Vec<char>` materialization，改为 `Peekable<char>` 单遍处理 `{}`。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-stdlib string -- --nocapture`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp --features llvm`、unsafe grep、单文件行数检查和 `git diff --check`。
+
+本轮收窄 compiler for-object pattern condition 构造：新增 key-only map condition helper，for-object binding 直接传 field key iterator，不再构造 wildcard pattern Vec。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-core vm::compiler32::tests -- --nocapture`、`cargo test -p lk-core vm::compiler32::facts_tests -- --nocapture`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp --features llvm`、unsafe grep 和单文件行数检查。
+
+本轮收窄 stdlib runtime display 输出构造：list/map/object display 改为直接向 `String` 追加内容，删除 map/object entry Vec 和 list value Vec 的中转 join。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-stdlib runtime_native -- --nocapture`、`cargo test -p lk-stdlib string -- --nocapture`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp --features llvm`、unsafe grep、单文件行数检查和 `git diff --check`。
+
 本轮收窄 `VmContext` trait registration helper 的 whole-list clone 边界，`runtime_list_values()` 不再先 clone 整个 `TypedList`，而是借用 backing 后按 variant 构造返回 values；string backing 只复制 `Arc<str>` 并在释放 heap borrow 后按需 materialize。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-core vm::context -- --nocapture`、`cargo test -p lk-core trait -- --nocapture`、`cargo check -p lk-core -p lk-stdlib -p lk-cli`、`cargo check -p lk-core -p lk-stdlib -p lk-cli --features llvm` 和 unsafe grep。
 
 本轮收窄 `iter.take` / `iter.skip` typed list slicing 后已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-stdlib iter -- --nocapture`、`cargo test -p lk-stdlib --lib` 和 `cargo check -p lk-core -p lk-stdlib -p lk-cli`。
@@ -275,6 +304,10 @@ cargo test -p lk-core llvm --features llvm -- --nocapture
 本轮同步收窄 core method helper builtin inline positional 展开：typed string list 不再 clone 整个 backing，也不再先转 `String`；同时 `StreamSpec::open_cursor()` 不再 clone 整棵 stream spec。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-core execute_program32_method_helper_uses_list_handle_positional_args -- --nocapture`、`cargo test -p lk-core vm::exec32::exec32_tests::native -- --nocapture`、`cargo test -p lk-stdlib stream -- --nocapture` 和 `cargo test -p lk-stdlib stream_test -- --nocapture`。
 
 本轮收窄 core object/map builtins：`__lk_set_field` 和 `__lk_merge_fields` 对 typed string map 按覆盖键过滤构造输出，不再 clone 整张 map 后覆盖；`__lk_set_field` 的 typed map 污染分支也删除旧 copy-then-set fallback，直接过滤构造 `StringMixed`。新增覆盖键、typed backing 保留和污染分支 len 不增长测试。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-core core_set_field_preserves_typed_string_int_map_without_copying_overwritten_entry -- --nocapture`、`cargo test -p lk-core core_set_field_pollutes_typed_map_without_copying_overwritten_entry -- --nocapture`、`cargo test -p lk-core core_merge_fields_filters_base_keys_overwritten_by_overlay -- --nocapture`、`cargo test -p lk-core vm::context -- --nocapture`、`cargo test -p lk-core vm::exec32::exec32_tests::native -- --nocapture`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp --features llvm`、legacy/materialization grep、unsafe grep、单文件行数检查和 `git diff --check`。
+
+本轮收窄 stdlib `list.push` / `list.concat` 同类型 typed backing 构造：输出 `Vec` 按目标容量一次性分配并复制左右/新增元素，不再 clone 后 push/extend。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-stdlib test_list_direct_runtime_call_preserves_typed_backing -- --nocapture`、`cargo test -p lk-stdlib test_list_direct_runtime_concat_preserves_typed_backing -- --nocapture`、`cargo test -p lk-stdlib list -- --nocapture`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp --features llvm`、legacy/materialization grep、unsafe grep、单文件行数检查和 `git diff --check`。
+
+本轮同步收窄 stdlib `iter.chain` 同类型 typed backing concat：输出 `Vec` 按目标容量一次性构造，不再 clone 左侧后 extend。已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-stdlib iter_direct_runtime_call_preserves_typed_lists -- --nocapture`、`cargo test -p lk-stdlib iter -- --nocapture`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp`、`cargo check -p lk-core -p lk-stdlib -p lk-cli -p lk-lsp --features llvm`、legacy/materialization grep、unsafe grep、单文件行数检查和 `git diff --check`。
 
 本轮收窄 `iter.chain` typed list concat 后已重跑 `cargo fmt --all -- --check`、`cargo test -p lk-stdlib iter -- --nocapture`、`cargo test -p lk-stdlib --lib` 和 `cargo check -p lk-core -p lk-stdlib -p lk-cli`。
 

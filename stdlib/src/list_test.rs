@@ -187,6 +187,26 @@ mod tests {
             expect_runtime_list_backing(pair[0].clone(), runtime.heap()),
             TypedList::Int(values) if values == vec![1, 7]
         ));
+
+        let mut state = RuntimeModuleState32::default();
+        let list = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
+            Arc::<str>::from("red"),
+            Arc::<str>::from("green"),
+        ]))));
+        let replacement = runtime_string_value("blue", state.heap_mut());
+        let args = [list, RuntimeVal::Int(0), replacement];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let pair = expect_runtime_list(result, runtime.heap());
+        assert_eq!(
+            pair[1],
+            RuntimeVal::ShortStr(lk_core::val::ShortStr::new("red").expect("short test string"))
+        );
+        assert!(matches!(
+            expect_runtime_list_backing(pair[0].clone(), runtime.heap()),
+            TypedList::String(values)
+                if values.iter().map(|value| value.as_ref()).collect::<Vec<_>>() == vec!["blue", "green"]
+        ));
         Ok(())
     }
 

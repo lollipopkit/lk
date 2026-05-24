@@ -26,7 +26,7 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    expr::{Expr, Pattern, TemplateStringPart},
+    expr::{Expr, TemplateStringPart},
     operator::{BinOp, UnaryOp},
     stmt::{ForPattern, Program, Stmt},
     val::{LiteralVal, ShortStr},
@@ -1054,11 +1054,8 @@ impl Compiler32 {
                 Ok(())
             }
             ForPattern::Object(entries) => {
-                let map_patterns = entries
-                    .iter()
-                    .map(|(key, _)| (key.clone(), Pattern::Wildcard))
-                    .collect::<Vec<_>>();
-                let condition = self.lower_map_pattern_condition(value, &map_patterns)?;
+                let condition =
+                    self.lower_map_pattern_key_condition(value, entries.iter().map(|(key, _)| key.as_str()))?;
                 self.emit_pattern_assert(condition)?;
                 for (key, pattern) in entries {
                     let key = self.lower_val(&LiteralVal::from_str(key))?;

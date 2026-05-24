@@ -266,13 +266,10 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn err(&self, msg: &str) -> String {
-        let right = (self.pos + 5).min(self.len);
-        let left = self.pos.saturating_sub(5);
-        let chars: Vec<_> = self.tokens[left..right].iter().collect();
         let ctx = if let Some(token) = self.tokens.get(self.pos) {
-            format!("'{:?}' at index {}, near '{:?}'", token, self.pos, chars)
+            format!("found {:?}", token)
         } else {
-            format!("at end, near '{:?}'", chars)
+            "found end of input".to_string()
         };
         format!("Syntax error: {} ({})", msg, ctx)
     }

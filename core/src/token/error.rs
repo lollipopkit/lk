@@ -81,6 +81,42 @@ impl ParseError {
             span: Some(Span::single(position)),
         }
     }
+
+    pub fn display_with_source(&self, source: &str) -> String {
+        self.display_with_source_color(source, false)
+    }
+
+    pub fn display_with_source_color(&self, source: &str, color: bool) -> String {
+        let Some(span) = &self.span else {
+            return self.message.clone();
+        };
+        let mut out = if color {
+            format!("\x1b[1m{}\x1b[0m at \x1b[36m{}\x1b[0m", self.message, span)
+        } else {
+            format!("{} at {}", self.message, span)
+        };
+        if let Some(line) = source.lines().nth(span.start.line.saturating_sub(1) as usize) {
+            out.push('\n');
+            out.push_str(line);
+            out.push('\n');
+            let start = span.start.column.saturating_sub(1) as usize;
+            let end = if span.end.line == span.start.line {
+                span.end.column.saturating_sub(1).max(span.start.column) as usize
+            } else {
+                line.chars().count().max(start + 1)
+            };
+            out.push_str(&" ".repeat(start));
+            let marker = "^".repeat(end.saturating_sub(start).max(1));
+            if color {
+                out.push_str("\x1b[31;1m");
+                out.push_str(&marker);
+                out.push_str("\x1b[0m");
+            } else {
+                out.push_str(&marker);
+            }
+        }
+        out
+    }
 }
 
 impl fmt::Display for ParseError {

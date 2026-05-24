@@ -541,7 +541,7 @@ fn runtime_positional_arg_list(
 }
 
 fn copy_method_positional_list(handle: HeapRef, heap: &mut HeapStore, frame: &mut [RuntimeVal]) -> anyhow::Result<()> {
-    let string_values = match heap
+    let long_string_values = match heap
         .get(handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
     {
@@ -569,31 +569,22 @@ fn copy_method_positional_list(handle: HeapRef, heap: &mut HeapStore, frame: &mu
             }
             return Ok(());
         }
-        HeapValue::List(TypedList::String(values)) => values
-            .iter()
-            .map(|value| match ShortStr::new(value.as_ref()) {
-                Some(short) => MethodStringArg::Short(short),
-                None => MethodStringArg::Long(Arc::clone(value)),
-            })
-            .collect::<Vec<_>>(),
+        HeapValue::List(TypedList::String(values)) => {
+            let mut long_values = Vec::new();
+            for (index, value) in values.iter().enumerate() {
+                match ShortStr::new(value.as_ref()) {
+                    Some(short) => frame[index] = RuntimeVal::ShortStr(short),
+                    None => long_values.push((index, Arc::clone(value))),
+                }
+            }
+            long_values
+        }
         other => bail!("method positional arguments must be a list, got {}", other.type_name()),
     };
-    for (slot, value) in frame.iter_mut().zip(string_values) {
-        *slot = method_string_arg_value(value, heap);
+    for (index, value) in long_string_values {
+        frame[index] = RuntimeVal::Obj(heap.alloc(HeapValue::String(value)));
     }
     Ok(())
-}
-
-enum MethodStringArg {
-    Short(ShortStr),
-    Long(Arc<str>),
-}
-
-fn method_string_arg_value(value: MethodStringArg, heap: &mut HeapStore) -> RuntimeVal {
-    match value {
-        MethodStringArg::Short(value) => RuntimeVal::ShortStr(value),
-        MethodStringArg::Long(value) => RuntimeVal::Obj(heap.alloc(HeapValue::String(value))),
-    }
 }
 
 fn runtime_named_arg_map(helper: &str, value: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<Option<HeapRef>> {

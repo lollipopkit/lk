@@ -45,6 +45,7 @@ impl Module for OsModule {
     fn runtime_exports(&self) -> Result<RuntimeExport32> {
         fn callable(heap: &mut HeapStore, f: PlainNativeFunction32, arity: u16) -> RuntimeVal {
             RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+                name: Arc::<str>::from("os::<native>"),
                 arity,
                 function: NativeFunction32::Plain(f),
             })))

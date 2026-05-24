@@ -41,8 +41,8 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap, typed_map_from_entries};
 
 use super::{
-    CallWindow32, Function32, Instr32, Module32, Opcode32, RegisterIndex, RuntimeExport32, RuntimeModuleState32,
-    VmContext,
+    CallWindow32, Function32, Instr32, Module32, NativeEntry32, Opcode32, RegisterIndex, RuntimeExport32,
+    RuntimeModuleState32, VmContext,
     analysis::{
         PerfCallFact, PerfIndexFact, VmCallMetric, VmContainerMetric, VmValueCopyMetric,
         record_branch_op_known_enabled, record_call_op_known_enabled, record_container_op_known_enabled,
@@ -146,7 +146,7 @@ fn format_runtime_val(value: &RuntimeVal, heap: &HeapStore, depth: usize) -> Str
                 HeapValue::List(_) => "[...]".to_string(),
                 HeapValue::Map(map) if depth < MAX_DEPTH => format_typed_map(map, heap, depth + 1),
                 HeapValue::Map(_) => "{...}".to_string(),
-                HeapValue::Callable(_) => "<function>".to_string(),
+                HeapValue::Callable(callable) => format_callable(callable),
                 HeapValue::Object(obj) => {
                     if depth < MAX_DEPTH {
                         let fields: Vec<String> = obj
@@ -161,6 +161,29 @@ fn format_runtime_val(value: &RuntimeVal, heap: &HeapStore, depth: usize) -> Str
                 }
                 _ => "<value>".to_string(),
             }
+        }
+    }
+}
+
+fn format_callable(callable: &crate::val::CallableValue) -> String {
+    match callable {
+        crate::val::CallableValue::Closure {
+            function_index,
+            captures,
+        } => format!("<fn #{}({} captures)>", function_index, captures.len()),
+        crate::val::CallableValue::RuntimeNative32 { name, arity, .. } => {
+            if *arity == NativeEntry32::VARIADIC {
+                format!("<native fn {}(...)>", name)
+            } else {
+                format!("<native fn {}({} args)>", name, arity)
+            }
+        }
+        crate::val::CallableValue::Runtime32(function) => {
+            format!(
+                "<fn {} ({} captures)>",
+                function.display_signature(),
+                function.capture_count()
+            )
         }
     }
 }

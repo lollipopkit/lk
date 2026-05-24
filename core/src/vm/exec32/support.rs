@@ -23,11 +23,10 @@ pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeV
                 *slot = value;
             }
             value => {
-                let mut mixed = values.iter().copied().map(RuntimeVal::Int).collect::<Vec<_>>();
-                let Some(slot) = mixed.get_mut(index) else {
+                if index >= values.len() {
                     bail!("list index {} out of bounds", index);
-                };
-                *slot = value;
+                }
+                let mixed = copy_numeric_list_with_replacement(values, index, value, RuntimeVal::Int);
                 *list = TypedList::Mixed(mixed);
             }
         },
@@ -39,11 +38,10 @@ pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeV
                 *slot = value;
             }
             value => {
-                let mut mixed = values.iter().copied().map(RuntimeVal::Float).collect::<Vec<_>>();
-                let Some(slot) = mixed.get_mut(index) else {
+                if index >= values.len() {
                     bail!("list index {} out of bounds", index);
-                };
-                *slot = value;
+                }
+                let mixed = copy_numeric_list_with_replacement(values, index, value, RuntimeVal::Float);
                 *list = TypedList::Mixed(mixed);
             }
         },
@@ -55,17 +53,33 @@ pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeV
                 *slot = value;
             }
             value => {
-                let mut mixed = values.iter().copied().map(RuntimeVal::Bool).collect::<Vec<_>>();
-                let Some(slot) = mixed.get_mut(index) else {
+                if index >= values.len() {
                     bail!("list index {} out of bounds", index);
-                };
-                *slot = value;
+                }
+                let mixed = copy_numeric_list_with_replacement(values, index, value, RuntimeVal::Bool);
                 *list = TypedList::Mixed(mixed);
             }
         },
         TypedList::String(_) => bail!("internal error: typed string list write must be handled before mutable borrow"),
     }
     Ok(())
+}
+
+fn copy_numeric_list_with_replacement<T: Copy>(
+    values: &[T],
+    index: usize,
+    value: RuntimeVal,
+    wrap: impl Fn(T) -> RuntimeVal,
+) -> Vec<RuntimeVal> {
+    let mut mixed = Vec::with_capacity(values.len());
+    for value in &values[..index] {
+        mixed.push(wrap(*value));
+    }
+    mixed.push(value);
+    for value in &values[index + 1..] {
+        mixed.push(wrap(*value));
+    }
+    mixed
 }
 
 pub(super) fn call_native_entry(

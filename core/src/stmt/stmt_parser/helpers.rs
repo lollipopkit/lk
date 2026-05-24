@@ -361,20 +361,10 @@ impl<'a> StmtParser<'a> {
     }
 
     pub(super) fn err(&self, msg: &str) -> String {
-        let r_idx = if self.pos + 5 < self.len {
-            self.pos + 5
+        let ctx = if let Some(c) = self.tokens.get(self.pos) {
+            format!("found {:?}", c)
         } else {
-            self.len
-        };
-        let l_idx = self.pos.saturating_sub(5);
-        let r_idx = if r_idx > self.len { self.len } else { r_idx };
-        let chars = &self.tokens[l_idx..r_idx];
-        let chars: Vec<_> = chars.iter().collect();
-        let c = self.tokens.get(self.pos);
-        let ctx = if let Some(c) = c {
-            format!("'{:?}' at index {}, near '{:?}'", c, self.pos, chars)
-        } else {
-            format!("at end, near '{:?}'", chars)
+            "found end of input".to_string()
         };
         format!("Syntax error: {} ({})", msg, ctx)
     }

@@ -938,7 +938,7 @@ fn call_runtime_callable_value(
             StreamCallableTarget::Runtime32(Arc::clone(function))
         }
         HeapValue::Callable(CallableValue::Closure { .. }) => StreamCallableTarget::Closure,
-        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
+        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function, .. }) => {
             StreamCallableTarget::RuntimeNative32 {
                 arity: *arity,
                 function: function.clone(),

@@ -295,6 +295,7 @@ fn direct_full_state_native_named_map_uses_heap_map_source() {
 
     let mut state = RuntimeModuleState32::default();
     let callable = RuntimeVal::Obj(state.heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+        name: Arc::<str>::from("full_state_named"),
         arity: 1,
         function: NativeFunction32::FullState(full_state_named),
     })));

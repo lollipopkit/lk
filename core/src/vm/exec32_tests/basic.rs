@@ -888,6 +888,43 @@ fn execute32_writes_mixed_list_by_int_index() {
 }
 
 #[test]
+fn execute32_pollutes_typed_int_list_by_string_write_without_reclassifying() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            ints: vec![7, 8, 1],
+            strings: vec!["nine".to_string()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadInt, 0, 0),
+            Instr32::abx(Opcode32::LoadInt, 1, 1),
+            Instr32::abc(Opcode32::NewList, 2, 0, 2),
+            Instr32::abx(Opcode32::LoadInt, 3, 2),
+            Instr32::abx(Opcode32::LoadString, 4, 0),
+            Instr32::abc(Opcode32::SetIndex, 2, 3, 4),
+            Instr32::abc(Opcode32::Return, 2, 1, 0),
+        ],
+        register_count: 5,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+    let RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list object");
+    };
+    let HeapValue::List(TypedList::Mixed(values)) = result.state.heap.get(handle).expect("heap object") else {
+        panic!("expected mixed list");
+    };
+
+    assert_eq!(values[0], RuntimeVal::Int(7));
+    assert!(matches!(&values[1], RuntimeVal::ShortStr(value) if value.as_str() == "nine"));
+}
+
+#[test]
 fn execute32_updates_typed_string_list_without_materializing() {
     let function = Function32 {
         consts: ConstPool32 {
@@ -960,6 +997,43 @@ fn execute32_adds_typed_string_lists_without_materializing_items() {
 
     assert_eq!(values.len(), 2);
     assert_eq!(result.state.heap.len(), 5);
+}
+
+#[test]
+fn execute32_adds_typed_int_lists_and_push_preserving_backing() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            ints: vec![1, 2, 3, 4],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadInt, 0, 0),
+            Instr32::abx(Opcode32::LoadInt, 1, 1),
+            Instr32::abc(Opcode32::NewList, 2, 0, 2),
+            Instr32::abx(Opcode32::LoadInt, 3, 2),
+            Instr32::abc(Opcode32::NewList, 4, 3, 1),
+            Instr32::abc(Opcode32::AddInt, 5, 2, 4),
+            Instr32::abx(Opcode32::LoadInt, 6, 3),
+            Instr32::abc(Opcode32::AddInt, 7, 5, 6),
+            Instr32::abc(Opcode32::Return, 7, 1, 0),
+        ],
+        register_count: 8,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+    let RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list object");
+    };
+    let HeapValue::List(TypedList::Int(values)) = result.state.heap.get(handle).expect("heap object") else {
+        panic!("expected typed int list");
+    };
+
+    assert_eq!(values, &vec![1, 2, 3, 4]);
 }
 
 #[test]

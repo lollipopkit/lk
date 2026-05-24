@@ -1,9 +1,9 @@
 use anyhow::{Result, anyhow};
 use lk_core::{
-    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap, de},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap, de},
     vm::{NativeArgs32, NativeRuntime32},
 };
-use std::sync::Arc;
+use std::{fmt::Write as _, sync::Arc};
 
 #[cfg(test)]
 pub(crate) fn runtime_native_export(
@@ -22,7 +22,7 @@ pub(crate) fn runtime_native_export(
     let RuntimeVal::Obj(handle) = value else {
         return Err(anyhow!("{name} must be a heap callable"));
     };
-    let Some(HeapValue::Callable(lk_core::val::CallableValue::RuntimeNative32 { arity, function })) =
+    let Some(HeapValue::Callable(lk_core::val::CallableValue::RuntimeNative32 { arity, function, .. })) =
         state.heap().get(handle)
     else {
         return Err(anyhow!("{name} must be RuntimeNative32"));
@@ -90,60 +90,119 @@ fn runtime_display_heap_value(value: &HeapValue, heap: &HeapStore) -> Result<Str
         HeapValue::String(value) => Ok(value.to_string()),
         HeapValue::List(values) => runtime_display_list(values, heap),
         HeapValue::Map(values) => runtime_display_map(values, heap),
+        HeapValue::Callable(value) => Ok(runtime_display_callable(value)),
         HeapValue::Object(value) => {
-            let fields = value
-                .fields
-                .iter()
-                .map(|(key, value)| Ok((key.to_string(), runtime_display_value(value, heap)?)))
-                .collect::<Result<Vec<_>>>()?;
-            Ok(format!("{}{}", value.type_name, display_entries(fields)))
+            let mut out = value.type_name.to_string();
+            append_display_entries(
+                &mut out,
+                value
+                    .fields
+                    .iter()
+                    .map(|(key, value)| Ok((key.to_string(), runtime_display_value(value, heap)?))),
+            )?;
+            Ok(out)
         }
         other => Ok(format!("<{}>", other.type_name())),
     }
 }
 
+fn runtime_display_callable(value: &CallableValue) -> String {
+    match value {
+        CallableValue::Closure {
+            function_index,
+            captures,
+        } => format!("<fn #{}({} captures)>", function_index, captures.len()),
+        CallableValue::RuntimeNative32 { name, arity, .. } => {
+            if *arity == lk_core::vm::NativeEntry32::VARIADIC {
+                format!("<native fn {}(...)>", name)
+            } else {
+                format!("<native fn {}({} args)>", name, arity)
+            }
+        }
+        CallableValue::Runtime32(function) => {
+            format!(
+                "<fn {} ({} captures)>",
+                function.display_signature(),
+                function.capture_count()
+            )
+        }
+    }
+}
+
 fn runtime_display_list(values: &TypedList, heap: &HeapStore) -> Result<String> {
-    let values = match values {
-        TypedList::Mixed(values) => values
-            .iter()
-            .map(|value| runtime_display_value(value, heap))
-            .collect::<Result<Vec<_>>>()?,
-        TypedList::Int(values) => values.iter().map(ToString::to_string).collect(),
-        TypedList::Float(values) => values.iter().map(ToString::to_string).collect(),
-        TypedList::Bool(values) => values.iter().map(ToString::to_string).collect(),
-        TypedList::String(values) => values.iter().map(|value| quote_string(value)).collect(),
-    };
-    Ok(format!("[{}]", values.join(",")))
+    let mut out = String::from("[");
+    let mut first = true;
+    match values {
+        TypedList::Mixed(values) => {
+            for value in values {
+                push_display_sep(&mut out, &mut first);
+                out.push_str(&runtime_display_value(value, heap)?);
+            }
+        }
+        TypedList::Int(values) => {
+            for value in values {
+                push_display_sep(&mut out, &mut first);
+                write!(&mut out, "{value}").expect("write to String cannot fail");
+            }
+        }
+        TypedList::Float(values) => {
+            for value in values {
+                push_display_sep(&mut out, &mut first);
+                write!(&mut out, "{value}").expect("write to String cannot fail");
+            }
+        }
+        TypedList::Bool(values) => {
+            for value in values {
+                push_display_sep(&mut out, &mut first);
+                write!(&mut out, "{value}").expect("write to String cannot fail");
+            }
+        }
+        TypedList::String(values) => {
+            for value in values {
+                push_display_sep(&mut out, &mut first);
+                out.push_str(&quote_string(value));
+            }
+        }
+    }
+    out.push(']');
+    Ok(out)
 }
 
 fn runtime_display_map(values: &TypedMap, heap: &HeapStore) -> Result<String> {
-    let entries = runtime_display_map_entries(values, heap)?;
-    Ok(display_entries(entries))
-}
-
-fn runtime_display_map_entries(values: &TypedMap, heap: &HeapStore) -> Result<Vec<(String, String)>> {
+    let mut out = String::new();
     match values {
-        TypedMap::Mixed(entries) => entries
-            .iter()
-            .map(|(key, value)| Ok((runtime_display_map_key(key), runtime_display_value(value, heap)?)))
-            .collect(),
-        TypedMap::StringMixed(entries) => entries
-            .iter()
-            .map(|(key, value)| Ok((quote_string(key), runtime_display_value(value, heap)?)))
-            .collect(),
-        TypedMap::StringInt(entries) => Ok(entries
-            .iter()
-            .map(|(key, value)| (quote_string(key), value.to_string()))
-            .collect()),
-        TypedMap::StringFloat(entries) => Ok(entries
-            .iter()
-            .map(|(key, value)| (quote_string(key), value.to_string()))
-            .collect()),
-        TypedMap::StringBool(entries) => Ok(entries
-            .iter()
-            .map(|(key, value)| (quote_string(key), value.to_string()))
-            .collect()),
+        TypedMap::Mixed(entries) => append_display_entries(
+            &mut out,
+            entries
+                .iter()
+                .map(|(key, value)| Ok((runtime_display_map_key(key), runtime_display_value(value, heap)?))),
+        )?,
+        TypedMap::StringMixed(entries) => append_display_entries(
+            &mut out,
+            entries
+                .iter()
+                .map(|(key, value)| Ok((quote_string(key), runtime_display_value(value, heap)?))),
+        )?,
+        TypedMap::StringInt(entries) => append_display_entries(
+            &mut out,
+            entries
+                .iter()
+                .map(|(key, value)| Ok((quote_string(key), value.to_string()))),
+        )?,
+        TypedMap::StringFloat(entries) => append_display_entries(
+            &mut out,
+            entries
+                .iter()
+                .map(|(key, value)| Ok((quote_string(key), value.to_string()))),
+        )?,
+        TypedMap::StringBool(entries) => append_display_entries(
+            &mut out,
+            entries
+                .iter()
+                .map(|(key, value)| Ok((quote_string(key), value.to_string()))),
+        )?,
     }
+    Ok(out)
 }
 
 fn runtime_display_map_key(key: &RuntimeMapKey) -> String {
@@ -157,13 +216,26 @@ fn runtime_display_map_key(key: &RuntimeMapKey) -> String {
     }
 }
 
-fn display_entries(entries: Vec<(String, String)>) -> String {
-    let body = entries
-        .into_iter()
-        .map(|(key, value)| format!("{key}:{value}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{{{body}}}")
+fn append_display_entries(out: &mut String, entries: impl IntoIterator<Item = Result<(String, String)>>) -> Result<()> {
+    out.push('{');
+    let mut first = true;
+    for entry in entries {
+        let (key, value) = entry?;
+        push_display_sep(out, &mut first);
+        out.push_str(&key);
+        out.push(':');
+        out.push_str(&value);
+    }
+    out.push('}');
+    Ok(())
+}
+
+fn push_display_sep(out: &mut String, first: &mut bool) {
+    if *first {
+        *first = false;
+    } else {
+        out.push(',');
+    }
 }
 
 fn quote_string(value: &str) -> String {

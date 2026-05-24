@@ -529,7 +529,7 @@ fn typed_list_arg_len(handle: HeapRef, heap: &HeapStore) -> Result<usize> {
 }
 
 fn copy_list_handle_into_slots(handle: HeapRef, heap: &mut HeapStore, frame: &mut [RuntimeVal]) -> Result<()> {
-    let string_values = match heap
+    let long_string_values = match heap
         .get(handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
     {
@@ -557,31 +557,22 @@ fn copy_list_handle_into_slots(handle: HeapRef, heap: &mut HeapStore, frame: &mu
             }
             return Ok(());
         }
-        HeapValue::List(TypedList::String(values)) => values
-            .iter()
-            .map(|value| match crate::val::ShortStr::new(value.as_ref()) {
-                Some(short) => RuntimeStringArg::Short(short),
-                None => RuntimeStringArg::Long(Arc::clone(value)),
-            })
-            .collect::<Vec<_>>(),
+        HeapValue::List(TypedList::String(values)) => {
+            let mut long_values = Vec::new();
+            for (index, value) in values.iter().enumerate() {
+                match crate::val::ShortStr::new(value.as_ref()) {
+                    Some(short) => frame[index] = RuntimeVal::ShortStr(short),
+                    None => long_values.push((index, Arc::clone(value))),
+                }
+            }
+            long_values
+        }
         other => bail!("runtime positional arguments must be a list, got {}", other.type_name()),
     };
-    for (slot, value) in frame.iter_mut().zip(string_values) {
-        *slot = runtime_string_arg_value(value, heap);
+    for (index, value) in long_string_values {
+        frame[index] = RuntimeVal::Obj(heap.alloc(HeapValue::String(value)));
     }
     Ok(())
-}
-
-enum RuntimeStringArg {
-    Short(crate::val::ShortStr),
-    Long(Arc<str>),
-}
-
-fn runtime_string_arg_value(value: RuntimeStringArg, heap: &mut HeapStore) -> RuntimeVal {
-    match value {
-        RuntimeStringArg::Short(value) => RuntimeVal::ShortStr(value),
-        RuntimeStringArg::Long(value) => RuntimeVal::Obj(heap.alloc(HeapValue::String(value))),
-    }
 }
 
 fn call_closure_value32(
@@ -1064,8 +1055,9 @@ fn copy_heap_value(value: &HeapValue, source_heap: &HeapStore, dest_heap: &mut H
                 .collect::<Result<_>>()?;
             HeapValue::Object(RuntimeObject::new(Arc::clone(&object.type_name), fields))
         }
-        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
+        HeapValue::Callable(CallableValue::RuntimeNative32 { name, arity, function }) => {
             HeapValue::Callable(CallableValue::RuntimeNative32 {
+                name: name.clone(),
                 arity: *arity,
                 function: function.clone(),
             })

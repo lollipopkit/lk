@@ -57,6 +57,7 @@ impl Executor32 {
             self.state
                 .heap
                 .alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+                    name: Arc::<str>::from(native.name.as_str()),
                     arity: native.arity,
                     function: native.function.clone(),
                 })),

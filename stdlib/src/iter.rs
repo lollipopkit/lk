@@ -529,30 +529,29 @@ impl ListConcatPlan {
 fn typed_list_concat_preserving_backing(left: &TypedList, right: &TypedList) -> ListConcatPlan {
     match (left, right) {
         (TypedList::Int(left), TypedList::Int(right)) => {
-            let mut left = left.clone();
-            left.extend(right.iter().copied());
-            ListConcatPlan::Ready(TypedList::Int(left))
+            ListConcatPlan::Ready(TypedList::Int(copy_concat(left, right)))
         }
         (TypedList::Float(left), TypedList::Float(right)) => {
-            let mut left = left.clone();
-            left.extend(right.iter().copied());
-            ListConcatPlan::Ready(TypedList::Float(left))
+            ListConcatPlan::Ready(TypedList::Float(copy_concat(left, right)))
         }
         (TypedList::Bool(left), TypedList::Bool(right)) => {
-            let mut left = left.clone();
-            left.extend(right.iter().copied());
-            ListConcatPlan::Ready(TypedList::Bool(left))
+            ListConcatPlan::Ready(TypedList::Bool(copy_concat(left, right)))
         }
         (TypedList::String(left), TypedList::String(right)) => {
-            let mut left = left.clone();
-            left.extend(right.iter().cloned());
-            ListConcatPlan::Ready(TypedList::String(left))
+            ListConcatPlan::Ready(TypedList::String(copy_concat(left, right)))
         }
         (left, right) => ListConcatPlan::Mixed {
             left: RuntimeListSnapshot::from_typed(left),
             right: RuntimeListSnapshot::from_typed(right),
         },
     }
+}
+
+fn copy_concat<T: Clone>(left: &[T], right: &[T]) -> Vec<T> {
+    let mut out = Vec::with_capacity(left.len() + right.len());
+    out.extend_from_slice(left);
+    out.extend_from_slice(right);
+    out
 }
 
 enum FlattenItem {
@@ -631,21 +630,17 @@ fn concat_list_snapshots(
     heap: &mut HeapStore,
 ) -> RuntimeListSnapshot {
     match (left, right) {
-        (RuntimeListSnapshot::Int(mut left), RuntimeListSnapshot::Int(right)) => {
-            left.extend(right);
-            RuntimeListSnapshot::Int(left)
+        (RuntimeListSnapshot::Int(left), RuntimeListSnapshot::Int(right)) => {
+            RuntimeListSnapshot::Int(copy_concat_owned(left, right))
         }
-        (RuntimeListSnapshot::Float(mut left), RuntimeListSnapshot::Float(right)) => {
-            left.extend(right);
-            RuntimeListSnapshot::Float(left)
+        (RuntimeListSnapshot::Float(left), RuntimeListSnapshot::Float(right)) => {
+            RuntimeListSnapshot::Float(copy_concat_owned(left, right))
         }
-        (RuntimeListSnapshot::Bool(mut left), RuntimeListSnapshot::Bool(right)) => {
-            left.extend(right);
-            RuntimeListSnapshot::Bool(left)
+        (RuntimeListSnapshot::Bool(left), RuntimeListSnapshot::Bool(right)) => {
+            RuntimeListSnapshot::Bool(copy_concat_owned(left, right))
         }
-        (RuntimeListSnapshot::String(mut left), RuntimeListSnapshot::String(right)) => {
-            left.extend(right);
-            RuntimeListSnapshot::String(left)
+        (RuntimeListSnapshot::String(left), RuntimeListSnapshot::String(right)) => {
+            RuntimeListSnapshot::String(copy_concat_owned(left, right))
         }
         (left, right) => {
             let mut values = Vec::with_capacity(left.len() + right.len());
@@ -654,6 +649,13 @@ fn concat_list_snapshots(
             RuntimeListSnapshot::Mixed(values)
         }
     }
+}
+
+fn copy_concat_owned<T>(left: Vec<T>, right: Vec<T>) -> Vec<T> {
+    let mut out = Vec::with_capacity(left.len() + right.len());
+    out.extend(left);
+    out.extend(right);
+    out
 }
 
 fn unique_typed_list(input: &TypedList, heap: &HeapStore) -> TypedList {
@@ -749,7 +751,7 @@ fn call_callable(
     {
         HeapValue::Callable(CallableValue::Runtime32(function)) => IterCallableTarget::Runtime32(Arc::clone(function)),
         HeapValue::Callable(CallableValue::Closure { .. }) => IterCallableTarget::Closure,
-        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
+        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function, .. }) => {
             IterCallableTarget::RuntimeNative32 {
                 arity: *arity,
                 function: function.clone(),
@@ -1119,6 +1121,7 @@ mod tests {
         let callback = state
             .heap_mut()
             .alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+                name: Arc::<str>::from("fail_on_first"),
                 arity: 1,
                 function: NativeFunction32::Plain(fail_on_first),
             }));

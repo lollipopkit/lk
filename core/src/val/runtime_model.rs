@@ -110,6 +110,7 @@ pub enum CallableValue {
         captures: Arc<Vec<RuntimeVal>>,
     },
     RuntimeNative32 {
+        name: Arc<str>,
         arity: u16,
         function: crate::vm::NativeFunction32,
     },

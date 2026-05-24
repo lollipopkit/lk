@@ -20,6 +20,7 @@ use lk_core::{
 use anyhow::Context;
 
 mod coverage;
+mod diagnostic;
 #[cfg(test)]
 mod main_test;
 mod paths;
@@ -233,7 +234,7 @@ fn main() -> anyhow::Result<()> {
                 let output = output_arg
                     .map(|p| {
                         sanitize_path(p.to_string_lossy().as_ref()).map_err(|e| {
-                            eprintln!("Error: {}", e);
+                            diagnostic::error(&e);
                             e
                         })
                     })
@@ -296,7 +297,7 @@ fn main() -> anyhow::Result<()> {
     // Otherwise: execute FILE as statements
     let file = file.expect("internal: file should be present when no subcommand");
     let safe = sanitize_path(file.to_string_lossy().as_ref()).map_err(|e| {
-        eprintln!("Error: {}", e);
+        diagnostic::error(&e);
         e
     })?;
     let src_path_str = safe.to_string_lossy().to_string();
@@ -306,7 +307,7 @@ fn main() -> anyhow::Result<()> {
         let input =
             String::from_utf8(raw).map_err(|e| anyhow::anyhow!("Input file is not valid UTF-8 LK module: {}", e))?;
         if let Err(e) = rt::init_runtime() {
-            eprintln!("Warning: Failed to initialize runtime: {}", e);
+            diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
         }
         let artifact = Module32Artifact::from_json_str(&input)
             .with_context(|| format!("decode Instr32 module {}", safe.display()))?;
@@ -326,14 +327,14 @@ fn main() -> anyhow::Result<()> {
 
     // Initialize runtime for concurrency if enabled
     if let Err(e) = rt::init_runtime() {
-        eprintln!("Warning: Failed to initialize runtime: {}", e);
+        diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
     }
 
     // Parse and execute as statements
     let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(&input) {
         Ok((tokens, spans)) => (tokens, spans),
         Err(parse_err) => {
-            eprintln!("Error: {}", parse_err);
+            diagnostic::parse_error(&parse_err, &input);
             std::process::exit(1);
         }
     };
@@ -341,7 +342,7 @@ fn main() -> anyhow::Result<()> {
     let program = match parser.parse_program_with_enhanced_errors(&input) {
         Ok(program) => program,
         Err(parse_err) => {
-            eprintln!("Error: {}", parse_err);
+            diagnostic::parse_error(&parse_err, &input);
             std::process::exit(1);
         }
     };
@@ -368,7 +369,7 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
     let program = parse_program_file(path)?;
     let mut checker = TypeChecker::new_strict();
     if let Err(err) = program.type_check(&mut checker) {
-        eprintln!("Error: {}", err);
+        diagnostic::error(&err);
         std::process::exit(1);
     }
     Ok(())

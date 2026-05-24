@@ -117,6 +117,30 @@ impl RuntimeCallable32 {
             state: Arc::clone(&self.state),
         }
     }
+
+    pub fn function_index(&self) -> u32 {
+        self.function_index
+    }
+
+    pub fn capture_count(&self) -> usize {
+        self.captures.len()
+    }
+
+    pub fn display_signature(&self) -> String {
+        let Some(function) = self.module.functions.get(self.function_index as usize) else {
+            return format!("#{}", self.function_index);
+        };
+        let mut params = function
+            .param_names
+            .iter()
+            .take(function.param_count as usize)
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>();
+        if params.len() < function.param_count as usize {
+            params.extend((params.len()..function.param_count as usize).map(|index| format!("arg{index}")));
+        }
+        format!("({})", params.join(", "))
+    }
 }
 
 #[derive(Debug)]

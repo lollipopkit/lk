@@ -6,7 +6,7 @@ use lk_core::package::{MANIFEST_FILE, Manifest};
 use lk_core::stmt::{Program, stmt_parser::StmtParser};
 use lk_core::token::Tokenizer;
 
-use crate::CompileMode;
+use crate::{CompileMode, diagnostic};
 
 fn read_file_content(path: &str) -> anyhow::Result<String> {
     std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", path, e))
@@ -35,7 +35,7 @@ pub(crate) fn parse_program_file(path: &Path) -> anyhow::Result<Program> {
     let (tokens, spans) = match Tokenizer::tokenize_enhanced_with_spans(&src) {
         Ok(result) => result,
         Err(parse_err) => {
-            eprintln!("Error: {}", parse_err);
+            diagnostic::parse_error(&parse_err, &src);
             std::process::exit(1);
         }
     };
@@ -43,7 +43,7 @@ pub(crate) fn parse_program_file(path: &Path) -> anyhow::Result<Program> {
     match parser.parse_program_with_enhanced_errors(&src) {
         Ok(program) => Ok(program),
         Err(parse_err) => {
-            eprintln!("Error: {}", parse_err);
+            diagnostic::parse_error(&parse_err, &src);
             std::process::exit(1);
         }
     }
