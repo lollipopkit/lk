@@ -1,15 +1,11 @@
-use std::{collections::BTreeMap, ops::Range, sync::Arc};
+use std::{ops::Range, sync::Arc};
 
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList},
+    val::{HeapStore, HeapValue, RuntimeVal, TypedList},
     vm::{Module32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeModuleState32, VmContext},
 };
-
-pub(super) fn string_key(key: &RuntimeMapKey) -> Option<&str> {
-    key.as_str()
-}
 
 pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeVal) -> Result<()> {
     match list {
@@ -140,67 +136,74 @@ impl InlineNativeArgs32 {
     }
 }
 
-pub(super) fn inline_native_args_from_stack(
+pub(super) fn move_inline_native_args_from_stack(
     native: &NativeEntry32,
-    stack: &[RuntimeVal],
+    stack: &mut [RuntimeVal],
     args: Range<usize>,
 ) -> Result<InlineNativeArgs32> {
-    inline_native_slots_from_stack(native, stack, args, "argument")
+    move_inline_native_slots_from_stack(native, stack, args, "argument")
 }
 
-pub(super) fn inline_native_slots_from_stack(
+pub(super) fn move_inline_native_slots_from_stack(
     native: &NativeEntry32,
-    stack: &[RuntimeVal],
+    stack: &mut [RuntimeVal],
     slots: Range<usize>,
     label: &str,
 ) -> Result<InlineNativeArgs32> {
-    let Some(values) = stack.get(slots.clone()) else {
+    if slots.end > stack.len() {
         bail!("{} {} window out of bounds", native.name, label);
-    };
-    Ok(match values.len() {
+    }
+    Ok(match slots.len() {
         0 => InlineNativeArgs32::Zero,
-        1 => InlineNativeArgs32::One([values[0].clone()]),
-        2 => InlineNativeArgs32::Two([values[0].clone(), values[1].clone()]),
-        3 => InlineNativeArgs32::Three([values[0].clone(), values[1].clone(), values[2].clone()]),
+        1 => InlineNativeArgs32::One([std::mem::take(&mut stack[slots.start])]),
+        2 => InlineNativeArgs32::Two([
+            std::mem::take(&mut stack[slots.start]),
+            std::mem::take(&mut stack[slots.start + 1]),
+        ]),
+        3 => InlineNativeArgs32::Three([
+            std::mem::take(&mut stack[slots.start]),
+            std::mem::take(&mut stack[slots.start + 1]),
+            std::mem::take(&mut stack[slots.start + 2]),
+        ]),
         4 => InlineNativeArgs32::Four([
-            values[0].clone(),
-            values[1].clone(),
-            values[2].clone(),
-            values[3].clone(),
+            std::mem::take(&mut stack[slots.start]),
+            std::mem::take(&mut stack[slots.start + 1]),
+            std::mem::take(&mut stack[slots.start + 2]),
+            std::mem::take(&mut stack[slots.start + 3]),
         ]),
         5 => InlineNativeArgs32::Five([
-            values[0].clone(),
-            values[1].clone(),
-            values[2].clone(),
-            values[3].clone(),
-            values[4].clone(),
+            std::mem::take(&mut stack[slots.start]),
+            std::mem::take(&mut stack[slots.start + 1]),
+            std::mem::take(&mut stack[slots.start + 2]),
+            std::mem::take(&mut stack[slots.start + 3]),
+            std::mem::take(&mut stack[slots.start + 4]),
         ]),
         6 => InlineNativeArgs32::Six([
-            values[0].clone(),
-            values[1].clone(),
-            values[2].clone(),
-            values[3].clone(),
-            values[4].clone(),
-            values[5].clone(),
+            std::mem::take(&mut stack[slots.start]),
+            std::mem::take(&mut stack[slots.start + 1]),
+            std::mem::take(&mut stack[slots.start + 2]),
+            std::mem::take(&mut stack[slots.start + 3]),
+            std::mem::take(&mut stack[slots.start + 4]),
+            std::mem::take(&mut stack[slots.start + 5]),
         ]),
         7 => InlineNativeArgs32::Seven([
-            values[0].clone(),
-            values[1].clone(),
-            values[2].clone(),
-            values[3].clone(),
-            values[4].clone(),
-            values[5].clone(),
-            values[6].clone(),
+            std::mem::take(&mut stack[slots.start]),
+            std::mem::take(&mut stack[slots.start + 1]),
+            std::mem::take(&mut stack[slots.start + 2]),
+            std::mem::take(&mut stack[slots.start + 3]),
+            std::mem::take(&mut stack[slots.start + 4]),
+            std::mem::take(&mut stack[slots.start + 5]),
+            std::mem::take(&mut stack[slots.start + 6]),
         ]),
         8 => InlineNativeArgs32::Eight([
-            values[0].clone(),
-            values[1].clone(),
-            values[2].clone(),
-            values[3].clone(),
-            values[4].clone(),
-            values[5].clone(),
-            values[6].clone(),
-            values[7].clone(),
+            std::mem::take(&mut stack[slots.start]),
+            std::mem::take(&mut stack[slots.start + 1]),
+            std::mem::take(&mut stack[slots.start + 2]),
+            std::mem::take(&mut stack[slots.start + 3]),
+            std::mem::take(&mut stack[slots.start + 4]),
+            std::mem::take(&mut stack[slots.start + 5]),
+            std::mem::take(&mut stack[slots.start + 6]),
+            std::mem::take(&mut stack[slots.start + 7]),
         ]),
         len => bail!(
             "{} FullState native {} count {} exceeds inline buffer",
@@ -258,23 +261,6 @@ fn map_native_error(native: &NativeEntry32, result: Result<RuntimeVal>) -> Resul
             anyhow!("native `{}` failed: {err}", native.name)
         }
     })
-}
-
-pub(super) fn checked_u8_count(count: u16) -> Result<u8> {
-    u8::try_from(count).map_err(|_| anyhow!("capture count {} exceeds u8 encoding", count))
-}
-
-pub(super) fn remove_runtime_entry(entries: &mut BTreeMap<RuntimeMapKey, RuntimeVal>, key: &RuntimeMapKey) {
-    if entries.remove(key).is_some() {
-        return;
-    }
-    let Some(key) = string_key(key) else {
-        return;
-    };
-    entries.remove(&RuntimeMapKey::String(Arc::<str>::from(key)));
-    if let Some(short) = ShortStr::new(key) {
-        entries.remove(&RuntimeMapKey::ShortStr(short));
-    }
 }
 
 pub(super) fn heap_kind(value: &HeapValue) -> &'static str {

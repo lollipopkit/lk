@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::values::{ChannelValue, ShortStr, StreamCursorValue, StreamValue, TaskValue};
-use anyhow::Result;
 
 mod heap;
 
@@ -108,7 +107,7 @@ impl HeapValue {
 pub enum CallableValue {
     Closure {
         function_index: u32,
-        captures: Vec<RuntimeVal>,
+        captures: Arc<Vec<RuntimeVal>>,
     },
     RuntimeNative32 {
         arity: u16,
@@ -121,6 +120,42 @@ pub enum CallableValue {
 pub struct RuntimeObject {
     pub type_name: Arc<str>,
     pub fields: BTreeMap<Arc<str>, RuntimeVal>,
+    pub field_slots: Vec<Arc<str>>,
+}
+
+impl RuntimeObject {
+    pub fn new(type_name: Arc<str>, fields: BTreeMap<Arc<str>, RuntimeVal>) -> Self {
+        let field_slots = fields.keys().cloned().collect();
+        Self {
+            type_name,
+            fields,
+            field_slots,
+        }
+    }
+
+    pub fn field_slot(&self, key: &str) -> Option<usize> {
+        self.field_slots.iter().position(|candidate| candidate.as_ref() == key)
+    }
+
+    pub fn get_field(&self, key: &str) -> Option<RuntimeVal> {
+        self.fields.get(key).cloned()
+    }
+
+    pub fn get_field_slot(&self, slot: usize, key: &str) -> Option<RuntimeVal> {
+        let slot_key = self.field_slots.get(slot)?;
+        if slot_key.as_ref() == key {
+            self.fields.get(slot_key).cloned()
+        } else {
+            None
+        }
+    }
+
+    pub fn set_field(&mut self, key: Arc<str>, value: RuntimeVal) {
+        if !self.fields.contains_key(key.as_ref()) {
+            self.field_slots.push(key.clone());
+        }
+        self.fields.insert(key, value);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,94 +174,6 @@ pub enum TypedList {
 }
 
 impl TypedList {
-    pub fn from_runtime_values(values: Vec<RuntimeVal>, heap: &HeapStore) -> Self {
-        if values.is_empty() {
-            return Self::Mixed(values);
-        }
-
-        let mut ints = Vec::with_capacity(values.len());
-        let mut floats = Vec::with_capacity(values.len());
-        let mut bools = Vec::with_capacity(values.len());
-        let mut strings = Vec::with_capacity(values.len());
-        for value in &values {
-            match value {
-                RuntimeVal::Int(value) if floats.is_empty() && bools.is_empty() && strings.is_empty() => {
-                    ints.push(*value);
-                }
-                RuntimeVal::Float(value) if ints.is_empty() && bools.is_empty() && strings.is_empty() => {
-                    floats.push(*value);
-                }
-                RuntimeVal::Bool(value) if ints.is_empty() && floats.is_empty() && strings.is_empty() => {
-                    bools.push(*value);
-                }
-                RuntimeVal::ShortStr(value) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
-                    strings.push(Arc::<str>::from(value.as_str()));
-                }
-                RuntimeVal::Obj(handle) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
-                    let Some(HeapValue::String(value)) = heap.get(*handle) else {
-                        return Self::Mixed(values);
-                    };
-                    strings.push(value.clone());
-                }
-                _ => return Self::Mixed(values),
-            }
-        }
-
-        if !ints.is_empty() {
-            Self::Int(ints)
-        } else if !floats.is_empty() {
-            Self::Float(floats)
-        } else if !bools.is_empty() {
-            Self::Bool(bools)
-        } else {
-            Self::String(strings)
-        }
-    }
-
-    pub fn from_runtime_slice(values: &[RuntimeVal], heap: &HeapStore) -> Self {
-        if values.is_empty() {
-            return Self::Mixed(Vec::new());
-        }
-
-        let mut ints = Vec::with_capacity(values.len());
-        let mut floats = Vec::with_capacity(values.len());
-        let mut bools = Vec::with_capacity(values.len());
-        let mut strings = Vec::with_capacity(values.len());
-        for value in values {
-            match value {
-                RuntimeVal::Int(value) if floats.is_empty() && bools.is_empty() && strings.is_empty() => {
-                    ints.push(*value);
-                }
-                RuntimeVal::Float(value) if ints.is_empty() && bools.is_empty() && strings.is_empty() => {
-                    floats.push(*value);
-                }
-                RuntimeVal::Bool(value) if ints.is_empty() && floats.is_empty() && strings.is_empty() => {
-                    bools.push(*value);
-                }
-                RuntimeVal::ShortStr(value) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
-                    strings.push(Arc::<str>::from(value.as_str()));
-                }
-                RuntimeVal::Obj(handle) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
-                    let Some(HeapValue::String(value)) = heap.get(*handle) else {
-                        return Self::Mixed(values.to_vec());
-                    };
-                    strings.push(value.clone());
-                }
-                _ => return Self::Mixed(values.to_vec()),
-            }
-        }
-
-        if !ints.is_empty() {
-            Self::Int(ints)
-        } else if !floats.is_empty() {
-            Self::Float(floats)
-        } else if !bools.is_empty() {
-            Self::Bool(bools)
-        } else {
-            Self::String(strings)
-        }
-    }
-
     #[inline]
     pub fn len(&self) -> usize {
         match self {
@@ -243,45 +190,13 @@ impl TypedList {
         self.len() == 0
     }
 
-    pub fn runtime_values_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<RuntimeVal>> {
-        Ok(match self {
-            Self::Mixed(values) => values.clone(),
-            Self::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
-            Self::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
-            Self::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
-            Self::String(values) => values
-                .iter()
-                .map(|value| {
-                    if let Some(short) = ShortStr::new(value) {
-                        RuntimeVal::ShortStr(short)
-                    } else {
-                        RuntimeVal::Obj(heap.alloc(HeapValue::String(value.clone())))
-                    }
-                })
-                .collect(),
-        })
-    }
-
-    fn runtime_values_no_heap(&self) -> Option<Vec<RuntimeVal>> {
-        Some(match self {
-            Self::Mixed(values) => values.clone(),
-            Self::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
-            Self::Float(values) => values.iter().copied().map(RuntimeVal::Float).collect(),
-            Self::Bool(values) => values.iter().copied().map(RuntimeVal::Bool).collect(),
-            Self::String(values) => values
-                .iter()
-                .map(|value| ShortStr::new(value).map(RuntimeVal::ShortStr))
-                .collect::<Option<Vec<_>>>()?,
-        })
-    }
-
     pub fn slice_from(&self, start: usize) -> Self {
         match self {
-            Self::Mixed(values) => Self::Mixed(values.get(start..).unwrap_or(&[]).to_vec()),
-            Self::Int(values) => Self::Int(values.get(start..).unwrap_or(&[]).to_vec()),
-            Self::Float(values) => Self::Float(values.get(start..).unwrap_or(&[]).to_vec()),
-            Self::Bool(values) => Self::Bool(values.get(start..).unwrap_or(&[]).to_vec()),
-            Self::String(values) => Self::String(values.get(start..).unwrap_or(&[]).to_vec()),
+            Self::Mixed(values) => Self::Mixed(values.get(start..).unwrap_or(&[]).iter().cloned().collect()),
+            Self::Int(values) => Self::Int(values.get(start..).unwrap_or(&[]).iter().copied().collect()),
+            Self::Float(values) => Self::Float(values.get(start..).unwrap_or(&[]).iter().copied().collect()),
+            Self::Bool(values) => Self::Bool(values.get(start..).unwrap_or(&[]).iter().copied().collect()),
+            Self::String(values) => Self::String(values.get(start..).unwrap_or(&[]).iter().cloned().collect()),
         }
     }
 }
@@ -294,11 +209,35 @@ impl PartialEq for TypedList {
             (Self::Float(left), Self::Float(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::String(left), Self::String(right)) => left == right,
-            _ => match (self.runtime_values_no_heap(), other.runtime_values_no_heap()) {
-                (Some(left), Some(right)) => left == right,
-                _ => false,
-            },
+            _ => typed_list_entries_equal_no_heap(self, other),
         }
+    }
+}
+
+fn typed_list_entries_equal_no_heap(left: &TypedList, right: &TypedList) -> bool {
+    left.len() == right.len() && (0..left.len()).all(|index| typed_list_item_equal_no_heap(left, index, right, index))
+}
+
+fn typed_list_item_equal_no_heap(left: &TypedList, left_index: usize, right: &TypedList, right_index: usize) -> bool {
+    match (left, right) {
+        (TypedList::Mixed(left), TypedList::Mixed(right)) => left[left_index] == right[right_index],
+        (TypedList::Int(left), TypedList::Int(right)) => left[left_index] == right[right_index],
+        (TypedList::Float(left), TypedList::Float(right)) => left[left_index] == right[right_index],
+        (TypedList::Bool(left), TypedList::Bool(right)) => left[left_index] == right[right_index],
+        (TypedList::String(left), TypedList::String(right)) => left[left_index] == right[right_index],
+        (TypedList::Int(left), TypedList::Mixed(right)) => right[right_index] == RuntimeVal::Int(left[left_index]),
+        (TypedList::Mixed(left), TypedList::Int(right)) => left[left_index] == RuntimeVal::Int(right[right_index]),
+        (TypedList::Float(left), TypedList::Mixed(right)) => right[right_index] == RuntimeVal::Float(left[left_index]),
+        (TypedList::Mixed(left), TypedList::Float(right)) => left[left_index] == RuntimeVal::Float(right[right_index]),
+        (TypedList::Bool(left), TypedList::Mixed(right)) => right[right_index] == RuntimeVal::Bool(left[left_index]),
+        (TypedList::Mixed(left), TypedList::Bool(right)) => left[left_index] == RuntimeVal::Bool(right[right_index]),
+        (TypedList::String(left), TypedList::Mixed(right)) => ShortStr::new(&left[left_index])
+            .map(RuntimeVal::ShortStr)
+            .is_some_and(|value| right[right_index] == value),
+        (TypedList::Mixed(left), TypedList::String(right)) => ShortStr::new(&right[right_index])
+            .map(RuntimeVal::ShortStr)
+            .is_some_and(|value| left[left_index] == value),
+        _ => false,
     }
 }
 
@@ -312,47 +251,6 @@ pub enum TypedMap {
 }
 
 impl TypedMap {
-    pub fn from_runtime_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> Self {
-        if entries.is_empty() {
-            return Self::Mixed(entries);
-        }
-
-        let mut mixed = BTreeMap::new();
-        let mut ints = BTreeMap::new();
-        let mut floats = BTreeMap::new();
-        let mut bools = BTreeMap::new();
-        for (key, value) in &entries {
-            let Some(key) = runtime_map_key_as_string(key) else {
-                return Self::Mixed(entries);
-            };
-            match value {
-                RuntimeVal::Int(value) if mixed.is_empty() && floats.is_empty() && bools.is_empty() => {
-                    ints.insert(key, *value);
-                }
-                RuntimeVal::Float(value) if mixed.is_empty() && ints.is_empty() && bools.is_empty() => {
-                    floats.insert(key, *value);
-                }
-                RuntimeVal::Bool(value) if mixed.is_empty() && ints.is_empty() && floats.is_empty() => {
-                    bools.insert(key, *value);
-                }
-                value if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
-                    mixed.insert(key, value.clone());
-                }
-                _ => return Self::StringMixed(entries_to_string_mixed(entries)),
-            }
-        }
-
-        if !ints.is_empty() {
-            Self::StringInt(ints)
-        } else if !floats.is_empty() {
-            Self::StringFloat(floats)
-        } else if !bools.is_empty() {
-            Self::StringBool(bools)
-        } else {
-            Self::StringMixed(mixed)
-        }
-    }
-
     #[inline]
     pub fn len(&self) -> usize {
         match self {
@@ -385,11 +283,6 @@ impl TypedMap {
         }
     }
 
-    pub fn get_into_heap(&self, key: &RuntimeMapKey, heap: &mut HeapStore) -> Result<Option<RuntimeVal>> {
-        let _ = heap;
-        Ok(self.get(key))
-    }
-
     pub fn get_str(&self, key: &str) -> Option<RuntimeVal> {
         match self {
             Self::Mixed(values) => {
@@ -405,11 +298,6 @@ impl TypedMap {
             Self::StringFloat(values) => values.get(key).copied().map(RuntimeVal::Float),
             Self::StringBool(values) => values.get(key).copied().map(RuntimeVal::Bool),
         }
-    }
-
-    pub fn get_str_into_heap(&self, key: &str, heap: &mut HeapStore) -> Result<Option<RuntimeVal>> {
-        let _ = heap;
-        Ok(self.get_str(key))
     }
 
     pub fn set(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
@@ -484,33 +372,6 @@ impl TypedMap {
         }
     }
 
-    pub fn entries(&self) -> Vec<(RuntimeMapKey, RuntimeVal)> {
-        match self {
-            Self::Mixed(values) => values.iter().map(|(key, value)| (key.clone(), value.clone())).collect(),
-            Self::StringMixed(values) => values
-                .iter()
-                .map(|(key, value)| (RuntimeMapKey::String(key.clone()), value.clone()))
-                .collect(),
-            Self::StringInt(values) => values
-                .iter()
-                .map(|(key, value)| (RuntimeMapKey::String(key.clone()), RuntimeVal::Int(*value)))
-                .collect(),
-            Self::StringFloat(values) => values
-                .iter()
-                .map(|(key, value)| (RuntimeMapKey::String(key.clone()), RuntimeVal::Float(*value)))
-                .collect(),
-            Self::StringBool(values) => values
-                .iter()
-                .map(|(key, value)| (RuntimeMapKey::String(key.clone()), RuntimeVal::Bool(*value)))
-                .collect(),
-        }
-    }
-
-    pub fn entries_into_heap(&self, heap: &mut HeapStore) -> Result<Vec<(RuntimeMapKey, RuntimeVal)>> {
-        let _ = heap;
-        Ok(self.entries())
-    }
-
     fn materialize_string_map_to_mixed(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
         let mut mixed = match std::mem::replace(self, Self::Mixed(BTreeMap::new())) {
             Self::Mixed(values) => values,
@@ -536,6 +397,93 @@ impl TypedMap {
     }
 }
 
+pub(crate) fn typed_map_from_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> TypedMap {
+    if entries.is_empty() {
+        return TypedMap::Mixed(entries);
+    }
+
+    #[derive(Clone, Copy)]
+    enum StringMapShape {
+        Mixed,
+        Int,
+        Float,
+        Bool,
+    }
+
+    let mut shape: Option<StringMapShape> = None;
+    for (key, value) in &entries {
+        if key.as_arc_str().is_none() {
+            return TypedMap::Mixed(entries);
+        }
+        let value_shape = match value {
+            RuntimeVal::Int(_) => StringMapShape::Int,
+            RuntimeVal::Float(_) => StringMapShape::Float,
+            RuntimeVal::Bool(_) => StringMapShape::Bool,
+            _ => StringMapShape::Mixed,
+        };
+        shape = match (shape, value_shape) {
+            (None, shape) => Some(shape),
+            (Some(StringMapShape::Int), StringMapShape::Int) => Some(StringMapShape::Int),
+            (Some(StringMapShape::Float), StringMapShape::Float) => Some(StringMapShape::Float),
+            (Some(StringMapShape::Bool), StringMapShape::Bool) => Some(StringMapShape::Bool),
+            (Some(StringMapShape::Mixed), StringMapShape::Mixed) => Some(StringMapShape::Mixed),
+            _ => {
+                return TypedMap::StringMixed(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (key.as_arc_str().expect("validated string key"), value))
+                        .collect(),
+                );
+            }
+        };
+    }
+
+    match shape.expect("non-empty map has a shape") {
+        StringMapShape::Mixed => TypedMap::StringMixed(
+            entries
+                .into_iter()
+                .map(|(key, value)| (key.as_arc_str().expect("validated string key"), value))
+                .collect(),
+        ),
+        StringMapShape::Int => TypedMap::StringInt(
+            entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let key = key.as_arc_str().expect("validated string key");
+                    let RuntimeVal::Int(value) = value else {
+                        unreachable!("validated int map value");
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        StringMapShape::Float => TypedMap::StringFloat(
+            entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let key = key.as_arc_str().expect("validated string key");
+                    let RuntimeVal::Float(value) = value else {
+                        unreachable!("validated float map value");
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        StringMapShape::Bool => TypedMap::StringBool(
+            entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let key = key.as_arc_str().expect("validated string key");
+                    let RuntimeVal::Bool(value) = value else {
+                        unreachable!("validated bool map value");
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+    }
+}
+
 impl PartialEq for TypedMap {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -544,7 +492,62 @@ impl PartialEq for TypedMap {
             (Self::StringInt(left), Self::StringInt(right)) => left == right,
             (Self::StringFloat(left), Self::StringFloat(right)) => left == right,
             (Self::StringBool(left), Self::StringBool(right)) => left == right,
-            _ => self.entries() == other.entries(),
+            _ => typed_map_entries_equal(self, other),
+        }
+    }
+}
+
+fn typed_map_entries_equal(left: &TypedMap, right: &TypedMap) -> bool {
+    left.len() == right.len()
+        && typed_map_entries_all(left, |key, value| {
+            typed_map_entry_value(right, &key).is_some_and(|right| right == value)
+        })
+}
+
+fn typed_map_entries_all(map: &TypedMap, mut visit: impl FnMut(RuntimeMapKey, RuntimeVal) -> bool) -> bool {
+    match map {
+        TypedMap::Mixed(entries) => entries.iter().all(|(key, value)| visit(key.clone(), value.clone())),
+        TypedMap::StringMixed(entries) => entries
+            .iter()
+            .all(|(key, value)| visit(RuntimeMapKey::String(key.clone()), value.clone())),
+        TypedMap::StringInt(entries) => entries
+            .iter()
+            .all(|(key, value)| visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Int(*value))),
+        TypedMap::StringFloat(entries) => entries
+            .iter()
+            .all(|(key, value)| visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Float(*value))),
+        TypedMap::StringBool(entries) => entries
+            .iter()
+            .all(|(key, value)| visit(RuntimeMapKey::String(key.clone()), RuntimeVal::Bool(*value))),
+    }
+}
+
+fn typed_map_entry_value(map: &TypedMap, key: &RuntimeMapKey) -> Option<RuntimeVal> {
+    match map {
+        TypedMap::Mixed(entries) => entries.get(key).cloned(),
+        TypedMap::StringMixed(entries) => {
+            let RuntimeMapKey::String(key) = key else {
+                return None;
+            };
+            entries.get(key).cloned()
+        }
+        TypedMap::StringInt(entries) => {
+            let RuntimeMapKey::String(key) = key else {
+                return None;
+            };
+            entries.get(key).copied().map(RuntimeVal::Int)
+        }
+        TypedMap::StringFloat(entries) => {
+            let RuntimeMapKey::String(key) = key else {
+                return None;
+            };
+            entries.get(key).copied().map(RuntimeVal::Float)
+        }
+        TypedMap::StringBool(entries) => {
+            let RuntimeMapKey::String(key) = key else {
+                return None;
+            };
+            entries.get(key).copied().map(RuntimeVal::Bool)
         }
     }
 }
@@ -577,100 +580,9 @@ impl RuntimeMapKey {
     }
 }
 
-fn runtime_map_key_as_string(key: &RuntimeMapKey) -> Option<Arc<str>> {
-    key.as_arc_str()
-}
-
-fn entries_to_string_mixed(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> BTreeMap<Arc<str>, RuntimeVal> {
-    entries
-        .into_iter()
-        .filter_map(|(key, value)| runtime_map_key_as_string(&key).map(|key| (key, value)))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn typed_int_list_materializes_to_runtime_values() {
-        let mut heap = HeapStore::new();
-        let values = TypedList::Int(vec![1, 2, 3])
-            .runtime_values_into_heap(&mut heap)
-            .expect("runtime values");
-
-        assert_eq!(values.len(), 3);
-        assert_eq!(values[0].as_int(), Some(1));
-        assert_eq!(values[2].as_int(), Some(3));
-        assert!(heap.is_empty());
-    }
-
-    #[test]
-    fn long_string_list_materialization_allocates_heap_object() {
-        let mut heap = HeapStore::new();
-        let values = TypedList::String(vec![Arc::<str>::from("short"), Arc::<str>::from("longer-than-seven")])
-            .runtime_values_into_heap(&mut heap)
-            .expect("runtime values");
-
-        assert_eq!(values[0].kind(), RuntimeValKind::ShortStr);
-        assert_eq!(values[1].kind(), RuntimeValKind::Obj);
-        assert_eq!(heap.len(), 1);
-    }
-
-    #[test]
-    fn runtime_values_materialize_to_typed_lists() {
-        let mut heap = HeapStore::new();
-        let long = heap.alloc(HeapValue::String(Arc::<str>::from("longer-than-seven")));
-
-        assert_eq!(
-            TypedList::from_runtime_values(vec![RuntimeVal::Int(1), RuntimeVal::Int(2)], &heap),
-            TypedList::Int(vec![1, 2])
-        );
-        assert_eq!(
-            TypedList::from_runtime_values(vec![RuntimeVal::Bool(true), RuntimeVal::Bool(false)], &heap),
-            TypedList::Bool(vec![true, false])
-        );
-        assert_eq!(
-            TypedList::from_runtime_values(
-                vec![
-                    RuntimeVal::ShortStr(ShortStr::new("short").expect("short")),
-                    RuntimeVal::Obj(long),
-                ],
-                &heap,
-            ),
-            TypedList::String(vec![Arc::<str>::from("short"), Arc::<str>::from("longer-than-seven")])
-        );
-
-        assert!(matches!(
-            TypedList::from_runtime_values(vec![RuntimeVal::Int(1), RuntimeVal::Bool(true)], &heap),
-            TypedList::Mixed(_)
-        ));
-    }
-
-    #[test]
-    fn runtime_slices_materialize_to_typed_lists_without_precloning() {
-        let mut heap = HeapStore::new();
-        let long = heap.alloc(HeapValue::String(Arc::<str>::from("longer-than-seven")));
-
-        assert_eq!(
-            TypedList::from_runtime_slice(&[RuntimeVal::Int(1), RuntimeVal::Int(2)], &heap),
-            TypedList::Int(vec![1, 2])
-        );
-        assert_eq!(
-            TypedList::from_runtime_slice(
-                &[
-                    RuntimeVal::ShortStr(ShortStr::new("short").expect("short")),
-                    RuntimeVal::Obj(long),
-                ],
-                &heap,
-            ),
-            TypedList::String(vec![Arc::<str>::from("short"), Arc::<str>::from("longer-than-seven")])
-        );
-        assert!(matches!(
-            TypedList::from_runtime_slice(&[RuntimeVal::Int(1), RuntimeVal::Bool(true)], &heap),
-            TypedList::Mixed(_)
-        ));
-    }
 
     #[test]
     fn runtime_entries_materialize_to_typed_string_maps() {
@@ -678,7 +590,7 @@ mod tests {
         entries.insert(RuntimeMapKey::String(Arc::<str>::from("answer")), RuntimeVal::Int(42));
 
         assert!(matches!(
-            TypedMap::from_runtime_entries(entries),
+            typed_map_from_entries(entries),
             TypedMap::StringInt(values) if values.get("answer") == Some(&42)
         ));
 
@@ -688,13 +600,28 @@ mod tests {
             RuntimeVal::Bool(true),
         );
         assert!(matches!(
-            TypedMap::from_runtime_entries(entries),
+            typed_map_from_entries(entries),
             TypedMap::StringBool(values) if values.get("ok") == Some(&true)
         ));
 
         let mut entries = BTreeMap::new();
         entries.insert(RuntimeMapKey::Int(1), RuntimeVal::Int(42));
-        assert!(matches!(TypedMap::from_runtime_entries(entries), TypedMap::Mixed(_)));
+        assert!(matches!(typed_map_from_entries(entries), TypedMap::Mixed(_)));
+    }
+
+    #[test]
+    fn typed_list_equality_compares_backing_without_runtime_value_vector() {
+        let short = ShortStr::new("short").expect("short");
+        let typed_int = TypedList::Int(vec![1, 2]);
+        let mixed_int = TypedList::Mixed(vec![RuntimeVal::Int(1), RuntimeVal::Int(2)]);
+        let typed_short_string = TypedList::String(vec![Arc::<str>::from("short")]);
+        let mixed_short_string = TypedList::Mixed(vec![RuntimeVal::ShortStr(short)]);
+        let typed_long_string = TypedList::String(vec![Arc::<str>::from("longer-than-short")]);
+        let mixed_long_string = TypedList::Mixed(vec![RuntimeVal::Obj(HeapRef::new(7))]);
+
+        assert_eq!(typed_int, mixed_int);
+        assert_eq!(typed_short_string, mixed_short_string);
+        assert_ne!(typed_long_string, mixed_long_string);
     }
 
     #[test]
@@ -738,5 +665,23 @@ mod tests {
             map.get(&RuntimeMapKey::String(Arc::<str>::from("ok"))),
             Some(RuntimeVal::Bool(true))
         );
+    }
+
+    #[test]
+    fn typed_map_equality_compares_entries_without_materializing_vector() {
+        let typed = TypedMap::StringInt(BTreeMap::from([(Arc::<str>::from("answer"), 42)]));
+        let string_mixed = TypedMap::StringMixed(BTreeMap::from([(Arc::<str>::from("answer"), RuntimeVal::Int(42))]));
+        let exact_mixed = TypedMap::Mixed(BTreeMap::from([(
+            RuntimeMapKey::String(Arc::<str>::from("answer")),
+            RuntimeVal::Int(42),
+        )]));
+        let short_key_mixed = TypedMap::Mixed(BTreeMap::from([(
+            RuntimeMapKey::ShortStr(ShortStr::new("answer").expect("short")),
+            RuntimeVal::Int(42),
+        )]));
+
+        assert_eq!(typed, string_mixed);
+        assert_eq!(typed, exact_mixed);
+        assert_ne!(typed, short_key_mixed);
     }
 }

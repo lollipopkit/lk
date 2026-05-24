@@ -6,10 +6,12 @@ use arcstr::ArcStr;
 use crate::{
     val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, Type, TypedList},
     vm::{
-        NativeArgs32, NativeRuntime32, call_runtime_value32_runtime, call_runtime_value32_runtime_named_map,
-        call_runtime_value32_runtime_with_receiver,
+        NativeArgs32, NativeRuntime32, call_runtime_value32_runtime_list_args,
+        call_runtime_value32_runtime_named_map_list_args, call_runtime_value32_runtime_with_receiver_list_args,
     },
 };
+
+const MAX_INLINE_METHOD_POSITIONAL_ARGS32: usize = u8::MAX as usize + 1;
 
 fn method_name_arc(helper: &str, method: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<ArcStr> {
     match method {
@@ -29,7 +31,6 @@ fn method_name_arc(helper: &str, method: &RuntimeVal, heap: &HeapStore) -> anyho
     }
 }
 
-#[cfg(not(feature = "aot-minimal-runtime"))]
 pub(super) fn core_call_method_builtin32(
     args: NativeArgs32<'_>,
     runtime: &mut NativeRuntime32<'_>,
@@ -39,15 +40,11 @@ pub(super) fn core_call_method_builtin32(
     }
     let receiver = args.get(0).expect("arity checked").clone();
     let method = method_name_arc("__lk_call_method", args.get(1).expect("arity checked"), runtime.heap())?;
-    let positional = runtime_positional_args(
-        "__lk_call_method",
-        args.get(2).expect("arity checked"),
-        runtime.heap_mut(),
-    )?;
-    call_method_positional_runtime(receiver, method, &positional, runtime)
+    let positional =
+        runtime_positional_arg_list("__lk_call_method", args.get(2).expect("arity checked"), runtime.heap())?;
+    call_method_positional_runtime(receiver, method, positional, runtime)
 }
 
-#[cfg(not(feature = "aot-minimal-runtime"))]
 pub(super) fn core_call_method_named_builtin32(
     args: NativeArgs32<'_>,
     runtime: &mut NativeRuntime32<'_>,
@@ -63,23 +60,23 @@ pub(super) fn core_call_method_named_builtin32(
         args.get(1).expect("arity checked"),
         runtime.heap(),
     )?;
-    let positional = runtime_positional_args(
+    let positional = runtime_positional_arg_list(
         "__lk_call_method_named",
         args.get(2).expect("arity checked"),
-        runtime.heap_mut(),
+        runtime.heap(),
     )?;
     let named = runtime_named_arg_map(
         "__lk_call_method_named",
         args.get(3).expect("arity checked"),
         runtime.heap(),
     )?;
-    call_method_named_runtime(receiver, method, &positional, named, runtime)
+    call_method_named_runtime(receiver, method, positional, named, runtime)
 }
 
 fn call_method_positional_runtime(
     receiver: RuntimeVal,
     method: ArcStr,
-    positional: &[RuntimeVal],
+    positional: MethodPositionalArgs,
     runtime: &mut NativeRuntime32<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     if let Some(prop) = runtime_access(&receiver, method.as_str(), runtime.heap_mut())? {
@@ -87,19 +84,25 @@ fn call_method_positional_runtime(
             let Some((state, ctx, module)) = runtime.parts_mut() else {
                 bail!("__lk_call_method requires full runtime state for callable receiver");
             };
-            return call_runtime_value32_runtime(prop, positional, state, module, ctx);
+            return call_runtime_value32_runtime_list_args(prop, positional.handle(), state, module, ctx);
         }
-        if positional.is_empty() {
+        if positional.is_empty(runtime.heap())? {
             return Ok(prop);
         }
     }
-    if let Some(result) = dispatch_map_builtin_method(&receiver, method.as_str(), positional, runtime.heap_mut())? {
+    if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
+        dispatch_map_builtin_method(&receiver, method.as_str(), positional, heap)
+    })? {
         return Ok(result);
     }
-    if let Some(result) = dispatch_string_builtin_method(&receiver, method.as_str(), positional, runtime.heap_mut())? {
+    if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
+        dispatch_string_builtin_method(&receiver, method.as_str(), positional, heap)
+    })? {
         return Ok(result);
     }
-    if let Some(result) = dispatch_list_builtin_method(&receiver, method.as_str(), positional, runtime.heap_mut())? {
+    if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
+        dispatch_list_builtin_method(&receiver, method.as_str(), positional, heap)
+    })? {
         return Ok(result);
     }
     call_trait_method_runtime(receiver, method, positional, runtime)
@@ -108,7 +111,7 @@ fn call_method_positional_runtime(
 fn call_method_named_runtime(
     receiver: RuntimeVal,
     method: ArcStr,
-    positional: &[RuntimeVal],
+    positional: MethodPositionalArgs,
     named: Option<HeapRef>,
     runtime: &mut NativeRuntime32<'_>,
 ) -> anyhow::Result<RuntimeVal> {
@@ -117,23 +120,33 @@ fn call_method_named_runtime(
             let Some((state, ctx, module)) = runtime.parts_mut() else {
                 bail!("__lk_call_method_named requires full runtime state for callable receiver");
             };
-            return call_runtime_value32_runtime_named_map(prop, positional, named, state, module, ctx);
+            return call_runtime_value32_runtime_named_map_list_args(
+                prop,
+                positional.handle(),
+                named,
+                state,
+                module,
+                ctx,
+            );
         }
-        if positional.is_empty() && named.is_none() {
+        if positional.is_empty(runtime.heap())? && named.is_none() {
             return Ok(prop);
         }
     }
     if named.is_none() {
-        if let Some(result) = dispatch_map_builtin_method(&receiver, method.as_str(), positional, runtime.heap_mut())? {
+        if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_map_builtin_method(&receiver, method.as_str(), positional, heap)
+        })? {
             return Ok(result);
         }
-        if let Some(result) =
-            dispatch_string_builtin_method(&receiver, method.as_str(), positional, runtime.heap_mut())?
-        {
+        if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_string_builtin_method(&receiver, method.as_str(), positional, heap)
+        })? {
             return Ok(result);
         }
-        if let Some(result) = dispatch_list_builtin_method(&receiver, method.as_str(), positional, runtime.heap_mut())?
-        {
+        if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
+            dispatch_list_builtin_method(&receiver, method.as_str(), positional, heap)
+        })? {
             return Ok(result);
         }
     }
@@ -176,11 +189,10 @@ fn dispatch_map_builtin_method(
             }
             let key = map_string_key(&positional[0], heap, "map.get() key")?;
             let default = positional.get(1).cloned().unwrap_or(RuntimeVal::Nil);
-            let map = match heap.get(handle) {
-                Some(HeapValue::Map(m)) => m.clone(),
+            let result = match heap.get(handle) {
+                Some(HeapValue::Map(map)) => map.get(&key).unwrap_or(RuntimeVal::Nil),
                 _ => return Ok(Some(default)),
             };
-            let result = map.get_into_heap(&key, heap)?.unwrap_or(RuntimeVal::Nil);
             if matches!(result, RuntimeVal::Nil) {
                 Ok(Some(default))
             } else {
@@ -334,26 +346,9 @@ fn dispatch_list_builtin_method(
                 bail!("list.join() expects 1 argument (separator), got {}", positional.len());
             }
             let sep = extract_string_arc(&positional[0], heap, "list.join() separator")?;
-            // Clone the list to avoid borrow conflict when calling make_string_val.
-            let list = match heap.get(handle) {
-                Some(HeapValue::List(l)) => l.clone(),
+            let parts = match heap.get(handle) {
+                Some(HeapValue::List(list)) => list_join_parts(list, heap)?,
                 _ => return Ok(None),
-            };
-            let parts: Vec<String> = match &list {
-                TypedList::String(vals) => vals.iter().map(|s| s.to_string()).collect(),
-                TypedList::Mixed(vals) => vals
-                    .iter()
-                    .map(|v| match v {
-                        RuntimeVal::ShortStr(s) => Ok(s.as_str().to_string()),
-                        RuntimeVal::Obj(h) => match heap.get(*h) {
-                            Some(HeapValue::String(s)) => Ok(s.to_string()),
-                            Some(other) => bail!("list.join(): element is not a string ({})", other.type_name()),
-                            None => bail!("list.join(): heap object out of bounds"),
-                        },
-                        other => bail!("list.join(): element is not a string ({:?})", other.kind()),
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?,
-                _ => bail!("list.join(): list must contain only strings"),
             };
             let joined = parts.join(sep.as_ref());
             Ok(Some(make_string_val(&joined, heap)))
@@ -362,10 +357,29 @@ fn dispatch_list_builtin_method(
     }
 }
 
+fn list_join_parts(list: &TypedList, heap: &HeapStore) -> anyhow::Result<Vec<String>> {
+    match list {
+        TypedList::String(vals) => Ok(vals.iter().map(|s| s.to_string()).collect()),
+        TypedList::Mixed(vals) => vals
+            .iter()
+            .map(|v| match v {
+                RuntimeVal::ShortStr(s) => Ok(s.as_str().to_string()),
+                RuntimeVal::Obj(h) => match heap.get(*h) {
+                    Some(HeapValue::String(s)) => Ok(s.to_string()),
+                    Some(other) => bail!("list.join(): element is not a string ({})", other.type_name()),
+                    None => bail!("list.join(): heap object out of bounds"),
+                },
+                other => bail!("list.join(): element is not a string ({:?})", other.kind()),
+            })
+            .collect(),
+        _ => bail!("list.join(): list must contain only strings"),
+    }
+}
+
 fn call_trait_method_runtime(
     receiver: RuntimeVal,
     method: ArcStr,
-    positional: &[RuntimeVal],
+    positional: MethodPositionalArgs,
     runtime: &mut NativeRuntime32<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     let receiver_type = runtime_dispatch_type(&receiver, runtime.heap());
@@ -383,34 +397,50 @@ fn call_trait_method_runtime(
     else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    call_runtime_value32_runtime_with_receiver(method_val, &receiver, positional, state, module, Some(ctx))
+    call_runtime_value32_runtime_with_receiver_list_args(
+        method_val,
+        &receiver,
+        positional.handle(),
+        state,
+        module,
+        Some(ctx),
+    )
 }
 
 fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> anyhow::Result<Option<RuntimeVal>> {
     match receiver {
         RuntimeVal::ShortStr(value) => Ok(runtime_string_access(value.as_str(), field)),
         RuntimeVal::Obj(handle) => {
-            let value = heap
+            enum RuntimeAccess32 {
+                Ready(Option<RuntimeVal>),
+                CopyPayload(crate::rt::RuntimePayload),
+                String(String),
+            }
+            let access = match heap
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-                .clone();
-            match value {
-                HeapValue::String(value) => Ok(runtime_string_access(value.as_ref(), field)),
-                HeapValue::List(values) => Ok(runtime_list_access(&values, field)),
-                HeapValue::Map(values) => values.get_str_into_heap(field, heap),
-                HeapValue::Object(object) => Ok(object.fields.get(field).cloned()),
-                HeapValue::Task(task) if field == "value" => {
-                    let Some(value) = &task.value else {
-                        return Ok(Some(RuntimeVal::Nil));
-                    };
+            {
+                HeapValue::String(value) => RuntimeAccess32::Ready(runtime_string_access(value.as_ref(), field)),
+                HeapValue::List(values) => RuntimeAccess32::Ready(runtime_list_access(values, field)),
+                HeapValue::Map(values) => RuntimeAccess32::Ready(values.get_str(field)),
+                HeapValue::Object(object) => RuntimeAccess32::Ready(object.get_field(field)),
+                HeapValue::Task(task) if field == "value" => match &task.value {
+                    Some(value) => RuntimeAccess32::CopyPayload(value.clone()),
+                    None => RuntimeAccess32::Ready(Some(RuntimeVal::Nil)),
+                },
+                HeapValue::Channel(channel) => match field {
+                    "capacity" => RuntimeAccess32::Ready(Some(RuntimeVal::Int(channel.capacity.unwrap_or(0) as i64))),
+                    "type" => RuntimeAccess32::String(format!("{:?}", channel.inner_type)),
+                    _ => RuntimeAccess32::Ready(None),
+                },
+                _ => RuntimeAccess32::Ready(None),
+            };
+            match access {
+                RuntimeAccess32::Ready(value) => Ok(value),
+                RuntimeAccess32::CopyPayload(value) => {
                     Ok(Some(crate::vm::copy_runtime_value(&value.value, &value.heap, heap)?))
                 }
-                HeapValue::Channel(channel) => match field {
-                    "capacity" => Ok(Some(RuntimeVal::Int(channel.capacity.unwrap_or(0) as i64))),
-                    "type" => Ok(Some(runtime_string_value(format!("{:?}", channel.inner_type), heap))),
-                    _ => Ok(None),
-                },
-                _ => Ok(None),
+                RuntimeAccess32::String(value) => Ok(Some(runtime_string_value(value, heap))),
             }
         }
         _ => Ok(None),
@@ -431,46 +461,139 @@ fn runtime_list_access(values: &TypedList, field: &str) -> Option<RuntimeVal> {
     }
 }
 
-fn runtime_positional_args(helper: &str, value: &RuntimeVal, heap: &mut HeapStore) -> anyhow::Result<Vec<RuntimeVal>> {
+#[derive(Clone, Copy)]
+enum MethodPositionalArgs {
+    Empty,
+    List(HeapRef),
+}
+
+impl MethodPositionalArgs {
+    fn handle(self) -> Option<HeapRef> {
+        match self {
+            Self::Empty => None,
+            Self::List(handle) => Some(handle),
+        }
+    }
+
+    fn is_empty(self, heap: &HeapStore) -> anyhow::Result<bool> {
+        Ok(self.len(heap)? == 0)
+    }
+
+    fn len(self, heap: &HeapStore) -> anyhow::Result<usize> {
+        match self {
+            Self::Empty => Ok(0),
+            Self::List(handle) => match heap
+                .get(handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+            {
+                HeapValue::List(list) => Ok(list.len()),
+                other => bail!("method positional arguments must be a list, got {}", other.type_name()),
+            },
+        }
+    }
+
+    fn with_slice<R>(
+        self,
+        heap: &mut HeapStore,
+        f: impl FnOnce(&[RuntimeVal], &mut HeapStore) -> anyhow::Result<R>,
+    ) -> anyhow::Result<R> {
+        match self {
+            Self::Empty => f(&[], heap),
+            Self::List(handle) => {
+                let len = self.len(heap)?;
+                if len > MAX_INLINE_METHOD_POSITIONAL_ARGS32 {
+                    bail!(
+                        "method positional argument count {} exceeds inline call buffer {}",
+                        len,
+                        MAX_INLINE_METHOD_POSITIONAL_ARGS32
+                    );
+                }
+                let mut values: [RuntimeVal; MAX_INLINE_METHOD_POSITIONAL_ARGS32] =
+                    std::array::from_fn(|_| RuntimeVal::Nil);
+                copy_method_positional_list(handle, heap, &mut values[..len])?;
+                f(&values[..len], heap)
+            }
+        }
+    }
+}
+
+fn runtime_positional_arg_list(
+    helper: &str,
+    value: &RuntimeVal,
+    heap: &HeapStore,
+) -> anyhow::Result<MethodPositionalArgs> {
     let handle = match value {
-        RuntimeVal::Nil => return Ok(Vec::new()),
+        RuntimeVal::Nil => return Ok(MethodPositionalArgs::Empty),
         RuntimeVal::Obj(h) => *h,
         other => bail!("{helper} expects positional arguments as list, got {:?}", other.kind()),
     };
 
-    // Phase 1: immutable borrow — handles all inline typed cases without cloning HeapValue.
-    {
-        let heap_val = heap
-            .get(handle)
-            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-        let HeapValue::List(list) = heap_val else {
-            bail!(
-                "{helper} expects positional arguments as list, got {}",
-                heap_val.type_name()
-            );
-        };
-        let result = match list {
-            TypedList::Mixed(values) => Some(values.clone()),
-            TypedList::Int(values) => Some(values.iter().copied().map(RuntimeVal::Int).collect()),
-            TypedList::Float(values) => Some(values.iter().copied().map(RuntimeVal::Float).collect()),
-            TypedList::Bool(values) => Some(values.iter().copied().map(RuntimeVal::Bool).collect()),
-            TypedList::String(_) => None,
-        };
-        if let Some(v) = result {
-            return Ok(v);
-        }
-    }
+    let heap_val = heap
+        .get(handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+    let HeapValue::List(_) = heap_val else {
+        bail!(
+            "{helper} expects positional arguments as list, got {}",
+            heap_val.type_name()
+        );
+    };
+    Ok(MethodPositionalArgs::List(handle))
+}
 
-    // Phase 2: String may allocate long strings into heap.
-    let list = match heap
+fn copy_method_positional_list(handle: HeapRef, heap: &mut HeapStore, frame: &mut [RuntimeVal]) -> anyhow::Result<()> {
+    let string_values = match heap
         .get(handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        .clone()
     {
-        HeapValue::List(l) => l,
-        _ => unreachable!("already verified as List in phase 1"),
+        HeapValue::List(TypedList::Mixed(values)) => {
+            for (slot, value) in frame.iter_mut().zip(values) {
+                *slot = value.clone();
+            }
+            return Ok(());
+        }
+        HeapValue::List(TypedList::Int(values)) => {
+            for (slot, &value) in frame.iter_mut().zip(values) {
+                *slot = RuntimeVal::Int(value);
+            }
+            return Ok(());
+        }
+        HeapValue::List(TypedList::Float(values)) => {
+            for (slot, &value) in frame.iter_mut().zip(values) {
+                *slot = RuntimeVal::Float(value);
+            }
+            return Ok(());
+        }
+        HeapValue::List(TypedList::Bool(values)) => {
+            for (slot, &value) in frame.iter_mut().zip(values) {
+                *slot = RuntimeVal::Bool(value);
+            }
+            return Ok(());
+        }
+        HeapValue::List(TypedList::String(values)) => values
+            .iter()
+            .map(|value| match ShortStr::new(value.as_ref()) {
+                Some(short) => MethodStringArg::Short(short),
+                None => MethodStringArg::Long(Arc::clone(value)),
+            })
+            .collect::<Vec<_>>(),
+        other => bail!("method positional arguments must be a list, got {}", other.type_name()),
     };
-    list.runtime_values_into_heap(heap)
+    for (slot, value) in frame.iter_mut().zip(string_values) {
+        *slot = method_string_arg_value(value, heap);
+    }
+    Ok(())
+}
+
+enum MethodStringArg {
+    Short(ShortStr),
+    Long(Arc<str>),
+}
+
+fn method_string_arg_value(value: MethodStringArg, heap: &mut HeapStore) -> RuntimeVal {
+    match value {
+        MethodStringArg::Short(value) => RuntimeVal::ShortStr(value),
+        MethodStringArg::Long(value) => RuntimeVal::Obj(heap.alloc(HeapValue::String(value))),
+    }
 }
 
 fn runtime_named_arg_map(helper: &str, value: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<Option<HeapRef>> {

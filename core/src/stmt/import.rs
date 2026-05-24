@@ -153,10 +153,11 @@ impl ModuleResolver {
     fn resolve_resolved_runtime_file(&self, resolved_path: &Path) -> Result<RuntimeExport32> {
         let resolved_path = Self::normalize_path(resolved_path.to_path_buf());
         if let Some(module) = self.runtime_file_modules.get(&resolved_path) {
-            return Ok(module.value().clone());
+            return Ok(module.value().shallow_clone_shared());
         }
         let module = self.load_file_runtime_module(&resolved_path)?;
-        self.runtime_file_modules.insert(resolved_path.clone(), module.clone());
+        self.runtime_file_modules
+            .insert(resolved_path.clone(), module.shallow_clone_shared());
         Ok(module)
     }
 
@@ -172,8 +173,8 @@ impl ModuleResolver {
 
         let resolver = Arc::new(self.clone());
         let mut ctx = VmContext::new_without_core_vm_builtins().with_resolver(resolver);
-        let result = program.execute32_raw_with_ctx(&mut ctx)?;
-        Ok(result.exports())
+        let result = program.execute32_with_ctx(&mut ctx)?;
+        Ok(result.into_exports())
     }
 
     /// Resolve file path using search paths
@@ -256,26 +257,22 @@ pub fn deserialize_imports(json: &str) -> serde_json::Result<Vec<ImportStmt>> {
 }
 
 fn runtime_export_field(module: &RuntimeExport32, name: &str) -> Result<RuntimeExport32> {
-    let state = module
-        .state
-        .lock()
-        .map_err(|_| anyhow!("RuntimeExport32 state lock poisoned"))?
-        .clone();
-    let RuntimeVal::Obj(handle) = module.value else {
+    let state = module.state_lock()?;
+    let RuntimeVal::Obj(handle) = module.value() else {
         return Err(anyhow!("runtime module export is not a map"));
     };
-    let Some(value) = state.heap.get(handle) else {
+    let Some(value) = state.heap.get(*handle) else {
         return Err(anyhow!("heap object {} out of bounds", handle.index()));
     };
     let HeapValue::Map(map) = value else {
         return Err(anyhow!("runtime module export is not a map"));
     };
     if let Some(value) = map.get_str(name) {
-        return Ok(RuntimeExport32 {
+        return Ok(RuntimeExport32::new(
             value,
-            state: module.state.clone(),
-            module: Arc::clone(&module.module),
-        });
+            module.shared_state(),
+            module.shared_module(),
+        ));
     }
     Err(anyhow!("Export '{}' not found in runtime module", name))
 }
@@ -466,11 +463,11 @@ mod tests {
             data := [1, 2, 3];
         "#;
         let runtime = resolver.resolve_source_runtime(src)?;
-        let RuntimeVal::Obj(handle) = runtime.value else {
+        let RuntimeVal::Obj(handle) = runtime.value() else {
             panic!("Expected runtime module map");
         };
-        let state = runtime.state.lock().expect("runtime module state").clone();
-        let Some(HeapValue::Map(map)) = state.heap.get(handle) else {
+        let state = runtime.state_lock().expect("runtime module state");
+        let Some(HeapValue::Map(map)) = state.heap.get(*handle) else {
             panic!("Expected runtime module map");
         };
         assert_eq!(map.get_str("answer"), Some(RuntimeVal::Int(7)));
@@ -487,11 +484,11 @@ mod tests {
         let mut resolver = ModuleResolver::new();
         resolver.add_search_path("..");
         let runtime = resolver.resolve_runtime_file("examples/fib")?;
-        let RuntimeVal::Obj(handle) = runtime.value else {
+        let RuntimeVal::Obj(handle) = runtime.value() else {
             panic!("Expected runtime module map");
         };
-        let state = runtime.state.lock().expect("runtime module state").clone();
-        let Some(value) = state.heap.get(handle) else {
+        let state = runtime.state_lock().expect("runtime module state");
+        let Some(value) = state.heap.get(*handle) else {
             panic!("Expected runtime module heap object");
         };
         let HeapValue::Map(map) = value else {

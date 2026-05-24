@@ -22,12 +22,15 @@ pub use super::RuntimeCallable32;
 pub use imports::import_runtime_export;
 pub use program::{
     compile_program32_module_with_ctx, execute_compiled_module32_with_ctx, execute_module32_artifact_with_ctx,
-    execute_program32, execute_program32_raw_with_ctx, execute_source32,
+    execute_program32, execute_program32_with_ctx, execute_source32,
 };
+#[cfg(test)]
+pub(crate) use runtime_callable::call_runtime_callable32_test;
 pub use runtime_callable::{
-    call_runtime_callable32_raw, call_runtime_callable32_runtime, call_runtime_value32_runtime,
-    call_runtime_value32_runtime_named_map, call_runtime_value32_runtime_with_receiver, copy_runtime_value,
-    runtime_value_to_callable32_externalized, runtime_value_to_callable32_shared,
+    call_runtime_callable32_runtime, call_runtime_value32_runtime, call_runtime_value32_runtime_list_args,
+    call_runtime_value32_runtime_named_map, call_runtime_value32_runtime_named_map_list_args,
+    call_runtime_value32_runtime_with_receiver, call_runtime_value32_runtime_with_receiver_list_args,
+    copy_runtime_value, runtime_value_to_callable32_shared,
 };
 
 use std::collections::BTreeMap;
@@ -35,15 +38,15 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap, typed_map_from_entries};
 
 use super::{
     CallWindow32, Function32, Instr32, Module32, Opcode32, RegisterIndex, RuntimeExport32, RuntimeModuleState32,
     VmContext,
     analysis::{
-        PerfCallFact, PerfIndexFact, VmCallMetric, VmContainerMetric, record_branch_op_known_enabled,
-        record_call_op_known_enabled, record_container_op_known_enabled, record_opcode_step_known_enabled,
-        vm_runtime_metrics_enabled,
+        PerfCallFact, PerfIndexFact, VmCallMetric, VmContainerMetric, VmValueCopyMetric,
+        record_branch_op_known_enabled, record_call_op_known_enabled, record_container_op_known_enabled,
+        record_copy_policy_clone, record_opcode_step_known_enabled, vm_runtime_metrics_enabled,
     },
 };
 #[cfg(test)]
@@ -52,13 +55,13 @@ use handler::{ErrorHandler32, LanguageRaise32};
 use return_values::ReturnValues32;
 use support::*;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Exec32Result {
     pub returns: Vec<RuntimeVal>,
     pub state: RuntimeModuleState32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Program32Result {
     pub returns: Vec<RuntimeVal>,
     pub state: RuntimeModuleState32,
@@ -97,30 +100,21 @@ impl Program32Result {
         }
     }
 
-    pub fn first_return_function(&self) -> Option<RuntimeCallable32> {
-        runtime_value_to_callable32_externalized(
-            self.first_return(),
-            &self.state.heap,
-            &self.state.globals,
-            Arc::clone(&self.module),
-        )
-    }
-
-    pub fn exports(&self) -> RuntimeExport32 {
-        let mut heap = self.state.heap.clone();
+    pub fn into_exports(self) -> RuntimeExport32 {
+        let mut state = self.state;
         let mut entries = BTreeMap::new();
-        for (slot, value) in self.module.globals.iter().zip(self.state.globals.iter()) {
+        for (slot, value) in self.module.globals.iter().zip(state.globals.iter()) {
             entries.insert(RuntimeMapKey::String(slot.name.clone()), value.clone());
         }
-        let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))));
-        RuntimeExport32 {
+        let value = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(typed_map_from_entries(entries))));
+        RuntimeExport32::new(
             value,
-            state: Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
-                heap,
-                self.state.globals.clone(),
+            Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
+                state.heap,
+                state.globals,
             ))),
-            module: Arc::clone(&self.module),
-        }
+            self.module,
+        )
     }
 
     /// Returns `true` if the first return value is `nil`.
@@ -213,7 +207,7 @@ fn format_map_key(key: &RuntimeMapKey) -> String {
 #[derive(Debug)]
 pub struct Executor32 {
     state: RuntimeModuleState32,
-    captures: Vec<RuntimeVal>,
+    captures: Arc<Vec<RuntimeVal>>,
     handler_stack: Vec<ErrorHandler32>,
     frame_base: usize,
     register_count: u16,
@@ -226,7 +220,7 @@ impl Executor32 {
     pub fn new(register_count: u16) -> Self {
         let mut this = Self {
             state: RuntimeModuleState32::default(),
-            captures: Vec::new(),
+            captures: Arc::new(Vec::new()),
             handler_stack: Vec::new(),
             frame_base: 0,
             register_count,
@@ -326,7 +320,7 @@ impl Executor32 {
         module: &Module32,
         shared_module: Option<Arc<Module32>>,
         function_index: u32,
-        captures: Vec<RuntimeVal>,
+        captures: Arc<Vec<RuntimeVal>>,
         state: RuntimeModuleState32,
         ctx: &mut VmContext,
         seed_args: F,
@@ -334,14 +328,12 @@ impl Executor32 {
     where
         F: FnOnce(&mut Self) -> Result<u16>,
     {
-        let function = module
-            .functions
-            .get(function_index as usize)
-            .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))
-            .map_err(|error| Exec32Failure {
-                error,
-                state: state.clone(),
-            })?;
+        let Some(function) = module.functions.get(function_index as usize) else {
+            return Err(Exec32Failure {
+                error: anyhow!("function index {} out of bounds", function_index),
+                state,
+            });
+        };
         if state.globals.len() != module.globals.len() {
             return Err(Exec32Failure {
                 error: anyhow!(
@@ -356,10 +348,15 @@ impl Executor32 {
         self.captures = captures;
         self.shared_module = shared_module;
         self.reset_entry_frame(function.register_count);
-        let arg_count = seed_args(&mut self).map_err(|error| Exec32Failure {
-            error,
-            state: self.state.clone(),
-        })?;
+        let arg_count = match seed_args(&mut self) {
+            Ok(arg_count) => arg_count,
+            Err(error) => {
+                return Err(Exec32Failure {
+                    error,
+                    state: self.state,
+                });
+            }
+        };
         if function.param_count != arg_count {
             return Err(Exec32Failure {
                 error: anyhow!(
@@ -421,7 +418,12 @@ impl Executor32 {
                     {
                         self.take(instr.b())?
                     } else {
-                        self.read(instr.b())?.clone()
+                        let value = self.read(instr.b())?.clone();
+                        record_copy_policy_clone(
+                            move_clone_metric(function, self.pc, instr.a() as u16, instr.b() as u16),
+                            matches!(value, RuntimeVal::Obj(_)),
+                        );
+                        value
                     };
                     self.write(instr.a(), value)?;
                     self.pc += 1;
@@ -441,7 +443,14 @@ impl Executor32 {
                     self.pc += 1;
                 }
                 Opcode32::StoreCellVal => {
-                    self.store_cell_value(instr.a(), instr.b())?;
+                    self.store_cell_value(
+                        instr.a(),
+                        instr.b(),
+                        function
+                            .performance
+                            .cell_move(self.pc)
+                            .is_some_and(|fact| fact.move_value),
+                    )?;
                     self.pc += 1;
                 }
                 Opcode32::LoadFunction => {
@@ -595,8 +604,12 @@ impl Executor32 {
                     if collect_metrics {
                         record_container_op_known_enabled(VmContainerMetric::List);
                     }
-                    let values = self.read_register_slice(instr.b(), instr.c())?;
-                    let list = HeapValue::List(TypedList::from_runtime_slice(values, &self.state.heap));
+                    let build_fact = function.performance.container_build(self.pc).copied();
+                    let list = if build_fact.is_some_and(|fact| fact.move_values) {
+                        HeapValue::List(self.take_register_list(instr.b(), instr.c())?)
+                    } else {
+                        HeapValue::List(self.read_register_list(instr.b(), instr.c())?)
+                    };
                     let handle = self.state.heap.alloc(list);
                     self.write(instr.a(), RuntimeVal::Obj(handle))?;
                     self.pc += 1;
@@ -605,11 +618,13 @@ impl Executor32 {
                     if collect_metrics {
                         record_container_op_known_enabled(VmContainerMetric::Map);
                     }
-                    let map = self.read_map_entries(instr.b(), instr.c())?;
-                    let handle = self
-                        .state
-                        .heap
-                        .alloc(HeapValue::Map(TypedMap::from_runtime_entries(map)));
+                    let build_fact = function.performance.container_build(self.pc).copied();
+                    let map = if let Some(fact) = build_fact {
+                        self.take_map_entries(instr.b(), instr.c(), fact.move_keys, fact.move_values)?
+                    } else {
+                        self.read_map_entries(instr.b(), instr.c())?
+                    };
+                    let handle = self.state.heap.alloc(HeapValue::Map(typed_map_from_entries(map)));
                     self.write(instr.a(), RuntimeVal::Obj(handle))?;
                     self.pc += 1;
                 }
@@ -657,7 +672,7 @@ impl Executor32 {
                         .and_then(|fact| fact.const_key)
                         .and_then(|index| function.consts.string(index))
                         .map(Arc::<str>::from);
-                    let index_fact = self.index_fact_from_static_or_cache(function);
+                    let index_fact = self.static_index_fact(function);
                     let value = self.get_index(self.pc, instr.b(), instr.c(), known_string_key, index_fact)?;
                     self.write(instr.a(), value)?;
                     self.pc += 1;
@@ -680,7 +695,7 @@ impl Executor32 {
                         .and_then(|fact| fact.const_key)
                         .and_then(|index| function.consts.string(index))
                         .map(Arc::<str>::from);
-                    let index_fact = self.index_fact_from_static_or_cache(function);
+                    let index_fact = self.static_index_fact(function);
                     self.set_index(
                         self.pc,
                         instr.a(),
@@ -705,6 +720,7 @@ impl Executor32 {
                     if self.pc != call_pc {
                         continue;
                     }
+                    self.clear_call_window_temps(window, 0)?;
                     self.write_returns(window, [value])?;
                     self.pc += 1;
                 }
@@ -726,6 +742,7 @@ impl Executor32 {
                     if self.pc != call_pc {
                         continue;
                     }
+                    self.clear_call_window_temps(window, call_fact.named_count)?;
                     self.write_returns(window, [value])?;
                     self.pc += 1;
                 }
@@ -736,19 +753,18 @@ impl Executor32 {
                     self.pc += 1;
                 }
                 Opcode32::SetGlobal => {
-                    let value = self.read(instr.a())?.clone();
+                    let global_fact = function.performance.global_op(self.pc).copied();
+                    let value = if global_fact.is_some_and(|fact| fact.move_source) {
+                        self.take(instr.a())?
+                    } else {
+                        self.read(instr.a())?.clone()
+                    };
                     let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
                     self.write_global(slot, value)?;
                     self.pc += 1;
                 }
                 Opcode32::Return => {
-                    let base = instr.a() as usize;
-                    let count = instr.b() as usize;
-                    if base + count > self.register_count as usize {
-                        bail!("Return range out of bounds");
-                    }
-                    let returns = &self.state.stack[self.frame_base + base..self.frame_base + base + count];
-                    return Ok(ReturnValues32::from_slice(returns));
+                    return self.take_return_values(instr.a(), instr.b());
                 }
                 other => bail!("Opcode32 {:?} is not implemented in Executor32 yet", other),
             }
@@ -758,6 +774,7 @@ impl Executor32 {
     }
 
     #[inline]
+    #[cfg(test)]
     pub(crate) fn seed_param_arg(&mut self, index: usize, value: RuntimeVal) -> Result<()> {
         let register = u8::try_from(index).map_err(|_| anyhow!("function arg index {} exceeds u8", index))?;
         self.write(register, value)
@@ -847,12 +864,18 @@ impl Executor32 {
         slot
     }
 
-    fn index_fact_from_static_or_cache(&self, function: &Function32) -> Option<PerfIndexFact> {
-        function
-            .performance
-            .index_op(self.pc)
-            .copied()
-            .or_else(|| self.state.inline_caches.index(self.pc))
+    fn static_index_fact(&self, function: &Function32) -> Option<PerfIndexFact> {
+        function.performance.index_op(self.pc).copied()
+    }
+}
+
+fn move_clone_metric(function: &Function32, pc: usize, dst: u16, src: u16) -> VmValueCopyMetric {
+    if function.performance.local_copy(pc).is_some() {
+        VmValueCopyMetric::LocalStore
+    } else if function.performance.is_local_slot(src) && !function.performance.is_local_slot(dst) {
+        VmValueCopyMetric::LocalLoad
+    } else {
+        VmValueCopyMetric::Register
     }
 }
 

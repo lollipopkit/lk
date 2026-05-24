@@ -1,8 +1,8 @@
 //! Runtime helpers exposed to LLVM-generated code.
 //!
-//! The LLVM backend emits a shell that embeds a `Module32Artifact` and calls
-//! into the Instr32 VM. This module keeps only the runtime entry points needed
-//! to replay imports and execute that artifact.
+//! Native LLVM output may still ask this module to replay imports and expose
+//! runtime objects, but it must not re-enter the Instr32 VM through an artifact
+//! launcher.
 
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
@@ -19,16 +19,16 @@ use crate::{
     stmt::{ImportSource, ImportStmt, ModuleResolver, deserialize_imports, execute_imports},
     util::fast_map::{FastHashMap, fast_hash_map_new},
     val::{HeapStore, HeapValue, RuntimeVal},
-    vm::{Module32Artifact, RuntimeExport32, VmContext, execute_module32_artifact_with_ctx, import_runtime_export},
+    vm::{RuntimeExport32, VmContext, import_runtime_export},
 };
 
+#[cfg(test)]
 mod imports;
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
-use imports::imports_need_concurrency_globals;
-use imports::stdlib_module_names_from_imports;
+use imports::{imports_need_concurrency_globals, stdlib_module_names_from_imports};
 
 #[cfg(not(test))]
 unsafe extern "Rust" {
@@ -198,41 +198,6 @@ pub extern "C" fn lk_rt_apply_native_imports() -> i32 {
             -1
         }
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn lk_rt_run_module32_json(ptr: *const i8, len: i64) -> i32 {
-    let json = read_string(ptr, len);
-    if json.trim().is_empty() {
-        eprintln!("lk_rt_run_module32_json: empty Module32 artifact");
-        return -1;
-    }
-
-    let artifact = match Module32Artifact::from_json_str(&json) {
-        Ok(artifact) => artifact,
-        Err(err) => {
-            eprintln!("lk_rt_run_module32_json: failed to decode Module32 artifact: {err}");
-            return -1;
-        }
-    };
-
-    with_state(move |state| {
-        match state
-            .prepare_module32_artifact_context(&artifact.imports)
-            .and_then(|()| execute_module32_artifact_with_ctx(artifact, &mut state.ctx))
-        {
-            Ok(result) => {
-                if !result.first_return_is_nil() {
-                    println!("{}", result.display_first_return());
-                }
-                0
-            }
-            Err(err) => {
-                eprintln!("lk_rt_run_module32_json: execution failed: {err}");
-                -1
-            }
-        }
-    })
 }
 
 macro_rules! require_stdlib_module {
@@ -431,24 +396,6 @@ impl RuntimeState {
         Ok(())
     }
 
-    fn prepare_module32_artifact_context(&mut self, imports: &[ImportStmt]) -> Result<()> {
-        let mut registrars = self.pending_stdlib_registrars.clone();
-        for module in stdlib_module_names_from_imports(imports) {
-            if matches!(module.as_str(), "task" | "chan" | "time") {
-                push_unique_registrar(&mut registrars, register_stdlib_concurrency_globals_bridge);
-            }
-            if let Some(registrar) = stdlib_registrar_for_module(module.as_str()) {
-                push_unique_registrar(&mut registrars, registrar);
-            }
-        }
-        let (ctx, resolver) =
-            Self::build_native_context(&self.pending_search_paths, &self.pending_package_modules, &registrars)?;
-        self.ctx = ctx;
-        self.resolver = resolver;
-        self.heap = HeapStore::new();
-        Ok(())
-    }
-
     fn resolve_native_import_source(source: &ImportSource, resolver: &ModuleResolver) -> Result<RuntimeExport32> {
         match source {
             ImportSource::Module(module) => resolver.resolve_runtime_module(module),
@@ -457,25 +404,22 @@ impl RuntimeState {
     }
 
     fn runtime_export_field(module: &RuntimeExport32, name: &str) -> Result<RuntimeExport32> {
-        let state = module
-            .state
-            .lock()
-            .map_err(|_| anyhow!("RuntimeExport32 state lock poisoned"))?;
-        let RuntimeVal::Obj(handle) = module.value else {
+        let state = module.state_lock()?;
+        let RuntimeVal::Obj(handle) = module.value() else {
             return Err(anyhow!("runtime module export is not a map"));
         };
-        let Some(value) = state.heap.get(handle) else {
+        let Some(value) = state.heap.get(*handle) else {
             return Err(anyhow!("heap object {} out of bounds", handle.index()));
         };
         let HeapValue::Map(map) = value else {
             return Err(anyhow!("runtime module export is not a map"));
         };
         if let Some(value) = map.get_str(name) {
-            return Ok(RuntimeExport32 {
+            return Ok(RuntimeExport32::new(
                 value,
-                state: Arc::clone(&module.state),
-                module: Arc::clone(&module.module),
-            });
+                module.shared_state(),
+                module.shared_module(),
+            ));
         }
         Err(anyhow!("Export '{}' not found in runtime module", name))
     }
@@ -548,28 +492,6 @@ fn register_artifact_stdlib_method_modules(registry: &mut ModuleRegistry) -> Res
         register(registry)?;
     }
     Ok(())
-}
-
-fn stdlib_registrar_for_module(module: &str) -> Option<StdlibRegistrar> {
-    match module {
-        "io" => Some(register_stdlib_io_bridge),
-        "json" => Some(register_stdlib_json_bridge),
-        "yaml" => Some(register_stdlib_yaml_bridge),
-        "toml" => Some(register_stdlib_toml_bridge),
-        "iter" => Some(register_stdlib_iter_bridge),
-        "math" => Some(register_stdlib_math_bridge),
-        "string" => Some(register_stdlib_string_bridge),
-        "list" => Some(register_stdlib_list_bridge),
-        "map" => Some(register_stdlib_map_bridge),
-        "datetime" => Some(register_stdlib_datetime_bridge),
-        "os" => Some(register_stdlib_os_bridge),
-        "tcp" => Some(register_stdlib_tcp_bridge),
-        "stream" => Some(register_stdlib_stream_bridge),
-        "task" => Some(register_stdlib_task_bridge),
-        "chan" => Some(register_stdlib_chan_bridge),
-        "time" => Some(register_stdlib_time_bridge),
-        _ => None,
-    }
 }
 
 impl Default for RuntimeState {

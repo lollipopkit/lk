@@ -80,7 +80,7 @@ assert_eq!(result.display_first_return(), "true");
 - Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
 - Compile to an executable Instr32 module artifact: `lk compile [FILE]` → `FILE.lkm` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry)
 - Compile to LLVM IR: `lk compile llvm [FILE]` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
-- Compile to a host executable embedding the same Instr32 module artifact: `lk compile exe [FILE]` (requires `rustc`; see [docs/llvm/backend.md](docs/llvm/backend.md))
+- Compile to an executable: `lk compile exe [FILE]` (native for LLVM-lowerable shapes; unsupported shapes fail; see [docs/llvm/backend.md](docs/llvm/backend.md))
 - Create packages and manage dependencies: `lk init`, `lk pkg add`, `lk pkg fetch`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))
 
 Note: command-line paths must be relative and sanitized.

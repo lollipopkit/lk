@@ -20,8 +20,12 @@ impl Executor32 {
         }
     }
 
-    pub(super) fn store_cell_value(&mut self, cell_register: u8, src_register: u8) -> Result<()> {
-        let value = self.read(src_register)?.clone();
+    pub(super) fn store_cell_value(&mut self, cell_register: u8, src_register: u8, move_value: bool) -> Result<()> {
+        let value = if move_value {
+            self.take(src_register)?
+        } else {
+            self.read(src_register)?.clone()
+        };
         let RuntimeVal::Obj(handle) = self.read(cell_register)?.clone() else {
             bail!("StoreCellVal expected UpvalCell object");
         };

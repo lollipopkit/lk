@@ -145,6 +145,8 @@ pub struct PerformanceFacts {
     pub register_copies: Vec<Option<PerfRegisterCopyFact>>,
     pub local_copies: Vec<Option<PerfLocalCopyFact>>,
     pub container_moves: Vec<Option<PerfContainerMoveFact>>,
+    pub container_builds: Vec<Option<PerfContainerBuildFact>>,
+    pub cell_moves: Vec<Option<PerfCellMoveFact>>,
     pub control_flow: PerfControlFlowFacts,
 }
 
@@ -201,6 +203,7 @@ pub enum PerfCallTargetKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PerfGlobalFact {
     pub slot: u16,
+    pub move_source: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -211,6 +214,17 @@ pub struct PerfRegisterCopyFact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PerfContainerMoveFact {
     pub move_key: bool,
+    pub move_value: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfContainerBuildFact {
+    pub move_keys: bool,
+    pub move_values: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfCellMoveFact {
     pub move_value: bool,
 }
 
@@ -255,6 +269,14 @@ impl PerformanceFacts {
 
     pub fn container_move(&self, pc: usize) -> Option<&PerfContainerMoveFact> {
         self.container_moves.get(pc).and_then(Option::as_ref)
+    }
+
+    pub fn container_build(&self, pc: usize) -> Option<&PerfContainerBuildFact> {
+        self.container_builds.get(pc).and_then(Option::as_ref)
+    }
+
+    pub fn cell_move(&self, pc: usize) -> Option<&PerfCellMoveFact> {
+        self.cell_moves.get(pc).and_then(Option::as_ref)
     }
 
     pub fn call_site(&self, pc: usize) -> Option<&PerfCallFact> {
@@ -349,6 +371,20 @@ impl PerformanceFacts {
             self.container_moves.resize_with(pc + 1, Option::default);
         }
         self.container_moves[pc] = Some(fact);
+    }
+
+    pub fn set_container_build_fact(&mut self, pc: usize, fact: PerfContainerBuildFact) {
+        if self.container_builds.len() <= pc {
+            self.container_builds.resize_with(pc + 1, Option::default);
+        }
+        self.container_builds[pc] = Some(fact);
+    }
+
+    pub fn set_cell_move_fact(&mut self, pc: usize, fact: PerfCellMoveFact) {
+        if self.cell_moves.len() <= pc {
+            self.cell_moves.resize_with(pc + 1, Option::default);
+        }
+        self.cell_moves[pc] = Some(fact);
     }
 
     pub fn set_control_flow_facts(&mut self, control_flow: PerfControlFlowFacts) {

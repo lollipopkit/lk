@@ -1,8 +1,8 @@
 use super::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::{
-    val::{CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal},
+    val::{CallableValue, HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedMap},
     vm::{
         ConstHeapValue32, ConstPool32, Instr32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32,
         Opcode32, RuntimeCallable32, VmContext,

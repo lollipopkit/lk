@@ -173,10 +173,6 @@ impl Program {
     pub fn execute32_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::Program32Result> {
         let mut type_checker = TypeChecker::new();
         self.type_check(&mut type_checker)?;
-        crate::vm::execute_program32_raw_with_ctx(self, ctx)
-    }
-
-    pub fn execute32_raw_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::Program32Result> {
-        self.execute32_with_ctx(ctx)
+        crate::vm::execute_program32_with_ctx(self, ctx)
     }
 }

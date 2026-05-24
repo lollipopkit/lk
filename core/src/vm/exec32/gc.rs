@@ -44,7 +44,7 @@ mod tests {
             RuntimeVal::Obj(inactive_stack),
         ];
         executor.state.stack_top = 2;
-        executor.captures = vec![RuntimeVal::Obj(capture)];
+        executor.captures = Arc::new(vec![RuntimeVal::Obj(capture)]);
 
         assert_eq!(executor.root_refs(), vec![global, stack, capture]);
     }

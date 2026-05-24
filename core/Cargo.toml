@@ -13,7 +13,6 @@ crate-type = ["rlib", "staticlib"]
 [features]
 default = ["llvm"]
 llvm = ["dep:llvm-tools"]
-aot-minimal-runtime = []
 
 [dependencies]
 anyhow = { workspace = true }

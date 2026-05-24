@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn chan_capacity_len_and_is_closed_use_runtime_channel() -> Result<()> {
         let mut state = RuntimeModuleState32::default();
-        let channel = runtime_channel(3, &mut state.heap)?;
+        let channel = runtime_channel(3, state.heap_mut())?;
         assert_eq!(
             call("capacity", std::slice::from_ref(&channel), &mut state)?,
             RuntimeVal::Int(3)
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn chan_try_send_and_recv_round_trips_runtime_values() -> Result<()> {
         let mut state = RuntimeModuleState32::default();
-        let channel = runtime_channel(1, &mut state.heap)?;
+        let channel = runtime_channel(1, state.heap_mut())?;
         let value = RuntimeVal::ShortStr(ShortStr::new("payload").expect("short string"));
         assert_eq!(
             call("try_send", &[channel.clone(), value], &mut state)?,
@@ -236,7 +236,7 @@ mod tests {
         );
 
         let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
-        let received = expect_list(&received, &state.heap);
+        let received = expect_list(&received, state.heap());
         assert_eq!(received.len(), 2);
         assert_eq!(received[0], RuntimeVal::Bool(true));
         assert_eq!(
@@ -249,10 +249,10 @@ mod tests {
     #[test]
     fn chan_try_recv_empty_returns_false_nil_pair() -> Result<()> {
         let mut state = RuntimeModuleState32::default();
-        let channel = runtime_channel(1, &mut state.heap)?;
+        let channel = runtime_channel(1, state.heap_mut())?;
         let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
         assert_eq!(
-            expect_list(&received, &state.heap),
+            expect_list(&received, state.heap()),
             vec![RuntimeVal::Bool(false), RuntimeVal::Nil]
         );
         Ok(())

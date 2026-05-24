@@ -94,7 +94,7 @@ mod tests {
         );
         let result = run32("import list; return [list.first([]), list.last([])];")?;
         assert_eq!(
-            expect_runtime_list(result.first_return().clone(), &result.state.heap),
+            expect_runtime_list(result.first_return().clone(), result.state.heap()),
             vec![RuntimeVal::Nil, RuntimeVal::Nil]
         );
         Ok(())
@@ -104,7 +104,7 @@ mod tests {
     fn test_list_concat_and_set_returns_pair() -> Result<()> {
         let concat = run32("import list; return list.concat([1,2], [3,4]);")?;
         assert_eq!(
-            expect_runtime_list(concat.first_return().clone(), &concat.state.heap),
+            expect_runtime_list(concat.first_return().clone(), concat.state.heap()),
             vec![
                 RuntimeVal::Int(1),
                 RuntimeVal::Int(2),
@@ -119,7 +119,7 @@ mod tests {
              return [updated[1], old];",
         )?;
         assert_eq!(
-            expect_runtime_list(result.first_return().clone(), &result.state.heap),
+            expect_runtime_list(result.first_return().clone(), result.state.heap()),
             vec![RuntimeVal::Int(42), RuntimeVal::Int(2)]
         );
         Ok(())
@@ -155,7 +155,7 @@ mod tests {
             panic!("push should use plain RuntimeNative32");
         };
         let mut state = RuntimeModuleState32::default();
-        let list = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
+        let list = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
         let args = [list, RuntimeVal::Int(3)];
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
@@ -177,7 +177,7 @@ mod tests {
             panic!("set should use plain RuntimeNative32");
         };
         let mut state = RuntimeModuleState32::default();
-        let list = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
+        let list = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
         let args = [list, RuntimeVal::Int(1), RuntimeVal::Int(7)];
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
@@ -199,12 +199,12 @@ mod tests {
         let mut state = RuntimeModuleState32::default();
         let left = RuntimeVal::Obj(
             state
-                .heap
+                .heap_mut()
                 .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from("a")]))),
         );
         let right = RuntimeVal::Obj(
             state
-                .heap
+                .heap_mut()
                 .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from("b")]))),
         );
         let args = [left, right];
@@ -224,11 +224,11 @@ mod tests {
             panic!("join should use plain RuntimeNative32");
         };
         let mut state = RuntimeModuleState32::default();
-        let list = RuntimeVal::Obj(state.heap.alloc(HeapValue::List(TypedList::String(vec![
+        let list = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("a"),
             Arc::<str>::from("b"),
         ]))));
-        let delimiter = runtime_string_value(",", &mut state.heap);
+        let delimiter = runtime_string_value(",", state.heap_mut());
         let args = [list, delimiter];
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&args), &mut runtime)?;

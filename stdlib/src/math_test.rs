@@ -113,7 +113,7 @@ mod tests {
             return [a, b, c, d];
         "#;
         let result = execute_math32(source)?;
-        let TypedList::Int(values) = runtime_list(result.first_return(), &result.state.heap) else {
+        let TypedList::Int(values) = runtime_list(result.first_return(), result.state.heap()) else {
             panic!("expected typed int list");
         };
         assert_eq!(values, &vec![100, 0, 4, 3]);

@@ -1,112 +1,26 @@
+use std::ops::Range;
+
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
-    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedMap},
+    val::{HeapStore, HeapValue, RuntimeVal},
     vm::{CallWindow32, Function32, Module32, NativeArgs32, NativeEntry32, VmContext, analysis::PerfCallTargetKind},
 };
 
 use super::{
-    Executor32, runtime_callable,
+    Executor32,
+    call::{CallableTarget32, callable_target32},
+    runtime_callable,
     support::{
-        call_native_entry_parts_with_args, call_native_entry_with_args, inline_native_args_from_stack,
-        inline_native_slots_from_stack,
+        call_native_entry_parts_with_args, call_native_entry_with_args, move_inline_native_args_from_stack,
+        move_inline_native_slots_from_stack,
     },
 };
 
-/// Write named arguments from a `&TypedMap` directly into a callee frame,
-/// bypassing tuple-vector materialization.
-///
-/// This is the direct-writer variant — call from a code path where you already
-/// hold a `&TypedMap` reference (e.g. the dynamic `__lk_call_method_named` builtin).
-/// All typed-map variants are handled without requiring `&mut HeapStore`.
-pub(crate) fn write_named_args32_to_frame_from_typed_map(
+pub(super) fn move_named_args32_to_frame_from_stack(
     function: &Function32,
-    positional: &[RuntimeVal],
-    named: &TypedMap,
-    frame: &mut [RuntimeVal],
-) -> Result<()> {
-    if frame.len() < function.param_count as usize {
-        bail!(
-            "callee frame has {} slots, function requires {} params",
-            frame.len(),
-            function.param_count
-        );
-    }
-    if function.param_names.len() != function.param_count as usize {
-        bail!("Function does not expose named parameter metadata");
-    }
-    let positional_count = function.positional_param_count as usize;
-    if positional.len() != positional_count {
-        bail!(
-            "Function expects {} positional arguments before named arguments, got {}",
-            positional_count,
-            positional.len()
-        );
-    }
-    frame[..positional_count].clone_from_slice(positional);
-    let named_slot_count = function.param_count as usize - positional_count;
-    let mut seen = vec![false; named_slot_count];
-
-    macro_rules! place_named {
-        ($name:expr, $value:expr) => {{
-            let name_str: &str = ($name).as_ref();
-            let Some(offset) = function.param_names[positional_count..]
-                .iter()
-                .position(|p| p.as_ref() == name_str)
-            else {
-                bail!("unknown named argument `{name_str}`");
-            };
-            if std::mem::replace(&mut seen[offset], true) {
-                bail!("duplicate named argument `{name_str}`");
-            }
-            frame[positional_count + offset] = $value;
-        }};
-    }
-
-    match named {
-        TypedMap::StringMixed(values) => {
-            for (name, value) in values {
-                place_named!(name, value.clone());
-            }
-        }
-        TypedMap::StringInt(values) => {
-            for (name, &value) in values {
-                place_named!(name, RuntimeVal::Int(value));
-            }
-        }
-        TypedMap::StringFloat(values) => {
-            for (name, &value) in values {
-                place_named!(name, RuntimeVal::Float(value));
-            }
-        }
-        TypedMap::StringBool(values) => {
-            for (name, &value) in values {
-                place_named!(name, RuntimeVal::Bool(value));
-            }
-        }
-        TypedMap::Mixed(values) => {
-            for (key, value) in values {
-                let Some(name) = key.as_arc_str() else {
-                    bail!("named argument key must be a string");
-                };
-                place_named!(name, value.clone());
-            }
-        }
-    }
-
-    if let Some(index) = seen.iter().position(|seen| !*seen) {
-        bail!(
-            "missing required named argument `{}`",
-            function.param_names[positional_count + index]
-        );
-    }
-    Ok(())
-}
-
-pub(super) fn write_named_args32_to_frame_from_stack(
-    function: &Function32,
-    positional: &[RuntimeVal],
-    caller_stack: &[RuntimeVal],
+    positional: Range<usize>,
+    caller_stack: &mut [RuntimeVal],
     named_start: usize,
     named_count: u16,
     heap: &HeapStore,
@@ -128,7 +42,7 @@ pub(super) fn write_named_args32_to_frame_from_stack(
                 positional.len()
             );
         }
-        frame[..positional.len()].clone_from_slice(positional);
+        move_range_into_frame(caller_stack, positional, &mut frame[..function.param_count as usize])?;
         return Ok(());
     }
 
@@ -144,24 +58,28 @@ pub(super) fn write_named_args32_to_frame_from_stack(
         );
     }
 
-    frame[..positional_count].clone_from_slice(positional);
+    move_range_into_frame(caller_stack, positional, &mut frame[..positional_count])?;
     let mut seen = vec![false; function.param_count as usize - positional_count];
     let named_end = named_start + named_count as usize * 2;
-    let Some(named_slots) = caller_stack.get(named_start..named_end) else {
+    if named_end > caller_stack.len() {
         bail!("CallNamed argument window {}..{} out of bounds", named_start, named_end);
-    };
-    for pair in named_slots.chunks_exact(2) {
-        let name = call_named_arg_name(&pair[0], heap)?;
-        let Some(offset) = function.param_names[positional_count..]
-            .iter()
-            .position(|param| param.as_ref() == name)
-        else {
-            bail!("unknown named argument `{name}`");
+    }
+    for pair_start in (named_start..named_end).step_by(2) {
+        let offset = {
+            let name = call_named_arg_name(&caller_stack[pair_start], heap)?;
+            let Some(offset) = function.param_names[positional_count..]
+                .iter()
+                .position(|param| param.as_ref() == name)
+            else {
+                bail!("unknown named argument `{name}`");
+            };
+            if std::mem::replace(&mut seen[offset], true) {
+                bail!("duplicate named argument `{name}`");
+            }
+            offset
         };
-        if std::mem::replace(&mut seen[offset], true) {
-            bail!("duplicate named argument `{name}`");
-        }
-        frame[positional_count + offset] = pair[1].clone();
+        caller_stack[pair_start] = RuntimeVal::Nil;
+        frame[positional_count + offset] = std::mem::take(&mut caller_stack[pair_start + 1]);
     }
 
     if let Some(index) = seen.iter().position(|seen| !*seen) {
@@ -169,6 +87,16 @@ pub(super) fn write_named_args32_to_frame_from_stack(
             "missing required named argument `{}`",
             function.param_names[positional_count + index]
         );
+    }
+    Ok(())
+}
+
+fn move_range_into_frame(caller_stack: &mut [RuntimeVal], range: Range<usize>, frame: &mut [RuntimeVal]) -> Result<()> {
+    if range.end > caller_stack.len() {
+        bail!("call argument window {}..{} out of bounds", range.start, range.end);
+    }
+    for (slot, value_index) in frame.iter_mut().zip(range) {
+        *slot = std::mem::take(&mut caller_stack[value_index]);
     }
     Ok(())
 }
@@ -203,37 +131,16 @@ impl Executor32 {
         let RuntimeVal::Obj(handle) = callee else {
             bail!("CallNamed callee is not callable");
         };
-        let callable = match (
-            known_target_kind.unwrap_or_default(),
+        let callable = callable_target32(
+            known_target_kind,
             self.state
                 .heap
                 .get(handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
-        ) {
-            (
-                PerfCallTargetKind::Closure,
-                HeapValue::Callable(CallableValue::Closure {
-                    function_index,
-                    captures,
-                }),
-            ) => CallableValue::Closure {
-                function_index: *function_index,
-                captures: captures.clone(),
-            },
-            (PerfCallTargetKind::Native, HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })) => {
-                CallableValue::RuntimeNative32 {
-                    arity: *arity,
-                    function: function.clone(),
-                }
-            }
-            (PerfCallTargetKind::Runtime, HeapValue::Callable(CallableValue::Runtime32(function))) => {
-                CallableValue::Runtime32(function.clone())
-            }
-            (_, HeapValue::Callable(callable)) => callable.clone(),
-            _ => bail!("CallNamed callee is not callable"),
-        };
+            "CallNamed callee is not callable",
+        )?;
         match callable {
-            CallableValue::RuntimeNative32 { arity, function } => {
+            CallableTarget32::RuntimeNative32 { arity, function } => {
                 if arity != NativeEntry32::VARIADIC && arity != window.arg_count {
                     bail!(
                         "Native expects {} positional arguments, got {}",
@@ -249,11 +156,11 @@ impl Executor32 {
                 let args = self.call_args_stack_range(window)?;
                 let named_start = args.end;
                 let result = if native.function.requires_full_state() {
-                    let args = inline_native_args_from_stack(&native, &self.state.stack, args.clone())?;
+                    let args = move_inline_native_args_from_stack(&native, &mut self.state.stack, args.clone())?;
                     let named_end = named_start + named_count as usize * 2;
-                    let named_stack = inline_native_slots_from_stack(
+                    let named_stack = move_inline_native_slots_from_stack(
                         &native,
-                        &self.state.stack,
+                        &mut self.state.stack,
                         named_start..named_end,
                         "named argument",
                     )?;
@@ -286,11 +193,11 @@ impl Executor32 {
                 };
                 result.or_else(|error| self.handle_call_error(error))
             }
-            CallableValue::Closure {
+            CallableTarget32::Closure {
                 function_index,
                 captures,
             } => self.call_closure_named_stack_args(module, function_index, captures, window, named_count, ctx),
-            CallableValue::Runtime32(function) => {
+            CallableTarget32::Runtime32(function) => {
                 let args = self.call_args_stack_range(window)?;
                 let named_start = args.end;
                 let result = runtime_callable::call_runtime_callable32_runtime_named_stack(

@@ -73,11 +73,11 @@ mod tests {
             "select$block",
         ] {
             let export = registry.get_runtime_builtin(name).expect("builtin present");
-            let state = export.state.lock().expect("runtime export state lock");
-            let RuntimeVal::Obj(handle) = export.value else {
+            let state = export.state_lock().expect("runtime export state lock");
+            let RuntimeVal::Obj(handle) = export.value() else {
                 panic!("{name} should be heap callable");
             };
-            let Some(HeapValue::Callable(CallableValue::RuntimeNative32 { function, .. })) = state.heap.get(handle)
+            let Some(HeapValue::Callable(CallableValue::RuntimeNative32 { function, .. })) = state.heap().get(*handle)
             else {
                 panic!("{name} should use RuntimeNative32");
             };
@@ -107,7 +107,7 @@ mod tests {
         let RuntimeVal::Obj(handle) = result.first_return() else {
             panic!("expected list object");
         };
-        let Some(HeapValue::List(TypedList::Mixed(values))) = result.state.heap.get(*handle) else {
+        let Some(HeapValue::List(TypedList::Mixed(values))) = result.state.heap().get(*handle) else {
             panic!("expected mixed list return");
         };
         assert_eq!(values, &vec![RuntimeVal::Bool(true), RuntimeVal::Int(7)]);

@@ -63,11 +63,8 @@ impl GcRoots32 {
 }
 
 pub fn collect_runtime_export32(export: &RuntimeExport32) -> Result<()> {
-    let mut state = export
-        .state
-        .lock()
-        .map_err(|_| anyhow!("RuntimeExport32 state lock poisoned"))?;
-    state.collect_garbage([&export.value]);
+    let mut state = export.state_lock()?;
+    state.collect_garbage([export.value()]);
     Ok(())
 }
 
@@ -129,17 +126,17 @@ mod tests {
         let exported = heap.alloc(HeapValue::String(Arc::<str>::from("exported")));
         let global = heap.alloc(HeapValue::String(Arc::<str>::from("global")));
         let dead = heap.alloc(HeapValue::String(Arc::<str>::from("dead")));
-        let export = RuntimeExport32 {
-            value: RuntimeVal::Obj(exported),
-            state: Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
+        let export = RuntimeExport32::new(
+            RuntimeVal::Obj(exported),
+            Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
                 heap,
                 vec![RuntimeVal::Obj(global)],
             ))),
-            module: Arc::new(Module32::default()),
-        };
+            Arc::new(Module32::default()),
+        );
 
         collect_runtime_export32(&export).expect("collect export");
-        let state = export.state.lock().expect("state");
+        let state = export.state_lock().expect("state");
 
         assert!(state.heap.get(exported).is_some());
         assert!(state.heap.get(global).is_some());

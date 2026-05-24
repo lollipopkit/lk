@@ -603,15 +603,7 @@ impl LkAnalyzer {
 
     /// List exports for a given stdlib module name
     pub fn list_module_exports(&self, module: &str) -> Option<Vec<String>> {
-        match self.registry.get_module(module) {
-            Ok(m) => {
-                let exports = m.exports();
-                let mut keys: Vec<String> = exports.keys().cloned().collect();
-                keys.sort();
-                Some(keys)
-            }
-            Err(_) => None,
-        }
+        self.module_export_names(module)
     }
 
     /// Collect imported module aliases from the given content.
@@ -1123,24 +1115,24 @@ impl LkAnalyzer {
             Expr::Var(name) => {
                 Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Id(id) if id == name))
             }
-            Expr::Val(val) => match val {
+            Expr::Literal(val) => match val {
                 value if value.as_str().is_some() => Self::find_token_range(
                     tokens,
                     spans,
                     |tok| matches!(tok, token::Token::Str(lit) if Some(lit.as_str()) == value.as_str()),
                 ),
-                val::Val::Int(i) => {
+                val::LiteralVal::Int(i) => {
                     Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Int(n) if n == i))
                 }
-                val::Val::Float(f) => Self::find_token_range(
+                val::LiteralVal::Float(f) => Self::find_token_range(
                     tokens,
                     spans,
                     |tok| matches!(tok, token::Token::Float(n) if (*n - *f).abs() < f64::EPSILON),
                 ),
-                val::Val::Bool(b) => {
+                val::LiteralVal::Bool(b) => {
                     Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Bool(n) if n == b))
                 }
-                val::Val::Nil => Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Nil)),
+                val::LiteralVal::Nil => Self::find_token_range(tokens, spans, |tok| matches!(tok, token::Token::Nil)),
                 _ => None,
             },
             Expr::Paren(inner) => Self::range_for_expr(inner, tokens, spans),
@@ -1182,34 +1174,6 @@ impl LkAnalyzer {
             }
         }
         Range::new(Position::new(0, 0), Position::new(0, 0))
-    }
-
-    pub(crate) fn analyze_statements(&self, statements: &[Box<Stmt>], result: &mut AnalysisResult) {
-        for (i, stmt) in statements.iter().enumerate() {
-            match stmt.as_ref() {
-                Stmt::Let { pattern, .. } => {
-                    // Extract variable names from pattern and create symbols for each
-                    if let Some(variables) = extract_variables_from_pattern(pattern) {
-                        for var_name in variables {
-                            result.symbols.push(DocumentSymbol {
-                                name: var_name.clone(),
-                                detail: Some("Variable declaration".to_string()),
-                                kind: SymbolKind::VARIABLE,
-                                tags: None,
-                                #[allow(deprecated)]
-                                deprecated: None,
-                                range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
-                                selection_range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
-                                children: None,
-                            });
-                        }
-                    }
-                }
-                Stmt::Function { .. } => {}
-                Stmt::Import(_import_stmt) => { /* imports are grouped via token scan later */ }
-                _ => {}
-            }
-        }
     }
 
     pub(crate) fn dedup_diagnostics(&self, diagnostics: &mut Vec<Diagnostic>) {

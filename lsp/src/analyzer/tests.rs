@@ -1,13 +1,24 @@
 use super::*;
 use lk_core::expr;
-use std::collections::HashMap;
+use lk_core::val::{HeapStore, HeapValue, LiteralVal, RuntimeVal, ShortStr, TypedMap};
+use std::collections::BTreeMap;
 use tower_lsp::lsp_types::{
     DiagnosticSeverity, InlayHintKind, NumberOrString, Position, Range, SemanticToken, SymbolKind,
 };
-use val::Val;
-
 fn create_analyzer() -> LkAnalyzer {
     LkAnalyzer::new()
+}
+
+fn short(value: &str) -> RuntimeVal {
+    RuntimeVal::ShortStr(ShortStr::new(value).expect("short test string"))
+}
+
+fn string_map(heap: &mut HeapStore, entries: impl IntoIterator<Item = (&'static str, RuntimeVal)>) -> RuntimeVal {
+    let entries = entries
+        .into_iter()
+        .map(|(key, value)| (std::sync::Arc::<str>::from(key), value))
+        .collect::<BTreeMap<_, _>>();
+    RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))))
 }
 
 #[test]
@@ -62,14 +73,38 @@ fn test_analyze_statement_program() {
     assert!(diag.message.contains("Function 'calculate_score' infers implicit Any"));
     assert_eq!(diag.code, Some(NumberOrString::String("lk_type_error".to_string())));
 
-    // Should have symbols for import, variable, and function
+    // Should have grouped import/variable symbols and function symbols.
     assert!(result.symbols.len() >= 3);
 
     let symbol_names: Vec<&String> = result.symbols.iter().map(|s| &s.name).collect();
-    assert!(symbol_names.contains(&&"import math".to_string()));
-    assert!(symbol_names.contains(&&"user_level".to_string()));
     assert!(symbol_names.contains(&&"calculate_score".to_string()));
-    assert!(symbol_names.contains(&&"result".to_string()));
+    let imports = result
+        .symbols
+        .iter()
+        .find(|s| s.name == "Imports")
+        .expect("Imports group");
+    let import_names: Vec<&String> = imports
+        .children
+        .as_ref()
+        .expect("import children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(import_names.contains(&&"import math".to_string()));
+    let variables = result
+        .symbols
+        .iter()
+        .find(|s| s.name == "Variables")
+        .expect("Variables group");
+    let variable_names: Vec<&String> = variables
+        .children
+        .as_ref()
+        .expect("variable children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(variable_names.contains(&&"user_level".to_string()));
+    assert!(variable_names.contains(&&"result".to_string()));
 }
 
 #[test]
@@ -93,7 +128,7 @@ fn test_collect_named_param_decls_for_signature_help() {
     ));
     assert!(matches!(
         params[1].default.as_ref(),
-        Some(expr::Expr::Val(Val::Int(100)))
+        Some(expr::Expr::Literal(LiteralVal::Int(100)))
     ));
 }
 
@@ -149,16 +184,10 @@ fn test_validate_identifier_access_with_valid_vars() {
     let analyzer = create_analyzer();
 
     // Create a variables map with req.user.role
-    let mut user_map = HashMap::new();
-    user_map.insert("role".to_string(), Val::from_str("admin"));
-    user_map.insert("id".to_string(), Val::Int(123));
-
-    let mut req_map = HashMap::new();
-    req_map.insert("user".to_string(), Val::from(user_map));
-
-    let mut context_map = HashMap::new();
-    context_map.insert("req".to_string(), Val::from(req_map));
-    let context = Val::from(context_map);
+    let mut heap = HeapStore::new();
+    let user = string_map(&mut heap, [("role", short("admin")), ("id", RuntimeVal::Int(123))]);
+    let req = string_map(&mut heap, [("user", user)]);
+    let context = string_map(&mut heap, [("req", req)]);
 
     // Parse expression that uses req.user.role
     let tokens = token::Tokenizer::tokenize("req.user.role == 'admin'").unwrap();
@@ -167,7 +196,7 @@ fn test_validate_identifier_access_with_valid_vars() {
         .parse()
         .expect("parser should succeed for req.user.role expression");
 
-    let diagnostics = analyzer.validate_identifier_access(&expr, Some(&context));
+    let diagnostics = analyzer.validate_identifier_access(&expr, Some((&context, &heap)));
 
     // Should have no diagnostics since variables map is valid
     assert!(diagnostics.is_empty());
@@ -178,23 +207,18 @@ fn test_identifier_map_has_key() {
     let analyzer = create_analyzer();
 
     // Create nested variables map structure
-    let mut inner_map = HashMap::new();
-    inner_map.insert("name".to_string(), Val::from_str("test"));
-
-    let mut middle_map = HashMap::new();
-    middle_map.insert("user".to_string(), Val::from(inner_map));
-
-    let mut context_map = HashMap::new();
-    context_map.insert("req".to_string(), Val::from(middle_map));
-    let context = Val::from(context_map);
+    let mut heap = HeapStore::new();
+    let inner = string_map(&mut heap, [("name", short("test"))]);
+    let middle = string_map(&mut heap, [("user", inner)]);
+    let context = string_map(&mut heap, [("req", middle)]);
 
     // Test existing nested key
-    assert!(analyzer.vars_has_key(&context, "req.user.name"));
+    assert!(analyzer.vars_has_key(&context, &heap, "req.user.name"));
 
     // Test non-existing key
-    assert!(!analyzer.vars_has_key(&context, "req.user.role"));
-    assert!(!analyzer.vars_has_key(&context, "req.admin"));
-    assert!(!analyzer.vars_has_key(&context, "nonexistent"));
+    assert!(!analyzer.vars_has_key(&context, &heap, "req.user.role"));
+    assert!(!analyzer.vars_has_key(&context, &heap, "req.admin"));
+    assert!(!analyzer.vars_has_key(&context, &heap, "nonexistent"));
 }
 
 #[test]

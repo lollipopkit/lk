@@ -1,7 +1,6 @@
 //! Time module for LK concurrency.
 //!
-//! Module-level functions use RuntimeNative32 while the older global
-//! concurrency builtins are still migrated separately.
+//! Module-level functions use RuntimeNative32.
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
@@ -203,7 +202,7 @@ mod tests {
             let RuntimeVal::Obj(handle) = value else {
                 panic!("{name} should return heap channel");
             };
-            let HeapValue::Channel(channel) = state.heap.get(handle).expect("channel object") else {
+            let HeapValue::Channel(channel) = state.heap().get(handle).expect("channel object") else {
                 panic!("{name} should return Channel");
             };
             assert_eq!(channel.capacity, Some(1));

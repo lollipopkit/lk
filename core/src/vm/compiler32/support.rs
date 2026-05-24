@@ -187,34 +187,40 @@ fn const_heap_value_from_literal(value: &LiteralVal) -> Result<ConstHeapValue32>
 pub(super) fn const_heap_value_from_expr_literal(expr: &Expr) -> Result<Option<ConstHeapValue32>> {
     match expr {
         Expr::Literal(value) => const_heap_value_from_literal(value).map(Some),
-        Expr::List(values) => {
-            let mut const_values = Vec::with_capacity(values.len());
-            for value in values {
-                let Some(value) = const_runtime_value_from_expr_literal(value)? else {
-                    return Ok(None);
-                };
-                const_values.push(value);
-            }
-            Ok(Some(ConstHeapValue32::List(const_values)))
-        }
-        Expr::Map(entries) => {
-            let mut const_entries = BTreeMap::new();
-            for (key, value) in entries {
-                let Expr::Literal(key) = &**key else {
-                    return Ok(None);
-                };
-                let Some(key) = const_runtime_map_key_from_literal(key)? else {
-                    return Ok(None);
-                };
-                let Some(value) = const_runtime_value_from_expr_literal(value)? else {
-                    return Ok(None);
-                };
-                const_entries.insert(key, value);
-            }
-            Ok(Some(ConstHeapValue32::Map(const_entries)))
-        }
+        Expr::List(values) => const_heap_list_from_expr_literals(values),
+        Expr::Map(entries) => const_heap_map_from_expr_literals(entries),
         _ => Ok(None),
     }
+}
+
+pub(super) fn const_heap_list_from_expr_literals(values: &[Box<Expr>]) -> Result<Option<ConstHeapValue32>> {
+    let mut const_values = Vec::with_capacity(values.len());
+    for value in values {
+        let Some(value) = const_runtime_value_from_expr_literal(value)? else {
+            return Ok(None);
+        };
+        const_values.push(value);
+    }
+    Ok(Some(ConstHeapValue32::List(const_values)))
+}
+
+pub(super) fn const_heap_map_from_expr_literals(
+    entries: &[(Box<Expr>, Box<Expr>)],
+) -> Result<Option<ConstHeapValue32>> {
+    let mut const_entries = BTreeMap::new();
+    for (key, value) in entries {
+        let Expr::Literal(key) = &**key else {
+            return Ok(None);
+        };
+        let Some(key) = const_runtime_map_key_from_literal(key)? else {
+            return Ok(None);
+        };
+        let Some(value) = const_runtime_value_from_expr_literal(value)? else {
+            return Ok(None);
+        };
+        const_entries.insert(key, value);
+    }
+    Ok(Some(ConstHeapValue32::Map(const_entries)))
 }
 
 fn const_runtime_value_from_literal(value: &LiteralVal) -> Result<ConstRuntimeValue32> {

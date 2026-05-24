@@ -1,9 +1,10 @@
 use anyhow::{Result, anyhow, bail};
+use std::sync::Arc;
 
 use crate::val::{CallableValue, HeapValue, RuntimeVal};
 use crate::vm::Module32;
 
-use super::{Executor32, checked_u8_count};
+use super::Executor32;
 
 impl Executor32 {
     pub(super) fn load_function_value(
@@ -19,7 +20,7 @@ impl Executor32 {
         }
         let value = RuntimeVal::Obj(self.state.heap.alloc(HeapValue::Callable(CallableValue::Closure {
             function_index,
-            captures: Vec::new(),
+            captures: Arc::new(Vec::new()),
         })));
         self.write(dst, value)
     }
@@ -37,10 +38,10 @@ impl Executor32 {
             .functions
             .get(function_index as usize)
             .ok_or_else(|| anyhow!("MakeClosure index {} out of bounds", function_index))?;
-        let captures = self.read_register_range_owned(capture_base, checked_u8_count(function.capture_count)?)?;
+        let captures = self.capture_values(capture_base, function.capture_count)?;
         let value = RuntimeVal::Obj(self.state.heap.alloc(HeapValue::Callable(CallableValue::Closure {
             function_index,
-            captures,
+            captures: Arc::new(captures),
         })));
         self.write(dst, value)
     }
@@ -61,5 +62,18 @@ impl Executor32 {
                 })),
         );
         self.write(dst, value)
+    }
+
+    fn capture_values(&self, base: u8, count: u16) -> Result<Vec<RuntimeVal>> {
+        let count = usize::from(count);
+        if usize::from(base) + count > usize::from(self.register_count) {
+            bail!("capture range {}..{} out of bounds", base, usize::from(base) + count);
+        }
+        let start = self.frame_base + usize::from(base);
+        let mut captures = Vec::with_capacity(count);
+        for value in &self.state.stack[start..start + count] {
+            captures.push(value.clone());
+        }
+        Ok(captures)
     }
 }

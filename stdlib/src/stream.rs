@@ -80,6 +80,8 @@ enum StreamSpec {
 trait StreamCursor {
     fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>>;
 
+    fn roots(&self) -> Vec<RuntimeVal>;
+
     fn collect_remaining(&mut self, limit: Option<i64>, runtime: &mut NativeRuntime32<'_>) -> Result<TypedList> {
         let mut out = Vec::new();
         let mut taken = 0i64;
@@ -95,47 +97,72 @@ trait StreamCursor {
             out.push(value);
             taken += 1;
         }
-        Ok(TypedList::from_runtime_values(out, runtime.heap()))
+        Ok(crate::typed_list_from_values(out, runtime.heap()))
     }
 }
 
 impl StreamSpec {
     fn open_cursor(&self) -> Box<dyn StreamCursor + Send> {
-        match self.clone() {
-            StreamSpec::FromList(data) => Box::new(FromListCursor { data, index: 0 }),
-            StreamSpec::Range { start, end, step } => Box::new(RangeCursor {
-                current: start,
-                end,
-                step,
+        match self {
+            StreamSpec::FromList(data) => Box::new(FromListCursor {
+                data: copy_typed_list(data),
+                index: 0,
             }),
-            StreamSpec::Repeat(value) => Box::new(RepeatCursor { value }),
+            StreamSpec::Range { start, end, step } => Box::new(RangeCursor {
+                current: *start,
+                end: *end,
+                step: *step,
+            }),
+            StreamSpec::Repeat(value) => Box::new(RepeatCursor { value: value.clone() }),
             StreamSpec::Iterate { seed, func } => Box::new(IterateCursor {
-                current: seed,
-                func,
+                current: seed.clone(),
+                func: func.clone(),
                 first: true,
             }),
-            StreamSpec::FromChannel { channel_id } => Box::new(ChannelCursor { channel_id }),
+            StreamSpec::FromChannel { channel_id } => Box::new(ChannelCursor {
+                channel_id: *channel_id,
+            }),
             StreamSpec::Map { upstream, func } => Box::new(MapCursor {
                 upstream: upstream.open_cursor(),
-                func,
+                func: func.clone(),
             }),
             StreamSpec::Filter { upstream, func } => Box::new(FilterCursor {
                 upstream: upstream.open_cursor(),
-                func,
+                func: func.clone(),
             }),
             StreamSpec::Take { upstream, n } => Box::new(TakeCursor {
                 upstream: upstream.open_cursor(),
-                remaining: n,
+                remaining: *n,
             }),
             StreamSpec::Skip { upstream, n } => Box::new(SkipCursor {
                 upstream: upstream.open_cursor(),
-                to_skip: n,
+                to_skip: *n,
             }),
             StreamSpec::Chain { left, right } => Box::new(ChainCursor {
                 left: left.open_cursor(),
                 right: right.open_cursor(),
                 left_exhausted: false,
             }),
+        }
+    }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        match self {
+            StreamSpec::FromList(data) => typed_list_roots(data),
+            StreamSpec::Repeat(value) => vec![value.clone()],
+            StreamSpec::Iterate { seed, func } => vec![seed.clone(), func.clone()],
+            StreamSpec::Map { upstream, func } | StreamSpec::Filter { upstream, func } => {
+                let mut roots = upstream.roots();
+                roots.push(func.clone());
+                roots
+            }
+            StreamSpec::Take { upstream, .. } | StreamSpec::Skip { upstream, .. } => upstream.roots(),
+            StreamSpec::Chain { left, right } => {
+                let mut roots = left.roots();
+                roots.extend(right.roots());
+                roots
+            }
+            StreamSpec::Range { .. } | StreamSpec::FromChannel { .. } => Vec::new(),
         }
     }
 }
@@ -166,6 +193,10 @@ impl StreamCursor for FromListCursor {
         self.index = start.saturating_add(out.len()).min(self.data.len());
         Ok(out)
     }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        typed_list_roots(&self.data)
+    }
 }
 
 #[derive(Debug)]
@@ -189,6 +220,10 @@ impl StreamCursor for RangeCursor {
         self.current += self.step;
         Ok(Some(RuntimeVal::Int(value)))
     }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        Vec::new()
+    }
 }
 
 #[derive(Debug)]
@@ -199,6 +234,10 @@ struct RepeatCursor {
 impl StreamCursor for RepeatCursor {
     fn next(&mut self, _runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
         Ok(Some(self.value.clone()))
+    }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        vec![self.value.clone()]
     }
 }
 
@@ -224,6 +263,10 @@ impl StreamCursor for IterateCursor {
         self.current = next.clone();
         Ok(Some(next))
     }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        vec![self.current.clone(), self.func.clone()]
+    }
 }
 
 struct MapCursor {
@@ -237,6 +280,12 @@ impl StreamCursor for MapCursor {
             return Ok(None);
         };
         call_runtime_callable_value(&self.func, &[value], runtime, "stream.map").map(Some)
+    }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        let mut roots = self.upstream.roots();
+        roots.push(self.func.clone());
+        roots
     }
 }
 
@@ -257,6 +306,12 @@ impl StreamCursor for FilterCursor {
             }
         }
     }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        let mut roots = self.upstream.roots();
+        roots.push(self.func.clone());
+        roots
+    }
 }
 
 struct TakeCursor {
@@ -275,6 +330,10 @@ impl StreamCursor for TakeCursor {
         }
         Ok(value)
     }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        self.upstream.roots()
+    }
 }
 
 struct SkipCursor {
@@ -291,6 +350,10 @@ impl StreamCursor for SkipCursor {
             self.to_skip -= 1;
         }
         self.upstream.next(runtime)
+    }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        self.upstream.roots()
     }
 }
 
@@ -310,6 +373,12 @@ impl StreamCursor for ChainCursor {
         }
         self.right.next(runtime)
     }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        let mut roots = self.left.roots();
+        roots.extend(self.right.roots());
+        roots
+    }
 }
 
 #[derive(Debug)]
@@ -323,6 +392,10 @@ impl StreamCursor for ChannelCursor {
             Some((true, value)) => Ok(Some(value.into_value(runtime.heap_mut())?)),
             Some((false, _)) | None => Ok(None),
         }
+    }
+
+    fn roots(&self) -> Vec<RuntimeVal> {
+        Vec::new()
     }
 }
 
@@ -371,7 +444,8 @@ impl Module for StreamModule {
 
 fn from_list32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.from_list")?;
-    let values = list_arg(&args.as_slice()[0], runtime.heap(), "stream.from_list argument")?;
+    let values = list_arg_ref(&args.as_slice()[0], runtime.heap(), "stream.from_list argument")?;
+    let values = copy_typed_list(values);
     create_stream(StreamSpec::FromList(values), Type::Any, runtime.heap_mut())
 }
 
@@ -520,15 +594,19 @@ fn collect_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
 
 fn create_stream(spec: StreamSpec, inner_type: Type, heap: &mut HeapStore) -> Result<RuntimeVal> {
     let id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
+    let roots = spec.roots();
     STREAMS.insert(id, Arc::new(spec));
-    Ok(RuntimeVal::Obj(
-        heap.alloc(HeapValue::Stream(Arc::new(StreamValue { id, inner_type }))),
-    ))
+    Ok(RuntimeVal::Obj(heap.alloc(HeapValue::Stream(Arc::new(StreamValue {
+        id,
+        inner_type,
+        roots,
+    })))))
 }
 
 fn create_cursor(stream_id: u64, heap: &mut HeapStore) -> Result<RuntimeVal> {
     let spec = get_stream_spec(stream_id)?;
     let cursor = spec.open_cursor();
+    let roots = cursor.roots();
     let id = NEXT_CURSOR_ID.fetch_add(1, Ordering::Relaxed);
     CURSORS.insert(id, Arc::new(Mutex::new(cursor)));
     let channel_id = match spec.as_ref() {
@@ -537,7 +615,7 @@ fn create_cursor(stream_id: u64, heap: &mut HeapStore) -> Result<RuntimeVal> {
     };
     CURSOR_INFO.insert(id, CursorInfo { channel_id });
     Ok(RuntimeVal::Obj(heap.alloc(HeapValue::StreamCursor(Arc::new(
-        StreamCursorValue { id, stream_id },
+        StreamCursorValue { id, stream_id, roots },
     )))))
 }
 
@@ -731,7 +809,7 @@ fn is_cursor(value: &RuntimeVal, heap: &HeapStore) -> bool {
     matches!(value, RuntimeVal::Obj(handle) if matches!(heap.get(*handle), Some(HeapValue::StreamCursor(_))))
 }
 
-fn list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedList> {
+fn list_arg_ref<'a>(value: &RuntimeVal, heap: &'a HeapStore, context: &str) -> Result<&'a TypedList> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("{context} must be a List");
     };
@@ -739,8 +817,18 @@ fn list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Typed
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match value {
-        HeapValue::List(list) => Ok(list.clone()),
+        HeapValue::List(list) => Ok(list),
         other => Err(anyhow!("{context} must be a List, got {}", other.type_name())),
+    }
+}
+
+fn copy_typed_list(list: &TypedList) -> TypedList {
+    match list {
+        TypedList::Mixed(values) => TypedList::Mixed(values.clone()),
+        TypedList::Int(values) => TypedList::Int(values.clone()),
+        TypedList::Float(values) => TypedList::Float(values.clone()),
+        TypedList::Bool(values) => TypedList::Bool(values.clone()),
+        TypedList::String(values) => TypedList::String(values.clone()),
     }
 }
 
@@ -766,17 +854,24 @@ fn typed_list_slice(list: &TypedList, start: usize, limit: Option<usize>) -> Typ
     let start = start.min(len);
     let end = limit.map_or(len, |limit| start.saturating_add(limit).min(len));
     match list {
-        TypedList::Mixed(values) => TypedList::Mixed(values[start..end].to_vec()),
-        TypedList::Int(values) => TypedList::Int(values[start..end].to_vec()),
-        TypedList::Float(values) => TypedList::Float(values[start..end].to_vec()),
-        TypedList::Bool(values) => TypedList::Bool(values[start..end].to_vec()),
-        TypedList::String(values) => TypedList::String(values[start..end].to_vec()),
+        TypedList::Mixed(values) => TypedList::Mixed(values[start..end].iter().cloned().collect()),
+        TypedList::Int(values) => TypedList::Int(values[start..end].iter().copied().collect()),
+        TypedList::Float(values) => TypedList::Float(values[start..end].iter().copied().collect()),
+        TypedList::Bool(values) => TypedList::Bool(values[start..end].iter().copied().collect()),
+        TypedList::String(values) => TypedList::String(values[start..end].iter().cloned().collect()),
+    }
+}
+
+fn typed_list_roots(list: &TypedList) -> Vec<RuntimeVal> {
+    match list {
+        TypedList::Mixed(values) => values.clone(),
+        TypedList::Int(_) | TypedList::Float(_) | TypedList::Bool(_) | TypedList::String(_) => Vec::new(),
     }
 }
 
 fn runtime_list(values: Vec<RuntimeVal>, heap: &mut HeapStore) -> Result<RuntimeVal> {
     Ok(RuntimeVal::Obj(
-        heap.alloc(HeapValue::List(TypedList::from_runtime_values(values, heap))),
+        heap.alloc(HeapValue::List(crate::typed_list_from_values(values, heap))),
     ))
 }
 
@@ -825,27 +920,45 @@ fn call_runtime_callable_value(
     let RuntimeVal::Obj(handle) = callable else {
         bail!("{context} must be a runtime callable");
     };
-    let value = runtime
+    enum StreamCallableTarget {
+        Runtime32(Arc<lk_core::vm::RuntimeCallable32>),
+        Closure,
+        RuntimeNative32 {
+            arity: u16,
+            function: lk_core::vm::NativeFunction32,
+        },
+    }
+
+    let target = match runtime
         .heap()
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        .clone();
-    let HeapValue::Callable(callable_value) = value else {
-        bail!("{context} must be a runtime callable");
+    {
+        HeapValue::Callable(CallableValue::Runtime32(function)) => {
+            StreamCallableTarget::Runtime32(Arc::clone(function))
+        }
+        HeapValue::Callable(CallableValue::Closure { .. }) => StreamCallableTarget::Closure,
+        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
+            StreamCallableTarget::RuntimeNative32 {
+                arity: *arity,
+                function: function.clone(),
+            }
+        }
+        _ => bail!("{context} must be a runtime callable"),
     };
 
-    match callable_value {
-        CallableValue::Runtime32(function) => {
+    match target {
+        StreamCallableTarget::Runtime32(function) => {
             let (heap, ctx) = runtime.heap_ctx_mut();
             call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
         }
-        CallableValue::Closure { .. } => {
+        StreamCallableTarget::Closure => {
             if let Some((state, ctx, module)) = runtime.state_ctx_module_mut() {
-                return call_runtime_value32_runtime(callable.clone(), args, state, module, ctx);
+                return call_runtime_value32_runtime(RuntimeVal::Obj(*handle), args, state, module, ctx);
             }
             bail!("{context} closure requires active RuntimeModuleState32")
         }
-        CallableValue::RuntimeNative32 { arity, function } => {
+        StreamCallableTarget::RuntimeNative32 { arity, function } => {
             let entry = NativeEntry32 {
                 name: context.to_string(),
                 arity,

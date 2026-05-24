@@ -41,6 +41,106 @@ fn compiler32_records_container_move_fact_for_rewritten_set_index() {
 }
 
 #[test]
+fn compiler32_records_container_build_fact_for_list_literal() {
+    let function = compile_source(
+        r#"
+        let x = 1 + 2;
+        return [x, x + 4];
+        "#,
+    );
+    let new_list_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::NewList)
+        .expect("NewList");
+    let fact = function
+        .performance
+        .container_build(new_list_pc)
+        .expect("container build fact");
+
+    assert!(!fact.move_keys);
+    assert!(fact.move_values);
+
+    let result = execute32(&function).expect("execute");
+    let RuntimeVal::Obj(_) = result.returns[0] else {
+        panic!("expected returned list object");
+    };
+}
+
+#[test]
+fn compiler32_records_container_build_fact_for_map_literal() {
+    let function = compile_source(
+        r#"
+        let x = 1 + 2;
+        return {"a": x, "b": x + 4};
+        "#,
+    );
+    let new_map_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::NewMap)
+        .expect("NewMap");
+    let fact = function
+        .performance
+        .container_build(new_map_pc)
+        .expect("container build fact");
+
+    assert!(fact.move_keys);
+    assert!(fact.move_values);
+
+    let result = execute32(&function).expect("execute");
+    let RuntimeVal::Obj(_) = result.returns[0] else {
+        panic!("expected returned map object");
+    };
+}
+
+#[test]
+fn compiler32_keeps_container_literal_source_locals_readable() {
+    let list_function = compile_source(
+        r#"
+        let x = "source-long-string";
+        let xs = [x];
+        return x;
+        "#,
+    );
+    let list_result = execute32(&list_function).expect("execute list source");
+    let RuntimeVal::Obj(_) = list_result.returns[0] else {
+        panic!("expected list source local to remain readable");
+    };
+
+    let map_function = compile_source(
+        r#"
+        let key = "answer";
+        let value = "source-long-string";
+        let values = {key: value};
+        return value;
+        "#,
+    );
+    let map_result = execute32(&map_function).expect("execute map source");
+    let RuntimeVal::Obj(_) = map_result.returns[0] else {
+        panic!("expected map value local to remain readable");
+    };
+}
+
+#[test]
+fn executor32_moves_returned_value_from_stack_window() {
+    let function = compile_source("return [1, 2, 3];");
+
+    let result = execute32(&function).expect("execute");
+    let RuntimeVal::Obj(_) = result.returns[0] else {
+        panic!("expected returned list object");
+    };
+    assert!(
+        result
+            .state
+            .stack
+            .iter()
+            .all(|value| !matches!(value, RuntimeVal::Obj(_))),
+        "return move should consume the source register from the executor stack"
+    );
+}
+
+#[test]
 fn compiler32_keeps_local_set_index_key_readable() {
     let function = compile_source(
         r#"
@@ -225,6 +325,46 @@ fn compiler32_does_not_mark_heap_literal_expression_statement_as_dead_write() {
 
     let result = execute32(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler32_records_cell_move_fact_for_upvalue_store_sources() {
+    let module = compile_source_module32(
+        r#"
+        fn make() {
+            let value = "stored-long-string";
+            let set = || {
+                value = "next-long-string";
+                return value;
+            };
+            return set();
+        }
+
+        return make();
+        "#,
+    )
+    .expect("compile module");
+
+    let store_cell_facts = module
+        .functions
+        .iter()
+        .flat_map(|function| {
+            function
+                .code
+                .iter()
+                .enumerate()
+                .filter(|(_, instr)| instr.opcode() == Opcode32::StoreCellVal)
+                .map(|(pc, _)| function.performance.cell_move(pc).copied())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(!store_cell_facts.is_empty(), "expected StoreCellVal instructions");
+    assert!(
+        store_cell_facts
+            .iter()
+            .all(|fact| fact.is_some_and(|fact| fact.move_value)),
+        "compiler-generated StoreCellVal should consume dead source temporaries"
+    );
 }
 
 #[test]
@@ -475,7 +615,9 @@ fn compiler32_records_global_slot_facts_for_get_and_set() {
         .collect::<Vec<_>>();
 
     assert!(global_facts.iter().any(|(opcode, fact)| *opcode == Opcode32::GetGlobal
-        && module.globals[fact.slot as usize].name.as_ref() == "counter"));
+        && module.globals[fact.slot as usize].name.as_ref() == "counter"
+        && !fact.move_source));
     assert!(global_facts.iter().any(|(opcode, fact)| *opcode == Opcode32::SetGlobal
-        && module.globals[fact.slot as usize].name.as_ref() == "counter"));
+        && module.globals[fact.slot as usize].name.as_ref() == "counter"
+        && fact.move_source));
 }

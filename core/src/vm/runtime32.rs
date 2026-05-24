@@ -1,9 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
 use crate::{
-    val::{HeapStore, HeapValue, RuntimeVal, TypedMap},
+    val::{HeapRef, HeapStore, HeapValue, RuntimeVal, TypedMap},
     vm::VmContext,
 };
 
@@ -14,19 +14,19 @@ pub type ContextNativeFunction32 = fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>
 
 #[derive(Debug)]
 pub struct RuntimeCallable32 {
-    pub module: Arc<Module32>,
-    pub function_index: u32,
-    pub captures: Arc<Vec<RuntimeVal>>,
-    pub state: Arc<Mutex<RuntimeModuleState32>>,
+    pub(crate) module: Arc<Module32>,
+    pub(crate) function_index: u32,
+    pub(crate) captures: Arc<Vec<RuntimeVal>>,
+    pub(crate) state: Arc<Mutex<RuntimeModuleState32>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RuntimeModuleState32 {
-    pub heap: HeapStore,
-    pub globals: Vec<RuntimeVal>,
-    pub stack: Vec<RuntimeVal>,
-    pub stack_top: usize,
-    pub inline_caches: InlineCaches32,
+    pub(crate) heap: HeapStore,
+    pub(crate) globals: Vec<RuntimeVal>,
+    pub(crate) stack: Vec<RuntimeVal>,
+    pub(crate) stack_top: usize,
+    pub(crate) inline_caches: InlineCaches32,
 }
 
 impl RuntimeModuleState32 {
@@ -49,6 +49,34 @@ impl RuntimeModuleState32 {
     pub fn collect_garbage<'a>(&mut self, extra_roots: impl IntoIterator<Item = &'a RuntimeVal>) {
         self.heap.collect(self.root_refs(extra_roots));
     }
+
+    pub fn heap(&self) -> &HeapStore {
+        &self.heap
+    }
+
+    pub fn heap_mut(&mut self) -> &mut HeapStore {
+        &mut self.heap
+    }
+
+    pub fn into_heap(self) -> HeapStore {
+        self.heap
+    }
+
+    pub fn globals(&self) -> &[RuntimeVal] {
+        &self.globals
+    }
+
+    pub fn globals_mut(&mut self) -> &mut Vec<RuntimeVal> {
+        &mut self.globals
+    }
+
+    pub fn stack(&self) -> &[RuntimeVal] {
+        &self.stack
+    }
+
+    pub fn stack_top(&self) -> usize {
+        self.stack_top
+    }
 }
 
 impl Default for RuntimeModuleState32 {
@@ -58,38 +86,30 @@ impl Default for RuntimeModuleState32 {
 }
 
 impl RuntimeCallable32 {
-    pub fn new(
-        module: Arc<Module32>,
-        function_index: u32,
-        captures: Vec<RuntimeVal>,
-        heap: HeapStore,
-        globals: Vec<RuntimeVal>,
-    ) -> Self {
-        Self::with_state(
-            module,
-            function_index,
-            captures,
-            Arc::new(Mutex::new(RuntimeModuleState32::new(heap, globals))),
-        )
-    }
-
     pub fn with_state(
         module: Arc<Module32>,
         function_index: u32,
-        captures: Vec<RuntimeVal>,
+        captures: Arc<Vec<RuntimeVal>>,
+        state: Arc<Mutex<RuntimeModuleState32>>,
+    ) -> Self {
+        Self::with_shared_captures(module, function_index, captures, state)
+    }
+
+    pub fn with_shared_captures(
+        module: Arc<Module32>,
+        function_index: u32,
+        captures: Arc<Vec<RuntimeVal>>,
         state: Arc<Mutex<RuntimeModuleState32>>,
     ) -> Self {
         Self {
             module,
             function_index,
-            captures: Arc::new(captures),
+            captures,
             state,
         }
     }
-}
 
-impl Clone for RuntimeCallable32 {
-    fn clone(&self) -> Self {
+    pub fn shallow_clone_shared(&self) -> Self {
         Self {
             module: Arc::clone(&self.module),
             function_index: self.function_index,
@@ -99,20 +119,50 @@ impl Clone for RuntimeCallable32 {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RuntimeExport32 {
-    pub value: RuntimeVal,
-    pub state: Arc<Mutex<RuntimeModuleState32>>,
-    pub module: Arc<Module32>,
+    pub(crate) value: RuntimeVal,
+    pub(crate) state: Arc<Mutex<RuntimeModuleState32>>,
+    pub(crate) module: Arc<Module32>,
 }
 
 impl RuntimeExport32 {
+    pub fn new(value: RuntimeVal, state: Arc<Mutex<RuntimeModuleState32>>, module: Arc<Module32>) -> Self {
+        Self { value, state, module }
+    }
+
     pub fn from_value(value: RuntimeVal, heap: HeapStore) -> Self {
-        Self {
+        Self::new(
             value,
-            state: Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new()))),
-            module: Arc::new(Module32::default()),
+            Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new()))),
+            Arc::new(Module32::default()),
+        )
+    }
+
+    pub fn value(&self) -> &RuntimeVal {
+        &self.value
+    }
+
+    pub fn shallow_clone_shared(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            state: Arc::clone(&self.state),
+            module: Arc::clone(&self.module),
         }
+    }
+
+    pub fn shared_state(&self) -> Arc<Mutex<RuntimeModuleState32>> {
+        Arc::clone(&self.state)
+    }
+
+    pub fn shared_module(&self) -> Arc<Module32> {
+        Arc::clone(&self.module)
+    }
+
+    pub fn state_lock(&self) -> Result<MutexGuard<'_, RuntimeModuleState32>> {
+        self.state
+            .lock()
+            .map_err(|_| anyhow!("RuntimeExport32 state lock poisoned"))
     }
 }
 
@@ -276,7 +326,10 @@ enum NativeNamedArgs32<'a> {
         start: usize,
         count: u16,
     },
-    Map(&'a TypedMap),
+    MapHandle {
+        handle: HeapRef,
+        count: usize,
+    },
 }
 
 impl<'a> NativeArgs32<'a> {
@@ -302,10 +355,10 @@ impl<'a> NativeArgs32<'a> {
     }
 
     #[inline]
-    pub const fn new_with_named_map(values: &'a [RuntimeVal], named: &'a TypedMap) -> Self {
+    pub const fn new_with_named_map_handle(values: &'a [RuntimeVal], handle: HeapRef, count: usize) -> Self {
         Self {
             values,
-            named: NativeNamedArgs32::Map(named),
+            named: NativeNamedArgs32::MapHandle { handle, count },
         }
     }
 
@@ -329,7 +382,7 @@ impl<'a> NativeArgs32<'a> {
         match self.named {
             NativeNamedArgs32::Empty => 0,
             NativeNamedArgs32::Stack { count, .. } => count as usize,
-            NativeNamedArgs32::Map(map) => map.len(),
+            NativeNamedArgs32::MapHandle { count, .. } => count,
         }
     }
 
@@ -355,7 +408,10 @@ impl<'a> NativeArgs32<'a> {
                 }
                 Ok(())
             }
-            NativeNamedArgs32::Map(map) => {
+            NativeNamedArgs32::MapHandle { handle, .. } => {
+                let Some(HeapValue::Map(map)) = heap.get(handle) else {
+                    anyhow::bail!("native named argument map {} is not a live map", handle.index());
+                };
                 for_each_typed_map_named_arg(map, &mut f)?;
                 Ok(())
             }
@@ -465,9 +521,10 @@ impl NativeEntry32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use crate::val::{HeapStore, HeapValue, RuntimeVal};
+    use crate::val::{HeapStore, HeapValue, RuntimeVal, TypedMap};
 
     use super::*;
 
@@ -482,21 +539,33 @@ mod tests {
     }
 
     #[test]
-    fn runtime_callable_clones_share_module_and_state() {
+    fn runtime_callable_shared_clone_keeps_module_captures_and_state_shared() {
         let module = Arc::new(Module32::default());
-        let callable = RuntimeCallable32::new(
-            Arc::clone(&module),
-            3,
-            vec![RuntimeVal::Int(1)],
-            HeapStore::new(),
-            Vec::new(),
-        );
-        let cloned = callable.clone();
+        let state = Arc::new(Mutex::new(RuntimeModuleState32::new(HeapStore::new(), Vec::new())));
+        let captures = Arc::new(vec![RuntimeVal::Int(1)]);
+        let callable = RuntimeCallable32::with_state(Arc::clone(&module), 3, Arc::clone(&captures), Arc::clone(&state));
+        let cloned = callable.shallow_clone_shared();
 
         assert!(Arc::ptr_eq(&callable.module, &cloned.module));
         assert!(Arc::ptr_eq(&callable.captures, &cloned.captures));
+        assert!(Arc::ptr_eq(&captures, &callable.captures));
         assert!(Arc::ptr_eq(&callable.state, &cloned.state));
         assert_eq!(cloned.function_index, 3);
+    }
+
+    #[test]
+    fn runtime_export_shared_clone_keeps_module_and_state_shared() {
+        let module = Arc::new(Module32::default());
+        let state = Arc::new(Mutex::new(RuntimeModuleState32::new(
+            HeapStore::new(),
+            vec![RuntimeVal::Int(1)],
+        )));
+        let export = RuntimeExport32::new(RuntimeVal::Int(7), Arc::clone(&state), Arc::clone(&module));
+        let cloned = export.shallow_clone_shared();
+
+        assert_eq!(cloned.value(), &RuntimeVal::Int(7));
+        assert!(Arc::ptr_eq(&export.state, &cloned.state));
+        assert!(Arc::ptr_eq(&export.module, &cloned.module));
     }
 
     #[test]
@@ -520,6 +589,22 @@ mod tests {
             })
             .expect("iterate named");
         assert_eq!(seen, vec![("flag".to_string(), RuntimeVal::Bool(false))]);
+
+        let mut heap = HeapStore::new();
+        let named_handle = heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::from([(
+            Arc::<str>::from("limit"),
+            7,
+        )]))));
+        let native_args = NativeArgs32::new_with_named_map_handle(&args, named_handle, 1);
+        assert_eq!(native_args.named_len(), 1);
+        let mut seen = Vec::new();
+        native_args
+            .try_for_each_named(&heap, |name, value| {
+                seen.push((name.to_string(), value.clone()));
+                Ok(())
+            })
+            .expect("iterate map-handle named");
+        assert_eq!(seen, vec![("limit".to_string(), RuntimeVal::Int(7))]);
 
         let mut heap = HeapStore::new();
         let globals = [RuntimeVal::Int(9)];

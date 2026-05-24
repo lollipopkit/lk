@@ -853,23 +853,55 @@ fn find_stdlib_export_location(module_name: &str, export_name: &str) -> Option<L
     let content = fs::read_to_string(&path).ok()?;
     let uri = Url::from_file_path(path).ok()?;
 
+    if let Some(native_fn) = stdlib_native_export_impl_name(&content, export_name) {
+        if let Some(location) = find_rust_function_location(&content, &native_fn, &uri) {
+            return Some(location);
+        }
+    }
+
+    if let Some(location) = find_rust_function_location(&content, export_name, &uri) {
+        return Some(location);
+    }
+
+    find_stdlib_module_location(module_name)
+}
+
+fn stdlib_native_export_impl_name(content: &str, export_name: &str) -> Option<String> {
+    let export_literal = format!("\"{export_name}\"");
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.contains("RuntimeNativeExport32::") || !trimmed.contains(&export_literal) {
+            continue;
+        }
+        let after_self = trimmed.split("Self::").nth(1)?;
+        let name: String = after_self
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+            .collect();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn find_rust_function_location(content: &str, function_name: &str, uri: &Url) -> Option<Location> {
     for (line_idx, line) in content.lines().enumerate() {
         let fn_name_start = line
-            .find(&format!("fn {export_name}("))
+            .find(&format!("fn {function_name}("))
             .map(|pos| pos + 3)
-            .or_else(|| line.find(&format!("pub fn {export_name}(")).map(|pos| pos + 7));
+            .or_else(|| line.find(&format!("pub fn {function_name}(")).map(|pos| pos + 7));
         let Some(fn_name_start) = fn_name_start else { continue };
-        let fn_name_end = fn_name_start + export_name.len();
+        let fn_name_end = fn_name_start + function_name.len();
         return Some(Location::new(
-            uri,
+            uri.clone(),
             Range::new(
                 Position::new(line_idx as u32, fn_name_start as u32),
                 Position::new(line_idx as u32, fn_name_end as u32),
             ),
         ));
     }
-
-    find_stdlib_module_location(module_name)
+    None
 }
 
 fn find_definition_in_content(content: &str, symbol_name: &str, uri: &Url) -> Option<Location> {

@@ -121,7 +121,7 @@ impl LkAnalyzer {
                     continue;
                 }
 
-                // Handle hash-style comments (# ...) for legacy compatibility
+                // Handle hash-style comments (# ...).
                 if c == '#' {
                     let comment_start = char_index;
                     // Everything to end of line is a comment
@@ -199,8 +199,6 @@ impl LkAnalyzer {
                     tokens.push(self.create_token(line_number, ident_start, char_index - ident_start, token_idx, 0));
                     continue;
                 }
-
-                // Legacy '@' context access removed; treat '@' as punctuation
 
                 // Handle operators - only tokenize multi-character operators to reduce density
                 if c == '=' || c == '!' || c == '<' || c == '>' || c == '&' || c == '|' || c == '-' {
@@ -495,8 +493,6 @@ impl LkAnalyzer {
                     char_index = j;
                     continue;
                 }
-
-                // Legacy '@' context access removed; treat '@' as punctuation
 
                 // Operators - only tokenize multi-character operators to reduce density
                 if "=!<>|&-".contains(c) {

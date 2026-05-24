@@ -11,14 +11,11 @@ pub(crate) fn runtime_native_export(
     name: &str,
 ) -> Result<(u16, lk_core::vm::NativeFunction32)> {
     let export = module.runtime_exports()?;
-    let state = export
-        .state
-        .lock()
-        .map_err(|_| anyhow!("runtime export state lock poisoned"))?;
-    let RuntimeVal::Obj(handle) = export.value else {
+    let state = export.state_lock()?;
+    let RuntimeVal::Obj(handle) = export.value() else {
         return Err(anyhow!("module export must be a map"));
     };
-    let Some(HeapValue::Map(map)) = state.heap.get(handle) else {
+    let Some(HeapValue::Map(map)) = state.heap().get(*handle) else {
         return Err(anyhow!("module export must be a map"));
     };
     let value = map.get_str(name).ok_or_else(|| anyhow!("{name} export present"))?;
@@ -26,7 +23,7 @@ pub(crate) fn runtime_native_export(
         return Err(anyhow!("{name} must be a heap callable"));
     };
     let Some(HeapValue::Callable(lk_core::val::CallableValue::RuntimeNative32 { arity, function })) =
-        state.heap.get(handle)
+        state.heap().get(handle)
     else {
         return Err(anyhow!("{name} must be RuntimeNative32"));
     };
@@ -120,12 +117,33 @@ fn runtime_display_list(values: &TypedList, heap: &HeapStore) -> Result<String> 
 }
 
 fn runtime_display_map(values: &TypedMap, heap: &HeapStore) -> Result<String> {
-    let entries = values
-        .entries()
-        .into_iter()
-        .map(|(key, value)| Ok((runtime_display_map_key(&key), runtime_display_value(&value, heap)?)))
-        .collect::<Result<Vec<_>>>()?;
+    let entries = runtime_display_map_entries(values, heap)?;
     Ok(display_entries(entries))
+}
+
+fn runtime_display_map_entries(values: &TypedMap, heap: &HeapStore) -> Result<Vec<(String, String)>> {
+    match values {
+        TypedMap::Mixed(entries) => entries
+            .iter()
+            .map(|(key, value)| Ok((runtime_display_map_key(key), runtime_display_value(value, heap)?)))
+            .collect(),
+        TypedMap::StringMixed(entries) => entries
+            .iter()
+            .map(|(key, value)| Ok((quote_string(key), runtime_display_value(value, heap)?)))
+            .collect(),
+        TypedMap::StringInt(entries) => Ok(entries
+            .iter()
+            .map(|(key, value)| (quote_string(key), value.to_string()))
+            .collect()),
+        TypedMap::StringFloat(entries) => Ok(entries
+            .iter()
+            .map(|(key, value)| (quote_string(key), value.to_string()))
+            .collect()),
+        TypedMap::StringBool(entries) => Ok(entries
+            .iter()
+            .map(|(key, value)| (quote_string(key), value.to_string()))
+            .collect()),
+    }
 }
 
 fn runtime_display_map_key(key: &RuntimeMapKey) -> String {
@@ -157,18 +175,16 @@ mod tests {
     use std::{collections::BTreeMap, sync::Arc};
 
     use super::*;
-    use lk_core::val::{RuntimeMapKey, TypedMap};
+    use lk_core::val::TypedMap;
 
     #[test]
     fn runtime_display_formats_typed_containers_without_val_containers() {
         let mut heap = HeapStore::new();
         let nested = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
-        let map = RuntimeVal::Obj(
-            heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(BTreeMap::from([
-                (RuntimeMapKey::String(Arc::<str>::from("items")), nested),
-                (RuntimeMapKey::String(Arc::<str>::from("ok")), RuntimeVal::Bool(true)),
-            ])))),
-        );
+        let map = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(BTreeMap::from([
+            (Arc::<str>::from("items"), nested),
+            (Arc::<str>::from("ok"), RuntimeVal::Bool(true)),
+        ])))));
 
         let output = runtime_display_value(&map, &heap).expect("display");
 

@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use super::{CallableValue, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap};
+use crate::vm::RuntimeCallable32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HeapRef(u32);
@@ -19,6 +22,7 @@ impl HeapRef {
 pub struct HeapStore {
     slots: Vec<Option<HeapValue>>,
     marks: Vec<u8>,
+    generations: Vec<u64>,
     free_list: Vec<u32>,
     live_len: usize,
     alloc_since_gc: u32,
@@ -35,6 +39,7 @@ impl HeapStore {
         Self {
             slots: Vec::new(),
             marks: Vec::new(),
+            generations: Vec::new(),
             free_list: Vec::new(),
             live_len: 0,
             alloc_since_gc: 0,
@@ -47,12 +52,14 @@ impl HeapStore {
         let index = if let Some(index) = self.free_list.pop() {
             self.slots[index as usize] = Some(value);
             self.marks[index as usize] = Self::WHITE;
+            self.generations[index as usize] = self.generations[index as usize].wrapping_add(1);
             index
         } else {
             let index = self.slots.len();
             assert!(u32::try_from(index).is_ok(), "heap object index overflow");
             self.slots.push(Some(value));
             self.marks.push(Self::WHITE);
+            self.generations.push(0);
             index as u32
         };
         self.live_len += 1;
@@ -68,6 +75,21 @@ impl HeapStore {
     #[inline]
     pub fn get_mut(&mut self, reference: HeapRef) -> Option<&mut HeapValue> {
         self.slots.get_mut(reference.index() as usize)?.as_mut()
+    }
+
+    #[inline]
+    pub fn shape_generation(&self, reference: HeapRef) -> Option<u64> {
+        self.slots.get(reference.index() as usize)?.as_ref()?;
+        self.generations.get(reference.index() as usize).copied()
+    }
+
+    #[inline]
+    pub fn bump_shape_generation(&mut self, reference: HeapRef) {
+        if self.get(reference).is_some()
+            && let Some(generation) = self.generations.get_mut(reference.index() as usize)
+        {
+            *generation = generation.wrapping_add(1);
+        }
     }
 
     #[inline]
@@ -115,79 +137,102 @@ impl HeapStore {
             return;
         }
         self.marks[index] = Self::BLACK;
-        let value = slot.as_ref().expect("checked live slot").clone();
-        self.mark_heap_value(value);
+        let mut refs = Vec::new();
+        let mut runtime_callables = Vec::new();
+        collect_heap_value_edges(
+            slot.as_ref().expect("checked live slot"),
+            &mut refs,
+            &mut runtime_callables,
+        );
+        for reference in refs {
+            self.mark_ref(reference);
+        }
+        for function in runtime_callables {
+            let _ = function.collect_garbage();
+        }
     }
+}
 
-    fn mark_heap_value(&mut self, value: HeapValue) {
-        match value {
-            HeapValue::String(_)
-            | HeapValue::Task(_)
-            | HeapValue::Channel(_)
-            | HeapValue::Stream(_)
-            | HeapValue::StreamCursor(_) => {}
-            HeapValue::List(values) => self.mark_typed_list(values),
-            HeapValue::Map(values) => self.mark_typed_map(values),
-            HeapValue::Object(object) => {
-                for value in object.fields.values() {
-                    self.mark_runtime_value(value);
-                }
+fn collect_heap_value_edges(
+    value: &HeapValue,
+    refs: &mut Vec<HeapRef>,
+    runtime_callables: &mut Vec<Arc<RuntimeCallable32>>,
+) {
+    match value {
+        HeapValue::String(_) | HeapValue::Task(_) | HeapValue::Channel(_) => {}
+        HeapValue::Stream(stream) => {
+            for value in &stream.roots {
+                collect_runtime_value_edge(value, refs);
             }
-            HeapValue::Callable(CallableValue::Closure { captures, .. }) => {
-                for value in &captures {
-                    self.mark_runtime_value(value);
-                }
+        }
+        HeapValue::StreamCursor(cursor) => {
+            for value in &cursor.roots {
+                collect_runtime_value_edge(value, refs);
             }
-            HeapValue::Callable(CallableValue::Runtime32(function)) => {
-                let _ = function.collect_garbage();
+        }
+        HeapValue::List(values) => collect_typed_list_edges(values, refs),
+        HeapValue::Map(values) => collect_typed_map_edges(values, refs),
+        HeapValue::Object(object) => {
+            for value in object.fields.values() {
+                collect_runtime_value_edge(value, refs);
             }
-            HeapValue::Callable(CallableValue::RuntimeNative32 { .. }) => {}
-            HeapValue::UpvalCell(value) => self.mark_runtime_value(&value),
-            HeapValue::ErrorVal(error) => {
-                for value in &error.trace {
-                    self.mark_runtime_value(value);
-                }
+        }
+        HeapValue::Callable(CallableValue::Closure { captures, .. }) => {
+            for value in captures.iter() {
+                collect_runtime_value_edge(value, refs);
+            }
+        }
+        HeapValue::Callable(CallableValue::Runtime32(function)) => {
+            runtime_callables.push(Arc::clone(function));
+        }
+        HeapValue::Callable(CallableValue::RuntimeNative32 { .. }) => {}
+        HeapValue::UpvalCell(value) => collect_runtime_value_edge(value, refs),
+        HeapValue::ErrorVal(error) => {
+            for value in &error.trace {
+                collect_runtime_value_edge(value, refs);
             }
         }
     }
+}
 
-    fn mark_typed_list(&mut self, values: TypedList) {
-        if let TypedList::Mixed(values) = values {
-            for value in &values {
-                self.mark_runtime_value(value);
+fn collect_typed_list_edges(values: &TypedList, refs: &mut Vec<HeapRef>) {
+    if let TypedList::Mixed(values) = values {
+        for value in values {
+            collect_runtime_value_edge(value, refs);
+        }
+    }
+}
+
+fn collect_typed_map_edges(values: &TypedMap, refs: &mut Vec<HeapRef>) {
+    match values {
+        TypedMap::Mixed(values) => {
+            for (key, value) in values {
+                collect_runtime_map_key_edge(key, refs);
+                collect_runtime_value_edge(value, refs);
             }
         }
-    }
-
-    fn mark_typed_map(&mut self, values: TypedMap) {
-        match values {
-            TypedMap::Mixed(values) => {
-                for (key, value) in &values {
-                    self.mark_runtime_map_key(key);
-                    self.mark_runtime_value(value);
-                }
+        TypedMap::StringMixed(values) => {
+            for value in values.values() {
+                collect_runtime_value_edge(value, refs);
             }
-            TypedMap::StringMixed(values) => {
-                for value in values.values() {
-                    self.mark_runtime_value(value);
-                }
-            }
-            TypedMap::StringInt(_) | TypedMap::StringFloat(_) | TypedMap::StringBool(_) => {}
         }
+        TypedMap::StringInt(_) | TypedMap::StringFloat(_) | TypedMap::StringBool(_) => {}
     }
+}
 
-    fn mark_runtime_map_key(&mut self, key: &RuntimeMapKey) {
-        if let RuntimeMapKey::Obj(reference) = key {
-            self.mark_ref(*reference);
-        }
+fn collect_runtime_map_key_edge(key: &RuntimeMapKey, refs: &mut Vec<HeapRef>) {
+    if let RuntimeMapKey::Obj(reference) = key {
+        refs.push(*reference);
     }
+}
 
-    fn mark_runtime_value(&mut self, value: &RuntimeVal) {
-        if let RuntimeVal::Obj(reference) = value {
-            self.mark_ref(*reference);
-        }
+fn collect_runtime_value_edge(value: &RuntimeVal, refs: &mut Vec<HeapRef>) {
+    if let RuntimeVal::Obj(reference) = value {
+        refs.push(*reference);
     }
+}
 
+impl HeapStore {
     fn sweep(&mut self) {
         self.free_list.clear();
         let mut live_len = 0;
@@ -217,10 +262,13 @@ impl Default for HeapStore {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::val::ErrorVal;
+    use crate::{
+        val::{ErrorVal, StreamCursorValue, StreamValue, Type},
+        vm::RuntimeModuleState32,
+    };
 
     #[test]
     fn heap_store_returns_stable_refs() {
@@ -251,6 +299,23 @@ mod tests {
     }
 
     #[test]
+    fn heap_store_shape_generation_tracks_mutation_and_slot_reuse() {
+        let mut heap = HeapStore::new();
+        let handle = heap.alloc(HeapValue::List(TypedList::Int(vec![1])));
+        let initial = heap.shape_generation(handle).expect("live handle generation");
+
+        heap.bump_shape_generation(handle);
+        assert_eq!(heap.shape_generation(handle), Some(initial.wrapping_add(1)));
+
+        heap.collect([]);
+        assert_eq!(heap.shape_generation(handle), None);
+
+        let reused = heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::new())));
+        assert_eq!(reused.index(), handle.index());
+        assert_eq!(heap.shape_generation(reused), Some(initial.wrapping_add(2)));
+    }
+
+    #[test]
     fn heap_store_tracks_gc_threshold_without_collecting_implicitly() {
         let mut heap = HeapStore::new();
         heap.set_gc_threshold(2);
@@ -278,13 +343,13 @@ mod tests {
             Arc::<str>::from("list"),
             RuntimeVal::Obj(list),
         )]))));
-        let object = heap.alloc(HeapValue::Object(super::super::RuntimeObject {
-            type_name: Arc::<str>::from("Box"),
-            fields: BTreeMap::from([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
-        }));
+        let object = heap.alloc(HeapValue::Object(super::super::RuntimeObject::new(
+            Arc::<str>::from("Box"),
+            BTreeMap::from([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
+        )));
         let closure = heap.alloc(HeapValue::Callable(CallableValue::Closure {
             function_index: 7,
-            captures: vec![RuntimeVal::Obj(object)],
+            captures: Arc::new(vec![RuntimeVal::Obj(object)]),
         }));
         let cell = heap.alloc(HeapValue::UpvalCell(RuntimeVal::Obj(closure)));
         let error = heap.alloc(HeapValue::ErrorVal(ErrorVal {
@@ -321,23 +386,48 @@ mod tests {
     }
 
     #[test]
+    fn heap_store_gc_marks_stream_and_cursor_roots() {
+        let mut heap = HeapStore::new();
+        let stream_root = heap.alloc(HeapValue::String(Arc::<str>::from("stream-root")));
+        let cursor_root = heap.alloc(HeapValue::String(Arc::<str>::from("cursor-root")));
+        let garbage = heap.alloc(HeapValue::String(Arc::<str>::from("garbage")));
+        let stream = heap.alloc(HeapValue::Stream(Arc::new(StreamValue {
+            id: 1,
+            inner_type: Type::Any,
+            roots: vec![RuntimeVal::Obj(stream_root)],
+        })));
+        let cursor = heap.alloc(HeapValue::StreamCursor(Arc::new(StreamCursorValue {
+            id: 1,
+            stream_id: 1,
+            roots: vec![RuntimeVal::Obj(cursor_root)],
+        })));
+
+        heap.collect([stream, cursor]);
+
+        assert!(heap.get(stream).is_some());
+        assert!(heap.get(cursor).is_some());
+        assert!(heap.get(stream_root).is_some());
+        assert!(heap.get(cursor_root).is_some());
+        assert!(heap.get(garbage).is_none());
+    }
+
+    #[test]
     fn heap_store_gc_collects_runtime32_callable_shared_state_without_marking_dest_heap_captures() {
         let mut source_heap = HeapStore::new();
         let source_capture = source_heap.alloc(HeapValue::String(Arc::<str>::from("source-capture")));
         let source_garbage = source_heap.alloc(HeapValue::String(Arc::<str>::from("source-garbage")));
-        let callable = crate::vm::RuntimeCallable32::new(
+        let callable = crate::vm::RuntimeCallable32::with_state(
             Arc::new(crate::vm::Module32::default()),
             0,
-            vec![RuntimeVal::Obj(source_capture)],
-            source_heap,
-            Vec::new(),
+            Arc::new(vec![RuntimeVal::Obj(source_capture)]),
+            Arc::new(Mutex::new(RuntimeModuleState32::new(source_heap, Vec::new()))),
         );
 
         let mut dest_heap = HeapStore::new();
         let same_index_garbage = dest_heap.alloc(HeapValue::String(Arc::<str>::from("dest-garbage")));
         assert_eq!(same_index_garbage.index(), source_capture.index());
         let callable_handle = dest_heap.alloc(HeapValue::Callable(CallableValue::Runtime32(Arc::new(
-            callable.clone(),
+            callable.shallow_clone_shared(),
         ))));
 
         dest_heap.collect([callable_handle]);

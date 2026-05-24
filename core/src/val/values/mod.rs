@@ -1,5 +1,7 @@
 use std::{fmt::Debug, sync::Arc};
 
+use crate::val::RuntimeVal;
+
 mod strings;
 mod types;
 
@@ -22,12 +24,14 @@ pub struct ChannelValue {
 pub struct StreamValue {
     pub id: u64,
     pub inner_type: Type,
+    pub roots: Vec<RuntimeVal>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StreamCursorValue {
     pub id: u64,
     pub stream_id: u64,
+    pub roots: Vec<RuntimeVal>,
 }
 
 #[derive(Debug, Clone, Default)]

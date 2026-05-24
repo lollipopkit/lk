@@ -45,7 +45,7 @@ mod tests {
             let mut runtime = NativeRuntime32::new(&mut state, None, None);
             function(NativeArgs32::new(args), &mut runtime)?
         };
-        Ok((result, state.heap))
+        Ok((result, state.into_heap()))
     }
 
     fn call_with_strings(name: &str, strings: &[&str]) -> Result<(RuntimeVal, HeapStore)> {
@@ -56,13 +56,13 @@ mod tests {
         let mut state = RuntimeModuleState32::default();
         let args = strings
             .iter()
-            .map(|value| runtime_string_value(value, &mut state.heap))
+            .map(|value| runtime_string_value(value, state.heap_mut()))
             .collect::<Vec<_>>();
         let result = {
             let mut runtime = NativeRuntime32::new(&mut state, None, None);
             function(NativeArgs32::new(&args), &mut runtime)?
         };
-        Ok((result, state.heap))
+        Ok((result, state.into_heap()))
     }
 
     fn runtime_str<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<&'a str> {
@@ -90,12 +90,12 @@ mod tests {
     fn test_os_arch_and_os_execute32() -> Result<()> {
         let arch = run32("import os; return os.arch();")?;
         assert_eq!(
-            runtime_str(arch.first_return(), &arch.state.heap),
+            runtime_str(arch.first_return(), arch.state.heap()),
             Some(std::env::consts::ARCH)
         );
         let os = run32("import os; return os.os();")?;
         assert_eq!(
-            runtime_str(os.first_return(), &os.state.heap),
+            runtime_str(os.first_return(), os.state.heap()),
             Some(std::env::consts::OS)
         );
         Ok(())
@@ -121,7 +121,7 @@ mod tests {
         let var = "LK_TEST_ENV_SHOULD_NOT_EXIST_42";
         let src_default = format!("import os; return os.env_get(\"{}\", \"dflt\");", var);
         let default = run32(&src_default)?;
-        assert_eq!(runtime_str(default.first_return(), &default.state.heap), Some("dflt"));
+        assert_eq!(runtime_str(default.first_return(), default.state.heap()), Some("dflt"));
 
         let src_set = format!("import os; return os.env_set(\"{}\", \"X\");", var);
         let err = run32(&src_set).expect_err("env.set should be disabled");
@@ -153,7 +153,7 @@ mod tests {
         let out = run32("import os; return os.dir_temp();")?;
         if !matches!(out.first_return(), RuntimeVal::Nil) {
             assert!(
-                runtime_str(out.first_return(), &out.state.heap).is_some(),
+                runtime_str(out.first_return(), out.state.heap()).is_some(),
                 "expected string or nil, got {:?}",
                 out.first_return()
             );
@@ -161,7 +161,7 @@ mod tests {
         let out = run32("import os; return os.dir_current();")?;
         if !matches!(out.first_return(), RuntimeVal::Nil) {
             assert!(
-                runtime_str(out.first_return(), &out.state.heap).is_some(),
+                runtime_str(out.first_return(), out.state.heap()).is_some(),
                 "expected string or nil, got {:?}",
                 out.first_return()
             );
@@ -169,7 +169,7 @@ mod tests {
 
         let src = format!("import os; return os.dir_list(\"{}\");", td.to_string_lossy());
         let out = run32(&src)?;
-        let TypedList::String(names) = runtime_list(out.first_return(), &out.state.heap) else {
+        let TypedList::String(names) = runtime_list(out.first_return(), out.state.heap()) else {
             panic!("expected typed string list");
         };
         assert!(names.iter().any(|name| name.as_ref() == "a.txt"));
@@ -186,7 +186,7 @@ mod tests {
     fn test_os_exec_capture_unix() -> Result<()> {
         let out = run32("import os; return os.exec(\"/bin/echo\", [\"hello\"]);")?;
         assert_eq!(
-            runtime_str(out.first_return(), &out.state.heap).map(str::trim_end),
+            runtime_str(out.first_return(), out.state.heap()).map(str::trim_end),
             Some("hello")
         );
         Ok(())
@@ -196,7 +196,7 @@ mod tests {
     #[cfg(unix)]
     fn test_os_exec_stream_mode_returns_line_list_unix() -> Result<()> {
         let out = run32("import os; return os.exec(\"/bin/echo\", [\"a\", \"b\"], true);")?;
-        let TypedList::String(list) = runtime_list(out.first_return(), &out.state.heap) else {
+        let TypedList::String(list) = runtime_list(out.first_return(), out.state.heap()) else {
             panic!("stream mode should return typed string list");
         };
         assert_eq!(list.as_slice(), &[Arc::<str>::from("a b")]);

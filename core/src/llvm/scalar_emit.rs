@@ -1,0 +1,177 @@
+use crate::vm::{Instr32, Opcode32};
+
+use super::{ir_text::next_tmp, scalar_facts::NativeScalarKind};
+
+pub(super) fn emit_i64_binary_block(ir: &mut String, instr: Instr32, tmp_index: &mut usize) {
+    let lhs = next_tmp(tmp_index);
+    let rhs = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    let zero = next_tmp(tmp_index);
+    let ok_label = format!("divisor_ok_{}", *tmp_index);
+    let op = match instr.opcode() {
+        Opcode32::AddInt => "add",
+        Opcode32::SubInt => "sub",
+        Opcode32::MulInt => "mul",
+        Opcode32::DivInt => "sdiv",
+        Opcode32::ModInt => "srem",
+        _ => unreachable!("opcode matched by caller"),
+    };
+    ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
+    if matches!(instr.opcode(), Opcode32::DivInt | Opcode32::ModInt) {
+        ir.push_str(&format!("  {zero} = icmp eq i64 {rhs}, 0\n"));
+        ir.push_str(&format!("  br i1 {zero}, label %lk_divisor_zero, label %{ok_label}\n"));
+        ir.push_str(&format!("{ok_label}:\n"));
+    }
+    ir.push_str(&format!("  {out} = {op} i64 {lhs}, {rhs}\n"));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+}
+
+pub(super) fn emit_f64_binary_block(ir: &mut String, instr: Instr32, tmp_index: &mut usize) {
+    let lhs = next_tmp(tmp_index);
+    let rhs = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    let zero = next_tmp(tmp_index);
+    let ok_label = format!("divisor_ok_{}", *tmp_index);
+    let op = match instr.opcode() {
+        Opcode32::AddFloat => "fadd",
+        Opcode32::SubFloat => "fsub",
+        Opcode32::MulFloat => "fmul",
+        Opcode32::DivFloat => "fdiv",
+        Opcode32::ModFloat => "frem",
+        _ => unreachable!("opcode matched by caller"),
+    };
+    ir.push_str(&format!("  {lhs} = load double, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {rhs} = load double, ptr %r{}.slot\n", instr.c()));
+    if matches!(instr.opcode(), Opcode32::DivFloat | Opcode32::ModFloat) {
+        ir.push_str(&format!("  {zero} = fcmp oeq double {rhs}, 0.0\n"));
+        ir.push_str(&format!("  br i1 {zero}, label %lk_divisor_zero, label %{ok_label}\n"));
+        ir.push_str(&format!("{ok_label}:\n"));
+    }
+    ir.push_str(&format!("  {out} = {op} double {lhs}, {rhs}\n"));
+    ir.push_str(&format!("  store double {out}, ptr %r{}.slot\n", instr.a()));
+}
+
+pub(super) fn emit_numeric_compare_block(
+    ir: &mut String,
+    instr: Instr32,
+    kind: NativeScalarKind,
+    tmp_index: &mut usize,
+) {
+    let lhs = next_tmp(tmp_index);
+    let rhs = next_tmp(tmp_index);
+    let cmp = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    let ty = kind.llvm_type();
+    ir.push_str(&format!("  {lhs} = load {ty}, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {rhs} = load {ty}, ptr %r{}.slot\n", instr.c()));
+    match kind {
+        NativeScalarKind::I64 => {
+            let pred = match instr.opcode() {
+                Opcode32::CmpInt => "eq",
+                Opcode32::CmpNeInt => "ne",
+                Opcode32::CmpLtInt => "slt",
+                Opcode32::CmpLeInt => "sle",
+                Opcode32::CmpGtInt => "sgt",
+                Opcode32::CmpGeInt => "sge",
+                _ => unreachable!("opcode matched by caller"),
+            };
+            ir.push_str(&format!("  {cmp} = icmp {pred} i64 {lhs}, {rhs}\n"));
+        }
+        NativeScalarKind::F64 => {
+            let pred = match instr.opcode() {
+                Opcode32::CmpInt => "oeq",
+                Opcode32::CmpNeInt => "une",
+                Opcode32::CmpLtInt => "olt",
+                Opcode32::CmpLeInt => "ole",
+                Opcode32::CmpGtInt => "ogt",
+                Opcode32::CmpGeInt => "oge",
+                _ => unreachable!("opcode matched by caller"),
+            };
+            ir.push_str(&format!("  {cmp} = fcmp {pred} double {lhs}, {rhs}\n"));
+        }
+        NativeScalarKind::Bool | NativeScalarKind::Nil => unreachable!("non-numeric compare rejected earlier"),
+    }
+    ir.push_str(&format!("  {out} = zext i1 {cmp} to i64\n"));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+}
+
+pub(super) fn emit_scalar_equality_block(
+    ir: &mut String,
+    instr: Instr32,
+    lhs_kind: NativeScalarKind,
+    rhs_kind: NativeScalarKind,
+    tmp_index: &mut usize,
+) {
+    let eq_result = match (lhs_kind, rhs_kind) {
+        (NativeScalarKind::Bool, NativeScalarKind::Bool) => None,
+        (NativeScalarKind::Nil, NativeScalarKind::Nil) => Some(true),
+        _ => Some(false),
+    };
+    if let Some(equal) = eq_result {
+        let value = i64::from(if instr.opcode() == Opcode32::CmpNeInt {
+            !equal
+        } else {
+            equal
+        });
+        ir.push_str(&format!("  store i64 {value}, ptr %r{}.slot\n", instr.a()));
+        return;
+    }
+
+    let lhs = next_tmp(tmp_index);
+    let rhs = next_tmp(tmp_index);
+    let cmp = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    let pred = match instr.opcode() {
+        Opcode32::CmpInt => "eq",
+        Opcode32::CmpNeInt => "ne",
+        _ => unreachable!("opcode matched by caller"),
+    };
+    ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
+    ir.push_str(&format!("  {cmp} = icmp {pred} i64 {lhs}, {rhs}\n"));
+    ir.push_str(&format!("  {out} = zext i1 {cmp} to i64\n"));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+}
+
+pub(super) fn emit_native_return_print(
+    ir: &mut String,
+    pc: usize,
+    register: u8,
+    kind: NativeScalarKind,
+    tmp_index: &mut usize,
+) {
+    let value = next_tmp(tmp_index);
+    ir.push_str(&format!(
+        "  {value} = load {}, ptr %r{register}.slot\n",
+        kind.llvm_type()
+    ));
+    match kind {
+        NativeScalarKind::I64 => {
+            ir.push_str(&format!(
+                "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_i64_fmt, i64 {value})\n"
+            ));
+        }
+        NativeScalarKind::F64 => {
+            ir.push_str(&format!(
+                "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_f64_fmt, double {value})\n"
+            ));
+        }
+        NativeScalarKind::Bool => {
+            let cond = next_tmp(tmp_index);
+            let text = next_tmp(tmp_index);
+            ir.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
+            ir.push_str(&format!(
+                "  {text} = select i1 {cond}, ptr @lk_bool_true, ptr @lk_bool_false\n"
+            ));
+            ir.push_str(&format!(
+                "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {text})\n"
+            ));
+        }
+        NativeScalarKind::Nil => {
+            ir.push_str(&format!(
+                "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr @lk_nil_text)\n"
+            ));
+        }
+    }
+}

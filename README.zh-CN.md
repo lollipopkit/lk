@@ -43,33 +43,32 @@ examples/
 #### 集成（库）
 
 ```rust
-use lk_core::{expr::Expr, vm::VmContext, val::Val};
+use lk_core::{stmt::stmt_parser::StmtParser, token::Tokenizer, vm::VmContext};
 
-// 解析表达式
-let expr_src = "data.req.user.name in 'foobar' && data.files.0.published == true";
-let expr = Expr::try_from(expr_src)?;
-
-// 在 VmContext 中提供变量（词法环境）
-let mut ctx = VmContext::new();
-let data_val: Val = serde_json::json!({
+// 通过 Instr32 VM 解析并执行。
+let source = r#"
+let data = {
     "req": { "user": { "name": "foo" } },
-    "files": [ { "name": "file1", "published": true } ]
-}).into();
-ctx.set("data", data_val);
+    "files": [ { "name": "file1", "published": true } ],
+};
+return data.req.user.name in "foobar" && data.files.0.published == true;
+"#;
+let tokens = Tokenizer::tokenize(source)?;
+let program = StmtParser::new(&tokens).parse_program()?;
+let mut ctx = VmContext::new();
+let result = program.execute32_with_ctx(&mut ctx)?;
 
-// 求值
-let result = expr.eval_with_ctx(&mut ctx)?; // Val::Bool(true)
-assert_eq!(result, Val::Bool(true));
+assert_eq!(result.display_first_return(), "true");
 ```
 
 #### CLI
 
 - 进入 REPL：`lk`
-- 执行脚本/字节码：`lk FILE`（自动检测 `.lk` 源码或 `.lkb` 字节码）
+- 执行源码或 Instr32 模块产物：`lk FILE`（支持 `.lk` 和 `.lkm`）
 - 仅做静态类型检查：`lk check FILE`（输出编译期诊断信息）
-- 编译为字节码：`lk compile [FILE]` → `FILE.lkb`（省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口）
+- 编译为可执行 Instr32 模块产物：`lk compile [FILE]` → `FILE.lkm`（省略 `FILE` 时使用当前目录的 `main.lk`、package 的 `src/main.lk`，或单一 workspace app 入口）
 - 编译为 LLVM IR：`lk compile llvm [FILE]`（详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
-- 编译为 ELF 可执行文件：`lk compile exe [FILE]`（需安装 LLVM 工具链与系统链接器，详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
+- 编译为 native 可执行文件：`lk compile exe [FILE]`（仅支持可 LLVM native lowering 的形状；不支持的形状会失败，详见 [docs/llvm/backend.md](docs/llvm/backend.md)）
 - 创建包并管理依赖：`lk init`、`lk pkg add`、`lk pkg fetch`、`lk pkg tree`（详见 [docs/packages.md](docs/packages.md)）
 
 注意：命令行参数路径必须为经净化的相对路径。

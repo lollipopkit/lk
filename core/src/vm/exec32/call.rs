@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{Result, anyhow, bail};
 
 use crate::{
@@ -7,10 +9,61 @@ use crate::{
 
 use super::{
     Executor32,
-    named_call::write_named_args32_to_frame_from_stack,
+    named_call::move_named_args32_to_frame_from_stack,
     runtime_callable,
-    support::{call_native_entry, call_native_entry_parts, inline_native_args_from_stack},
+    support::{call_native_entry, call_native_entry_parts, move_inline_native_args_from_stack},
 };
+
+pub(super) enum CallableTarget32 {
+    Closure {
+        function_index: u32,
+        captures: Arc<Vec<RuntimeVal>>,
+    },
+    RuntimeNative32 {
+        arity: u16,
+        function: crate::vm::NativeFunction32,
+    },
+    Runtime32(Arc<crate::vm::RuntimeCallable32>),
+}
+
+pub(super) fn callable_target32(
+    known_target_kind: Option<PerfCallTargetKind>,
+    heap_value: &HeapValue,
+    error: &'static str,
+) -> Result<CallableTarget32> {
+    match (known_target_kind.unwrap_or_default(), heap_value) {
+        (
+            PerfCallTargetKind::Closure,
+            HeapValue::Callable(CallableValue::Closure {
+                function_index,
+                captures,
+            }),
+        )
+        | (
+            PerfCallTargetKind::Unknown,
+            HeapValue::Callable(CallableValue::Closure {
+                function_index,
+                captures,
+            }),
+        ) => Ok(CallableTarget32::Closure {
+            function_index: *function_index,
+            captures: Arc::clone(captures),
+        }),
+        (PerfCallTargetKind::Native, HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }))
+        | (PerfCallTargetKind::Unknown, HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })) => {
+            Ok(CallableTarget32::RuntimeNative32 {
+                arity: *arity,
+                function: function.clone(),
+            })
+        }
+        (PerfCallTargetKind::Runtime, HeapValue::Callable(CallableValue::Runtime32(function)))
+        | (PerfCallTargetKind::Unknown, HeapValue::Callable(CallableValue::Runtime32(function))) => {
+            Ok(CallableTarget32::Runtime32(Arc::clone(function)))
+        }
+        (_, HeapValue::Callable(_)) => bail!("{error}"),
+        _ => bail!("{error}"),
+    }
+}
 
 impl Executor32 {
     pub(super) fn observe_call_target_kind(&self, callee: u16) -> PerfCallTargetKind {
@@ -51,42 +104,21 @@ impl Executor32 {
         let RuntimeVal::Obj(handle) = callee else {
             bail!("{} is not a function", self.runtime_value_display_string(&callee)?);
         };
-        let callable = match (
-            known_target_kind.unwrap_or_default(),
+        let callable = callable_target32(
+            known_target_kind,
             self.state
                 .heap
                 .get(handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?,
-        ) {
-            (
-                PerfCallTargetKind::Closure,
-                HeapValue::Callable(CallableValue::Closure {
-                    function_index,
-                    captures,
-                }),
-            ) => CallableValue::Closure {
-                function_index: *function_index,
-                captures: captures.clone(),
-            },
-            (PerfCallTargetKind::Native, HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })) => {
-                CallableValue::RuntimeNative32 {
-                    arity: *arity,
-                    function: function.clone(),
-                }
-            }
-            (PerfCallTargetKind::Runtime, HeapValue::Callable(CallableValue::Runtime32(function))) => {
-                CallableValue::Runtime32(function.clone())
-            }
-            (_, HeapValue::Callable(callable)) => callable.clone(),
-            _ => bail!("Call callee is not callable"),
-        };
+            "Call callee is not callable",
+        )?;
 
         match callable {
-            CallableValue::Closure {
+            CallableTarget32::Closure {
                 function_index,
                 captures,
             } => self.call_closure_window(module, function_index, captures, window, ctx),
-            CallableValue::RuntimeNative32 { arity, function } => {
+            CallableTarget32::RuntimeNative32 { arity, function } => {
                 if arity != NativeEntry32::VARIADIC && arity != window.arg_count {
                     bail!(
                         "Native expects {} positional arguments, got {}",
@@ -101,7 +133,7 @@ impl Executor32 {
                 };
                 let args = self.call_args_stack_range(window)?;
                 let result = if native.function.requires_full_state() {
-                    let args = inline_native_args_from_stack(&native, &self.state.stack, args)?;
+                    let args = move_inline_native_args_from_stack(&native, &mut self.state.stack, args)?;
                     call_native_entry(
                         &native,
                         args.as_slice(),
@@ -124,7 +156,7 @@ impl Executor32 {
                 };
                 result.or_else(|error| self.handle_call_error(error))
             }
-            CallableValue::Runtime32(function) => {
+            CallableTarget32::Runtime32(function) => {
                 let args = self.call_args_stack_range(window)?;
                 let result = runtime_callable::call_runtime_callable32_runtime(
                     function.as_ref(),
@@ -141,7 +173,7 @@ impl Executor32 {
         &mut self,
         module: &Module32,
         function_index: u32,
-        captures: Vec<RuntimeVal>,
+        captures: Arc<Vec<RuntimeVal>>,
         window: CallWindow32,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<RuntimeVal> {
@@ -164,7 +196,7 @@ impl Executor32 {
         &mut self,
         module: &Module32,
         function_index: u32,
-        captures: Vec<RuntimeVal>,
+        captures: Arc<Vec<RuntimeVal>>,
         window: CallWindow32,
         named_count: u16,
         ctx: &mut Option<&mut VmContext>,
@@ -181,34 +213,37 @@ impl Executor32 {
         let saved_pc = self.pc;
         let saved_captures = std::mem::replace(&mut self.captures, captures);
         let saved_register_count = self.register_count;
-        let new_base = self.state.stack_top;
-        let new_top = new_base + function.register_count as usize;
-        if self.state.stack.len() < new_top {
-            self.state.stack.resize(new_top, RuntimeVal::Nil);
-        }
-        let (caller_stack, callee_stack) = self.state.stack.split_at_mut(new_base);
-        let positional = &caller_stack[positional];
-        let callee_frame = &mut callee_stack[..function.register_count as usize];
-        callee_frame.fill(RuntimeVal::Nil);
-        write_named_args32_to_frame_from_stack(
-            function,
-            positional,
-            caller_stack,
-            named_start,
-            named_count,
-            &self.state.heap,
-            callee_frame,
-        )?;
-        self.frame_base = new_base;
-        self.register_count = function.register_count;
-        self.state.stack_top = new_top;
-        self.pc = 0;
-        let result = self.run_function_inner(function, Some(module), ctx);
+        let saved_handler_depth = self.handler_stack.len();
+        let result = (|| {
+            let new_base = self.state.stack_top;
+            let new_top = new_base + function.register_count as usize;
+            if self.state.stack.len() < new_top {
+                self.state.stack.resize(new_top, RuntimeVal::Nil);
+            }
+            let (caller_stack, callee_stack) = self.state.stack.split_at_mut(new_base);
+            let callee_frame = &mut callee_stack[..function.register_count as usize];
+            callee_frame.fill(RuntimeVal::Nil);
+            move_named_args32_to_frame_from_stack(
+                function,
+                positional,
+                caller_stack,
+                named_start,
+                named_count,
+                &self.state.heap,
+                callee_frame,
+            )?;
+            self.frame_base = new_base;
+            self.register_count = function.register_count;
+            self.state.stack_top = new_top;
+            self.pc = 0;
+            self.run_function_inner(function, Some(module), ctx)
+        })();
         self.frame_base = saved_base;
         self.register_count = saved_register_count;
         self.state.stack_top = saved_top;
         self.pc = saved_pc;
         self.captures = saved_captures;
+        self.handler_stack.truncate(saved_handler_depth);
         match result {
             Ok(returns) => Ok(returns.into_first()),
             Err(error) => {
@@ -226,7 +261,7 @@ impl Executor32 {
         &mut self,
         module: &Module32,
         function_index: u32,
-        captures: Vec<RuntimeVal>,
+        captures: Arc<Vec<RuntimeVal>>,
         window: CallWindow32,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<RuntimeVal> {
@@ -248,26 +283,36 @@ impl Executor32 {
         let saved_pc = self.pc;
         let saved_captures = std::mem::replace(&mut self.captures, captures);
         let saved_register_count = self.register_count;
-        let new_base = self.state.stack_top;
-        let new_top = new_base + function.register_count as usize;
-        if self.state.stack.len() < new_top {
-            self.state.stack.resize(new_top, RuntimeVal::Nil);
-        }
-        let (caller_stack, callee_stack) = self.state.stack.split_at_mut(new_base);
-        let args = &caller_stack[arg_range];
-        let callee_frame = &mut callee_stack[..function.register_count as usize];
-        callee_frame[..window.arg_count as usize].clone_from_slice(args);
-        callee_frame[window.arg_count as usize..].fill(RuntimeVal::Nil);
-        self.frame_base = new_base;
-        self.register_count = function.register_count;
-        self.state.stack_top = new_top;
-        self.pc = 0;
-        let result = self.run_function_inner(function, Some(module), ctx);
+        let saved_handler_depth = self.handler_stack.len();
+        let result = (|| {
+            let new_base = self.state.stack_top;
+            let new_top = new_base + function.register_count as usize;
+            if self.state.stack.len() < new_top {
+                self.state.stack.resize(new_top, RuntimeVal::Nil);
+            }
+            let (caller_stack, callee_stack) = self.state.stack.split_at_mut(new_base);
+            let callee_frame = &mut callee_stack[..function.register_count as usize];
+            let param_count = window.arg_count as usize;
+            callee_frame[..param_count].fill(RuntimeVal::Nil);
+            if arg_range.end > caller_stack.len() {
+                bail!("call args range {}..{} out of bounds", arg_range.start, arg_range.end);
+            }
+            for (slot, arg_index) in callee_frame[..param_count].iter_mut().zip(arg_range) {
+                *slot = std::mem::take(&mut caller_stack[arg_index]);
+            }
+            callee_frame[param_count..].fill(RuntimeVal::Nil);
+            self.frame_base = new_base;
+            self.register_count = function.register_count;
+            self.state.stack_top = new_top;
+            self.pc = 0;
+            self.run_function_inner(function, Some(module), ctx)
+        })();
         self.frame_base = saved_base;
         self.register_count = saved_register_count;
         self.state.stack_top = saved_top;
         self.pc = saved_pc;
         self.captures = saved_captures;
+        self.handler_stack.truncate(saved_handler_depth);
         match result {
             Ok(returns) => Ok(returns.into_first()),
             Err(error) => {

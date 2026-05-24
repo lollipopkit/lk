@@ -264,7 +264,13 @@ fn main() -> anyhow::Result<()> {
                     }
                     #[cfg(feature = "llvm")]
                     Some(CompileMode::Exe) => {
-                        compile_host_executable_launcher(&safe, output.as_deref())?;
+                        let options = LlvmBackendOptions {
+                            module_name: module_name_from_path(&safe),
+                            target_triple,
+                            run_optimizations: !skip_opt,
+                            opt_level: opt_level_cli.into(),
+                        };
+                        compile_executable(&safe, output.as_deref(), options)?;
                         return Ok(());
                     }
                 }
@@ -295,13 +301,6 @@ fn main() -> anyhow::Result<()> {
     })?;
     let src_path_str = safe.to_string_lossy().to_string();
     let raw = std::fs::read(&safe).map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", src_path_str, e))?;
-
-    if safe.extension().and_then(|ext| ext.to_str()) == Some("lkb") {
-        anyhow::bail!(
-            "LKB execution has been removed; run LK source through the Instr32 VM: {}",
-            src_path_str
-        );
-    }
 
     if safe.extension().and_then(|ext| ext.to_str()) == Some("lkm") {
         let input =
@@ -404,129 +403,61 @@ fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<(
 }
 
 #[cfg(feature = "llvm")]
-fn compile_host_executable_launcher(path: &Path, output: Option<&Path>) -> anyhow::Result<()> {
+fn compile_executable(path: &Path, output: Option<&Path>, options: LlvmBackendOptions) -> anyhow::Result<()> {
     let artifact = compile_instr32_artifact(path)?;
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
-    let deps_dir = current_target_deps_dir()?;
-    let lk_core = latest_rlib(&deps_dir, "lk_core")?;
-    let lk_stdlib = latest_rlib(&deps_dir, "lk_stdlib")?;
-    let source = host_executable_launcher_source(&artifact.to_json_string()?);
-    let source_path = temp_host_launcher_source_path(path)?;
-    std::fs::write(&source_path, source)
-        .with_context(|| format!("write host executable launcher source {}", source_path.display()))?;
-    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let output_status = Command::new(&rustc)
-        .arg("--edition=2024")
-        .arg(&source_path)
-        .arg("-L")
-        .arg(format!("dependency={}", deps_dir.display()))
-        .arg("--extern")
-        .arg(format!("lk_core={}", lk_core.display()))
-        .arg("--extern")
-        .arg(format!("lk_stdlib={}", lk_stdlib.display()))
-        .arg("-o")
-        .arg(&output)
-        .output()
-        .with_context(|| format!("spawn rustc to build host executable launcher {}", output.display()))?;
-    let _ = std::fs::remove_file(&source_path);
-    if !output_status.status.success() {
-        anyhow::bail!(
-            "host executable launcher build failed for {}:\n{}",
-            path.display(),
-            String::from_utf8_lossy(&output_status.stderr)
-        );
-    }
+    let llvm = lk_core::llvm::compile_module32_artifact_to_llvm(&artifact, options)
+        .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
+    compile_native_executable_from_llvm(path, &output, &llvm.module.ir)?;
     println!("{}", output.display());
     Ok(())
 }
 
 #[cfg(feature = "llvm")]
-fn host_executable_launcher_source(artifact_json: &str) -> String {
-    format!(
-        r#"use std::sync::Arc;
-
-use lk_core::{{
-    module::ModuleRegistry,
-    rt,
-    stmt::ModuleResolver,
-    typ::TypeChecker,
-    vm::{{execute_module32_artifact_with_ctx, Module32Artifact, VmContext}},
-}};
-
-const LK_MODULE32_JSON: &str = {artifact_json:?};
-
-fn build_vm_context() -> Result<VmContext, Box<dyn std::error::Error>> {{
-    let mut registry = ModuleRegistry::new();
-    lk_stdlib::register_stdlib_globals(&mut registry);
-    lk_stdlib::register_stdlib_modules(&mut registry)?;
-    let resolver = Arc::new(ModuleResolver::with_registry(registry));
-    Ok(VmContext::new()
-        .with_resolver(resolver)
-        .with_type_checker(Some(TypeChecker::new_strict())))
-}}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {{
-    let _ = rt::init_runtime();
-    let artifact = Module32Artifact::from_json_str(LK_MODULE32_JSON)?;
-    let mut ctx = build_vm_context()?;
-    let result = execute_module32_artifact_with_ctx(artifact, &mut ctx)?;
-    rt::shutdown_runtime();
-    if !result.first_return_is_nil() {{
-        println!("{{}}", result.display_first_return());
-    }}
+fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str) -> anyhow::Result<()> {
+    let source_path = temp_llvm_source_path(path)?;
+    std::fs::write(&source_path, ir).with_context(|| format!("write native LLVM IR {}", source_path.display()))?;
+    let clang = clang_command();
+    let output_status = Command::new(&clang)
+        .arg(&source_path)
+        .arg("-o")
+        .arg(output)
+        .output()
+        .with_context(|| format!("spawn clang to build native executable {}", output.display()))?;
+    let _ = std::fs::remove_file(&source_path);
+    if !output_status.status.success() {
+        anyhow::bail!(
+            "native executable build failed for {}:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&output_status.stderr)
+        );
+    }
     Ok(())
-}}
-"#
-    )
 }
 
 #[cfg(feature = "llvm")]
-fn temp_host_launcher_source_path(path: &Path) -> anyhow::Result<PathBuf> {
+fn clang_command() -> std::ffi::OsString {
+    std::env::var_os("LK_CLANG")
+        .or_else(|| std::env::var_os("CLANG"))
+        .or_else(|| std::env::var_os("CC"))
+        .unwrap_or_else(|| {
+            let homebrew_llvm = Path::new("/opt/homebrew/opt/llvm/bin/clang");
+            if homebrew_llvm.exists() {
+                homebrew_llvm.as_os_str().to_os_string()
+            } else {
+                "clang".into()
+            }
+        })
+}
+
+#[cfg(feature = "llvm")]
+fn temp_llvm_source_path(path: &Path) -> anyhow::Result<PathBuf> {
     let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("lk");
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    Ok(std::env::temp_dir().join(format!("lk-{stem}-{}-{nanos}.rs", std::process::id())))
-}
-
-#[cfg(feature = "llvm")]
-fn current_target_deps_dir() -> anyhow::Result<PathBuf> {
-    let exe = std::env::current_exe().context("locate current lk executable")?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("current executable has no parent: {}", exe.display()))?;
-    if dir.file_name().and_then(|name| name.to_str()) == Some("deps") {
-        Ok(dir.to_path_buf())
-    } else {
-        Ok(dir.join("deps"))
-    }
-}
-
-#[cfg(feature = "llvm")]
-fn latest_rlib(deps_dir: &Path, crate_name: &str) -> anyhow::Result<PathBuf> {
-    let prefix = format!("lib{crate_name}-");
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    for entry in std::fs::read_dir(deps_dir).with_context(|| format!("read {}", deps_dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !file_name.starts_with(&prefix) || path.extension().and_then(|ext| ext.to_str()) != Some("rlib") {
-            continue;
-        }
-        let modified = entry
-            .metadata()?
-            .modified()
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        if newest.as_ref().is_none_or(|(existing, _)| modified > *existing) {
-            newest = Some((modified, path));
-        }
-    }
-    newest
-        .map(|(_, path)| path)
-        .ok_or_else(|| anyhow::anyhow!("could not find {crate_name} rlib in {}", deps_dir.display()))
+    Ok(std::env::temp_dir().join(format!("lk-{stem}-{}-{nanos}.ll", std::process::id())))
 }
 
 #[cfg(feature = "llvm")]

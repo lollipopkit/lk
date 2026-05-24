@@ -1,12 +1,17 @@
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use crate::{
         expr::Expr,
         stmt::{Program, Stmt, run_program, run_program_default, stmt_parser::StmtParser},
         token::Tokenizer,
         typ::TypeChecker,
-        val::{HeapStore, HeapValue, LiteralVal, RuntimeMapKey, RuntimeVal, ShortStr, TypedMap},
-        vm::{NativeArgs32, Program32Result, VmContext, call_runtime_callable32_raw, call_runtime_callable32_runtime},
+        val::{HeapStore, HeapValue, LiteralVal, RuntimeVal, ShortStr, TypedMap},
+        vm::{
+            NativeArgs32, Program32Result, VmContext, call_runtime_callable32_runtime, call_runtime_callable32_test,
+            runtime_value_to_callable32_shared,
+        },
     };
     use anyhow::Result;
 
@@ -218,10 +223,8 @@ mod tests {
 
         let mut env = VmContext::new();
         let mut heap = HeapStore::new();
-        let user = heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(
-            [(RuntimeMapKey::String("age".into()), RuntimeVal::Int(25))]
-                .into_iter()
-                .collect(),
+        let user = heap.alloc(HeapValue::Map(TypedMap::StringInt(
+            [(Arc::<str>::from("age"), 25)].into_iter().collect(),
         )));
         env.define_runtime_value("user", RuntimeVal::Obj(user), heap);
 
@@ -385,7 +388,7 @@ mod tests {
         let mut closure_parser = StmtParser::new(&closure_tokens);
         let closure_program = closure_parser.parse_program()?;
         let mut closure_ctx = VmContext::new();
-        let closure_result = closure_program.execute32_raw_with_ctx(&mut closure_ctx)?;
+        let closure_result = closure_program.execute32_with_ctx(&mut closure_ctx)?;
         let closure_value = closure_result.first_return();
         let crate::val::RuntimeVal::Obj(handle) = closure_value else {
             panic!("expected runtime callable object, got {:?}", closure_value.kind());
@@ -439,33 +442,42 @@ mod tests {
         let stmt = parser.parse_statement()?;
         let mut env = VmContext::new();
         let program = Program::new(vec![Box::new(stmt)])?;
-        let result = program.execute32_raw_with_ctx(&mut env)?;
-        let outer = result
-            .state
-            .globals
-            .iter()
-            .find_map(|value| {
-                crate::vm::runtime_value_to_callable32_externalized(
-                    value,
-                    &result.state.heap,
-                    &result.state.globals,
-                    result.module.clone(),
-                )
-            })
-            .expect("outer runtime function exported as module global");
+        let result = program.execute32_with_ctx(&mut env)?;
+        let module = Arc::clone(&result.module);
+        let shared_state = Arc::new(Mutex::new(result.state));
+        let outer = {
+            let state = shared_state.lock().expect("test runtime state lock");
+            state
+                .globals()
+                .iter()
+                .find_map(|value| {
+                    runtime_value_to_callable32_shared(
+                        value,
+                        state.heap(),
+                        Arc::clone(&module),
+                        Arc::clone(&shared_state),
+                    )
+                })
+                .expect("outer runtime function exported as module global")
+        };
 
         // Introduce a runtime global with the same name after capturing; lexical semantics
         // should continue to use the captured value (2) rather than the new global (100).
         env.define_runtime_value("offset", RuntimeVal::Int(100), HeapStore::new());
 
-        let captured_result = call_runtime_callable32_raw(&outer, &[], &mut env)?;
-        let captured = crate::vm::runtime_value_to_callable32_externalized(
-            captured_result.returns.first().unwrap_or(&crate::val::RuntimeVal::Nil),
-            &captured_result.state.heap,
-            &captured_result.state.globals,
-            result.module.clone(),
-        )
-        .expect("outer returned runtime closure");
+        let captured_returns = call_runtime_callable32_test(&outer, &[], &mut env)?;
+        let captured_value = captured_returns.first().cloned().unwrap_or(RuntimeVal::Nil);
+        let captured_state = Arc::clone(&outer.state);
+        let captured = {
+            let state = captured_state.lock().expect("test runtime state lock");
+            runtime_value_to_callable32_shared(
+                &captured_value,
+                state.heap(),
+                Arc::clone(&module),
+                Arc::clone(&captured_state),
+            )
+            .expect("outer returned runtime closure")
+        };
         let mut heap = HeapStore::new();
         let value = call_runtime_callable32_runtime(
             &captured,
@@ -486,15 +498,15 @@ mod tests {
         let stmt = parser.parse_statement()?;
         let mut env = VmContext::new();
         let program = Program::new(vec![Box::new(stmt)])?;
-        let result = program.execute32_raw_with_ctx(&mut env)?;
-        let factorial = result.state.globals.iter().find_map(|value| {
-            crate::vm::runtime_value_to_callable32_externalized(
-                value,
-                &result.state.heap,
-                &result.state.globals,
-                result.module.clone(),
-            )
-        });
+        let result = program.execute32_with_ctx(&mut env)?;
+        let module = Arc::clone(&result.module);
+        let shared_state = Arc::new(Mutex::new(result.state));
+        let factorial = {
+            let state = shared_state.lock().expect("test runtime state lock");
+            state.globals().iter().find_map(|value| {
+                runtime_value_to_callable32_shared(value, state.heap(), Arc::clone(&module), Arc::clone(&shared_state))
+            })
+        };
         assert!(factorial.is_some(), "factorial defined as runtime function global");
         Ok(())
     }

@@ -5,8 +5,11 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::val::{HeapRef, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, TypedList, TypedMap};
 
-use super::{Executor32, heap_kind, remove_runtime_entry, set_list_value};
-use crate::vm::analysis::{PerfIndexFact, PerfIndexTargetKind, PerfValueKind};
+use super::{Executor32, heap_kind, set_list_value};
+use crate::vm::{
+    IndexInlineCache32,
+    analysis::{PerfIndexFact, PerfIndexTargetKind, PerfValueKind},
+};
 
 #[derive(Clone, Copy)]
 enum IndexTargetKind {
@@ -14,6 +17,25 @@ enum IndexTargetKind {
     Map,
     Object,
     String,
+}
+
+enum SliceFromPlan {
+    List(TypedList),
+    String(Arc<str>),
+}
+
+enum ToIterPlan {
+    ExistingList(HeapRef),
+    StringChars(Vec<Arc<str>>),
+    Map(TypedMapIterSnapshot),
+}
+
+enum TypedMapIterSnapshot {
+    Mixed(Vec<(RuntimeMapKey, RuntimeVal)>),
+    StringMixed(Vec<(Arc<str>, RuntimeVal)>),
+    StringInt(Vec<(Arc<str>, i64)>),
+    StringFloat(Vec<(Arc<str>, f64)>),
+    StringBool(Vec<(Arc<str>, bool)>),
 }
 
 impl Executor32 {
@@ -61,6 +83,33 @@ impl Executor32 {
         Ok(values)
     }
 
+    pub(super) fn take_map_entries(
+        &mut self,
+        base: u8,
+        count: u8,
+        move_keys: bool,
+        move_values: bool,
+    ) -> Result<BTreeMap<RuntimeMapKey, RuntimeVal>> {
+        let mut values = BTreeMap::new();
+        for entry in 0..count {
+            let key_reg = base
+                .checked_add(entry.checked_mul(2).expect("map entry register overflow"))
+                .ok_or_else(|| anyhow!("map key register overflow"))?;
+            let value_reg = key_reg
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("map value register overflow"))?;
+            let moved_key = if move_keys { Some(self.take(key_reg)?) } else { None };
+            let key = self.map_key_from_register_or_value(key_reg, moved_key)?;
+            let value = if move_values {
+                self.take(value_reg)?
+            } else {
+                self.read(value_reg)?.clone()
+            };
+            values.insert(key, value);
+        }
+        Ok(values)
+    }
+
     pub(super) fn read_object_fields(&self, base: u8, count: u8) -> Result<RuntimeObject> {
         let type_name = Arc::<str>::from(self.to_runtime_string(base)?);
         let field_base = base
@@ -82,7 +131,7 @@ impl Executor32 {
                 self.read(value_reg)?.clone(),
             );
         }
-        Ok(RuntimeObject { type_name, fields })
+        Ok(RuntimeObject::new(type_name, fields))
     }
 
     pub(super) fn get_index(
@@ -99,14 +148,11 @@ impl Executor32 {
                 self.index_string(&value, key_reg)
             }
             RuntimeVal::Obj(handle) => {
-                let index_fact = match index_fact {
-                    Some(fact) => Some(fact),
-                    None => {
-                        let fact = self.index_fact_from_heap(handle)?;
-                        self.state.inline_caches.set_index(pc, fact);
-                        Some(fact)
-                    }
+                let index_cache = match index_fact {
+                    Some(_) => None,
+                    None => self.cached_or_observed_index_cache(pc, handle, known_string_key.as_ref())?,
                 };
+                let index_fact = index_fact.or_else(|| index_cache.map(|cache| cache.fact));
                 let target_kind = match index_fact.map(|fact| fact.target_kind) {
                     Some(PerfIndexTargetKind::List) => IndexTargetKind::List,
                     Some(PerfIndexTargetKind::Map) => IndexTargetKind::Map,
@@ -133,11 +179,14 @@ impl Executor32 {
                         Ok(self.lookup_map_handle(handle, &key)?.unwrap_or(RuntimeVal::Nil))
                     }
                     IndexTargetKind::Object => {
-                        let key = match known_string_key {
-                            Some(key) => key,
+                        let key = match known_string_key.as_ref() {
+                            Some(key) => key.clone(),
                             None => self.object_key_from_register(key_reg)?,
                         };
-                        Ok(self.index_object_handle(handle, &key)?.unwrap_or(RuntimeVal::Nil))
+                        let field_slot = index_cache.and_then(|cache| cache.object_field_slot);
+                        Ok(self
+                            .index_object_handle(handle, &key, field_slot)?
+                            .unwrap_or(RuntimeVal::Nil))
                     }
                     IndexTargetKind::String => {
                         let value = match self
@@ -225,18 +274,19 @@ impl Executor32 {
         match self.read(target_reg)?.clone() {
             RuntimeVal::ShortStr(value) => self.slice_string_from(Arc::<str>::from(value.as_str()), start),
             RuntimeVal::Obj(handle) => {
-                let value = self
+                let plan = match self
                     .state
                     .heap
                     .get(handle)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-                match value {
-                    HeapValue::List(values) => Ok(RuntimeVal::Obj(
-                        self.state.heap.alloc(HeapValue::List(values.slice_from(start))),
-                    )),
-                    HeapValue::String(value) => self.slice_string_from(value.clone(), start),
-                    other => bail!("SliceFrom target object is not sliceable: {:?}", heap_kind(&other)),
+                    .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+                {
+                    HeapValue::List(values) => SliceFromPlan::List(values.slice_from(start)),
+                    HeapValue::String(value) => SliceFromPlan::String(Arc::clone(value)),
+                    other => bail!("SliceFrom target object is not sliceable: {:?}", heap_kind(other)),
+                };
+                match plan {
+                    SliceFromPlan::List(values) => Ok(RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(values)))),
+                    SliceFromPlan::String(value) => self.slice_string_from(value, start),
                 }
             }
             other => bail!("SliceFrom target expected string/list object, got {:?}", other.kind()),
@@ -252,33 +302,26 @@ impl Executor32 {
         let RuntimeVal::Obj(handle) = self.read(base)?.clone() else {
             bail!("MapRest base expected map object");
         };
-        let source = self
+        let source = match self
             .state
             .heap
             .get(handle)
-            .cloned()
-            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-        let HeapValue::Map(map) = &source else {
-            bail!("MapRest source object is not a map: {:?}", heap_kind(&source));
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::Map(map) => map,
+            other => bail!("MapRest source object is not a map: {:?}", heap_kind(other)),
         };
 
-        let mut entries = map
-            .entries_into_heap(&mut self.state.heap)?
-            .into_iter()
-            .collect::<BTreeMap<_, _>>();
+        let mut removed_keys = Vec::with_capacity(usize::from(key_count));
         for offset in 0..key_count {
             let key_reg = base
                 .checked_add(1)
                 .and_then(|reg| reg.checked_add(offset))
                 .ok_or_else(|| anyhow!("MapRest key register overflow"))?;
-            let key = self.map_key_from_register(key_reg)?;
-            remove_runtime_entry(&mut entries, &key);
+            removed_keys.push(self.map_key_from_register(key_reg)?);
         }
-        Ok(RuntimeVal::Obj(
-            self.state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))),
-        ))
+        let map = typed_map_without_keys(source, &removed_keys);
+        Ok(RuntimeVal::Obj(self.state.heap.alloc(HeapValue::Map(map))))
     }
 
     fn list_contains(&self, values: &TypedList, needle: &RuntimeVal) -> Result<bool> {
@@ -317,41 +360,80 @@ impl Executor32 {
                     .chars()
                     .map(|ch| Arc::<str>::from(ch.to_string()))
                     .collect();
-                Ok(RuntimeVal::Obj(
-                    self.state.heap.alloc(HeapValue::List(TypedList::String(list))),
-                ))
+                self.finish_to_iter_plan(ToIterPlan::StringChars(list))
             }
-            RuntimeVal::Obj(handle) => match self
-                .state
-                .heap
-                .get(handle)
-                .cloned()
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-            {
-                HeapValue::List(_) => Ok(RuntimeVal::Obj(handle)),
-                HeapValue::String(value) => {
-                    let list = value.chars().map(|ch| Arc::<str>::from(ch.to_string())).collect();
-                    Ok(RuntimeVal::Obj(
-                        self.state.heap.alloc(HeapValue::List(TypedList::String(list))),
-                    ))
-                }
-                HeapValue::Map(map) => self.map_to_iter_list(&map),
-                other => bail!("ToIter target object is not iterable: {:?}", heap_kind(&other)),
-            },
+            RuntimeVal::Obj(handle) => {
+                let plan = match self
+                    .state
+                    .heap
+                    .get(handle)
+                    .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+                {
+                    HeapValue::List(_) => ToIterPlan::ExistingList(handle),
+                    HeapValue::String(value) => {
+                        ToIterPlan::StringChars(value.chars().map(|ch| Arc::<str>::from(ch.to_string())).collect())
+                    }
+                    HeapValue::Map(map) => ToIterPlan::Map(typed_map_iter_snapshot(map)),
+                    other => bail!("ToIter target object is not iterable: {:?}", heap_kind(other)),
+                };
+                self.finish_to_iter_plan(plan)
+            }
             other => bail!("ToIter target expected string/list/map, got {:?}", other.kind()),
         }
     }
 
-    fn map_to_iter_list(&mut self, map: &TypedMap) -> Result<RuntimeVal> {
-        let mut pairs = Vec::with_capacity(map.len());
-        for (key, value) in map.entries_into_heap(&mut self.state.heap)? {
-            let key = self.runtime_map_key_to_value(key);
-            let pair = HeapValue::List(TypedList::from_runtime_values(vec![key, value], &self.state.heap));
-            pairs.push(RuntimeVal::Obj(self.state.heap.alloc(pair)));
+    fn finish_to_iter_plan(&mut self, plan: ToIterPlan) -> Result<RuntimeVal> {
+        match plan {
+            ToIterPlan::ExistingList(handle) => Ok(RuntimeVal::Obj(handle)),
+            ToIterPlan::StringChars(list) => Ok(RuntimeVal::Obj(
+                self.state.heap.alloc(HeapValue::List(TypedList::String(list))),
+            )),
+            ToIterPlan::Map(snapshot) => self.map_entries_to_iter_list(snapshot),
+        }
+    }
+
+    fn map_entries_to_iter_list(&mut self, entries: TypedMapIterSnapshot) -> Result<RuntimeVal> {
+        let mut pairs = Vec::with_capacity(entries.len());
+        match entries {
+            TypedMapIterSnapshot::Mixed(entries) => {
+                for (key, value) in entries {
+                    let key = self.runtime_map_key_to_value(key);
+                    self.push_iter_pair(&mut pairs, key, value);
+                }
+            }
+            TypedMapIterSnapshot::StringMixed(entries) => {
+                for (key, value) in entries {
+                    let key = self.runtime_string_key_to_value(key);
+                    self.push_iter_pair(&mut pairs, key, value);
+                }
+            }
+            TypedMapIterSnapshot::StringInt(entries) => {
+                for (key, value) in entries {
+                    let key = self.runtime_string_key_to_value(key);
+                    self.push_iter_pair(&mut pairs, key, RuntimeVal::Int(value));
+                }
+            }
+            TypedMapIterSnapshot::StringFloat(entries) => {
+                for (key, value) in entries {
+                    let key = self.runtime_string_key_to_value(key);
+                    self.push_iter_pair(&mut pairs, key, RuntimeVal::Float(value));
+                }
+            }
+            TypedMapIterSnapshot::StringBool(entries) => {
+                for (key, value) in entries {
+                    let key = self.runtime_string_key_to_value(key);
+                    self.push_iter_pair(&mut pairs, key, RuntimeVal::Bool(value));
+                }
+            }
         }
         Ok(RuntimeVal::Obj(
             self.state.heap.alloc(HeapValue::List(TypedList::Mixed(pairs))),
         ))
+    }
+
+    fn push_iter_pair(&mut self, pairs: &mut Vec<RuntimeVal>, key: RuntimeVal, value: RuntimeVal) {
+        let pair = HeapValue::List(TypedList::Mixed(vec![key, value]));
+        pairs.push(RuntimeVal::Obj(self.state.heap.alloc(pair)));
     }
 
     fn runtime_map_key_to_value(&mut self, key: RuntimeMapKey) -> RuntimeVal {
@@ -368,6 +450,14 @@ impl Executor32 {
                 }
             }
             RuntimeMapKey::Obj(value) => RuntimeVal::Obj(value),
+        }
+    }
+
+    fn runtime_string_key_to_value(&mut self, value: Arc<str>) -> RuntimeVal {
+        if let Some(short) = ShortStr::new(&value) {
+            RuntimeVal::ShortStr(short)
+        } else {
+            RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(value)))
         }
     }
 
@@ -398,11 +488,9 @@ impl Executor32 {
         };
         let index_fact = match index_fact {
             Some(fact) => Some(fact),
-            None => {
-                let fact = self.index_fact_from_heap(handle)?;
-                self.state.inline_caches.set_index(pc, fact);
-                Some(fact)
-            }
+            None => self
+                .cached_or_observed_index_cache(pc, handle, known_string_key.as_ref())?
+                .map(|cache| cache.fact),
         };
 
         match index_fact.map(|fact| fact.target_kind) {
@@ -437,6 +525,7 @@ impl Executor32 {
         };
 
         if let Some(done) = self.try_set_string_list(handle, &key, value.clone())? {
+            self.state.heap.bump_shape_generation(handle);
             return Ok(done);
         }
 
@@ -455,17 +544,19 @@ impl Executor32 {
             }
             HeapValue::Map(map) => {
                 map.set(key, value);
-                Ok(())
+                Ok::<(), anyhow::Error>(())
             }
             HeapValue::Object(object) => {
                 let Some(key) = key.as_arc_str() else {
                     bail!("SetIndex object key must be string");
                 };
-                object.fields.insert(key, value);
+                object.set_field(key, value);
                 Ok(())
             }
             other => bail!("SetIndex target object is not writable: {:?}", heap_kind(other)),
-        }
+        }?;
+        self.state.heap.bump_shape_generation(handle);
+        Ok(())
     }
 
     fn index_fact_from_heap(&self, handle: HeapRef) -> Result<PerfIndexFact> {
@@ -495,6 +586,43 @@ impl Executor32 {
         }
     }
 
+    fn cached_or_observed_index_cache(
+        &mut self,
+        pc: usize,
+        handle: HeapRef,
+        known_string_key: Option<&Arc<str>>,
+    ) -> Result<Option<IndexInlineCache32>> {
+        let generation = self
+            .state
+            .heap
+            .shape_generation(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
+        if let Some(cache) = self.state.inline_caches.index(pc, handle, generation) {
+            return Ok(Some(cache));
+        }
+        let fact = self.index_fact_from_heap(handle)?;
+        let object_field_slot = self.object_field_slot_from_heap(handle, known_string_key)?;
+        self.state
+            .inline_caches
+            .set_index(pc, handle, generation, fact, object_field_slot);
+        Ok(self.state.inline_caches.index(pc, handle, generation))
+    }
+
+    fn object_field_slot_from_heap(&self, handle: HeapRef, key: Option<&Arc<str>>) -> Result<Option<u16>> {
+        let Some(key) = key else {
+            return Ok(None);
+        };
+        match self
+            .state
+            .heap
+            .get(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::Object(object) => Ok(object.field_slot(key).and_then(|slot| u16::try_from(slot).ok())),
+            _ => Ok(None),
+        }
+    }
+
     fn set_list_index_handle(
         &mut self,
         handle: HeapRef,
@@ -507,11 +635,13 @@ impl Executor32 {
         let key = RuntimeMapKey::Int(index);
         if matches!(self.state.heap.get(handle), Some(HeapValue::List(TypedList::String(_)))) {
             if let Some(done) = self.try_set_string_list(handle, &key, value.clone())? {
+                self.state.heap.bump_shape_generation(handle);
                 return Ok(done);
             }
         }
         let index = usize::try_from(index).map_err(|_| anyhow!("list index must be non-negative"))?;
         if self.try_set_typed_list_index(handle, index, &value, known_value_kind)? {
+            self.state.heap.bump_shape_generation(handle);
             return Ok(());
         }
         match self
@@ -525,7 +655,9 @@ impl Executor32 {
                 "SetIndex target object changed while writing list: {:?}",
                 heap_kind(other)
             ),
-        }
+        }?;
+        self.state.heap.bump_shape_generation(handle);
+        Ok(())
     }
 
     fn try_set_typed_list_index(
@@ -586,6 +718,7 @@ impl Executor32 {
             None => self.map_key_from_register_or_value(key_reg, moved_key)?,
         };
         if self.try_set_typed_string_map_index(handle, &key, &value, known_value_kind)? {
+            self.state.heap.bump_shape_generation(handle);
             return Ok(());
         }
         match self
@@ -596,13 +729,15 @@ impl Executor32 {
         {
             HeapValue::Map(map) => {
                 map.set(key, value);
-                Ok(())
+                Ok::<(), anyhow::Error>(())
             }
             other => bail!(
                 "SetIndex target object changed while writing map: {:?}",
                 heap_kind(other)
             ),
-        }
+        }?;
+        self.state.heap.bump_shape_generation(handle);
+        Ok(())
     }
 
     fn try_set_typed_string_map_index(
@@ -662,14 +797,16 @@ impl Executor32 {
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         {
             HeapValue::Object(object) => {
-                object.fields.insert(key, value);
-                Ok(())
+                object.set_field(key, value);
+                Ok::<(), anyhow::Error>(())
             }
             other => bail!(
                 "SetIndex target object changed while writing object: {:?}",
                 heap_kind(other)
             ),
-        }
+        }?;
+        self.state.heap.bump_shape_generation(handle);
+        Ok(())
     }
 
     fn object_key_from_register(&self, register: u8) -> Result<Arc<str>> {
@@ -724,7 +861,10 @@ impl Executor32 {
             return Ok(Some(()));
         }
 
-        let strings = values.clone();
+        let Some(HeapValue::List(TypedList::String(values))) = self.state.heap.get_mut(handle) else {
+            bail!("heap object {} changed while taking string list", handle.index());
+        };
+        let strings = std::mem::take(values);
         let mut mixed = Vec::with_capacity(strings.len());
         for value in strings {
             mixed.push(self.runtime_value_from_string(value));
@@ -907,14 +1047,26 @@ impl Executor32 {
         }
     }
 
-    fn index_object_handle(&self, handle: HeapRef, key: &Arc<str>) -> Result<Option<RuntimeVal>> {
+    fn index_object_handle(
+        &self,
+        handle: HeapRef,
+        key: &Arc<str>,
+        cached_slot: Option<u16>,
+    ) -> Result<Option<RuntimeVal>> {
         match self
             .state
             .heap
             .get(handle)
             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
         {
-            HeapValue::Object(object) => Ok(object.fields.get(key).cloned()),
+            HeapValue::Object(object) => {
+                if let Some(slot) = cached_slot
+                    && let Some(value) = object.get_field_slot(slot as usize, key)
+                {
+                    return Ok(Some(value));
+                }
+                Ok(object.get_field(key))
+            }
             other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
         }
     }
@@ -999,6 +1151,102 @@ fn list_value_kind(list: &TypedList) -> PerfValueKind {
         TypedList::Bool(_) => PerfValueKind::Bool,
         TypedList::String(_) => PerfValueKind::String,
         TypedList::Mixed(_) => PerfValueKind::Unknown,
+    }
+}
+
+fn typed_map_without_keys(map: &TypedMap, removed_keys: &[RuntimeMapKey]) -> TypedMap {
+    match map {
+        TypedMap::Mixed(entries) => TypedMap::Mixed(
+            entries
+                .iter()
+                .filter(|(key, _)| !typed_map_key_removed(key, removed_keys))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        ),
+        TypedMap::StringMixed(entries) => TypedMap::StringMixed(
+            entries
+                .iter()
+                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        ),
+        TypedMap::StringInt(entries) => TypedMap::StringInt(
+            entries
+                .iter()
+                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
+                .map(|(key, value)| (key.clone(), *value))
+                .collect(),
+        ),
+        TypedMap::StringFloat(entries) => TypedMap::StringFloat(
+            entries
+                .iter()
+                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
+                .map(|(key, value)| (key.clone(), *value))
+                .collect(),
+        ),
+        TypedMap::StringBool(entries) => TypedMap::StringBool(
+            entries
+                .iter()
+                .filter(|(key, _)| !string_map_key_removed(key, removed_keys))
+                .map(|(key, value)| (key.clone(), *value))
+                .collect(),
+        ),
+    }
+}
+
+fn typed_map_key_removed(key: &RuntimeMapKey, removed_keys: &[RuntimeMapKey]) -> bool {
+    removed_keys.iter().any(|removed| runtime_map_keys_match(key, removed))
+}
+
+fn string_map_key_removed(key: &Arc<str>, removed_keys: &[RuntimeMapKey]) -> bool {
+    removed_keys
+        .iter()
+        .any(|removed| removed.as_str().is_some_and(|removed| removed == key.as_ref()))
+}
+
+fn runtime_map_keys_match(left: &RuntimeMapKey, right: &RuntimeMapKey) -> bool {
+    left == right
+        || left
+            .as_str()
+            .zip(right.as_str())
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn typed_map_iter_snapshot(map: &TypedMap) -> TypedMapIterSnapshot {
+    match map {
+        TypedMap::Mixed(entries) => TypedMapIterSnapshot::Mixed(
+            entries
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        ),
+        TypedMap::StringMixed(entries) => TypedMapIterSnapshot::StringMixed(
+            entries
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        ),
+        TypedMap::StringInt(entries) => {
+            TypedMapIterSnapshot::StringInt(entries.iter().map(|(key, value)| (key.clone(), *value)).collect())
+        }
+        TypedMap::StringFloat(entries) => {
+            TypedMapIterSnapshot::StringFloat(entries.iter().map(|(key, value)| (key.clone(), *value)).collect())
+        }
+        TypedMap::StringBool(entries) => {
+            TypedMapIterSnapshot::StringBool(entries.iter().map(|(key, value)| (key.clone(), *value)).collect())
+        }
+    }
+}
+
+impl TypedMapIterSnapshot {
+    fn len(&self) -> usize {
+        match self {
+            Self::Mixed(entries) => entries.len(),
+            Self::StringMixed(entries) => entries.len(),
+            Self::StringInt(entries) => entries.len(),
+            Self::StringFloat(entries) => entries.len(),
+            Self::StringBool(entries) => entries.len(),
+        }
     }
 }
 

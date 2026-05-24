@@ -141,9 +141,7 @@ Date: 2026-05-23
 
 Samples reported: 6 per engine.
 Geometric mean VM/Lua ratio: **17.648x**.
-Native executable output now uses the same Instr32 `Module32Artifact` payload
-through a host launcher; this validation run measures the VM artifact path, not
-native AOT.
+This validation run measures the VM artifact path, not native AOT.
 
 ## Current Bottlenecks
 

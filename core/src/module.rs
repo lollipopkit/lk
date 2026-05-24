@@ -1,5 +1,5 @@
 use crate::{
-    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedMap},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedMap},
     vm::{
         ContextNativeFunction32, Module32, NativeFunction32, PlainNativeFunction32, RuntimeExport32,
         RuntimeModuleState32,
@@ -202,17 +202,17 @@ pub fn runtime_export_from_plain_native_entries(
             arity: native.arity,
             function: native.function.clone(),
         })));
-        entries.insert(RuntimeMapKey::String(Arc::<str>::from(native.name)), value);
+        entries.insert(Arc::<str>::from(native.name), value);
     }
     for value in values {
-        entries.insert(RuntimeMapKey::String(Arc::<str>::from(value.name)), value.value.clone());
+        entries.insert(Arc::<str>::from(value.name), value.value.clone());
     }
-    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))));
-    RuntimeExport32 {
+    let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
+    RuntimeExport32::new(
         value,
-        state: Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new()))),
-        module: Arc::new(Module32::default()),
-    }
+        Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new()))),
+        Arc::new(Module32::default()),
+    )
 }
 
 pub fn runtime_export_from_runtime_native(function: NativeFunction32, arity: u16) -> RuntimeExport32 {

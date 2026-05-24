@@ -27,11 +27,9 @@ mod core_impl;
 mod semantic_tokens;
 #[cfg(test)]
 mod tests;
-mod utils;
 
 #[allow(unused_imports)]
 pub use semantic_tokens::SemanticTokenValidationSummary;
-pub use utils::extract_variables_from_pattern;
 
 // Soft limits to keep LSP responsive on large/broken files
 const MAX_SCAN_LINES: usize = 400; // max lines to line-scan

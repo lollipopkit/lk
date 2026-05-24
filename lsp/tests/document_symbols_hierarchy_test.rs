@@ -47,14 +47,12 @@ fn test_function_symbol_hierarchy_with_groups_and_labels() {
         import_kids
     );
 
-    // Top-level Variables container and individual variable
+    // Top-level Variables container
     let vars = get_symbol(&res.symbols, "Variables").expect("Variables container present");
     assert_eq!(vars.kind, SymbolKind::NAMESPACE);
     let var_kids = list_child_names(vars);
     assert!(var_kids.iter().any(|n| n == "a"), "variables children: {:?}", var_kids);
-    // Backward compatibility: individual variable still present at top level
-    let top_var = get_symbol(&res.symbols, "a").expect("top-level variable symbol present");
-    assert_eq!(top_var.kind, SymbolKind::VARIABLE);
+    assert!(get_symbol(&res.symbols, "a").is_none());
 
     // Function hierarchy: outer -> { Parameters, Locals, inner }
     let top_names: Vec<&String> = res.symbols.iter().map(|s| &s.name).collect();
@@ -176,9 +174,8 @@ fn test_toplevel_grouped_containers() {
     let var_names = list_child_names(vars);
     assert!(var_names.iter().any(|n| n == "x"), "vars: {:?}", var_names);
     assert!(var_names.iter().any(|n| n == "y"), "vars: {:?}", var_names);
-    // Individual variables still present at top-level
-    assert!(get_symbol(&res.symbols, "x").is_some());
-    assert!(get_symbol(&res.symbols, "y").is_some());
+    assert!(get_symbol(&res.symbols, "x").is_none());
+    assert!(get_symbol(&res.symbols, "y").is_none());
 
     // No top-level labels in this program
 }

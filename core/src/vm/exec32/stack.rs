@@ -2,11 +2,16 @@ use std::ops::Range;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::{val::RuntimeVal, vm::CallWindow32};
+use std::sync::Arc;
+
+use crate::{
+    val::{HeapStore, HeapValue, RuntimeVal, TypedList},
+    vm::CallWindow32,
+};
 
 use crate::vm::analysis::record_register_write;
 
-use super::Executor32;
+use super::{Executor32, ReturnValues32};
 
 impl Executor32 {
     #[inline]
@@ -61,13 +66,25 @@ impl Executor32 {
         Ok(range_start..range_start + count)
     }
 
-    pub(super) fn read_register_slice(&self, base: u8, count: u8) -> Result<&[RuntimeVal]> {
+    pub(super) fn read_register_list(&self, base: u8, count: u8) -> Result<TypedList> {
         let range = self.register_range(base, count, "register range")?;
-        Ok(&self.state.stack[range])
+        Ok(typed_list_from_runtime_slots(
+            &self.state.stack[range],
+            &self.state.heap,
+        ))
     }
 
-    pub(super) fn read_register_range_owned(&self, base: u8, count: u8) -> Result<Vec<RuntimeVal>> {
-        Ok(self.read_register_slice(base, count)?.to_vec())
+    pub(super) fn take_register_list(&mut self, base: u8, count: u8) -> Result<TypedList> {
+        let range = self.register_range(base, count, "register range")?;
+        Ok(take_typed_list_from_runtime_slots(
+            &mut self.state.stack[range],
+            &self.state.heap,
+        ))
+    }
+
+    pub(super) fn take_return_values(&mut self, base: u8, count: u8) -> Result<ReturnValues32> {
+        let range = self.register_range(base, count, "return range")?;
+        Ok(ReturnValues32::take_from_slots(&mut self.state.stack[range]))
     }
 
     fn register_range(&self, base: u8, count: u8, label: &str) -> Result<Range<usize>> {
@@ -98,4 +115,146 @@ impl Executor32 {
         }
         Ok(())
     }
+
+    pub(super) fn clear_call_window_temps(&mut self, window: CallWindow32, named_count: u16) -> Result<()> {
+        let start = window.arg_base().as_usize();
+        let count = window.arg_count as usize + named_count as usize * 2;
+        if start + count > self.register_count as usize {
+            bail!("call temp range {}..{} out of bounds", start, start + count);
+        }
+        let range_start = self.frame_base + start;
+        let range_end = range_start + count;
+        self.state.stack[range_start..range_end].fill(RuntimeVal::Nil);
+        Ok(())
+    }
+}
+
+fn typed_list_from_runtime_slots(values: &[RuntimeVal], heap: &HeapStore) -> TypedList {
+    if values.is_empty() {
+        return TypedList::Mixed(Vec::new());
+    }
+
+    let mut ints = Vec::with_capacity(values.len());
+    let mut floats = Vec::with_capacity(values.len());
+    let mut bools = Vec::with_capacity(values.len());
+    let mut strings = Vec::with_capacity(values.len());
+    for value in values {
+        match value {
+            RuntimeVal::Int(value) if floats.is_empty() && bools.is_empty() && strings.is_empty() => {
+                ints.push(*value);
+            }
+            RuntimeVal::Float(value) if ints.is_empty() && bools.is_empty() && strings.is_empty() => {
+                floats.push(*value);
+            }
+            RuntimeVal::Bool(value) if ints.is_empty() && floats.is_empty() && strings.is_empty() => {
+                bools.push(*value);
+            }
+            RuntimeVal::ShortStr(value) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
+                strings.push(Arc::<str>::from(value.as_str()));
+            }
+            RuntimeVal::Obj(handle) if ints.is_empty() && floats.is_empty() && bools.is_empty() => {
+                let Some(HeapValue::String(value)) = heap.get(*handle) else {
+                    return TypedList::Mixed(values.iter().cloned().collect());
+                };
+                strings.push(Arc::clone(value));
+            }
+            _ => return TypedList::Mixed(values.iter().cloned().collect()),
+        }
+    }
+
+    if !ints.is_empty() {
+        TypedList::Int(ints)
+    } else if !floats.is_empty() {
+        TypedList::Float(floats)
+    } else if !bools.is_empty() {
+        TypedList::Bool(bools)
+    } else {
+        TypedList::String(strings)
+    }
+}
+
+fn take_typed_list_from_runtime_slots(values: &mut [RuntimeVal], heap: &HeapStore) -> TypedList {
+    match runtime_slot_list_shape(values, heap) {
+        RuntimeSlotListShape::Mixed => TypedList::Mixed(values.iter_mut().map(std::mem::take).collect()),
+        RuntimeSlotListShape::Int => {
+            let out = values
+                .iter_mut()
+                .map(|value| match std::mem::take(value) {
+                    RuntimeVal::Int(value) => value,
+                    _ => unreachable!("shape scan only returns Int for int slots"),
+                })
+                .collect();
+            TypedList::Int(out)
+        }
+        RuntimeSlotListShape::Float => {
+            let out = values
+                .iter_mut()
+                .map(|value| match std::mem::take(value) {
+                    RuntimeVal::Float(value) => value,
+                    _ => unreachable!("shape scan only returns Float for float slots"),
+                })
+                .collect();
+            TypedList::Float(out)
+        }
+        RuntimeSlotListShape::Bool => {
+            let out = values
+                .iter_mut()
+                .map(|value| match std::mem::take(value) {
+                    RuntimeVal::Bool(value) => value,
+                    _ => unreachable!("shape scan only returns Bool for bool slots"),
+                })
+                .collect();
+            TypedList::Bool(out)
+        }
+        RuntimeSlotListShape::String => {
+            let out = values
+                .iter_mut()
+                .map(|value| match std::mem::take(value) {
+                    RuntimeVal::ShortStr(value) => Arc::<str>::from(value.as_str()),
+                    RuntimeVal::Obj(handle) => match heap.get(handle) {
+                        Some(HeapValue::String(value)) => Arc::clone(value),
+                        _ => unreachable!("shape scan only returns String for string slots"),
+                    },
+                    _ => unreachable!("shape scan only returns String for string slots"),
+                })
+                .collect();
+            TypedList::String(out)
+        }
+    }
+}
+
+enum RuntimeSlotListShape {
+    Mixed,
+    Int,
+    Float,
+    Bool,
+    String,
+}
+
+fn runtime_slot_list_shape(values: &[RuntimeVal], heap: &HeapStore) -> RuntimeSlotListShape {
+    if values.is_empty() {
+        return RuntimeSlotListShape::Mixed;
+    }
+    let mut shape: Option<RuntimeSlotListShape> = None;
+    for value in values {
+        let next = match value {
+            RuntimeVal::Int(_) => RuntimeSlotListShape::Int,
+            RuntimeVal::Float(_) => RuntimeSlotListShape::Float,
+            RuntimeVal::Bool(_) => RuntimeSlotListShape::Bool,
+            RuntimeVal::ShortStr(_) => RuntimeSlotListShape::String,
+            RuntimeVal::Obj(handle) if matches!(heap.get(*handle), Some(HeapValue::String(_))) => {
+                RuntimeSlotListShape::String
+            }
+            _ => return RuntimeSlotListShape::Mixed,
+        };
+        match (&shape, next) {
+            (None, next) => shape = Some(next),
+            (Some(RuntimeSlotListShape::Int), RuntimeSlotListShape::Int)
+            | (Some(RuntimeSlotListShape::Float), RuntimeSlotListShape::Float)
+            | (Some(RuntimeSlotListShape::Bool), RuntimeSlotListShape::Bool)
+            | (Some(RuntimeSlotListShape::String), RuntimeSlotListShape::String) => {}
+            _ => return RuntimeSlotListShape::Mixed,
+        }
+    }
+    shape.unwrap_or(RuntimeSlotListShape::Mixed)
 }

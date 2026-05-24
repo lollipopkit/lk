@@ -324,7 +324,6 @@ impl Expr {
         }
     }
     /// Cached parsing: parse expression string and return a shared Arc<Expr>.
-    /// Use `parse_cached` if you need an owned `Expr` value.
     pub fn parse_cached_arc(expression: &str) -> Result<Arc<Expr>> {
         use dashmap::mapref::entry::Entry;
         // Global static cache: Key is expression string, Value is parsed Expr wrapped in Arc
@@ -344,11 +343,6 @@ impl Expr {
             }
             Entry::Occupied(o) => o.get().clone(),
         })
-    }
-    /// Backwards-compatible helper that returns an owned `Expr` by cloning
-    /// the shared cached AST. Prefer `parse_cached_arc` for performance.
-    pub fn parse_cached(expression: &str) -> Result<Expr> {
-        Ok(Self::parse_cached_arc(expression)?.as_ref().clone())
     }
     /// Constant folding: calculate pure constant sub-expressions as LiteralVal constants
     pub(crate) fn fold_constants(self) -> Expr {

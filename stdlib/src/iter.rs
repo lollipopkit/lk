@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
-    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap},
     vm::{
         NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeExport32,
         call_runtime_callable32_runtime, call_runtime_value32_runtime,
@@ -62,25 +64,28 @@ impl Module for IterModule {
 fn map32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.map")?;
     let values = args.as_slice();
-    let input = list_items(&values[0], runtime.heap_mut(), "iter.map first argument")?;
+    let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.map first argument")?;
     let mut out = Vec::with_capacity(input.len());
-    for value in input {
+    input.for_each_item(|item| {
+        let value = item.into_runtime_value(runtime.heap_mut());
         out.push(call_callable(
             &values[1],
             &[value],
             runtime,
             "iter.map second argument",
         )?);
-    }
+        Ok(())
+    })?;
     runtime_list(out, runtime.heap_mut())
 }
 
 fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.filter")?;
     let values = args.as_slice();
-    let input = list_items(&values[0], runtime.heap_mut(), "iter.filter first argument")?;
+    let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.filter first argument")?;
     let mut out = Vec::with_capacity(input.len());
-    for value in input {
+    input.for_each_item(|item| {
+        let value = item.into_runtime_value(runtime.heap_mut());
         let keep = call_callable(
             &values[1],
             std::slice::from_ref(&value),
@@ -90,30 +95,39 @@ fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
         if truthy(&keep) {
             out.push(value);
         }
-    }
+        Ok(())
+    })?;
     runtime_list(out, runtime.heap_mut())
 }
 
 fn reduce32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 3, "iter.reduce")?;
     let values = args.as_slice();
-    let input = list_items(&values[0], runtime.heap_mut(), "iter.reduce first argument")?;
+    let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.reduce first argument")?;
     let mut acc = values[1].clone();
-    for value in input {
-        acc = call_callable(&values[2], &[acc, value], runtime, "iter.reduce third argument")?;
-    }
+    input.for_each_item(|item| {
+        let value = item.into_runtime_value(runtime.heap_mut());
+        let previous = std::mem::replace(&mut acc, RuntimeVal::Nil);
+        acc = call_callable(&values[2], &[previous, value], runtime, "iter.reduce third argument")?;
+        Ok(())
+    })?;
     Ok(acc)
 }
 
 fn enumerate32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
-    let input = one_list(args, runtime, "iter.enumerate")?;
+    expect_arity(args, 1, "iter.enumerate")?;
+    let input = list_snapshot_arg(&args.as_slice()[0], runtime.heap(), "iter.enumerate")?;
     let mut out = Vec::with_capacity(input.len());
-    for (index, value) in input.into_iter().enumerate() {
+    let mut index = 0usize;
+    input.for_each_item(|item| {
+        let value = item.into_runtime_value(runtime.heap_mut());
         out.push(runtime_list(
             vec![RuntimeVal::Int(index as i64), value],
             runtime.heap_mut(),
         )?);
-    }
+        index += 1;
+        Ok(())
+    })?;
     runtime_list(out, runtime.heap_mut())
 }
 
@@ -154,13 +168,22 @@ fn range32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
 fn zip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.zip")?;
     let values = args.as_slice();
-    let left = typed_list_arg(&values[0], runtime.heap(), "iter.zip first argument")?;
-    let right = typed_list_arg(&values[1], runtime.heap(), "iter.zip second argument")?;
-    let count = left.len().min(right.len());
-    let mut out = Vec::with_capacity(count);
-    for index in 0..count {
-        let left = typed_list_item(&left, index, runtime.heap_mut()).expect("index bounded by count");
-        let right = typed_list_item(&right, index, runtime.heap_mut()).expect("index bounded by count");
+    let pairs = {
+        let left = typed_list_arg_ref(&values[0], runtime.heap(), "iter.zip first argument")?;
+        let right = typed_list_arg_ref(&values[1], runtime.heap(), "iter.zip second argument")?;
+        let count = left.len().min(right.len());
+        let mut pairs = Vec::with_capacity(count);
+        for index in 0..count {
+            let left = typed_list_item_snapshot(left, index).expect("index bounded by count");
+            let right = typed_list_item_snapshot(right, index).expect("index bounded by count");
+            pairs.push((left, right));
+        }
+        pairs
+    };
+    let mut out = Vec::with_capacity(pairs.len());
+    for (left, right) in pairs {
+        let left = left.into_runtime_value(runtime.heap_mut());
+        let right = right.into_runtime_value(runtime.heap_mut());
         out.push(runtime_list(vec![left, right], runtime.heap_mut())?);
     }
     runtime_list(out, runtime.heap_mut())
@@ -183,22 +206,27 @@ fn skip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
 fn chain32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.chain")?;
     let values = args.as_slice();
-    let left = typed_list_arg(&values[0], runtime.heap(), "iter.chain first argument")?;
-    let right = typed_list_arg(&values[1], runtime.heap(), "iter.chain second argument")?;
-    let list = typed_list_concat_preserving_backing(left, right, runtime.heap_mut());
+    let plan = typed_list_concat_preserving_backing(
+        typed_list_arg_ref(&values[0], runtime.heap(), "iter.chain first argument")?,
+        typed_list_arg_ref(&values[1], runtime.heap(), "iter.chain second argument")?,
+    );
+    let list = plan.into_typed(runtime.heap_mut());
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
 }
 
 fn flatten32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "iter.flatten")?;
-    let input = typed_list_arg(&args.as_slice()[0], runtime.heap(), "iter.flatten")?;
-    let list = flatten_typed_list(input, runtime.heap_mut())?;
+    let plan = flatten_typed_list(
+        typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.flatten")?,
+        runtime.heap(),
+    )?;
+    let list = plan.into_typed(runtime.heap_mut());
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
 }
 
 fn unique32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "iter.unique")?;
-    let input = typed_list_arg(&args.as_slice()[0], runtime.heap(), "iter.unique")?;
+    let input = typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.unique")?;
     let list = unique_typed_list(input, runtime.heap());
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
 }
@@ -206,14 +234,20 @@ fn unique32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
 fn chunk32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.chunk")?;
     let values = args.as_slice();
-    let input = typed_list_arg(&values[0], runtime.heap(), "iter.chunk first argument")?;
     let size = count_arg(&values[1], "iter.chunk size")?;
     if size == 0 {
         bail!("iter.chunk size must be positive");
     }
-    let mut out = Vec::new();
-    for start in (0..input.len()).step_by(size) {
-        let chunk = typed_list_slice(&input, start, Some(size));
+    let chunks = {
+        let input = typed_list_arg_ref(&values[0], runtime.heap(), "iter.chunk first argument")?;
+        let mut chunks = Vec::new();
+        for start in (0..input.len()).step_by(size) {
+            chunks.push(typed_list_slice(input, start, Some(size)));
+        }
+        chunks
+    };
+    let mut out = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
         out.push(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(chunk))));
     }
     runtime_list(out, runtime.heap_mut())
@@ -226,7 +260,8 @@ fn next32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
 
 fn collect32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "iter.collect")?;
-    let input = typed_list_arg(&args.as_slice()[0], runtime.heap(), "iter.collect")?;
+    let input = typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.collect")?;
+    let input = copy_typed_list(input);
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(input))))
 }
 
@@ -241,19 +276,7 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
     }
 }
 
-fn one_list(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>, name: &str) -> Result<Vec<RuntimeVal>> {
-    expect_arity(args, 1, name)?;
-    list_items(&args.as_slice()[0], runtime.heap_mut(), name)
-}
-
-fn list_items(value: &RuntimeVal, heap: &mut HeapStore, context: &str) -> Result<Vec<RuntimeVal>> {
-    match maybe_list_items(value, heap)? {
-        Some(values) => Ok(values),
-        None => bail!("{context} expects a list"),
-    }
-}
-
-fn maybe_list_items(value: &RuntimeVal, heap: &mut HeapStore) -> Result<Option<Vec<RuntimeVal>>> {
+fn maybe_typed_list_arg_ref<'a>(value: &RuntimeVal, heap: &'a HeapStore) -> Result<Option<&'a TypedList>> {
     let RuntimeVal::Obj(handle) = value else {
         return Ok(None);
     };
@@ -261,28 +284,12 @@ fn maybe_list_items(value: &RuntimeVal, heap: &mut HeapStore) -> Result<Option<V
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match value {
-        HeapValue::List(list) => {
-            let list = list.clone();
-            Ok(Some(list.runtime_values_into_heap(heap)?))
-        }
+        HeapValue::List(list) => Ok(Some(list)),
         _ => Ok(None),
     }
 }
 
-fn maybe_typed_list_arg(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<TypedList>> {
-    let RuntimeVal::Obj(handle) = value else {
-        return Ok(None);
-    };
-    let value = heap
-        .get(*handle)
-        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
-    match value {
-        HeapValue::List(list) => Ok(Some(list.clone())),
-        _ => Ok(None),
-    }
-}
-
-fn typed_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedList> {
+fn typed_list_arg_ref<'a>(value: &RuntimeVal, heap: &'a HeapStore, context: &str) -> Result<&'a TypedList> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("{context} expects a list");
     };
@@ -290,8 +297,24 @@ fn typed_list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match value {
-        HeapValue::List(list) => Ok(list.clone()),
+        HeapValue::List(list) => Ok(list),
         _ => bail!("{context} expects a list"),
+    }
+}
+
+fn list_snapshot_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<RuntimeListSnapshot> {
+    Ok(RuntimeListSnapshot::from_typed(typed_list_arg_ref(
+        value, heap, context,
+    )?))
+}
+
+fn copy_typed_list(list: &TypedList) -> TypedList {
+    match list {
+        TypedList::Mixed(values) => TypedList::Mixed(values.clone()),
+        TypedList::Int(values) => TypedList::Int(values.clone()),
+        TypedList::Float(values) => TypedList::Float(values.clone()),
+        TypedList::Bool(values) => TypedList::Bool(values.clone()),
+        TypedList::String(values) => TypedList::String(values.clone()),
     }
 }
 
@@ -329,21 +352,34 @@ fn first_list_item(value: &RuntimeVal, heap: &mut HeapStore, context: &str) -> R
     Ok(RuntimeVal::Obj(heap.alloc(HeapValue::String(string))))
 }
 
-fn typed_list_item(list: &TypedList, index: usize, heap: &mut HeapStore) -> Option<RuntimeVal> {
-    match list {
-        TypedList::Mixed(values) => values.get(index).cloned(),
-        TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int),
-        TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float),
-        TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool),
-        TypedList::String(values) => {
-            let value = values.get(index)?;
-            if let Some(short) = ShortStr::new(value) {
-                Some(RuntimeVal::ShortStr(short))
-            } else {
-                Some(RuntimeVal::Obj(heap.alloc(HeapValue::String(value.clone()))))
+enum RuntimeListItemSnapshot {
+    Value(RuntimeVal),
+    String(Arc<str>),
+}
+
+impl RuntimeListItemSnapshot {
+    fn into_runtime_value(self, heap: &mut HeapStore) -> RuntimeVal {
+        match self {
+            Self::Value(value) => value,
+            Self::String(value) => {
+                if let Some(short) = ShortStr::new(&value) {
+                    RuntimeVal::ShortStr(short)
+                } else {
+                    RuntimeVal::Obj(heap.alloc(HeapValue::String(value)))
+                }
             }
         }
     }
+}
+
+fn typed_list_item_snapshot(list: &TypedList, index: usize) -> Option<RuntimeListItemSnapshot> {
+    Some(match list {
+        TypedList::Mixed(values) => RuntimeListItemSnapshot::Value(values.get(index)?.clone()),
+        TypedList::Int(values) => RuntimeListItemSnapshot::Value(RuntimeVal::Int(*values.get(index)?)),
+        TypedList::Float(values) => RuntimeListItemSnapshot::Value(RuntimeVal::Float(*values.get(index)?)),
+        TypedList::Bool(values) => RuntimeListItemSnapshot::Value(RuntimeVal::Bool(*values.get(index)?)),
+        TypedList::String(values) => RuntimeListItemSnapshot::String(Arc::clone(values.get(index)?)),
+    })
 }
 
 fn list_slice(
@@ -373,73 +409,254 @@ fn typed_list_slice(list: &TypedList, start: usize, limit: Option<usize>) -> Typ
     let start = start.min(len);
     let end = limit.map_or(len, |limit| start.saturating_add(limit).min(len));
     match list {
-        TypedList::Mixed(values) => TypedList::Mixed(values[start..end].to_vec()),
-        TypedList::Int(values) => TypedList::Int(values[start..end].to_vec()),
-        TypedList::Float(values) => TypedList::Float(values[start..end].to_vec()),
-        TypedList::Bool(values) => TypedList::Bool(values[start..end].to_vec()),
-        TypedList::String(values) => TypedList::String(values[start..end].to_vec()),
+        TypedList::Mixed(values) => TypedList::Mixed(values[start..end].iter().cloned().collect()),
+        TypedList::Int(values) => TypedList::Int(values[start..end].iter().copied().collect()),
+        TypedList::Float(values) => TypedList::Float(values[start..end].iter().copied().collect()),
+        TypedList::Bool(values) => TypedList::Bool(values[start..end].iter().copied().collect()),
+        TypedList::String(values) => TypedList::String(values[start..end].iter().cloned().collect()),
     }
 }
 
-fn typed_list_concat_preserving_backing(left: TypedList, right: TypedList, heap: &mut HeapStore) -> TypedList {
+enum RuntimeListSnapshot {
+    Mixed(Vec<RuntimeVal>),
+    Int(Vec<i64>),
+    Float(Vec<f64>),
+    Bool(Vec<bool>),
+    String(Vec<Arc<str>>),
+}
+
+impl RuntimeListSnapshot {
+    fn from_typed(list: &TypedList) -> Self {
+        match list {
+            TypedList::Mixed(values) => Self::Mixed(values.clone()),
+            TypedList::Int(values) => Self::Int(values.clone()),
+            TypedList::Float(values) => Self::Float(values.clone()),
+            TypedList::Bool(values) => Self::Bool(values.clone()),
+            TypedList::String(values) => Self::String(values.clone()),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Mixed(values) => values.len(),
+            Self::Int(values) => values.len(),
+            Self::Float(values) => values.len(),
+            Self::Bool(values) => values.len(),
+            Self::String(values) => values.len(),
+        }
+    }
+
+    fn for_each_item(self, mut f: impl FnMut(RuntimeListItemSnapshot) -> Result<()>) -> Result<()> {
+        match self {
+            Self::Mixed(values) => {
+                for value in values {
+                    f(RuntimeListItemSnapshot::Value(value))?;
+                }
+            }
+            Self::Int(values) => {
+                for value in values {
+                    f(RuntimeListItemSnapshot::Value(RuntimeVal::Int(value)))?;
+                }
+            }
+            Self::Float(values) => {
+                for value in values {
+                    f(RuntimeListItemSnapshot::Value(RuntimeVal::Float(value)))?;
+                }
+            }
+            Self::Bool(values) => {
+                for value in values {
+                    f(RuntimeListItemSnapshot::Value(RuntimeVal::Bool(value)))?;
+                }
+            }
+            Self::String(values) => {
+                for value in values {
+                    f(RuntimeListItemSnapshot::String(value))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn into_typed(self) -> TypedList {
+        match self {
+            Self::Mixed(values) => TypedList::Mixed(values),
+            Self::Int(values) => TypedList::Int(values),
+            Self::Float(values) => TypedList::Float(values),
+            Self::Bool(values) => TypedList::Bool(values),
+            Self::String(values) => TypedList::String(values),
+        }
+    }
+
+    fn append_to_mixed_output(self, out: &mut Vec<RuntimeVal>, heap: &mut HeapStore) {
+        match self {
+            Self::Mixed(values) => out.extend(values),
+            Self::Int(values) => out.extend(values.into_iter().map(RuntimeVal::Int)),
+            Self::Float(values) => out.extend(values.into_iter().map(RuntimeVal::Float)),
+            Self::Bool(values) => out.extend(values.into_iter().map(RuntimeVal::Bool)),
+            Self::String(values) => out.extend(values.into_iter().map(|value| {
+                if let Some(short) = ShortStr::new(&value) {
+                    RuntimeVal::ShortStr(short)
+                } else {
+                    RuntimeVal::Obj(heap.alloc(HeapValue::String(value)))
+                }
+            })),
+        }
+    }
+}
+
+enum ListConcatPlan {
+    Ready(TypedList),
+    Mixed {
+        left: RuntimeListSnapshot,
+        right: RuntimeListSnapshot,
+    },
+}
+
+impl ListConcatPlan {
+    fn into_typed(self, heap: &mut HeapStore) -> TypedList {
+        match self {
+            Self::Ready(list) => list,
+            Self::Mixed { left, right } => {
+                let mut values = Vec::with_capacity(left.len() + right.len());
+                left.append_to_mixed_output(&mut values, heap);
+                right.append_to_mixed_output(&mut values, heap);
+                TypedList::Mixed(values)
+            }
+        }
+    }
+}
+
+fn typed_list_concat_preserving_backing(left: &TypedList, right: &TypedList) -> ListConcatPlan {
     match (left, right) {
-        (TypedList::Int(mut left), TypedList::Int(right)) => {
-            left.extend(right);
-            TypedList::Int(left)
+        (TypedList::Int(left), TypedList::Int(right)) => {
+            let mut left = left.clone();
+            left.extend(right.iter().copied());
+            ListConcatPlan::Ready(TypedList::Int(left))
         }
-        (TypedList::Float(mut left), TypedList::Float(right)) => {
-            left.extend(right);
-            TypedList::Float(left)
+        (TypedList::Float(left), TypedList::Float(right)) => {
+            let mut left = left.clone();
+            left.extend(right.iter().copied());
+            ListConcatPlan::Ready(TypedList::Float(left))
         }
-        (TypedList::Bool(mut left), TypedList::Bool(right)) => {
-            left.extend(right);
-            TypedList::Bool(left)
+        (TypedList::Bool(left), TypedList::Bool(right)) => {
+            let mut left = left.clone();
+            left.extend(right.iter().copied());
+            ListConcatPlan::Ready(TypedList::Bool(left))
         }
-        (TypedList::String(mut left), TypedList::String(right)) => {
+        (TypedList::String(left), TypedList::String(right)) => {
+            let mut left = left.clone();
+            left.extend(right.iter().cloned());
+            ListConcatPlan::Ready(TypedList::String(left))
+        }
+        (left, right) => ListConcatPlan::Mixed {
+            left: RuntimeListSnapshot::from_typed(left),
+            right: RuntimeListSnapshot::from_typed(right),
+        },
+    }
+}
+
+enum FlattenItem {
+    List(RuntimeListSnapshot),
+    Value(RuntimeVal),
+}
+
+enum FlattenPlan {
+    Ready(TypedList),
+    Items(Vec<FlattenItem>),
+}
+
+impl FlattenPlan {
+    fn into_typed(self, heap: &mut HeapStore) -> TypedList {
+        match self {
+            Self::Ready(list) => list,
+            Self::Items(items) => flatten_items_into_typed(items, heap),
+        }
+    }
+}
+
+fn flatten_typed_list(input: &TypedList, heap: &HeapStore) -> Result<FlattenPlan> {
+    let TypedList::Mixed(values) = input else {
+        return Ok(FlattenPlan::Ready(RuntimeListSnapshot::from_typed(input).into_typed()));
+    };
+    let mut items = Vec::with_capacity(values.len());
+    for value in values.iter() {
+        if let Some(list) = maybe_typed_list_arg_ref(value, heap)? {
+            items.push(FlattenItem::List(RuntimeListSnapshot::from_typed(list)));
+        } else {
+            items.push(FlattenItem::Value(value.clone()));
+        }
+    }
+    Ok(FlattenPlan::Items(items))
+}
+
+fn flatten_items_into_typed(items: Vec<FlattenItem>, heap: &mut HeapStore) -> TypedList {
+    let mut typed_out: Option<RuntimeListSnapshot> = None;
+    let mut mixed_out: Option<Vec<RuntimeVal>> = None;
+    for item in items {
+        match item {
+            FlattenItem::List(list) => {
+                if let Some(out) = mixed_out.as_mut() {
+                    list.append_to_mixed_output(out, heap);
+                } else {
+                    typed_out = Some(match typed_out.take() {
+                        Some(current) => concat_list_snapshots(current, list, heap),
+                        None => list,
+                    });
+                }
+            }
+            FlattenItem::Value(value) => {
+                let out = mixed_out.get_or_insert_with(|| {
+                    let Some(list) = typed_out.take() else {
+                        return Vec::new();
+                    };
+                    let mut values = Vec::with_capacity(list.len());
+                    list.append_to_mixed_output(&mut values, heap);
+                    values
+                });
+                out.push(value);
+            }
+        }
+    }
+    match mixed_out {
+        Some(values) => crate::typed_list_from_values(values, heap),
+        None => typed_out
+            .map(RuntimeListSnapshot::into_typed)
+            .unwrap_or_else(|| TypedList::Mixed(Vec::new())),
+    }
+}
+
+fn concat_list_snapshots(
+    left: RuntimeListSnapshot,
+    right: RuntimeListSnapshot,
+    heap: &mut HeapStore,
+) -> RuntimeListSnapshot {
+    match (left, right) {
+        (RuntimeListSnapshot::Int(mut left), RuntimeListSnapshot::Int(right)) => {
             left.extend(right);
-            TypedList::String(left)
+            RuntimeListSnapshot::Int(left)
+        }
+        (RuntimeListSnapshot::Float(mut left), RuntimeListSnapshot::Float(right)) => {
+            left.extend(right);
+            RuntimeListSnapshot::Float(left)
+        }
+        (RuntimeListSnapshot::Bool(mut left), RuntimeListSnapshot::Bool(right)) => {
+            left.extend(right);
+            RuntimeListSnapshot::Bool(left)
+        }
+        (RuntimeListSnapshot::String(mut left), RuntimeListSnapshot::String(right)) => {
+            left.extend(right);
+            RuntimeListSnapshot::String(left)
         }
         (left, right) => {
-            let mut values = typed_list_to_runtime_values(left, heap);
-            values.extend(typed_list_to_runtime_values(right, heap));
-            TypedList::Mixed(values)
+            let mut values = Vec::with_capacity(left.len() + right.len());
+            left.append_to_mixed_output(&mut values, heap);
+            right.append_to_mixed_output(&mut values, heap);
+            RuntimeListSnapshot::Mixed(values)
         }
     }
 }
 
-fn flatten_typed_list(input: TypedList, heap: &mut HeapStore) -> Result<TypedList> {
-    let TypedList::Mixed(values) = input else {
-        return Ok(input);
-    };
-    let mut typed_out: Option<TypedList> = None;
-    let mut mixed_out: Option<Vec<RuntimeVal>> = None;
-    for value in values {
-        if let Some(list) = maybe_typed_list_arg(&value, heap)? {
-            if let Some(out) = mixed_out.as_mut() {
-                out.extend(typed_list_to_runtime_values(list, heap));
-            } else {
-                typed_out = Some(match typed_out.take() {
-                    Some(current) => typed_list_concat_preserving_backing(current, list, heap),
-                    None => list,
-                });
-            }
-        } else {
-            let out = mixed_out.get_or_insert_with(|| {
-                typed_out
-                    .take()
-                    .map(|list| typed_list_to_runtime_values(list, heap))
-                    .unwrap_or_default()
-            });
-            out.push(value);
-        }
-    }
-    Ok(match mixed_out {
-        Some(values) => TypedList::from_runtime_values(values, heap),
-        None => typed_out.unwrap_or_else(|| TypedList::Mixed(Vec::new())),
-    })
-}
-
-fn unique_typed_list(input: TypedList, heap: &HeapStore) -> TypedList {
+fn unique_typed_list(input: &TypedList, heap: &HeapStore) -> TypedList {
     match input {
         TypedList::Mixed(values) => unique_mixed_values(values, heap),
         TypedList::Int(values) => TypedList::Int(unique_copy_values(values)),
@@ -449,22 +666,22 @@ fn unique_typed_list(input: TypedList, heap: &HeapStore) -> TypedList {
     }
 }
 
-fn unique_mixed_values(values: Vec<RuntimeVal>, heap: &HeapStore) -> TypedList {
+fn unique_mixed_values(values: &[RuntimeVal], heap: &HeapStore) -> TypedList {
     let mut out: Vec<RuntimeVal> = Vec::with_capacity(values.len());
     for value in values {
-        if !out.iter().any(|existing| runtime_values_equal(existing, &value, heap)) {
-            out.push(value);
+        if !out.iter().any(|existing| runtime_values_equal(existing, value, heap)) {
+            out.push(value.clone());
         }
     }
-    TypedList::from_runtime_values(out, heap)
+    crate::typed_list_from_values(out, heap)
 }
 
-fn unique_copy_values<T>(values: Vec<T>) -> Vec<T>
+fn unique_copy_values<T>(values: &[T]) -> Vec<T>
 where
     T: Copy + PartialEq,
 {
     let mut out = Vec::with_capacity(values.len());
-    for value in values {
+    for value in values.iter().copied() {
         if !out.contains(&value) {
             out.push(value);
         }
@@ -472,40 +689,21 @@ where
     out
 }
 
-fn unique_arc_values(values: Vec<std::sync::Arc<str>>) -> Vec<std::sync::Arc<str>> {
+fn unique_arc_values(values: &[std::sync::Arc<str>]) -> Vec<std::sync::Arc<str>> {
     let mut out = Vec::with_capacity(values.len());
     for value in values {
         if !out
             .iter()
             .any(|existing: &std::sync::Arc<str>| existing.as_ref() == value.as_ref())
         {
-            out.push(value);
+            out.push(Arc::clone(value));
         }
     }
     out
 }
 
-fn typed_list_to_runtime_values(list: TypedList, heap: &mut HeapStore) -> Vec<RuntimeVal> {
-    match list {
-        TypedList::Mixed(values) => values,
-        TypedList::Int(values) => values.into_iter().map(RuntimeVal::Int).collect(),
-        TypedList::Float(values) => values.into_iter().map(RuntimeVal::Float).collect(),
-        TypedList::Bool(values) => values.into_iter().map(RuntimeVal::Bool).collect(),
-        TypedList::String(values) => values
-            .into_iter()
-            .map(|value| {
-                if let Some(short) = ShortStr::new(&value) {
-                    RuntimeVal::ShortStr(short)
-                } else {
-                    RuntimeVal::Obj(heap.alloc(HeapValue::String(value)))
-                }
-            })
-            .collect(),
-    }
-}
-
 fn runtime_list(values: Vec<RuntimeVal>, heap: &mut HeapStore) -> Result<RuntimeVal> {
-    let list = TypedList::from_runtime_values(values, heap);
+    let list = crate::typed_list_from_values(values, heap);
     Ok(RuntimeVal::Obj(heap.alloc(HeapValue::List(list))))
 }
 
@@ -537,27 +735,41 @@ fn call_callable(
     let RuntimeVal::Obj(handle) = callable_value else {
         bail!("{context} must be callable");
     };
-    let value = runtime
+
+    enum IterCallableTarget {
+        Runtime32(Arc<lk_core::vm::RuntimeCallable32>),
+        Closure,
+        RuntimeNative32 { arity: u16, function: NativeFunction32 },
+    }
+
+    let target = match runtime
         .heap()
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-        .clone();
-    let HeapValue::Callable(callable) = value else {
-        bail!("{context} must be callable");
+    {
+        HeapValue::Callable(CallableValue::Runtime32(function)) => IterCallableTarget::Runtime32(Arc::clone(function)),
+        HeapValue::Callable(CallableValue::Closure { .. }) => IterCallableTarget::Closure,
+        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
+            IterCallableTarget::RuntimeNative32 {
+                arity: *arity,
+                function: function.clone(),
+            }
+        }
+        _ => bail!("{context} must be callable"),
     };
 
-    match callable {
-        CallableValue::Runtime32(function) => {
+    match target {
+        IterCallableTarget::Runtime32(function) => {
             let (heap, ctx) = runtime.heap_ctx_mut();
             call_runtime_callable32_runtime(function.as_ref(), NativeArgs32::new(args), heap, ctx)
         }
-        CallableValue::Closure { .. } => {
+        IterCallableTarget::Closure => {
             if let Some((state, ctx, module)) = runtime.state_ctx_module_mut() {
-                return call_runtime_value32_runtime(callable_value.clone(), args, state, module, ctx);
+                return call_runtime_value32_runtime(RuntimeVal::Obj(*handle), args, state, module, ctx);
             }
             bail!("{context} closure requires active RuntimeModuleState32")
         }
-        CallableValue::RuntimeNative32 { arity, function } => {
+        IterCallableTarget::RuntimeNative32 { arity, function } => {
             let entry = NativeEntry32 {
                 name: context.to_string(),
                 arity,
@@ -600,45 +812,127 @@ fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal, heap: &HeapStore)
     match (left, right) {
         (HeapValue::String(left), HeapValue::String(right)) => left == right,
         (HeapValue::List(left), HeapValue::List(right)) => runtime_lists_equal(left, right, heap),
-        (HeapValue::Map(left), HeapValue::Map(right)) => {
-            let left = left.entries();
-            let right = right.entries();
-            left.len() == right.len()
-                && left.iter().all(|(key, left)| {
-                    right
-                        .iter()
-                        .find(|(candidate, _)| candidate == key)
-                        .is_some_and(|(_, right)| runtime_values_equal(left, right, heap))
-                })
-        }
+        (HeapValue::Map(left), HeapValue::Map(right)) => runtime_maps_equal(left, right, heap),
         _ => false,
     }
 }
 
-fn runtime_lists_equal(left: &TypedList, right: &TypedList, heap: &HeapStore) -> bool {
-    if let (TypedList::String(left), TypedList::String(right)) = (left, right) {
-        return left == right;
-    }
-    let (Some(left), Some(right)) = (runtime_list_items(left), runtime_list_items(right)) else {
+fn runtime_maps_equal(left: &TypedMap, right: &TypedMap, heap: &HeapStore) -> bool {
+    if left.len() != right.len() {
         return false;
-    };
-    left.len() == right.len()
-        && left
+    }
+    match left {
+        TypedMap::Mixed(entries) => entries
             .iter()
-            .zip(right.iter())
-            .all(|(left, right)| runtime_values_equal(left, right, heap))
+            .all(|(key, value)| runtime_map_value_equal(right, key, value, heap)),
+        TypedMap::StringMixed(entries) => entries
+            .iter()
+            .all(|(key, value)| runtime_map_value_equal(right, &RuntimeMapKey::String(key.clone()), value, heap)),
+        TypedMap::StringInt(entries) => entries.iter().all(|(key, value)| {
+            runtime_map_value_equal(
+                right,
+                &RuntimeMapKey::String(key.clone()),
+                &RuntimeVal::Int(*value),
+                heap,
+            )
+        }),
+        TypedMap::StringFloat(entries) => entries.iter().all(|(key, value)| {
+            runtime_map_value_equal(
+                right,
+                &RuntimeMapKey::String(key.clone()),
+                &RuntimeVal::Float(*value),
+                heap,
+            )
+        }),
+        TypedMap::StringBool(entries) => entries.iter().all(|(key, value)| {
+            runtime_map_value_equal(
+                right,
+                &RuntimeMapKey::String(key.clone()),
+                &RuntimeVal::Bool(*value),
+                heap,
+            )
+        }),
+    }
 }
 
-fn runtime_list_items(list: &TypedList) -> Option<Vec<RuntimeVal>> {
-    match list {
-        TypedList::Mixed(values) => Some(values.clone()),
-        TypedList::Int(values) => Some(values.iter().copied().map(RuntimeVal::Int).collect()),
-        TypedList::Float(values) => Some(values.iter().copied().map(RuntimeVal::Float).collect()),
-        TypedList::Bool(values) => Some(values.iter().copied().map(RuntimeVal::Bool).collect()),
-        TypedList::String(values) => values
-            .iter()
-            .map(|value| lk_core::val::ShortStr::new(value).map(RuntimeVal::ShortStr))
-            .collect(),
+fn runtime_map_value_equal(right: &TypedMap, key: &RuntimeMapKey, left: &RuntimeVal, heap: &HeapStore) -> bool {
+    right
+        .get(key)
+        .is_some_and(|right| runtime_values_equal(left, &right, heap))
+}
+
+fn runtime_lists_equal(left: &TypedList, right: &TypedList, heap: &HeapStore) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    match (left, right) {
+        (TypedList::Int(left), TypedList::Int(right)) => return left == right,
+        (TypedList::Float(left), TypedList::Float(right)) => return left == right,
+        (TypedList::Bool(left), TypedList::Bool(right)) => return left == right,
+        (TypedList::String(left), TypedList::String(right)) => return left == right,
+        _ => {}
+    }
+    (0..left.len()).all(|index| runtime_list_items_equal(left, index, right, index, heap))
+}
+
+fn runtime_list_items_equal(
+    left: &TypedList,
+    left_index: usize,
+    right: &TypedList,
+    right_index: usize,
+    heap: &HeapStore,
+) -> bool {
+    match (left, right) {
+        (TypedList::Mixed(left), TypedList::Mixed(right)) => {
+            runtime_values_equal(&left[left_index], &right[right_index], heap)
+        }
+        (TypedList::Mixed(left), TypedList::String(right)) => {
+            runtime_value_equals_string(&left[left_index], &right[right_index], heap)
+        }
+        (TypedList::String(left), TypedList::Mixed(right)) => {
+            runtime_value_equals_string(&right[right_index], &left[left_index], heap)
+        }
+        (TypedList::Int(left), _) => {
+            runtime_list_runtime_item_equal(RuntimeVal::Int(left[left_index]), right, right_index, heap)
+        }
+        (TypedList::Float(left), _) => {
+            runtime_list_runtime_item_equal(RuntimeVal::Float(left[left_index]), right, right_index, heap)
+        }
+        (TypedList::Bool(left), _) => {
+            runtime_list_runtime_item_equal(RuntimeVal::Bool(left[left_index]), right, right_index, heap)
+        }
+        (TypedList::String(left), _) => runtime_list_string_item_equal(&left[left_index], right, right_index, heap),
+        (TypedList::Mixed(left), _) => {
+            runtime_list_runtime_item_equal(left[left_index].clone(), right, right_index, heap)
+        }
+    }
+}
+
+fn runtime_list_runtime_item_equal(left: RuntimeVal, right: &TypedList, right_index: usize, heap: &HeapStore) -> bool {
+    match right {
+        TypedList::Mixed(right) => runtime_values_equal(&left, &right[right_index], heap),
+        TypedList::Int(right) => runtime_values_equal(&left, &RuntimeVal::Int(right[right_index]), heap),
+        TypedList::Float(right) => runtime_values_equal(&left, &RuntimeVal::Float(right[right_index]), heap),
+        TypedList::Bool(right) => runtime_values_equal(&left, &RuntimeVal::Bool(right[right_index]), heap),
+        TypedList::String(right) => runtime_value_equals_string(&left, &right[right_index], heap),
+    }
+}
+
+fn runtime_list_string_item_equal(left: &Arc<str>, right: &TypedList, right_index: usize, heap: &HeapStore) -> bool {
+    match right {
+        TypedList::Mixed(right) => runtime_value_equals_string(&right[right_index], left, heap),
+        TypedList::String(right) => left == &right[right_index],
+        _ => false,
+    }
+}
+
+fn runtime_value_equals_string(value: &RuntimeVal, expected: &str, heap: &HeapStore) -> bool {
+    match value {
+        RuntimeVal::ShortStr(value) => value.as_str() == expected,
+        RuntimeVal::Obj(handle) => {
+            matches!(heap.get(*handle), Some(HeapValue::String(value)) if value.as_ref() == expected)
+        }
+        _ => false,
     }
 }
 
@@ -651,8 +945,6 @@ mod tests {
         token::Tokenizer,
         vm::{NativeFunction32, Program32Result, RuntimeModuleState32, VmContext},
     };
-    use std::sync::Arc;
-
     fn run32(source: &str) -> Result<Program32Result> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
@@ -689,7 +981,7 @@ mod tests {
     }
 
     fn expect_return_list(result: &Program32Result) -> Vec<RuntimeVal> {
-        expect_list(result.first_return(), &result.state.heap)
+        expect_list(result.first_return(), result.state.heap())
     }
 
     fn iter_native(name: &str) -> Result<(u16, NativeFunction32)> {
@@ -731,14 +1023,14 @@ mod tests {
         let zipped = expect_return_list(&result);
         assert_eq!(zipped.len(), 2);
         assert_eq!(
-            expect_list(&zipped[0], &result.state.heap),
+            expect_list(&zipped[0], result.state.heap()),
             vec![
                 RuntimeVal::Int(1),
                 RuntimeVal::ShortStr(lk_core::val::ShortStr::new("a").expect("short"))
             ]
         );
         assert_eq!(
-            expect_list(&zipped[1], &result.state.heap),
+            expect_list(&zipped[1], result.state.heap()),
             vec![
                 RuntimeVal::Int(2),
                 RuntimeVal::ShortStr(lk_core::val::ShortStr::new("b").expect("short"))
@@ -779,14 +1071,14 @@ mod tests {
         let chunks = expect_return_list(&result);
         assert_eq!(chunks.len(), 3);
         assert_eq!(
-            expect_list(&chunks[0], &result.state.heap),
+            expect_list(&chunks[0], result.state.heap()),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2)]
         );
         assert_eq!(
-            expect_list(&chunks[1], &result.state.heap),
+            expect_list(&chunks[1], result.state.heap()),
             vec![RuntimeVal::Int(3), RuntimeVal::Int(4)]
         );
-        assert_eq!(expect_list(&chunks[2], &result.state.heap), vec![RuntimeVal::Int(5)]);
+        assert_eq!(expect_list(&chunks[2], result.state.heap()), vec![RuntimeVal::Int(5)]);
         Ok(())
     }
 
@@ -806,6 +1098,37 @@ mod tests {
             run32_value("import iter; return iter.reduce([1,2,3], 0, fn(acc, x) => acc + x);")?,
             RuntimeVal::Int(6)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn iter_map_materializes_long_string_items_lazily_for_callback() -> Result<()> {
+        fn fail_on_first(_args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+            bail!("stop after first item");
+        }
+
+        let (_, function) = iter_native("map")?;
+        let NativeFunction32::FullState(function) = function else {
+            panic!("map must use FullState RuntimeNative32");
+        };
+        let mut state = RuntimeModuleState32::default();
+        let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
+            Arc::<str>::from("long-map-first"),
+            Arc::<str>::from("long-map-second"),
+        ])));
+        let callback = state
+            .heap_mut()
+            .alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+                arity: 1,
+                function: NativeFunction32::Plain(fail_on_first),
+            }));
+        let args = [RuntimeVal::Obj(input), RuntimeVal::Obj(callback)];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+
+        let err = function(NativeArgs32::new(&args), &mut runtime).expect_err("callback should fail");
+
+        assert!(err.to_string().contains("stop after first item"));
+        assert_eq!(runtime.heap().len(), 3);
         Ok(())
     }
 
@@ -838,7 +1161,7 @@ mod tests {
                 panic!("{name} must use plain RuntimeNative32");
             };
             let mut state = RuntimeModuleState32::default();
-            let list = state.heap.alloc(HeapValue::List(TypedList::String(vec![
+            let list = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
                 Arc::clone(&long),
                 Arc::<str>::from("tail"),
             ])));
@@ -868,12 +1191,12 @@ mod tests {
         };
         let mut state = RuntimeModuleState32::default();
         let left = state
-            .heap
+            .heap_mut()
             .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from(
                 "long-left-value",
             )])));
         let right = state
-            .heap
+            .heap_mut()
             .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from(
                 "long-right-value",
             )])));
@@ -900,7 +1223,7 @@ mod tests {
             panic!("chunk must use plain RuntimeNative32");
         };
         let mut state = RuntimeModuleState32::default();
-        let input = state.heap.alloc(HeapValue::List(TypedList::String(vec![
+        let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-one-value"),
             Arc::<str>::from("long-two-value"),
             Arc::<str>::from("long-three-value"),
@@ -937,12 +1260,12 @@ mod tests {
             panic!("zip must use plain RuntimeNative32");
         };
         let mut state = RuntimeModuleState32::default();
-        let left = state.heap.alloc(HeapValue::List(TypedList::String(vec![
+        let left = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-left-used"),
             Arc::<str>::from("long-left-unused"),
         ])));
         let right = state
-            .heap
+            .heap_mut()
             .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from(
                 "long-right-used",
             )])));
@@ -976,7 +1299,7 @@ mod tests {
             panic!("collect must use plain RuntimeNative32");
         };
         let mut state = RuntimeModuleState32::default();
-        let input = state.heap.alloc(HeapValue::List(TypedList::String(vec![
+        let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-collect-one"),
             Arc::<str>::from("long-collect-two"),
         ])));
@@ -1004,16 +1327,16 @@ mod tests {
         };
         let mut state = RuntimeModuleState32::default();
         let first = state
-            .heap
+            .heap_mut()
             .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from(
                 "long-flatten-one",
             )])));
         let second = state
-            .heap
+            .heap_mut()
             .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from(
                 "long-flatten-two",
             )])));
-        let outer = state.heap.alloc(HeapValue::List(TypedList::Mixed(vec![
+        let outer = state.heap_mut().alloc(HeapValue::List(TypedList::Mixed(vec![
             RuntimeVal::Obj(first),
             RuntimeVal::Obj(second),
         ])));
@@ -1040,7 +1363,7 @@ mod tests {
             panic!("unique must use plain RuntimeNative32");
         };
         let mut state = RuntimeModuleState32::default();
-        let input = state.heap.alloc(HeapValue::List(TypedList::String(vec![
+        let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-unique-one"),
             Arc::<str>::from("long-unique-one"),
             Arc::<str>::from("long-unique-two"),

@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn test_string_lower() -> Result<()> {
         let result = execute_string32("import string; return string.lower(\"HELLO\");")?;
-        assert_eq!(runtime_str(result.first_return(), &result.state.heap), Some("hello"));
+        assert_eq!(runtime_str(result.first_return(), result.state.heap()), Some("hello"));
 
         Ok(())
     }
@@ -124,7 +124,7 @@ mod tests {
             return [named, named_all, positional];
         "#;
         let result = execute_string32(source)?;
-        let TypedList::String(values) = runtime_list(result.first_return(), &result.state.heap) else {
+        let TypedList::String(values) = runtime_list(result.first_return(), result.state.heap()) else {
             panic!("expected typed string list");
         };
         assert_eq!(

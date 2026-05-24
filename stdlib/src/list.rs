@@ -31,17 +31,23 @@ impl ListModule {
     fn push32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "push()")?;
         let values = args.as_slice();
-        let list = list_arg(&values[0], runtime.heap(), "push() first argument")?;
-        let typed = list_push_preserving_backing(list, values[1].clone(), runtime.heap_mut());
+        let plan = list_push_preserving_backing(
+            list_arg(&values[0], runtime.heap(), "push() first argument")?,
+            values[1].clone(),
+            runtime.heap(),
+        );
+        let typed = plan.into_typed(runtime.heap_mut());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(typed))))
     }
 
     fn concat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "concat()")?;
         let values = args.as_slice();
-        let left = list_arg(&values[0], runtime.heap(), "concat() first argument")?;
-        let right = list_arg(&values[1], runtime.heap(), "concat() second argument")?;
-        let typed = list_concat_preserving_backing(left, right, runtime.heap_mut());
+        let plan = list_concat_preserving_backing(
+            list_arg(&values[0], runtime.heap(), "concat() first argument")?,
+            list_arg(&values[1], runtime.heap(), "concat() second argument")?,
+        );
+        let typed = plan.into_typed(runtime.heap_mut());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(typed))))
     }
 
@@ -64,12 +70,16 @@ impl ListModule {
         if index < 0 {
             return Ok(RuntimeVal::Nil);
         }
-        Ok(list_get(&list, index as usize, runtime.heap_mut()).unwrap_or(RuntimeVal::Nil))
+        Ok(list_get_item(list, index as usize)
+            .map(|item| item.into_runtime(runtime.heap_mut()))
+            .unwrap_or(RuntimeVal::Nil))
     }
 
     fn first32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         let list = one_list(args, runtime, "first()")?;
-        Ok(list_get(&list, 0, runtime.heap_mut()).unwrap_or(RuntimeVal::Nil))
+        Ok(list_get_item(list, 0)
+            .map(|item| item.into_runtime(runtime.heap_mut()))
+            .unwrap_or(RuntimeVal::Nil))
     }
 
     fn last32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -77,19 +87,25 @@ impl ListModule {
         let Some(index) = list.len().checked_sub(1) else {
             return Ok(RuntimeVal::Nil);
         };
-        Ok(list_get(&list, index, runtime.heap_mut()).unwrap_or(RuntimeVal::Nil))
+        Ok(list_get_item(list, index)
+            .map(|item| item.into_runtime(runtime.heap_mut()))
+            .unwrap_or(RuntimeVal::Nil))
     }
 
     fn set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "set()")?;
         let values = args.as_slice();
-        let list = list_arg(&values[0], runtime.heap(), "set() first argument")?;
         let index = int_arg(&values[1], "set() index")?;
         if index < 0 {
             bail!("set() index must be non-negative");
         }
-        let (updated_list, old) =
-            list_set_preserving_backing(list, index as usize, values[2].clone(), runtime.heap_mut())?;
+        let plan = list_set_preserving_backing(
+            list_arg(&values[0], runtime.heap(), "set() first argument")?,
+            index as usize,
+            values[2].clone(),
+            runtime.heap(),
+        )?;
+        let (updated_list, old) = plan.into_typed(runtime.heap_mut());
         let updated = RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(updated_list)));
         Ok(RuntimeVal::Obj(
             runtime
@@ -140,12 +156,12 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
     }
 }
 
-fn one_list(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<TypedList> {
+fn one_list<'a>(args: NativeArgs32<'a>, runtime: &'a NativeRuntime32<'a>, name: &str) -> Result<&'a TypedList> {
     expect_arity(args, 1, name)?;
     list_arg(&args.as_slice()[0], runtime.heap(), name)
 }
 
-fn list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedList> {
+fn list_arg<'a>(value: &RuntimeVal, heap: &'a HeapStore, context: &str) -> Result<&'a TypedList> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("{context} argument must be a list");
     };
@@ -153,165 +169,338 @@ fn list_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Typed
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match value {
-        HeapValue::List(list) => Ok(list.clone()),
+        HeapValue::List(list) => Ok(list),
         other => Err(anyhow!("{context} argument must be a list, got {}", other.type_name())),
     }
 }
 
-fn list_get(list: &TypedList, index: usize, heap: &mut HeapStore) -> Option<RuntimeVal> {
-    match list {
-        TypedList::Mixed(values) => values.get(index).cloned(),
-        TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int),
-        TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float),
-        TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool),
-        TypedList::String(values) => values
-            .get(index)
-            .map(|value| runtime_string_value(value.as_ref(), heap)),
+enum ListItem32 {
+    Value(RuntimeVal),
+    String(Arc<str>),
+}
+
+impl ListItem32 {
+    fn into_runtime(self, heap: &mut HeapStore) -> RuntimeVal {
+        match self {
+            Self::Value(value) => value,
+            Self::String(value) => runtime_string_value(value.as_ref(), heap),
+        }
     }
 }
 
-fn list_push_preserving_backing(list: TypedList, value: RuntimeVal, heap: &mut HeapStore) -> TypedList {
+fn list_get_item(list: &TypedList, index: usize) -> Option<ListItem32> {
     match list {
-        TypedList::Mixed(mut values) => {
+        TypedList::Mixed(values) => values.get(index).cloned().map(ListItem32::Value),
+        TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int).map(ListItem32::Value),
+        TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float).map(ListItem32::Value),
+        TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool).map(ListItem32::Value),
+        TypedList::String(values) => values.get(index).cloned().map(ListItem32::String),
+    }
+}
+
+enum ListPushPlan {
+    Ready(TypedList),
+    MaterializeString { values: Vec<Arc<str>>, value: RuntimeVal },
+}
+
+impl ListPushPlan {
+    fn into_typed(self, heap: &mut HeapStore) -> TypedList {
+        match self {
+            Self::Ready(list) => list,
+            Self::MaterializeString { values, value } => {
+                let mut mixed = Vec::with_capacity(values.len() + 1);
+                append_string_values(values, &mut mixed, heap);
+                mixed.push(value);
+                TypedList::Mixed(mixed)
+            }
+        }
+    }
+}
+
+fn list_push_preserving_backing(list: &TypedList, value: RuntimeVal, heap: &HeapStore) -> ListPushPlan {
+    match list {
+        TypedList::Mixed(values) => {
+            let mut values = values.clone();
             values.push(value);
-            TypedList::Mixed(values)
+            ListPushPlan::Ready(TypedList::Mixed(values))
         }
-        TypedList::Int(mut values) => match value {
+        TypedList::Int(values) => match value {
             RuntimeVal::Int(value) => {
+                let mut values = values.clone();
                 values.push(value);
-                TypedList::Int(values)
+                ListPushPlan::Ready(TypedList::Int(values))
             }
             value => {
-                let mut mixed = values.into_iter().map(RuntimeVal::Int).collect::<Vec<_>>();
+                let mut mixed = values.iter().copied().map(RuntimeVal::Int).collect::<Vec<_>>();
                 mixed.push(value);
-                TypedList::Mixed(mixed)
+                ListPushPlan::Ready(TypedList::Mixed(mixed))
             }
         },
-        TypedList::Float(mut values) => match value {
+        TypedList::Float(values) => match value {
             RuntimeVal::Float(value) => {
+                let mut values = values.clone();
                 values.push(value);
-                TypedList::Float(values)
+                ListPushPlan::Ready(TypedList::Float(values))
             }
             value => {
-                let mut mixed = values.into_iter().map(RuntimeVal::Float).collect::<Vec<_>>();
+                let mut mixed = values.iter().copied().map(RuntimeVal::Float).collect::<Vec<_>>();
                 mixed.push(value);
-                TypedList::Mixed(mixed)
+                ListPushPlan::Ready(TypedList::Mixed(mixed))
             }
         },
-        TypedList::Bool(mut values) => match value {
+        TypedList::Bool(values) => match value {
             RuntimeVal::Bool(value) => {
+                let mut values = values.clone();
                 values.push(value);
-                TypedList::Bool(values)
+                ListPushPlan::Ready(TypedList::Bool(values))
             }
             value => {
-                let mut mixed = values.into_iter().map(RuntimeVal::Bool).collect::<Vec<_>>();
+                let mut mixed = values.iter().copied().map(RuntimeVal::Bool).collect::<Vec<_>>();
                 mixed.push(value);
-                TypedList::Mixed(mixed)
+                ListPushPlan::Ready(TypedList::Mixed(mixed))
             }
         },
-        TypedList::String(mut values) => match runtime_string_value_arg(&value, heap) {
+        TypedList::String(values) => match runtime_string_value_arg(&value, heap) {
             Some(value) => {
+                let mut values = values.clone();
                 values.push(value);
-                TypedList::String(values)
+                ListPushPlan::Ready(TypedList::String(values))
             }
-            None => {
-                let mut mixed = materialize_string_values(values, heap);
-                mixed.push(value);
-                TypedList::Mixed(mixed)
-            }
+            None => ListPushPlan::MaterializeString {
+                values: values.clone(),
+                value,
+            },
         },
     }
 }
 
-fn list_concat_preserving_backing(left: TypedList, right: TypedList, heap: &mut HeapStore) -> TypedList {
+enum RuntimeListSnapshot {
+    Mixed(Vec<RuntimeVal>),
+    Int(Vec<i64>),
+    Float(Vec<f64>),
+    Bool(Vec<bool>),
+    String(Vec<Arc<str>>),
+}
+
+impl RuntimeListSnapshot {
+    fn from_typed(list: &TypedList) -> Self {
+        match list {
+            TypedList::Mixed(values) => Self::Mixed(values.clone()),
+            TypedList::Int(values) => Self::Int(values.clone()),
+            TypedList::Float(values) => Self::Float(values.clone()),
+            TypedList::Bool(values) => Self::Bool(values.clone()),
+            TypedList::String(values) => Self::String(values.clone()),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Mixed(values) => values.len(),
+            Self::Int(values) => values.len(),
+            Self::Float(values) => values.len(),
+            Self::Bool(values) => values.len(),
+            Self::String(values) => values.len(),
+        }
+    }
+
+    fn append_to_mixed_output(self, out: &mut Vec<RuntimeVal>, heap: &mut HeapStore) {
+        match self {
+            Self::Mixed(values) => out.extend(values),
+            Self::Int(values) => out.extend(values.into_iter().map(RuntimeVal::Int)),
+            Self::Float(values) => out.extend(values.into_iter().map(RuntimeVal::Float)),
+            Self::Bool(values) => out.extend(values.into_iter().map(RuntimeVal::Bool)),
+            Self::String(values) => out.extend(
+                values
+                    .into_iter()
+                    .map(|value| runtime_string_value(value.as_ref(), heap)),
+            ),
+        }
+    }
+}
+
+enum ListConcatPlan {
+    Ready(TypedList),
+    Mixed {
+        left: RuntimeListSnapshot,
+        right: RuntimeListSnapshot,
+    },
+}
+
+impl ListConcatPlan {
+    fn into_typed(self, heap: &mut HeapStore) -> TypedList {
+        match self {
+            Self::Ready(list) => list,
+            Self::Mixed { left, right } => {
+                let mut mixed = Vec::with_capacity(left.len() + right.len());
+                left.append_to_mixed_output(&mut mixed, heap);
+                right.append_to_mixed_output(&mut mixed, heap);
+                TypedList::Mixed(mixed)
+            }
+        }
+    }
+}
+
+fn list_concat_preserving_backing(left: &TypedList, right: &TypedList) -> ListConcatPlan {
     match (left, right) {
-        (TypedList::Int(mut left), TypedList::Int(right)) => {
-            left.extend(right);
-            TypedList::Int(left)
+        (TypedList::Int(left), TypedList::Int(right)) => {
+            let mut left = left.clone();
+            left.extend(right.iter().copied());
+            ListConcatPlan::Ready(TypedList::Int(left))
         }
-        (TypedList::Float(mut left), TypedList::Float(right)) => {
-            left.extend(right);
-            TypedList::Float(left)
+        (TypedList::Float(left), TypedList::Float(right)) => {
+            let mut left = left.clone();
+            left.extend(right.iter().copied());
+            ListConcatPlan::Ready(TypedList::Float(left))
         }
-        (TypedList::Bool(mut left), TypedList::Bool(right)) => {
-            left.extend(right);
-            TypedList::Bool(left)
+        (TypedList::Bool(left), TypedList::Bool(right)) => {
+            let mut left = left.clone();
+            left.extend(right.iter().copied());
+            ListConcatPlan::Ready(TypedList::Bool(left))
         }
-        (TypedList::String(mut left), TypedList::String(right)) => {
-            left.extend(right);
-            TypedList::String(left)
+        (TypedList::String(left), TypedList::String(right)) => {
+            let mut left = left.clone();
+            left.extend(right.iter().cloned());
+            ListConcatPlan::Ready(TypedList::String(left))
         }
-        (left, right) => {
-            let mut mixed = list_to_runtime_values(left, heap);
-            mixed.extend(list_to_runtime_values(right, heap));
-            TypedList::Mixed(mixed)
+        (left, right) => ListConcatPlan::Mixed {
+            left: RuntimeListSnapshot::from_typed(left),
+            right: RuntimeListSnapshot::from_typed(right),
+        },
+    }
+}
+
+enum ListSetPlan {
+    Ready {
+        list: TypedList,
+        old: RuntimeVal,
+    },
+    StringReady {
+        list: TypedList,
+        old: Arc<str>,
+    },
+    MaterializeString {
+        values: Vec<Arc<str>>,
+        index: usize,
+        value: RuntimeVal,
+    },
+}
+
+impl ListSetPlan {
+    fn into_typed(self, heap: &mut HeapStore) -> (TypedList, RuntimeVal) {
+        match self {
+            Self::Ready { list, old } => (list, old),
+            Self::StringReady { list, old } => (list, runtime_string_value(old.as_ref(), heap)),
+            Self::MaterializeString { values, index, value } => {
+                let mut mixed = Vec::with_capacity(values.len());
+                append_string_values(values, &mut mixed, heap);
+                set_polluted_list(mixed, index, value, 0).expect("index was checked before materializing string list")
+            }
         }
     }
 }
 
 fn list_set_preserving_backing(
-    list: TypedList,
+    list: &TypedList,
     index: usize,
     value: RuntimeVal,
-    heap: &mut HeapStore,
-) -> Result<(TypedList, RuntimeVal)> {
+    heap: &HeapStore,
+) -> Result<ListSetPlan> {
     match list {
-        TypedList::Mixed(mut values) => {
-            let Some(slot) = values.get_mut(index) else {
+        TypedList::Mixed(values) => {
+            let Some(old) = values.get(index).cloned() else {
                 bail!("list index {} out of bounds", index);
             };
-            let old = std::mem::replace(slot, value);
-            Ok((TypedList::Mixed(values), old))
+            let mut values = values.clone();
+            values[index] = value;
+            Ok(ListSetPlan::Ready {
+                list: TypedList::Mixed(values),
+                old,
+            })
         }
-        TypedList::Int(mut values) => match value {
+        TypedList::Int(values) => match value {
             RuntimeVal::Int(value) => {
-                let Some(slot) = values.get_mut(index) else {
+                let Some(old) = values.get(index).copied() else {
                     bail!("list index {} out of bounds", index);
                 };
-                let old = RuntimeVal::Int(std::mem::replace(slot, value));
-                Ok((TypedList::Int(values), old))
+                let mut values = values.clone();
+                values[index] = value;
+                Ok(ListSetPlan::Ready {
+                    list: TypedList::Int(values),
+                    old: RuntimeVal::Int(old),
+                })
             }
-            value => set_materialized_list(values.into_iter().map(RuntimeVal::Int).collect(), index, value),
+            value => set_polluted_list(values.iter().copied().map(RuntimeVal::Int), index, value, values.len())
+                .map(|(list, old)| ListSetPlan::Ready { list, old }),
         },
-        TypedList::Float(mut values) => match value {
+        TypedList::Float(values) => match value {
             RuntimeVal::Float(value) => {
-                let Some(slot) = values.get_mut(index) else {
+                let Some(old) = values.get(index).copied() else {
                     bail!("list index {} out of bounds", index);
                 };
-                let old = RuntimeVal::Float(std::mem::replace(slot, value));
-                Ok((TypedList::Float(values), old))
+                let mut values = values.clone();
+                values[index] = value;
+                Ok(ListSetPlan::Ready {
+                    list: TypedList::Float(values),
+                    old: RuntimeVal::Float(old),
+                })
             }
-            value => set_materialized_list(values.into_iter().map(RuntimeVal::Float).collect(), index, value),
+            value => set_polluted_list(
+                values.iter().copied().map(RuntimeVal::Float),
+                index,
+                value,
+                values.len(),
+            )
+            .map(|(list, old)| ListSetPlan::Ready { list, old }),
         },
-        TypedList::Bool(mut values) => match value {
+        TypedList::Bool(values) => match value {
             RuntimeVal::Bool(value) => {
-                let Some(slot) = values.get_mut(index) else {
+                let Some(old) = values.get(index).copied() else {
                     bail!("list index {} out of bounds", index);
                 };
-                let old = RuntimeVal::Bool(std::mem::replace(slot, value));
-                Ok((TypedList::Bool(values), old))
+                let mut values = values.clone();
+                values[index] = value;
+                Ok(ListSetPlan::Ready {
+                    list: TypedList::Bool(values),
+                    old: RuntimeVal::Bool(old),
+                })
             }
-            value => set_materialized_list(values.into_iter().map(RuntimeVal::Bool).collect(), index, value),
+            value => set_polluted_list(values.iter().copied().map(RuntimeVal::Bool), index, value, values.len())
+                .map(|(list, old)| ListSetPlan::Ready { list, old }),
         },
-        TypedList::String(mut values) => match runtime_string_value_arg(&value, heap) {
+        TypedList::String(values) => match runtime_string_value_arg(&value, heap) {
             Some(value) => {
-                let Some(slot) = values.get_mut(index) else {
+                let Some(old) = values.get(index).cloned() else {
                     bail!("list index {} out of bounds", index);
                 };
-                let old = runtime_string_value(slot.as_ref(), heap);
-                *slot = value;
-                Ok((TypedList::String(values), old))
+                let mut values = values.clone();
+                values[index] = value;
+                Ok(ListSetPlan::StringReady {
+                    list: TypedList::String(values),
+                    old,
+                })
             }
-            None => set_materialized_list(materialize_string_values(values, heap), index, value),
+            None => {
+                if index >= values.len() {
+                    bail!("list index {} out of bounds", index);
+                }
+                Ok(ListSetPlan::MaterializeString {
+                    values: values.clone(),
+                    index,
+                    value,
+                })
+            }
         },
     }
 }
 
-fn set_materialized_list(
-    mut values: Vec<RuntimeVal>,
+fn set_polluted_list(
+    items: impl IntoIterator<Item = RuntimeVal>,
     index: usize,
     value: RuntimeVal,
+    len_hint: usize,
 ) -> Result<(TypedList, RuntimeVal)> {
+    let mut values = Vec::with_capacity(len_hint);
+    values.extend(items);
     let Some(slot) = values.get_mut(index) else {
         bail!("list index {} out of bounds", index);
     };
@@ -319,21 +508,12 @@ fn set_materialized_list(
     Ok((TypedList::Mixed(values), old))
 }
 
-fn list_to_runtime_values(list: TypedList, heap: &mut HeapStore) -> Vec<RuntimeVal> {
-    match list {
-        TypedList::Mixed(values) => values,
-        TypedList::Int(values) => values.into_iter().map(RuntimeVal::Int).collect(),
-        TypedList::Float(values) => values.into_iter().map(RuntimeVal::Float).collect(),
-        TypedList::Bool(values) => values.into_iter().map(RuntimeVal::Bool).collect(),
-        TypedList::String(values) => materialize_string_values(values, heap),
-    }
-}
-
-fn materialize_string_values(values: Vec<Arc<str>>, heap: &mut HeapStore) -> Vec<RuntimeVal> {
-    values
-        .into_iter()
-        .map(|value| runtime_string_value(value.as_ref(), heap))
-        .collect()
+fn append_string_values(values: Vec<Arc<str>>, out: &mut Vec<RuntimeVal>, heap: &mut HeapStore) {
+    out.extend(
+        values
+            .into_iter()
+            .map(|value| runtime_string_value(value.as_ref(), heap)),
+    );
 }
 
 fn runtime_string_value_arg(value: &RuntimeVal, heap: &HeapStore) -> Option<Arc<str>> {

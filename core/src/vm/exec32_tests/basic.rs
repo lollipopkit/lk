@@ -1,5 +1,12 @@
 use super::*;
-use crate::vm::analysis::{PerfIndexTargetKind, PerfValueKind};
+use crate::val::ShortStr;
+use crate::vm::{
+    ConstRuntimeValue32,
+    analysis::{
+        PerfContainerBuildFact, PerfIndexTargetKind, PerfKeyFact, PerfRegisterCopyFact, PerfValueKind, PerformanceFacts,
+    },
+    vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+};
 #[test]
 fn execute32_returns_int_arithmetic_result() {
     let function = Function32 {
@@ -55,6 +62,57 @@ fn execute32_branches_with_test_and_jump() {
 }
 
 #[test]
+fn execute32_not_rejects_string_operand() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            strings: vec!["ok".to_string()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadString, 0, 0),
+            Instr32::abc(Opcode32::Not, 1, 0, 0),
+            Instr32::abc(Opcode32::Return, 1, 1, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let err = execute32(&function).expect_err("string not operand must be rejected");
+
+    assert!(err.to_string().contains("Not expected Bool or Nil"));
+}
+
+#[test]
+fn execute32_tostring_rejects_list_operand() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            ints: vec![1],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadInt, 0, 0),
+            Instr32::abc(Opcode32::NewList, 1, 0, 1),
+            Instr32::abc(Opcode32::ToString, 2, 1, 0),
+            Instr32::abc(Opcode32::Return, 2, 1, 0),
+        ],
+        register_count: 3,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let err = execute32(&function).expect_err("list tostring operand must be rejected");
+
+    assert!(err.to_string().contains("object cannot be converted to string"));
+}
+
+#[test]
 fn execute32_materializes_long_string_in_heap() {
     let function = Function32 {
         consts: ConstPool32 {
@@ -77,6 +135,112 @@ fn execute32_materializes_long_string_in_heap() {
 
     assert_eq!(result.returns[0].kind(), crate::val::RuntimeValKind::Obj);
     assert_eq!(result.state.heap.len(), 1);
+}
+
+#[test]
+fn execute32_load_heap_const_list_preserves_typed_string_backing() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![ConstHeapValue32::List(vec![
+                ConstRuntimeValue32::ShortStr(ShortStr::new("short").expect("short string")),
+                ConstRuntimeValue32::Heap(Box::new(ConstHeapValue32::LongString(Arc::<str>::from(
+                    "long-const-string",
+                )))),
+            ])],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadHeapConst, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+    let RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list object");
+    };
+    let HeapValue::List(TypedList::String(values)) = result.state.heap.get(handle).expect("heap object") else {
+        panic!("expected typed string list");
+    };
+
+    assert_eq!(values.len(), 2);
+    assert!(values.iter().any(|value| value.as_ref() == "short"));
+    assert!(values.iter().any(|value| value.as_ref() == "long-const-string"));
+}
+
+#[test]
+fn execute32_records_move_heap_clone_as_register_copy_metric() {
+    let mut performance = PerformanceFacts::default();
+    performance.set_register_copy_fact(1, PerfRegisterCopyFact { move_source: false });
+    let function = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![ConstHeapValue32::LongString(Arc::<str>::from("longer-than-seven"))],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadHeapConst, 0, 0),
+            Instr32::abc(Opcode32::Move, 1, 0, 0),
+            Instr32::abc(Opcode32::Return, 1, 1, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        performance,
+        ..Function32::default()
+    };
+
+    vm_runtime_metrics_reset();
+    let result = execute32(&function).expect("execute32");
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(result.returns[0].kind(), crate::val::RuntimeValKind::Obj);
+    assert_eq!(metrics.copy_policy_heap_clones, 1);
+    assert_eq!(metrics.register_copy_heap_clones, 1);
+    assert_eq!(metrics.local_copy_heap_clones, 0);
+}
+
+#[test]
+fn execute32_records_move_heap_clone_as_local_store_metric() {
+    let mut performance = PerformanceFacts::default();
+    performance.mark_local_slot(1);
+    performance.set_register_copy_fact(1, PerfRegisterCopyFact { move_source: false });
+    performance.set_local_copy_fact(1, crate::vm::analysis::PerfLocalCopyFact { move_source: false });
+    let function = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![ConstHeapValue32::LongString(Arc::<str>::from("longer-than-seven"))],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadHeapConst, 0, 0),
+            Instr32::abc(Opcode32::Move, 1, 0, 0),
+            Instr32::abc(Opcode32::Return, 1, 1, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        performance,
+        ..Function32::default()
+    };
+
+    vm_runtime_metrics_reset();
+    let result = execute32(&function).expect("execute32");
+    let metrics = vm_runtime_metrics_snapshot();
+
+    assert_eq!(result.returns[0].kind(), crate::val::RuntimeValKind::Obj);
+    assert_eq!(metrics.copy_policy_heap_clones, 1);
+    assert_eq!(metrics.register_copy_heap_clones, 0);
+    assert_eq!(metrics.local_copy_heap_clones, 1);
+    assert_eq!(metrics.local_store_heap_clones, 1);
 }
 
 #[test]
@@ -145,6 +309,73 @@ fn execute32_allocates_typed_int_list_on_heap() {
     };
 
     assert_eq!(values, &vec![7, 8]);
+}
+
+#[test]
+fn execute32_new_list_without_build_fact_clones_source_register() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![ConstHeapValue32::LongString(Arc::<str>::from("longer-than-seven"))],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadHeapConst, 0, 0),
+            Instr32::abc(Opcode32::NewList, 1, 0, 1),
+            Instr32::abc(Opcode32::Return, 0, 2, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+
+    assert!(matches!(result.returns[0], RuntimeVal::Obj(_)));
+    assert!(matches!(result.returns[1], RuntimeVal::Obj(_)));
+}
+
+#[test]
+fn execute32_new_list_build_fact_consumes_source_register() {
+    let mut performance = PerformanceFacts::default();
+    performance.set_container_build_fact(
+        1,
+        PerfContainerBuildFact {
+            move_keys: false,
+            move_values: true,
+        },
+    );
+    let function = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![ConstHeapValue32::LongString(Arc::<str>::from("longer-than-seven"))],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadHeapConst, 0, 0),
+            Instr32::abc(Opcode32::NewList, 1, 0, 1),
+            Instr32::abc(Opcode32::Return, 0, 2, 0),
+        ],
+        register_count: 2,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        performance,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+
+    assert_eq!(result.returns[0], RuntimeVal::Nil);
+    let RuntimeVal::Obj(handle) = result.returns[1] else {
+        panic!("expected list object");
+    };
+    let HeapValue::List(TypedList::String(values)) = result.state.heap.get(handle).expect("heap object") else {
+        panic!("expected typed string list");
+    };
+    assert_eq!(values[0].as_ref(), "longer-than-seven");
 }
 
 #[test]
@@ -247,6 +478,14 @@ fn execute32_to_iter_materializes_map_entries_as_pairs() {
 
 #[test]
 fn execute32_allocates_object_and_reads_string_field() {
+    let mut performance = PerformanceFacts::default();
+    performance.set_key_fact(
+        4,
+        PerfKeyFact {
+            const_key: Some(1),
+            ..PerfKeyFact::default()
+        },
+    );
     let function = Function32 {
         consts: ConstPool32 {
             ints: vec![42],
@@ -266,12 +505,20 @@ fn execute32_allocates_object_and_reads_string_field() {
         positional_param_count: 0,
         param_names: Vec::new(),
         capture_count: 0,
+        performance,
         ..Function32::default()
     };
 
     let result = execute32(&function).expect("execute32");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    let cache = result
+        .state
+        .inline_caches
+        .index_cache_for_tests(4)
+        .expect("index cache");
+    assert_eq!(cache.fact.target_kind, PerfIndexTargetKind::Object);
+    assert_eq!(cache.object_field_slot, Some(0));
 }
 
 #[test]
@@ -308,9 +555,82 @@ fn execute32_allocates_typed_string_int_map_and_reads_string_key() {
         panic!("expected typed string-int map");
     };
     assert_eq!(values.get("answer"), Some(&42));
-    let cache = result.state.inline_caches.index(4).expect("index cache");
+    let cache = result.state.inline_caches.index_fact_for_tests(4).expect("index cache");
     assert_eq!(cache.target_kind, PerfIndexTargetKind::Map);
     assert_eq!(cache.value_kind, PerfValueKind::Int);
+}
+
+#[test]
+fn execute32_new_map_without_build_fact_clones_source_registers() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![ConstHeapValue32::LongString(Arc::<str>::from("longer-than-seven"))],
+            strings: vec!["answer".to_string()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadString, 0, 0),
+            Instr32::abx(Opcode32::LoadHeapConst, 1, 0),
+            Instr32::abc(Opcode32::NewMap, 2, 0, 1),
+            Instr32::abc(Opcode32::Return, 0, 3, 0),
+        ],
+        register_count: 3,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+
+    assert!(matches!(result.returns[0], RuntimeVal::ShortStr(_)));
+    assert!(matches!(result.returns[1], RuntimeVal::Obj(_)));
+    assert!(matches!(result.returns[2], RuntimeVal::Obj(_)));
+}
+
+#[test]
+fn execute32_new_map_build_fact_consumes_source_registers() {
+    let mut performance = PerformanceFacts::default();
+    performance.set_container_build_fact(
+        2,
+        PerfContainerBuildFact {
+            move_keys: true,
+            move_values: true,
+        },
+    );
+    let function = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![ConstHeapValue32::LongString(Arc::<str>::from("longer-than-seven"))],
+            strings: vec!["answer".to_string()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadString, 0, 0),
+            Instr32::abx(Opcode32::LoadHeapConst, 1, 0),
+            Instr32::abc(Opcode32::NewMap, 2, 0, 1),
+            Instr32::abc(Opcode32::Return, 0, 3, 0),
+        ],
+        register_count: 3,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        performance,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+
+    assert_eq!(result.returns[0], RuntimeVal::Nil);
+    assert_eq!(result.returns[1], RuntimeVal::Nil);
+    let RuntimeVal::Obj(handle) = result.returns[2] else {
+        panic!("expected map object");
+    };
+    let HeapValue::Map(TypedMap::StringMixed(values)) = result.state.heap.get(handle).expect("heap object") else {
+        panic!("expected string-mixed map");
+    };
+    assert!(matches!(values.get("answer"), Some(RuntimeVal::Obj(_))));
 }
 
 #[test]
@@ -415,6 +735,98 @@ fn execute32_materializes_typed_string_int_map_to_string_mixed_on_value_pollutio
 
     assert_eq!(values.get("answer"), Some(&RuntimeVal::Int(1)));
     assert!(matches!(values.get("label"), Some(RuntimeVal::ShortStr(value)) if value.as_str() == "ok"));
+}
+
+#[test]
+fn execute32_adds_and_subtracts_typed_string_int_maps_without_runtime_entry_materialization() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            ints: vec![1, 2, 3],
+            strings: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadString, 0, 0),
+            Instr32::abx(Opcode32::LoadInt, 1, 0),
+            Instr32::abx(Opcode32::LoadString, 2, 1),
+            Instr32::abx(Opcode32::LoadInt, 3, 1),
+            Instr32::abc(Opcode32::NewMap, 4, 0, 2),
+            Instr32::abx(Opcode32::LoadString, 5, 1),
+            Instr32::abx(Opcode32::LoadInt, 6, 2),
+            Instr32::abx(Opcode32::LoadString, 7, 2),
+            Instr32::abx(Opcode32::LoadInt, 8, 2),
+            Instr32::abc(Opcode32::NewMap, 9, 5, 2),
+            Instr32::abc(Opcode32::AddInt, 10, 4, 9),
+            Instr32::abc(Opcode32::SubInt, 11, 10, 9),
+            Instr32::abc(Opcode32::Return, 10, 2, 0),
+        ],
+        register_count: 12,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+    let RuntimeVal::Obj(added) = result.returns[0] else {
+        panic!("expected added map");
+    };
+    let RuntimeVal::Obj(removed) = result.returns[1] else {
+        panic!("expected removed map");
+    };
+
+    let HeapValue::Map(TypedMap::StringInt(values)) = result.state.heap.get(added).expect("added map") else {
+        panic!("expected added string-int map");
+    };
+    assert_eq!(values.get("a"), Some(&1));
+    assert_eq!(values.get("b"), Some(&3));
+    assert_eq!(values.get("c"), Some(&3));
+
+    let HeapValue::Map(TypedMap::StringInt(values)) = result.state.heap.get(removed).expect("removed map") else {
+        panic!("expected removed string-int map");
+    };
+    assert_eq!(values.get("a"), Some(&1));
+    assert_eq!(values.get("b"), None);
+    assert_eq!(values.get("c"), None);
+}
+
+#[test]
+fn execute32_subtracts_string_key_from_typed_string_int_map_without_cloning_removed_entry() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            ints: vec![1, 2],
+            strings: vec!["a".to_string(), "b".to_string()],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadString, 0, 0),
+            Instr32::abx(Opcode32::LoadInt, 1, 0),
+            Instr32::abx(Opcode32::LoadString, 2, 1),
+            Instr32::abx(Opcode32::LoadInt, 3, 1),
+            Instr32::abc(Opcode32::NewMap, 4, 0, 2),
+            Instr32::abx(Opcode32::LoadString, 5, 1),
+            Instr32::abc(Opcode32::SubInt, 6, 4, 5),
+            Instr32::abc(Opcode32::Return, 6, 1, 0),
+        ],
+        register_count: 7,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+    let RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected map object");
+    };
+    let HeapValue::Map(TypedMap::StringInt(values)) = result.state.heap.get(handle).expect("map object") else {
+        panic!("expected string-int map");
+    };
+
+    assert_eq!(values.get("a"), Some(&1));
+    assert_eq!(values.get("b"), None);
 }
 
 #[test]
@@ -548,6 +960,77 @@ fn execute32_adds_typed_string_lists_without_materializing_items() {
 
     assert_eq!(values.len(), 2);
     assert_eq!(result.state.heap.len(), 5);
+}
+
+#[test]
+fn execute32_prepends_value_to_typed_string_list_without_helper_materialization() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            ints: vec![7],
+            heap_values: vec![ConstHeapValue32::LongString(Arc::<str>::from("long-tail-value"))],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadInt, 0, 0),
+            Instr32::abx(Opcode32::LoadHeapConst, 1, 0),
+            Instr32::abc(Opcode32::NewList, 2, 1, 1),
+            Instr32::abc(Opcode32::AddInt, 3, 0, 2),
+            Instr32::abc(Opcode32::Return, 3, 1, 0),
+        ],
+        register_count: 4,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+    let RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list object");
+    };
+    let HeapValue::List(TypedList::Mixed(values)) = result.state.heap.get(handle).expect("heap object") else {
+        panic!("expected mixed list");
+    };
+
+    assert_eq!(values[0], RuntimeVal::Int(7));
+    assert_eq!(values.len(), 2);
+}
+
+#[test]
+fn execute32_subtracts_cross_numeric_list_without_reclassifying_lhs_backing() {
+    let function = Function32 {
+        consts: ConstPool32 {
+            ints: vec![1, 2],
+            floats: vec![1.0],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadInt, 0, 0),
+            Instr32::abx(Opcode32::LoadInt, 1, 1),
+            Instr32::abc(Opcode32::NewList, 2, 0, 2),
+            Instr32::abx(Opcode32::LoadFloat, 3, 0),
+            Instr32::abc(Opcode32::NewList, 4, 3, 1),
+            Instr32::abc(Opcode32::SubInt, 5, 2, 4),
+            Instr32::abc(Opcode32::Return, 5, 1, 0),
+        ],
+        register_count: 6,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+
+    let result = execute32(&function).expect("execute32");
+    let RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list object");
+    };
+    let HeapValue::List(TypedList::Int(values)) = result.state.heap.get(handle).expect("heap object") else {
+        panic!("expected typed int list");
+    };
+
+    assert_eq!(values, &vec![2]);
 }
 
 #[test]

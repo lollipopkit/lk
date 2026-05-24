@@ -1,4 +1,4 @@
-use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap};
+use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -197,14 +197,14 @@ fn json_to_runtime(value: serde_json::Value, heap: &mut HeapStore) -> anyhow::Re
                 .into_iter()
                 .map(|value| json_to_runtime(value, heap))
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::from_runtime_values(values, heap))))
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(values, heap))))
         }
         serde_json::Value::Object(values) => {
             let entries = values
                 .into_iter()
                 .map(|(key, value)| Ok((runtime_string_key(&key), json_to_runtime(value, heap)?)))
                 .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
-            RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))))
+            RuntimeVal::Obj(heap.alloc(HeapValue::Map(super::typed_map_from_entries(entries))))
         }
     })
 }
@@ -220,14 +220,14 @@ fn yaml_to_runtime(value: serde_yaml::Value, heap: &mut HeapStore) -> anyhow::Re
                 .into_iter()
                 .map(|value| yaml_to_runtime(value, heap))
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::from_runtime_values(values, heap))))
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(values, heap))))
         }
         serde_yaml::Value::Mapping(values) => {
             let entries = values
                 .into_iter()
                 .map(|(key, value)| Ok((yaml_key_to_runtime(key)?, yaml_to_runtime(value, heap)?)))
                 .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
-            RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))))
+            RuntimeVal::Obj(heap.alloc(HeapValue::Map(super::typed_map_from_entries(entries))))
         }
         serde_yaml::Value::Tagged(value) => yaml_to_runtime(value.value, heap)?,
     })
@@ -245,14 +245,14 @@ fn toml_to_runtime(value: toml::Value, heap: &mut HeapStore) -> anyhow::Result<R
                 .into_iter()
                 .map(|value| toml_to_runtime(value, heap))
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::from_runtime_values(values, heap))))
+            RuntimeVal::Obj(heap.alloc(HeapValue::List(decoded_values_to_typed_list(values, heap))))
         }
         toml::Value::Table(values) => {
             let entries = values
                 .into_iter()
                 .map(|(key, value)| Ok((runtime_string_key(&key), toml_to_runtime(value, heap)?)))
                 .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
-            RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))))
+            RuntimeVal::Obj(heap.alloc(HeapValue::Map(super::typed_map_from_entries(entries))))
         }
     })
 }
@@ -262,6 +262,74 @@ fn number_to_runtime(int_value: Option<i64>, float_value: Option<f64>) -> Runtim
         .map(RuntimeVal::Int)
         .or_else(|| float_value.map(RuntimeVal::Float))
         .unwrap_or(RuntimeVal::Nil)
+}
+
+enum RuntimeValueListShape {
+    Empty,
+    Int(Vec<i64>),
+    Float(Vec<f64>),
+    Bool(Vec<bool>),
+    String(Vec<Arc<str>>),
+    Mixed,
+}
+
+fn decoded_values_to_typed_list(values: Vec<RuntimeVal>, heap: &HeapStore) -> TypedList {
+    let mut shape = RuntimeValueListShape::Empty;
+    for value in &values {
+        shape = append_decoded_value_list_shape(shape, value, heap);
+    }
+    match shape {
+        RuntimeValueListShape::Empty => TypedList::Mixed(values),
+        RuntimeValueListShape::Int(values) => TypedList::Int(values),
+        RuntimeValueListShape::Float(values) => TypedList::Float(values),
+        RuntimeValueListShape::Bool(values) => TypedList::Bool(values),
+        RuntimeValueListShape::String(values) => TypedList::String(values),
+        RuntimeValueListShape::Mixed => TypedList::Mixed(values),
+    }
+}
+
+fn append_decoded_value_list_shape(
+    shape: RuntimeValueListShape,
+    value: &RuntimeVal,
+    heap: &HeapStore,
+) -> RuntimeValueListShape {
+    match (shape, value) {
+        (RuntimeValueListShape::Empty, RuntimeVal::Int(value)) => RuntimeValueListShape::Int(vec![*value]),
+        (RuntimeValueListShape::Empty, RuntimeVal::Float(value)) => RuntimeValueListShape::Float(vec![*value]),
+        (RuntimeValueListShape::Empty, RuntimeVal::Bool(value)) => RuntimeValueListShape::Bool(vec![*value]),
+        (RuntimeValueListShape::Empty, RuntimeVal::ShortStr(value)) => {
+            RuntimeValueListShape::String(vec![Arc::<str>::from(value.as_str())])
+        }
+        (RuntimeValueListShape::Empty, RuntimeVal::Obj(handle)) => match heap.get(*handle) {
+            Some(HeapValue::String(value)) => RuntimeValueListShape::String(vec![Arc::clone(value)]),
+            _ => RuntimeValueListShape::Mixed,
+        },
+        (RuntimeValueListShape::Int(mut values), RuntimeVal::Int(value)) => {
+            values.push(*value);
+            RuntimeValueListShape::Int(values)
+        }
+        (RuntimeValueListShape::Float(mut values), RuntimeVal::Float(value)) => {
+            values.push(*value);
+            RuntimeValueListShape::Float(values)
+        }
+        (RuntimeValueListShape::Bool(mut values), RuntimeVal::Bool(value)) => {
+            values.push(*value);
+            RuntimeValueListShape::Bool(values)
+        }
+        (RuntimeValueListShape::String(mut values), RuntimeVal::ShortStr(value)) => {
+            values.push(Arc::<str>::from(value.as_str()));
+            RuntimeValueListShape::String(values)
+        }
+        (RuntimeValueListShape::String(mut values), RuntimeVal::Obj(handle)) => match heap.get(*handle) {
+            Some(HeapValue::String(value)) => {
+                values.push(Arc::clone(value));
+                RuntimeValueListShape::String(values)
+            }
+            _ => RuntimeValueListShape::Mixed,
+        },
+        (RuntimeValueListShape::Mixed, _) => RuntimeValueListShape::Mixed,
+        _ => RuntimeValueListShape::Mixed,
+    }
 }
 
 fn runtime_string_value(value: &str, heap: &mut HeapStore) -> RuntimeVal {

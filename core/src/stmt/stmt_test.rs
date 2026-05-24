@@ -6,7 +6,7 @@ mod tests {
         token::Tokenizer,
         typ::TypeChecker,
         val::{HeapStore, HeapValue, RuntimeVal, TypedList},
-        vm::{VmContext, execute_program32_raw_with_ctx},
+        vm::{VmContext, execute_program32_with_ctx},
     };
 
     fn parse_program(source: &str) -> Program {
@@ -15,10 +15,10 @@ mod tests {
         parser.parse_program().expect("Failed to parse program")
     }
 
-    fn execute_program_raw(source: &str) -> (RuntimeVal, HeapStore) {
+    fn execute_program_with_ctx(source: &str) -> (RuntimeVal, HeapStore) {
         let program = parse_program(source);
         let mut ctx = VmContext::new();
-        let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("Failed to execute");
+        let result = execute_program32_with_ctx(&program, &mut ctx).expect("Failed to execute");
         (result.first_return().clone(), result.state.heap)
     }
 
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn test_for_loop_tuple_destructure() {
-        let (result, heap) = execute_program_raw(
+        let (result, heap) = execute_program_with_ctx(
             r#"
             let keys = [];
             let values = [];
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn test_for_loop_map_iteration() {
-        let (result, heap) = execute_program_raw(
+        let (result, heap) = execute_program_with_ctx(
             r#"
             let keys = [];
             let values = [];
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn test_for_loop_nested_loops() {
-        let (result, heap) = execute_program_raw(
+        let (result, heap) = execute_program_with_ctx(
             r#"
             let result = [];
             for i in [1, 2] {
@@ -767,7 +767,7 @@ mod tests {
 
     #[test]
     fn test_for_loop_complex_pattern() {
-        let (result, heap) = execute_program_raw(
+        let (result, heap) = execute_program_with_ctx(
             r#"
             let first = [];
             let rest = [];

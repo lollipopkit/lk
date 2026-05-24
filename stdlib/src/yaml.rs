@@ -68,7 +68,7 @@ mod tests {
         };
 
         let mut state = RuntimeModuleState32::default();
-        let input = runtime_string_value("answer: 42", &mut state.heap);
+        let input = runtime_string_value("answer: 42", state.heap_mut());
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&[input]), &mut runtime).expect("parse");
 

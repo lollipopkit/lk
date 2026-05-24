@@ -45,8 +45,8 @@ mod tests {
             return Err(anyhow!("{name} must use plain RuntimeNative32"));
         };
         let mut state = RuntimeModuleState32::default();
-        let left = runtime_string_value(left, &mut state.heap);
-        let right = runtime_string_value(right, &mut state.heap);
+        let left = runtime_string_value(left, state.heap_mut());
+        let right = runtime_string_value(right, state.heap_mut());
         let args = [left, right];
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
         function(NativeArgs32::new(&args), &mut runtime)
@@ -69,7 +69,7 @@ mod tests {
 
         let formatted = run32("import datetime; return datetime.format(1704544200, \"%Y-%m-%d %H:%M\");")?;
         assert_eq!(
-            runtime_str(formatted.first_return(), &formatted.state.heap),
+            runtime_str(formatted.first_return(), formatted.state.heap()),
             Some("2024-01-06 12:30")
         );
         assert_eq!(
@@ -171,7 +171,7 @@ mod tests {
     fn test_datetime_format() -> Result<()> {
         let formatted = run32("import datetime; return datetime.format(1672531200, \"%Y-%m-%d\");")?;
         assert_eq!(
-            runtime_str(formatted.first_return(), &formatted.state.heap),
+            runtime_str(formatted.first_return(), formatted.state.heap()),
             Some("2023-01-01")
         );
         Ok(())

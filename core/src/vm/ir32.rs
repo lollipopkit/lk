@@ -1,7 +1,7 @@
 //! Canonical 32-bit VM instruction model for the VM rewrite.
 //!
-//! Compiler and executor work should target this representation directly; the
-//! removed bytecode instruction model must not be reintroduced.
+//! Compiler and executor work should target this representation directly;
+//! alternate instruction models must not be reintroduced.
 
 use std::{collections::BTreeMap, fmt::Write as _, mem::size_of, sync::Arc};
 

@@ -682,11 +682,12 @@ impl LkAnalyzer {
                                 if let T::Id(mod_name) = &tokens[j] {
                                     if self.registry.get_module(mod_name).is_ok() {
                                         // Validate each item against module exports
-                                        if let Ok(m) = self.registry.get_module(mod_name) {
-                                            let exports = m.exports();
+                                        if let Some(exports) = self.module_export_names(mod_name) {
                                             for idx in item_indices {
                                                 if let T::Id(item_name) = &tokens[idx] {
-                                                    if !exports.contains_key(item_name) && idx < spans.len() {
+                                                    if !exports.iter().any(|export| export == item_name)
+                                                        && idx < spans.len()
+                                                    {
                                                         let sp = &spans[idx];
                                                         let range = Range::new(
                                                             Position::new(
@@ -965,8 +966,6 @@ impl LkAnalyzer {
                 match token_entry.parse_program_arc(content) {
                     Ok(program_arc) => {
                         let program = program_arc.as_ref();
-                        // Analyze statements for symbols and identifier roots
-                        self.analyze_statements(&program.statements, &mut result);
                         // Integrate slot-based symbols (parameters/locals) for richer outline
                         let mut resolver = SlotResolver::new();
                         let resolution = resolver.resolve_program_slots(program);
@@ -975,8 +974,6 @@ impl LkAnalyzer {
                         // Top-level variable declarations (outside functions), grouped
                         let top_level_vars = Self::collect_decl_symbols(&enriched);
                         if !top_level_vars.is_empty() {
-                            // Keep individual variables at top-level for backward compatibility
-                            result.symbols.extend(top_level_vars.clone());
                             let (range_start, range_end) = (
                                 top_level_vars
                                     .first()
@@ -1004,8 +1001,6 @@ impl LkAnalyzer {
                         // Top-level imports grouped
                         let import_syms = Self::collect_import_symbols_via_tokens(tokens, spans);
                         if !import_syms.is_empty() {
-                            // Keep individual imports at top-level for backward compatibility
-                            result.symbols.extend(import_syms.clone());
                             let (range_start, range_end) = (
                                 import_syms
                                     .first()
@@ -1084,7 +1079,7 @@ impl LkAnalyzer {
 
                         // First, attempt recovering parse to collect multiple errors with precise spans
                         let mut recover_parser = StmtParser::new_with_spans(tokens, spans);
-                        let (stmts, errs) = recover_parser.parse_program_recovering_with_enhanced_errors(content);
+                        let (_stmts, errs) = recover_parser.parse_program_recovering_with_enhanced_errors(content);
                         if !errs.is_empty() {
                             for e in errs {
                                 let range = if let Some(span) = &e.span {
@@ -1104,8 +1099,6 @@ impl LkAnalyzer {
                                     None,
                                 ));
                             }
-                            // Even with errors, analyze statements to surface symbols and identifier roots
-                            self.analyze_statements(&stmts, &mut result);
                             // And add precise import diagnostics using tokens/spans
                             self.add_import_diagnostics(tokens, spans, &mut result);
                             // Named-args diagnostics (best-effort on partially parsed code)

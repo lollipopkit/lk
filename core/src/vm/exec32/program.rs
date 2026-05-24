@@ -15,7 +15,7 @@ use super::{Executor32, Program32Result, execute_module32, imports::import_runti
 
 pub fn execute_program32(program: &Program) -> Result<Program32Result> {
     let mut ctx = VmContext::new_without_core_vm_builtins();
-    execute_program32_raw_with_ctx(program, &mut ctx)
+    execute_program32_with_ctx(program, &mut ctx)
 }
 
 pub fn compile_program32_module_with_ctx(program: &Program, ctx: &mut VmContext) -> Result<Arc<crate::vm::Module32>> {
@@ -35,7 +35,7 @@ pub fn compile_program32_module_with_ctx(program: &Program, ctx: &mut VmContext)
     )?))
 }
 
-pub fn execute_program32_raw_with_ctx(program: &Program, ctx: &mut VmContext) -> Result<Program32Result> {
+pub fn execute_program32_with_ctx(program: &Program, ctx: &mut VmContext) -> Result<Program32Result> {
     let module = compile_program32_module_with_ctx(program, ctx)?;
     execute_compiled_module32_with_ctx(module, ctx)
 }
@@ -109,14 +109,14 @@ mod tests {
         let mut ctx = VmContext::new_without_core_vm_builtins();
         ctx.define_runtime_global(
             "external",
-            RuntimeExport32 {
-                value: RuntimeVal::Obj(source_string),
-                state: Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
+            RuntimeExport32::new(
+                RuntimeVal::Obj(source_string),
+                Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
                     source_heap,
                     Vec::new(),
                 ))),
-                module: Arc::new(crate::vm::Module32::default()),
-            },
+                Arc::new(crate::vm::Module32::default()),
+            ),
         );
         let slots = vec![
             GlobalSlot32 {

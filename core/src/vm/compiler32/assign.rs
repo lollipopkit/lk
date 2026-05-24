@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 
 use crate::{expr::Expr, operator::BinOp, val::LiteralVal};
 
-use crate::vm::analysis::{PerfContainerMoveFact, PerfIndexTargetKind};
+use crate::vm::analysis::{PerfCellMoveFact, PerfContainerMoveFact, PerfIndexTargetKind};
 
 use super::{Compiler32, Instr32, Opcode32, checked_u8, facts::index_fact_from_target};
 
@@ -15,12 +15,7 @@ impl Compiler32 {
         let src = self.lower_expr(value)?;
         if let Some(dst) = self.locals.get(name).copied() {
             if self.cell_locals.contains(name) {
-                self.emit(Instr32::abc(
-                    Opcode32::StoreCellVal,
-                    checked_u8("assign cell", dst)?,
-                    checked_u8("assign src", src)?,
-                    0,
-                ));
+                self.emit_store_cell_value(dst, src, "assign cell")?;
             } else {
                 self.emit_move(dst, src, "assign local")?;
             }
@@ -28,14 +23,9 @@ impl Compiler32 {
             && self.capture_cells.contains(name)
         {
             let cell = self.emit_load_capture(capture)?;
-            self.emit(Instr32::abc(
-                Opcode32::StoreCellVal,
-                checked_u8("assign capture cell", cell)?,
-                checked_u8("assign src", src)?,
-                0,
-            ));
+            self.emit_store_cell_value(cell, src, "assign capture cell")?;
         } else if let Some(slot) = self.global_names.get(name).copied() {
-            self.emit_set_global(src, slot)?;
+            self.emit_set_global_with_policy(src, slot, true)?;
         } else {
             bail!("Compiler32 assignment to undefined local/global `{name}`");
         }
@@ -52,12 +42,7 @@ impl Compiler32 {
             };
             let result = self.emit_bin_op_to_register(dst, op, lhs, rhs)?;
             if self.cell_locals.contains(name) {
-                self.emit(Instr32::abc(
-                    Opcode32::StoreCellVal,
-                    checked_u8("compound assign cell", dst)?,
-                    checked_u8("compound assign src", result)?,
-                    0,
-                ));
+                self.emit_store_cell_value(dst, result, "compound assign cell")?;
             } else {
                 self.emit_move(dst, result, "compound assign local")?;
             }
@@ -67,20 +52,29 @@ impl Compiler32 {
             let cell = self.emit_load_capture(capture)?;
             let lhs = self.emit_load_cell_value(cell)?;
             let result = self.emit_bin_op_to_register(lhs, op, lhs, rhs)?;
-            self.emit(Instr32::abc(
-                Opcode32::StoreCellVal,
-                checked_u8("compound assign capture cell", cell)?,
-                checked_u8("compound assign capture src", result)?,
-                0,
-            ));
+            self.emit_store_cell_value(cell, result, "compound assign capture cell")?;
         } else if let Some(slot) = self.global_names.get(name).copied() {
             let lhs = self.emit_get_global(slot)?;
             let dst = self.alloc_reg();
             let result = self.emit_bin_op_to_register(dst, op, lhs, rhs)?;
-            self.emit_set_global(result, slot)?;
+            self.emit_set_global_with_policy(result, slot, true)?;
         } else {
             bail!("Compiler32 compound assignment to undefined local/global `{name}`");
         }
+        Ok(())
+    }
+
+    pub(super) fn emit_store_cell_value(&mut self, cell: u16, src: u16, context: &str) -> Result<()> {
+        let pc = self.function.code.len();
+        self.emit(Instr32::abc(
+            Opcode32::StoreCellVal,
+            checked_u8(&format!("{context} cell"), cell)?,
+            checked_u8(&format!("{context} src"), src)?,
+            0,
+        ));
+        self.function
+            .performance
+            .set_cell_move_fact(pc, PerfCellMoveFact { move_value: true });
         Ok(())
     }
 

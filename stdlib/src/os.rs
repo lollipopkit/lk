@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry},
-    val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap},
+    val::{CallableValue, HeapStore, HeapValue, RuntimeVal, TypedList, TypedMap},
     vm::{
         Module32, NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, PlainNativeFunction32,
         RuntimeExport32, RuntimeModuleState32,
@@ -49,21 +49,21 @@ impl Module for OsModule {
                 function: NativeFunction32::Plain(f),
             })))
         }
-        fn key(s: &str) -> RuntimeMapKey {
-            RuntimeMapKey::String(Arc::<str>::from(s))
+        fn key(s: &str) -> Arc<str> {
+            Arc::<str>::from(s)
         }
 
         let mut heap = HeapStore::new();
 
         // Build os.env sub-namespace
-        let mut env_entries: BTreeMap<RuntimeMapKey, RuntimeVal> = BTreeMap::new();
+        let mut env_entries: BTreeMap<Arc<str>, RuntimeVal> = BTreeMap::new();
         env_entries.insert(key("get"), callable(&mut heap, env_get32, NativeEntry32::VARIADIC));
         env_entries.insert(key("set"), callable(&mut heap, env_set32, 2));
         env_entries.insert(key("unset"), callable(&mut heap, env_unset32, 1));
-        let env_val = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(env_entries))));
+        let env_val = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(env_entries))));
 
         // Build outer module map
-        let mut entries: BTreeMap<RuntimeMapKey, RuntimeVal> = BTreeMap::new();
+        let mut entries: BTreeMap<Arc<str>, RuntimeVal> = BTreeMap::new();
         entries.insert(key("hostname"), callable(&mut heap, hostname32, 0));
         entries.insert(key("arch"), callable(&mut heap, arch32, 0));
         entries.insert(key("os"), callable(&mut heap, os32, 0));
@@ -80,12 +80,12 @@ impl Module for OsModule {
         entries.insert(key("dir_current"), callable(&mut heap, dir_current32, 0));
         entries.insert(key("env"), env_val);
 
-        let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))));
-        Ok(RuntimeExport32 {
+        let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
+        Ok(RuntimeExport32::new(
             value,
-            state: Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new()))),
-            module: Arc::new(Module32::default()),
-        })
+            Arc::new(Mutex::new(RuntimeModuleState32::new(heap, Vec::new()))),
+            Arc::new(Module32::default()),
+        ))
     }
 }
 

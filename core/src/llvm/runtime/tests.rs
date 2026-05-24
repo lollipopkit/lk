@@ -1,9 +1,7 @@
 use super::*;
 use crate::{
-    stmt::{ImportItem, ImportSource, ImportStmt, stmt_parser::StmtParser},
-    token::Tokenizer,
+    stmt::{ImportItem, ImportSource, ImportStmt},
     val::{CallableValue, HeapValue, RuntimeMapKey},
-    vm::Compiler32,
 };
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
@@ -51,33 +49,6 @@ fn concurrency_globals_are_registered_only_for_concurrency_imports() {
     assert!(imports_need_concurrency_globals(&[ImportStmt::Module {
         module: "chan".to_string(),
     }]));
-}
-
-#[test]
-fn module32_json_runtime_entry_executes_artifact() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-    lk_rt_begin_session();
-
-    let tokens = Tokenizer::tokenize("return 42;").expect("tokens");
-    let program = StmtParser::new(&tokens).parse_program().expect("program");
-    let module = Compiler32::compile_module(&program).expect("compile module");
-    let artifact = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let json = artifact.to_json_string().expect("json");
-
-    let status = lk_rt_run_module32_json(json.as_ptr().cast(), json.len() as i64);
-    assert_eq!(status, 0);
-}
-
-#[test]
-fn module32_json_runtime_entry_rejects_invalid_artifact() {
-    let _guard = RUNTIME_TEST_LOCK.lock().unwrap();
-    reset_runtime_state();
-    lk_rt_begin_session();
-
-    let invalid = b"{\"format\":\"not.lk.module32\"}";
-    let status = lk_rt_run_module32_json(invalid.as_ptr().cast(), invalid.len() as i64);
-    assert_eq!(status, -1);
 }
 
 #[test]

@@ -168,9 +168,9 @@ benchmark 只在新 VM 闭环后恢复。
 11. 新 VM 的 call ABI、global slot、typed container、GC root、upvalue 全部验证后，继续确认旧
     `Op` runtime、BC32、packed executor、quickening、旧 fused op 无源码残留，且不得作为
     compatibility layer 恢复。
-12. 新 VM 闭环后继续恢复 CLI、coverage、bench、LLVM shell 和 host executable launcher；真正
-    native AOT 只能基于 `Module32Artifact` / `RuntimeVal` / `HeapStore` 重新设计，不恢复 LKB 或旧
-    AOT callable bridge。
+12. 新 VM 闭环后继续恢复 CLI、coverage、bench 和 LLVM true native AOT 覆盖；LLVM/AOT 不恢复
+    Instr32 artifact shell、host executable launcher、LKB 或旧 AOT callable bridge。暂未 native-lowerable
+    的 shape 必须明确报错，直到基于 `Module32Artifact` / `RuntimeVal` / `HeapStore` 完成真正 native 设计。
 
 ## 测试策略
 

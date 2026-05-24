@@ -45,6 +45,8 @@ fn execute_module32_calls_closure_function() {
     let result = execute_module32(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert_eq!(result.state.stack[1], RuntimeVal::Nil);
+    assert_eq!(result.state.stack[2], RuntimeVal::Nil);
 }
 
 #[test]
@@ -142,10 +144,12 @@ fn execute_module32_caches_call_shape_without_static_fact() {
         globals: Vec::new(),
         entry: 0,
     };
+    assert!(module.functions[0].performance.call_site(3).is_none());
 
     let result = execute_module32(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert!(module.functions[0].performance.call_site(3).is_none());
     assert_eq!(
         result.state.inline_caches.call(3),
         Some(PerfCallFact {
@@ -199,10 +203,15 @@ fn execute_module32_caches_named_call_shape_without_static_fact() {
         globals: Vec::new(),
         entry: 0,
     };
+    assert!(module.functions[0].performance.call_site(4).is_none());
 
     let result = execute_module32(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert!(module.functions[0].performance.call_site(4).is_none());
+    assert_eq!(result.state.stack[1], RuntimeVal::Nil);
+    assert_eq!(result.state.stack[2], RuntimeVal::Nil);
+    assert_eq!(result.state.stack[3], RuntimeVal::Nil);
     assert_eq!(
         result.state.inline_caches.call(4),
         Some(PerfCallFact {
@@ -380,7 +389,7 @@ fn runtime_value_closure_call_uses_active_shared_stack_window() {
     let mut heap = HeapStore::new();
     let closure = RuntimeVal::Obj(heap.alloc(HeapValue::Callable(CallableValue::Closure {
         function_index: 1,
-        captures: Vec::new(),
+        captures: Arc::new(Vec::new()),
     })));
     let mut ctx = VmContext::new_without_core_vm_builtins();
 

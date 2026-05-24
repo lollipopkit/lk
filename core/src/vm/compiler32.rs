@@ -35,7 +35,9 @@ use crate::{
 use super::{
     ConstHeapValue32, ConstRuntimeValue32, Function32, GlobalSlot32, Instr32, Module32, NativeEntry32, Opcode32,
 };
-use crate::vm::analysis::{PerfCallTargetKind, PerfContainerFact, PerfGlobalFact, PerfRegisterFact, PerfValueKind};
+use crate::vm::analysis::{
+    PerfCallTargetKind, PerfContainerBuildFact, PerfContainerFact, PerfGlobalFact, PerfRegisterFact, PerfValueKind,
+};
 use facts::*;
 use free_vars::collect_expr_free_vars;
 use support::*;
@@ -567,7 +569,7 @@ impl Compiler32 {
     }
 
     fn lower_list(&mut self, elements: &[Box<Expr>]) -> Result<u16> {
-        if let Some(value) = const_heap_value_from_expr_literal(&Expr::List(elements.to_vec()))? {
+        if let Some(value) = const_heap_list_from_expr_literals(elements)? {
             let dst = self.alloc_reg();
             let k = self.push_heap_value(value)?;
             self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("list dst", dst)?, k));
@@ -584,7 +586,7 @@ impl Compiler32 {
     }
 
     fn lower_map(&mut self, entries: &[(Box<Expr>, Box<Expr>)]) -> Result<u16> {
-        if let Some(value) = const_heap_value_from_expr_literal(&Expr::Map(entries.to_vec()))? {
+        if let Some(value) = const_heap_map_from_expr_literals(entries)? {
             let dst = self.alloc_reg();
             let k = self.push_heap_value(value)?;
             self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("map dst", dst)?, k));
@@ -658,16 +660,25 @@ impl Compiler32 {
 
         let base = self.alloc_regs(len)?;
         for (offset, value) in values.into_iter().enumerate() {
-            self.emit_move_with_policy(base + offset as u16, value, "list element", true)?;
+            let move_source = !self.function.performance.is_local_slot(value);
+            self.emit_move_with_policy(base + offset as u16, value, "list element", move_source)?;
         }
 
         let dst = self.alloc_reg();
+        let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::NewList,
             checked_u8("list dst", dst)?,
             checked_u8("list base", base)?,
             checked_u8("list len", len as u16)?,
         ));
+        self.function.performance.set_container_build_fact(
+            pc,
+            PerfContainerBuildFact {
+                move_keys: false,
+                move_values: true,
+            },
+        );
         Ok(dst)
     }
 
@@ -683,17 +694,27 @@ impl Compiler32 {
         )?;
         for (offset, (key, value)) in entries.into_iter().enumerate() {
             let key_dst = base + (offset as u16 * 2);
-            self.emit_move_with_policy(key_dst, key, "map key", true)?;
-            self.emit_move_with_policy(key_dst + 1, value, "map value", true)?;
+            let move_key = !self.function.performance.is_local_slot(key);
+            let move_value = !self.function.performance.is_local_slot(value);
+            self.emit_move_with_policy(key_dst, key, "map key", move_key)?;
+            self.emit_move_with_policy(key_dst + 1, value, "map value", move_value)?;
         }
 
         let dst = self.alloc_reg();
+        let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::NewMap,
             checked_u8("map dst", dst)?,
             checked_u8("map base", base)?,
             checked_u8("map len", len as u16)?,
         ));
+        self.function.performance.set_container_build_fact(
+            pc,
+            PerfContainerBuildFact {
+                move_keys: true,
+                move_values: true,
+            },
+        );
         Ok(dst)
     }
 
@@ -1179,7 +1200,13 @@ impl Compiler32 {
         let slot = u16::try_from(slot).map_err(|_| anyhow!("Compiler32 global slot {slot} exceeds u16"))?;
         let pc = self.function.code.len();
         self.emit(Instr32::abx(Opcode32::GetGlobal, checked_u8("global dst", dst)?, slot));
-        self.function.performance.set_global_fact(pc, PerfGlobalFact { slot });
+        self.function.performance.set_global_fact(
+            pc,
+            PerfGlobalFact {
+                slot,
+                move_source: false,
+            },
+        );
         self.function.performance.clear_register(dst);
         Ok(dst)
     }
@@ -1231,20 +1258,21 @@ impl Compiler32 {
             checked_u8("upval cell dst", dst)?,
             k,
         ));
-        self.emit(Instr32::abc(
-            Opcode32::StoreCellVal,
-            checked_u8("upval cell dst", dst)?,
-            checked_u8("upval cell src", src)?,
-            0,
-        ));
+        self.emit_store_cell_value(dst, src, "upval cell")?;
         Ok(dst)
     }
 
     fn emit_set_global(&mut self, src: u16, slot: u32) -> Result<()> {
+        self.emit_set_global_with_policy(src, slot, false)
+    }
+
+    pub(super) fn emit_set_global_with_policy(&mut self, src: u16, slot: u32, move_source: bool) -> Result<()> {
         let slot = u16::try_from(slot).map_err(|_| anyhow!("Compiler32 global slot {slot} exceeds u16"))?;
         let pc = self.function.code.len();
         self.emit(Instr32::abx(Opcode32::SetGlobal, checked_u8("global src", src)?, slot));
-        self.function.performance.set_global_fact(pc, PerfGlobalFact { slot });
+        self.function
+            .performance
+            .set_global_fact(pc, PerfGlobalFact { slot, move_source });
         Ok(())
     }
 

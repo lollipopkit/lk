@@ -10,14 +10,19 @@ pub(super) enum ReturnValues32 {
 }
 
 impl ReturnValues32 {
-    pub(super) fn from_slice(values: &[RuntimeVal]) -> Self {
+    pub(super) fn take_from_slots(values: &mut [RuntimeVal]) -> Self {
         match values {
             [] => Self::None,
-            [one] => Self::One(one.clone()),
-            [one, two] => Self::Two([one.clone(), two.clone()]),
-            [one, two, three] => Self::Three([one.clone(), two.clone(), three.clone()]),
-            [one, two, three, four] => Self::Four([one.clone(), two.clone(), three.clone(), four.clone()]),
-            values => Self::Many(values.to_vec()),
+            [one] => Self::One(std::mem::take(one)),
+            [one, two] => Self::Two([std::mem::take(one), std::mem::take(two)]),
+            [one, two, three] => Self::Three([std::mem::take(one), std::mem::take(two), std::mem::take(three)]),
+            [one, two, three, four] => Self::Four([
+                std::mem::take(one),
+                std::mem::take(two),
+                std::mem::take(three),
+                std::mem::take(four),
+            ]),
+            values => Self::Many(values.iter_mut().map(std::mem::take).collect()),
         }
     }
 
@@ -52,22 +57,34 @@ mod tests {
 
     #[test]
     fn return_values_inline_common_small_counts() {
-        assert!(matches!(ReturnValues32::from_slice(&[]), ReturnValues32::None));
+        let mut none = [];
         assert!(matches!(
-            ReturnValues32::from_slice(&[RuntimeVal::Int(1)]),
+            ReturnValues32::take_from_slots(&mut none),
+            ReturnValues32::None
+        ));
+
+        let mut one = [RuntimeVal::Int(1)];
+        assert!(matches!(
+            ReturnValues32::take_from_slots(&mut one),
             ReturnValues32::One(RuntimeVal::Int(1))
         ));
+        assert_eq!(one, [RuntimeVal::Nil]);
+
+        let mut two = [RuntimeVal::Int(1), RuntimeVal::Int(2)];
         assert!(matches!(
-            ReturnValues32::from_slice(&[RuntimeVal::Int(1), RuntimeVal::Int(2)]),
+            ReturnValues32::take_from_slots(&mut two),
             ReturnValues32::Two([RuntimeVal::Int(1), RuntimeVal::Int(2)])
         ));
+        assert_eq!(two, [RuntimeVal::Nil, RuntimeVal::Nil]);
+
+        let mut four = [
+            RuntimeVal::Int(1),
+            RuntimeVal::Int(2),
+            RuntimeVal::Int(3),
+            RuntimeVal::Int(4),
+        ];
         assert!(matches!(
-            ReturnValues32::from_slice(&[
-                RuntimeVal::Int(1),
-                RuntimeVal::Int(2),
-                RuntimeVal::Int(3),
-                RuntimeVal::Int(4)
-            ]),
+            ReturnValues32::take_from_slots(&mut four),
             ReturnValues32::Four([
                 RuntimeVal::Int(1),
                 RuntimeVal::Int(2),
@@ -75,15 +92,22 @@ mod tests {
                 RuntimeVal::Int(4)
             ])
         ));
+        assert_eq!(
+            four,
+            [RuntimeVal::Nil, RuntimeVal::Nil, RuntimeVal::Nil, RuntimeVal::Nil]
+        );
+
+        let mut many = [
+            RuntimeVal::Int(1),
+            RuntimeVal::Int(2),
+            RuntimeVal::Int(3),
+            RuntimeVal::Int(4),
+            RuntimeVal::Int(5),
+        ];
         assert!(matches!(
-            ReturnValues32::from_slice(&[
-                RuntimeVal::Int(1),
-                RuntimeVal::Int(2),
-                RuntimeVal::Int(3),
-                RuntimeVal::Int(4),
-                RuntimeVal::Int(5)
-            ]),
+            ReturnValues32::take_from_slots(&mut many),
             ReturnValues32::Many(_)
         ));
+        assert!(many.iter().all(|value| matches!(value, RuntimeVal::Nil)));
     }
 }

@@ -140,7 +140,7 @@ fn task_join_all32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
             .map_err(|err| anyhow!("Failed to await task: {err}"))?;
         values.push(value.into_value(runtime.heap_mut())?);
     }
-    let list = lk_core::val::TypedList::from_runtime_values(values, runtime.heap());
+    let list = crate::typed_list_from_values(values, runtime.heap());
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
 }
 
@@ -233,10 +233,10 @@ mod tests {
     #[test]
     fn task_try_await_uses_runtime_task_value() -> Result<()> {
         let mut state = RuntimeModuleState32::default();
-        let task = resolved_task(RuntimeVal::Int(42), &mut state.heap);
+        let task = resolved_task(RuntimeVal::Int(42), state.heap_mut());
         let result = call("try_await", &[task], &mut state)?;
         assert_eq!(
-            expect_list(&result, &state.heap),
+            expect_list(&result, state.heap()),
             vec![RuntimeVal::Bool(true), RuntimeVal::Int(42)]
         );
         Ok(())
@@ -246,7 +246,7 @@ mod tests {
     fn task_join_all_empty_returns_empty_list() -> Result<()> {
         let mut state = RuntimeModuleState32::default();
         let result = call("join_all", &[], &mut state)?;
-        assert_eq!(expect_list(&result, &state.heap), Vec::<RuntimeVal>::new());
+        assert_eq!(expect_list(&result, state.heap()), Vec::<RuntimeVal>::new());
         Ok(())
     }
 
@@ -267,13 +267,13 @@ mod tests {
     #[test]
     fn task_try_await_pending_returns_false_nil() -> Result<()> {
         let mut state = RuntimeModuleState32::default();
-        let task = RuntimeVal::Obj(state.heap.alloc(HeapValue::Task(Arc::new(TaskValue {
+        let task = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Task(Arc::new(TaskValue {
             id: 999_999,
             value: None,
         }))));
         let result = call("try_await", &[task], &mut state)?;
         assert_eq!(
-            expect_list(&result, &state.heap),
+            expect_list(&result, state.heap()),
             vec![RuntimeVal::Bool(false), RuntimeVal::Nil]
         );
         Ok(())

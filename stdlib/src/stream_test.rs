@@ -51,7 +51,7 @@ mod tests {
             "import stream; let s = stream.take(stream.map(stream.range(0, 10), fn(x) => x * 2), 3); let c = stream.subscribe(s); return stream.collect(c);",
         )?;
         assert_eq!(
-            expect_list(v.first_return(), &v.state.heap),
+            expect_list(v.first_return(), v.state.heap()),
             vec![RuntimeVal::Int(0), RuntimeVal::Int(2), RuntimeVal::Int(4)]
         );
         Ok(())
@@ -62,7 +62,7 @@ mod tests {
         let v =
             run("import stream; let s = stream.take(stream.iterate(1, fn(x) => x + 1), 5); return stream.collect(s);")?;
         assert_eq!(
-            expect_list(v.first_return(), &v.state.heap),
+            expect_list(v.first_return(), v.state.heap()),
             vec![
                 RuntimeVal::Int(1),
                 RuntimeVal::Int(2),
@@ -78,7 +78,7 @@ mod tests {
     fn test_list_to_stream_collect() -> Result<()> {
         let v = run("import stream; return stream.collect(stream.from_list([1,2,3]));")?;
         assert_eq!(
-            expect_list(v.first_return(), &v.state.heap),
+            expect_list(v.first_return(), v.state.heap()),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
         );
         Ok(())
@@ -89,7 +89,7 @@ mod tests {
         let v = run(
             "import stream; let ch = chan(8); send(ch, 42); let s = stream.from_channel(ch); let c = stream.subscribe(s); return stream.next(c);",
         )?;
-        let values = expect_list(v.first_return(), &v.state.heap);
+        let values = expect_list(v.first_return(), v.state.heap());
         assert_eq!(values.len(), 2);
         assert_eq!(values[0], RuntimeVal::Bool(true));
         assert_eq!(values[1], RuntimeVal::Int(42));
@@ -129,7 +129,7 @@ mod tests {
             panic!("from_list must use plain RuntimeNative32");
         };
         let mut state = RuntimeModuleState32::default();
-        let input = state.heap.alloc(HeapValue::List(TypedList::String(vec![
+        let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-stream-one"),
             Arc::<str>::from("long-stream-two"),
         ])));
@@ -154,7 +154,7 @@ mod tests {
             panic!("collect must use full-state RuntimeNative32");
         };
         let mut state = RuntimeModuleState32::default();
-        let input = state.heap.alloc(HeapValue::List(TypedList::String(vec![
+        let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-stream-one"),
             Arc::<str>::from("long-stream-two"),
         ])));

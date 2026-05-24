@@ -8,16 +8,13 @@ use super::{RuntimeCallable32, runtime_value_to_callable32_shared};
 use crate::vm::{Module32, RuntimeExport32};
 
 pub fn import_runtime_export(export: &RuntimeExport32, dest_heap: &mut HeapStore) -> Result<RuntimeVal> {
-    let state = export
-        .state
-        .lock()
-        .map_err(|_| anyhow!("RuntimeExport32 state lock poisoned"))?;
+    let state = export.state_lock()?;
     import_runtime_value(
-        &export.value,
+        export.value(),
         &state.heap,
         dest_heap,
-        Arc::clone(&export.module),
-        export.state.clone(),
+        export.shared_module(),
+        export.shared_state(),
     )
 }
 
@@ -52,8 +49,7 @@ fn import_runtime_value(
             }
             let value = source_heap
                 .get(*handle)
-                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-                .clone();
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
             let value = import_heap_value(value, source_heap, dest_heap, source_module, source_state)?;
             Ok(RuntimeVal::Obj(dest_heap.alloc(value)))
         }
@@ -61,14 +57,14 @@ fn import_runtime_value(
 }
 
 fn import_heap_value(
-    value: HeapValue,
+    value: &HeapValue,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module32>,
     source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
 ) -> Result<HeapValue> {
     Ok(match value {
-        HeapValue::String(value) => HeapValue::String(value),
+        HeapValue::String(value) => HeapValue::String(value.clone()),
         HeapValue::List(values) => HeapValue::List(import_typed_list(
             values,
             source_heap,
@@ -100,38 +96,42 @@ fn import_heap_value(
                     ))
                 })
                 .collect::<Result<_>>()?;
-            HeapValue::Object(RuntimeObject {
-                type_name: object.type_name,
-                fields,
-            })
+            HeapValue::Object(RuntimeObject::new(object.type_name.clone(), fields))
         }
         HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function }) => {
-            HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function })
+            HeapValue::Callable(CallableValue::RuntimeNative32 {
+                arity: *arity,
+                function: function.clone(),
+            })
         }
         HeapValue::Callable(CallableValue::Closure {
             function_index,
             captures,
         }) => {
-            let callable =
-                RuntimeCallable32::with_state(Arc::clone(&source_module), function_index, captures, source_state);
+            let callable = RuntimeCallable32::with_shared_captures(
+                Arc::clone(&source_module),
+                *function_index,
+                Arc::clone(captures),
+                source_state,
+            );
             HeapValue::Callable(CallableValue::Runtime32(Arc::new(callable)))
         }
         HeapValue::Callable(CallableValue::Runtime32(function)) => {
-            HeapValue::Callable(CallableValue::Runtime32(function))
+            HeapValue::Callable(CallableValue::Runtime32(Arc::clone(function)))
         }
-        HeapValue::Task(value) => HeapValue::Task(value),
-        HeapValue::Channel(value) => HeapValue::Channel(value),
-        HeapValue::Stream(value) => HeapValue::Stream(value),
-        HeapValue::StreamCursor(value) => HeapValue::StreamCursor(value),
+        HeapValue::Task(value) => HeapValue::Task(Arc::clone(value)),
+        HeapValue::Channel(value) => HeapValue::Channel(Arc::clone(value)),
+        HeapValue::Stream(value) => HeapValue::Stream(Arc::clone(value)),
+        HeapValue::StreamCursor(value) => HeapValue::StreamCursor(Arc::clone(value)),
         HeapValue::UpvalCell(value) => HeapValue::UpvalCell(import_runtime_value(
-            &value,
+            value,
             source_heap,
             dest_heap,
             source_module,
             source_state,
         )?),
         HeapValue::ErrorVal(error) => HeapValue::ErrorVal(crate::val::ErrorVal {
-            message: error.message,
+            message: error.message.clone(),
             trace: error
                 .trace
                 .iter()
@@ -150,7 +150,7 @@ fn import_heap_value(
 }
 
 fn import_typed_list(
-    values: TypedList,
+    values: &TypedList,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module32>,
@@ -171,15 +171,15 @@ fn import_typed_list(
                 })
                 .collect::<Result<_>>()?,
         ),
-        TypedList::Int(values) => TypedList::Int(values),
-        TypedList::Float(values) => TypedList::Float(values),
-        TypedList::Bool(values) => TypedList::Bool(values),
-        TypedList::String(values) => TypedList::String(values),
+        TypedList::Int(values) => TypedList::Int(values.clone()),
+        TypedList::Float(values) => TypedList::Float(values.clone()),
+        TypedList::Bool(values) => TypedList::Bool(values.clone()),
+        TypedList::String(values) => TypedList::String(values.clone()),
     })
 }
 
 fn import_typed_map(
-    values: TypedMap,
+    values: &TypedMap,
     source_heap: &HeapStore,
     dest_heap: &mut HeapStore,
     source_module: Arc<Module32>,
@@ -220,8 +220,8 @@ fn import_typed_map(
                 })
                 .collect::<Result<_>>()?,
         ),
-        TypedMap::StringInt(values) => TypedMap::StringInt(values),
-        TypedMap::StringFloat(values) => TypedMap::StringFloat(values),
-        TypedMap::StringBool(values) => TypedMap::StringBool(values),
+        TypedMap::StringInt(values) => TypedMap::StringInt(values.clone()),
+        TypedMap::StringFloat(values) => TypedMap::StringFloat(values.clone()),
+        TypedMap::StringBool(values) => TypedMap::StringBool(values.clone()),
     })
 }

@@ -96,24 +96,59 @@ impl LkAnalyzer {
     }
 
     fn analyze_statements(&self, statements: &[Box<Stmt>], result: &mut AnalysisResult) {
+        fn collect_pattern_vars(pattern: &lk_core::expr::Pattern, out: &mut Vec<String>) {
+            match pattern {
+                lk_core::expr::Pattern::Variable(name) => out.push(name.clone()),
+                lk_core::expr::Pattern::List { patterns, rest } => {
+                    for pattern in patterns {
+                        collect_pattern_vars(pattern, out);
+                    }
+                    if let Some(rest_var) = rest {
+                        out.push(rest_var.clone());
+                    }
+                }
+                lk_core::expr::Pattern::Map { patterns, rest } => {
+                    for (_, pattern) in patterns {
+                        collect_pattern_vars(pattern, out);
+                    }
+                    if let Some(rest_var) = rest {
+                        out.push(rest_var.clone());
+                    }
+                }
+                lk_core::expr::Pattern::Or(patterns) => {
+                    for pattern in patterns {
+                        collect_pattern_vars(pattern, out);
+                    }
+                }
+                lk_core::expr::Pattern::Guard { pattern, .. } => collect_pattern_vars(pattern, out),
+                lk_core::expr::Pattern::Literal(_)
+                | lk_core::expr::Pattern::Wildcard
+                | lk_core::expr::Pattern::Range { .. } => {}
+            }
+        }
+
+        let mut variables = Vec::new();
+        let mut imports = Vec::new();
+
         for (i, stmt) in statements.iter().enumerate() {
             match stmt.as_ref() {
                 Stmt::Let { pattern, .. } => {
-                    // Extract variable names from pattern and create symbols for each
-                    if let Some(variables) = lk_lsp::analyzer::extract_variables_from_pattern(pattern) {
-                        for var_name in variables {
-                            result.symbols.push(DocumentSymbol {
-                                name: var_name.clone(),
-                                detail: Some("Variable declaration".to_string()),
-                                kind: SymbolKind::VARIABLE,
-                                tags: None,
-                                #[allow(deprecated)]
-                                deprecated: None,
-                                range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
-                                selection_range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
-                                children: None,
-                            });
-                        }
+                    let mut names = Vec::new();
+                    collect_pattern_vars(pattern, &mut names);
+                    names.sort();
+                    names.dedup();
+                    for var_name in names {
+                        variables.push(DocumentSymbol {
+                            name: var_name,
+                            detail: Some("Variable declaration".to_string()),
+                            kind: SymbolKind::VARIABLE,
+                            tags: None,
+                            #[allow(deprecated)]
+                            deprecated: None,
+                            range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
+                            selection_range: Range::new(Position::new(i as u32, 0), Position::new(i as u32, 100)),
+                            children: None,
+                        });
                     }
                 }
                 Stmt::Function { name, params, .. } => {
@@ -143,7 +178,7 @@ impl LkAnalyzer {
                         },
                         ImportStmt::ModuleAlias { module, .. } => module.clone(),
                     };
-                    result.symbols.push(DocumentSymbol {
+                    imports.push(DocumentSymbol {
                         name: format!("import {}", import_name),
                         detail: Some("Import statement".to_string()),
                         kind: SymbolKind::MODULE,
@@ -157,6 +192,34 @@ impl LkAnalyzer {
                 }
                 _ => {}
             }
+        }
+
+        if !variables.is_empty() {
+            result.symbols.push(DocumentSymbol {
+                name: "Variables".to_string(),
+                detail: None,
+                kind: SymbolKind::NAMESPACE,
+                tags: None,
+                #[allow(deprecated)]
+                deprecated: None,
+                range: Range::new(Position::new(0, 0), Position::new(0, 100)),
+                selection_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                children: Some(variables),
+            });
+        }
+
+        if !imports.is_empty() {
+            result.symbols.push(DocumentSymbol {
+                name: "Imports".to_string(),
+                detail: None,
+                kind: SymbolKind::NAMESPACE,
+                tags: None,
+                #[allow(deprecated)]
+                deprecated: None,
+                range: Range::new(Position::new(0, 0), Position::new(0, 100)),
+                selection_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                children: Some(imports),
+            });
         }
     }
 
@@ -541,7 +604,7 @@ async fn test_lsp_completion_functionality() {
     assert!(labels.contains(&&"&&".to_string()));
     assert!(labels.contains(&&"||".to_string()));
 
-    // Check for common access root identifier (no legacy '@')
+    // Check for common access root identifier.
     assert!(labels.contains(&&"req".to_string()));
 
     // Verify completion kinds
@@ -593,25 +656,39 @@ async fn test_lsp_document_symbols() {
     assert!(symbols.is_some());
 
     let symbols = symbols.unwrap();
-    assert!(symbols.len() >= 6); // 2 imports, 3 lets, 2 functions
+    assert!(symbols.len() >= 4); // Imports, Variables, and 2 functions
 
     let symbol_names: Vec<&String> = symbols.iter().map(|s| &s.name).collect();
-    assert!(symbol_names.contains(&&"import math".to_string()));
-    assert!(symbol_names.contains(&&"import string".to_string()));
-    assert!(symbol_names.contains(&&"global_var".to_string()));
+    assert!(symbol_names.contains(&&"Imports".to_string()));
+    assert!(symbol_names.contains(&&"Variables".to_string()));
     assert!(symbol_names.contains(&&"process_data".to_string()));
     assert!(symbol_names.contains(&&"main".to_string()));
 
     // Check symbol kinds
-    let import_symbols: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::MODULE).collect();
-    assert_eq!(import_symbols.len(), 2);
+    let imports = symbols.iter().find(|s| s.name == "Imports").expect("Imports group");
+    let import_names: Vec<&String> = imports
+        .children
+        .as_ref()
+        .expect("import children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(import_names.contains(&&"import math".to_string()));
+    assert!(import_names.contains(&&"import string".to_string()));
 
     let function_symbols: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::FUNCTION).collect();
     assert_eq!(function_symbols.len(), 2);
 
-    let variable_symbols: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::VARIABLE).collect();
-    // Only top-level variables are detected in our simple analyzer
-    assert!(variable_symbols.len() >= 2); // At least global_var and final_result
+    let variables = symbols.iter().find(|s| s.name == "Variables").expect("Variables group");
+    let variable_names: Vec<&String> = variables
+        .children
+        .as_ref()
+        .expect("variable children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(variable_names.contains(&&"global_var".to_string()));
+    assert!(variable_names.contains(&&"final_result".to_string()));
 }
 
 #[tokio::test]
@@ -696,20 +773,34 @@ async fn test_lsp_complex_program_analysis() {
     assert!(symbols.is_some());
     let symbols = symbols.unwrap();
 
-    // Should have imports, variables, functions
-    assert!(symbols.len() >= 6);
+    // Should have grouped imports, grouped variables, and functions
+    assert!(symbols.len() >= 4);
 
     let symbol_names: Vec<&String> = symbols.iter().map(|s| &s.name).collect();
 
-    // Check imports
-    assert!(symbol_names.contains(&&"import math".to_string()));
-    assert!(symbol_names.contains(&&"import string".to_string()));
-    assert!(symbol_names.contains(&&"import datetime".to_string()));
+    let imports = symbols.iter().find(|s| s.name == "Imports").expect("Imports group");
+    let import_names: Vec<&String> = imports
+        .children
+        .as_ref()
+        .expect("import children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(import_names.contains(&&"import math".to_string()));
+    assert!(import_names.contains(&&"import string".to_string()));
+    assert!(import_names.contains(&&"import datetime".to_string()));
 
-    // Check variables
-    assert!(symbol_names.contains(&&"user_level".to_string()));
-    assert!(symbol_names.contains(&&"user_name".to_string()));
-    assert!(symbol_names.contains(&&"record_id".to_string()));
+    let variables = symbols.iter().find(|s| s.name == "Variables").expect("Variables group");
+    let variable_names: Vec<&String> = variables
+        .children
+        .as_ref()
+        .expect("variable children")
+        .iter()
+        .map(|s| &s.name)
+        .collect();
+    assert!(variable_names.contains(&&"user_level".to_string()));
+    assert!(variable_names.contains(&&"user_name".to_string()));
+    assert!(variable_names.contains(&&"record_id".to_string()));
 
     // Check functions
     assert!(symbol_names.contains(&&"validate_access".to_string()));

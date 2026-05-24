@@ -1,11 +1,10 @@
-use std::collections::BTreeMap;
-
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
     val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap},
     vm::{NativeArgs32, NativeRuntime32, RuntimeExport32},
 };
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::runtime_native::runtime_string_arg;
 
@@ -46,24 +45,24 @@ impl MapModule {
         expect_arity(args, 2, "has()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "has() first argument")?;
-        let key = string_key_arg(&values[1], runtime.heap(), "has() key")?;
-        Ok(RuntimeVal::Bool(map.get(&key).is_some()))
+        let key = runtime_string_arg(&values[1], runtime.heap(), "has() key")?;
+        Ok(RuntimeVal::Bool(map.get(&RuntimeMapKey::String(key)).is_some()))
     }
 
     fn get32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "get()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "get() first argument")?;
-        let key = string_key_arg(&values[1], runtime.heap(), "get() key")?;
-        Ok(map.get_into_heap(&key, runtime.heap_mut())?.unwrap_or(RuntimeVal::Nil))
+        let key = runtime_string_arg(&values[1], runtime.heap(), "get() key")?;
+        Ok(map.get(&RuntimeMapKey::String(key)).unwrap_or(RuntimeVal::Nil))
     }
 
     fn set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "set()")?;
         let values = args.as_slice();
-        let mut map = map_arg(&values[0], runtime.heap(), "set() first argument")?;
-        let key = string_key_arg(&values[1], runtime.heap(), "set() key")?;
-        map.set(key, values[2].clone());
+        let map = map_arg(&values[0], runtime.heap(), "set() first argument")?;
+        let key = runtime_string_arg(&values[1], runtime.heap(), "set() key")?;
+        let map = set_map_entry(map, key, values[2].clone());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(map))))
     }
 
@@ -71,26 +70,97 @@ impl MapModule {
         expect_arity(args, 2, "delete()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "delete() first argument")?;
-        let key = string_key_arg(&values[1], runtime.heap(), "delete() key")?;
-        let mut entries = BTreeMap::new();
-        let mut removed = RuntimeVal::Nil;
-        for (entry_key, value) in map.entries_into_heap(runtime.heap_mut())? {
-            if entry_key == key {
-                removed = value;
-            } else {
-                entries.insert(entry_key, value);
-            }
-        }
-        let updated = RuntimeVal::Obj(
-            runtime
-                .heap_mut()
-                .alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))),
-        );
+        let key = runtime_string_arg(&values[1], runtime.heap(), "delete() key")?;
+        let (map, removed) = delete_map_entry(map, key.as_ref());
+        let updated = RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(map)));
         Ok(RuntimeVal::Obj(
             runtime
                 .heap_mut()
                 .alloc(HeapValue::List(TypedList::Mixed(vec![updated, removed]))),
         ))
+    }
+}
+
+fn set_map_entry(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
+    match map {
+        TypedMap::Mixed(entries) => {
+            let mut entries = entries
+                .iter()
+                .filter(|(entry_key, _)| **entry_key != RuntimeMapKey::String(Arc::clone(&key)))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>();
+            entries.insert(RuntimeMapKey::String(key), value);
+            TypedMap::Mixed(entries)
+        }
+        TypedMap::StringMixed(entries) => {
+            let mut entries = entries
+                .iter()
+                .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>();
+            entries.insert(key, value);
+            TypedMap::StringMixed(entries)
+        }
+        TypedMap::StringInt(entries) => match value {
+            RuntimeVal::Int(value) => {
+                let mut entries = entries
+                    .iter()
+                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
+                    .map(|(key, value)| (key.clone(), *value))
+                    .collect::<BTreeMap<_, _>>();
+                entries.insert(key, value);
+                TypedMap::StringInt(entries)
+            }
+            value => {
+                let mut entries = entries
+                    .iter()
+                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
+                    .map(|(key, value)| (key.clone(), RuntimeVal::Int(*value)))
+                    .collect::<BTreeMap<_, _>>();
+                entries.insert(key, value);
+                TypedMap::StringMixed(entries)
+            }
+        },
+        TypedMap::StringFloat(entries) => match value {
+            RuntimeVal::Float(value) => {
+                let mut entries = entries
+                    .iter()
+                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
+                    .map(|(key, value)| (key.clone(), *value))
+                    .collect::<BTreeMap<_, _>>();
+                entries.insert(key, value);
+                TypedMap::StringFloat(entries)
+            }
+            value => {
+                let mut entries = entries
+                    .iter()
+                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
+                    .map(|(key, value)| (key.clone(), RuntimeVal::Float(*value)))
+                    .collect::<BTreeMap<_, _>>();
+                entries.insert(key, value);
+                TypedMap::StringMixed(entries)
+            }
+        },
+        TypedMap::StringBool(entries) => match value {
+            RuntimeVal::Bool(value) => {
+                let mut entries = entries
+                    .iter()
+                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
+                    .map(|(key, value)| (key.clone(), *value))
+                    .collect::<BTreeMap<_, _>>();
+                entries.insert(key, value);
+                TypedMap::StringBool(entries)
+            }
+            value => {
+                let mut entries = entries
+                    .iter()
+                    .filter(|(entry_key, _)| entry_key.as_ref() != key.as_ref())
+                    .map(|(key, value)| (key.clone(), RuntimeVal::Bool(*value)))
+                    .collect::<BTreeMap<_, _>>();
+                entries.insert(key, value);
+                TypedMap::StringMixed(entries)
+            }
+        },
     }
 }
 
@@ -134,12 +204,12 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
     }
 }
 
-fn one_map(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<TypedMap> {
+fn one_map<'a>(args: NativeArgs32<'a>, runtime: &'a NativeRuntime32<'a>, name: &str) -> Result<&'a TypedMap> {
     expect_arity(args, 1, name)?;
     map_arg(&args.as_slice()[0], runtime.heap(), name)
 }
 
-fn map_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedMap> {
+fn map_arg<'a>(value: &RuntimeVal, heap: &'a HeapStore, context: &str) -> Result<&'a TypedMap> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("{context} argument must be a map");
     };
@@ -147,33 +217,214 @@ fn map_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<TypedM
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match value {
-        HeapValue::Map(map) => Ok(map.clone()),
+        HeapValue::Map(map) => Ok(map),
         other => Err(anyhow!("{context} argument must be a map, got {}", other.type_name())),
     }
 }
 
-fn string_key_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<RuntimeMapKey> {
-    let key = runtime_string_arg(value, heap, context)?;
-    Ok(RuntimeMapKey::String(key))
-}
-
-fn map_keys_list(map: TypedMap) -> Vec<std::sync::Arc<str>> {
+fn map_keys_list(map: &TypedMap) -> Vec<std::sync::Arc<str>> {
     match map {
-        TypedMap::Mixed(entries) => entries.into_keys().filter_map(|key| key.as_arc_str()).collect(),
-        TypedMap::StringMixed(entries) => entries.into_keys().collect(),
-        TypedMap::StringInt(entries) => entries.into_keys().collect(),
-        TypedMap::StringFloat(entries) => entries.into_keys().collect(),
-        TypedMap::StringBool(entries) => entries.into_keys().collect(),
+        TypedMap::Mixed(entries) => entries.keys().filter_map(RuntimeMapKey::as_arc_str).collect(),
+        TypedMap::StringMixed(entries) => entries.keys().cloned().collect(),
+        TypedMap::StringInt(entries) => entries.keys().cloned().collect(),
+        TypedMap::StringFloat(entries) => entries.keys().cloned().collect(),
+        TypedMap::StringBool(entries) => entries.keys().cloned().collect(),
     }
 }
 
-fn map_values_list(map: TypedMap, heap: &HeapStore) -> TypedList {
+fn map_values_list(map: &TypedMap, heap: &HeapStore) -> TypedList {
     match map {
-        TypedMap::Mixed(entries) => TypedList::from_runtime_values(entries.into_values().collect(), heap),
-        TypedMap::StringMixed(entries) => TypedList::from_runtime_values(entries.into_values().collect(), heap),
-        TypedMap::StringInt(entries) => TypedList::Int(entries.into_values().collect()),
-        TypedMap::StringFloat(entries) => TypedList::Float(entries.into_values().collect()),
-        TypedMap::StringBool(entries) => TypedList::Bool(entries.into_values().collect()),
+        TypedMap::Mixed(entries) => map_runtime_values_to_list(entries.values(), heap),
+        TypedMap::StringMixed(entries) => map_runtime_values_to_list(entries.values(), heap),
+        TypedMap::StringInt(entries) => TypedList::Int(entries.values().copied().collect()),
+        TypedMap::StringFloat(entries) => TypedList::Float(entries.values().copied().collect()),
+        TypedMap::StringBool(entries) => TypedList::Bool(entries.values().copied().collect()),
+    }
+}
+
+enum RuntimeValueListShape {
+    Empty,
+    Int(Vec<i64>),
+    Float(Vec<f64>),
+    Bool(Vec<bool>),
+    String {
+        values: Vec<Arc<str>>,
+        originals: Vec<RuntimeVal>,
+    },
+    Mixed(Vec<RuntimeVal>),
+}
+
+fn map_runtime_values_to_list<'a>(values: impl IntoIterator<Item = &'a RuntimeVal>, heap: &HeapStore) -> TypedList {
+    let mut shape = RuntimeValueListShape::Empty;
+    for value in values {
+        shape = append_map_value_list_shape(shape, value, heap);
+    }
+    match shape {
+        RuntimeValueListShape::Empty => TypedList::Mixed(Vec::new()),
+        RuntimeValueListShape::Int(values) => TypedList::Int(values),
+        RuntimeValueListShape::Float(values) => TypedList::Float(values),
+        RuntimeValueListShape::Bool(values) => TypedList::Bool(values),
+        RuntimeValueListShape::String { values, .. } => TypedList::String(values),
+        RuntimeValueListShape::Mixed(values) => TypedList::Mixed(values),
+    }
+}
+
+fn append_map_value_list_shape(
+    shape: RuntimeValueListShape,
+    value: &RuntimeVal,
+    heap: &HeapStore,
+) -> RuntimeValueListShape {
+    match (shape, value) {
+        (RuntimeValueListShape::Empty, RuntimeVal::Int(value)) => RuntimeValueListShape::Int(vec![*value]),
+        (RuntimeValueListShape::Empty, RuntimeVal::Float(value)) => RuntimeValueListShape::Float(vec![*value]),
+        (RuntimeValueListShape::Empty, RuntimeVal::Bool(value)) => RuntimeValueListShape::Bool(vec![*value]),
+        (RuntimeValueListShape::Empty, value) => match runtime_string_from_map_value(value, heap) {
+            Some(string) => RuntimeValueListShape::String {
+                values: vec![string],
+                originals: vec![value.clone()],
+            },
+            None => RuntimeValueListShape::Mixed(vec![value.clone()]),
+        },
+        (RuntimeValueListShape::Int(mut values), RuntimeVal::Int(value)) => {
+            values.push(*value);
+            RuntimeValueListShape::Int(values)
+        }
+        (RuntimeValueListShape::Float(mut values), RuntimeVal::Float(value)) => {
+            values.push(*value);
+            RuntimeValueListShape::Float(values)
+        }
+        (RuntimeValueListShape::Bool(mut values), RuntimeVal::Bool(value)) => {
+            values.push(*value);
+            RuntimeValueListShape::Bool(values)
+        }
+        (
+            RuntimeValueListShape::String {
+                mut values,
+                mut originals,
+            },
+            value,
+        ) => match runtime_string_from_map_value(value, heap) {
+            Some(string) => {
+                values.push(string);
+                originals.push(value.clone());
+                RuntimeValueListShape::String { values, originals }
+            }
+            None => {
+                originals.push(value.clone());
+                RuntimeValueListShape::Mixed(originals)
+            }
+        },
+        (RuntimeValueListShape::Mixed(mut values), value) => {
+            values.push(value.clone());
+            RuntimeValueListShape::Mixed(values)
+        }
+        (RuntimeValueListShape::Int(values), value) => {
+            let mut mixed = values.into_iter().map(RuntimeVal::Int).collect::<Vec<_>>();
+            mixed.push(value.clone());
+            RuntimeValueListShape::Mixed(mixed)
+        }
+        (RuntimeValueListShape::Float(values), value) => {
+            let mut mixed = values.into_iter().map(RuntimeVal::Float).collect::<Vec<_>>();
+            mixed.push(value.clone());
+            RuntimeValueListShape::Mixed(mixed)
+        }
+        (RuntimeValueListShape::Bool(values), value) => {
+            let mut mixed = values.into_iter().map(RuntimeVal::Bool).collect::<Vec<_>>();
+            mixed.push(value.clone());
+            RuntimeValueListShape::Mixed(mixed)
+        }
+    }
+}
+
+fn runtime_string_from_map_value(value: &RuntimeVal, heap: &HeapStore) -> Option<Arc<str>> {
+    match value {
+        RuntimeVal::ShortStr(value) => Some(Arc::<str>::from(value.as_str())),
+        RuntimeVal::Obj(handle) => match heap.get(*handle) {
+            Some(HeapValue::String(value)) => Some(Arc::clone(value)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn delete_map_entry(map: &TypedMap, key: &str) -> (TypedMap, RuntimeVal) {
+    match map {
+        TypedMap::Mixed(entries) => {
+            let removed_key = RuntimeMapKey::String(Arc::<str>::from(key));
+            let mut removed = RuntimeVal::Nil;
+            let entries = entries
+                .iter()
+                .filter_map(|(entry_key, value)| {
+                    if *entry_key == removed_key {
+                        removed = value.clone();
+                        None
+                    } else {
+                        Some((entry_key.clone(), value.clone()))
+                    }
+                })
+                .collect();
+            (TypedMap::Mixed(entries), removed)
+        }
+        TypedMap::StringMixed(entries) => {
+            let mut removed = RuntimeVal::Nil;
+            let entries = entries
+                .iter()
+                .filter_map(|(entry_key, value)| {
+                    if entry_key.as_ref() == key {
+                        removed = value.clone();
+                        None
+                    } else {
+                        Some((entry_key.clone(), value.clone()))
+                    }
+                })
+                .collect();
+            (TypedMap::StringMixed(entries), removed)
+        }
+        TypedMap::StringInt(entries) => {
+            let mut removed = RuntimeVal::Nil;
+            let entries = entries
+                .iter()
+                .filter_map(|(entry_key, value)| {
+                    if entry_key.as_ref() == key {
+                        removed = RuntimeVal::Int(*value);
+                        None
+                    } else {
+                        Some((entry_key.clone(), *value))
+                    }
+                })
+                .collect();
+            (TypedMap::StringInt(entries), removed)
+        }
+        TypedMap::StringFloat(entries) => {
+            let mut removed = RuntimeVal::Nil;
+            let entries = entries
+                .iter()
+                .filter_map(|(entry_key, value)| {
+                    if entry_key.as_ref() == key {
+                        removed = RuntimeVal::Float(*value);
+                        None
+                    } else {
+                        Some((entry_key.clone(), *value))
+                    }
+                })
+                .collect();
+            (TypedMap::StringFloat(entries), removed)
+        }
+        TypedMap::StringBool(entries) => {
+            let mut removed = RuntimeVal::Nil;
+            let entries = entries
+                .iter()
+                .filter_map(|(entry_key, value)| {
+                    if entry_key.as_ref() == key {
+                        removed = RuntimeVal::Bool(*value);
+                        None
+                    } else {
+                        Some((entry_key.clone(), *value))
+                    }
+                })
+                .collect();
+            (TypedMap::StringBool(entries), removed)
+        }
     }
 }
 
@@ -188,6 +439,7 @@ mod tests {
         token::Tokenizer,
         vm::{NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32, VmContext},
     };
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use crate::runtime_native::runtime_string_value;
@@ -304,22 +556,33 @@ mod tests {
         entries.insert(RuntimeMapKey::String(Arc::<str>::from("a")), RuntimeVal::Int(1));
         let mut state = RuntimeModuleState32::default();
         let map = RuntimeVal::Obj(
-            state
-                .heap
-                .alloc(HeapValue::Map(TypedMap::from_runtime_entries(entries))),
+            state.heap_mut().alloc(HeapValue::Map(TypedMap::StringInt(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let RuntimeMapKey::String(key) = key else {
+                            panic!("test map key must be a string");
+                        };
+                        let RuntimeVal::Int(value) = value else {
+                            panic!("test map value must be an int");
+                        };
+                        (key, value)
+                    })
+                    .collect(),
+            ))),
         );
-        let key = runtime_string_value("b", &mut state.heap);
-        let args = [map, key, RuntimeVal::Int(2)];
+        let key = runtime_string_value("a", state.heap_mut());
+        let args = [map, key, RuntimeVal::Int(7)];
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
         let result = function(NativeArgs32::new(&args), &mut runtime)?;
         let RuntimeVal::Obj(handle) = result else {
             panic!("set should return map object");
         };
-        let Some(HeapValue::Map(map)) = runtime.heap().get(handle) else {
-            panic!("set should preserve map in runtime heap");
+        let Some(HeapValue::Map(TypedMap::StringInt(map))) = runtime.heap().get(handle) else {
+            panic!("set should preserve typed int map backing");
         };
-        assert_eq!(map.get_str("a"), Some(RuntimeVal::Int(1)));
-        assert_eq!(map.get_str("b"), Some(RuntimeVal::Int(2)));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("a"), Some(&7));
         Ok(())
     }
 
@@ -333,7 +596,7 @@ mod tests {
         entries.insert(Arc::<str>::from("a"), 1);
         entries.insert(Arc::<str>::from("b"), 2);
         let mut state = RuntimeModuleState32::default();
-        let map = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(entries))));
+        let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringInt(entries))));
         let args = [map];
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
 
@@ -351,6 +614,35 @@ mod tests {
     }
 
     #[test]
+    fn test_map_values_classifies_string_mixed_backing_without_runtime_value_helper() -> Result<()> {
+        let (_, function) = map_native("values")?;
+        let NativeFunction32::Plain(function) = function else {
+            panic!("values should use plain RuntimeNative32");
+        };
+        let mut state = RuntimeModuleState32::default();
+        let heap_string = runtime_string_value("long-map-value", state.heap_mut());
+        let mut entries = BTreeMap::new();
+        entries.insert(Arc::<str>::from("a"), runtime_string_value("short", state.heap_mut()));
+        entries.insert(Arc::<str>::from("b"), heap_string);
+        let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
+        let args = [map];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+
+        let RuntimeVal::Obj(handle) = result else {
+            panic!("values should return list object");
+        };
+        let Some(HeapValue::List(TypedList::String(values))) = runtime.heap().get(handle) else {
+            panic!("values should classify all string values into typed string backing");
+        };
+        assert_eq!(values.len(), 2);
+        assert!(values.iter().any(|value| value.as_ref() == "short"));
+        assert!(values.iter().any(|value| value.as_ref() == "long-map-value"));
+        Ok(())
+    }
+
+    #[test]
     fn test_map_keys_reads_string_key_backing_directly() -> Result<()> {
         let (_, function) = map_native("keys")?;
         let NativeFunction32::Plain(function) = function else {
@@ -360,7 +652,7 @@ mod tests {
         entries.insert(Arc::<str>::from("long-key-one"), true);
         entries.insert(Arc::<str>::from("long-key-two"), false);
         let mut state = RuntimeModuleState32::default();
-        let map = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringBool(entries))));
+        let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringBool(entries))));
         let args = [map];
         let mut runtime = NativeRuntime32::new(&mut state, None, None);
 
@@ -374,6 +666,42 @@ mod tests {
         };
         assert_eq!(values.len(), 2);
         assert_eq!(runtime.heap().len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_delete_preserves_typed_map_backing_directly() -> Result<()> {
+        let (_, function) = map_native("delete")?;
+        let NativeFunction32::Plain(function) = function else {
+            panic!("delete should use plain RuntimeNative32");
+        };
+        let mut entries = BTreeMap::new();
+        entries.insert(Arc::<str>::from("a"), 1);
+        entries.insert(Arc::<str>::from("b"), 2);
+        let mut state = RuntimeModuleState32::default();
+        let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringInt(entries))));
+        let key = runtime_string_value("b", state.heap_mut());
+        let args = [map, key];
+        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+
+        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+
+        let RuntimeVal::Obj(pair_handle) = result else {
+            panic!("delete should return pair list");
+        };
+        let Some(HeapValue::List(TypedList::Mixed(pair))) = runtime.heap().get(pair_handle) else {
+            panic!("delete should return mixed pair list");
+        };
+        let [RuntimeVal::Obj(updated_handle), RuntimeVal::Int(removed)] = pair.as_slice() else {
+            panic!("delete should return updated map and removed int");
+        };
+        let Some(HeapValue::Map(TypedMap::StringInt(updated))) = runtime.heap().get(*updated_handle) else {
+            panic!("delete should preserve typed int map backing");
+        };
+        assert_eq!(*removed, 2);
+        assert_eq!(updated.get("a"), Some(&1));
+        assert_eq!(updated.get("b"), None);
+        assert_eq!(runtime.heap().len(), 3);
         Ok(())
     }
 }

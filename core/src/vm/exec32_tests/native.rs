@@ -42,6 +42,8 @@ fn execute_module32_calls_native_function_with_same_call_opcode() {
     let result = execute_module32(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert_eq!(result.state.stack[1], RuntimeVal::Nil);
+    assert_eq!(result.state.stack[2], RuntimeVal::Nil);
 }
 
 #[test]
@@ -115,6 +117,11 @@ fn execute_module32_calls_full_state_native_with_named_args() {
     let result = execute_module32(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(50)]);
+    assert_eq!(result.state.stack[1], RuntimeVal::Nil);
+    assert_eq!(result.state.stack[2], RuntimeVal::Nil);
+    assert_eq!(result.state.stack[3], RuntimeVal::Nil);
+    assert_eq!(result.state.stack[4], RuntimeVal::Nil);
+    assert_eq!(result.state.stack[5], RuntimeVal::Nil);
 }
 
 #[test]
@@ -137,7 +144,12 @@ fn execute_module32_calls_runtime32_callable_from_heap() {
         ..Function32::default()
     };
     let callee_module = Arc::new(Module32::single(callee));
-    let callable = RuntimeCallable32::new(Arc::clone(&callee_module), 0, Vec::new(), HeapStore::new(), Vec::new());
+    let callable = RuntimeCallable32::with_state(
+        Arc::clone(&callee_module),
+        0,
+        Arc::new(Vec::new()),
+        Arc::new(Mutex::new(RuntimeModuleState32::new(HeapStore::new(), Vec::new()))),
+    );
 
     let entry = Function32 {
         consts: ConstPool32 {
@@ -171,6 +183,151 @@ fn execute_module32_calls_runtime32_callable_from_heap() {
         .expect("call runtime32");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
+    assert_eq!(result.state.stack[1], RuntimeVal::Nil);
+}
+
+#[test]
+fn direct_runtime_closure_call_restores_state_after_arg_error() {
+    let callee = Function32 {
+        code: vec![Instr32::abc(Opcode32::Return, 0, 1, 0)],
+        register_count: 2,
+        param_count: 1,
+        positional_param_count: 1,
+        param_names: vec!["value".into()],
+        ..Function32::default()
+    };
+    let module = Module32::single(callee);
+    let mut state = RuntimeModuleState32::default();
+    state.stack_top = 1;
+    state.stack.resize(1, RuntimeVal::Nil);
+    state.stack[0] = RuntimeVal::Int(99);
+    let callable = RuntimeVal::Obj(state.heap.alloc(HeapValue::Callable(CallableValue::Closure {
+        function_index: 0,
+        captures: Arc::new(Vec::new()),
+    })));
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    let err = call_runtime_value32_runtime(callable.clone(), &[], &mut state, Some(&module), Some(&mut ctx))
+        .expect_err("arity error");
+
+    assert!(err.to_string().contains("Function expects 1 positional arguments"));
+    assert!(matches!(
+        state.heap.get(match callable {
+            RuntimeVal::Obj(handle) => handle,
+            _ => unreachable!(),
+        }),
+        Some(HeapValue::Callable(_))
+    ));
+    assert_eq!(state.stack_top, 1);
+    assert_eq!(state.stack[0], RuntimeVal::Int(99));
+}
+
+#[test]
+fn direct_runtime_closure_named_call_restores_state_after_named_error() {
+    let callee = Function32 {
+        code: vec![Instr32::abc(Opcode32::Return, 0, 1, 0)],
+        register_count: 2,
+        param_count: 1,
+        positional_param_count: 0,
+        param_names: vec!["value".into()],
+        ..Function32::default()
+    };
+    let module = Module32::single(callee);
+    let mut state = RuntimeModuleState32::default();
+    state.stack_top = 1;
+    state.stack.resize(1, RuntimeVal::Nil);
+    state.stack[0] = RuntimeVal::Int(77);
+    let callable = RuntimeVal::Obj(state.heap.alloc(HeapValue::Callable(CallableValue::Closure {
+        function_index: 0,
+        captures: Arc::new(Vec::new()),
+    })));
+    let named = state.heap.alloc(HeapValue::String("not-a-map".into()));
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    let err = call_runtime_value32_runtime_named_map(
+        callable.clone(),
+        &[],
+        Some(named),
+        &mut state,
+        Some(&module),
+        Some(&mut ctx),
+    )
+    .expect_err("named map error");
+
+    assert!(err.to_string().contains("named arguments must be a map"));
+    assert!(matches!(
+        state.heap.get(match callable {
+            RuntimeVal::Obj(handle) => handle,
+            _ => unreachable!(),
+        }),
+        Some(HeapValue::Callable(_))
+    ));
+    assert!(matches!(
+        state.heap.get(named),
+        Some(HeapValue::String(value)) if value.as_ref() == "not-a-map"
+    ));
+    assert_eq!(state.stack_top, 1);
+    assert_eq!(state.stack[0], RuntimeVal::Int(77));
+}
+
+#[test]
+fn direct_full_state_native_named_map_uses_heap_map_source() {
+    fn full_state_named(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        if runtime.state_ctx_module_mut().is_none() {
+            bail!("full_state_named requires active runtime state");
+        }
+        let [RuntimeVal::Int(value)] = args.as_slice() else {
+            bail!("full_state_named expects one positional int");
+        };
+        let mut increment = 0;
+        args.try_for_each_named(runtime.heap(), |name, value| {
+            let RuntimeVal::Int(value) = value else {
+                bail!("{name} must be int");
+            };
+            match name {
+                "increment" => increment = *value,
+                other => bail!("unknown named argument {other}"),
+            }
+            Ok(())
+        })?;
+        Ok(RuntimeVal::Int(value + increment))
+    }
+
+    let mut state = RuntimeModuleState32::default();
+    let callable = RuntimeVal::Obj(state.heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+        arity: 1,
+        function: NativeFunction32::FullState(full_state_named),
+    })));
+    let named = state
+        .heap
+        .alloc(HeapValue::Map(TypedMap::StringInt(std::collections::BTreeMap::from([
+            (Arc::<str>::from("increment"), 37),
+        ]))));
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    let result = call_runtime_value32_runtime_named_map(
+        callable.clone(),
+        &[RuntimeVal::Int(5)],
+        Some(named),
+        &mut state,
+        None,
+        Some(&mut ctx),
+    )
+    .expect("full state native named map");
+
+    assert_eq!(result, RuntimeVal::Int(42));
+    assert!(matches!(
+        state.heap.get(named),
+        Some(HeapValue::Map(TypedMap::StringInt(values)))
+            if values.get("increment").copied() == Some(37)
+    ));
+    assert!(matches!(
+        state.heap.get(match callable {
+            RuntimeVal::Obj(handle) => handle,
+            _ => unreachable!(),
+        }),
+        Some(HeapValue::Callable(_))
+    ));
 }
 
 #[test]
@@ -194,9 +351,27 @@ fn execute_module32_uses_global_slot_fact_for_get_and_set() {
         capture_count: 0,
         ..Function32::default()
     };
-    entry.performance.set_global_fact(0, PerfGlobalFact { slot: 1 });
-    entry.performance.set_global_fact(2, PerfGlobalFact { slot: 1 });
-    entry.performance.set_global_fact(3, PerfGlobalFact { slot: 1 });
+    entry.performance.set_global_fact(
+        0,
+        PerfGlobalFact {
+            slot: 1,
+            move_source: false,
+        },
+    );
+    entry.performance.set_global_fact(
+        2,
+        PerfGlobalFact {
+            slot: 1,
+            move_source: false,
+        },
+    );
+    entry.performance.set_global_fact(
+        3,
+        PerfGlobalFact {
+            slot: 1,
+            move_source: false,
+        },
+    );
     let module = Module32 {
         functions: vec![entry],
         natives: Vec::new(),
@@ -212,6 +387,77 @@ fn execute_module32_uses_global_slot_fact_for_get_and_set() {
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
     assert_eq!(result.state.globals, vec![RuntimeVal::Int(0), RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn execute_module32_set_global_move_fact_consumes_source_register() {
+    let mut entry = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![ConstHeapValue32::LongString(Arc::<str>::from("stored-global-value"))],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadHeapConst, 0, 0),
+            Instr32::abx(Opcode32::SetGlobal, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    entry.performance.set_global_fact(
+        1,
+        PerfGlobalFact {
+            slot: 0,
+            move_source: true,
+        },
+    );
+    let module = Module32 {
+        functions: vec![entry],
+        natives: Vec::new(),
+        globals: vec![GlobalSlot32 { name: "stored".into() }],
+        entry: 0,
+    };
+
+    let result = execute_module32_with_globals(&module, vec![RuntimeVal::Nil]).expect("execute module");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Nil]);
+    assert!(matches!(result.state.globals[0], RuntimeVal::Obj(_)));
+}
+
+#[test]
+fn execute_module32_set_global_without_move_fact_clones_source_register() {
+    let entry = Function32 {
+        consts: ConstPool32 {
+            heap_values: vec![ConstHeapValue32::LongString(Arc::<str>::from("stored-global-value"))],
+            ..ConstPool32::default()
+        },
+        code: vec![
+            Instr32::abx(Opcode32::LoadHeapConst, 0, 0),
+            Instr32::abx(Opcode32::SetGlobal, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let module = Module32 {
+        functions: vec![entry],
+        natives: Vec::new(),
+        globals: vec![GlobalSlot32 { name: "stored".into() }],
+        entry: 0,
+    };
+
+    let result = execute_module32_with_globals(&module, vec![RuntimeVal::Nil]).expect("execute module");
+
+    assert!(matches!(result.returns[0], RuntimeVal::Obj(_)));
+    assert!(matches!(result.state.globals[0], RuntimeVal::Obj(_)));
 }
 
 #[test]
@@ -259,7 +505,12 @@ fn execute32_caller_handler_catches_raise_from_runtime32_callable() {
         globals: Vec::new(),
         entry: 0,
     });
-    let callable = RuntimeCallable32::new(callee_module, 0, Vec::new(), HeapStore::new(), Vec::new());
+    let callable = RuntimeCallable32::with_state(
+        callee_module,
+        0,
+        Arc::new(Vec::new()),
+        Arc::new(Mutex::new(RuntimeModuleState32::new(HeapStore::new(), Vec::new()))),
+    );
     let entry = Function32 {
         code: vec![
             Instr32::as_bx(Opcode32::TryBegin, 0, 3),
@@ -313,7 +564,12 @@ fn execute_module32_calls_runtime32_callable_with_named_args() {
         globals: Vec::new(),
         entry: 0,
     });
-    let callable = RuntimeCallable32::new(Arc::clone(&callee_module), 0, Vec::new(), HeapStore::new(), Vec::new());
+    let callable = RuntimeCallable32::with_state(
+        Arc::clone(&callee_module),
+        0,
+        Arc::new(Vec::new()),
+        Arc::new(Mutex::new(RuntimeModuleState32::new(HeapStore::new(), Vec::new()))),
+    );
 
     let entry = Function32 {
         consts: ConstPool32 {
@@ -378,16 +634,18 @@ fn runtime32_callable_error_keeps_shared_module_state() {
         globals: vec![GlobalSlot32 { name: "counter".into() }],
         entry: 0,
     });
-    let callable = RuntimeCallable32::new(
+    let callable = RuntimeCallable32::with_state(
         Arc::clone(&callee_module),
         0,
-        Vec::new(),
-        HeapStore::new(),
-        vec![RuntimeVal::Int(1)],
+        Arc::new(Vec::new()),
+        Arc::new(Mutex::new(RuntimeModuleState32::new(
+            HeapStore::new(),
+            vec![RuntimeVal::Int(1)],
+        ))),
     );
     let mut ctx = VmContext::new_without_core_vm_builtins();
 
-    let err = call_runtime_callable32_raw(&callable, &[], &mut ctx).expect_err("call should raise");
+    let err = call_runtime_callable32_test(&callable, &[], &mut ctx).expect_err("call should raise");
 
     assert!(err.to_string().contains("boom"));
     let state = callable.state.lock().expect("callable state");
@@ -421,10 +679,10 @@ fn execute_module32_context_native_can_use_vm_context() {
         let Some(seed_export) = ctx.get_runtime_global("seed") else {
             bail!("seed must be a runtime global");
         };
-        let RuntimeVal::Int(seed) = seed_export.value else {
+        let RuntimeVal::Int(seed) = seed_export.value() else {
             bail!("seed must be an int runtime global");
         };
-        let value = seed + delta;
+        let value = *seed + delta;
         ctx.define_runtime_value("seen", RuntimeVal::Int(value), HeapStore::new());
         Ok(RuntimeVal::Int(value))
     }
@@ -445,8 +703,8 @@ fn execute_module32_context_native_can_use_vm_context() {
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
     assert!(matches!(
-        ctx.get_runtime_global("seen").map(|export| &export.value),
-        Some(RuntimeVal::Int(42))
+        ctx.get_runtime_global("seen").map(|export| export.value()),
+        Some(&RuntimeVal::Int(42))
     ));
 }
 
@@ -464,12 +722,12 @@ fn execute_program32_with_ctx_reads_external_slots_without_syncing_back_to_conte
     let mut ctx = crate::vm::VmContext::new_without_core_vm_builtins();
     ctx.define_runtime_value("seed", RuntimeVal::Int(39), HeapStore::new());
 
-    let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("execute");
+    let result = execute_program32_with_ctx(&program, &mut ctx).expect("execute");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(42)]);
     assert!(matches!(
-        ctx.get_runtime_global("seed").map(|export| &export.value),
-        Some(RuntimeVal::Int(39))
+        ctx.get_runtime_global("seed").map(|export| export.value()),
+        Some(&RuntimeVal::Int(39))
     ));
     assert!(ctx.get_runtime_global("total").is_none());
 }
@@ -503,7 +761,7 @@ fn execute_program32_imports_core_bit_builtins_as_runtime_native32() {
     let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
     let mut ctx = crate::vm::VmContext::new();
 
-    let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("execute");
+    let result = execute_program32_with_ctx(&program, &mut ctx).expect("execute");
 
     assert_eq!(result.returns, vec![RuntimeVal::Int(6)]);
 }
@@ -521,7 +779,7 @@ fn execute_program32_imports_core_object_builtins_as_runtime_native32() {
     let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
     let mut ctx = crate::vm::VmContext::new();
 
-    let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("execute");
+    let result = execute_program32_with_ctx(&program, &mut ctx).expect("execute");
     let map = result.first_return_map().expect("result map");
 
     assert_eq!(
@@ -539,6 +797,23 @@ fn execute_program32_imports_core_object_builtins_as_runtime_native32() {
 }
 
 #[test]
+fn execute_program32_method_helper_uses_list_handle_positional_args() {
+    let tokens = crate::token::Tokenizer::tokenize(
+        r#"
+        let parts = "crimson-long-name,emerald-long-name".split(",");
+        return parts.join("|");
+        "#,
+    )
+    .expect("tokenize");
+    let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+    let mut ctx = crate::vm::VmContext::new();
+
+    let result = execute_program32_with_ctx(&program, &mut ctx).expect("execute");
+
+    assert_eq!(result.display_first_return(), "crimson-long-name|emerald-long-name");
+}
+
+#[test]
 fn execute_program32_imports_typeof_as_runtime_native32() {
     let tokens = crate::token::Tokenizer::tokenize(
         r#"
@@ -549,7 +824,7 @@ fn execute_program32_imports_typeof_as_runtime_native32() {
     let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
     let mut ctx = crate::vm::VmContext::new();
 
-    let result = execute_program32_raw_with_ctx(&program, &mut ctx).expect("execute");
+    let result = execute_program32_with_ctx(&program, &mut ctx).expect("execute");
 
     assert!(matches!(result.first_return(), RuntimeVal::ShortStr(value) if value.as_str() == "Object"));
 }
