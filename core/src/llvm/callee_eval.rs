@@ -5,15 +5,17 @@ use crate::vm::{Function32Data, Instr32, Module32Artifact, Opcode32};
 use super::{
     const_display::native_string_const_value,
     ir_text::{llvm_float_literal, native_relative_target},
+    output::emit_native_builtin_call,
     straightline_value::{
         NativeStraightlineValue, NativeStringKeyKind, native_runtime_string_key_kind, native_static_alias_symbol,
         native_static_collection_equality_bool, native_static_compare_bool, native_static_container_test,
         native_static_contains, native_static_equality_bool, native_static_f64_binary,
-        native_static_f64_divisor_nonzero, native_static_i64_binary, native_static_i64_divisor_nonzero,
-        native_static_index, native_static_int_range, native_static_len, native_static_list_from_values,
-        native_static_load_cell, native_static_map_from_pairs, native_static_map_rest, native_static_not,
-        native_static_object_from_fields, native_static_set_index, native_static_slice_from, native_static_store_cell,
-        native_static_to_iter, native_static_to_string_value, native_static_truthy,
+        native_static_f64_divisor_nonzero, native_static_global, native_static_i64_binary,
+        native_static_i64_divisor_nonzero, native_static_index, native_static_int_range, native_static_len,
+        native_static_list_from_values, native_static_list_join, native_static_list_push, native_static_load_cell,
+        native_static_map_from_pairs, native_static_map_rest, native_static_not, native_static_object_from_fields,
+        native_static_set_index, native_static_slice_from, native_static_store_cell, native_static_string_split,
+        native_static_string_starts_with, native_static_to_iter, native_static_to_string_value, native_static_truthy,
         native_straightline_heap_const_value,
     },
 };
@@ -192,7 +194,14 @@ pub(super) fn native_straightline_function_return(
                 regs[instr.a() as usize] = Some(value);
             }
             Opcode32::GetGlobal => {
-                let Some(value) = globals.get(instr.bx() as usize).and_then(Clone::clone) else {
+                let value = globals.get(instr.bx() as usize).and_then(Clone::clone).or_else(|| {
+                    artifact
+                        .module
+                        .globals
+                        .get(instr.bx() as usize)
+                        .and_then(|name| native_static_global(name))
+                });
+                let Some(value) = value else {
                     return Ok(None);
                 };
                 if instr.a() as usize >= regs.len() {
@@ -482,6 +491,19 @@ pub(super) fn native_straightline_function_return(
                 native_replace_static_aliases(&mut regs, globals, instr.a() as usize, &value);
                 regs[instr.a() as usize] = Some(value);
             }
+            Opcode32::ListPush => {
+                let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(value) = native_static_list_push(target, value) else {
+                    return Ok(None);
+                };
+                native_replace_static_aliases(&mut regs, globals, instr.a() as usize, &value);
+                regs[instr.a() as usize] = Some(value);
+            }
             Opcode32::Contains => {
                 let Some(needle) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
@@ -685,6 +707,55 @@ pub(super) fn native_straightline_function_return(
                     value,
                 });
             }
+            Opcode32::StringStartsWith => {
+                let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(prefix) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                let Some(value) = native_static_string_starts_with(target, prefix) else {
+                    return Ok(None);
+                };
+                regs[instr.a() as usize] = Some(value);
+            }
+            Opcode32::StringSplit => {
+                let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(delimiter) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                let symbol = format!("@lk_func{function_index}_split_list_{}", *ssa_index);
+                *ssa_index += 1;
+                let Some(value) = native_static_string_split(target, delimiter, symbol) else {
+                    return Ok(None);
+                };
+                regs[instr.a() as usize] = Some(value);
+            }
+            Opcode32::ListJoin => {
+                let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(separator) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                let symbol = format!("@lk_func{function_index}_join_str_{}", *ssa_index);
+                *ssa_index += 1;
+                let Some(value) = native_static_list_join(target, separator, symbol) else {
+                    return Ok(None);
+                };
+                regs[instr.a() as usize] = Some(value);
+            }
             Opcode32::Test => {
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
@@ -740,10 +811,21 @@ pub(super) fn native_straightline_function_return(
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
-                let Some((target, captures)) = native_straightline_call_target(target) else {
+                let Some(args) = native_straightline_call_args(&regs, instr.b(), instr.c()) else {
                     return Ok(None);
                 };
-                let Some(args) = native_straightline_call_args(&regs, instr.b(), instr.c()) else {
+                if let NativeStraightlineValue::Builtin(builtin) = target {
+                    if instr.a() as usize >= regs.len() {
+                        return Ok(None);
+                    }
+                    regs[instr.a() as usize] = emit_native_builtin_call(body, builtin, &args, ssa_index);
+                    if regs[instr.a() as usize].is_none() {
+                        return Ok(None);
+                    }
+                    pc = next_pc;
+                    continue;
+                }
+                let Some((target, captures)) = native_straightline_call_target(target) else {
                     return Ok(None);
                 };
                 regs[instr.a() as usize] = native_straightline_function_return(
@@ -751,6 +833,24 @@ pub(super) fn native_straightline_function_return(
                     target as usize,
                     &args,
                     &captures,
+                    globals,
+                    depth + 1,
+                    body,
+                    ssa_index,
+                )?;
+                if regs[instr.a() as usize].is_none() {
+                    return Ok(None);
+                }
+            }
+            Opcode32::CallDirect => {
+                let Some(args) = native_straightline_call_args(&regs, instr.a(), instr.c()) else {
+                    return Ok(None);
+                };
+                regs[instr.a() as usize] = native_straightline_function_return(
+                    artifact,
+                    instr.b() as usize,
+                    &args,
+                    &[],
                     globals,
                     depth + 1,
                     body,

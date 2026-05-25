@@ -314,6 +314,17 @@ impl TypedMap {
     pub fn set(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
         match self {
             Self::Mixed(values) => {
+                if values.is_empty()
+                    && let Some(key) = key.as_arc_str()
+                {
+                    *self = match value {
+                        RuntimeVal::Int(value) => Self::StringInt(BTreeMap::from([(key, value)])),
+                        RuntimeVal::Float(value) => Self::StringFloat(BTreeMap::from([(key, value)])),
+                        RuntimeVal::Bool(value) => Self::StringBool(BTreeMap::from([(key, value)])),
+                        value => Self::StringMixed(BTreeMap::from([(key, value)])),
+                    };
+                    return;
+                }
                 values.insert(key, value);
             }
             Self::StringMixed(values) => {
@@ -672,6 +683,22 @@ mod tests {
         assert_eq!(
             map.get(&RuntimeMapKey::String(Arc::<str>::from("answer"))),
             Some(RuntimeVal::Bool(true))
+        );
+    }
+
+    #[test]
+    fn empty_mixed_map_set_with_string_key_specializes_backing() {
+        let mut map = TypedMap::Mixed(BTreeMap::new());
+
+        map.set(
+            RuntimeMapKey::ShortStr(ShortStr::new("answer").expect("short")),
+            RuntimeVal::Int(42),
+        );
+
+        assert!(matches!(map, TypedMap::StringInt(_)));
+        assert_eq!(
+            map.get(&RuntimeMapKey::String(Arc::<str>::from("answer"))),
+            Some(RuntimeVal::Int(42))
         );
     }
 

@@ -191,6 +191,7 @@ impl Executor32 {
                         ctx.as_deref_mut(),
                     )
                 };
+                self.sync_heap_gc_threshold();
                 result.or_else(|error| self.handle_call_error(error))
             }
             CallableTarget32::Closure {

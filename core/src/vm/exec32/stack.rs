@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use crate::{
     vm::CallWindow32,
 };
 
-use crate::vm::analysis::record_register_write;
+use crate::vm::analysis::record_register_write_known_enabled;
 
 use super::{Executor32, ReturnValues32};
 
@@ -17,18 +17,22 @@ impl Executor32 {
     #[inline]
     pub(super) fn read(&self, register: u8) -> Result<&RuntimeVal> {
         let index = self.stack_index(register)?;
-        self.state
-            .stack
-            .get(index)
-            .ok_or_else(|| anyhow!("register {} out of bounds", register))
+        Ok(&self.state.stack[index])
     }
 
     #[inline]
     pub(super) fn write(&mut self, register: u8, value: RuntimeVal) -> Result<()> {
         let index = self.stack_index(register)?;
-        self.state.stack[index] = value;
-        record_register_write();
+        self.write_stack_index(index, value);
         Ok(())
+    }
+
+    #[inline]
+    pub(super) fn write_stack_index(&mut self, index: usize, value: RuntimeVal) {
+        self.state.stack[index] = value;
+        if self.collect_metrics {
+            record_register_write_known_enabled();
+        }
     }
 
     #[inline]
@@ -38,11 +42,34 @@ impl Executor32 {
     }
 
     #[inline]
-    fn stack_index(&self, register: u8) -> Result<usize> {
+    pub(super) fn stack_index(&self, register: u8) -> Result<usize> {
         if register as u16 >= self.register_count {
             bail!("register {} out of bounds", register);
         }
         Ok(self.frame_base + register as usize)
+    }
+
+    #[inline]
+    pub(super) fn stack_abc_indices(&self, instr: crate::vm::Instr32) -> Result<(usize, usize, usize)> {
+        let a = instr.a();
+        let b = instr.b();
+        let c = instr.c();
+        let max = a.max(b).max(c);
+        if max as u16 >= self.register_count {
+            bail!("register {} out of bounds", max);
+        }
+        let base = self.frame_base;
+        Ok((base + a as usize, base + b as usize, base + c as usize))
+    }
+
+    #[inline]
+    pub(super) fn stack_bc_indices(&self, lhs: u8, rhs: u8) -> Result<(usize, usize)> {
+        let max = lhs.max(rhs);
+        if max as u16 >= self.register_count {
+            bail!("register {} out of bounds", max);
+        }
+        let base = self.frame_base;
+        Ok((base + lhs as usize, base + rhs as usize))
     }
 
     pub(super) fn reset_entry_frame(&mut self, register_count: u16) {

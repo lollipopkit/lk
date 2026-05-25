@@ -3,7 +3,8 @@ use crate::{
     stmt::stmt_parser::StmtParser,
     token::Tokenizer,
     vm::{
-        ConstPool32Data, Function32Data, Instr32, MODULE32_ARTIFACT_VERSION, Module32Artifact, Module32Data, Opcode32,
+        ConstHeapValue32Data, ConstPool32Data, Function32Data, Instr32, MODULE32_ARTIFACT_VERSION, Module32Artifact,
+        Module32Data, Opcode32,
     },
 };
 
@@ -13,6 +14,664 @@ fn llvm_backend_lowers_zero_arg_direct_function_call_without_shell() {
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 42"));
+}
+
+#[test]
+fn llvm_backend_lowers_control_flow_call_direct_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::LoadBool, 1, 1, 0).raw(),
+                        Instr32::abc(Opcode32::CallDirect, 0, 1, 1).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 2,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::Test, 0, 1, 2).raw(),
+                        Instr32::abc(Opcode32::LoadBool, 1, 0, 0).raw(),
+                        Instr32::sj(Opcode32::Jmp, 1).raw(),
+                        Instr32::abc(Opcode32::LoadBool, 1, 1, 0).raw(),
+                        Instr32::abc(Opcode32::Return, 1, 1, 0).raw(),
+                    ],
+                    register_count: 2,
+                    param_count: 1,
+                    positional_param_count: 1,
+                    param_names: vec!["value".to_string()],
+                    capture_count: 0,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(
+        &artifact,
+        LlvmBackendOptions {
+            run_optimizations: false,
+            ..LlvmBackendOptions::default()
+        },
+    )
+    .expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("call1.bb0"));
+}
+
+#[test]
+fn llvm_backend_lowers_control_flow_direct_emit_text_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: vec!["println".to_string()],
+            functions: vec![
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: vec![7],
+                        floats: Vec::new(),
+                        strings: vec!["workload".to_string()],
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::LoadBool, 0, 1, 0).raw(),
+                        Instr32::abc(Opcode32::Test, 0, 1, 1).raw(),
+                        Instr32::abx(Opcode32::LoadString, 1, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 2, 0).raw(),
+                        Instr32::abc(Opcode32::CallDirect, 0, 1, 2).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: vec![
+                            ConstHeapValue32Data::LongString("name=".to_string()),
+                            ConstHeapValue32Data::LongString("|count=".to_string()),
+                        ],
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::GetGlobal, 2, 0).raw(),
+                        Instr32::abx(Opcode32::LoadHeapConst, 3, 0).raw(),
+                        Instr32::abc(Opcode32::ConcatString, 4, 3, 0).raw(),
+                        Instr32::abx(Opcode32::LoadHeapConst, 5, 1).raw(),
+                        Instr32::abc(Opcode32::ToString, 6, 1, 0).raw(),
+                        Instr32::abc(Opcode32::ConcatString, 7, 4, 5).raw(),
+                        Instr32::abc(Opcode32::ConcatString, 8, 7, 6).raw(),
+                        Instr32::abc(Opcode32::Move, 3, 8, 0).raw(),
+                        Instr32::abc(Opcode32::Call, 2, 2, 1).raw(),
+                        Instr32::abc(Opcode32::LoadNil, 0, 0, 0).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 9,
+                    param_count: 2,
+                    positional_param_count: 2,
+                    param_names: vec!["name".to_string(), "count".to_string()],
+                    capture_count: 0,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_raw_fmt"));
+    assert!(artifact.module.ir.contains("call4.bb0"));
+}
+
+#[test]
+fn llvm_backend_lowers_control_flow_static_function_call_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: vec![1, 40, 2, 0],
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::LoadInt, 4, 0).raw(),
+                        Instr32::abc(Opcode32::Test, 4, 1, 6).raw(),
+                        Instr32::abx(Opcode32::LoadFunction, 0, 1).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 1, 1).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 2, 2).raw(),
+                        Instr32::abc(Opcode32::Call, 0, 0, 2).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 0, 3).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 5,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::AddInt, 2, 0, 1).raw(),
+                        Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 2,
+                    positional_param_count: 2,
+                    param_names: vec!["lhs".to_string(), "rhs".to_string()],
+                    capture_count: 0,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(
+        &artifact,
+        LlvmBackendOptions {
+            run_optimizations: false,
+            ..LlvmBackendOptions::default()
+        },
+    )
+    .expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(
+        artifact.module.ir.contains("add i64"),
+        "expected static function native add: {}",
+        artifact.module.ir
+    );
+}
+
+#[test]
+fn llvm_backend_lowers_control_flow_zero_capture_closure_call_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: vec![1, 40, 2, 0],
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::LoadInt, 4, 0).raw(),
+                        Instr32::abc(Opcode32::Test, 4, 1, 6).raw(),
+                        Instr32::abc(Opcode32::MakeClosure, 0, 1, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 1, 1).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 2, 2).raw(),
+                        Instr32::abc(Opcode32::Call, 0, 0, 2).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 0, 3).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 5,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::AddInt, 2, 0, 1).raw(),
+                        Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 2,
+                    positional_param_count: 2,
+                    param_names: vec!["lhs".to_string(), "rhs".to_string()],
+                    capture_count: 0,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(
+        &artifact,
+        LlvmBackendOptions {
+            run_optimizations: false,
+            ..LlvmBackendOptions::default()
+        },
+    )
+    .expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(
+        artifact.module.ir.contains("add i64"),
+        "expected zero-capture closure native add: {}",
+        artifact.module.ir
+    );
+}
+
+#[test]
+fn llvm_backend_lowers_control_flow_static_capture_closure_call_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: vec![2, 0],
+                        floats: Vec::new(),
+                        strings: vec!["value".to_string(), "key".to_string()],
+                        heap_values: vec![ConstHeapValue32Data::Map(Vec::new())],
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::LoadHeapConst, 5, 0).raw(),
+                        Instr32::abx(Opcode32::LoadString, 6, 1).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 1, 0).raw(),
+                        Instr32::abc(Opcode32::SetIndex, 5, 6, 1).raw(),
+                        Instr32::abc(Opcode32::GetIndex, 1, 5, 6).raw(),
+                        Instr32::abc(Opcode32::Test, 1, 1, 5).raw(),
+                        Instr32::abx(Opcode32::LoadString, 3, 0).raw(),
+                        Instr32::abc(Opcode32::MakeClosure, 0, 1, 3).raw(),
+                        Instr32::abc(Opcode32::Call, 0, 0, 0).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 0, 1).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 7,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: vec!["value".to_string()],
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::LoadCapture, 0, 0).raw(),
+                        Instr32::abx(Opcode32::LoadString, 1, 0).raw(),
+                        Instr32::abc(Opcode32::CmpInt, 2, 0, 1).raw(),
+                        Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 1,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(
+        &artifact,
+        LlvmBackendOptions {
+            run_optimizations: false,
+            ..LlvmBackendOptions::default()
+        },
+    )
+    .expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(
+        artifact.module.ir.contains("call8.bb0") && artifact.module.ir.contains("@strcmp"),
+        "expected captured closure native block lowering: {}",
+        artifact.module.ir
+    );
+}
+
+#[test]
+fn llvm_backend_lowers_inline_zero_capture_closure_arg_call_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: vec![40, 2],
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::MakeClosure, 1, 2, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 2, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 3, 1).raw(),
+                        Instr32::abc(Opcode32::CallDirect, 0, 1, 3).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 4,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::Call, 0, 0, 2).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 3,
+                    positional_param_count: 3,
+                    param_names: vec!["f".to_string(), "lhs".to_string(), "rhs".to_string()],
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::AddInt, 2, 0, 1).raw(),
+                        Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 2,
+                    positional_param_count: 2,
+                    param_names: vec!["lhs".to_string(), "rhs".to_string()],
+                    capture_count: 0,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+}
+
+#[test]
+fn llvm_backend_lowers_inline_static_capture_closure_arg_call_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: vec!["value".to_string()],
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::LoadString, 0, 0).raw(),
+                        Instr32::abc(Opcode32::MakeClosure, 1, 2, 0).raw(),
+                        Instr32::abc(Opcode32::CallDirect, 0, 1, 1).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 2,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::Call, 0, 0, 0).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 1,
+                    param_count: 1,
+                    positional_param_count: 1,
+                    param_names: vec!["f".to_string()],
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: vec!["value".to_string()],
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::LoadCapture, 0, 0).raw(),
+                        Instr32::abx(Opcode32::LoadString, 1, 0).raw(),
+                        Instr32::abc(Opcode32::CmpInt, 2, 0, 1).raw(),
+                        Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 1,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(
+        &artifact,
+        LlvmBackendOptions {
+            run_optimizations: false,
+            ..LlvmBackendOptions::default()
+        },
+    )
+    .expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(
+        artifact.module.ir.contains("call2.bb0") && artifact.module.ir.contains("@strcmp"),
+        "expected inline captured closure argument native lowering: {}",
+        artifact.module.ir
+    );
+}
+
+#[test]
+fn llvm_backend_lowers_inline_static_capture_closure_arg_dynamic_call_named_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: vec![40, 1],
+                        floats: Vec::new(),
+                        strings: vec!["delta".to_string()],
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::LoadInt, 0, 0).raw(),
+                        Instr32::abc(Opcode32::MakeClosure, 1, 2, 0).raw(),
+                        Instr32::abx(Opcode32::LoadString, 2, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 3, 1).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 4, 1).raw(),
+                        Instr32::abc(Opcode32::AddInt, 3, 3, 4).raw(),
+                        Instr32::abc(Opcode32::CallDirect, 0, 1, 3).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 5,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::CallNamed, 0, 1 << 7).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 3,
+                    positional_param_count: 3,
+                    param_names: vec!["f".to_string(), "name".to_string(), "value".to_string()],
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::LoadCapture, 1, 0).raw(),
+                        Instr32::abc(Opcode32::AddInt, 2, 1, 0).raw(),
+                        Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 1,
+                    positional_param_count: 0,
+                    param_names: vec!["delta".to_string()],
+                    capture_count: 1,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(
+        &artifact,
+        LlvmBackendOptions {
+            run_optimizations: false,
+            ..LlvmBackendOptions::default()
+        },
+    )
+    .expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(
+        artifact.module.ir.contains("i64 42"),
+        "expected inline captured closure named call native lowering: {}",
+        artifact.module.ir
+    );
+}
+
+#[test]
+fn llvm_backend_lowers_control_flow_static_map_set_index_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![Function32Data {
+                consts: ConstPool32Data {
+                    ints: vec![42],
+                    floats: Vec::new(),
+                    strings: vec!["answer".to_string()],
+                    heap_values: vec![ConstHeapValue32Data::Map(Vec::new())],
+                },
+                code: vec![
+                    Instr32::abc(Opcode32::LoadBool, 0, 1, 0).raw(),
+                    Instr32::abc(Opcode32::Test, 0, 1, 1).raw(),
+                    Instr32::abx(Opcode32::LoadHeapConst, 1, 0).raw(),
+                    Instr32::abx(Opcode32::LoadString, 2, 0).raw(),
+                    Instr32::abx(Opcode32::LoadInt, 3, 0).raw(),
+                    Instr32::abc(Opcode32::SetIndex, 1, 2, 3).raw(),
+                    Instr32::abc(Opcode32::GetIndex, 4, 1, 2).raw(),
+                    Instr32::abc(Opcode32::Return, 4, 1, 0).raw(),
+                ],
+                register_count: 5,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
 
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
@@ -536,6 +1195,74 @@ fn llvm_backend_lowers_static_call_named_without_shell() {
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
     assert!(artifact.module.ir.contains("@lk_i64_fmt"));
     assert!(artifact.module.ir.contains("i64 42"));
+}
+
+#[test]
+fn llvm_backend_lowers_control_flow_static_call_named_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: Vec::new(),
+            functions: vec![
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: vec![1, 40, 2, 0],
+                        floats: Vec::new(),
+                        strings: vec!["delta".to_string()],
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abx(Opcode32::LoadInt, 4, 0).raw(),
+                        Instr32::abc(Opcode32::Test, 4, 1, 6).raw(),
+                        Instr32::abx(Opcode32::LoadFunction, 0, 1).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 1, 1).raw(),
+                        Instr32::abx(Opcode32::LoadString, 2, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 3, 2).raw(),
+                        Instr32::abx(Opcode32::CallNamed, 0, (1 << 7) | 1).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                        Instr32::abx(Opcode32::LoadInt, 0, 3).raw(),
+                        Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                    ],
+                    register_count: 5,
+                    param_count: 0,
+                    positional_param_count: 0,
+                    param_names: Vec::new(),
+                    capture_count: 0,
+                },
+                Function32Data {
+                    consts: ConstPool32Data {
+                        ints: Vec::new(),
+                        floats: Vec::new(),
+                        strings: Vec::new(),
+                        heap_values: Vec::new(),
+                    },
+                    code: vec![
+                        Instr32::abc(Opcode32::AddInt, 2, 0, 1).raw(),
+                        Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    ],
+                    register_count: 3,
+                    param_count: 2,
+                    positional_param_count: 1,
+                    param_names: vec!["base".to_string(), "delta".to_string()],
+                    capture_count: 0,
+                },
+            ],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(
+        artifact.module.ir.contains("add i64"),
+        "expected control-flow static named call native lowering: {}",
+        artifact.module.ir
+    );
 }
 
 #[test]

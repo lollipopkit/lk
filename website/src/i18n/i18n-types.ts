@@ -130,11 +130,11 @@ type RootTranslation = {
 		 */
 		kicker: string
 		/**
-		 * F​r​o​m​ ​s​c​r​i​p​t​ ​t​o​ ​I​n​s​t​r​3​2​ ​m​o​d​u​l​e​s​,​ ​d​i​a​g​n​o​s​t​i​c​s​,​ ​a​n​d​ ​t​r​u​e​-​n​a​t​i​v​e​ ​L​L​V​M​.
+		 * F​r​o​m​ ​s​c​r​i​p​t​ ​t​o​ ​I​n​s​t​r​3​2​ ​e​x​e​c​u​t​i​o​n​,​ ​d​i​a​g​n​o​s​t​i​c​s​,​ ​a​n​d​ ​t​r​u​e​-​n​a​t​i​v​e​ ​L​L​V​M​.
 		 */
 		title: string
 		/**
-		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​c​o​m​p​i​l​e​ ​e​x​e​c​u​t​a​b​l​e​ ​`​.​l​k​m​`​ ​I​n​s​t​r​3​2​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​l​o​w​e​r​ ​s​u​p​p​o​r​t​e​d​ ​s​h​a​p​e​s​ ​t​o​ ​t​r​u​e​-​n​a​t​i​v​e​ ​L​L​V​M​ ​I​R​ ​w​i​t​h​o​u​t​ ​a​r​t​i​f​a​c​t​-​s​h​e​l​l​ ​f​a​l​l​b​a​c​k​s​.
+		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​a​n​d​ ​l​o​w​e​r​ ​s​u​p​p​o​r​t​e​d​ ​s​h​a​p​e​s​ ​t​o​ ​t​r​u​e​-​n​a​t​i​v​e​ ​L​L​V​M​ ​I​R​ ​w​i​t​h​o​u​t​ ​a​r​t​i​f​a​c​t​-​s​h​e​l​l​ ​o​r​ ​h​o​s​t​-​l​a​u​n​c​h​e​r​ ​f​a​l​l​b​a​c​k​s​.
 		 */
 		subtitle: string
 		rows: {
@@ -349,11 +349,11 @@ export type TranslationFunctions = {
 		 */
 		kicker: () => LocalizedString
 		/**
-		 * From script to Instr32 modules, diagnostics, and true-native LLVM.
+		 * From script to Instr32 execution, diagnostics, and true-native LLVM.
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK can run a REPL, execute `.lk` files, type-check without executing, compile executable `.lkm` Instr32 module artifacts, and lower supported shapes to true-native LLVM IR without artifact-shell fallbacks.
+		 * LK can run a REPL, execute `.lk` files, type-check without executing, and lower supported shapes to true-native LLVM IR without artifact-shell or host-launcher fallbacks.
 		 */
 		subtitle: () => LocalizedString
 		rows: {

@@ -1,6 +1,14 @@
 use super::{Executor32, handler::ErrorHandler32};
 
 impl Executor32 {
+    pub(super) fn alloc_heap_value(&mut self, value: crate::val::HeapValue) -> crate::val::HeapRef {
+        let handle = self.state.heap.alloc(value);
+        if self.state.heap.should_collect() {
+            self.gc_pending = true;
+        }
+        handle
+    }
+
     pub(crate) fn root_refs(&self) -> Vec<crate::val::HeapRef> {
         let handler_roots = self.handler_stack.iter().flat_map(ErrorHandler32::roots);
         self.state
@@ -8,10 +16,17 @@ impl Executor32 {
             .into_refs()
     }
 
-    pub(super) fn maybe_collect_garbage(&mut self) {
-        if self.state.heap.should_collect() {
+    pub(super) fn collect_pending_garbage(&mut self) {
+        if self.gc_pending {
             let roots = self.root_refs();
             self.state.heap.collect(roots);
+            self.gc_pending = false;
+        }
+    }
+
+    pub(super) fn sync_heap_gc_threshold(&mut self) {
+        if self.state.heap.should_collect() {
+            self.gc_pending = true;
         }
     }
 }

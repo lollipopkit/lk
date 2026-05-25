@@ -12,5 +12,6 @@ use crate::{
 mod basic;
 mod calls;
 mod container;
+mod cross_heap;
 mod gc_cell_error;
 mod native;

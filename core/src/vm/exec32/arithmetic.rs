@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap};
-use crate::vm::Instr32;
+use crate::vm::{Instr32, Opcode32};
 
 use super::Executor32;
 
@@ -80,26 +80,61 @@ fn copy_with_extra_owned<T>(values: Vec<T>, value: T) -> Vec<T> {
     out
 }
 
+#[inline]
+fn compare_int_values(opcode: Opcode32, lhs: i64, rhs: i64) -> Result<bool> {
+    Ok(match opcode {
+        Opcode32::CmpLtInt => lhs < rhs,
+        Opcode32::CmpLeInt => lhs <= rhs,
+        Opcode32::CmpGtInt => lhs > rhs,
+        Opcode32::CmpGeInt => lhs >= rhs,
+        other => bail!("Opcode32 {:?} is not an integer ordering comparison", other),
+    })
+}
+
+#[inline]
+fn compare_float_values(opcode: Opcode32, lhs: f64, rhs: f64) -> Result<bool> {
+    Ok(match opcode {
+        Opcode32::CmpLtInt => lhs < rhs,
+        Opcode32::CmpLeInt => lhs <= rhs,
+        Opcode32::CmpGtInt => lhs > rhs,
+        Opcode32::CmpGeInt => lhs >= rhs,
+        other => bail!("Opcode32 {:?} is not a numeric ordering comparison", other),
+    })
+}
+
 impl Executor32 {
     pub(super) fn dynamic_add(&mut self, instr: Instr32) -> Result<()> {
+        let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
+        if let Some(value) = {
+            let lhs = &self.state.stack[lhs];
+            let rhs = &self.state.stack[rhs];
+            match (lhs, rhs) {
+                (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => Some(RuntimeVal::Int(lhs.wrapping_add(*rhs))),
+                (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => Some(RuntimeVal::Float(*lhs as f64 + *rhs)),
+                (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => Some(RuntimeVal::Float(*lhs + *rhs as f64)),
+                (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => Some(RuntimeVal::Float(*lhs + *rhs)),
+                _ => None,
+            }
+        } {
+            self.write_stack_index(dst, value);
+            self.pc += 1;
+            return Ok(());
+        }
+
         let lhs = self.read(instr.b())?.clone();
         let rhs = self.read(instr.c())?.clone();
         let value = match (&lhs, &rhs) {
-            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs.wrapping_add(*rhs)),
-            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 + *rhs),
-            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs + *rhs as f64),
-            (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs + *rhs),
             _ if self.runtime_value_is_map(&lhs)? && self.runtime_value_is_map(&rhs)? => {
                 let lhs = self.runtime_value_to_typed_map(&lhs)?.expect("checked map");
                 let rhs = self.runtime_value_to_typed_map(&rhs)?.expect("checked map");
                 let map = merge_typed_maps(lhs, rhs);
-                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::Map(map)))
+                RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Map(map)))
             }
             _ if self.runtime_value_is_heap_list(&lhs)? || self.runtime_value_is_heap_list(&rhs)? => {
                 let lhs = self.runtime_value_to_list_add_operand(&lhs)?;
                 let rhs = self.runtime_value_to_list_add_operand(&rhs)?;
                 let list = self.add_list_values(lhs, rhs)?;
-                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(list)))
+                RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(list)))
             }
             _ if self.runtime_value_to_string(&lhs)?.is_some() || self.runtime_value_to_string(&rhs)?.is_some() => {
                 let lhs = self.runtime_value_display_string(&lhs)?;
@@ -118,35 +153,48 @@ impl Executor32 {
     }
 
     pub(super) fn dynamic_sub(&mut self, instr: Instr32) -> Result<()> {
+        let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
+        if let Some(value) = {
+            let lhs = &self.state.stack[lhs];
+            let rhs = &self.state.stack[rhs];
+            match (lhs, rhs) {
+                (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => Some(RuntimeVal::Int(lhs.wrapping_sub(*rhs))),
+                (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => Some(RuntimeVal::Float(*lhs as f64 - *rhs)),
+                (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => Some(RuntimeVal::Float(*lhs - *rhs as f64)),
+                (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => Some(RuntimeVal::Float(*lhs - *rhs)),
+                _ => None,
+            }
+        } {
+            self.write_stack_index(dst, value);
+            self.pc += 1;
+            return Ok(());
+        }
+
         let lhs = self.read(instr.b())?.clone();
         let rhs = self.read(instr.c())?.clone();
         let value = match (&lhs, &rhs) {
-            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs.wrapping_sub(*rhs)),
-            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs as f64 - *rhs),
-            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(*lhs - *rhs as f64),
-            (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs - *rhs),
             _ if self.runtime_value_is_heap_list(&lhs)? && self.runtime_value_is_heap_list(&rhs)? => {
                 let lhs_values = self.runtime_value_to_list_snapshot(&lhs)?.expect("checked list");
                 let rhs_values = self.runtime_value_to_list_snapshot(&rhs)?.expect("checked list");
                 let values = self.remove_list_values(lhs_values, &rhs_values)?;
-                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(values)))
+                RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(values)))
             }
             _ if self.runtime_value_is_heap_list(&lhs)? => {
                 let lhs_values = self.runtime_value_to_list_snapshot(&lhs)?.expect("checked list");
                 let values = self.remove_first_list_value(lhs_values, &rhs)?;
-                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(values)))
+                RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(values)))
             }
             _ if self.runtime_value_is_map(&lhs)? && self.runtime_value_is_map(&rhs)? => {
                 let lhs = self.runtime_value_to_typed_map(&lhs)?.expect("checked map");
                 let rhs = self.runtime_value_to_typed_map(&rhs)?.expect("checked map");
                 let map = remove_typed_map_keys(lhs, rhs);
-                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::Map(map)))
+                RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Map(map)))
             }
             _ if self.runtime_value_is_map(&lhs)? => {
                 let key = self.runtime_map_key_from_value(&rhs)?;
                 let lhs = self.runtime_value_to_typed_map(&lhs)?.expect("checked map");
                 let map = typed_map_without_key(lhs, &key);
-                RuntimeVal::Obj(self.state.heap.alloc(HeapValue::Map(map)))
+                RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Map(map)))
             }
             _ => bail!(
                 "Sub expected numbers or list/map lhs, got {:?} and {:?}",
@@ -165,22 +213,84 @@ impl Executor32 {
         int_op: impl FnOnce(i64, i64) -> i64,
         float_op: impl FnOnce(f64, f64) -> f64,
     ) -> Result<()> {
-        let lhs = self
-            .read(instr.b())
-            .with_context(|| format!("{:?} at pc {} lhs register {}", instr.opcode(), self.pc, instr.b()))?;
-        let rhs = self
-            .read(instr.c())
-            .with_context(|| format!("{:?} at pc {} rhs register {}", instr.opcode(), self.pc, instr.c()))?;
-        let value = match (lhs, rhs) {
+        let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
+        let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
             (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(int_op(*lhs, *rhs)),
-            _ => RuntimeVal::Float(float_op(
-                self.number_value(lhs)
-                    .with_context(|| format!("{:?} at pc {} lhs register {}", instr.opcode(), self.pc, instr.b()))?,
-                self.number_value(rhs)
-                    .with_context(|| format!("{:?} at pc {} rhs register {}", instr.opcode(), self.pc, instr.c()))?,
-            )),
+            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(float_op(*lhs as f64, *rhs)),
+            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Float(float_op(*lhs, *rhs as f64)),
+            (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(float_op(*lhs, *rhs)),
+            (lhs, rhs) => bail!(
+                "{:?} expected Int or Float, got {:?} and {:?}",
+                instr.opcode(),
+                lhs.kind(),
+                rhs.kind()
+            ),
         };
-        self.write(instr.a(), value)?;
+        self.write_stack_index(dst, value);
+        self.pc += 1;
+        Ok(())
+    }
+
+    #[inline]
+    pub(super) fn dynamic_div(&mut self, instr: Instr32) -> Result<()> {
+        let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
+        let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
+            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("DivInt divisor is zero"),
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs / rhs),
+            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => {
+                if *rhs == 0.0 {
+                    bail!("DivInt divisor is zero");
+                }
+                RuntimeVal::Float(*lhs as f64 / *rhs)
+            }
+            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => {
+                if *rhs == 0 {
+                    bail!("DivInt divisor is zero");
+                }
+                RuntimeVal::Float(*lhs / *rhs as f64)
+            }
+            (RuntimeVal::Float(_), RuntimeVal::Float(rhs)) if *rhs == 0.0 => bail!("DivInt divisor is zero"),
+            (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs / *rhs),
+            (lhs, rhs) => bail!(
+                "{:?} expected Int or Float, got {:?} and {:?}",
+                instr.opcode(),
+                lhs.kind(),
+                rhs.kind()
+            ),
+        };
+        self.write_stack_index(dst, value);
+        self.pc += 1;
+        Ok(())
+    }
+
+    #[inline]
+    pub(super) fn dynamic_mod(&mut self, instr: Instr32) -> Result<()> {
+        let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
+        let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
+            (RuntimeVal::Int(_), RuntimeVal::Int(0)) => bail!("ModInt divisor is zero"),
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => RuntimeVal::Int(lhs % rhs),
+            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => {
+                if *rhs == 0.0 {
+                    bail!("ModInt divisor is zero");
+                }
+                RuntimeVal::Float(*lhs as f64 % *rhs)
+            }
+            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => {
+                if *rhs == 0 {
+                    bail!("ModInt divisor is zero");
+                }
+                RuntimeVal::Float(*lhs % *rhs as f64)
+            }
+            (RuntimeVal::Float(_), RuntimeVal::Float(rhs)) if *rhs == 0.0 => bail!("ModInt divisor is zero"),
+            (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => RuntimeVal::Float(*lhs % *rhs),
+            (lhs, rhs) => bail!(
+                "{:?} expected Int or Float, got {:?} and {:?}",
+                instr.opcode(),
+                lhs.kind(),
+                rhs.kind()
+            ),
+        };
+        self.write_stack_index(dst, value);
         self.pc += 1;
         Ok(())
     }
@@ -195,18 +305,50 @@ impl Executor32 {
     }
 
     #[inline]
-    pub(super) fn int_compare(&mut self, instr: Instr32, op: impl FnOnce(f64, f64) -> bool) -> Result<()> {
-        let lhs = self.read_number(instr.b())?;
-        let rhs = self.read_number(instr.c())?;
-        self.write(instr.a(), RuntimeVal::Bool(op(lhs, rhs)))?;
+    pub(super) fn number_compare(
+        &mut self,
+        instr: Instr32,
+        int_op: impl FnOnce(i64, i64) -> bool,
+        float_op: impl FnOnce(f64, f64) -> bool,
+    ) -> Result<()> {
+        let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
+        let value = match (&self.state.stack[lhs], &self.state.stack[rhs]) {
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => int_op(*lhs, *rhs),
+            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => float_op(*lhs as f64, *rhs),
+            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => float_op(*lhs, *rhs as f64),
+            (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => float_op(*lhs, *rhs),
+            (lhs, rhs) => bail!(
+                "{:?} expected Int or Float, got {:?} and {:?}",
+                instr.opcode(),
+                lhs.kind(),
+                rhs.kind()
+            ),
+        };
+        self.write_stack_index(dst, RuntimeVal::Bool(value));
         self.pc += 1;
         Ok(())
     }
 
+    #[inline]
+    pub(super) fn number_compare_value(&self, opcode: Opcode32, lhs_reg: u8, rhs_reg: u8) -> Result<bool> {
+        let (lhs, rhs) = self.stack_bc_indices(lhs_reg, rhs_reg)?;
+        match (&self.state.stack[lhs], &self.state.stack[rhs]) {
+            (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => compare_int_values(opcode, *lhs, *rhs),
+            (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => compare_float_values(opcode, *lhs as f64, *rhs),
+            (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => compare_float_values(opcode, *lhs, *rhs as f64),
+            (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => compare_float_values(opcode, *lhs, *rhs),
+            (lhs, rhs) => bail!(
+                "{:?} expected Int or Float, got {:?} and {:?}",
+                opcode,
+                lhs.kind(),
+                rhs.kind()
+            ),
+        }
+    }
+
     pub(super) fn values_equal(&self, lhs: u8, rhs: u8) -> Result<bool> {
-        let lhs = self.read(lhs)?.clone();
-        let rhs = self.read(rhs)?.clone();
-        self.runtime_values_equal(&lhs, &rhs)
+        let (lhs, rhs) = self.stack_bc_indices(lhs, rhs)?;
+        self.runtime_values_equal(&self.state.stack[lhs], &self.state.stack[rhs])
     }
 
     fn runtime_values_equal(&self, lhs: &RuntimeVal, rhs: &RuntimeVal) -> Result<bool> {

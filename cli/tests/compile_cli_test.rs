@@ -162,6 +162,31 @@ fn test_llvm_compile_lowers_simple_i64_return_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
+fn test_llvm_compile_lowers_unused_stdlib_import_metadata() {
+    let dir = unique_tmp_dir("llvm_unused_stdlib_import");
+    ensure_clean_dir(&dir);
+    write_file(&dir, "a.lk", "import math;\nreturn 123;\n");
+
+    let llvm = run_cli(&dir, ["compile", "llvm", "a.lk"])
+        .output()
+        .expect("spawn llvm compile");
+    assert!(
+        llvm.status.success(),
+        "LLVM IR compile failed: {}",
+        String::from_utf8_lossy(&llvm.stderr)
+    );
+    let ir = fs::read_to_string(dir.join("a.ll")).expect("read LLVM IR");
+    assert!(
+        !ir.contains("@lk_module32_json"),
+        "unused import metadata should not force artifact shell: {ir}"
+    );
+    assert!(ir.contains("@lk_i64_fmt"), "expected native i64 print lowering: {ir}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
 fn test_llvm_compile_exe_rejects_unsupported_runtime_values_without_host_launcher() {
     let dir = unique_tmp_dir("llvm_exe_unsupported_runtime_value");
     ensure_clean_dir(&dir);
@@ -178,6 +203,10 @@ fn test_llvm_compile_exe_rejects_unsupported_runtime_values_without_host_launche
     let stderr = String::from_utf8_lossy(&exe.stderr);
     assert!(
         stderr.contains("LLVM native lowering does not support"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("runtime callable returns are not native-lowerable yet"),
         "unexpected stderr: {stderr}"
     );
     assert!(
@@ -572,7 +601,7 @@ fn test_llvm_compile_lowers_zero_arg_direct_f64_call_without_instr32_shell() {
     );
     assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
     assert!(
-        ir.contains("@printf(ptr @lk_f64_fmt, double 3.75)"),
+        ir.contains("store double 3.75"),
         "expected direct f64 call constant result lowering: {ir}"
     );
 
@@ -731,7 +760,7 @@ fn test_llvm_compile_lowers_f64_positional_direct_call_without_instr32_shell() {
     );
     assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
     assert!(
-        ir.contains("@printf(ptr @lk_f64_fmt, double 3.75)"),
+        ir.contains("store double 3.75"),
         "expected f64 direct arg call constant result: {ir}"
     );
 
@@ -782,7 +811,10 @@ fn test_llvm_compile_lowers_f64_return_without_instr32_shell() {
         "f64 return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
-    assert!(ir.contains("fadd double"), "expected native f64 arithmetic: {ir}");
+    assert!(
+        ir.contains("store double 3.75"),
+        "expected native f64 arithmetic constant lowering: {ir}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

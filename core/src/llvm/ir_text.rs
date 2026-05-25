@@ -29,10 +29,19 @@ pub(super) fn native_scalar_main_header(options: &LlvmBackendOptions) -> String 
     ir.push_str("@lk_i64_fmt = private unnamed_addr constant [5 x i8] c\"%ld\\0A\\00\", align 1\n\n");
     ir.push_str("@lk_f64_fmt = private unnamed_addr constant [4 x i8] c\"%g\\0A\\00\", align 1\n");
     ir.push_str("@lk_str_fmt = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\", align 1\n");
+    ir.push_str("@lk_i64_raw_fmt = private unnamed_addr constant [4 x i8] c\"%ld\\00\", align 1\n");
+    ir.push_str("@lk_f64_raw_fmt = private unnamed_addr constant [3 x i8] c\"%g\\00\", align 1\n");
+    ir.push_str("@lk_str_raw_fmt = private unnamed_addr constant [3 x i8] c\"%s\\00\", align 1\n");
     ir.push_str("@lk_bool_true = private unnamed_addr constant [5 x i8] c\"true\\00\", align 1\n");
     ir.push_str("@lk_bool_false = private unnamed_addr constant [6 x i8] c\"false\\00\", align 1\n\n");
     ir.push_str("@lk_nil_text = private unnamed_addr constant [4 x i8] c\"nil\\00\", align 1\n\n");
+    ir.push_str("@lk_empty_text = private unnamed_addr constant [1 x i8] zeroinitializer, align 1\n\n");
     ir.push_str("declare i32 @printf(ptr, ...)\n\n");
+    ir.push_str("declare i64 @clock()\n");
+    ir.push_str("declare i64 @time(ptr)\n\n");
+    ir.push_str("declare ptr @getenv(ptr)\n");
+    ir.push_str("declare i32 @strcmp(ptr, ptr)\n\n");
+    ir.push_str("declare i32 @strncmp(ptr, ptr, i64)\n\n");
     ir.push_str("define i32 @main() {\n");
     ir.push_str("entry:\n");
     ir

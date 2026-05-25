@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::val::{HeapRef, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, TypedList, TypedMap};
 
-use super::{Executor32, heap_kind, set_list_value};
+use super::{Executor32, heap_kind, push_list_value, set_list_value};
 use crate::vm::{
     IndexInlineCache32,
     analysis::{PerfIndexFact, PerfIndexTargetKind, PerfValueKind},
@@ -142,12 +142,10 @@ impl Executor32 {
         known_string_key: Option<Arc<str>>,
         index_fact: Option<PerfIndexFact>,
     ) -> Result<RuntimeVal> {
-        match self.read(target_reg)?.clone() {
-            RuntimeVal::ShortStr(value) => {
-                let value = Arc::<str>::from(value.as_str());
-                self.index_string(&value, key_reg)
-            }
+        match self.read(target_reg)? {
+            RuntimeVal::ShortStr(value) => self.index_string(value.as_str(), key_reg),
             RuntimeVal::Obj(handle) => {
+                let handle = *handle;
                 let index_cache = match index_fact {
                     Some(_) => None,
                     None => self.cached_or_observed_index_cache(pc, handle, known_string_key.as_ref())?,
@@ -189,16 +187,15 @@ impl Executor32 {
                             .unwrap_or(RuntimeVal::Nil))
                     }
                     IndexTargetKind::String => {
-                        let value = match self
+                        match self
                             .state
                             .heap
                             .get(handle)
                             .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
                         {
-                            HeapValue::String(value) => value.clone(),
+                            HeapValue::String(value) => return self.index_string(value, key_reg),
                             other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
-                        };
-                        self.index_string(&value, key_reg)
+                        }
                     }
                 }
             }
@@ -222,15 +219,16 @@ impl Executor32 {
     }
 
     pub(super) fn len_value(&self, register: u8) -> Result<usize> {
-        match self.read(register)? {
-            RuntimeVal::ShortStr(value) => Ok(value.as_str().chars().count()),
+        let index = self.stack_index(register)?;
+        match &self.state.stack[index] {
+            RuntimeVal::ShortStr(value) => Ok(string_char_len(value.as_str())),
             RuntimeVal::Obj(handle) => match self
                 .state
                 .heap
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
-                HeapValue::String(value) => Ok(value.chars().count()),
+                HeapValue::String(value) => Ok(string_char_len(value)),
                 HeapValue::List(value) => Ok(value.len()),
                 HeapValue::Map(value) => Ok(value.len()),
                 other => bail!("Len target object is not sized: {:?}", heap_kind(other)),
@@ -240,8 +238,9 @@ impl Executor32 {
     }
 
     pub(super) fn contains_value(&self, needle_reg: u8, haystack_reg: u8) -> Result<bool> {
-        let needle = self.read(needle_reg)?.clone();
-        match self.read(haystack_reg)?.clone() {
+        let (needle_index, haystack_index) = self.stack_bc_indices(needle_reg, haystack_reg)?;
+        let needle = &self.state.stack[needle_index];
+        match &self.state.stack[haystack_index] {
             RuntimeVal::ShortStr(haystack) => {
                 let Some(needle) = self.runtime_value_to_string(&needle)? else {
                     return Ok(false);
@@ -251,7 +250,7 @@ impl Executor32 {
             RuntimeVal::Obj(handle) => match self
                 .state
                 .heap
-                .get(handle)
+                .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
                 HeapValue::String(haystack) => {
@@ -285,7 +284,7 @@ impl Executor32 {
                     other => bail!("SliceFrom target object is not sliceable: {:?}", heap_kind(other)),
                 };
                 match plan {
-                    SliceFromPlan::List(values) => Ok(RuntimeVal::Obj(self.state.heap.alloc(HeapValue::List(values)))),
+                    SliceFromPlan::List(values) => Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::List(values)))),
                     SliceFromPlan::String(value) => self.slice_string_from(value, start),
                 }
             }
@@ -324,7 +323,7 @@ impl Executor32 {
             removed_keys.push(self.map_key_from_register(key_reg)?);
         }
         let map = typed_map_without_keys(source, &removed_keys);
-        Ok(RuntimeVal::Obj(self.state.heap.alloc(HeapValue::Map(map))))
+        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Map(map))))
     }
 
     fn list_contains(&self, values: &TypedList, needle: &RuntimeVal) -> Result<bool> {
@@ -383,7 +382,7 @@ impl Executor32 {
         match plan {
             ToIterPlan::ExistingList(handle) => Ok(RuntimeVal::Obj(handle)),
             ToIterPlan::StringChars(list) => Ok(RuntimeVal::Obj(
-                self.state.heap.alloc(HeapValue::List(TypedList::String(list))),
+                self.alloc_heap_value(HeapValue::List(TypedList::String(list))),
             )),
             ToIterPlan::Map(snapshot) => self.map_entries_to_iter_list(snapshot),
         }
@@ -424,13 +423,13 @@ impl Executor32 {
             }
         }
         Ok(RuntimeVal::Obj(
-            self.state.heap.alloc(HeapValue::List(TypedList::Mixed(pairs))),
+            self.alloc_heap_value(HeapValue::List(TypedList::Mixed(pairs))),
         ))
     }
 
     fn push_iter_pair(&mut self, pairs: &mut Vec<RuntimeVal>, key: RuntimeVal, value: RuntimeVal) {
         let pair = HeapValue::List(TypedList::Mixed(vec![key, value]));
-        pairs.push(RuntimeVal::Obj(self.state.heap.alloc(pair)));
+        pairs.push(RuntimeVal::Obj(self.alloc_heap_value(pair)));
     }
 
     fn runtime_map_key_to_value(&mut self, key: RuntimeMapKey) -> RuntimeVal {
@@ -443,7 +442,7 @@ impl Executor32 {
                 if let Some(short) = ShortStr::new(&value) {
                     RuntimeVal::ShortStr(short)
                 } else {
-                    RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(value)))
+                    RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(value)))
                 }
             }
             RuntimeMapKey::Obj(value) => RuntimeVal::Obj(value),
@@ -454,7 +453,7 @@ impl Executor32 {
         if let Some(short) = ShortStr::new(&value) {
             RuntimeVal::ShortStr(short)
         } else {
-            RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(value)))
+            RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(value)))
         }
     }
 
@@ -469,7 +468,13 @@ impl Executor32 {
         known_string_key: Option<Arc<str>>,
         index_fact: Option<PerfIndexFact>,
     ) -> Result<()> {
-        let target = self.read(target_reg)?.clone();
+        let handle = {
+            let target = self.read(target_reg)?;
+            let RuntimeVal::Obj(handle) = target else {
+                bail!("SetIndex target expected Obj, got {:?}", target.kind());
+            };
+            *handle
+        };
         let moved_key = if move_key && known_string_key.is_none() {
             Some(self.take(key_reg)?)
         } else {
@@ -479,9 +484,6 @@ impl Executor32 {
             self.take(value_reg)?
         } else {
             self.read(value_reg)?.clone()
-        };
-        let RuntimeVal::Obj(handle) = target else {
-            bail!("SetIndex target expected Obj, got {:?}", target.kind());
         };
         let index_fact = match index_fact {
             Some(fact) => Some(fact),
@@ -553,6 +555,60 @@ impl Executor32 {
             other => bail!("SetIndex target object is not writable: {:?}", heap_kind(other)),
         }?;
         self.state.heap.bump_shape_generation(handle);
+        Ok(())
+    }
+
+    pub(super) fn push_list(&mut self, target_reg: u8, value_reg: u8, move_value: bool) -> Result<()> {
+        let handle = {
+            let target = self.read(target_reg)?;
+            let RuntimeVal::Obj(handle) = target else {
+                bail!("ListPush target expected Obj, got {:?}", target.kind());
+            };
+            *handle
+        };
+        let value = if move_value {
+            self.take(value_reg)?
+        } else {
+            self.read(value_reg)?.clone()
+        };
+        let string_value = self.runtime_value_to_string(&value)?;
+
+        if string_value.is_none() && matches!(self.state.heap.get(handle), Some(HeapValue::List(TypedList::String(_))))
+        {
+            self.push_string_list_polluted(handle, value)?;
+        } else {
+            let Some(HeapValue::List(list)) = self.state.heap.get_mut(handle) else {
+                bail!("ListPush target object is not a list");
+            };
+            push_list_value(list, value, string_value)?;
+        }
+
+        self.state.heap.bump_shape_generation(handle);
+        Ok(())
+    }
+
+    fn push_string_list_polluted(&mut self, handle: HeapRef, value: RuntimeVal) -> Result<()> {
+        let values = match self
+            .state
+            .heap
+            .get(handle)
+            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+        {
+            HeapValue::List(TypedList::String(values)) => values.clone(),
+            other => bail!(
+                "ListPush target object changed while materializing string list: {:?}",
+                heap_kind(other)
+            ),
+        };
+        let mut mixed = Vec::with_capacity(values.len() + 1);
+        for value in values {
+            mixed.push(self.runtime_string_key_to_value(value));
+        }
+        mixed.push(value);
+        let Some(HeapValue::List(list)) = self.state.heap.get_mut(handle) else {
+            bail!("heap object {} changed while materializing string list", handle.index());
+        };
+        *list = TypedList::Mixed(mixed);
         Ok(())
     }
 
@@ -925,7 +981,7 @@ impl Executor32 {
             }
             other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
         };
-        Ok(RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(long_string))))
+        Ok(RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(long_string))))
     }
 
     fn index_typed_list_handle(
@@ -977,9 +1033,17 @@ impl Executor32 {
         }
     }
 
-    fn index_string(&self, value: &Arc<str>, key_reg: u8) -> Result<RuntimeVal> {
+    fn index_string(&self, value: &str, key_reg: u8) -> Result<RuntimeVal> {
         let index =
             usize::try_from(self.read_int(key_reg)?).map_err(|_| anyhow!("string index must be non-negative"))?;
+        if value.is_ascii() {
+            let Some(byte) = value.as_bytes().get(index).copied() else {
+                return Ok(RuntimeVal::Nil);
+            };
+            let mut buf = [0_u8; 4];
+            let ch = (byte as char).encode_utf8(&mut buf);
+            return Ok(RuntimeVal::ShortStr(ShortStr::new(ch).expect("ascii char is short")));
+        }
         let Some(ch) = value.chars().nth(index) else {
             return Ok(RuntimeVal::Nil);
         };
@@ -1265,6 +1329,15 @@ fn string_chars_to_list(value: &str) -> Vec<Arc<str>> {
         out.push(Arc::<str>::from(ch.to_string()));
     }
     out
+}
+
+#[inline]
+fn string_char_len(value: &str) -> usize {
+    if value.is_ascii() {
+        value.len()
+    } else {
+        value.chars().count()
+    }
 }
 
 impl TypedMapIterSnapshot {

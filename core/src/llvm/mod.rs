@@ -7,10 +7,15 @@
 mod backend;
 mod callee_eval;
 mod const_display;
+mod dynamic_containers;
 mod ir_text;
 mod options;
+mod output;
+mod scalar_block_helpers;
+mod scalar_blocks;
 mod scalar_emit;
 mod scalar_facts;
+mod scalar_inline;
 mod straightline_value;
 
 pub use backend::{

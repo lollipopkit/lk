@@ -502,10 +502,20 @@ fn compiler32_records_loop_backedge_as_branch_target() {
         .enumerate()
         .find(|(_, instr)| instr.opcode() == Opcode32::Jmp && instr.sj_arg() < 0)
         .expect("loop backedge");
+    let cmp_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::CmpLtInt)
+        .expect("loop compare");
     let target = ((loop_backedge.0 as i64) + 1 + i64::from(loop_backedge.1.sj_arg())) as usize;
 
     assert!(function.performance.is_branch_target(target));
     assert!(!function.performance.same_block(loop_backedge.0, target));
+    let fused = function
+        .performance
+        .fused_bool_branch(cmp_pc)
+        .expect("compare branch fusion fact");
+    assert_eq!(fused.result_reg, function.code[cmp_pc].a());
 
     let result = execute32(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(3)]);
@@ -526,8 +536,8 @@ fn compiler32_records_positional_call_shape_fact() {
     let call_pc = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode32::Call)
-        .expect("Call");
+        .position(|instr| instr.opcode() == Opcode32::CallDirect)
+        .expect("CallDirect");
     let fact = function.performance.call_site(call_pc).expect("call fact");
 
     assert_eq!(fact.call_base, function.code[call_pc].a() as u16);
@@ -537,11 +547,96 @@ fn compiler32_records_positional_call_shape_fact() {
 }
 
 #[test]
+fn compiler32_direct_module_call_does_not_copy_callable_into_window() {
+    let module = compile_source_module32(
+        r#"
+        fn id(x) {
+            return x;
+        }
+        return id(42);
+        "#,
+    )
+    .expect("compile module");
+    let function = &module.functions[0];
+    let call_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::CallDirect)
+        .expect("CallDirect");
+    let call_base = function.code[call_pc].a();
+
+    assert!(
+        !function.code[..call_pc]
+            .iter()
+            .any(|instr| instr.opcode() == Opcode32::Move && instr.a() == call_base),
+        "direct module function call should not copy a heap callable into the return slot"
+    );
+}
+
+#[test]
+fn compiler32_lowers_direct_call_expression_args_into_call_window() {
+    let module = compile_source_module32(
+        r#"
+        fn add(a, b) {
+            return a + b;
+        }
+        return add(40 + 1, 1 + 0);
+        "#,
+    )
+    .expect("compile module");
+    let function = &module.functions[0];
+    let call_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::CallDirect)
+        .expect("CallDirect");
+    let call_base = function.code[call_pc].a();
+    let arg0 = call_base + 1;
+    let arg1 = call_base + 2;
+
+    assert!(
+        !function.code[..call_pc]
+            .iter()
+            .any(|instr| instr.opcode() == Opcode32::Move && (instr.a() == arg0 || instr.a() == arg1)),
+        "call expression arguments should lower directly into the call window"
+    );
+}
+
+#[test]
+fn compiler32_lowers_named_signature_args_into_direct_call_window() {
+    let module = compile_source_module32(
+        r#"
+        fn add(a, {b: Int? = a + 1}) {
+            return a + b;
+        }
+        return add(20 + 0);
+        "#,
+    )
+    .expect("compile module");
+    let function = &module.functions[0];
+    let call_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::CallDirect)
+        .expect("CallDirect");
+    let call_base = function.code[call_pc].a() as u16;
+    let arg0 = call_base + 1;
+    let arg1 = call_base + 2;
+
+    assert!(
+        !function.code[..call_pc]
+            .iter()
+            .any(|instr| instr.opcode() == Opcode32::Move && (instr.a() as u16 == arg0 || instr.a() as u16 == arg1)),
+        "named-signature direct call arguments should lower directly into the call window"
+    );
+}
+
+#[test]
 fn compiler32_records_dynamic_named_call_shape_fact() {
     let module = compile_source_module32(
         r#"
         let make = || |x| x;
-        return make()(x: 42);
+        return make()(40 + 1, x: 1 + 0);
         "#,
     )
     .expect("compile module");
@@ -554,9 +649,30 @@ fn compiler32_records_dynamic_named_call_shape_fact() {
     let fact = function.performance.call_site(call_pc).expect("call fact");
 
     assert_eq!(fact.call_base, function.code[call_pc].a() as u16);
-    assert_eq!(fact.positional_count, 0);
+    assert_eq!(fact.positional_count, 1);
     assert_eq!(fact.named_count, 1);
     assert_eq!(fact.target_kind, PerfCallTargetKind::Unknown);
+    let callee_move_pc = function.code[..call_pc]
+        .iter()
+        .rposition(|instr| instr.opcode() == Opcode32::Move && instr.a() as u16 == fact.call_base)
+        .expect("callee move");
+    assert!(
+        function
+            .performance
+            .register_copy(callee_move_pc)
+            .is_some_and(|fact| fact.move_source),
+        "temporary dynamic callee should move into the call window"
+    );
+    let first_arg = fact.call_base + 1;
+    let named_key = fact.call_base + 2;
+    let named_value = fact.call_base + 3;
+    assert!(
+        !function.code[..call_pc]
+            .iter()
+            .any(|instr| instr.opcode() == Opcode32::Move
+                && matches!(instr.a() as u16, dst if dst == first_arg || dst == named_key || dst == named_value)),
+        "dynamic named call arguments should lower directly into the call window"
+    );
 }
 
 #[test]

@@ -2,8 +2,27 @@ use std::collections::HashSet;
 
 use crate::{
     expr::{Expr, Pattern, SelectPattern, TemplateStringPart},
-    stmt::Stmt,
+    stmt::{NamedParamDecl, Stmt},
 };
+
+pub(super) fn collect_function_free_vars(
+    params: &[String],
+    named_params: &[NamedParamDecl],
+    body: &Stmt,
+) -> Vec<String> {
+    let mut bound = HashSet::with_capacity(params.len() + named_params.len());
+    bound.extend(params.iter().cloned());
+    bound.extend(named_params.iter().map(|param| param.name.clone()));
+
+    let mut free = Vec::new();
+    for param in named_params {
+        if let Some(default) = &param.default {
+            collect_expr_free_vars(default, &mut bound, &mut free);
+        }
+    }
+    collect_single_stmt_free_vars(body, &mut bound, &mut free);
+    free
+}
 
 pub(super) fn collect_expr_free_vars(expr: &Expr, bound: &mut HashSet<String>, free: &mut Vec<String>) {
     match expr {

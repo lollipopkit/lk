@@ -51,9 +51,9 @@ const en: BaseTranslation = {
   },
   runtime: {
     kicker: 'Runtime and Tooling',
-    title: 'From script to Instr32 modules, diagnostics, and true-native LLVM.',
+    title: 'From script to Instr32 execution, diagnostics, and true-native LLVM.',
     subtitle:
-      'LK can run a REPL, execute `.lk` files, type-check without executing, compile executable `.lkm` Instr32 module artifacts, and lower supported shapes to true-native LLVM IR without artifact-shell fallbacks.',
+      'LK can run a REPL, execute `.lk` files, type-check without executing, and lower supported shapes to true-native LLVM IR without artifact-shell or host-launcher fallbacks.',
     rows: {
       valueModel: 'Value model',
       execution: 'Execution',

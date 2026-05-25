@@ -228,10 +228,18 @@ pub struct PerfCellMoveFact {
     pub move_value: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfFusedBoolBranchFact {
+    pub result_reg: u8,
+    pub jump_when: bool,
+    pub jump_offset: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PerfControlFlowFacts {
     pub block_ids: Vec<u32>,
     pub branch_targets: Vec<bool>,
+    pub fused_bool_branches: Vec<Option<PerfFusedBoolBranchFact>>,
 }
 
 impl PerformanceFacts {
@@ -303,6 +311,14 @@ impl PerformanceFacts {
 
     pub fn is_branch_target(&self, pc: usize) -> bool {
         self.control_flow.branch_targets.get(pc).copied().unwrap_or(false)
+    }
+
+    pub fn fused_bool_branch(&self, pc: usize) -> Option<PerfFusedBoolBranchFact> {
+        self.control_flow.fused_bool_branches.get(pc).copied().flatten()
+    }
+
+    pub fn has_control_flow_fact_slot(&self, pc: usize) -> bool {
+        self.control_flow.fused_bool_branches.get(pc).is_some()
     }
 
     pub fn same_block(&self, a: usize, b: usize) -> bool {

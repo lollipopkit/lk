@@ -47,6 +47,51 @@ fn execute_module32_calls_native_function_with_same_call_opcode() {
 }
 
 #[test]
+fn execute_module32_collects_after_native_heap_allocation() {
+    fn native_alloc_dead(_args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        runtime
+            .heap_mut()
+            .alloc(HeapValue::String(Arc::<str>::from("native-dead")));
+        Ok(RuntimeVal::Nil)
+    }
+
+    let entry = Function32 {
+        code: vec![
+            Instr32::abx(Opcode32::LoadNative, 0, 0),
+            Instr32::abc(Opcode32::Call, 0, 0, 0),
+            Instr32::abc(Opcode32::Nop, 0, 0, 0),
+            Instr32::abc(Opcode32::Return, 0, 1, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let module = Module32 {
+        functions: vec![entry],
+        natives: vec![NativeEntry32 {
+            name: "native_alloc_dead".to_string(),
+            arity: 0,
+            function: NativeFunction32::Plain(native_alloc_dead),
+        }],
+        globals: Vec::new(),
+        entry: 0,
+    };
+    let mut heap = HeapStore::new();
+    heap.set_gc_threshold(1);
+
+    let result = Executor32::new(1)
+        .run_module_with_globals_and_heap(&module, Vec::new(), heap)
+        .expect("execute module");
+
+    assert_eq!(result.returns, vec![RuntimeVal::Nil]);
+    assert_eq!(result.state.heap.len(), 0);
+    assert!(!result.state.heap.should_collect());
+}
+
+#[test]
 fn execute_module32_calls_full_state_native_with_named_args() {
     fn full_state_clamp(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         if runtime.state_ctx_module_mut().is_none() {
@@ -329,6 +374,81 @@ fn direct_full_state_native_named_map_uses_heap_map_source() {
         }),
         Some(HeapValue::Callable(_))
     ));
+}
+
+#[test]
+fn direct_runtime_native_collects_after_heap_allocation() {
+    fn native_alloc_live(_args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        runtime
+            .heap_mut()
+            .alloc(HeapValue::String(Arc::<str>::from("native-dead")));
+        let live = runtime
+            .heap_mut()
+            .alloc(HeapValue::String(Arc::<str>::from("native-live")));
+        Ok(RuntimeVal::Obj(live))
+    }
+
+    let mut state = RuntimeModuleState32::default();
+    let callable = RuntimeVal::Obj(state.heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+        name: Arc::<str>::from("native_alloc_live"),
+        arity: 0,
+        function: NativeFunction32::Plain(native_alloc_live),
+    })));
+    state.heap.set_gc_threshold(1);
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    let result = call_runtime_value32_runtime(callable.clone(), &[], &mut state, None, Some(&mut ctx))
+        .expect("direct runtime native");
+
+    let RuntimeVal::Obj(live) = result else {
+        panic!("native should return live heap object");
+    };
+    assert!(matches!(
+        state.heap.get(live),
+        Some(HeapValue::String(value)) if value.as_ref() == "native-live"
+    ));
+    assert!(state.heap.get(HeapRef::new(1)).is_none());
+    assert!(matches!(
+        state.heap.get(match callable {
+            RuntimeVal::Obj(handle) => handle,
+            _ => unreachable!(),
+        }),
+        Some(HeapValue::Callable(_))
+    ));
+    assert!(!state.heap.should_collect());
+}
+
+#[test]
+fn direct_runtime_native_collects_after_heap_allocation_error() {
+    fn native_alloc_then_error(_args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        runtime
+            .heap_mut()
+            .alloc(HeapValue::String(Arc::<str>::from("native-error-dead")));
+        bail!("native failed after allocation");
+    }
+
+    let mut state = RuntimeModuleState32::default();
+    let callable = RuntimeVal::Obj(state.heap.alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+        name: Arc::<str>::from("native_alloc_then_error"),
+        arity: 0,
+        function: NativeFunction32::Plain(native_alloc_then_error),
+    })));
+    state.heap.set_gc_threshold(1);
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    let err = call_runtime_value32_runtime(callable.clone(), &[], &mut state, None, Some(&mut ctx))
+        .expect_err("direct runtime native should fail");
+
+    assert!(err.to_string().contains("native failed after allocation"));
+    assert!(state.heap.get(HeapRef::new(1)).is_none());
+    assert!(matches!(
+        state.heap.get(match callable {
+            RuntimeVal::Obj(handle) => handle,
+            _ => unreachable!(),
+        }),
+        Some(HeapValue::Callable(_))
+    ));
+    assert!(!state.heap.should_collect());
 }
 
 #[test]
@@ -651,6 +771,98 @@ fn runtime32_callable_error_keeps_shared_module_state() {
     assert!(err.to_string().contains("boom"));
     let state = callable.state.lock().expect("callable state");
     assert_eq!(state.globals, vec![RuntimeVal::Int(41)]);
+    assert_eq!(
+        state.stack_top(),
+        0,
+        "direct runtime callable errors must not leave their callee frame active"
+    );
+}
+
+#[test]
+fn runtime32_callable_native_error_collects_pending_heap_allocations() {
+    fn native_alloc_then_error(_args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        runtime
+            .heap_mut()
+            .alloc(HeapValue::String(Arc::<str>::from("runtime-callable-native-dead")));
+        bail!("runtime native failed after allocation");
+    }
+
+    let callee = Function32 {
+        code: vec![
+            Instr32::abx(Opcode32::LoadNative, 0, 0),
+            Instr32::abc(Opcode32::Call, 0, 0, 0),
+        ],
+        register_count: 1,
+        param_count: 0,
+        positional_param_count: 0,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let callee_module = Arc::new(Module32 {
+        functions: vec![callee],
+        natives: vec![NativeEntry32 {
+            name: "native_alloc_then_error".to_string(),
+            arity: 0,
+            function: NativeFunction32::Plain(native_alloc_then_error),
+        }],
+        globals: Vec::new(),
+        entry: 0,
+    });
+    let mut state = RuntimeModuleState32::new(HeapStore::new(), Vec::new());
+    state.heap.set_gc_threshold(1);
+    let callable = RuntimeCallable32::with_state(
+        Arc::clone(&callee_module),
+        0,
+        Arc::new(Vec::new()),
+        Arc::new(Mutex::new(state)),
+    );
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    let err = call_runtime_callable32_test(&callable, &[], &mut ctx).expect_err("native should fail");
+
+    assert!(err.to_string().contains("runtime native failed after allocation"));
+    let state = callable.state.lock().expect("callable state");
+    assert!(state.heap.get(HeapRef::new(1)).is_none());
+    assert!(!state.heap.should_collect());
+    assert_eq!(state.stack_top(), 0);
+}
+
+#[test]
+fn direct_runtime_callable_restores_shared_state_stack_top() {
+    let callee = Function32 {
+        consts: ConstPool32::default(),
+        code: vec![
+            Instr32::abc(Opcode32::AddInt, 2, 0, 1),
+            Instr32::abc(Opcode32::Return, 2, 1, 0),
+        ],
+        register_count: 3,
+        param_count: 2,
+        positional_param_count: 2,
+        param_names: Vec::new(),
+        capture_count: 0,
+        ..Function32::default()
+    };
+    let module = Arc::new(Module32 {
+        functions: vec![callee],
+        natives: Vec::new(),
+        globals: Vec::new(),
+        entry: 0,
+    });
+    let state = Arc::new(Mutex::new(RuntimeModuleState32::new(HeapStore::new(), Vec::new())));
+    let callable = RuntimeCallable32::with_state(Arc::clone(&module), 0, Arc::new(Vec::new()), Arc::clone(&state));
+    let mut ctx = VmContext::new_without_core_vm_builtins();
+
+    let result = call_runtime_callable32_test(&callable, &[RuntimeVal::Int(40), RuntimeVal::Int(2)], &mut ctx)
+        .expect("call runtime callable");
+
+    assert_eq!(result, vec![RuntimeVal::Int(42)]);
+    let state = state.lock().expect("callable state");
+    assert_eq!(
+        state.stack_top(),
+        0,
+        "direct runtime callable calls must not leave their callee frame active"
+    );
 }
 
 #[test]

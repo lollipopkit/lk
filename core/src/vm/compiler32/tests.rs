@@ -8,6 +8,9 @@ fn parse_program32(source: &str) -> crate::stmt::Program {
     parser.parse_program().expect("parse program")
 }
 
+mod call_intrinsics;
+mod loops;
+
 #[test]
 fn compiler32_lowers_int_arithmetic_to_executable_function32() {
     let expr = Expr::Bin(
@@ -103,14 +106,19 @@ fn compiler32_records_local_slots_and_local_copy_facts() {
     )
     .expect("compile source");
 
-    let local_move = function
-        .code
-        .iter()
-        .enumerate()
-        .find(|(pc, instr)| instr.opcode() == Opcode32::Move && function.performance.local_copy(*pc).is_some())
-        .expect("local copy move");
-
-    assert!(function.performance.is_local_slot(local_move.1.a() as u16));
+    assert!(
+        function.performance.is_local_slot(0),
+        "direct-to-slot lowering should keep the local slot fact"
+    );
+    assert!(
+        function
+            .code
+            .iter()
+            .enumerate()
+            .all(|(pc, instr)| instr.opcode() != Opcode32::Move || function.performance.local_copy(pc).is_none()),
+        "literal and binary local writes should not emit local-copy moves: {:?}",
+        function.code
+    );
 
     let result = execute32(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2)]);
@@ -339,7 +347,7 @@ fn compiler32_lowers_list_literal_to_heap_list() {
 }
 
 #[test]
-fn compiler32_marks_container_materialization_moves_as_source_moves() {
+fn compiler32_lowers_container_elements_directly_into_build_window() {
     let function = compile_source32(
         r#"
         let a = 1;
@@ -349,19 +357,30 @@ fn compiler32_marks_container_materialization_moves_as_source_moves() {
     )
     .expect("compile source");
 
-    let move_facts = function
+    let source_move_facts = function
         .code
         .iter()
         .enumerate()
         .filter(|(_, instr)| instr.opcode() == Opcode32::Move)
         .filter_map(|(pc, _)| function.performance.register_copy(pc))
+        .filter(|fact| fact.move_source)
         .collect::<Vec<_>>();
 
     assert!(
-        move_facts.iter().any(|fact| fact.move_source),
-        "expected container materialization to mark source moves in {:?}",
+        source_move_facts.is_empty(),
+        "expected direct list window lowering without source materialization moves in {:?}",
         function.code
     );
+    let new_list_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::NewList)
+        .expect("new list instruction");
+    let build = function
+        .performance
+        .container_build(new_list_pc)
+        .expect("container build fact");
+    assert!(build.move_values);
 
     let result = execute32(&function).expect("execute");
     let crate::val::RuntimeVal::Obj(handle) = result.returns[0] else {
@@ -466,6 +485,19 @@ fn compiler32_lowers_struct_literal_and_field_access() {
         "expected NewObject in {:?}",
         function.code
     );
+    let object_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::NewObject)
+        .expect("NewObject");
+    let object_base = function.code[object_pc].b() as u16;
+    assert!(
+        !function.code[..object_pc]
+            .iter()
+            .any(|instr| instr.opcode() == Opcode32::Move
+                && matches!(instr.a() as u16, dst if dst >= object_base && dst < object_base + 5)),
+        "struct literal fields should lower directly into the object build window"
+    );
 
     let result = execute32(&function).expect("execute");
 
@@ -486,57 +518,6 @@ fn compiler32_accepts_type_only_declarations_as_noop() {
     .expect("compile source");
 
     let result = execute32(&function).expect("execute");
-
-    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
-}
-
-#[test]
-fn compiler32_dynamic_method_helper_reads_runtime_properties() {
-    let program = parse_program32(
-        r#"
-        let user = {"score": 40};
-        return user.score() + [1, 2].len() + "ok".len();
-        "#,
-    );
-    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
-
-    let result = program.execute32_with_ctx(&mut ctx).expect("execute program");
-
-    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(44)]);
-}
-
-#[test]
-fn compiler32_dynamic_method_helper_calls_runtime_callable_property() {
-    let program = parse_program32(
-        r#"
-        fn add(a, b) {
-            return a + b;
-        }
-        let table = {"add": add};
-        return table.add(40, 2);
-        "#,
-    );
-    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
-
-    let result = program.execute32_with_ctx(&mut ctx).expect("execute program");
-
-    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
-}
-
-#[test]
-fn compiler32_dynamic_method_helper_calls_runtime_callable_property_with_named_args() {
-    let program = parse_program32(
-        r#"
-        fn add(a, {b: Int}) {
-            return a + b;
-        }
-        let table = {"add": add};
-        return table.add(40, b: 2);
-        "#,
-    );
-    let mut ctx = crate::vm::VmContext::new().with_type_checker(Some(crate::typ::TypeChecker::new_strict()));
-
-    let result = program.execute32_with_ctx(&mut ctx).expect("execute program");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
@@ -638,6 +619,30 @@ fn compiler32_lowers_list_index_access() {
 }
 
 #[test]
+fn compiler32_reads_local_index_target_without_receiver_clone() {
+    let function = compile_source32(
+        r#"
+        let values = [40, 2];
+        return values[0] + values[1];
+        "#,
+    )
+    .expect("compile source");
+    for instr in function
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode32::GetIndex)
+    {
+        assert!(
+            function.performance.is_local_slot(instr.b() as u16),
+            "local index receiver should be read from its local slot"
+        );
+    }
+
+    let result = execute32(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
 fn compiler32_lowers_in_membership_to_contains_opcode() {
     let function = compile_source32(
         r#"
@@ -690,30 +695,6 @@ fn compiler32_lowers_while_with_int_comparison() {
 }
 
 #[test]
-fn compiler32_lowers_for_over_list_with_indexed_len_path() {
-    let function = compile_source32(
-        r#"
-        let sum = 0;
-        for value in [1, 2, 3, 4] {
-            sum = sum + value;
-        }
-        return sum;
-        "#,
-    )
-    .expect("compile source");
-
-    assert!(
-        function.code.iter().any(|instr| instr.opcode() == Opcode32::Len),
-        "expected Len in {:?}",
-        function.code
-    );
-
-    let result = execute32(&function).expect("execute");
-
-    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(10)]);
-}
-
-#[test]
 fn compiler32_lowers_for_array_rest_pattern_to_slice_from() {
     let function = compile_source32(
         r#"
@@ -759,49 +740,6 @@ fn compiler32_lowers_if_let_map_rest_binding_to_map_rest() {
     let result = execute32(&function).expect("execute");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
-}
-
-#[test]
-fn compiler32_lowers_for_tuple_pattern_over_map_entries() {
-    let function = compile_source32(
-        r#"
-        let total = 0;
-        let items = {"a": 1, "b": 2};
-        for (key, value) in items {
-            total = total + value;
-        }
-        return total;
-        "#,
-    )
-    .expect("compile source");
-
-    assert!(
-        function.code.iter().any(|instr| instr.opcode() == Opcode32::ToIter),
-        "expected ToIter in {:?}",
-        function.code
-    );
-
-    let result = execute32(&function).expect("execute");
-
-    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(3)]);
-}
-
-#[test]
-fn compiler32_lowers_for_over_short_string_with_indexed_len_path() {
-    let function = compile_source32(
-        r#"
-        let count = 0;
-        for ch in "abc" {
-            count = count + 1;
-        }
-        return count;
-        "#,
-    )
-    .expect("compile source");
-
-    let result = execute32(&function).expect("execute");
-
-    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(3)]);
 }
 
 #[test]
@@ -905,15 +843,37 @@ fn compiler32_keeps_top_level_let_in_entry_frame() {
     )
     .expect("compile module");
 
+    assert_eq!(module.globals.len(), 1);
+    assert_eq!(module.globals[0].name.as_ref(), "answer");
+
+    let result = execute_module32(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+    assert_eq!(result.state.globals[0], crate::val::RuntimeVal::Int(42));
+}
+
+#[test]
+fn compiler32_promotes_top_level_let_to_global_when_function_reads_it() {
+    let module = compile_source_module32(
+        r#"
+        let local = 40;
+        fn read_local() {
+            return local + 2;
+        }
+        return read_local();
+        "#,
+    )
+    .expect("compile module");
+
     assert_eq!(module.globals.len(), 2);
     assert_eq!(module.globals[0].name.as_ref(), "local");
-    assert_eq!(module.globals[1].name.as_ref(), "answer");
+    assert_eq!(module.globals[1].name.as_ref(), "read_local");
 
     let result = execute_module32(&module).expect("execute module");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
     assert_eq!(result.state.globals[0], crate::val::RuntimeVal::Int(40));
-    assert_eq!(result.state.globals[1], crate::val::RuntimeVal::Int(42));
+    assert!(matches!(result.state.globals[1], crate::val::RuntimeVal::Obj(_)));
 }
 
 #[test]
@@ -1071,16 +1031,43 @@ fn compiler32_lowers_named_args_to_normal_call_window() {
         .functions
         .iter()
         .flat_map(|function| function.code.iter())
-        .filter(|instr| instr.opcode() == Opcode32::Call)
+        .filter(|instr| matches!(instr.opcode(), Opcode32::Call | Opcode32::CallDirect))
         .collect::<Vec<_>>();
-    assert!(!calls.is_empty(), "expected named-call lowering to reuse Call opcode");
     assert!(
-        calls.iter().all(|instr| instr.a() == instr.b()),
+        !calls.is_empty(),
+        "expected named-call lowering to reuse a positional call opcode"
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|instr| instr.opcode() == Opcode32::CallDirect || instr.a() == instr.b()),
         "Call must use one window where callee slot is also return base"
     );
 
     let result = execute_module32(&module).expect("execute module");
 
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
+fn compiler32_top_level_local_shadow_disables_direct_module_call() {
+    let module = compile_source_module32(
+        r#"
+        fn value() {
+            return 1;
+        }
+        let value = || 42;
+        return value();
+        "#,
+    )
+    .expect("compile module");
+    let entry = &module.functions[0];
+
+    assert!(
+        entry.code.iter().any(|instr| instr.opcode() == Opcode32::Call),
+        "shadowed function value must use normal callable dispatch"
+    );
+    let result = execute_module32(&module).expect("execute module");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
 
@@ -1428,46 +1415,4 @@ fn compiler32_lowers_compound_assign_break_and_continue_in_while() {
     let result = execute32(&function).expect("execute");
 
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(18)]);
-}
-
-#[test]
-fn compiler32_lowers_for_range_with_break_and_continue() {
-    let function = compile_source32(
-        r#"
-        let sum = 0;
-        for i in 0..7 {
-            if (i == 3) {
-                continue;
-            }
-            if (i == 6) {
-                break;
-            }
-            sum += i;
-        }
-        return sum;
-        "#,
-    )
-    .expect("compile source");
-
-    let result = execute32(&function).expect("execute");
-
-    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(12)]);
-}
-
-#[test]
-fn compiler32_lowers_for_range_inclusive_and_negative_step() {
-    let function = compile_source32(
-        r#"
-        let sum = 0;
-        for i in 5..=1..0 - 2 {
-            sum += i;
-        }
-        return sum;
-        "#,
-    )
-    .expect("compile source");
-
-    let result = execute32(&function).expect("execute");
-
-    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(9)]);
 }

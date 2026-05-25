@@ -187,7 +187,13 @@ fn import_typed_map(
             let mut out = std::collections::BTreeMap::new();
             for (key, value) in values {
                 out.insert(
-                    key.clone(),
+                    import_runtime_map_key(
+                        key,
+                        source_heap,
+                        dest_heap,
+                        Arc::clone(&source_module),
+                        source_state.clone(),
+                    )?,
                     import_runtime_value(
                         value,
                         source_heap,
@@ -218,6 +224,34 @@ fn import_typed_map(
         TypedMap::StringInt(values) => TypedMap::StringInt(copy_string_map_values(values)),
         TypedMap::StringFloat(values) => TypedMap::StringFloat(copy_string_map_values(values)),
         TypedMap::StringBool(values) => TypedMap::StringBool(copy_string_map_values(values)),
+    })
+}
+
+fn import_runtime_map_key(
+    key: &crate::val::RuntimeMapKey,
+    source_heap: &HeapStore,
+    dest_heap: &mut HeapStore,
+    source_module: Arc<Module32>,
+    source_state: std::sync::Arc<std::sync::Mutex<crate::vm::RuntimeModuleState32>>,
+) -> Result<crate::val::RuntimeMapKey> {
+    Ok(match key {
+        crate::val::RuntimeMapKey::Nil => crate::val::RuntimeMapKey::Nil,
+        crate::val::RuntimeMapKey::Bool(value) => crate::val::RuntimeMapKey::Bool(*value),
+        crate::val::RuntimeMapKey::Int(value) => crate::val::RuntimeMapKey::Int(*value),
+        crate::val::RuntimeMapKey::ShortStr(value) => crate::val::RuntimeMapKey::ShortStr(*value),
+        crate::val::RuntimeMapKey::String(value) => crate::val::RuntimeMapKey::String(Arc::clone(value)),
+        crate::val::RuntimeMapKey::Obj(handle) => {
+            match import_runtime_value(
+                &RuntimeVal::Obj(*handle),
+                source_heap,
+                dest_heap,
+                source_module,
+                source_state,
+            )? {
+                RuntimeVal::Obj(handle) => crate::val::RuntimeMapKey::Obj(handle),
+                _ => unreachable!("object map key import must stay an object"),
+            }
+        }
     })
 }
 

@@ -1,37 +1,28 @@
 use anyhow::{Result, bail};
 
 use crate::{
-    stmt::{
-        Program,
-        import::{ImportSource, ImportStmt},
-    },
+    stmt::{Program, import::ImportStmt},
     vm::{Compiler32, ConstHeapValue32Data, Instr32, Module32Artifact, Opcode32},
 };
 
 use super::{
     callee_eval::{native_straightline_function_return, native_straightline_named_call_args},
-    const_display::{
-        llvm_string_constant, native_const_list_display, native_const_map_display, native_string_const_value,
-    },
-    ir_text::{
-        emit_branch_to_next, llvm_float_literal, native_label, native_relative_target, native_scalar_main_header,
-        next_tmp, reg_in_bounds,
-    },
+    const_display::{native_const_list_display, native_const_map_display, native_string_const_value},
+    ir_text::{llvm_float_literal, native_relative_target},
     options::{LlvmBackendOptions, OptLevel},
-    scalar_emit::{
-        emit_f64_binary_block, emit_i64_binary_block, emit_native_return_print, emit_numeric_compare_block,
-        emit_scalar_equality_block,
-    },
-    scalar_facts::{NativeScalarFacts, NativeScalarKind, native_scalar_block_facts},
+    output::{emit_native_builtin_call, native_scalar_main_ir, native_straightline_main_ir},
+    scalar_blocks::compile_native_scalar_main_blocks,
+    scalar_facts::native_scalar_block_facts_with_statics_and_functions,
     straightline_value::{
         NativeStraightlineValue, NativeStringKeyKind, native_runtime_string_key_kind, native_static_alias_symbol,
         native_static_collection_equality_bool, native_static_compare_bool, native_static_container_test,
         native_static_contains, native_static_equality_bool, native_static_f64_binary,
-        native_static_f64_divisor_nonzero, native_static_i64_binary, native_static_i64_divisor_nonzero,
-        native_static_index, native_static_int_range, native_static_len, native_static_list_from_values,
-        native_static_load_cell, native_static_map_from_pairs, native_static_map_rest, native_static_not,
-        native_static_object_from_fields, native_static_set_index, native_static_slice_from, native_static_store_cell,
-        native_static_to_iter, native_static_to_string_value, native_static_truthy,
+        native_static_f64_divisor_nonzero, native_static_global, native_static_i64_binary,
+        native_static_i64_divisor_nonzero, native_static_index, native_static_int_range, native_static_len,
+        native_static_list_from_values, native_static_list_join, native_static_list_push, native_static_load_cell,
+        native_static_map_from_pairs, native_static_map_rest, native_static_not, native_static_object_from_fields,
+        native_static_set_index, native_static_slice_from, native_static_store_cell, native_static_string_split,
+        native_static_string_starts_with, native_static_to_iter, native_static_to_string_value, native_static_truthy,
     },
 };
 
@@ -106,18 +97,6 @@ pub fn compile_module32_artifact_to_llvm(
 }
 
 fn unsupported_module32_artifact_reason(artifact: &Module32Artifact) -> String {
-    if !artifact.imports.is_empty() {
-        return format!(
-            "imports are not native-lowerable yet ({})",
-            artifact
-                .imports
-                .iter()
-                .map(import_stmt_label)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-
     let Some(function) = artifact.module.functions.get(artifact.module.entry as usize) else {
         return format!("entry function {} is out of bounds", artifact.module.entry);
     };
@@ -138,41 +117,284 @@ fn unsupported_module32_artifact_reason(artifact: &Module32Artifact) -> String {
         Ok(code) => code,
         Err(error) => return format!("entry bytecode decode failed: {error}"),
     };
-    if native_scalar_function_needs_blocks(&code) && native_straightline_function_has_call(&code) {
-        return "control-flow lowering with direct calls is not native-lowerable yet".to_string();
+    if let Some(global_names) = unsupported_runtime_global_names(artifact, &code) {
+        return format!(
+            "runtime globals are not native-lowerable yet ({})",
+            global_names.join(", ")
+        );
     }
-    if native_scalar_function_needs_blocks(&code)
-        && native_scalar_block_facts(function.register_count as usize, artifact.module.globals.len(), &code).is_none()
+    let needs_block_lowering =
+        native_scalar_function_needs_blocks(&code) || native_direct_call_targets_need_blocks(artifact, &code);
+    if needs_block_lowering
+        && native_scalar_block_facts_with_statics_and_functions(
+            function.register_count as usize,
+            artifact.module.globals.len(),
+            &artifact.module.globals,
+            &function.consts.strings,
+            &function.consts.heap_values,
+            &code,
+            Some(&artifact.module.functions),
+        )
+        .is_none()
     {
+        if let Some(reason) = unsupported_scalar_block_opcode_reason(artifact, &code) {
+            return reason;
+        }
         return "scalar block facts could not classify the entry function".to_string();
+    }
+    if needs_block_lowering && native_straightline_function_has_call(&code) {
+        return unsupported_control_flow_call_reason(artifact, function, &code);
+    }
+    if let Some(reason) = unsupported_runtime_return_reason(function, artifact.module.globals.len(), &code) {
+        return reason;
     }
     "entry function contains an unsupported Instr32/native value shape".to_string()
 }
 
-fn import_stmt_label(import: &ImportStmt) -> String {
-    match import {
-        ImportStmt::Module { module } => module.clone(),
-        ImportStmt::File { path } => format!("file:{path}"),
-        ImportStmt::Items { source, .. } => import_source_label(source),
-        ImportStmt::Namespace { alias, source } => format!("{} as {alias}", import_source_label(source)),
-        ImportStmt::ModuleAlias { module, alias } => format!("{module} as {alias}"),
+fn unsupported_control_flow_call_reason(
+    artifact: &Module32Artifact,
+    function: &crate::vm::Function32Data,
+    code: &[Instr32],
+) -> String {
+    if let Some(reason) = unsupported_control_flow_direct_call_reason(artifact, function, code) {
+        return reason;
     }
+    for (pc, instr) in code.iter().copied().enumerate() {
+        match instr.opcode() {
+            Opcode32::Call => {
+                return format!(
+                    "control-flow dynamic Call at pc {pc} uses callee r{} with {} args; native lowering needs a statically known Function/Closure target and scalar arguments for this call shape",
+                    instr.b(),
+                    instr.c()
+                );
+            }
+            Opcode32::CallNamed => {
+                return format!(
+                    "control-flow CallNamed at pc {pc} uses callee r{} with packed args {}; native lowering needs a statically known Function/Closure target and scalar positional/named arguments",
+                    instr.a(),
+                    instr.bx()
+                );
+            }
+            Opcode32::MakeClosure => {
+                return format!(
+                    "control-flow MakeClosure at pc {pc} builds function {} from captures starting at r{}; block lowering needs statically known native-lowerable captures",
+                    instr.b(),
+                    instr.c()
+                );
+            }
+            _ => {}
+        }
+    }
+    "control-flow lowering with direct calls is not native-lowerable yet".to_string()
 }
 
-fn import_source_label(source: &ImportSource) -> String {
-    match source {
-        ImportSource::Module(module) => module.clone(),
-        ImportSource::File(path) => format!("file:{path}"),
+fn unsupported_runtime_return_reason(
+    function: &crate::vm::Function32Data,
+    global_count: usize,
+    code: &[Instr32],
+) -> Option<String> {
+    let mut callable_regs = vec![None; function.register_count as usize];
+    let mut callable_globals = vec![None; global_count];
+    for (pc, instr) in code.iter().copied().enumerate() {
+        match instr.opcode() {
+            Opcode32::LoadFunction => {
+                *callable_regs.get_mut(instr.a() as usize)? = Some("function");
+            }
+            Opcode32::MakeClosure => {
+                *callable_regs.get_mut(instr.a() as usize)? = Some("closure");
+            }
+            Opcode32::Move => {
+                let value = *callable_regs.get(instr.b() as usize)?;
+                *callable_regs.get_mut(instr.a() as usize)? = value;
+            }
+            Opcode32::SetGlobal => {
+                let value = *callable_regs.get(instr.a() as usize)?;
+                *callable_globals.get_mut(instr.bx() as usize)? = value;
+            }
+            Opcode32::GetGlobal => {
+                let value = *callable_globals.get(instr.bx() as usize)?;
+                *callable_regs.get_mut(instr.a() as usize)? = value;
+            }
+            Opcode32::Return if instr.b() == 1 => {
+                if let Some(kind) = callable_regs.get(instr.a() as usize).copied().flatten() {
+                    return Some(format!(
+                        "runtime callable returns are not native-lowerable yet: Return at pc {pc} returns a {kind} value from r{}",
+                        instr.a()
+                    ));
+                }
+            }
+            Opcode32::Return => {}
+            _ => {
+                if reg_writes_a(instr.opcode()) {
+                    *callable_regs.get_mut(instr.a() as usize)? = None;
+                }
+            }
+        }
     }
+    None
+}
+
+fn reg_writes_a(opcode: Opcode32) -> bool {
+    !matches!(
+        opcode,
+        Opcode32::SetGlobal
+            | Opcode32::SetIndex
+            | Opcode32::StoreCellVal
+            | Opcode32::TryBegin
+            | Opcode32::TryEnd
+            | Opcode32::Raise
+            | Opcode32::Test
+            | Opcode32::Jmp
+            | Opcode32::Return
+            | Opcode32::Nop
+    )
+}
+
+fn unsupported_scalar_block_opcode_reason(artifact: &Module32Artifact, code: &[Instr32]) -> Option<String> {
+    unsupported_scalar_block_opcode_reason_in_code(code).or_else(|| {
+        for instr in code.iter().copied() {
+            if instr.opcode() != Opcode32::CallDirect {
+                continue;
+            }
+            let function = artifact.module.functions.get(instr.b() as usize)?;
+            let callee_code = function
+                .code
+                .iter()
+                .copied()
+                .map(Instr32::try_from_raw)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            if let Some(reason) = unsupported_scalar_block_opcode_reason_in_code(&callee_code) {
+                return Some(format!(
+                    "direct callee function {} is not native-lowerable yet: {reason}",
+                    instr.b()
+                ));
+            }
+        }
+        None
+    })
+}
+
+fn unsupported_scalar_block_opcode_reason_in_code(code: &[Instr32]) -> Option<String> {
+    for (pc, instr) in code.iter().copied().enumerate() {
+        match instr.opcode() {
+            Opcode32::NewMap => {
+                return Some(format!(
+                    "control-flow NewMap at pc {pc} needs native typed container construction lowering"
+                ));
+            }
+            Opcode32::NewRange | Opcode32::ToIter | Opcode32::Contains | Opcode32::SliceFrom | Opcode32::MapRest => {
+                return Some(format!(
+                    "control-flow {:?} at pc {pc} needs native container/string lowering",
+                    instr.opcode()
+                ));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn unsupported_control_flow_direct_call_reason(
+    artifact: &Module32Artifact,
+    function: &crate::vm::Function32Data,
+    code: &[Instr32],
+) -> Option<String> {
+    for (pc, instr) in code.iter().copied().enumerate() {
+        if instr.opcode() != Opcode32::CallDirect {
+            continue;
+        }
+        let callee = instr.b() as usize;
+        let arg_start = instr.a() as usize + 1;
+        let arg_count = instr.c() as usize;
+        let arg_end = arg_start.saturating_add(arg_count);
+        let Some(target) = artifact.module.functions.get(callee) else {
+            return Some(format!(
+                "control-flow CallDirect at pc {pc} targets missing function {callee}"
+            ));
+        };
+        if arg_end > function.register_count as usize {
+            return Some(format!(
+                "control-flow CallDirect at pc {pc} argument window r{arg_start}..r{arg_end} exceeds entry register count {}",
+                function.register_count
+            ));
+        }
+        if target.capture_count == 0 && target.param_count == arg_count as u16 {
+            continue;
+        }
+        return Some(format!(
+            "control-flow CallDirect at pc {pc} targets function {callee} with {} params, {} captures, {} entry regs; block lowering needs native function ABI for this call shape",
+            target.param_count, target.capture_count, target.register_count
+        ));
+    }
+    None
+}
+
+fn unsupported_runtime_global_names(artifact: &Module32Artifact, code: &[Instr32]) -> Option<Vec<String>> {
+    let mut seeded_globals = vec![false; artifact.module.globals.len()];
+    let imported_names = imported_global_names(&artifact.imports);
+    let mut names = Vec::new();
+    for instr in code {
+        match instr.opcode() {
+            Opcode32::SetGlobal => {
+                if let Some(seeded) = seeded_globals.get_mut(instr.bx() as usize) {
+                    *seeded = true;
+                }
+            }
+            Opcode32::GetGlobal => {
+                let index = instr.bx() as usize;
+                if seeded_globals.get(index).copied().unwrap_or(false) {
+                    continue;
+                }
+                let Some(name) = artifact.module.globals.get(index) else {
+                    continue;
+                };
+                if native_static_global(name).is_some() {
+                    continue;
+                }
+                if imported_names.is_empty() || imported_names.iter().any(|imported| imported == name) {
+                    names.push(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    names.sort();
+    names.dedup();
+    if names.is_empty() { None } else { Some(names) }
+}
+
+fn imported_global_names(imports: &[ImportStmt]) -> Vec<String> {
+    let mut names = Vec::new();
+    for import in imports {
+        match import {
+            ImportStmt::Module { module } => names.push(module.clone()),
+            ImportStmt::File { path } => names.push(import_file_global_name(path)),
+            ImportStmt::Items { items, .. } => {
+                for item in items {
+                    names.push(item.alias.clone().unwrap_or_else(|| item.name.clone()));
+                }
+            }
+            ImportStmt::Namespace { alias, .. } | ImportStmt::ModuleAlias { alias, .. } => names.push(alias.clone()),
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn import_file_global_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("module")
+        .to_string()
 }
 
 fn compile_native_scalar_main_artifact(
     artifact: &Module32Artifact,
     options: &LlvmBackendOptions,
 ) -> Result<Option<String>> {
-    if !artifact.imports.is_empty() {
-        return Ok(None);
-    }
     let Some(function) = artifact.module.functions.get(artifact.module.entry as usize) else {
         return Ok(None);
     };
@@ -190,17 +412,29 @@ fn compile_native_scalar_main_artifact(
     if code.is_empty() {
         return Ok(Some(native_scalar_main_ir(options, &body, None)));
     }
-    if native_scalar_function_needs_blocks(&code)
-        && !native_straightline_function_has_call(&code)
-        && let Some(scalar_facts) =
-            native_scalar_block_facts(function.register_count as usize, artifact.module.globals.len(), &code)
+    let needs_block_lowering =
+        native_scalar_function_needs_blocks(&code) || native_direct_call_targets_need_blocks(artifact, &code);
+    if needs_block_lowering
+        && let Some(scalar_facts) = native_scalar_block_facts_with_statics_and_functions(
+            function.register_count as usize,
+            artifact.module.globals.len(),
+            &artifact.module.globals,
+            &function.consts.strings,
+            &function.consts.heap_values,
+            &code,
+            Some(&artifact.module.functions),
+        )
     {
         return compile_native_scalar_main_blocks(
+            artifact,
             options,
             function.register_count as usize,
             artifact.module.globals.len(),
+            &artifact.module.globals,
             &function.consts.ints,
             &function.consts.floats,
+            &function.consts.strings,
+            &function.consts.heap_values,
             &code,
             &scalar_facts,
         );
@@ -397,7 +631,14 @@ fn compile_native_scalar_main_artifact(
                 *global = Some(value);
             }
             Opcode32::GetGlobal => {
-                let Some(value) = globals.get(instr.bx() as usize).and_then(Clone::clone) else {
+                let value = globals.get(instr.bx() as usize).and_then(Clone::clone).or_else(|| {
+                    artifact
+                        .module
+                        .globals
+                        .get(instr.bx() as usize)
+                        .and_then(|name| native_static_global(name))
+                });
+                let Some(value) = value else {
                     return Ok(None);
                 };
                 if instr.a() as usize >= regs.len() {
@@ -678,6 +919,19 @@ fn compile_native_scalar_main_artifact(
                 native_replace_static_aliases(&mut regs, &mut globals, instr.a() as usize, &value);
                 regs[instr.a() as usize] = Some(value);
             }
+            Opcode32::ListPush => {
+                let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(value) = native_static_list_push(target, value) else {
+                    return Ok(None);
+                };
+                native_replace_static_aliases(&mut regs, &mut globals, instr.a() as usize, &value);
+                regs[instr.a() as usize] = Some(value);
+            }
             Opcode32::Contains => {
                 let Some(needle) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
@@ -881,6 +1135,55 @@ fn compile_native_scalar_main_artifact(
                     value,
                 });
             }
+            Opcode32::StringStartsWith => {
+                let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(prefix) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                let Some(value) = native_static_string_starts_with(target, prefix) else {
+                    return Ok(None);
+                };
+                regs[instr.a() as usize] = Some(value);
+            }
+            Opcode32::StringSplit => {
+                let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(delimiter) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                let symbol = format!("@lk_split_list_{}", ssa_index);
+                ssa_index += 1;
+                let Some(value) = native_static_string_split(target, delimiter, symbol) else {
+                    return Ok(None);
+                };
+                regs[instr.a() as usize] = Some(value);
+            }
+            Opcode32::ListJoin => {
+                let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(separator) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                let symbol = format!("@lk_join_str_{}", ssa_index);
+                ssa_index += 1;
+                let Some(value) = native_static_list_join(target, separator, symbol) else {
+                    return Ok(None);
+                };
+                regs[instr.a() as usize] = Some(value);
+            }
             Opcode32::Call => {
                 if instr.a() != instr.b() {
                     return Ok(None);
@@ -888,10 +1191,21 @@ fn compile_native_scalar_main_artifact(
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
-                let Some((function_index, captures)) = native_straightline_call_target(target) else {
+                let Some(args) = native_straightline_call_args(&regs, instr.b(), instr.c()) else {
                     return Ok(None);
                 };
-                let Some(args) = native_straightline_call_args(&regs, instr.b(), instr.c()) else {
+                if let NativeStraightlineValue::Builtin(builtin) = target {
+                    if instr.a() as usize >= regs.len() {
+                        return Ok(None);
+                    }
+                    regs[instr.a() as usize] = emit_native_builtin_call(&mut body, builtin, &args, &mut ssa_index);
+                    if regs[instr.a() as usize].is_none() {
+                        return Ok(None);
+                    }
+                    pc = next_pc;
+                    continue;
+                }
+                let Some((function_index, captures)) = native_straightline_call_target(target) else {
                     return Ok(None);
                 };
                 let Some(value) = native_straightline_function_return(
@@ -899,6 +1213,28 @@ fn compile_native_scalar_main_artifact(
                     function_index as usize,
                     &args,
                     &captures,
+                    &mut globals,
+                    0,
+                    &mut body,
+                    &mut ssa_index,
+                )?
+                else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                regs[instr.a() as usize] = Some(value);
+            }
+            Opcode32::CallDirect => {
+                let Some(args) = native_straightline_call_args(&regs, instr.a(), instr.c()) else {
+                    return Ok(None);
+                };
+                let Some(value) = native_straightline_function_return(
+                    artifact,
+                    instr.b() as usize,
+                    &args,
+                    &[],
                     &mut globals,
                     0,
                     &mut body,
@@ -1067,272 +1403,42 @@ fn native_scalar_function_needs_blocks(code: &[Instr32]) -> bool {
                 | Opcode32::IsNil
                 | Opcode32::Test
                 | Opcode32::Jmp
-                | Opcode32::GetGlobal
         )
     })
 }
 
+fn native_direct_call_targets_need_blocks(artifact: &Module32Artifact, code: &[Instr32]) -> bool {
+    code.iter().copied().any(|instr| {
+        instr.opcode() == Opcode32::CallDirect
+            && artifact
+                .module
+                .functions
+                .get(instr.b() as usize)
+                .and_then(|function| {
+                    let code = function
+                        .code
+                        .iter()
+                        .copied()
+                        .map(Instr32::try_from_raw)
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()?;
+                    Some(native_scalar_function_needs_blocks(&code) || native_straightline_function_has_call(&code))
+                })
+                .unwrap_or(false)
+    })
+}
+
 fn native_straightline_function_has_call(code: &[Instr32]) -> bool {
-    code.iter()
-        .any(|instr| matches!(instr.opcode(), Opcode32::LoadFunction | Opcode32::Call))
-}
-
-fn compile_native_scalar_main_blocks(
-    options: &LlvmBackendOptions,
-    register_count: usize,
-    global_count: usize,
-    int_consts: &[i64],
-    float_consts: &[f64],
-    code: &[Instr32],
-    scalar_facts: &NativeScalarFacts,
-) -> Result<Option<String>> {
-    let mut ir = native_scalar_main_header(options);
-    for reg in 0..register_count {
-        ir.push_str(&format!("  %r{reg}.slot = alloca i64\n"));
-    }
-    for global in 0..global_count {
-        ir.push_str(&format!("  %g{global}.slot = alloca i64\n"));
-    }
-    ir.push_str("  br label %bb0\n\n");
-
-    let mut tmp_index = 0usize;
-    for (pc, instr) in code.iter().copied().enumerate() {
-        ir.push_str(&format!("bb{pc}:\n"));
-        match instr.opcode() {
-            Opcode32::LoadString | Opcode32::LoadHeapConst => return Ok(None),
-            Opcode32::LoadNil => {
-                if !reg_in_bounds(register_count, instr.a()) {
-                    return Ok(None);
-                }
-                ir.push_str(&format!("  store i64 0, ptr %r{}.slot\n", instr.a()));
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::LoadInt => {
-                let Some(value) = int_consts.get(instr.bx() as usize) else {
-                    return Ok(None);
-                };
-                if !reg_in_bounds(register_count, instr.a()) {
-                    return Ok(None);
-                }
-                ir.push_str(&format!("  store i64 {value}, ptr %r{}.slot\n", instr.a()));
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::LoadFloat => {
-                let Some(value) = float_consts.get(instr.bx() as usize) else {
-                    return Ok(None);
-                };
-                if !reg_in_bounds(register_count, instr.a()) {
-                    return Ok(None);
-                }
-                ir.push_str(&format!(
-                    "  store double {}, ptr %r{}.slot\n",
-                    llvm_float_literal(*value),
-                    instr.a()
-                ));
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::LoadBool => {
-                if !reg_in_bounds(register_count, instr.a()) {
-                    return Ok(None);
-                }
-                let value = i64::from(instr.b() != 0);
-                ir.push_str(&format!("  store i64 {value}, ptr %r{}.slot\n", instr.a()));
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::Move => {
-                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
-                    return Ok(None);
-                }
-                let Some(kind) = scalar_facts.register_kind_before(pc, instr.b()) else {
-                    return Ok(None);
-                };
-                let value = next_tmp(&mut tmp_index);
-                let ty = kind.llvm_type();
-                ir.push_str(&format!("  {value} = load {ty}, ptr %r{}.slot\n", instr.b()));
-                ir.push_str(&format!("  store {ty} {value}, ptr %r{}.slot\n", instr.a()));
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
-                if !three_regs_in_bounds(register_count, instr) {
-                    return Ok(None);
-                }
-                emit_i64_binary_block(&mut ir, instr, &mut tmp_index);
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::AddFloat | Opcode32::SubFloat | Opcode32::MulFloat | Opcode32::DivFloat | Opcode32::ModFloat => {
-                if !three_regs_in_bounds(register_count, instr) {
-                    return Ok(None);
-                }
-                emit_f64_binary_block(&mut ir, instr, &mut tmp_index);
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::CmpInt
-            | Opcode32::CmpNeInt
-            | Opcode32::CmpLtInt
-            | Opcode32::CmpLeInt
-            | Opcode32::CmpGtInt
-            | Opcode32::CmpGeInt => {
-                if !three_regs_in_bounds(register_count, instr) {
-                    return Ok(None);
-                }
-                let Some(kind) = scalar_facts.register_kind_before(pc, instr.b()) else {
-                    return Ok(None);
-                };
-                let Some(rhs_kind) = scalar_facts.register_kind_before(pc, instr.c()) else {
-                    return Ok(None);
-                };
-                if kind == rhs_kind && kind.is_numeric() {
-                    emit_numeric_compare_block(&mut ir, instr, kind, &mut tmp_index);
-                } else if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) {
-                    emit_scalar_equality_block(&mut ir, instr, kind, rhs_kind, &mut tmp_index);
-                } else {
-                    return Ok(None);
-                }
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::Test => {
-                if !reg_in_bounds(register_count, instr.a()) {
-                    return Ok(None);
-                }
-                let Some(kind) = scalar_facts.register_kind_before(pc, instr.a()) else {
-                    return Ok(None);
-                };
-                let fallthrough = pc + 1;
-                let Some(relative) = native_relative_target(pc, instr.c() as i8 as i32, code.len()) else {
-                    return Ok(None);
-                };
-                let truthy_target = if instr.b() != 0 { fallthrough } else { relative };
-                let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
-                match kind {
-                    NativeScalarKind::Bool => {
-                        let value = next_tmp(&mut tmp_index);
-                        let cond = next_tmp(&mut tmp_index);
-                        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
-                        ir.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
-                        ir.push_str(&format!(
-                            "  br i1 {cond}, label {}, label {}\n",
-                            native_label(truthy_target, code.len()),
-                            native_label(falsy_target, code.len())
-                        ));
-                    }
-                    NativeScalarKind::Nil => {
-                        ir.push_str(&format!("  br label {}\n", native_label(falsy_target, code.len())));
-                    }
-                    NativeScalarKind::I64 | NativeScalarKind::F64 => {
-                        ir.push_str(&format!("  br label {}\n", native_label(truthy_target, code.len())));
-                    }
-                }
-            }
-            Opcode32::Not => {
-                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
-                    return Ok(None);
-                }
-                let Some(kind) = scalar_facts.register_kind_before(pc, instr.b()) else {
-                    return Ok(None);
-                };
-                match kind {
-                    NativeScalarKind::Bool => {
-                        let value = next_tmp(&mut tmp_index);
-                        let cond = next_tmp(&mut tmp_index);
-                        let out = next_tmp(&mut tmp_index);
-                        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.b()));
-                        ir.push_str(&format!("  {cond} = icmp eq i64 {value}, 0\n"));
-                        ir.push_str(&format!("  {out} = zext i1 {cond} to i64\n"));
-                        ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
-                    }
-                    NativeScalarKind::Nil => {
-                        ir.push_str(&format!("  store i64 1, ptr %r{}.slot\n", instr.a()));
-                    }
-                    _ => return Ok(None),
-                }
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::IsNil => {
-                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
-                    return Ok(None);
-                }
-                let Some(kind) = scalar_facts.register_kind_before(pc, instr.b()) else {
-                    return Ok(None);
-                };
-                let value = i64::from(kind == NativeScalarKind::Nil);
-                ir.push_str(&format!("  store i64 {value}, ptr %r{}.slot\n", instr.a()));
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::Jmp => {
-                let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len()) else {
-                    return Ok(None);
-                };
-                ir.push_str(&format!("  br label {}\n", native_label(target, code.len())));
-            }
-            Opcode32::GetGlobal => {
-                if !reg_in_bounds(register_count, instr.a()) || instr.bx() as usize >= global_count {
-                    return Ok(None);
-                }
-                let Some(kind) = scalar_facts.global_kind_before(pc, instr.bx()) else {
-                    return Ok(None);
-                };
-                let value = next_tmp(&mut tmp_index);
-                let ty = kind.llvm_type();
-                ir.push_str(&format!("  {value} = load {ty}, ptr %g{}.slot\n", instr.bx()));
-                ir.push_str(&format!("  store {ty} {value}, ptr %r{}.slot\n", instr.a()));
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::SetGlobal => {
-                if !reg_in_bounds(register_count, instr.a()) || instr.bx() as usize >= global_count {
-                    return Ok(None);
-                }
-                let Some(kind) = scalar_facts.register_kind_before(pc, instr.a()) else {
-                    return Ok(None);
-                };
-                let value = next_tmp(&mut tmp_index);
-                let ty = kind.llvm_type();
-                ir.push_str(&format!("  {value} = load {ty}, ptr %r{}.slot\n", instr.a()));
-                ir.push_str(&format!("  store {ty} {value}, ptr %g{}.slot\n", instr.bx()));
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::Return => {
-                if instr.b() == 0 {
-                    ir.push_str("  ret i32 0\n");
-                } else if instr.b() == 1 && reg_in_bounds(register_count, instr.a()) {
-                    let Some(kind) = scalar_facts.register_kind_before(pc, instr.a()) else {
-                        return Ok(None);
-                    };
-                    emit_native_return_print(&mut ir, pc, instr.a(), kind, &mut tmp_index);
-                    ir.push_str("  ret i32 0\n");
-                } else {
-                    return Ok(None);
-                }
-            }
-            Opcode32::Nop => emit_branch_to_next(&mut ir, pc, code.len()),
-            _ => return Ok(None),
-        }
-        ir.push('\n');
-    }
-    ir.push_str("exit:\n");
-    ir.push_str("  ret i32 0\n");
-    ir.push_str("lk_divisor_zero:\n");
-    ir.push_str("  ret i32 1\n");
-    ir.push_str("}\n");
-    Ok(Some(ir))
-}
-
-fn three_regs_in_bounds(register_count: usize, instr: Instr32) -> bool {
-    reg_in_bounds(register_count, instr.a())
-        && reg_in_bounds(register_count, instr.b())
-        && reg_in_bounds(register_count, instr.c())
-}
-
-fn native_scalar_main_ir(options: &LlvmBackendOptions, body: &str, return_value: Option<&str>) -> String {
-    let mut ir = native_scalar_main_header(options);
-    ir.push_str(body);
-    if let Some(value) = return_value {
-        ir.push_str(&format!(
-            "  %print = call i32 (ptr, ...) @printf(ptr @lk_i64_fmt, i64 {value})\n"
-        ));
-    }
-    ir.push_str("  ret i32 0\n");
-    ir.push_str("}\n");
-    ir
+    code.iter().any(|instr| {
+        matches!(
+            instr.opcode(),
+            Opcode32::LoadFunction
+                | Opcode32::MakeClosure
+                | Opcode32::Call
+                | Opcode32::CallDirect
+                | Opcode32::CallNamed
+        )
+    })
 }
 
 fn native_replace_static_aliases(
@@ -1365,58 +1471,4 @@ fn native_replace_static_aliases(
             *global = Some(value.clone());
         }
     }
-}
-
-fn native_straightline_main_ir(
-    options: &LlvmBackendOptions,
-    body: &str,
-    return_value: Option<&NativeStraightlineValue>,
-) -> String {
-    let mut ir = native_scalar_main_header(options);
-    ir.push_str(body);
-    let mut globals = String::new();
-    if let Some(value) = return_value {
-        match value {
-            NativeStraightlineValue::I64(value) => {
-                ir.push_str(&format!(
-                    "  %print = call i32 (ptr, ...) @printf(ptr @lk_i64_fmt, i64 {value})\n"
-                ));
-            }
-            NativeStraightlineValue::F64(value) => {
-                ir.push_str(&format!(
-                    "  %print = call i32 (ptr, ...) @printf(ptr @lk_f64_fmt, double {value})\n"
-                ));
-            }
-            NativeStraightlineValue::Bool(value) => {
-                ir.push_str(&format!("  %bool.text = icmp ne i64 {value}, 0\n"));
-                ir.push_str("  %bool.ptr = select i1 %bool.text, ptr @lk_bool_true, ptr @lk_bool_false\n");
-                ir.push_str("  %print = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr %bool.ptr)\n");
-            }
-            NativeStraightlineValue::Nil => {
-                ir.push_str("  %print = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr @lk_nil_text)\n");
-            }
-            NativeStraightlineValue::String { symbol, value, .. }
-            | NativeStraightlineValue::List { symbol, value, .. }
-            | NativeStraightlineValue::Map { symbol, value, .. }
-            | NativeStraightlineValue::Object { symbol, value, .. } => {
-                ir.push_str(&format!(
-                    "  %print = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {symbol})\n"
-                ));
-                globals.push_str(&llvm_string_constant(symbol, value));
-            }
-            NativeStraightlineValue::Error { symbol } => {
-                ir.push_str(&format!(
-                    "  %print = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {symbol})\n"
-                ));
-                globals.push_str(&llvm_string_constant(symbol, "<value>"));
-            }
-            NativeStraightlineValue::Function(_)
-            | NativeStraightlineValue::Closure { .. }
-            | NativeStraightlineValue::Cell { .. } => {}
-        }
-    }
-    ir.push_str("  ret i32 0\n");
-    ir.push_str("}\n");
-    ir.push_str(&globals);
-    ir
 }

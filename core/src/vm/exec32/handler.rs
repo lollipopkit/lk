@@ -50,7 +50,7 @@ impl super::Executor32 {
             .rposition(|handler| handler.frame_base == self.frame_base)
         {
             let handler = self.handler_stack.remove(handler_index);
-            let error = RuntimeVal::Obj(self.state.heap.alloc(HeapValue::ErrorVal(ErrorVal {
+            let error = RuntimeVal::Obj(self.alloc_heap_value(HeapValue::ErrorVal(ErrorVal {
                 message: Arc::<str>::from(message),
                 trace: Vec::new(),
             })));
@@ -87,7 +87,7 @@ impl super::Executor32 {
         let Some(handler) = self.handler_stack.pop() else {
             bail!("{}", raise.message);
         };
-        let error = RuntimeVal::Obj(self.state.heap.alloc(HeapValue::ErrorVal(ErrorVal {
+        let error = RuntimeVal::Obj(self.alloc_heap_value(HeapValue::ErrorVal(ErrorVal {
             message: raise.message.clone(),
             trace: Vec::new(),
         })));

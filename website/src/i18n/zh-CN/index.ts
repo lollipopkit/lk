@@ -50,9 +50,9 @@ const zhCN: Translation = {
   },
   runtime: {
     kicker: '运行时与工具链',
-    title: '从脚本到 Instr32 模块、诊断和 true-native LLVM。',
+    title: '从脚本到 Instr32 执行、诊断和 true-native LLVM。',
     subtitle:
-      'LK 可以运行 REPL、执行 `.lk` 文件、不执行只做类型检查、编译为可执行 `.lkm` Instr32 模块产物，并把已支持的 shape 降到 true-native LLVM IR，不再保留 artifact shell fallback。',
+      'LK 可以运行 REPL、执行 `.lk` 文件、不执行只做类型检查，并把已支持的 shape 降到 true-native LLVM IR，不再保留 artifact shell 或 host launcher fallback。',
     rows: {
       valueModel: '值模型',
       execution: '执行',

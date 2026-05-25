@@ -10,7 +10,7 @@ use crate::{
 use super::Executor32;
 
 impl Executor32 {
-    pub(super) fn try_load_const_instr(&mut self, function: &Function32, instr: Instr32) -> Result<bool> {
+    pub(super) fn load_const_instr(&mut self, function: &Function32, instr: Instr32) -> Result<()> {
         let dead_write = function.performance.is_dead_write(self.pc);
         match instr.opcode() {
             Opcode32::LoadNil => {
@@ -49,7 +49,7 @@ impl Executor32 {
                 let value = if let Some(short) = ShortStr::new(value) {
                     RuntimeVal::ShortStr(short)
                 } else {
-                    RuntimeVal::Obj(self.state.heap.alloc(HeapValue::String(value.into())))
+                    RuntimeVal::Obj(self.alloc_heap_value(HeapValue::String(value.into())))
                 };
                 if !dead_write {
                     self.write(instr.a(), value)?;
@@ -62,15 +62,15 @@ impl Executor32 {
                     .ok_or_else(|| anyhow!("LoadHeapConst const index {} out of bounds", instr.bx()))?;
                 let value = self.materialize_heap_const(value.clone())?;
                 if !dead_write {
-                    let handle = self.state.heap.alloc(value);
+                    let handle = self.alloc_heap_value(value);
                     self.write(instr.a(), RuntimeVal::Obj(handle))?;
                 }
             }
-            _ => return Ok(false),
+            _ => unreachable!("load_const_instr called for non-const opcode"),
         }
 
         self.pc += 1;
-        Ok(true)
+        Ok(())
     }
 
     fn materialize_const_value(&mut self, value: ConstRuntimeValue32) -> Result<RuntimeVal> {
@@ -82,7 +82,7 @@ impl Executor32 {
             ConstRuntimeValue32::ShortStr(value) => RuntimeVal::ShortStr(value),
             ConstRuntimeValue32::Heap(value) => {
                 let value = self.materialize_heap_const(*value)?;
-                RuntimeVal::Obj(self.state.heap.alloc(value))
+                RuntimeVal::Obj(self.alloc_heap_value(value))
             }
         })
     }

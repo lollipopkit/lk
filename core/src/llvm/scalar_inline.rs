@@ -1,0 +1,714 @@
+use crate::vm::{ConstHeapValue32Data, Function32Data, Instr32, Module32Artifact, Opcode32};
+
+use super::{
+    callee_eval::native_straightline_function_return,
+    const_display::llvm_string_constant,
+    ir_text::{llvm_float_literal, native_label, native_relative_target, next_tmp, reg_in_bounds},
+    output::emit_native_builtin_call,
+    scalar_block_helpers::{
+        clear_control_flow_static_values, concat_text_values, control_flow_static_boundaries,
+        emit_dynamic_string_starts_with, emit_inline_branch_to_next, emit_inline_i64_binary_block,
+        emit_inline_scalar_arg_stores, emit_inline_scalar_equality_block, emit_inline_string_ptr_equality_block,
+        emit_mixed_numeric_int_opcode_block, emit_static_string_i64_map_get, i64_slot_kind, inline_native_label,
+        inline_text_value_from_reg, native_static_string, scalar_named_call_args, static_call_args,
+        static_string_i64_map_supported, static_string_value_trusted_at_call, store_native_inline_scalar_value,
+        three_regs_in_bounds,
+    },
+    scalar_emit::emit_f64_binary_block,
+    scalar_facts::{NativeScalarFacts, NativeScalarKind, native_scalar_block_facts_with_initial},
+    straightline_value::{
+        NativeStraightlineValue, native_static_f64_binary, native_static_global, native_static_index,
+        native_static_set_index, native_straightline_heap_const_value,
+    },
+};
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_inline_direct_scalar_call(
+    ir: &mut String,
+    extra_globals: &mut String,
+    artifact: &Module32Artifact,
+    callee: &Function32Data,
+    call_pc: usize,
+    instr: Instr32,
+    caller_register_count: usize,
+    global_count: usize,
+    global_names: &[String],
+    caller_code: &[Instr32],
+    caller_static_regs: &[Option<NativeStraightlineValue>],
+    caller_static_globals: &[Option<NativeStraightlineValue>],
+    caller_facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+    caller_code_len: usize,
+) -> Option<()> {
+    emit_inline_static_scalar_call(
+        ir,
+        extra_globals,
+        artifact,
+        callee,
+        call_pc,
+        instr,
+        caller_register_count,
+        global_count,
+        global_names,
+        caller_code,
+        caller_static_regs,
+        caller_static_globals,
+        caller_facts,
+        &[],
+        tmp_index,
+        caller_code_len,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_inline_static_scalar_call(
+    ir: &mut String,
+    extra_globals: &mut String,
+    artifact: &Module32Artifact,
+    callee: &Function32Data,
+    call_pc: usize,
+    instr: Instr32,
+    caller_register_count: usize,
+    global_count: usize,
+    global_names: &[String],
+    caller_code: &[Instr32],
+    caller_static_regs: &[Option<NativeStraightlineValue>],
+    caller_static_globals: &[Option<NativeStraightlineValue>],
+    caller_facts: &NativeScalarFacts,
+    callee_captures: &[NativeStraightlineValue],
+    tmp_index: &mut usize,
+    caller_code_len: usize,
+) -> Option<()> {
+    if callee.capture_count as usize != callee_captures.len() || instr.c() as u16 != callee.param_count {
+        return None;
+    }
+    let arg_start = instr.a() as usize + 1;
+    let arg_end = arg_start.checked_add(instr.c() as usize)?;
+    if arg_end > caller_register_count || arg_end > caller_static_regs.len() {
+        return None;
+    }
+    let callee_code = callee
+        .code
+        .iter()
+        .copied()
+        .map(Instr32::try_from_raw)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let mut callee_kinds = vec![None; callee.register_count as usize];
+    let mut callee_static_regs = vec![None; callee.register_count as usize];
+    for arg in 0..instr.c() as usize {
+        let caller_reg = instr.a().checked_add(1)?.checked_add(arg as u8)?;
+        let static_value = caller_static_regs.get(arg_start + arg).and_then(Clone::clone);
+        if let Some(kind) = caller_facts.register_kind_before(call_pc, caller_reg) {
+            callee_kinds[arg] = Some(kind);
+        } else if static_value.is_none() {
+            return None;
+        }
+        callee_static_regs[arg] = static_value;
+        if matches!(
+            callee_static_regs[arg],
+            Some(NativeStraightlineValue::String { .. } | NativeStraightlineValue::StringPtr(_))
+        ) && !static_string_value_trusted_at_call(caller_code, call_pc, caller_reg)
+        {
+            callee_static_regs[arg] = None;
+        }
+    }
+    let caller_global_kinds = caller_facts.global_kinds_before(call_pc)?;
+    let callee_facts = native_scalar_block_facts_with_initial(
+        callee.register_count as usize,
+        global_count,
+        global_names,
+        &callee.consts.strings,
+        &callee.consts.heap_values,
+        &callee_code,
+        callee_kinds,
+        callee_static_regs.clone(),
+        caller_global_kinds.to_vec(),
+        caller_static_globals.to_vec(),
+        Some(&artifact.module.functions),
+        callee_captures,
+        0,
+    )?;
+
+    emit_inline_scalar_arg_stores(ir, caller_facts, call_pc, instr, tmp_index)?;
+    ir.push_str(&format!("  br label %call{call_pc}.bb0\n\n"));
+    emit_inline_direct_scalar_blocks(
+        ir,
+        extra_globals,
+        artifact,
+        callee,
+        &callee_code,
+        &callee_facts,
+        call_pc,
+        instr.a(),
+        global_count,
+        global_names,
+        &callee_static_regs,
+        caller_static_globals,
+        callee_captures,
+        tmp_index,
+        caller_code_len,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_inline_direct_scalar_blocks(
+    ir: &mut String,
+    extra_globals: &mut String,
+    artifact: &Module32Artifact,
+    callee: &Function32Data,
+    code: &[Instr32],
+    scalar_facts: &NativeScalarFacts,
+    call_pc: usize,
+    dst: u8,
+    global_count: usize,
+    global_names: &[String],
+    initial_static_regs: &[Option<NativeStraightlineValue>],
+    inherited_static_globals: &[Option<NativeStraightlineValue>],
+    callee_captures: &[NativeStraightlineValue],
+    tmp_index: &mut usize,
+    caller_code_len: usize,
+) -> Option<()> {
+    let register_count = callee.register_count as usize;
+    let mut static_regs: Vec<Option<NativeStraightlineValue>> = initial_static_regs.to_vec();
+    if static_regs.len() != register_count {
+        return None;
+    }
+    let mut static_globals = inherited_static_globals.to_vec();
+    let static_boundaries = control_flow_static_boundaries(code);
+    for (pc, instr) in code.iter().copied().enumerate() {
+        if static_boundaries.get(pc).copied().unwrap_or(false) {
+            clear_control_flow_static_values(&mut static_regs);
+        }
+        ir.push_str(&format!("call{call_pc}.bb{pc}:\n"));
+        match instr.opcode() {
+            Opcode32::LoadString => {
+                let value = callee.consts.strings.get(instr.bx() as usize)?;
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                let symbol = format!("@lk_call{call_pc}_str_{pc}");
+                extra_globals.push_str(&llvm_string_constant(&symbol, value));
+                static_regs[instr.a() as usize] = Some(native_static_string(value, symbol.clone()));
+                ir.push_str(&format!(
+                    "  store ptr {symbol}, ptr %call{call_pc}.r{}.slot\n",
+                    instr.a()
+                ));
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::LoadHeapConst => {
+                let value = callee.consts.heap_values.get(instr.bx() as usize)?;
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                if let ConstHeapValue32Data::LongString(value) = value {
+                    let symbol = format!("@lk_call{call_pc}_heap_str_{pc}");
+                    extra_globals.push_str(&llvm_string_constant(&symbol, value));
+                    static_regs[instr.a() as usize] = Some(native_static_string(value, symbol.clone()));
+                    ir.push_str(&format!(
+                        "  store ptr {symbol}, ptr %call{call_pc}.r{}.slot\n",
+                        instr.a()
+                    ));
+                } else {
+                    static_regs[instr.a() as usize] =
+                        Some(native_straightline_heap_const_value(call_pc, instr.bx(), value)?);
+                }
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::LoadCapture => {
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                let value = callee_captures.get(instr.bx() as usize)?.clone();
+                if store_native_inline_scalar_value(
+                    ir,
+                    extra_globals,
+                    &mut static_regs,
+                    call_pc,
+                    instr.a(),
+                    value.clone(),
+                    tmp_index,
+                )
+                .is_none()
+                {
+                    static_regs[instr.a() as usize] = Some(value);
+                }
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::LoadNil => {
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                static_regs[instr.a() as usize] = None;
+                ir.push_str(&format!("  store i64 0, ptr %call{call_pc}.r{}.slot\n", instr.a()));
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::LoadInt => {
+                let value = callee.consts.ints.get(instr.bx() as usize)?;
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                static_regs[instr.a() as usize] = None;
+                ir.push_str(&format!(
+                    "  store i64 {value}, ptr %call{call_pc}.r{}.slot\n",
+                    instr.a()
+                ));
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::LoadFloat => {
+                let value = callee.consts.floats.get(instr.bx() as usize)?;
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                static_regs[instr.a() as usize] = Some(NativeStraightlineValue::F64(llvm_float_literal(*value)));
+                ir.push_str(&format!(
+                    "  store double {}, ptr %call{call_pc}.r{}.slot\n",
+                    llvm_float_literal(*value),
+                    instr.a()
+                ));
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::LoadBool => {
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                static_regs[instr.a() as usize] = None;
+                ir.push_str(&format!(
+                    "  store i64 {}, ptr %call{call_pc}.r{}.slot\n",
+                    i64::from(instr.b() != 0),
+                    instr.a()
+                ));
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::AddFloat | Opcode32::SubFloat | Opcode32::MulFloat | Opcode32::DivFloat | Opcode32::ModFloat => {
+                if !three_regs_in_bounds(register_count, instr) {
+                    return None;
+                }
+                if let (Some(NativeStraightlineValue::F64(lhs)), Some(NativeStraightlineValue::F64(rhs))) = (
+                    static_regs.get(instr.b() as usize).and_then(Clone::clone),
+                    static_regs.get(instr.c() as usize).and_then(Clone::clone),
+                ) && let Some(value) = native_static_f64_binary(&lhs, &rhs, instr.opcode())
+                {
+                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::F64(value.clone()));
+                    ir.push_str(&format!(
+                        "  store double {value}, ptr %call{call_pc}.r{}.slot\n",
+                        instr.a()
+                    ));
+                    emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+                    continue;
+                }
+                static_regs[instr.a() as usize] = None;
+                emit_f64_binary_block(ir, instr, tmp_index);
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
+                if !three_regs_in_bounds(register_count, instr) {
+                    return None;
+                }
+                static_regs[instr.a() as usize] = None;
+                let lhs = scalar_facts.register_kind_before(pc, instr.b())?;
+                let rhs = scalar_facts.register_kind_before(pc, instr.c())?;
+                if i64_slot_kind(lhs) && i64_slot_kind(rhs) {
+                    emit_inline_i64_binary_block(ir, call_pc, instr, tmp_index);
+                } else if lhs.is_numeric() && rhs.is_numeric() {
+                    emit_mixed_numeric_int_opcode_block(ir, &format!("call{call_pc}."), instr, lhs, rhs, tmp_index);
+                } else {
+                    return None;
+                }
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::ToString => {
+                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+                    return None;
+                }
+                let value = inline_text_value_from_reg(
+                    ir,
+                    call_pc,
+                    instr.b(),
+                    scalar_facts.register_kind_before(pc, instr.b()),
+                    &static_regs,
+                    tmp_index,
+                )?;
+                static_regs[instr.a() as usize] = Some(value);
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::ConcatString => {
+                if !three_regs_in_bounds(register_count, instr) {
+                    return None;
+                }
+                let lhs = inline_text_value_from_reg(
+                    ir,
+                    call_pc,
+                    instr.b(),
+                    scalar_facts.register_kind_before(pc, instr.b()),
+                    &static_regs,
+                    tmp_index,
+                )?;
+                let rhs = inline_text_value_from_reg(
+                    ir,
+                    call_pc,
+                    instr.c(),
+                    scalar_facts.register_kind_before(pc, instr.c()),
+                    &static_regs,
+                    tmp_index,
+                )?;
+                static_regs[instr.a() as usize] = Some(concat_text_values(lhs, rhs)?);
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::StringStartsWith => {
+                if !three_regs_in_bounds(register_count, instr) {
+                    return None;
+                }
+                let NativeStraightlineValue::String { value: prefix, .. } =
+                    static_regs.get(instr.c() as usize).and_then(Clone::clone)?
+                else {
+                    return None;
+                };
+                if let Some(NativeStraightlineValue::String { value: target, .. }) =
+                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
+                    && static_string_value_trusted_at_call(code, pc, instr.b())
+                {
+                    let value = i64::from(target.starts_with(&prefix));
+                    ir.push_str(&format!(
+                        "  store i64 {value}, ptr %call{call_pc}.r{}.slot\n",
+                        instr.a()
+                    ));
+                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(value.to_string()));
+                } else if scalar_facts.register_kind_before(pc, instr.b()) == Some(NativeScalarKind::StrPtr) {
+                    emit_dynamic_string_starts_with(
+                        ir,
+                        extra_globals,
+                        &format!("call{call_pc}."),
+                        instr.a(),
+                        instr.b(),
+                        &prefix,
+                        tmp_index,
+                    );
+                    static_regs[instr.a() as usize] = None;
+                } else {
+                    return None;
+                }
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::GetIndex => {
+                if !three_regs_in_bounds(register_count, instr) {
+                    return None;
+                }
+                let target = static_regs.get(instr.b() as usize).and_then(Clone::clone)?;
+                if let NativeStraightlineValue::Map { entries, .. } = &target
+                    && (scalar_facts.register_kind_before(pc, instr.c()) == Some(NativeScalarKind::StrPtr)
+                        || !static_string_value_trusted_at_call(code, pc, instr.c()))
+                    && static_string_i64_map_supported(entries)
+                {
+                    emit_static_string_i64_map_get(
+                        ir,
+                        extra_globals,
+                        entries,
+                        &format!("call{call_pc}."),
+                        instr.a(),
+                        instr.c(),
+                        tmp_index,
+                    )?;
+                    static_regs[instr.a() as usize] = None;
+                } else {
+                    let key = static_regs.get(instr.c() as usize).and_then(Clone::clone)?;
+                    let value = native_static_index(target, key, String::new())?;
+                    if store_native_inline_scalar_value(
+                        ir,
+                        extra_globals,
+                        &mut static_regs,
+                        call_pc,
+                        instr.a(),
+                        value,
+                        tmp_index,
+                    )
+                    .is_none()
+                    {
+                        return None;
+                    }
+                }
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::Move => {
+                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+                    return None;
+                }
+                if let Some(kind) = scalar_facts.register_kind_before(pc, instr.b()) {
+                    static_regs[instr.a() as usize] = static_regs.get(instr.b() as usize).and_then(Clone::clone);
+                    let value = next_tmp(tmp_index);
+                    let ty = kind.llvm_type();
+                    ir.push_str(&format!(
+                        "  {value} = load {ty}, ptr %call{call_pc}.r{}.slot\n",
+                        instr.b()
+                    ));
+                    ir.push_str(&format!(
+                        "  store {ty} {value}, ptr %call{call_pc}.r{}.slot\n",
+                        instr.a()
+                    ));
+                    if kind == NativeScalarKind::MaybeI64 {
+                        let present = next_tmp(tmp_index);
+                        ir.push_str(&format!(
+                            "  {present} = load i64, ptr %call{call_pc}.r{}.present.slot\n",
+                            instr.b()
+                        ));
+                        ir.push_str(&format!(
+                            "  store i64 {present}, ptr %call{call_pc}.r{}.present.slot\n",
+                            instr.a()
+                        ));
+                    }
+                    emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+                    continue;
+                }
+                static_regs[instr.a() as usize] = static_regs.get(instr.b() as usize).and_then(Clone::clone);
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::CmpInt | Opcode32::CmpNeInt => {
+                if !three_regs_in_bounds(register_count, instr) {
+                    return None;
+                }
+                let lhs = scalar_facts.register_kind_before(pc, instr.b())?;
+                let rhs = scalar_facts.register_kind_before(pc, instr.c())?;
+                if lhs == rhs && lhs == NativeScalarKind::StrPtr {
+                    emit_inline_string_ptr_equality_block(ir, call_pc, instr, tmp_index);
+                } else {
+                    emit_inline_scalar_equality_block(ir, call_pc, instr, lhs, rhs, tmp_index)?;
+                }
+                static_regs[instr.a() as usize] = None;
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::Test => {
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                let kind = scalar_facts.register_kind_before(pc, instr.a())?;
+                let fallthrough = pc + 1;
+                let relative = native_relative_target(pc, instr.c() as i8 as i32, code.len())?;
+                let truthy_target = if instr.b() != 0 { fallthrough } else { relative };
+                let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
+                match kind {
+                    NativeScalarKind::Bool => {
+                        let value = next_tmp(tmp_index);
+                        let cond = next_tmp(tmp_index);
+                        ir.push_str(&format!(
+                            "  {value} = load i64, ptr %call{call_pc}.r{}.slot\n",
+                            instr.a()
+                        ));
+                        ir.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
+                        ir.push_str(&format!(
+                            "  br i1 {cond}, label {}, label {}\n",
+                            inline_native_label(call_pc, truthy_target, code.len()),
+                            inline_native_label(call_pc, falsy_target, code.len())
+                        ));
+                    }
+                    NativeScalarKind::Nil => {
+                        ir.push_str(&format!(
+                            "  br label {}\n",
+                            inline_native_label(call_pc, falsy_target, code.len())
+                        ));
+                    }
+                    NativeScalarKind::I64
+                    | NativeScalarKind::F64
+                    | NativeScalarKind::StrPtr
+                    | NativeScalarKind::MaybeI64 => {
+                        ir.push_str(&format!(
+                            "  br label {}\n",
+                            inline_native_label(call_pc, truthy_target, code.len())
+                        ));
+                    }
+                }
+            }
+            Opcode32::Jmp => {
+                let target = native_relative_target(pc, instr.sj_arg(), code.len())?;
+                ir.push_str(&format!(
+                    "  br label {}\n",
+                    inline_native_label(call_pc, target, code.len())
+                ));
+            }
+            Opcode32::GetGlobal => {
+                if !reg_in_bounds(register_count, instr.a()) || instr.bx() as usize >= global_count {
+                    return None;
+                }
+                if let Some(value) = global_names
+                    .get(instr.bx() as usize)
+                    .and_then(|name| native_static_global(name))
+                    .or_else(|| static_globals.get(instr.bx() as usize).and_then(Clone::clone))
+                {
+                    if store_native_inline_scalar_value(
+                        ir,
+                        extra_globals,
+                        &mut static_regs,
+                        call_pc,
+                        instr.a(),
+                        value.clone(),
+                        tmp_index,
+                    )
+                    .is_none()
+                    {
+                        static_regs[instr.a() as usize] = Some(value);
+                    }
+                    emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+                    continue;
+                }
+                let kind = scalar_facts.global_kind_before(pc, instr.bx())?;
+                static_regs[instr.a() as usize] = None;
+                let value = next_tmp(tmp_index);
+                let ty = kind.llvm_type();
+                ir.push_str(&format!("  {value} = load {ty}, ptr %g{}.slot\n", instr.bx()));
+                ir.push_str(&format!(
+                    "  store {ty} {value}, ptr %call{call_pc}.r{}.slot\n",
+                    instr.a()
+                ));
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::Call => {
+                if instr.a() != instr.b() || !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                if let Some(target @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. })) =
+                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
+                {
+                    let (function_index, captures) = static_call_target(target)?;
+                    let function_index = u8::try_from(function_index).ok()?;
+                    let callee = artifact.module.functions.get(function_index as usize)?;
+                    let direct_instr = Instr32::abc(Opcode32::CallDirect, instr.a(), function_index, instr.c());
+                    emit_inline_static_scalar_call(
+                        ir,
+                        extra_globals,
+                        artifact,
+                        callee,
+                        pc,
+                        direct_instr,
+                        register_count,
+                        global_count,
+                        global_names,
+                        code,
+                        &static_regs,
+                        &static_globals,
+                        scalar_facts,
+                        &captures,
+                        tmp_index,
+                        code.len(),
+                    )?;
+                    static_regs[instr.a() as usize] = None;
+                    continue;
+                }
+                let Some(NativeStraightlineValue::Builtin(builtin)) =
+                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
+                else {
+                    return None;
+                };
+                let Some(args) = static_call_args(&static_regs, instr.b(), instr.c()) else {
+                    return None;
+                };
+                let value = emit_native_builtin_call(ir, builtin, &args, tmp_index)?;
+                if store_native_inline_scalar_value(
+                    ir,
+                    extra_globals,
+                    &mut static_regs,
+                    call_pc,
+                    instr.a(),
+                    value,
+                    tmp_index,
+                )
+                .is_none()
+                {
+                    return None;
+                }
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::CallNamed => {
+                if !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                let target = static_regs.get(instr.a() as usize).and_then(Clone::clone)?;
+                let (function_index, captures) = static_call_target(target)?;
+                let function = artifact.module.functions.get(function_index as usize)?;
+                let slot_prefix = format!("call{call_pc}.");
+                let args = scalar_named_call_args(
+                    function,
+                    ir,
+                    &slot_prefix,
+                    scalar_facts,
+                    pc,
+                    &static_regs,
+                    instr.a(),
+                    instr.bx() & 0x7f,
+                    instr.bx() >> 7,
+                    tmp_index,
+                )?;
+                let value = native_straightline_function_return(
+                    artifact,
+                    function_index as usize,
+                    &args,
+                    &captures,
+                    &mut static_globals,
+                    0,
+                    ir,
+                    tmp_index,
+                )
+                .ok()??;
+                if store_native_inline_scalar_value(
+                    ir,
+                    extra_globals,
+                    &mut static_regs,
+                    call_pc,
+                    instr.a(),
+                    value,
+                    tmp_index,
+                )
+                .is_none()
+                {
+                    return None;
+                }
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::SetIndex => {
+                if !three_regs_in_bounds(register_count, instr) {
+                    return None;
+                }
+                let target = static_regs.get(instr.a() as usize).and_then(Clone::clone)?;
+                let key = static_regs.get(instr.b() as usize).and_then(Clone::clone)?;
+                let value = static_regs.get(instr.c() as usize).and_then(Clone::clone)?;
+                static_regs[instr.a() as usize] = Some(native_static_set_index(target, key, value)?);
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
+            Opcode32::CallDirect => return None,
+            Opcode32::Return => {
+                if instr.b() != 1 || !reg_in_bounds(register_count, instr.a()) {
+                    return None;
+                }
+                let kind = scalar_facts.register_kind_before(pc, instr.a())?;
+                let value = next_tmp(tmp_index);
+                let ty = kind.llvm_type();
+                ir.push_str(&format!(
+                    "  {value} = load {ty}, ptr %call{call_pc}.r{}.slot\n",
+                    instr.a()
+                ));
+                ir.push_str(&format!("  store {ty} {value}, ptr %r{dst}.slot\n"));
+                ir.push_str(&format!("  br label {}\n", native_label(call_pc + 1, caller_code_len)));
+            }
+            Opcode32::Nop => emit_inline_branch_to_next(ir, call_pc, pc, code.len()),
+            _ => return None,
+        }
+        ir.push('\n');
+    }
+    ir.push_str(&format!("call{call_pc}.exit:\n"));
+    ir.push_str(&format!(
+        "  br label {}\n\n",
+        native_label(call_pc + 1, caller_code_len)
+    ));
+    let _ = artifact;
+    let _ = &mut static_globals;
+    Some(())
+}
+
+fn static_call_target(value: NativeStraightlineValue) -> Option<(u16, Vec<NativeStraightlineValue>)> {
+    match value {
+        NativeStraightlineValue::Function(function_index) => Some((function_index, Vec::new())),
+        NativeStraightlineValue::Closure {
+            function_index,
+            captures,
+        } => Some((function_index, captures)),
+        _ => None,
+    }
+}

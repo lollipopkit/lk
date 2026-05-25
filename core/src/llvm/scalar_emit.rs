@@ -90,7 +90,9 @@ pub(super) fn emit_numeric_compare_block(
             };
             ir.push_str(&format!("  {cmp} = fcmp {pred} double {lhs}, {rhs}\n"));
         }
-        NativeScalarKind::Bool | NativeScalarKind::Nil => unreachable!("non-numeric compare rejected earlier"),
+        NativeScalarKind::Bool | NativeScalarKind::Nil | NativeScalarKind::StrPtr | NativeScalarKind::MaybeI64 => {
+            unreachable!("non-numeric compare rejected earlier")
+        }
     }
     ir.push_str(&format!("  {out} = zext i1 {cmp} to i64\n"));
     ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
@@ -106,6 +108,9 @@ pub(super) fn emit_scalar_equality_block(
     let eq_result = match (lhs_kind, rhs_kind) {
         (NativeScalarKind::Bool, NativeScalarKind::Bool) => None,
         (NativeScalarKind::Nil, NativeScalarKind::Nil) => Some(true),
+        (NativeScalarKind::MaybeI64, NativeScalarKind::Nil) | (NativeScalarKind::Nil, NativeScalarKind::MaybeI64) => {
+            None
+        }
         _ => Some(false),
     };
     if let Some(equal) = eq_result {
@@ -127,9 +132,21 @@ pub(super) fn emit_scalar_equality_block(
         Opcode32::CmpNeInt => "ne",
         _ => unreachable!("opcode matched by caller"),
     };
-    ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
-    ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
-    ir.push_str(&format!("  {cmp} = icmp {pred} i64 {lhs}, {rhs}\n"));
+    if lhs_kind == NativeScalarKind::MaybeI64 || rhs_kind == NativeScalarKind::MaybeI64 {
+        let maybe_reg = if lhs_kind == NativeScalarKind::MaybeI64 {
+            instr.b()
+        } else {
+            instr.c()
+        };
+        let present = next_tmp(tmp_index);
+        ir.push_str(&format!("  {present} = load i64, ptr %r{maybe_reg}.present.slot\n"));
+        let nil_equal = if instr.opcode() == Opcode32::CmpInt { "eq" } else { "ne" };
+        ir.push_str(&format!("  {cmp} = icmp {nil_equal} i64 {present}, 0\n"));
+    } else {
+        ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
+        ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
+        ir.push_str(&format!("  {cmp} = icmp {pred} i64 {lhs}, {rhs}\n"));
+    }
     ir.push_str(&format!("  {out} = zext i1 {cmp} to i64\n"));
     ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
 }
@@ -171,6 +188,16 @@ pub(super) fn emit_native_return_print(
         NativeScalarKind::Nil => {
             ir.push_str(&format!(
                 "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr @lk_nil_text)\n"
+            ));
+        }
+        NativeScalarKind::StrPtr => {
+            ir.push_str(&format!(
+                "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {value})\n"
+            ));
+        }
+        NativeScalarKind::MaybeI64 => {
+            ir.push_str(&format!(
+                "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_i64_fmt, i64 {value})\n"
             ));
         }
     }

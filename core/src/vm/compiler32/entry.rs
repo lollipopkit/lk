@@ -10,8 +10,8 @@ use crate::{
 
 use super::{
     CompiledFunction32, Compiler32, Function32, FunctionSignature32, Instr32, Module32, NativeEntry32, Opcode32,
-    checked_u8, collect_function_names, collect_function_signatures, collect_global_names_with_external,
-    collect_native_names, function_frame_params, global_slots_from_names,
+    checked_u8, collect_function_inline_bodies, collect_function_names, collect_function_signatures,
+    collect_global_names_with_external, collect_native_names, function_frame_params, global_slots_from_names,
 };
 
 impl Compiler32 {
@@ -47,6 +47,7 @@ impl Compiler32 {
     {
         let function_names = collect_function_names(program)?;
         let function_signatures = collect_function_signatures(program)?;
+        let function_bodies = collect_function_inline_bodies(program)?;
         let native_names = collect_native_names(&natives)?;
         let global_names = collect_global_names_with_external(program, external_globals)?;
         let mut module = Module32 {
@@ -59,6 +60,7 @@ impl Compiler32 {
         let mut entry = Self::with_names(
             function_names.clone(),
             function_signatures.clone(),
+            function_bodies.clone(),
             native_names.clone(),
             global_names.clone(),
             true,
@@ -86,6 +88,7 @@ impl Compiler32 {
                     body,
                     function_names.clone(),
                     function_signatures.clone(),
+                    function_bodies.clone(),
                     native_names.clone(),
                     global_names.clone(),
                     HashMap::new(),
@@ -118,6 +121,7 @@ impl Compiler32 {
     pub(super) fn with_names(
         function_names: HashMap<String, u32>,
         function_signatures: HashMap<String, FunctionSignature32>,
+        function_bodies: HashMap<String, super::support::FunctionInlineBody32>,
         native_names: HashMap<String, u32>,
         global_names: HashMap<String, u32>,
         top_level: bool,
@@ -125,6 +129,7 @@ impl Compiler32 {
         Self {
             function_names,
             function_signatures,
+            function_bodies,
             native_names,
             global_names,
             top_level,
@@ -138,6 +143,7 @@ impl Compiler32 {
         body: &Stmt,
         function_names: HashMap<String, u32>,
         function_signatures: HashMap<String, FunctionSignature32>,
+        function_bodies: HashMap<String, super::support::FunctionInlineBody32>,
         native_names: HashMap<String, u32>,
         global_names: HashMap<String, u32>,
         capture_names: HashMap<String, u16>,
@@ -147,7 +153,14 @@ impl Compiler32 {
         if frame_params.len() > u16::MAX as usize {
             bail!("Compiler32 function has too many params: {}", frame_params.len());
         }
-        let mut compiler = Self::with_names(function_names, function_signatures, native_names, global_names, false);
+        let mut compiler = Self::with_names(
+            function_names,
+            function_signatures,
+            function_bodies,
+            native_names,
+            global_names,
+            false,
+        );
         compiler.capture_names = capture_names;
         compiler.dynamic_function_base = dynamic_function_base;
         compiler.function.param_count = frame_params.len() as u16;

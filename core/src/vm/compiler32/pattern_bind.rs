@@ -16,8 +16,11 @@ impl Compiler32 {
             } else {
                 self.alloc_reg()
             };
-            let value = self.lower_expr(value)?;
-            self.emit_move(slot, value, "let local")?;
+            if !self.try_lower_expr_to_register(slot, value)? {
+                let value = self.lower_expr(value)?;
+                let move_source = !self.is_current_local_slot(value);
+                self.emit_move_with_policy(slot, value, "let local", move_source)?;
+            }
             if self.top_level
                 && let Some(global_slot) = self.global_names.get(name).copied()
             {

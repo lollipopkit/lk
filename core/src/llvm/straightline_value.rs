@@ -25,6 +25,13 @@ pub(super) enum NativeStraightlineValue {
         len: usize,
         key_kind: NativeStringKeyKind,
     },
+    StringPtr(String),
+    Text(Vec<NativeTextPart>),
+    DynamicTextChar,
+    DynamicSplitText {
+        text: Vec<NativeTextPart>,
+        delimiter: String,
+    },
     List {
         symbol: String,
         value: String,
@@ -34,6 +41,19 @@ pub(super) enum NativeStraightlineValue {
         symbol: String,
         value: String,
         entries: Vec<(RuntimeMapKeyData, ConstRuntimeValue32Data)>,
+    },
+    DynamicStringIntMap {
+        id: usize,
+    },
+    DynamicIntList {
+        id: usize,
+    },
+    DynamicTextList {
+        id: usize,
+    },
+    DynamicJoinedText {
+        id: usize,
+        delimiter_len: usize,
     },
     Object {
         symbol: String,
@@ -48,11 +68,48 @@ pub(super) enum NativeStraightlineValue {
     Error {
         symbol: String,
     },
+    Builtin(NativeBuiltin),
+    Module(NativeModule),
     Function(u16),
     Closure {
         function_index: u16,
         captures: Vec<NativeStraightlineValue>,
     },
+}
+
+#[derive(Clone)]
+pub(super) enum NativeTextPart {
+    I64(String),
+    F64(String),
+    Bool(String),
+    Nil,
+    StrPtr(String),
+    String { symbol: String, value: String },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeBuiltin {
+    Print,
+    Println,
+    CoreCallMethod,
+    OsClock,
+    OsEpoch,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeModule {
+    Os,
+    OsEnv,
+}
+
+pub(super) fn native_static_global(name: &str) -> Option<NativeStraightlineValue> {
+    match name {
+        "print" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Print)),
+        "println" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Println)),
+        "__lk_call_method" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod)),
+        "os" => Some(NativeStraightlineValue::Module(NativeModule::Os)),
+        _ => None,
+    }
 }
 
 pub(super) fn native_static_to_string_value(
@@ -66,17 +123,88 @@ pub(super) fn native_static_to_string_value(
         NativeStraightlineValue::I64(value) if !value.starts_with('%') => value,
         NativeStraightlineValue::F64(value) if !value.starts_with('%') && !value.starts_with("0x") => value,
         NativeStraightlineValue::String { value, .. } => value,
+        NativeStraightlineValue::StringPtr(_)
+        | NativeStraightlineValue::Text(_)
+        | NativeStraightlineValue::DynamicSplitText { .. }
+        | NativeStraightlineValue::DynamicTextChar => return None,
         NativeStraightlineValue::Cell { .. }
+        | NativeStraightlineValue::DynamicStringIntMap { .. }
+        | NativeStraightlineValue::DynamicIntList { .. }
+        | NativeStraightlineValue::DynamicTextList { .. }
+        | NativeStraightlineValue::DynamicJoinedText { .. }
         | NativeStraightlineValue::Error { .. }
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
-        | NativeStraightlineValue::Object { .. } => return None,
+        | NativeStraightlineValue::Object { .. }
+        | NativeStraightlineValue::Builtin(_)
+        | NativeStraightlineValue::Module(_) => return None,
         NativeStraightlineValue::F64(_)
         | NativeStraightlineValue::Bool(_)
         | NativeStraightlineValue::I64(_)
         | NativeStraightlineValue::Function(_)
         | NativeStraightlineValue::Closure { .. } => return None,
     };
+    Some(NativeStraightlineValue::String {
+        len: value.chars().count(),
+        symbol,
+        key_kind: native_runtime_string_key_kind(&value),
+        value,
+    })
+}
+
+pub(super) fn native_static_string_starts_with(
+    target: NativeStraightlineValue,
+    prefix: NativeStraightlineValue,
+) -> Option<NativeStraightlineValue> {
+    let NativeStraightlineValue::String { value: target, .. } = target else {
+        return None;
+    };
+    let NativeStraightlineValue::String { value: prefix, .. } = prefix else {
+        return None;
+    };
+    Some(NativeStraightlineValue::Bool(
+        i64::from(target.starts_with(&prefix)).to_string(),
+    ))
+}
+
+pub(super) fn native_static_string_split(
+    target: NativeStraightlineValue,
+    delimiter: NativeStraightlineValue,
+    symbol: String,
+) -> Option<NativeStraightlineValue> {
+    let NativeStraightlineValue::String { value: target, .. } = target else {
+        return None;
+    };
+    let NativeStraightlineValue::String { value: delimiter, .. } = delimiter else {
+        return None;
+    };
+    let elements = target
+        .split(&delimiter)
+        .map(native_const_string_value)
+        .collect::<Vec<_>>();
+    Some(NativeStraightlineValue::List {
+        value: native_const_list_display(&elements)?,
+        symbol,
+        elements,
+    })
+}
+
+pub(super) fn native_static_list_join(
+    target: NativeStraightlineValue,
+    separator: NativeStraightlineValue,
+    symbol: String,
+) -> Option<NativeStraightlineValue> {
+    let NativeStraightlineValue::List { elements, .. } = target else {
+        return None;
+    };
+    let NativeStraightlineValue::String { value: separator, .. } = separator else {
+        return None;
+    };
+    let mut parts = Vec::with_capacity(elements.len());
+    for value in elements {
+        parts.push(native_const_runtime_string(value)?);
+    }
+    let value = parts.join(&separator);
     Some(NativeStraightlineValue::String {
         len: value.chars().count(),
         symbol,
@@ -130,13 +258,24 @@ pub(super) fn native_static_truthy(value: &NativeStraightlineValue) -> Option<bo
             Some(true)
         }
         NativeStraightlineValue::String { .. }
+        | NativeStraightlineValue::StringPtr(_)
+        | NativeStraightlineValue::Text(_)
+        | NativeStraightlineValue::DynamicSplitText { .. }
+        | NativeStraightlineValue::DynamicTextChar
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
+        | NativeStraightlineValue::DynamicStringIntMap { .. }
+        | NativeStraightlineValue::DynamicIntList { .. }
+        | NativeStraightlineValue::DynamicTextList { .. }
+        | NativeStraightlineValue::DynamicJoinedText { .. }
         | NativeStraightlineValue::Object { .. }
         | NativeStraightlineValue::Cell { .. }
         | NativeStraightlineValue::Error { .. } => Some(true),
         NativeStraightlineValue::Bool(_) | NativeStraightlineValue::I64(_) | NativeStraightlineValue::F64(_) => None,
-        NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. } => None,
+        NativeStraightlineValue::Builtin(_)
+        | NativeStraightlineValue::Module(_)
+        | NativeStraightlineValue::Function(_)
+        | NativeStraightlineValue::Closure { .. } => None,
     }
 }
 
@@ -450,6 +589,19 @@ pub(super) fn native_static_index(
             };
             native_const_runtime_value(value, symbol)
         }
+        NativeStraightlineValue::Module(module) => native_static_module_index(module, key),
+        _ => None,
+    }
+}
+
+fn native_static_module_index(module: NativeModule, key: NativeStraightlineValue) -> Option<NativeStraightlineValue> {
+    let NativeStraightlineValue::String { value: key, .. } = key else {
+        return None;
+    };
+    match (module, key.as_str()) {
+        (NativeModule::Os, "clock") => Some(NativeStraightlineValue::Builtin(NativeBuiltin::OsClock)),
+        (NativeModule::Os, "epoch") => Some(NativeStraightlineValue::Builtin(NativeBuiltin::OsEpoch)),
+        (NativeModule::Os, "env") => Some(NativeStraightlineValue::Module(NativeModule::OsEnv)),
         _ => None,
     }
 }
@@ -516,6 +668,24 @@ pub(super) fn native_static_set_index(
         }
         _ => None,
     }
+}
+
+pub(super) fn native_static_list_push(
+    target: NativeStraightlineValue,
+    value: NativeStraightlineValue,
+) -> Option<NativeStraightlineValue> {
+    let NativeStraightlineValue::List {
+        symbol, mut elements, ..
+    } = target
+    else {
+        return None;
+    };
+    elements.push(native_runtime_const_value(&value)?);
+    Some(NativeStraightlineValue::List {
+        value: native_const_list_display(&elements)?,
+        symbol,
+        elements,
+    })
 }
 
 pub(super) fn native_static_load_cell(value: NativeStraightlineValue) -> Option<NativeStraightlineValue> {
@@ -737,11 +907,21 @@ fn native_runtime_const_value(value: &NativeStraightlineValue) -> Option<ConstRu
             Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::Map(out))))
         }
         NativeStraightlineValue::Object { .. }
+        | NativeStraightlineValue::DynamicStringIntMap { .. }
+        | NativeStraightlineValue::DynamicIntList { .. }
+        | NativeStraightlineValue::DynamicTextList { .. }
+        | NativeStraightlineValue::DynamicJoinedText { .. }
+        | NativeStraightlineValue::StringPtr(_)
+        | NativeStraightlineValue::Text(_)
+        | NativeStraightlineValue::DynamicSplitText { .. }
+        | NativeStraightlineValue::DynamicTextChar
         | NativeStraightlineValue::Cell { .. }
         | NativeStraightlineValue::Error { .. }
         | NativeStraightlineValue::Bool(_)
         | NativeStraightlineValue::I64(_)
         | NativeStraightlineValue::F64(_)
+        | NativeStraightlineValue::Builtin(_)
+        | NativeStraightlineValue::Module(_)
         | NativeStraightlineValue::Function(_)
         | NativeStraightlineValue::Closure { .. } => None,
     }
@@ -794,9 +974,29 @@ fn native_map_key(value: NativeStraightlineValue) -> Option<RuntimeMapKeyData> {
     }
 }
 
+fn native_const_string_value(value: &str) -> ConstRuntimeValue32Data {
+    if ShortStr::new(value).is_some() {
+        ConstRuntimeValue32Data::ShortStr(value.to_string())
+    } else {
+        ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::LongString(value.to_string())))
+    }
+}
+
+fn native_const_runtime_string(value: ConstRuntimeValue32Data) -> Option<String> {
+    match value {
+        ConstRuntimeValue32Data::ShortStr(value) => Some(value),
+        ConstRuntimeValue32Data::Heap(value) => match *value {
+            ConstHeapValue32Data::LongString(value) => Some(value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn native_string_key_value(value: NativeStraightlineValue) -> Option<String> {
     match value {
         NativeStraightlineValue::String { value, .. } => Some(value),
+        NativeStraightlineValue::StringPtr(_) => None,
         _ => None,
     }
 }

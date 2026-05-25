@@ -65,6 +65,47 @@ pub(super) fn set_list_value(list: &mut TypedList, index: usize, value: RuntimeV
     Ok(())
 }
 
+pub(super) fn push_list_value(list: &mut TypedList, value: RuntimeVal, string_value: Option<Arc<str>>) -> Result<()> {
+    match list {
+        TypedList::Mixed(values) => values.push(value),
+        TypedList::Int(values) => match value {
+            RuntimeVal::Int(value) => values.push(value),
+            value => {
+                let mut mixed = copy_numeric_list(values, RuntimeVal::Int);
+                mixed.push(value);
+                *list = TypedList::Mixed(mixed);
+            }
+        },
+        TypedList::Float(values) => match value {
+            RuntimeVal::Float(value) => values.push(value),
+            value => {
+                let mut mixed = copy_numeric_list(values, RuntimeVal::Float);
+                mixed.push(value);
+                *list = TypedList::Mixed(mixed);
+            }
+        },
+        TypedList::Bool(values) => match value {
+            RuntimeVal::Bool(value) => values.push(value),
+            value => {
+                let mut mixed = copy_numeric_list(values, RuntimeVal::Bool);
+                mixed.push(value);
+                *list = TypedList::Mixed(mixed);
+            }
+        },
+        TypedList::String(values) => match string_value {
+            Some(value) => values.push(value),
+            None => bail!("internal error: typed string list push must be materialized before mutable borrow"),
+        },
+    }
+    Ok(())
+}
+
+fn copy_numeric_list<T: Copy>(values: &[T], wrap: impl Fn(T) -> RuntimeVal) -> Vec<RuntimeVal> {
+    let mut mixed = Vec::with_capacity(values.len() + 1);
+    mixed.extend(values.iter().copied().map(wrap));
+    mixed
+}
+
 fn copy_numeric_list_with_replacement<T: Copy>(
     values: &[T],
     index: usize,

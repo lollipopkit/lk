@@ -44,7 +44,7 @@ use super::{
     CallWindow32, Function32, Instr32, Module32, NativeEntry32, Opcode32, RegisterIndex, RuntimeExport32,
     RuntimeModuleState32, VmContext,
     analysis::{
-        PerfCallFact, PerfIndexFact, VmCallMetric, VmContainerMetric, VmValueCopyMetric,
+        PerfCallFact, PerfFusedBoolBranchFact, PerfIndexFact, VmCallMetric, VmContainerMetric, VmValueCopyMetric,
         record_branch_op_known_enabled, record_call_op_known_enabled, record_container_op_known_enabled,
         record_copy_policy_clone, record_opcode_step_known_enabled, vm_runtime_metrics_enabled,
     },
@@ -297,10 +297,13 @@ fn format_map_key(key: &RuntimeMapKey) -> String {
 pub struct Executor32 {
     state: RuntimeModuleState32,
     captures: Arc<Vec<RuntimeVal>>,
+    empty_captures: Arc<Vec<RuntimeVal>>,
     handler_stack: Vec<ErrorHandler32>,
     frame_base: usize,
     register_count: u16,
     pc: usize,
+    collect_metrics: bool,
+    gc_pending: bool,
     shared_module: Option<Arc<Module32>>,
 }
 
@@ -310,10 +313,13 @@ impl Executor32 {
         let mut this = Self {
             state: RuntimeModuleState32::default(),
             captures: Arc::new(Vec::new()),
+            empty_captures: Arc::new(Vec::new()),
             handler_stack: Vec::new(),
             frame_base: 0,
             register_count,
             pc: 0,
+            collect_metrics: false,
+            gc_pending: false,
             shared_module: None,
         };
         this.reset_entry_frame(register_count);
@@ -433,6 +439,7 @@ impl Executor32 {
                 state,
             });
         }
+        let saved_top = state.stack_top();
         self.state = state;
         self.captures = captures;
         self.shared_module = shared_module;
@@ -440,6 +447,7 @@ impl Executor32 {
         let arg_count = match seed_args(&mut self) {
             Ok(arg_count) => arg_count,
             Err(error) => {
+                self.state.stack_top = saved_top;
                 return Err(Exec32Failure {
                     error,
                     state: self.state,
@@ -447,6 +455,7 @@ impl Executor32 {
             }
         };
         if function.param_count != arg_count {
+            self.state.stack_top = saved_top;
             return Err(Exec32Failure {
                 error: anyhow!(
                     "Function expects {} positional arguments, got {}",
@@ -458,11 +467,18 @@ impl Executor32 {
         }
         let mut ctx = Some(ctx);
         match self.run_function_inner(function, Some(module), &mut ctx) {
-            Ok(returns) => Ok(self.finish(returns.into_vec())),
-            Err(error) => Err(Exec32Failure {
-                error,
-                state: self.state,
-            }),
+            Ok(returns) => {
+                let returns = returns.into_vec();
+                self.state.stack_top = saved_top;
+                Ok(self.finish(returns))
+            }
+            Err(error) => {
+                self.state.stack_top = saved_top;
+                Err(Exec32Failure {
+                    error,
+                    state: self.state,
+                })
+            }
         }
     }
 
@@ -488,17 +504,21 @@ impl Executor32 {
         }
 
         let collect_metrics = vm_runtime_metrics_enabled();
+        self.collect_metrics = collect_metrics;
         while self.pc < function.code.len() {
             if collect_metrics {
                 record_opcode_step_known_enabled();
             }
-            self.maybe_collect_garbage();
+            self.collect_pending_garbage();
             let instr = function.code[self.pc];
-            if self.try_load_const_instr(function, instr)? {
-                continue;
-            }
             match instr.opcode() {
                 Opcode32::Nop => self.pc += 1,
+                Opcode32::LoadNil
+                | Opcode32::LoadBool
+                | Opcode32::LoadInt
+                | Opcode32::LoadFloat
+                | Opcode32::LoadString
+                | Opcode32::LoadHeapConst => self.load_const_instr(function, instr)?,
                 Opcode32::Move => {
                     let value = if function
                         .performance
@@ -559,20 +579,8 @@ impl Executor32 {
                 Opcode32::MulInt => {
                     self.dynamic_numeric_binary(instr, |lhs, rhs| lhs.wrapping_mul(rhs), |lhs, rhs| lhs * rhs)?
                 }
-                Opcode32::DivInt => {
-                    let rhs = self.read_number(instr.c())?;
-                    if rhs == 0.0 {
-                        bail!("DivInt divisor is zero");
-                    }
-                    self.dynamic_numeric_binary(instr, |lhs, rhs| lhs / rhs, |lhs, rhs| lhs / rhs)?;
-                }
-                Opcode32::ModInt => {
-                    let rhs = self.read_number(instr.c())?;
-                    if rhs == 0.0 {
-                        bail!("ModInt divisor is zero");
-                    }
-                    self.dynamic_numeric_binary(instr, |lhs, rhs| lhs % rhs, |lhs, rhs| lhs % rhs)?;
-                }
+                Opcode32::DivInt => self.dynamic_div(instr)?,
+                Opcode32::ModInt => self.dynamic_mod(instr)?,
                 Opcode32::AddFloat => self.float_binary(instr, |lhs, rhs| lhs + rhs)?,
                 Opcode32::SubFloat => self.float_binary(instr, |lhs, rhs| lhs - rhs)?,
                 Opcode32::MulFloat => self.float_binary(instr, |lhs, rhs| lhs * rhs)?,
@@ -596,25 +604,37 @@ impl Executor32 {
                 }
                 Opcode32::Not => {
                     let value = match self.read(instr.b())? {
-                        RuntimeVal::Bool(value) => RuntimeVal::Bool(!value),
-                        RuntimeVal::Nil => RuntimeVal::Bool(true),
+                        RuntimeVal::Bool(value) => !value,
+                        RuntimeVal::Nil => true,
                         other => bail!("Not expected Bool or Nil, got {:?}", other.kind()),
                     };
-                    self.write(instr.a(), value)?;
+                    if self.try_fused_bool_branch(function, instr.a(), value)? {
+                        continue;
+                    }
+                    self.write(instr.a(), RuntimeVal::Bool(value))?;
                     self.pc += 1;
                 }
                 Opcode32::IsNil => {
                     let value = matches!(self.read(instr.b())?, RuntimeVal::Nil);
+                    if self.try_fused_bool_branch(function, instr.a(), value)? {
+                        continue;
+                    }
                     self.write(instr.a(), RuntimeVal::Bool(value))?;
                     self.pc += 1;
                 }
                 Opcode32::IsList => {
                     let value = self.runtime_value_is_list(self.read(instr.b())?)?;
+                    if self.try_fused_bool_branch(function, instr.a(), value)? {
+                        continue;
+                    }
                     self.write(instr.a(), RuntimeVal::Bool(value))?;
                     self.pc += 1;
                 }
                 Opcode32::IsMap => {
                     let value = self.runtime_value_is_map(self.read(instr.b())?)?;
+                    if self.try_fused_bool_branch(function, instr.a(), value)? {
+                        continue;
+                    }
                     self.write(instr.a(), RuntimeVal::Bool(value))?;
                     self.pc += 1;
                 }
@@ -629,22 +649,63 @@ impl Executor32 {
                     self.write_string(instr.a(), format!("{lhs}{rhs}"))?;
                     self.pc += 1;
                 }
+                Opcode32::StringStartsWith => {
+                    self.string_starts_with(instr.a(), instr.b(), instr.c())?;
+                    self.pc += 1;
+                }
+                Opcode32::StringSplit => {
+                    self.string_split(instr.a(), instr.b(), instr.c())?;
+                    self.pc += 1;
+                }
+                Opcode32::ListJoin => {
+                    self.list_join(instr.a(), instr.b(), instr.c())?;
+                    self.pc += 1;
+                }
                 Opcode32::CmpInt => {
                     let equal = self.values_equal(instr.b(), instr.c())?;
+                    if self.try_fused_bool_branch(function, instr.a(), equal)? {
+                        continue;
+                    }
                     self.write(instr.a(), RuntimeVal::Bool(equal))?;
                     self.pc += 1;
                 }
                 Opcode32::CmpNeInt => {
                     let equal = self.values_equal(instr.b(), instr.c())?;
+                    if self.try_fused_bool_branch(function, instr.a(), !equal)? {
+                        continue;
+                    }
                     self.write(instr.a(), RuntimeVal::Bool(!equal))?;
                     self.pc += 1;
                 }
-                Opcode32::CmpLtInt => self.int_compare(instr, |lhs, rhs| lhs < rhs)?,
-                Opcode32::CmpLeInt => self.int_compare(instr, |lhs, rhs| lhs <= rhs)?,
-                Opcode32::CmpGtInt => self.int_compare(instr, |lhs, rhs| lhs > rhs)?,
-                Opcode32::CmpGeInt => self.int_compare(instr, |lhs, rhs| lhs >= rhs)?,
+                Opcode32::CmpLtInt => {
+                    if self.try_fused_compare_branch(function, instr)? {
+                        continue;
+                    }
+                    self.number_compare(instr, |lhs, rhs| lhs < rhs, |lhs, rhs| lhs < rhs)?;
+                }
+                Opcode32::CmpLeInt => {
+                    if self.try_fused_compare_branch(function, instr)? {
+                        continue;
+                    }
+                    self.number_compare(instr, |lhs, rhs| lhs <= rhs, |lhs, rhs| lhs <= rhs)?;
+                }
+                Opcode32::CmpGtInt => {
+                    if self.try_fused_compare_branch(function, instr)? {
+                        continue;
+                    }
+                    self.number_compare(instr, |lhs, rhs| lhs > rhs, |lhs, rhs| lhs > rhs)?;
+                }
+                Opcode32::CmpGeInt => {
+                    if self.try_fused_compare_branch(function, instr)? {
+                        continue;
+                    }
+                    self.number_compare(instr, |lhs, rhs| lhs >= rhs, |lhs, rhs| lhs >= rhs)?;
+                }
                 Opcode32::Contains => {
                     let value = self.contains_value(instr.b(), instr.c())?;
+                    if self.try_fused_bool_branch(function, instr.a(), value)? {
+                        continue;
+                    }
                     self.write(instr.a(), RuntimeVal::Bool(value))?;
                     self.pc += 1;
                 }
@@ -699,7 +760,7 @@ impl Executor32 {
                     } else {
                         HeapValue::List(self.read_register_list(instr.b(), instr.c())?)
                     };
-                    let handle = self.state.heap.alloc(list);
+                    let handle = self.alloc_heap_value(list);
                     self.write(instr.a(), RuntimeVal::Obj(handle))?;
                     self.pc += 1;
                 }
@@ -713,7 +774,7 @@ impl Executor32 {
                     } else {
                         self.read_map_entries(instr.b(), instr.c())?
                     };
-                    let handle = self.state.heap.alloc(HeapValue::Map(typed_map_from_entries(map)));
+                    let handle = self.alloc_heap_value(HeapValue::Map(typed_map_from_entries(map)));
                     self.write(instr.a(), RuntimeVal::Obj(handle))?;
                     self.pc += 1;
                 }
@@ -722,7 +783,7 @@ impl Executor32 {
                         record_container_op_known_enabled(VmContainerMetric::Generic);
                     }
                     let object = self.read_object_fields(instr.b(), instr.c())?;
-                    let handle = self.state.heap.alloc(HeapValue::Object(object));
+                    let handle = self.alloc_heap_value(HeapValue::Object(object));
                     self.write(instr.a(), RuntimeVal::Obj(handle))?;
                     self.pc += 1;
                 }
@@ -731,7 +792,7 @@ impl Executor32 {
                         record_container_op_known_enabled(VmContainerMetric::List);
                     }
                     let list = self.build_int_range(instr.b(), instr.c() != 0)?;
-                    let handle = self.state.heap.alloc(HeapValue::List(TypedList::Int(list)));
+                    let handle = self.alloc_heap_value(HeapValue::List(TypedList::Int(list)));
                     self.write(instr.a(), RuntimeVal::Obj(handle))?;
                     self.pc += 1;
                 }
@@ -797,6 +858,17 @@ impl Executor32 {
                     )?;
                     self.pc += 1;
                 }
+                Opcode32::ListPush => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::List);
+                    }
+                    let move_value = function
+                        .performance
+                        .container_move(self.pc)
+                        .is_some_and(|fact| fact.move_value);
+                    self.push_list(instr.a(), instr.b(), move_value)?;
+                    self.pc += 1;
+                }
                 Opcode32::Call => {
                     if collect_metrics {
                         record_call_op_known_enabled(VmCallMetric::Generic);
@@ -806,6 +878,22 @@ impl Executor32 {
                         CallWindow32::new(RegisterIndex::new(call_fact.call_base), call_fact.positional_count, 1);
                     let call_pc = self.pc;
                     let value = self.call_function(module, window, Some(call_fact.target_kind), ctx)?;
+                    if self.pc != call_pc {
+                        continue;
+                    }
+                    self.clear_call_window_temps(window, 0)?;
+                    self.write_returns(window, [value])?;
+                    self.pc += 1;
+                }
+                Opcode32::CallDirect => {
+                    if collect_metrics {
+                        record_call_op_known_enabled(VmCallMetric::Exact);
+                    }
+                    let call_fact = self.call_fact_from_static_cache_or_instr(function, instr, false);
+                    let window =
+                        CallWindow32::new(RegisterIndex::new(call_fact.call_base), call_fact.positional_count, 1);
+                    let call_pc = self.pc;
+                    let value = self.call_direct_function(module, instr.b() as u32, window, ctx)?;
                     if self.pc != call_pc {
                         continue;
                     }
@@ -871,7 +959,8 @@ impl Executor32 {
 
     #[inline]
     fn read_int(&self, register: u8) -> Result<i64> {
-        match self.read(register)? {
+        let index = self.stack_index(register)?;
+        match &self.state.stack[index] {
             RuntimeVal::Int(value) => Ok(*value),
             other => bail!("register {} expected Int, got {:?}", register, other.kind()),
         }
@@ -879,7 +968,8 @@ impl Executor32 {
 
     #[inline]
     fn read_number(&self, register: u8) -> Result<f64> {
-        self.number_value(self.read(register)?)
+        let index = self.stack_index(register)?;
+        self.number_value(&self.state.stack[index])
             .with_context(|| format!("register {} expected Int or Float", register))
     }
 
@@ -893,15 +983,74 @@ impl Executor32 {
 
     #[inline]
     fn truthy(&self, register: u8) -> Result<bool> {
+        let index = self.stack_index(register)?;
         Ok(!matches!(
-            self.read(register)?,
+            &self.state.stack[index],
             RuntimeVal::Nil | RuntimeVal::Bool(false)
         ))
     }
 
     #[inline]
+    fn try_fused_compare_branch(&mut self, function: &Function32, instr: Instr32) -> Result<bool> {
+        let Some(fact) = self.fused_bool_branch_fact(function, instr.a()) else {
+            return Ok(false);
+        };
+        let value = self.number_compare_value(instr.opcode(), instr.b(), instr.c())?;
+        self.apply_fused_bool_branch_fact(fact, value)
+    }
+
+    #[inline]
+    fn try_fused_bool_branch(&mut self, function: &Function32, result_reg: u8, value: bool) -> Result<bool> {
+        let Some(fact) = self.fused_bool_branch_fact(function, result_reg) else {
+            return Ok(false);
+        };
+
+        self.apply_fused_bool_branch_fact(fact, value)
+    }
+
+    #[inline]
+    fn apply_fused_bool_branch_fact(&mut self, fact: PerfFusedBoolBranchFact, value: bool) -> Result<bool> {
+        if self.collect_metrics {
+            record_branch_op_known_enabled(true);
+        }
+        if value == fact.jump_when {
+            self.pc = self.relative_pc_from(self.pc + 2, fact.jump_offset)?;
+        } else {
+            self.pc += 3;
+        }
+        Ok(true)
+    }
+
+    #[inline]
+    fn fused_bool_branch_fact(&self, function: &Function32, result_reg: u8) -> Option<PerfFusedBoolBranchFact> {
+        if let Some(fact) = function.performance.fused_bool_branch(self.pc)
+            && fact.result_reg == result_reg
+        {
+            return Some(fact);
+        }
+        if function.performance.has_control_flow_fact_slot(self.pc) {
+            return None;
+        }
+        let test = function.code.get(self.pc + 1).copied()?;
+        if test.opcode() != Opcode32::Test || test.a() != result_reg || test.c() != 1 {
+            return None;
+        }
+        let jmp = function.code.get(self.pc + 2).copied()?;
+        (jmp.opcode() == Opcode32::Jmp).then_some(PerfFusedBoolBranchFact {
+            result_reg,
+            jump_when: test.b() != 0,
+            jump_offset: jmp.sj_arg(),
+        })
+    }
+
+    #[inline]
     pub(super) fn relative_pc(&self, offset: i32) -> Result<usize> {
-        let next = self.pc as i64 + 1 + offset as i64;
+        self.relative_pc_from(self.pc, offset)
+    }
+
+    #[inline]
+    fn relative_pc_from(&self, pc: usize, offset: i32) -> Result<usize> {
+        let next = pc as i64 + 1 + offset as i64;
         if next < 0 {
             bail!("jump before start of function");
         }

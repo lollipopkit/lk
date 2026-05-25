@@ -13,10 +13,8 @@ use super::{
     Exec32Failure, Executor32,
     call::{CallableTarget32, callable_target32},
     named_call::call_named_arg_name,
-    support::{call_native_entry, call_native_entry_parts_with_args, call_native_entry_with_args},
+    support::{InlineNativeArgs32, call_native_entry, call_native_entry_parts_with_args, call_native_entry_with_args},
 };
-
-const MAX_INLINE_POSITIONAL_ARGS32: usize = u8::MAX as usize + 1;
 
 #[cfg(test)]
 pub(crate) fn call_runtime_callable32_test(
@@ -221,6 +219,7 @@ fn call_runtime_value32_with_map_args(
     module: Option<&Module32>,
     ctx: Option<&mut VmContext>,
 ) -> Result<RuntimeVal> {
+    let callee_root = callee.clone();
     let RuntimeVal::Obj(handle) = callee else {
         bail!("runtime callee is not callable");
     };
@@ -248,7 +247,7 @@ fn call_runtime_value32_with_map_args(
                     arity,
                     function,
                 };
-                call_runtime_native32_positional(&native, pos, state, module, ctx)
+                call_runtime_native32_positional(&native, pos, state, module, ctx, callee_root)
             }
             CallableTarget32::Runtime32(function) => {
                 call_runtime_callable32_runtime_positional(function.as_ref(), pos, &mut state.heap, ctx)
@@ -278,7 +277,7 @@ fn call_runtime_value32_with_map_args(
                 arity,
                 function,
             };
-            call_runtime_native32_named_map(&native, pos, named_handle, named_count, state, module, ctx)
+            call_runtime_native32_named_map(&native, pos, named_handle, named_count, state, module, ctx, callee_root)
         }
         CallableTarget32::Runtime32(function) => call_runtime_callable32_runtime_named_map_positional(
             function.as_ref(),
@@ -304,58 +303,99 @@ enum RuntimePositionalArgs<'a> {
     },
 }
 
-enum RuntimePositionalSlice<'a> {
-    Borrowed(&'a [RuntimeVal]),
-    Inline {
-        values: Box<[RuntimeVal; MAX_INLINE_POSITIONAL_ARGS32]>,
-        len: usize,
-    },
-}
-
-impl<'a> RuntimePositionalSlice<'a> {
-    fn as_slice(&self) -> &[RuntimeVal] {
-        match self {
-            Self::Borrowed(values) => values,
-            Self::Inline { values, len } => &values[..*len],
-        }
-    }
-}
-
 impl<'a> RuntimePositionalArgs<'a> {
-    fn len(self, heap: &HeapStore) -> Result<usize> {
+    fn len(&self, heap: &HeapStore) -> Result<usize> {
         match self {
             Self::Slice(values) => Ok(values.len()),
-            Self::ListHandle(handle) => typed_list_arg_len(handle, heap),
+            Self::ListHandle(handle) => typed_list_arg_len(*handle, heap),
             Self::Prefixed { rest, .. } => Ok(rest.len() + 1),
-            Self::PrefixedList { rest, .. } => Ok(typed_list_arg_len(rest, heap)? + 1),
+            Self::PrefixedList { rest, .. } => Ok(typed_list_arg_len(*rest, heap)? + 1),
         }
     }
 
-    fn materialize_full_state_native_args(self, heap: &mut HeapStore) -> Result<RuntimePositionalSlice<'a>> {
+    fn materialize_full_state_native_args(
+        &self,
+        native: &NativeEntry32,
+        heap: &mut HeapStore,
+    ) -> Result<InlineNativeArgs32> {
+        let len = self.len(heap)?;
+        Ok(match len {
+            0 => InlineNativeArgs32::Zero,
+            1 => InlineNativeArgs32::One([self.cloned_arg_at(heap, 0)?]),
+            2 => InlineNativeArgs32::Two([self.cloned_arg_at(heap, 0)?, self.cloned_arg_at(heap, 1)?]),
+            3 => InlineNativeArgs32::Three([
+                self.cloned_arg_at(heap, 0)?,
+                self.cloned_arg_at(heap, 1)?,
+                self.cloned_arg_at(heap, 2)?,
+            ]),
+            4 => InlineNativeArgs32::Four([
+                self.cloned_arg_at(heap, 0)?,
+                self.cloned_arg_at(heap, 1)?,
+                self.cloned_arg_at(heap, 2)?,
+                self.cloned_arg_at(heap, 3)?,
+            ]),
+            5 => InlineNativeArgs32::Five([
+                self.cloned_arg_at(heap, 0)?,
+                self.cloned_arg_at(heap, 1)?,
+                self.cloned_arg_at(heap, 2)?,
+                self.cloned_arg_at(heap, 3)?,
+                self.cloned_arg_at(heap, 4)?,
+            ]),
+            6 => InlineNativeArgs32::Six([
+                self.cloned_arg_at(heap, 0)?,
+                self.cloned_arg_at(heap, 1)?,
+                self.cloned_arg_at(heap, 2)?,
+                self.cloned_arg_at(heap, 3)?,
+                self.cloned_arg_at(heap, 4)?,
+                self.cloned_arg_at(heap, 5)?,
+            ]),
+            7 => InlineNativeArgs32::Seven([
+                self.cloned_arg_at(heap, 0)?,
+                self.cloned_arg_at(heap, 1)?,
+                self.cloned_arg_at(heap, 2)?,
+                self.cloned_arg_at(heap, 3)?,
+                self.cloned_arg_at(heap, 4)?,
+                self.cloned_arg_at(heap, 5)?,
+                self.cloned_arg_at(heap, 6)?,
+            ]),
+            8 => InlineNativeArgs32::Eight([
+                self.cloned_arg_at(heap, 0)?,
+                self.cloned_arg_at(heap, 1)?,
+                self.cloned_arg_at(heap, 2)?,
+                self.cloned_arg_at(heap, 3)?,
+                self.cloned_arg_at(heap, 4)?,
+                self.cloned_arg_at(heap, 5)?,
+                self.cloned_arg_at(heap, 6)?,
+                self.cloned_arg_at(heap, 7)?,
+            ]),
+            len => bail!(
+                "{} FullState native argument count {} exceeds inline buffer",
+                native.name,
+                len
+            ),
+        })
+    }
+
+    fn cloned_arg_at(&self, heap: &mut HeapStore, index: usize) -> Result<RuntimeVal> {
         match self {
-            Self::Slice(values) => Ok(RuntimePositionalSlice::Borrowed(values)),
-            Self::ListHandle(handle) => {
-                let len = typed_list_arg_len(handle, heap)?;
-                let mut values = inline_positional_buffer(len)?;
-                copy_list_handle_into_slots(handle, heap, &mut values[..len])?;
-                Ok(RuntimePositionalSlice::Inline { values, len })
-            }
+            Self::Slice(values) => values
+                .get(index)
+                .cloned()
+                .ok_or_else(|| anyhow!("runtime positional argument index {index} out of bounds")),
+            Self::ListHandle(handle) => typed_list_arg_value(*handle, heap, index),
             Self::Prefixed { first, rest } => {
-                let len = rest.len() + 1;
-                let mut values = inline_positional_buffer(len)?;
-                values[0] = first.clone();
-                for (slot, value) in values[1..len].iter_mut().zip(rest) {
-                    *slot = value.clone();
+                if index == 0 {
+                    return Ok((*first).clone());
                 }
-                Ok(RuntimePositionalSlice::Inline { values, len })
+                rest.get(index - 1)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("runtime positional argument index {index} out of bounds"))
             }
             Self::PrefixedList { first, rest } => {
-                let rest_len = typed_list_arg_len(rest, heap)?;
-                let len = rest_len + 1;
-                let mut values = inline_positional_buffer(len)?;
-                values[0] = first.clone();
-                copy_list_handle_into_slots(rest, heap, &mut values[1..len])?;
-                Ok(RuntimePositionalSlice::Inline { values, len })
+                if index == 0 {
+                    return Ok((*first).clone());
+                }
+                typed_list_arg_value(*rest, heap, index - 1)
             }
         }
     }
@@ -382,6 +422,21 @@ impl<'a> RuntimePositionalArgs<'a> {
             }
         }
     }
+
+    fn append_root_values(&self, roots: &mut Vec<RuntimeVal>) {
+        match self {
+            Self::Slice(values) => roots.extend(values.iter().cloned()),
+            Self::ListHandle(handle) => roots.push(RuntimeVal::Obj(*handle)),
+            Self::Prefixed { first, rest } => {
+                roots.push((*first).clone());
+                roots.extend(rest.iter().cloned());
+            }
+            Self::PrefixedList { first, rest } => {
+                roots.push((*first).clone());
+                roots.push(RuntimeVal::Obj(*rest));
+            }
+        }
+    }
 }
 
 fn call_runtime_native32_positional(
@@ -390,18 +445,23 @@ fn call_runtime_native32_positional(
     state: &mut RuntimeModuleState32,
     module: Option<&Module32>,
     ctx: Option<&mut VmContext>,
+    callee_root: RuntimeVal,
 ) -> Result<RuntimeVal> {
+    let mut roots = vec![callee_root];
+    pos.append_root_values(&mut roots);
     if native.function.requires_full_state() {
-        let pos = pos.materialize_full_state_native_args(&mut state.heap)?;
-        return call_native_entry(native, pos.as_slice(), state, module, None, ctx);
+        let pos = pos.materialize_full_state_native_args(native, &mut state.heap)?;
+        let result = call_native_entry(native, pos.as_slice(), state, module, None, ctx);
+        return collect_direct_native_garbage_after_result(state, roots, result);
     }
 
     let RuntimeModuleState32 {
         heap, globals, stack, ..
     } = state;
-    with_runtime_positional_stack_slice(pos, heap, stack, |heap, args| {
+    let result = with_runtime_positional_stack_slice(pos, heap, stack, |heap, args| {
         call_native_entry_parts_with_args(native, NativeArgs32::new(args), heap, globals, module, None, ctx)
-    })
+    });
+    collect_direct_native_garbage_after_result(state, roots, result)
 }
 
 fn call_runtime_native32_named_map(
@@ -412,10 +472,13 @@ fn call_runtime_native32_named_map(
     state: &mut RuntimeModuleState32,
     module: Option<&Module32>,
     ctx: Option<&mut VmContext>,
+    callee_root: RuntimeVal,
 ) -> Result<RuntimeVal> {
+    let mut roots = vec![callee_root, RuntimeVal::Obj(named)];
+    pos.append_root_values(&mut roots);
     if native.function.requires_full_state() {
-        let pos = pos.materialize_full_state_native_args(&mut state.heap)?;
-        return call_native_entry_with_args(
+        let pos = pos.materialize_full_state_native_args(native, &mut state.heap)?;
+        let result = call_native_entry_with_args(
             native,
             NativeArgs32::new_with_named_map_handle(pos.as_slice(), named, named_count),
             state,
@@ -423,12 +486,13 @@ fn call_runtime_native32_named_map(
             None,
             ctx,
         );
+        return collect_direct_native_garbage_after_result(state, roots, result);
     }
 
     let RuntimeModuleState32 {
         heap, globals, stack, ..
     } = state;
-    with_runtime_positional_stack_slice(pos, heap, stack, |heap, args| {
+    let result = with_runtime_positional_stack_slice(pos, heap, stack, |heap, args| {
         call_native_entry_parts_with_args(
             native,
             NativeArgs32::new_with_named_map_handle(args, named, named_count),
@@ -438,7 +502,22 @@ fn call_runtime_native32_named_map(
             None,
             ctx,
         )
-    })
+    });
+    collect_direct_native_garbage_after_result(state, roots, result)
+}
+
+fn collect_direct_native_garbage_after_result(
+    state: &mut RuntimeModuleState32,
+    mut roots: Vec<RuntimeVal>,
+    result: Result<RuntimeVal>,
+) -> Result<RuntimeVal> {
+    if let Ok(value) = &result {
+        roots.push(value.clone());
+    }
+    if state.heap.should_collect() {
+        state.collect_garbage(roots.iter());
+    }
+    result
 }
 
 fn with_runtime_positional_stack_slice<R>(
@@ -484,17 +563,6 @@ fn with_runtime_positional_stack_slice<R>(
     }
 }
 
-fn inline_positional_buffer(len: usize) -> Result<Box<[RuntimeVal; MAX_INLINE_POSITIONAL_ARGS32]>> {
-    if len > MAX_INLINE_POSITIONAL_ARGS32 {
-        bail!(
-            "runtime positional argument count {} exceeds inline call buffer {}",
-            len,
-            MAX_INLINE_POSITIONAL_ARGS32
-        );
-    }
-    Ok(Box::new(std::array::from_fn(|_| RuntimeVal::Nil)))
-}
-
 fn typed_list_arg_len(handle: HeapRef, heap: &HeapStore) -> Result<usize> {
     match heap
         .get(handle)
@@ -503,6 +571,53 @@ fn typed_list_arg_len(handle: HeapRef, heap: &HeapStore) -> Result<usize> {
         HeapValue::List(list) => Ok(list.len()),
         other => bail!("runtime positional arguments must be a list, got {}", other.type_name()),
     }
+}
+
+fn typed_list_arg_value(handle: HeapRef, heap: &mut HeapStore, index: usize) -> Result<RuntimeVal> {
+    let long_string = match heap
+        .get(handle)
+        .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+    {
+        HeapValue::List(TypedList::Mixed(values)) => {
+            return values
+                .get(index)
+                .cloned()
+                .ok_or_else(|| anyhow!("runtime list argument index {index} out of bounds"));
+        }
+        HeapValue::List(TypedList::Int(values)) => {
+            return values
+                .get(index)
+                .copied()
+                .map(RuntimeVal::Int)
+                .ok_or_else(|| anyhow!("runtime list argument index {index} out of bounds"));
+        }
+        HeapValue::List(TypedList::Float(values)) => {
+            return values
+                .get(index)
+                .copied()
+                .map(RuntimeVal::Float)
+                .ok_or_else(|| anyhow!("runtime list argument index {index} out of bounds"));
+        }
+        HeapValue::List(TypedList::Bool(values)) => {
+            return values
+                .get(index)
+                .copied()
+                .map(RuntimeVal::Bool)
+                .ok_or_else(|| anyhow!("runtime list argument index {index} out of bounds"));
+        }
+        HeapValue::List(TypedList::String(values)) => {
+            let value = values
+                .get(index)
+                .cloned()
+                .ok_or_else(|| anyhow!("runtime list argument index {index} out of bounds"))?;
+            if let Some(short) = crate::val::ShortStr::new(value.as_ref()) {
+                return Ok(RuntimeVal::ShortStr(short));
+            }
+            value
+        }
+        other => bail!("runtime positional arguments must be a list, got {}", other.type_name()),
+    };
+    Ok(RuntimeVal::Obj(heap.alloc(HeapValue::String(long_string))))
 }
 
 fn copy_list_handle_into_slots(handle: HeapRef, heap: &mut HeapStore, frame: &mut [RuntimeVal]) -> Result<()> {
@@ -1270,7 +1385,28 @@ fn copy_runtime_entries(
 ) -> Result<std::collections::BTreeMap<RuntimeMapKey, RuntimeVal>> {
     let mut out = std::collections::BTreeMap::new();
     for (key, value) in values {
-        out.insert(key.clone(), copy_runtime_value(value, source_heap, dest_heap)?);
+        out.insert(
+            copy_runtime_map_key(key, source_heap, dest_heap)?,
+            copy_runtime_value(value, source_heap, dest_heap)?,
+        );
     }
     Ok(out)
+}
+
+fn copy_runtime_map_key(
+    key: &RuntimeMapKey,
+    source_heap: &HeapStore,
+    dest_heap: &mut HeapStore,
+) -> Result<RuntimeMapKey> {
+    Ok(match key {
+        RuntimeMapKey::Nil => RuntimeMapKey::Nil,
+        RuntimeMapKey::Bool(value) => RuntimeMapKey::Bool(*value),
+        RuntimeMapKey::Int(value) => RuntimeMapKey::Int(*value),
+        RuntimeMapKey::ShortStr(value) => RuntimeMapKey::ShortStr(*value),
+        RuntimeMapKey::String(value) => RuntimeMapKey::String(Arc::clone(value)),
+        RuntimeMapKey::Obj(handle) => match copy_runtime_value(&RuntimeVal::Obj(*handle), source_heap, dest_heap)? {
+            RuntimeVal::Obj(handle) => RuntimeMapKey::Obj(handle),
+            _ => unreachable!("object map key copy must stay an object"),
+        },
+    })
 }

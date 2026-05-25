@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::{expr::Pattern, stmt::Stmt, val::LiteralVal};
+use crate::{expr::Pattern, stmt::Stmt, val::LiteralVal, vm::analysis::PerfValueKind};
 
 use super::{
     Compiler32, Instr32, Opcode32,
@@ -200,6 +200,7 @@ impl Compiler32 {
             checked_u8("pattern list shape value", value)?,
             0,
         ));
+        self.set_register_kind(is_list, PerfValueKind::Bool);
         let result = self.lower_val(&LiteralVal::Bool(false))?;
         let skip_len = self.emit_test_placeholder(is_list)?;
         let len = self.alloc_reg();
@@ -209,15 +210,15 @@ impl Compiler32 {
             checked_u8("pattern list value", value)?,
             0,
         ));
+        self.set_register_kind(len, PerfValueKind::Int);
         let expected = self.lower_val(&LiteralVal::Int(fixed_len as i64))?;
-        let condition = self.alloc_reg();
         self.emit(Instr32::abc(
             Opcode32::CmpGeInt,
-            checked_u8("pattern list condition", condition)?,
+            checked_u8("pattern list condition", result)?,
             checked_u8("pattern list len", len)?,
             checked_u8("pattern list expected", expected)?,
         ));
-        self.emit_move(result, condition, "pattern list condition")?;
+        self.set_register_kind(result, PerfValueKind::Bool);
         let end = self.function.code.len();
         self.patch_test_false_jump(skip_len, end)?;
         Ok(result)
@@ -239,6 +240,7 @@ impl Compiler32 {
             checked_u8("pattern map shape value", value)?,
             0,
         ));
+        self.set_register_kind(is_map, PerfValueKind::Bool);
         let result = self.lower_val(&LiteralVal::Bool(false))?;
         let skip_contains = self.emit_test_placeholder(is_map)?;
         let mut condition = self.lower_val(&LiteralVal::Bool(true))?;
@@ -251,6 +253,7 @@ impl Compiler32 {
                 checked_u8("pattern map key", key)?,
                 checked_u8("pattern map value", value)?,
             ));
+            self.set_register_kind(contains, PerfValueKind::Bool);
             condition = self.lower_and_condition(condition, contains)?;
         }
         self.emit_move(result, condition, "pattern map condition")?;

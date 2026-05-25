@@ -18,7 +18,7 @@ impl Executor32 {
         if module.functions.get(function_index as usize).is_none() {
             bail!("LoadFunction index {} out of bounds", function_index);
         }
-        let value = RuntimeVal::Obj(self.state.heap.alloc(HeapValue::Callable(CallableValue::Closure {
+        let value = RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Callable(CallableValue::Closure {
             function_index,
             captures: Arc::new(Vec::new()),
         })));
@@ -39,7 +39,7 @@ impl Executor32 {
             .get(function_index as usize)
             .ok_or_else(|| anyhow!("MakeClosure index {} out of bounds", function_index))?;
         let captures = self.capture_values(capture_base, function.capture_count)?;
-        let value = RuntimeVal::Obj(self.state.heap.alloc(HeapValue::Callable(CallableValue::Closure {
+        let value = RuntimeVal::Obj(self.alloc_heap_value(HeapValue::Callable(CallableValue::Closure {
             function_index,
             captures: Arc::new(captures),
         })));
@@ -54,13 +54,11 @@ impl Executor32 {
             .get(native_index)
             .ok_or_else(|| anyhow!("LoadNative index {} out of bounds", native_index))?;
         let value = RuntimeVal::Obj(
-            self.state
-                .heap
-                .alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
-                    name: Arc::<str>::from(native.name.as_str()),
-                    arity: native.arity,
-                    function: native.function.clone(),
-                })),
+            self.alloc_heap_value(HeapValue::Callable(CallableValue::RuntimeNative32 {
+                name: Arc::<str>::from(native.name.as_str()),
+                arity: native.arity,
+                function: native.function.clone(),
+            })),
         );
         self.write(dst, value)
     }

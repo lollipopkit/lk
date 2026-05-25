@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -12,7 +12,7 @@ use crate::{
 
 use std::sync::Arc;
 
-use super::{ConstHeapValue32, GlobalSlot32, NativeEntry32};
+use super::{ConstHeapValue32, GlobalSlot32, NativeEntry32, free_vars::collect_function_free_vars};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShortCircuitKind {
@@ -27,6 +27,13 @@ pub(super) enum NumericFlavor {
     Float,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RangeStepSign {
+    Positive,
+    Negative,
+    Dynamic,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct LoopPatch32 {
     pub(super) breaks: Vec<usize>,
@@ -38,6 +45,13 @@ pub(super) struct FunctionSignature32 {
     pub(super) positional_params: Vec<String>,
     pub(super) positional_count: usize,
     pub(super) named_params: Vec<NamedParamDecl>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct FunctionInlineBody32 {
+    pub(super) params: Vec<String>,
+    pub(super) named_param_count: usize,
+    pub(super) body: Stmt,
 }
 
 pub(super) fn collect_function_names(program: &Program) -> Result<HashMap<String, u32>> {
@@ -54,6 +68,30 @@ pub(super) fn collect_function_names(program: &Program) -> Result<HashMap<String
         }
     }
     Ok(names)
+}
+
+pub(super) fn collect_function_inline_bodies(program: &Program) -> Result<HashMap<String, FunctionInlineBody32>> {
+    let mut bodies = HashMap::new();
+    for stmt in &program.statements {
+        if let Stmt::Function {
+            name,
+            params,
+            named_params,
+            body,
+            ..
+        } = stmt.as_ref()
+        {
+            let body = FunctionInlineBody32 {
+                params: params.clone(),
+                named_param_count: named_params.len(),
+                body: body.as_ref().clone(),
+            };
+            if bodies.insert(name.clone(), body).is_some() {
+                bail!("Compiler32 duplicate function `{name}`");
+            }
+        }
+    }
+    Ok(bodies)
 }
 
 pub(super) fn collect_function_signatures(program: &Program) -> Result<HashMap<String, FunctionSignature32>> {
@@ -86,6 +124,28 @@ pub(super) fn function_frame_params(params: &[String], named_params: &[NamedPara
     frame_params
 }
 
+pub(super) fn range_step_sign(step: Option<&Expr>) -> RangeStepSign {
+    let Some(step) = step else {
+        return RangeStepSign::Positive;
+    };
+    match const_int_expr_value(step) {
+        Some(value) if value > 0 => RangeStepSign::Positive,
+        Some(value) if value < 0 => RangeStepSign::Negative,
+        _ => RangeStepSign::Dynamic,
+    }
+}
+
+fn const_int_expr_value(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Paren(inner) => const_int_expr_value(inner),
+        Expr::Literal(LiteralVal::Int(value)) => Some(*value),
+        Expr::Bin(lhs, BinOp::Add, rhs) => const_int_expr_value(lhs)?.checked_add(const_int_expr_value(rhs)?),
+        Expr::Bin(lhs, BinOp::Sub, rhs) => const_int_expr_value(lhs)?.checked_sub(const_int_expr_value(rhs)?),
+        Expr::Bin(lhs, BinOp::Mul, rhs) => const_int_expr_value(lhs)?.checked_mul(const_int_expr_value(rhs)?),
+        _ => None,
+    }
+}
+
 pub(super) fn collect_global_names_with_external<I, S>(
     program: &Program,
     external_globals: I,
@@ -98,13 +158,19 @@ where
     for name in external_globals {
         insert_global_name(&mut names, name.as_ref().to_owned())?;
     }
+
+    let top_level_lets = collect_top_level_let_names(program);
+    let function_visible_lets = collect_function_visible_top_level_lets(program, &top_level_lets);
+
     for stmt in &program.statements {
         match stmt.as_ref() {
             Stmt::Define { name, .. } | Stmt::Function { name, .. } => {
                 insert_global_name(&mut names, name.clone())?;
             }
             Stmt::Let { pattern, .. } => {
-                if let Pattern::Variable(name) = pattern {
+                if let Pattern::Variable(name) = pattern
+                    && function_visible_lets.contains(name)
+                {
                     insert_global_name(&mut names, name.clone())?;
                 }
             }
@@ -112,6 +178,40 @@ where
         }
     }
     Ok(names)
+}
+
+fn collect_top_level_let_names(program: &Program) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for stmt in &program.statements {
+        if let Stmt::Let {
+            pattern: Pattern::Variable(name),
+            ..
+        } = stmt.as_ref()
+        {
+            names.insert(name.clone());
+        }
+    }
+    names
+}
+
+fn collect_function_visible_top_level_lets(program: &Program, top_level_lets: &HashSet<String>) -> HashSet<String> {
+    let mut visible = HashSet::new();
+    for stmt in &program.statements {
+        if let Stmt::Function {
+            params,
+            named_params,
+            body,
+            ..
+        } = stmt.as_ref()
+        {
+            for name in collect_function_free_vars(params, named_params, body) {
+                if top_level_lets.contains(&name) {
+                    visible.insert(name);
+                }
+            }
+        }
+    }
+    visible
 }
 
 fn insert_global_name(names: &mut HashMap<String, u32>, name: String) -> Result<()> {

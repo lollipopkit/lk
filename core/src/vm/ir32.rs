@@ -155,6 +155,11 @@ pub enum Opcode32 {
     Raise = 48,
     TryBegin = 55,
     TryEnd = 56,
+    CallDirect = 57,
+    ListPush = 58,
+    StringStartsWith = 59,
+    StringSplit = 60,
+    ListJoin = 61,
     IsList = 49,
     IsMap = 50,
     CallNamed = 51,
@@ -220,6 +225,11 @@ impl Opcode32 {
             48 => Some(Self::Raise),
             55 => Some(Self::TryBegin),
             56 => Some(Self::TryEnd),
+            57 => Some(Self::CallDirect),
+            58 => Some(Self::ListPush),
+            59 => Some(Self::StringStartsWith),
+            60 => Some(Self::StringSplit),
+            61 => Some(Self::ListJoin),
             49 => Some(Self::IsList),
             50 => Some(Self::IsMap),
             51 => Some(Self::CallNamed),
@@ -578,12 +588,12 @@ mod tests {
     }
 
     #[test]
-    fn instr32_decoder_rejects_unaligned_or_unknown_words() {
+    fn instr32_decoder_rejects_unaligned_or_invalid_format_words() {
         let unaligned = [0_u8, 1, 2];
         assert!(decode_instr32(&unaligned).is_err());
 
-        let invalid_opcode = 125_u32.to_le_bytes();
-        assert!(decode_instr32(&invalid_opcode).is_err());
+        let invalid_format = (7_u32 << Instr32::FORMAT_SHIFT).to_le_bytes();
+        assert!(decode_instr32(&invalid_format).is_err());
     }
 
     #[test]

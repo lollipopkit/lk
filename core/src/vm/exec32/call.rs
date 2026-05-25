@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::{
     val::{CallableValue, HeapValue, RuntimeVal},
-    vm::{CallWindow32, Module32, NativeArgs32, NativeEntry32, VmContext, analysis::PerfCallTargetKind},
+    vm::{CallWindow32, Function32, Module32, NativeArgs32, NativeEntry32, VmContext, analysis::PerfCallTargetKind},
 };
 
 use super::{
@@ -83,9 +83,13 @@ impl Executor32 {
 
     pub(super) fn handle_call_error(&mut self, error: anyhow::Error) -> Result<RuntimeVal> {
         if let Some(raise) = error.downcast_ref::<super::LanguageRaise32>() {
-            self.handle_language_raise(raise)?;
+            if let Err(error) = self.handle_language_raise(raise) {
+                self.collect_pending_garbage();
+                return Err(error);
+            }
             Ok(RuntimeVal::Nil)
         } else {
+            self.collect_pending_garbage();
             Err(error)
         }
     }
@@ -154,6 +158,7 @@ impl Executor32 {
                         ctx.as_deref_mut(),
                     )
                 };
+                self.sync_heap_gc_threshold();
                 result.or_else(|error| self.handle_call_error(error))
             }
             CallableTarget32::Runtime32(function) => {
@@ -169,6 +174,19 @@ impl Executor32 {
         }
     }
 
+    pub(super) fn call_direct_function(
+        &mut self,
+        module: Option<&Module32>,
+        function_index: u32,
+        window: CallWindow32,
+        ctx: &mut Option<&mut VmContext>,
+    ) -> Result<RuntimeVal> {
+        let module = module.ok_or_else(|| anyhow!("CallDirect requires Module32 execution"))?;
+        let captures = Arc::clone(&self.empty_captures);
+        let function = checked_positional_function(module, function_index, window.arg_count)?;
+        self.call_closure_stack_args(module, function, captures, window, ctx)
+    }
+
     pub(super) fn call_closure_window(
         &mut self,
         module: &Module32,
@@ -177,19 +195,8 @@ impl Executor32 {
         window: CallWindow32,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<RuntimeVal> {
-        let function = module
-            .functions
-            .get(function_index as usize)
-            .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
-        if function.param_count != window.arg_count {
-            bail!(
-                "Function expects {} positional arguments, got {}",
-                function.param_count,
-                window.arg_count
-            );
-        }
-
-        self.call_closure_stack_args(module, function_index, captures, window, ctx)
+        let function = checked_positional_function(module, function_index, window.arg_count)?;
+        self.call_closure_stack_args(module, function, captures, window, ctx)
     }
 
     pub(super) fn call_closure_named_stack_args(
@@ -260,23 +267,11 @@ impl Executor32 {
     fn call_closure_stack_args(
         &mut self,
         module: &Module32,
-        function_index: u32,
+        function: &Function32,
         captures: Arc<Vec<RuntimeVal>>,
         window: CallWindow32,
         ctx: &mut Option<&mut VmContext>,
     ) -> Result<RuntimeVal> {
-        let function = module
-            .functions
-            .get(function_index as usize)
-            .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
-        if function.param_count != window.arg_count {
-            bail!(
-                "Function expects {} positional arguments, got {}",
-                function.param_count,
-                window.arg_count
-            );
-        }
-
         let arg_range = self.call_args_stack_range(window)?;
         let saved_base = self.frame_base;
         let saved_top = self.state.stack_top;
@@ -325,4 +320,19 @@ impl Executor32 {
             }
         }
     }
+}
+
+fn checked_positional_function(module: &Module32, function_index: u32, arg_count: u16) -> Result<&Function32> {
+    let function = module
+        .functions
+        .get(function_index as usize)
+        .ok_or_else(|| anyhow!("function index {} out of bounds", function_index))?;
+    if function.param_count != arg_count {
+        bail!(
+            "Function expects {} positional arguments, got {}",
+            function.param_count,
+            arg_count
+        );
+    }
+    Ok(function)
 }

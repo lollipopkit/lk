@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 
 use crate::vm::analysis::{
-    PerfContainerFact, PerfControlFlowFacts, PerfLocalCopyFact, PerfRegisterCopyFact, PerfRegisterFact, PerfValueFact,
-    PerfValueKind,
+    PerfContainerFact, PerfControlFlowFacts, PerfFusedBoolBranchFact, PerfLocalCopyFact, PerfRegisterCopyFact,
+    PerfRegisterFact, PerfValueFact, PerfValueKind,
 };
 
 use super::{Compiler32, ConstHeapValue32, Function32, Instr32, Opcode32, support::*};
@@ -50,6 +50,9 @@ impl Compiler32 {
     }
 
     pub(super) fn emit_move_with_policy(&mut self, dst: u16, src: u16, context: &str, move_source: bool) -> Result<()> {
+        if dst == src {
+            return Ok(());
+        }
         let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::Move,
@@ -78,6 +81,10 @@ impl Compiler32 {
         if let Some(pc) = self.function.code.len().checked_sub(1) {
             self.function.performance.set_dead_write_fact(pc);
         }
+    }
+
+    pub(super) fn is_current_local_slot(&self, reg: u16) -> bool {
+        self.locals.values().any(|slot| *slot == reg)
     }
 
     pub(super) fn emit_test_placeholder(&mut self, condition: u16) -> Result<usize> {
@@ -226,9 +233,13 @@ fn build_control_flow_facts(code: &[Instr32]) -> Result<PerfControlFlowFacts> {
 
     let mut branch_targets = vec![false; code.len()];
     let mut block_starts = vec![false; code.len()];
+    let mut fused_bool_branches = vec![None; code.len()];
     block_starts[0] = true;
 
     for (pc, instr) in code.iter().copied().enumerate() {
+        if let Some(fact) = fused_bool_branch_fact(code, pc, instr) {
+            fused_bool_branches[pc] = Some(fact);
+        }
         match instr.opcode() {
             Opcode32::Test => {
                 mark_target(pc + 1, code.len(), &mut branch_targets, &mut block_starts)?;
@@ -275,7 +286,44 @@ fn build_control_flow_facts(code: &[Instr32]) -> Result<PerfControlFlowFacts> {
     Ok(PerfControlFlowFacts {
         block_ids,
         branch_targets,
+        fused_bool_branches,
     })
+}
+
+fn fused_bool_branch_fact(code: &[Instr32], pc: usize, instr: Instr32) -> Option<PerfFusedBoolBranchFact> {
+    if !opcode_writes_bool_result(instr.opcode()) {
+        return None;
+    }
+    let test = code.get(pc + 1).copied()?;
+    if test.opcode() != Opcode32::Test || test.a() != instr.a() || test.c() != 1 {
+        return None;
+    }
+    let jmp = code.get(pc + 2).copied()?;
+    if jmp.opcode() != Opcode32::Jmp {
+        return None;
+    }
+    Some(PerfFusedBoolBranchFact {
+        result_reg: instr.a(),
+        jump_when: test.b() != 0,
+        jump_offset: jmp.sj_arg(),
+    })
+}
+
+fn opcode_writes_bool_result(opcode: Opcode32) -> bool {
+    matches!(
+        opcode,
+        Opcode32::Not
+            | Opcode32::IsNil
+            | Opcode32::IsList
+            | Opcode32::IsMap
+            | Opcode32::CmpInt
+            | Opcode32::CmpNeInt
+            | Opcode32::CmpLtInt
+            | Opcode32::CmpLeInt
+            | Opcode32::CmpGtInt
+            | Opcode32::CmpGeInt
+            | Opcode32::Contains
+    )
 }
 
 fn mark_relative_target(

@@ -12,19 +12,23 @@ impl Compiler32 {
             return Ok(());
         }
 
-        let src = self.lower_expr(value)?;
         if let Some(dst) = self.locals.get(name).copied() {
             if self.cell_locals.contains(name) {
+                let src = self.lower_expr(value)?;
                 self.emit_store_cell_value(dst, src, "assign cell")?;
-            } else {
-                self.emit_move(dst, src, "assign local")?;
+            } else if !self.try_lower_expr_to_register(dst, value)? {
+                let src = self.lower_expr(value)?;
+                let move_source = !self.is_current_local_slot(src);
+                self.emit_move_with_policy(dst, src, "assign local", move_source)?;
             }
         } else if let Some(capture) = self.capture_names.get(name).copied()
             && self.capture_cells.contains(name)
         {
+            let src = self.lower_expr(value)?;
             let cell = self.emit_load_capture(capture)?;
             self.emit_store_cell_value(cell, src, "assign capture cell")?;
         } else if let Some(slot) = self.global_names.get(name).copied() {
+            let src = self.lower_expr(value)?;
             self.emit_set_global_with_policy(src, slot, true)?;
         } else {
             bail!("Compiler32 assignment to undefined local/global `{name}`");
@@ -44,7 +48,8 @@ impl Compiler32 {
             if self.cell_locals.contains(name) {
                 self.emit_store_cell_value(dst, result, "compound assign cell")?;
             } else {
-                self.emit_move(dst, result, "compound assign local")?;
+                let move_source = !self.is_current_local_slot(result);
+                self.emit_move_with_policy(dst, result, "compound assign local", move_source)?;
             }
         } else if let Some(capture) = self.capture_names.get(name).copied()
             && self.capture_cells.contains(name)

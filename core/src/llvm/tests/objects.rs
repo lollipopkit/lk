@@ -75,6 +75,25 @@ fn llvm_backend_lowers_source_static_list_set_index_without_artifact_shell() {
 }
 
 #[test]
+fn llvm_backend_lowers_source_static_list_push_without_artifact_shell() {
+    let source = r#"
+        let values = [];
+        values.push(40);
+        values.push(2);
+        return values[0] + values[1];
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_i64_fmt"));
+    assert!(artifact.module.ir.contains("i64 42"));
+}
+
+#[test]
 fn llvm_backend_lowers_source_static_map_set_index_without_artifact_shell() {
     let source = r#"
         let values = {"a": 1};

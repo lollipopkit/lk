@@ -6,11 +6,14 @@
 mod assign;
 mod builder;
 mod call;
+mod container_lower;
 mod entry;
 mod facts;
 #[cfg(test)]
 mod facts_tests;
 mod free_vars;
+mod inline;
+mod lower_into;
 mod match_expr;
 mod pattern_bind;
 mod pattern_control;
@@ -36,7 +39,7 @@ use super::{
     ConstHeapValue32, ConstRuntimeValue32, Function32, GlobalSlot32, Instr32, Module32, NativeEntry32, Opcode32,
 };
 use crate::vm::analysis::{
-    PerfCallTargetKind, PerfContainerBuildFact, PerfContainerFact, PerfGlobalFact, PerfRegisterFact, PerfValueKind,
+    PerfCallTargetKind, PerfContainerBuildFact, PerfGlobalFact, PerfRegisterFact, PerfValueKind,
 };
 use facts::*;
 use free_vars::collect_expr_free_vars;
@@ -50,6 +53,7 @@ pub struct Compiler32 {
     locals: HashMap<String, u16>,
     function_names: HashMap<String, u32>,
     function_signatures: HashMap<String, FunctionSignature32>,
+    function_bodies: HashMap<String, FunctionInlineBody32>,
     native_names: HashMap<String, u32>,
     global_names: HashMap<String, u32>,
     capture_names: HashMap<String, u16>,
@@ -57,6 +61,7 @@ pub struct Compiler32 {
     cell_locals: HashSet<String>,
     dynamic_function_base: u32,
     pending_functions: Vec<Function32>,
+    inline_stack: Vec<String>,
     loops: Vec<LoopPatch32>,
     top_level: bool,
     emitted_return: bool,
@@ -190,8 +195,11 @@ impl Compiler32 {
         } else {
             self.alloc_reg()
         };
-        let value = self.lower_expr(value)?;
-        self.emit_move(slot, value, "define local")?;
+        if !self.try_lower_expr_to_register(slot, value)? {
+            let value = self.lower_expr(value)?;
+            let move_source = !self.is_current_local_slot(value);
+            self.emit_move_with_policy(slot, value, "define local", move_source)?;
+        }
         if self.top_level
             && let Some(global_slot) = self.global_names.get(name).copied()
         {
@@ -262,7 +270,7 @@ impl Compiler32 {
     }
 
     fn lower_access(&mut self, target: &Expr, key: &Expr) -> Result<u16> {
-        let target = self.lower_expr(target)?;
+        let target = self.lower_readonly_access_target(target)?;
         let index_fact = index_fact_from_target(&self.function.performance, target);
         let (key, key_fact) = self.lower_index_key(key)?;
         let dst = self.alloc_reg();
@@ -283,6 +291,16 @@ impl Compiler32 {
         Ok(dst)
     }
 
+    fn lower_readonly_access_target(&mut self, target: &Expr) -> Result<u16> {
+        if let Expr::Var(name) = target
+            && let Some(local) = self.locals.get(name).copied()
+            && !self.cell_locals.contains(name)
+        {
+            return Ok(local);
+        }
+        self.lower_expr(target)
+    }
+
     fn lower_index_key(&mut self, key: &Expr) -> Result<(u16, Option<crate::vm::analysis::PerfKeyFact>)> {
         if let Some(text) = short_string_literal_key(key) {
             let dst = self.alloc_reg();
@@ -301,11 +319,11 @@ impl Compiler32 {
                 }),
             ));
         }
-        Ok((self.lower_expr(key)?, None))
+        Ok((self.lower_readonly_operand(key)?, None))
     }
 
     fn lower_optional_access(&mut self, target: &Expr, key: &Expr) -> Result<u16> {
-        let target = self.lower_expr(target)?;
+        let target = self.lower_readonly_access_target(target)?;
         let dst = self.alloc_reg();
         self.emit(Instr32::abc(Opcode32::LoadNil, checked_u8("optional dst", dst)?, 0, 0));
 
@@ -340,7 +358,7 @@ impl Compiler32 {
     }
 
     fn lower_unary(&mut self, op: &UnaryOp, inner: &Expr) -> Result<u16> {
-        let src = self.lower_expr(inner)?;
+        let src = self.lower_readonly_operand(inner)?;
         let dst = self.alloc_reg();
         let opcode = match op {
             UnaryOp::Not => Opcode32::Not,
@@ -355,18 +373,19 @@ impl Compiler32 {
     }
 
     fn lower_short_circuit(&mut self, lhs: &Expr, rhs: &Expr, kind: ShortCircuitKind) -> Result<u16> {
-        let lhs = self.lower_expr(lhs)?;
+        let lhs = self.lower_readonly_operand(lhs)?;
         let dst = self.alloc_reg();
-        self.emit_move(dst, lhs, "short circuit lhs")?;
+        let move_source = !self.is_current_local_slot(lhs);
+        self.emit_move_with_policy(dst, lhs, "short circuit lhs", move_source)?;
 
         let test_reg = match kind {
-            ShortCircuitKind::And | ShortCircuitKind::Or => lhs,
+            ShortCircuitKind::And | ShortCircuitKind::Or => dst,
             ShortCircuitKind::Nullish => {
                 let is_nil = self.alloc_reg();
                 self.emit(Instr32::abc(
                     Opcode32::IsNil,
                     checked_u8("nullish test dst", is_nil)?,
-                    checked_u8("nullish lhs", lhs)?,
+                    checked_u8("nullish lhs", dst)?,
                     0,
                 ));
                 is_nil
@@ -376,14 +395,12 @@ impl Compiler32 {
         let test_pc = self.emit_test_placeholder(test_reg)?;
         match kind {
             ShortCircuitKind::And | ShortCircuitKind::Nullish => {
-                let rhs_value = self.lower_expr(rhs)?;
-                self.emit_move(dst, rhs_value, "short circuit rhs")?;
+                self.lower_expr_to_register(dst, rhs, "short circuit rhs")?;
                 let end = self.function.code.len();
                 self.patch_test_false_jump(test_pc, end)?;
             }
             ShortCircuitKind::Or => {
-                let rhs_value = self.lower_expr(rhs)?;
-                self.emit_move(dst, rhs_value, "short circuit rhs")?;
+                self.lower_expr_to_register(dst, rhs, "short circuit rhs")?;
                 let end = self.function.code.len();
                 self.patch_test_true_jump(test_pc, end)?;
             }
@@ -405,6 +422,7 @@ impl Compiler32 {
                         checked_u8("template string src", value)?,
                         0,
                     ));
+                    self.set_register_kind(dst, PerfValueKind::String);
                     dst
                 }
             };
@@ -415,6 +433,7 @@ impl Compiler32 {
                 checked_u8("template concat lhs", acc)?,
                 checked_u8("template concat rhs", part_reg)?,
             ));
+            self.set_register_kind(next, PerfValueKind::String);
             acc = next;
         }
         Ok(acc)
@@ -508,6 +527,7 @@ impl Compiler32 {
         let mut compiler = Self::with_names(
             self.function_names.clone(),
             self.function_signatures.clone(),
+            self.function_bodies.clone(),
             self.native_names.clone(),
             self.global_names.clone(),
             false,
@@ -553,105 +573,19 @@ impl Compiler32 {
     }
 
     fn lower_conditional(&mut self, condition: &Expr, then_expr: &Expr, else_expr: &Expr) -> Result<u16> {
-        let condition = self.lower_expr(condition)?;
+        let condition = self.lower_readonly_operand(condition)?;
         let dst = self.alloc_reg();
         let test_pc = self.emit_test_placeholder(condition)?;
 
-        let then_value = self.lower_expr(then_expr)?;
-        self.emit_move(dst, then_value, "conditional then")?;
+        self.lower_expr_to_register(dst, then_expr, "conditional then")?;
         let jmp_end = self.emit_jmp_placeholder();
 
         let else_start = self.function.code.len();
         self.patch_test_false_jump(test_pc, else_start)?;
-        let else_value = self.lower_expr(else_expr)?;
-        self.emit_move(dst, else_value, "conditional else")?;
+        self.lower_expr_to_register(dst, else_expr, "conditional else")?;
 
         let end = self.function.code.len();
         self.patch_jmp(jmp_end, end)?;
-        Ok(dst)
-    }
-
-    fn lower_list(&mut self, elements: &[Box<Expr>]) -> Result<u16> {
-        if let Some(value) = const_heap_list_from_expr_literals(elements)? {
-            let dst = self.alloc_reg();
-            let k = self.push_heap_value(value)?;
-            self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("list dst", dst)?, k));
-            self.set_register_list_fact(dst, list_fact_from_exprs(elements));
-            return Ok(dst);
-        }
-        let mut values = Vec::with_capacity(elements.len());
-        for element in elements {
-            values.push(self.lower_expr(element)?);
-        }
-        let dst = self.materialize_list(values)?;
-        self.set_register_list_fact(dst, list_fact_from_exprs(elements));
-        Ok(dst)
-    }
-
-    fn lower_map(&mut self, entries: &[(Box<Expr>, Box<Expr>)]) -> Result<u16> {
-        if let Some(value) = const_heap_map_from_expr_literals(entries)? {
-            let dst = self.alloc_reg();
-            let k = self.push_heap_value(value)?;
-            self.emit(Instr32::abx(Opcode32::LoadHeapConst, checked_u8("map dst", dst)?, k));
-            self.set_register_map_fact(dst, map_fact_from_exprs(entries));
-            return Ok(dst);
-        }
-        let mut values = Vec::with_capacity(entries.len());
-        for (key, value) in entries {
-            values.push((self.lower_expr(key)?, self.lower_expr(value)?));
-        }
-        let dst = self.materialize_map(values)?;
-        self.set_register_map_fact(dst, map_fact_from_exprs(entries));
-        Ok(dst)
-    }
-
-    fn lower_struct_literal(&mut self, name: &str, fields: &[(String, Box<Expr>)]) -> Result<u16> {
-        let mut values = Vec::with_capacity(fields.len());
-        for (key, value) in fields {
-            let key = self.lower_val(&LiteralVal::from_str(key))?;
-            values.push((key, self.lower_expr(value)?));
-        }
-        self.materialize_object(name, values)
-    }
-
-    fn lower_range_expr(
-        &mut self,
-        start: Option<&Expr>,
-        end: Option<&Expr>,
-        inclusive: bool,
-        step: Option<&Expr>,
-    ) -> Result<u16> {
-        let start = match start {
-            Some(start) => self.lower_expr(start)?,
-            None => self.lower_val(&LiteralVal::Int(0))?,
-        };
-        let end = end.ok_or_else(|| anyhow!("Compiler32 open-ended range expression is not supported"))?;
-        let end = self.lower_expr(end)?;
-        let step = match step {
-            Some(step) => self.lower_expr(step)?,
-            None => self.lower_val(&LiteralVal::Int(1))?,
-        };
-
-        let base = self.alloc_regs(3)?;
-        self.emit_move(base, start, "range start")?;
-        self.emit_move(base + 1, end, "range end")?;
-        self.emit_move(base + 2, step, "range step")?;
-
-        let dst = self.alloc_reg();
-        self.emit(Instr32::abc(
-            Opcode32::NewRange,
-            checked_u8("range dst", dst)?,
-            checked_u8("range base", base)?,
-            u8::from(inclusive),
-        ));
-        self.set_register_list_fact(
-            dst,
-            PerfContainerFact {
-                value_kind: PerfValueKind::Int,
-                known_len: None,
-                adoptable: false,
-            },
-        );
         Ok(dst)
     }
 
@@ -663,7 +597,7 @@ impl Compiler32 {
 
         let base = self.alloc_regs(len)?;
         for (offset, value) in values.into_iter().enumerate() {
-            let move_source = !self.function.performance.is_local_slot(value);
+            let move_source = !self.is_current_local_slot(value);
             self.emit_move_with_policy(base + offset as u16, value, "list element", move_source)?;
         }
 
@@ -682,72 +616,6 @@ impl Compiler32 {
                 move_values: true,
             },
         );
-        Ok(dst)
-    }
-
-    fn materialize_map(&mut self, entries: Vec<(u16, u16)>) -> Result<u16> {
-        let len = entries.len();
-        if len > i8::MAX as usize {
-            bail!("Compiler32 map literal has {} entries, max {}", len, i8::MAX);
-        }
-
-        let base = self.alloc_regs(
-            len.checked_mul(2)
-                .ok_or_else(|| anyhow!("Compiler32 map entry overflow"))?,
-        )?;
-        for (offset, (key, value)) in entries.into_iter().enumerate() {
-            let key_dst = base + (offset as u16 * 2);
-            let move_key = !self.function.performance.is_local_slot(key);
-            let move_value = !self.function.performance.is_local_slot(value);
-            self.emit_move_with_policy(key_dst, key, "map key", move_key)?;
-            self.emit_move_with_policy(key_dst + 1, value, "map value", move_value)?;
-        }
-
-        let dst = self.alloc_reg();
-        let pc = self.function.code.len();
-        self.emit(Instr32::abc(
-            Opcode32::NewMap,
-            checked_u8("map dst", dst)?,
-            checked_u8("map base", base)?,
-            checked_u8("map len", len as u16)?,
-        ));
-        self.function.performance.set_container_build_fact(
-            pc,
-            PerfContainerBuildFact {
-                move_keys: true,
-                move_values: true,
-            },
-        );
-        Ok(dst)
-    }
-
-    fn materialize_object(&mut self, type_name: &str, fields: Vec<(u16, u16)>) -> Result<u16> {
-        let len = fields.len();
-        if len > i8::MAX as usize {
-            bail!("Compiler32 object literal has {} fields, max {}", len, i8::MAX);
-        }
-
-        let base = self.alloc_regs(
-            len.checked_mul(2)
-                .and_then(|slots| slots.checked_add(1))
-                .ok_or_else(|| anyhow!("Compiler32 object field overflow"))?,
-        )?;
-        let type_name = self.lower_val(&LiteralVal::from_str(type_name))?;
-        self.emit_move_with_policy(base, type_name, "object type name", true)?;
-        for (offset, (key, value)) in fields.into_iter().enumerate() {
-            let key_dst = base + 1 + (offset as u16 * 2);
-            self.emit_move_with_policy(key_dst, key, "object key", true)?;
-            self.emit_move_with_policy(key_dst + 1, value, "object value", true)?;
-        }
-
-        let dst = self.alloc_reg();
-        self.emit(Instr32::abc(
-            Opcode32::NewObject,
-            checked_u8("object dst", dst)?,
-            checked_u8("object base", base)?,
-            checked_u8("object len", len as u16)?,
-        ));
-        self.set_register_kind(dst, PerfValueKind::Object);
         Ok(dst)
     }
 
@@ -775,7 +643,7 @@ impl Compiler32 {
 
     fn lower_if(&mut self, condition: &Expr, then_stmt: &Stmt, else_stmt: Option<&Stmt>) -> Result<()> {
         let watermark = self.next_reg;
-        let condition = self.lower_expr(condition)?;
+        let condition = self.lower_readonly_operand(condition)?;
         let test_pc = self.emit_test_placeholder(condition)?;
 
         self.emitted_return = false;
@@ -810,7 +678,7 @@ impl Compiler32 {
     fn lower_while(&mut self, condition: &Expr, body: &Stmt) -> Result<()> {
         let watermark = self.next_reg;
         let loop_start = self.function.code.len();
-        let condition = self.lower_expr(condition)?;
+        let condition = self.lower_readonly_operand(condition)?;
         let test_pc = self.emit_test_placeholder(condition)?;
 
         self.loops.push(LoopPatch32::default());
@@ -856,14 +724,24 @@ impl Compiler32 {
 
     fn lower_for_indexed(&mut self, pattern: &ForPattern, iterable: &Expr, body: &Stmt) -> Result<()> {
         let watermark = self.next_reg;
-        let iterable_value = self.lower_expr(iterable)?;
-        let iterable = self.alloc_reg();
-        self.emit(Instr32::abc(
-            Opcode32::ToIter,
-            checked_u8("for indexed iter dst", iterable)?,
-            checked_u8("for indexed iter src", iterable_value)?,
-            0,
-        ));
+        let iterable_value = self.lower_readonly_access_target(iterable)?;
+        let direct_iterable = matches!(
+            self.function.performance.value_kind(iterable_value),
+            PerfValueKind::List | PerfValueKind::String
+        );
+        let iterable = if direct_iterable {
+            iterable_value
+        } else {
+            let iterable = self.alloc_reg();
+            self.emit(Instr32::abc(
+                Opcode32::ToIter,
+                checked_u8("for indexed iter dst", iterable)?,
+                checked_u8("for indexed iter src", iterable_value)?,
+                0,
+            ));
+            self.set_register_kind(iterable, PerfValueKind::List);
+            iterable
+        };
         let len = self.alloc_reg();
         self.emit(Instr32::abc(
             Opcode32::Len,
@@ -871,6 +749,7 @@ impl Compiler32 {
             checked_u8("for indexed iterable", iterable)?,
             0,
         ));
+        self.set_register_kind(len, PerfValueKind::Int);
         let index = self.lower_val(&LiteralVal::Int(0))?;
         let step = self.lower_val(&LiteralVal::Int(1))?;
         let value = self.alloc_reg();
@@ -890,6 +769,10 @@ impl Compiler32 {
             checked_u8("for indexed iterable", iterable)?,
             checked_u8("for indexed index", index)?,
         ));
+        if let Some(fact) = index_fact_from_target(&self.function.performance, iterable) {
+            let pc = self.function.code.len() - 1;
+            self.function.performance.set_index_fact(pc, fact);
+        }
         let previous_binding = self.bind_for_pattern(pattern, value)?;
 
         self.loops.push(LoopPatch32::default());
@@ -928,10 +811,12 @@ impl Compiler32 {
         body: &Stmt,
     ) -> Result<()> {
         let watermark = self.next_reg;
-        let start = match start {
-            Some(start) => self.lower_expr(start)?,
-            None => self.lower_val(&LiteralVal::Int(0))?,
-        };
+        let step_sign = range_step_sign(step);
+        let index = self.alloc_reg();
+        match start {
+            Some(start) => self.lower_expr_to_register(index, start, "for range initial index")?,
+            None => self.emit_literal_to_register(index, &LiteralVal::Int(0))?,
+        }
         let end = end.ok_or_else(|| anyhow!("Compiler32 open-ended range for loop is not supported"))?;
         let end = self.lower_expr(end)?;
         let step = match step {
@@ -939,10 +824,76 @@ impl Compiler32 {
             None => self.lower_val(&LiteralVal::Int(1))?,
         };
 
-        let index = self.alloc_reg();
-        self.emit_move(index, start, "for range initial index")?;
         let previous_binding = self.bind_for_pattern(pattern, index)?;
 
+        match step_sign {
+            RangeStepSign::Positive => self.lower_for_range_static_loop(index, end, step, inclusive, true, body)?,
+            RangeStepSign::Negative => self.lower_for_range_static_loop(index, end, step, inclusive, false, body)?,
+            RangeStepSign::Dynamic => self.lower_for_range_dynamic_loop(index, end, step, inclusive, body)?,
+        }
+
+        self.restore_for_pattern(previous_binding);
+        self.emitted_return = false;
+        self.next_reg = watermark; // recycle all loop registers
+        Ok(())
+    }
+
+    fn lower_for_range_static_loop(
+        &mut self,
+        index: u16,
+        end: u16,
+        step: u16,
+        inclusive: bool,
+        positive_step: bool,
+        body: &Stmt,
+    ) -> Result<()> {
+        let loop_start = self.function.code.len();
+        let condition = self.alloc_reg();
+        self.emit(Instr32::abc(
+            match (positive_step, inclusive) {
+                (true, true) => Opcode32::CmpLeInt,
+                (true, false) => Opcode32::CmpLtInt,
+                (false, true) => Opcode32::CmpGeInt,
+                (false, false) => Opcode32::CmpGtInt,
+            },
+            checked_u8("for range static condition dst", condition)?,
+            checked_u8("for range static index", index)?,
+            checked_u8("for range static end", end)?,
+        ));
+
+        let exit_test = self.emit_test_placeholder(condition)?;
+        self.loops.push(LoopPatch32::default());
+        self.emitted_return = false;
+        self.lower_stmt(body)?;
+        let loop_patch = self.loops.pop().expect("loop patch just pushed");
+
+        let step_start = self.function.code.len();
+        if !self.emitted_return {
+            self.emit_bin_op_to_register(index, &BinOp::Add, index, step)?;
+            let jmp_back = self.emit_jmp_placeholder();
+            self.patch_jmp(jmp_back, loop_start)?;
+        }
+
+        let loop_end = self.function.code.len();
+        self.patch_test_false_jump(exit_test, loop_end)?;
+        for pc in loop_patch.breaks {
+            self.patch_jmp(pc, loop_end)?;
+        }
+        for pc in loop_patch.continues {
+            self.patch_jmp(pc, step_start)?;
+        }
+        self.emitted_return = false;
+        Ok(())
+    }
+
+    fn lower_for_range_dynamic_loop(
+        &mut self,
+        index: u16,
+        end: u16,
+        step: u16,
+        inclusive: bool,
+        body: &Stmt,
+    ) -> Result<()> {
         let loop_start = self.function.code.len();
         let zero = self.lower_val(&LiteralVal::Int(0))?;
         let is_positive = self.alloc_reg();
@@ -1004,9 +955,7 @@ impl Compiler32 {
         for pc in loop_patch.continues {
             self.patch_jmp(pc, step_start)?;
         }
-        self.restore_for_pattern(previous_binding);
         self.emitted_return = false;
-        self.next_reg = watermark; // recycle all loop registers
         Ok(())
     }
 
@@ -1131,6 +1080,7 @@ impl Compiler32 {
             && let Some(slot) = self.global_names.get(name).copied()
         {
             self.emit_set_global(function, slot)?;
+            return Ok(());
         }
         self.insert_local(name.to_string(), function);
         Ok(())
@@ -1301,8 +1251,8 @@ impl Compiler32 {
 
     fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {
         let static_flavor = numeric_flavor(lhs, op, rhs);
-        let lhs = self.lower_expr(lhs)?;
-        let rhs = self.lower_expr(rhs)?;
+        let lhs = self.lower_readonly_operand(lhs)?;
+        let rhs = self.lower_readonly_operand(rhs)?;
         let dst = self.alloc_reg();
         let flavor =
             numeric_flavor_from_register_facts(&self.function.performance, op, lhs, rhs).unwrap_or(static_flavor);

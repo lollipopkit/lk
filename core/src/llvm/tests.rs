@@ -4,13 +4,13 @@ use crate::{
     stmt::stmt_parser::StmtParser,
     token::Tokenizer,
     vm::{
-        ConstHeapValue32Data, ConstPool32Data, ConstRuntimeValue32Data, Function32Data, Instr32,
+        Compiler32, ConstHeapValue32Data, ConstPool32Data, ConstRuntimeValue32Data, Function32Data, Instr32,
         MODULE32_ARTIFACT_VERSION, Module32Artifact, Module32Data, Opcode32, RuntimeMapKeyData,
     },
 };
 
 #[test]
-fn llvm_backend_reports_imports_as_unsupported_native_shape() {
+fn llvm_backend_allows_unused_import_metadata_for_native_shape() {
     let artifact = Module32Artifact {
         format: "lk.module32".to_string(),
         version: MODULE32_ARTIFACT_VERSION,
@@ -37,13 +37,123 @@ fn llvm_backend_reports_imports_as_unsupported_native_shape() {
         },
     };
 
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+}
+
+#[test]
+fn llvm_backend_lowers_static_println_runtime_global_without_shell() {
+    let source = r#"
+        println(40 + 2);
+        return 7;
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module =
+        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["println"]).expect("compile module");
+    let artifact = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("i64 7"));
+}
+
+#[test]
+fn llvm_backend_reports_imported_runtime_globals_as_unsupported_native_shape() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: vec![ImportStmt::Module {
+            module: "process".to_string(),
+        }],
+        module: Module32Data {
+            entry: 0,
+            globals: vec!["process".to_string()],
+            functions: vec![Function32Data {
+                consts: ConstPool32Data {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr32::abx(Opcode32::GetGlobal, 0, 0).raw(),
+                    Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                ],
+                register_count: 1,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
     let err = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default())
-        .expect_err("imports must be rejected without artifact shell fallback");
+        .expect_err("runtime globals must be rejected without native runtime seeding");
 
     let message = err.to_string();
-    assert!(message.contains("imports are not native-lowerable yet"), "{message}");
-    assert!(message.contains("os"), "{message}");
+    assert!(
+        message.contains("runtime globals are not native-lowerable yet"),
+        "{message}"
+    );
+    assert!(message.contains("process"), "{message}");
     assert!(!message.contains("lk_rt_run_module32_json"), "{message}");
+}
+
+#[test]
+fn llvm_backend_lowers_os_clock_and_epoch_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: vec![ImportStmt::Module {
+            module: "os".to_string(),
+        }],
+        module: Module32Data {
+            entry: 0,
+            globals: vec!["os".to_string()],
+            functions: vec![Function32Data {
+                consts: ConstPool32Data {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["clock".to_string(), "epoch".to_string()],
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr32::abx(Opcode32::GetGlobal, 1, 0).raw(),
+                    Instr32::abx(Opcode32::LoadString, 2, 0).raw(),
+                    Instr32::abc(Opcode32::GetIndex, 3, 1, 2).raw(),
+                    Instr32::abc(Opcode32::Move, 4, 3, 0).raw(),
+                    Instr32::abc(Opcode32::Call, 4, 4, 0).raw(),
+                    Instr32::abx(Opcode32::GetGlobal, 2, 0).raw(),
+                    Instr32::abx(Opcode32::LoadString, 3, 1).raw(),
+                    Instr32::abc(Opcode32::GetIndex, 4, 2, 3).raw(),
+                    Instr32::abc(Opcode32::Move, 5, 4, 0).raw(),
+                    Instr32::abc(Opcode32::Call, 5, 5, 0).raw(),
+                    Instr32::abc(Opcode32::Move, 1, 5, 0).raw(),
+                    Instr32::abc(Opcode32::SubInt, 2, 1, 1).raw(),
+                    Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                ],
+                register_count: 6,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("declare i64 @clock()"));
+    assert!(artifact.module.ir.contains("declare i64 @time(ptr)"));
 }
 
 #[test]
@@ -293,124 +403,9 @@ fn llvm_backend_lowers_source_while_i64_loop_without_shell() {
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
     assert!(artifact.module.ir.contains("icmp "));
-    assert!(artifact.module.ir.contains("%g0.slot = alloca i64"));
+    assert!(!artifact.module.ir.contains("%g0.slot = alloca"));
+    assert!(artifact.module.ir.contains("%r0.slot = alloca i64"));
     assert!(artifact.module.ir.contains("br label %bb"));
-}
-
-#[test]
-fn llvm_backend_lowers_bool_return_without_artifact_shell() {
-    let tokens = Tokenizer::tokenize("return true;").expect("tokens");
-    let program = StmtParser::new(&tokens).parse_program().expect("program");
-
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
-
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
-    assert!(artifact.module.ir.contains("@lk_bool_true"));
-    assert!(artifact.module.ir.contains("select i1"));
-    assert!(artifact.module.ir.contains("@lk_str_fmt"));
-}
-
-#[test]
-fn llvm_backend_lowers_simple_f64_return_without_artifact_shell() {
-    let tokens = Tokenizer::tokenize("return 1.5 + 2.25 * 2.0;").expect("tokens");
-    let program = StmtParser::new(&tokens).parse_program().expect("program");
-
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
-
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
-    assert!(artifact.module.ir.contains("@lk_f64_fmt"));
-    assert!(artifact.module.ir.contains("double"));
-}
-
-#[test]
-fn llvm_backend_lowers_f64_instr32_arithmetic_ops_without_shell() {
-    let artifact = Module32Artifact {
-        format: "lk.module32".to_string(),
-        version: MODULE32_ARTIFACT_VERSION,
-        imports: Vec::new(),
-        module: Module32Data {
-            entry: 0,
-            globals: Vec::new(),
-            functions: vec![Function32Data {
-                consts: ConstPool32Data {
-                    ints: Vec::new(),
-                    floats: vec![20.0, 6.0, 3.0],
-                    strings: Vec::new(),
-                    heap_values: Vec::new(),
-                },
-                code: vec![
-                    Instr32::abx(Opcode32::LoadFloat, 0, 0).raw(),
-                    Instr32::abx(Opcode32::LoadFloat, 1, 1).raw(),
-                    Instr32::abx(Opcode32::LoadFloat, 2, 2).raw(),
-                    Instr32::abc(Opcode32::DivFloat, 3, 0, 1).raw(),
-                    Instr32::abc(Opcode32::ModFloat, 4, 0, 1).raw(),
-                    Instr32::abc(Opcode32::MulFloat, 5, 4, 2).raw(),
-                    Instr32::abc(Opcode32::AddFloat, 6, 3, 5).raw(),
-                    Instr32::abc(Opcode32::SubFloat, 7, 6, 2).raw(),
-                    Instr32::abc(Opcode32::Return, 7, 1, 0).raw(),
-                ],
-                register_count: 8,
-                param_count: 0,
-                positional_param_count: 0,
-                param_names: Vec::new(),
-                capture_count: 0,
-            }],
-        },
-    };
-
-    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
-
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(artifact.module.ir.contains("fdiv double"));
-    assert!(artifact.module.ir.contains("frem double"));
-    assert!(artifact.module.ir.contains("fmul double"));
-    assert!(artifact.module.ir.contains("fadd double"));
-    assert!(artifact.module.ir.contains("fsub double"));
-    assert!(artifact.module.ir.contains("fcmp oeq double"));
-    assert!(artifact.module.ir.contains("label %lk_divisor_zero"));
-}
-
-#[test]
-fn llvm_backend_lowers_source_f64_global_without_shell() {
-    let source = r#"
-            let x = 1.5;
-            x = x + 2.25;
-            return x;
-        "#;
-    let tokens = Tokenizer::tokenize(source).expect("tokens");
-    let program = StmtParser::new(&tokens).parse_program().expect("program");
-
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
-
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
-    assert!(artifact.module.ir.contains("%g0.slot = alloca i64"));
-    assert!(artifact.module.ir.contains("store double"));
-    assert!(artifact.module.ir.contains("@lk_f64_fmt"));
-}
-
-#[test]
-fn llvm_backend_lowers_source_f64_branch_without_shell() {
-    let source = r#"
-            let x = 1.5;
-            let y = 2.25;
-            if (x < y) {
-                return true;
-            }
-            return false;
-        "#;
-    let tokens = Tokenizer::tokenize(source).expect("tokens");
-    let program = StmtParser::new(&tokens).parse_program().expect("program");
-
-    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
-
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
-    assert!(artifact.module.ir.contains("fcmp olt double"));
-    assert!(artifact.module.ir.contains("br i1 %"));
-    assert!(artifact.module.ir.contains("@lk_bool_true"));
 }
 
 #[test]
@@ -456,6 +451,11 @@ fn llvm_backend_rejects_non_scalar_runtime_returns_without_artifact_shell() {
 
     assert!(
         err.to_string().contains("LLVM native lowering does not support"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        err.to_string()
+            .contains("runtime callable returns are not native-lowerable yet"),
         "unexpected error: {err}"
     );
 }
