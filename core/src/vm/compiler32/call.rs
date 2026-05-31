@@ -691,7 +691,7 @@ impl Compiler32 {
         Ok(call_base)
     }
 
-    fn lower_call_window_regs(&mut self, callee: u16, arg_regs: &[u16]) -> Result<u16> {
+    pub(super) fn lower_call_window_regs(&mut self, callee: u16, arg_regs: &[u16]) -> Result<u16> {
         if arg_regs.len() > i8::MAX as usize {
             bail!("Compiler32 call has {} args, max {}", arg_regs.len(), i8::MAX);
         }

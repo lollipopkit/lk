@@ -53,7 +53,7 @@ fn llvm_backend_lowers_source_nil_optional_access_without_artifact_shell() {
 
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
-    assert!(artifact.module.ir.contains("@lk_nil_text"));
+    assert!(!artifact.module.ir.contains("ptr @lk_nil_text"));
 }
 
 #[test]

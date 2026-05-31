@@ -7,16 +7,16 @@
 mod backend;
 mod callee_eval;
 mod const_display;
+mod diagnostics;
 mod dynamic_containers;
 mod ir_text;
+mod map_mutate;
 mod options;
 mod output;
-mod scalar_block_helpers;
-mod scalar_blocks;
-mod scalar_emit;
-mod scalar_facts;
-mod scalar_inline;
+mod scalar;
+mod straightline_main;
 mod straightline_value;
+mod subfunction;
 
 pub use backend::{
     LlvmBackend, LlvmBackendError, LlvmModule, LlvmModuleArtifact, compile_module32_artifact_to_llvm,

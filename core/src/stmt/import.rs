@@ -107,7 +107,17 @@ impl ModuleResolver {
     /// Set the default base directory for relative file imports.
     pub fn set_base_dir(&mut self, path: impl Into<PathBuf>) {
         let base = path.into();
-        self.search_paths = vec![base.clone(), base.join("lib"), base.join("modules")];
+        // Keep current directory as a search path; add the file's directory
+        if !self
+            .search_paths
+            .iter()
+            .any(|p| p.as_os_str() == PathBuf::from(".").as_os_str())
+        {
+            self.search_paths.insert(0, PathBuf::from("."));
+        }
+        self.search_paths.push(base.clone());
+        self.search_paths.push(base.join("lib"));
+        self.search_paths.push(base.join("modules"));
     }
 
     /// Register a package root module. `import name;` resolves to this file when

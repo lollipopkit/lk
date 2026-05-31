@@ -1,17 +1,27 @@
+mod formatting; mod object_display; mod static_direct; mod symbolic;
+
+use crate::llvm::{
+    callee_eval::{native_direct_call_static_return_value, native_straightline_function_return},
+    const_display::llvm_string_constant,
+    ir_text::{native_relative_target, next_tmp, reg_in_bounds},
+    output::emit_native_static_core_call_method,
+    straightline_value::{
+        NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeModule,
+        NativeStraightlineValue, NativeTextPart, native_runtime_string_key_kind, native_straightline_heap_const_value,
+    },
+};
 use crate::vm::{
     ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Module32Artifact, Opcode32, RuntimeMapKeyData,
 };
 
-use super::{
-    callee_eval::native_straightline_function_return,
-    const_display::llvm_string_constant,
-    ir_text::{native_relative_target, next_tmp, reg_in_bounds},
-    scalar_facts::NativeScalarFacts,
-    scalar_facts::NativeScalarKind,
-    straightline_value::{NativeBuiltin, NativeModule, NativeStraightlineValue, NativeTextPart},
-};
+use super::{facts::NativeScalarFacts, facts::NativeScalarKind};
 
-pub(super) fn control_flow_static_boundaries(code: &[Instr32]) -> Vec<bool> {
+pub(in crate::llvm) use formatting::emit_static_formatted_print;
+use object_display::native_object_display_text;
+use static_direct::static_direct_call_args;
+pub(in crate::llvm) use symbolic::kind_symbolic_value;
+
+pub(in crate::llvm) fn control_flow_static_boundaries(code: &[Instr32]) -> Vec<bool> {
     let mut boundaries = vec![false; code.len()];
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
@@ -37,22 +47,297 @@ pub(super) fn control_flow_static_boundaries(code: &[Instr32]) -> Vec<bool> {
             _ => {}
         }
     }
+    for (pc, count) in predecessor_counts(code).into_iter().enumerate().take(code.len()) {
+        if count > 1 {
+            boundaries[pc] = true;
+        }
+    }
     if !boundaries.is_empty() {
         boundaries[0] = false;
     }
     boundaries
 }
 
-pub(super) fn clear_control_flow_static_values(values: &mut [Option<NativeStraightlineValue>]) {
-    let _ = values;
+pub(in crate::llvm) fn clear_control_flow_static_values(values: &mut [Option<NativeStraightlineValue>]) {
+    for value in values {
+        if !matches!(
+            value,
+            Some(
+                NativeStraightlineValue::List { .. }
+                    | NativeStraightlineValue::Map { .. }
+                    | NativeStraightlineValue::Object { .. }
+                    | NativeStraightlineValue::DynamicMap {
+                        key: NativeMapKeyKind::Str,
+                        value: NativeMapValueKind::I64,
+                        ..
+                    }
+                    | NativeStraightlineValue::DynamicList { .. }
+                    | NativeStraightlineValue::DynamicConstListElement { .. }
+                    | NativeStraightlineValue::DynamicJoinedText { .. }
+                    | NativeStraightlineValue::Builtin(_)
+                    | NativeStraightlineValue::Module(_)
+                    | NativeStraightlineValue::Function(_)
+                    | NativeStraightlineValue::Closure { .. }
+            )
+        ) {
+            *value = None;
+        }
+    }
 }
 
-pub(super) fn mark_static_untaken_return_path(
+pub(in crate::llvm) fn local_register_kind_before(code: &[Instr32], pc: usize, reg: u8) -> Option<NativeScalarKind> {
+    let start = pc.saturating_sub(64);
+    let mut nearest = None;
+    for prev_pc in (start..pc).rev() {
+        let prev = code.get(prev_pc).copied()?;
+        if prev.a() != reg {
+            continue;
+        }
+        let kind = match prev.opcode() {
+            Opcode32::LoadInt => Some(NativeScalarKind::I64),
+            Opcode32::LoadFloat => Some(NativeScalarKind::F64),
+            Opcode32::LoadString => Some(NativeScalarKind::StrPtr),
+            Opcode32::LoadBool
+            | Opcode32::Not
+            | Opcode32::IsNil
+            | Opcode32::CmpInt
+            | Opcode32::CmpNeInt
+            | Opcode32::CmpLtInt
+            | Opcode32::CmpLeInt
+            | Opcode32::CmpGtInt
+            | Opcode32::CmpGeInt => Some(NativeScalarKind::Bool),
+            Opcode32::LoadNil => Some(NativeScalarKind::Nil),
+            Opcode32::Move => local_register_kind_before(code, prev_pc, prev.b()),
+            _ => None,
+        };
+        if kind == Some(NativeScalarKind::StrPtr) && matches!(nearest, None | Some(NativeScalarKind::Nil)) {
+            return kind;
+        }
+        if nearest.is_none() {
+            nearest = kind;
+        } else if !matches!(nearest, Some(NativeScalarKind::Nil)) {
+            return nearest;
+        }
+    }
+    nearest
+}
+
+pub(in crate::llvm) fn local_heap_kind_before(
+    code: &[Instr32],
+    heap_values: &[ConstHeapValue32Data],
+    pc: usize,
+    reg: u8,
+) -> Option<NativeScalarKind> {
+    let start = pc.saturating_sub(64);
+    for prev_pc in (start..pc).rev() {
+        let prev = code.get(prev_pc).copied()?;
+        if prev.a() != reg {
+            continue;
+        }
+        return match prev.opcode() {
+            Opcode32::LoadHeapConst
+                if matches!(
+                    heap_values.get(prev.bx() as usize),
+                    Some(ConstHeapValue32Data::LongString(_))
+                ) =>
+            {
+                Some(NativeScalarKind::StrPtr)
+            }
+            _ => None,
+        };
+    }
+    None
+}
+
+pub(in crate::llvm) fn local_compare_kind(
+    kind: Option<NativeScalarKind>,
+    heap_kind: Option<NativeScalarKind>,
+    local_kind: Option<NativeScalarKind>,
+) -> Option<NativeScalarKind> {
+    if heap_kind == Some(NativeScalarKind::StrPtr) && !kind.is_some_and(NativeScalarKind::is_numeric) {
+        heap_kind
+    } else if local_kind == Some(NativeScalarKind::StrPtr) && !kind.is_some_and(NativeScalarKind::is_numeric) {
+        local_kind
+    } else if kind.is_some_and(|kind| kind != NativeScalarKind::StrPtr) {
+        kind
+    } else {
+        kind.or(local_kind)
+    }
+}
+
+pub(in crate::llvm) fn local_static_container_before(
+    code: &[Instr32],
+    heap_values: &[ConstHeapValue32Data],
+    pc: usize,
+    reg: u8,
+) -> Option<NativeStraightlineValue> {
+    let start = pc.saturating_sub(128);
+    for prev_pc in (start..pc).rev() {
+        let prev = code.get(prev_pc).copied()?;
+        if !instr_writes_register(prev, reg) {
+            continue;
+        }
+        let value = match prev.opcode() {
+            Opcode32::LoadHeapConst => match heap_values.get(prev.bx() as usize) {
+                Some(ConstHeapValue32Data::List(values))
+                    if values
+                        .iter()
+                        .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_))) =>
+                {
+                    Some(NativeStraightlineValue::DynamicList {
+                        id: prev_pc,
+                        element: NativeListElementKind::I64,
+                    })
+                }
+                Some(ConstHeapValue32Data::Map(values)) if values.is_empty() => {
+                    Some(NativeStraightlineValue::DynamicMap {
+                        id: prev_pc,
+                        key: NativeMapKeyKind::Str,
+                        value: NativeMapValueKind::I64,
+                    })
+                }
+                Some(value) => native_straightline_heap_const_value(0, prev.bx(), value),
+                None => None,
+            },
+            Opcode32::SliceFrom => Some(NativeStraightlineValue::DynamicList {
+                id: prev_pc,
+                element: NativeListElementKind::I64,
+            }),
+            Opcode32::ListPush => local_static_container_before(code, heap_values, prev_pc, prev.a()),
+            Opcode32::Move if prev.b() != reg => local_static_container_before(code, heap_values, prev_pc, prev.b()),
+            _ => None,
+        };
+        return value;
+    }
+    None
+}
+
+pub(in crate::llvm) fn local_static_i64_before(
+    code: &[Instr32],
+    int_consts: &[i64],
+    pc: usize,
+    reg: u8,
+) -> Option<NativeStraightlineValue> {
+    let start = pc.saturating_sub(32);
+    for prev_pc in (start..pc).rev() {
+        let prev = code.get(prev_pc).copied()?;
+        if prev.a() != reg {
+            continue;
+        }
+        return match prev.opcode() {
+            Opcode32::LoadInt => int_consts
+                .get(prev.bx() as usize)
+                .map(|value| NativeStraightlineValue::I64(value.to_string())),
+            Opcode32::Move if prev.b() != reg => local_static_i64_before(code, int_consts, prev_pc, prev.b()),
+            _ => None,
+        };
+    }
+    None
+}
+
+pub(in crate::llvm) fn emit_text_string_equality_block(
+    ir: &mut String,
+    extra_globals: &mut String,
+    parts: &[NativeTextPart],
+    expected: &str,
+    out_reg: u8,
+    not_equal: bool,
+    tmp_index: &mut usize,
+) -> Option<()> {
+    let mut remaining = expected;
+    let mut checks = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        if let NativeTextPart::StrPtr(ptr) = part {
+            let (prefix, after_prefix) = split_expected_for_dynamic_part(remaining, &parts[index + 1..])?;
+            let symbol = format!("@lk_text_cmp_{}", *tmp_index);
+            *tmp_index += 1;
+            extra_globals.push_str(&llvm_string_constant(&symbol, prefix));
+            let cmp = next_tmp(tmp_index);
+            let ok = next_tmp(tmp_index);
+            ir.push_str(&format!("  {cmp} = call i32 @strcmp(ptr {ptr}, ptr {symbol})\n"));
+            ir.push_str(&format!("  {ok} = icmp eq i32 {cmp}, 0\n"));
+            checks.push(ok);
+            remaining = after_prefix;
+            continue;
+        }
+        if let NativeTextPart::I64(value) = part
+            && value.starts_with('%')
+        {
+            let (expected, after_expected) = split_expected_for_dynamic_part(remaining, &parts[index + 1..])?;
+            let expected = expected.parse::<i64>().ok()?;
+            let ok = next_tmp(tmp_index);
+            ir.push_str(&format!("  {ok} = icmp eq i64 {value}, {expected}\n"));
+            checks.push(ok);
+            remaining = after_expected;
+            continue;
+        }
+        let literal = static_text_part_literal(part)?;
+        remaining = remaining.strip_prefix(&literal)?;
+    }
+    if !remaining.is_empty() {
+        return None;
+    }
+    let mut combined = if let Some(first) = checks.first() {
+        first.clone()
+    } else {
+        ir.push_str(&format!(
+            "  store i64 {}, ptr %r{out_reg}.slot\n",
+            i64::from(!not_equal)
+        ));
+        return Some(());
+    };
+    for check in checks.iter().skip(1) {
+        let next = next_tmp(tmp_index);
+        ir.push_str(&format!("  {next} = and i1 {combined}, {check}\n"));
+        combined = next;
+    }
+    if not_equal {
+        let inverted = next_tmp(tmp_index);
+        ir.push_str(&format!("  {inverted} = xor i1 {combined}, true\n"));
+        combined = inverted;
+    }
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {out} = zext i1 {combined} to i64\n"));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{out_reg}.slot\n"));
+    Some(())
+}
+
+fn split_expected_for_dynamic_part<'a>(remaining: &'a str, suffix: &[NativeTextPart]) -> Option<(&'a str, &'a str)> {
+    let delimiter = suffix
+        .iter()
+        .filter_map(static_text_part_literal)
+        .find(|s| !s.is_empty());
+    let Some(delimiter) = delimiter else {
+        return Some((remaining, ""));
+    };
+    let offset = remaining.find(&delimiter)?;
+    Some(remaining.split_at(offset))
+}
+
+fn static_text_part_literal(part: &NativeTextPart) -> Option<String> {
+    match part {
+        NativeTextPart::I64(value) if !value.starts_with('%') => Some(value.clone()),
+        NativeTextPart::F64(value) if !value.starts_with('%') && !value.starts_with("0x") => Some(value.clone()),
+        NativeTextPart::Bool(value) if value == "0" => Some("false".to_string()),
+        NativeTextPart::Bool(value) if value == "1" => Some("true".to_string()),
+        NativeTextPart::Nil => Some("nil".to_string()),
+        NativeTextPart::String { value, .. } => Some(value.clone()),
+        NativeTextPart::StrPtr(_) | NativeTextPart::Bool(_) | NativeTextPart::I64(_) | NativeTextPart::F64(_) => None,
+    }
+}
+
+pub(in crate::llvm) fn mark_static_untaken_return_path(
     skip_pcs: &mut [bool],
     boundaries: &[bool],
     code: &[Instr32],
     start: usize,
 ) {
+    if predecessor_counts(code).get(start).copied().unwrap_or(0) > 1 {
+        return;
+    }
+    if mark_static_untaken_merge_path(skip_pcs, code, start) {
+        return;
+    }
     let Some(path) = static_untaken_return_path(boundaries, code, start) else {
         return;
     };
@@ -61,6 +346,76 @@ pub(super) fn mark_static_untaken_return_path(
             *skip = true;
         }
     }
+}
+
+fn mark_static_untaken_merge_path(skip_pcs: &mut [bool], code: &[Instr32], start: usize) -> bool {
+    let predecessors = predecessor_counts(code);
+    let mut pc = start;
+    let mut marked_any = false;
+    let mut seen = vec![false; code.len()];
+    while pc < code.len() {
+        if marked_any && predecessors.get(pc).copied().unwrap_or(0) > 1 {
+            return true;
+        }
+        if seen[pc] {
+            return marked_any;
+        }
+        seen[pc] = true;
+        if let Some(skip) = skip_pcs.get_mut(pc) {
+            *skip = true;
+            marked_any = true;
+        }
+        let instr = code[pc];
+        match instr.opcode() {
+            Opcode32::Return => return true,
+            Opcode32::Jmp => {
+                let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len()) else {
+                    return marked_any;
+                };
+                pc = target;
+            }
+            Opcode32::Test => return marked_any,
+            _ => {
+                let Some(next) = pc.checked_add(1) else {
+                    return marked_any;
+                };
+                pc = next;
+            }
+        }
+    }
+    marked_any
+}
+
+fn predecessor_counts(code: &[Instr32]) -> Vec<usize> {
+    let mut predecessors = vec![0usize; code.len() + 1];
+    for (pc, instr) in code.iter().copied().enumerate() {
+        match instr.opcode() {
+            Opcode32::Jmp => {
+                if let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len())
+                    && let Some(count) = predecessors.get_mut(target)
+                {
+                    *count += 1;
+                }
+            }
+            Opcode32::Test => {
+                if let Some(count) = predecessors.get_mut(pc + 1) {
+                    *count += 1;
+                }
+                if let Some(target) = native_relative_target(pc, instr.c() as i8 as i32, code.len())
+                    && let Some(count) = predecessors.get_mut(target)
+                {
+                    *count += 1;
+                }
+            }
+            Opcode32::Return => {}
+            _ => {
+                if let Some(count) = predecessors.get_mut(pc + 1) {
+                    *count += 1;
+                }
+            }
+        }
+    }
+    predecessors
 }
 
 fn static_untaken_return_path(boundaries: &[bool], code: &[Instr32], start: usize) -> Option<Vec<usize>> {
@@ -95,31 +450,45 @@ fn static_untaken_linear_return_path(boundaries: &[bool], code: &[Instr32], star
     }
 }
 
-pub(super) fn static_string_value_trusted_at_call(code: &[Instr32], call_pc: usize, reg: u8) -> bool {
-    static_string_value_trusted_before(code, call_pc, reg, 0)
+pub(in crate::llvm) fn static_register_value_trusted_before(code: &[Instr32], pc_limit: usize, reg: u8) -> bool {
+    static_register_value_trusted_before_inner(code, pc_limit, reg, 0)
 }
 
-pub(super) fn three_regs_in_bounds(register_count: usize, instr: Instr32) -> bool {
+pub(in crate::llvm) fn static_string_value_trusted_at_call(code: &[Instr32], call_pc: usize, reg: u8) -> bool {
+    static_register_value_trusted_before(code, call_pc, reg)
+}
+
+pub(in crate::llvm) fn three_regs_in_bounds(register_count: usize, instr: Instr32) -> bool {
     reg_in_bounds(register_count, instr.a())
         && reg_in_bounds(register_count, instr.b())
         && reg_in_bounds(register_count, instr.c())
 }
 
-pub(super) fn i64_slot_kind(kind: NativeScalarKind) -> bool {
+pub(in crate::llvm) fn i64_slot_kind(kind: NativeScalarKind) -> bool {
     matches!(kind, NativeScalarKind::I64 | NativeScalarKind::MaybeI64)
 }
 
-pub(super) fn static_call_args(
+pub(in crate::llvm) fn static_call_args(
     static_regs: &[Option<NativeStraightlineValue>],
     callee: u8,
     count: u8,
 ) -> Option<Vec<NativeStraightlineValue>> {
     let start = callee as usize + 1;
     let end = start.checked_add(count as usize)?;
-    static_regs.get(start..end)?.iter().cloned().collect()
+    static_regs
+        .get(start..end)?
+        .iter()
+        .cloned()
+        .map(|value| match value {
+            Some(NativeStraightlineValue::Builtin(_)) => None,
+            value => value,
+        })
+        .collect()
 }
 
-pub(super) fn static_call_target(value: NativeStraightlineValue) -> Option<(u16, Vec<NativeStraightlineValue>)> {
+pub(in crate::llvm) fn static_call_target(
+    value: NativeStraightlineValue,
+) -> Option<(u16, Vec<NativeStraightlineValue>)> {
     match value {
         NativeStraightlineValue::Function(function_index) => Some((function_index, Vec::new())),
         NativeStraightlineValue::Closure {
@@ -130,7 +499,7 @@ pub(super) fn static_call_target(value: NativeStraightlineValue) -> Option<(u16,
     }
 }
 
-pub(super) fn native_static_closure(
+pub(in crate::llvm) fn native_static_closure(
     functions: &[crate::vm::Function32Data],
     function_index: u8,
     capture_start: u8,
@@ -150,7 +519,7 @@ pub(super) fn native_static_closure(
     })
 }
 
-pub(super) fn static_callable_value(
+pub(in crate::llvm) fn static_callable_value(
     functions: &[crate::vm::Function32Data],
     instr: Instr32,
     static_regs: &[Option<NativeStraightlineValue>],
@@ -162,7 +531,7 @@ pub(super) fn static_callable_value(
     }
 }
 
-pub(super) fn emit_inline_scalar_arg_stores(
+pub(in crate::llvm) fn emit_inline_scalar_arg_stores(
     ir: &mut String,
     caller_facts: &NativeScalarFacts,
     call_pc: usize,
@@ -183,11 +552,11 @@ pub(super) fn emit_inline_scalar_arg_stores(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn emit_static_named_call(
+pub(in crate::llvm) fn emit_static_named_call(
     ir: &mut String,
     extra_globals: &mut String,
     artifact: &Module32Artifact,
-    scalar_facts: &NativeScalarFacts,
+    facts: &NativeScalarFacts,
     pc: usize,
     static_regs: &mut [Option<NativeStraightlineValue>],
     static_globals: &mut [Option<NativeStraightlineValue>],
@@ -201,7 +570,7 @@ pub(super) fn emit_static_named_call(
         function,
         ir,
         "",
-        scalar_facts,
+        facts,
         pc,
         static_regs,
         instr.a(),
@@ -225,11 +594,87 @@ pub(super) fn emit_static_named_call(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn scalar_named_call_args(
+pub(in crate::llvm) fn emit_static_direct_call_result(
+    ir: &mut String,
+    extra_globals: &mut String,
+    artifact: &Module32Artifact,
+    code: &[Instr32],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValue32Data],
+    pc: usize,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    static_globals: &mut [Option<NativeStraightlineValue>],
+    instr: Instr32,
+    tmp_index: &mut usize,
+) -> Option<()> {
+    let (args, recovered_heap_const) = static_direct_call_args(
+        code,
+        int_consts,
+        strings,
+        heap_values,
+        pc,
+        static_regs,
+        instr.a(),
+        instr.c(),
+    )?;
+    if !recovered_heap_const
+        && !args.iter().any(|value| {
+            matches!(
+                value,
+                NativeStraightlineValue::Function(_)
+                    | NativeStraightlineValue::Closure { .. }
+                    | NativeStraightlineValue::String { .. }
+                    | NativeStraightlineValue::List { .. }
+                    | NativeStraightlineValue::Map { .. }
+                    | NativeStraightlineValue::Object { .. }
+            )
+        })
+        && !artifact
+            .module
+            .functions
+            .get(instr.b() as usize)
+            .is_some_and(|function| function.consts.strings.iter().any(|value| value == "reduce"))
+        && !native_direct_call_static_return_value(
+            &artifact.module.functions,
+            instr,
+            static_regs,
+            code,
+            int_consts,
+            pc,
+            &[],
+            0,
+        )
+        .is_some_and(|value| {
+            matches!(
+                value,
+                NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }
+            )
+        })
+    {
+        return None;
+    }
+    let value = native_straightline_function_return(
+        artifact,
+        instr.b() as usize,
+        &args,
+        &[],
+        static_globals,
+        0,
+        ir,
+        tmp_index,
+    )
+    .ok()
+    .flatten()?;
+    store_native_scalar_call_result(ir, extra_globals, static_regs, instr.a(), value, tmp_index)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::llvm) fn scalar_named_call_args(
     function: &crate::vm::Function32Data,
     ir: &mut String,
     slot_prefix: &str,
-    scalar_facts: &NativeScalarFacts,
+    facts: &NativeScalarFacts,
     pc: usize,
     static_regs: &[Option<NativeStraightlineValue>],
     callee: u8,
@@ -262,7 +707,7 @@ pub(super) fn scalar_named_call_args(
         *slot = Some(scalar_arg_value(
             ir,
             slot_prefix,
-            scalar_facts,
+            facts,
             pc,
             static_regs,
             reg,
@@ -284,7 +729,7 @@ pub(super) fn scalar_named_call_args(
         args[positional_count + offset] = Some(scalar_arg_value(
             ir,
             slot_prefix,
-            scalar_facts,
+            facts,
             pc,
             static_regs,
             pair_start + 1,
@@ -298,10 +743,10 @@ pub(super) fn scalar_named_call_args(
     args.into_iter().collect()
 }
 
-fn scalar_arg_value(
+pub(in crate::llvm) fn scalar_arg_value(
     ir: &mut String,
     slot_prefix: &str,
-    scalar_facts: &NativeScalarFacts,
+    facts: &NativeScalarFacts,
     pc: usize,
     static_regs: &[Option<NativeStraightlineValue>],
     reg: usize,
@@ -311,7 +756,7 @@ fn scalar_arg_value(
         return Some(value);
     }
     let reg = u8::try_from(reg).ok()?;
-    let kind = scalar_facts.register_kind_before(pc, reg)?;
+    let kind = facts.register_kind_before(pc, reg)?;
     if kind == NativeScalarKind::Nil {
         return Some(NativeStraightlineValue::Nil);
     }
@@ -327,7 +772,7 @@ fn scalar_arg_value(
     }
 }
 
-pub(super) fn emit_static_scalar_value_store_if_needed(
+pub(in crate::llvm) fn emit_static_scalar_value_store_if_needed(
     ir: &mut String,
     reg: u8,
     value: &NativeStraightlineValue,
@@ -335,6 +780,7 @@ pub(super) fn emit_static_scalar_value_store_if_needed(
     match value {
         NativeStraightlineValue::I64(value) => {
             ir.push_str(&format!("  store i64 {value}, ptr %r{reg}.slot\n"));
+            ir.push_str(&format!("  store i64 1, ptr %r{reg}.present.slot\n"));
         }
         NativeStraightlineValue::Bool(value) => {
             ir.push_str(&format!("  store i64 {value}, ptr %r{reg}.slot\n"));
@@ -342,18 +788,26 @@ pub(super) fn emit_static_scalar_value_store_if_needed(
         NativeStraightlineValue::Nil => {
             ir.push_str(&format!("  store i64 0, ptr %r{reg}.slot\n"));
         }
-        NativeStraightlineValue::F64(_)
-        | NativeStraightlineValue::String { .. }
+        NativeStraightlineValue::F64(value) => {
+            ir.push_str(&format!("  store double {value}, ptr %r{reg}.slot\n"));
+        }
+        NativeStraightlineValue::String { .. }
         | NativeStraightlineValue::StringPtr(_)
         | NativeStraightlineValue::Text(_)
         | NativeStraightlineValue::DynamicTextChar
         | NativeStraightlineValue::DynamicSplitText { .. }
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
-        | NativeStraightlineValue::DynamicStringIntMap { .. }
-        | NativeStraightlineValue::DynamicIntList { .. }
-        | NativeStraightlineValue::DynamicTextList { .. }
+        | NativeStraightlineValue::DynamicMap {
+            key: NativeMapKeyKind::Str,
+            value: NativeMapValueKind::I64,
+            ..
+        }
+        | NativeStraightlineValue::DynamicList { .. }
+        | NativeStraightlineValue::DynamicConstListElement { .. }
         | NativeStraightlineValue::DynamicJoinedText { .. }
+        | NativeStraightlineValue::Channel { .. }
+        | NativeStraightlineValue::ArgList { .. }
         | NativeStraightlineValue::Object { .. }
         | NativeStraightlineValue::Error { .. }
         | NativeStraightlineValue::Builtin(_)
@@ -365,8 +819,11 @@ pub(super) fn emit_static_scalar_value_store_if_needed(
     Some(())
 }
 
-fn static_string_value_trusted_before(code: &[Instr32], pc_limit: usize, reg: u8, depth: usize) -> bool {
+fn static_register_value_trusted_before_inner(code: &[Instr32], pc_limit: usize, reg: u8, depth: usize) -> bool {
     if depth > 8 {
+        return false;
+    }
+    if register_written_by_enclosing_backedge_loop(code, pc_limit, reg) {
         return false;
     }
     let Some(last_write) = code
@@ -383,17 +840,40 @@ fn static_string_value_trusted_before(code: &[Instr32], pc_limit: usize, reg: u8
     let crosses_boundary = boundaries
         .iter()
         .copied()
-        .skip(last_write + 1)
-        .take(pc_limit.saturating_sub(last_write))
+        .skip(last_write)
+        .take(pc_limit.saturating_sub(last_write) + 1)
         .any(|boundary| boundary);
     if crosses_boundary {
         return false;
     }
     let instr = code[last_write];
     if instr.opcode() == Opcode32::Move {
-        return static_string_value_trusted_before(code, last_write, instr.b(), depth + 1);
+        return static_register_value_trusted_before_inner(code, last_write, instr.b(), depth + 1);
+    }
+    if code
+        .iter()
+        .copied()
+        .skip(last_write + 1)
+        .take(pc_limit.saturating_sub(last_write + 1))
+        .any(|instr| matches!(instr.opcode(), Opcode32::Jmp | Opcode32::Test | Opcode32::Return))
+    {
+        return false;
     }
     true
+}
+
+fn register_written_by_enclosing_backedge_loop(code: &[Instr32], pc_limit: usize, reg: u8) -> bool {
+    code.iter()
+        .copied()
+        .enumerate()
+        .skip(pc_limit.saturating_add(1))
+        .filter(|(_, instr)| instr.opcode() == Opcode32::Jmp)
+        .any(|(jump_pc, instr)| {
+            let Some(target) = native_relative_target(jump_pc, instr.sj_arg(), code.len()) else {
+                return false;
+            };
+            target <= pc_limit && (target..jump_pc).any(|pc| instr_writes_register(code[pc], reg))
+        })
 }
 
 fn instr_writes_register(instr: Instr32, reg: u8) -> bool {
@@ -413,7 +893,7 @@ fn instr_writes_register(instr: Instr32, reg: u8) -> bool {
         )
 }
 
-pub(super) fn store_native_scalar_call_result(
+pub(in crate::llvm) fn store_native_scalar_call_result(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
@@ -425,27 +905,40 @@ pub(super) fn store_native_scalar_call_result(
         NativeStraightlineValue::I64(value) => {
             static_regs[dst as usize] = None;
             ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
         }
         NativeStraightlineValue::F64(value) => {
-            static_regs[dst as usize] = None;
+            static_regs[dst as usize] = if value.starts_with('%') {
+                None
+            } else {
+                Some(NativeStraightlineValue::F64(value.clone()))
+            };
             ir.push_str(&format!("  store double {value}, ptr %r{dst}.slot\n"));
         }
         NativeStraightlineValue::Bool(value) => {
-            static_regs[dst as usize] = None;
+            static_regs[dst as usize] = if value.starts_with('%') {
+                None
+            } else {
+                Some(NativeStraightlineValue::Bool(value.clone()))
+            };
             ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
         }
         NativeStraightlineValue::Nil => {
-            static_regs[dst as usize] = None;
+            static_regs[dst as usize] = Some(NativeStraightlineValue::Nil);
             ir.push_str(&format!("  store i64 0, ptr %r{dst}.slot\n"));
         }
         NativeStraightlineValue::String { symbol, value, .. } => {
-            static_regs[dst as usize] = Some(native_static_string(&value, symbol.clone()));
             if symbol.is_empty() {
                 let symbol = format!("@lk_call_str_{}", *tmp_index);
                 *tmp_index += 1;
                 extra_globals.push_str(&llvm_string_constant(&symbol, &value));
+                static_regs[dst as usize] = Some(native_static_string(&value, symbol.clone()));
                 ir.push_str(&format!("  store ptr {symbol}, ptr %r{dst}.slot\n"));
             } else {
+                if symbol.starts_with("@lk_func") || symbol.starts_with("@lk_static_") {
+                    extra_globals.push_str(&llvm_string_constant(&symbol, &value));
+                }
+                static_regs[dst as usize] = Some(native_static_string(&value, symbol.clone()));
                 ir.push_str(&format!("  store ptr {symbol}, ptr %r{dst}.slot\n"));
             }
         }
@@ -453,12 +946,28 @@ pub(super) fn store_native_scalar_call_result(
             static_regs[dst as usize] = Some(NativeStraightlineValue::StringPtr(value.clone()));
             ir.push_str(&format!("  store ptr {value}, ptr %r{dst}.slot\n"));
         }
+        NativeStraightlineValue::DynamicList {
+            element: NativeListElementKind::I64,
+            ..
+        }
+        | NativeStraightlineValue::DynamicList {
+            element: NativeListElementKind::Text,
+            ..
+        }
+        | NativeStraightlineValue::List { .. }
+        | NativeStraightlineValue::Map { .. }
+        | NativeStraightlineValue::Object { .. }
+        | NativeStraightlineValue::Channel { .. }
+        | NativeStraightlineValue::Function(_)
+        | NativeStraightlineValue::Closure { .. } => {
+            static_regs[dst as usize] = Some(value);
+        }
         _ => return None,
     }
     Some(())
 }
 
-pub(super) fn store_native_inline_scalar_value(
+pub(in crate::llvm) fn store_native_inline_scalar_value(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
@@ -471,6 +980,7 @@ pub(super) fn store_native_inline_scalar_value(
         NativeStraightlineValue::I64(value) => {
             static_regs[dst as usize] = None;
             ir.push_str(&format!("  store i64 {value}, ptr %call{call_pc}.r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 1, ptr %call{call_pc}.r{dst}.present.slot\n"));
         }
         NativeStraightlineValue::F64(value) => {
             static_regs[dst as usize] = None;
@@ -485,13 +995,17 @@ pub(super) fn store_native_inline_scalar_value(
             ir.push_str(&format!("  store i64 0, ptr %call{call_pc}.r{dst}.slot\n"));
         }
         NativeStraightlineValue::String { symbol, value, .. } => {
-            static_regs[dst as usize] = Some(native_static_string(&value, symbol.clone()));
             if symbol.is_empty() {
                 let symbol = format!("@lk_call_inline_str_{}", *tmp_index);
                 *tmp_index += 1;
                 extra_globals.push_str(&llvm_string_constant(&symbol, &value));
+                static_regs[dst as usize] = Some(native_static_string(&value, symbol.clone()));
                 ir.push_str(&format!("  store ptr {symbol}, ptr %call{call_pc}.r{dst}.slot\n"));
             } else {
+                if symbol.starts_with("@lk_func") || symbol.starts_with("@lk_static_") {
+                    extra_globals.push_str(&llvm_string_constant(&symbol, &value));
+                }
+                static_regs[dst as usize] = Some(native_static_string(&value, symbol.clone()));
                 ir.push_str(&format!("  store ptr {symbol}, ptr %call{call_pc}.r{dst}.slot\n"));
             }
         }
@@ -499,12 +1013,20 @@ pub(super) fn store_native_inline_scalar_value(
             static_regs[dst as usize] = Some(NativeStraightlineValue::StringPtr(value.clone()));
             ir.push_str(&format!("  store ptr {value}, ptr %call{call_pc}.r{dst}.slot\n"));
         }
+        NativeStraightlineValue::Object { .. } => {
+            static_regs[dst as usize] = Some(value);
+        }
         _ => return None,
     }
     Some(())
 }
 
-pub(super) fn emit_inline_i64_binary_block(ir: &mut String, call_pc: usize, instr: Instr32, tmp_index: &mut usize) {
+pub(in crate::llvm) fn emit_inline_i64_binary_block(
+    ir: &mut String,
+    call_pc: usize,
+    instr: Instr32,
+    tmp_index: &mut usize,
+) {
     let lhs = next_tmp(tmp_index);
     let rhs = next_tmp(tmp_index);
     let out = next_tmp(tmp_index);
@@ -535,7 +1057,7 @@ pub(super) fn emit_inline_i64_binary_block(ir: &mut String, call_pc: usize, inst
     ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
 }
 
-pub(super) fn emit_mixed_numeric_int_opcode_block(
+pub(in crate::llvm) fn emit_mixed_numeric_int_opcode_block(
     ir: &mut String,
     slot_prefix: &str,
     instr: Instr32,
@@ -561,7 +1083,7 @@ pub(super) fn emit_mixed_numeric_int_opcode_block(
     ));
 }
 
-pub(super) fn emit_dynamic_string_starts_with(
+pub(in crate::llvm) fn emit_dynamic_string_starts_with(
     ir: &mut String,
     extra_globals: &mut String,
     slot_prefix: &str,
@@ -589,7 +1111,7 @@ pub(super) fn emit_dynamic_string_starts_with(
     ir.push_str(&format!("  store i64 {out}, ptr %{slot_prefix}r{dst}.slot\n"));
 }
 
-pub(super) fn emit_static_string_i64_map_get(
+pub(in crate::llvm) fn emit_static_string_i64_map_get(
     ir: &mut String,
     extra_globals: &mut String,
     entries: &[(RuntimeMapKeyData, ConstRuntimeValue32Data)],
@@ -634,7 +1156,9 @@ pub(super) fn emit_static_string_i64_map_get(
     Some(())
 }
 
-pub(super) fn static_string_i64_map_supported(entries: &[(RuntimeMapKeyData, ConstRuntimeValue32Data)]) -> bool {
+pub(in crate::llvm) fn static_string_i64_map_supported(
+    entries: &[(RuntimeMapKeyData, ConstRuntimeValue32Data)],
+) -> bool {
     entries
         .iter()
         .all(|(key, value)| runtime_map_key_text(key).is_some() && const_runtime_i64_value(value).is_some())
@@ -680,7 +1204,7 @@ fn emit_numeric_load_as_f64(
     }
 }
 
-pub(super) fn inline_text_value_from_reg(
+pub(in crate::llvm) fn inline_text_value_from_reg(
     ir: &mut String,
     call_pc: usize,
     reg: u8,
@@ -706,7 +1230,7 @@ pub(super) fn inline_text_value_from_reg(
     Some(NativeStraightlineValue::Text(vec![part]))
 }
 
-pub(super) fn text_value_from_reg(
+pub(in crate::llvm) fn text_value_from_reg(
     ir: &mut String,
     reg: u8,
     kind: Option<NativeScalarKind>,
@@ -731,7 +1255,7 @@ pub(super) fn text_value_from_reg(
     Some(NativeStraightlineValue::Text(vec![part]))
 }
 
-fn text_value_from_native(value: NativeStraightlineValue) -> Option<NativeStraightlineValue> {
+pub(in crate::llvm) fn text_value_from_native(value: NativeStraightlineValue) -> Option<NativeStraightlineValue> {
     let parts = match value {
         NativeStraightlineValue::Text(parts) => parts,
         NativeStraightlineValue::I64(value) => vec![NativeTextPart::I64(value)],
@@ -740,12 +1264,28 @@ fn text_value_from_native(value: NativeStraightlineValue) -> Option<NativeStraig
         NativeStraightlineValue::Nil => vec![NativeTextPart::Nil],
         NativeStraightlineValue::StringPtr(value) => vec![NativeTextPart::StrPtr(value)],
         NativeStraightlineValue::String { symbol, value, .. } => vec![NativeTextPart::String { symbol, value }],
+        NativeStraightlineValue::Object {
+            symbol,
+            value,
+            type_name,
+            fields,
+        } => match native_object_display_text(&type_name, &fields) {
+            Some(value) => vec![NativeTextPart::String {
+                symbol: String::new(),
+                value,
+            }],
+            None => vec![NativeTextPart::String { symbol, value }],
+        },
+        NativeStraightlineValue::DynamicTextChar => vec![NativeTextPart::String {
+            symbol: String::new(),
+            value: "x".to_string(),
+        }],
         _ => return None,
     };
     Some(NativeStraightlineValue::Text(parts))
 }
 
-pub(super) fn concat_text_values(
+pub(in crate::llvm) fn concat_text_values(
     lhs: NativeStraightlineValue,
     rhs: NativeStraightlineValue,
 ) -> Option<NativeStraightlineValue> {
@@ -759,7 +1299,7 @@ pub(super) fn concat_text_values(
     Some(NativeStraightlineValue::Text(lhs))
 }
 
-pub(super) fn emit_native_block_core_call_method(
+pub(in crate::llvm) fn emit_native_block_core_call_method(
     ir: &mut String,
     extra_globals: &mut String,
     builtin: NativeBuiltin,
@@ -769,6 +1309,9 @@ pub(super) fn emit_native_block_core_call_method(
     if builtin != NativeBuiltin::CoreCallMethod {
         return None;
     }
+    if let Some(value) = emit_native_static_core_call_method(args, tmp_index) {
+        return Some(value);
+    }
     let [
         NativeStraightlineValue::Module(NativeModule::OsEnv),
         NativeStraightlineValue::String { value: method, .. },
@@ -777,11 +1320,14 @@ pub(super) fn emit_native_block_core_call_method(
     else {
         return None;
     };
-    if method != "get" || elements.len() != 2 {
+    if method != "get" || (elements.len() != 1 && elements.len() != 2) {
         return None;
     }
     let name = native_const_string_arg(&elements[0])?;
-    let default = native_const_string_arg(&elements[1])?;
+    let default = match elements.get(1) {
+        Some(value) => native_const_string_arg(value)?,
+        None => String::new(),
+    };
     let name_symbol = format!("@lk_env_name_{}", *tmp_index);
     *tmp_index += 1;
     let default_symbol = format!("@lk_env_default_{}", *tmp_index);
@@ -810,23 +1356,23 @@ fn native_const_string_arg(value: &ConstRuntimeValue32Data) -> Option<String> {
     }
 }
 
-pub(super) fn native_static_string(value: &str, symbol: String) -> NativeStraightlineValue {
+pub(in crate::llvm) fn native_static_string(value: &str, symbol: String) -> NativeStraightlineValue {
     NativeStraightlineValue::String {
         symbol,
         value: value.to_string(),
         len: value.chars().count(),
-        key_kind: super::straightline_value::native_runtime_string_key_kind(value),
+        key_kind: native_runtime_string_key_kind(value),
     }
 }
 
-pub(super) fn emit_inline_branch_to_next(ir: &mut String, call_pc: usize, pc: usize, code_len: usize) {
+pub(in crate::llvm) fn emit_inline_branch_to_next(ir: &mut String, call_pc: usize, pc: usize, code_len: usize) {
     ir.push_str(&format!(
         "  br label {}\n",
         inline_native_label(call_pc, pc + 1, code_len)
     ));
 }
 
-pub(super) fn inline_native_label(call_pc: usize, target: usize, code_len: usize) -> String {
+pub(in crate::llvm) fn inline_native_label(call_pc: usize, target: usize, code_len: usize) -> String {
     if target >= code_len {
         format!("%call{call_pc}.exit")
     } else {
@@ -834,7 +1380,7 @@ pub(super) fn inline_native_label(call_pc: usize, target: usize, code_len: usize
     }
 }
 
-pub(super) fn emit_inline_scalar_equality_block(
+pub(in crate::llvm) fn emit_inline_scalar_equality_block(
     ir: &mut String,
     call_pc: usize,
     instr: Instr32,
@@ -893,7 +1439,7 @@ pub(super) fn emit_inline_scalar_equality_block(
     Some(())
 }
 
-pub(super) fn emit_string_ptr_equality_block(ir: &mut String, instr: Instr32, tmp_index: &mut usize) {
+pub(in crate::llvm) fn emit_string_ptr_equality_block(ir: &mut String, instr: Instr32, tmp_index: &mut usize) {
     let lhs = next_tmp(tmp_index);
     let rhs = next_tmp(tmp_index);
     let cmp_value = next_tmp(tmp_index);
@@ -908,7 +1454,7 @@ pub(super) fn emit_string_ptr_equality_block(ir: &mut String, instr: Instr32, tm
     ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
 }
 
-pub(super) fn emit_inline_string_ptr_equality_block(
+pub(in crate::llvm) fn emit_inline_string_ptr_equality_block(
     ir: &mut String,
     call_pc: usize,
     instr: Instr32,
@@ -925,5 +1471,29 @@ pub(super) fn emit_inline_string_ptr_equality_block(
     let pred = if instr.opcode() == Opcode32::CmpInt { "eq" } else { "ne" };
     ir.push_str(&format!("  {is_equal} = icmp {pred} i32 {cmp_value}, 0\n"));
     ir.push_str(&format!("  {out} = zext i1 {is_equal} to i64\n"));
+    ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
+}
+
+pub(in crate::llvm) fn emit_inline_scalar_ordered_comparison_block(
+    ir: &mut String,
+    call_pc: usize,
+    instr: Instr32,
+    tmp_index: &mut usize,
+) {
+    let lhs = next_tmp(tmp_index);
+    let rhs = next_tmp(tmp_index);
+    let cmp = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    let pred = match instr.opcode() {
+        Opcode32::CmpLtInt => "slt",
+        Opcode32::CmpLeInt => "sle",
+        Opcode32::CmpGtInt => "sgt",
+        Opcode32::CmpGeInt => "sge",
+        _ => "slt",
+    };
+    ir.push_str(&format!("  {lhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {rhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.c()));
+    ir.push_str(&format!("  {cmp} = icmp {pred} i64 {lhs}, {rhs}\n"));
+    ir.push_str(&format!("  {out} = zext i1 {cmp} to i64\n"));
     ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
 }

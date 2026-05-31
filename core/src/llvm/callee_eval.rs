@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::vm::{Function32Data, Instr32, Module32Artifact, Opcode32};
+use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Function32Data, Instr32, Module32Artifact, Opcode32};
 
 use super::{
     const_display::native_string_const_value,
@@ -219,6 +219,27 @@ pub(super) fn native_straightline_function_return(
                 *global = Some(value);
             }
             Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
+                if instr.opcode() == Opcode32::AddInt
+                    && let (
+                        Some(NativeStraightlineValue::String { value: lhs, .. }),
+                        Some(NativeStraightlineValue::String { value: rhs, .. }),
+                    ) = (
+                        regs.get(instr.b() as usize).and_then(Clone::clone),
+                        regs.get(instr.c() as usize).and_then(Clone::clone),
+                    )
+                {
+                    let value = format!("{lhs}{rhs}");
+                    let symbol = format!("@lk_func{function_index}_add_str_{}", *ssa_index);
+                    *ssa_index += 1;
+                    regs[instr.a() as usize] = Some(NativeStraightlineValue::String {
+                        symbol,
+                        len: value.chars().count(),
+                        key_kind: native_runtime_string_key_kind(&value),
+                        value,
+                    });
+                    pc = next_pc;
+                    continue;
+                }
                 let Some(NativeStraightlineValue::I64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
                     return Ok(None);
@@ -579,7 +600,8 @@ pub(super) fn native_straightline_function_return(
                 };
                 let symbol = format!("@lk_func{function_index}_new_list_{}", *ssa_index);
                 *ssa_index += 1;
-                regs[instr.a() as usize] = native_static_list_from_values(&values, symbol);
+                regs[instr.a() as usize] = native_static_list_from_values(&values, symbol)
+                    .or(Some(NativeStraightlineValue::ArgList { elements: values }));
                 if regs[instr.a() as usize].is_none() {
                     return Ok(None);
                 }
@@ -818,6 +840,14 @@ pub(super) fn native_straightline_function_return(
                     if instr.a() as usize >= regs.len() {
                         return Ok(None);
                     }
+                    if builtin == super::straightline_value::NativeBuiltin::CoreCallMethod
+                        && let Some(value) =
+                            native_straightline_core_call_method(artifact, &args, globals, depth, body, ssa_index)?
+                    {
+                        regs[instr.a() as usize] = Some(value);
+                        pc = next_pc;
+                        continue;
+                    }
                     regs[instr.a() as usize] = emit_native_builtin_call(body, builtin, &args, ssa_index);
                     if regs[instr.a() as usize].is_none() {
                         return Ok(None);
@@ -914,6 +944,114 @@ pub(super) fn native_straightline_function_return(
     Ok(None)
 }
 
+pub(super) fn native_direct_call_static_return_value(
+    functions: &[Function32Data],
+    instr: Instr32,
+    caller_static_values: &[Option<NativeStraightlineValue>],
+    caller_code: &[Instr32],
+    caller_int_consts: &[i64],
+    call_pc: usize,
+    captures: &[NativeStraightlineValue],
+    depth: usize,
+) -> Option<NativeStraightlineValue> {
+    if depth >= 8 {
+        return None;
+    }
+    let function_index = instr.b() as usize;
+    let function = functions.get(function_index)?;
+    if function.capture_count as usize != captures.len() || function.param_count != instr.c() as u16 {
+        return None;
+    }
+    let code = function
+        .code
+        .iter()
+        .copied()
+        .map(Instr32::try_from_raw)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let mut regs = vec![None; function.register_count as usize];
+    for arg in 0..instr.c() as usize {
+        let caller_reg = instr.a() as usize + 1 + arg;
+        let value =
+            caller_static_values.get(caller_reg).cloned().flatten().or_else(|| {
+                native_local_static_i64_before(caller_code, caller_int_consts, call_pc, caller_reg as u8)
+            })?;
+        *regs.get_mut(arg)? = Some(value);
+    }
+    for pc in 0..code.len() {
+        let instr = code[pc];
+        match instr.opcode() {
+            Opcode32::LoadInt => {
+                let value = function.consts.ints.get(instr.bx() as usize)?;
+                *regs.get_mut(instr.a() as usize)? = Some(NativeStraightlineValue::I64(value.to_string()));
+            }
+            Opcode32::LoadHeapConst => {
+                let value = function.consts.heap_values.get(instr.bx() as usize)?;
+                *regs.get_mut(instr.a() as usize)? =
+                    native_straightline_heap_const_value(function_index, instr.bx(), value);
+                regs.get(instr.a() as usize)?.as_ref()?;
+            }
+            Opcode32::LoadFunction => {
+                *regs.get_mut(instr.a() as usize)? = Some(NativeStraightlineValue::Function(instr.bx()));
+            }
+            Opcode32::LoadCapture => {
+                *regs.get_mut(instr.a() as usize)? = Some(captures.get(instr.bx() as usize)?.clone());
+            }
+            Opcode32::LoadCellVal => {
+                let cell = regs.get(instr.b() as usize)?.clone()?;
+                *regs.get_mut(instr.a() as usize)? = Some(native_static_load_cell(cell)?);
+            }
+            Opcode32::StoreCellVal => {
+                let cell = regs.get(instr.a() as usize)?.clone()?;
+                let value = regs.get(instr.b() as usize)?.clone()?;
+                let value = native_static_store_cell(cell, value)?;
+                let mut globals = Vec::new();
+                native_replace_static_aliases(&mut regs, &mut globals, instr.a() as usize, &value);
+                *regs.get_mut(instr.a() as usize)? = Some(value);
+            }
+            Opcode32::MakeClosure => {
+                let callee = functions.get(instr.b() as usize)?;
+                let start = instr.c() as usize;
+                let end = start.checked_add(callee.capture_count as usize)?;
+                let captures = regs.get(start..end)?.iter().cloned().collect::<Option<Vec<_>>>()?;
+                *regs.get_mut(instr.a() as usize)? = Some(NativeStraightlineValue::Closure {
+                    function_index: instr.b() as u16,
+                    captures,
+                });
+            }
+            Opcode32::Move => {
+                *regs.get_mut(instr.a() as usize)? = regs.get(instr.b() as usize)?.clone();
+            }
+            Opcode32::Return if instr.b() == 1 => return regs.get(instr.a() as usize)?.clone(),
+            Opcode32::Return => return None,
+            Opcode32::Nop => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn native_local_static_i64_before(
+    code: &[Instr32],
+    int_consts: &[i64],
+    pc: usize,
+    reg: u8,
+) -> Option<NativeStraightlineValue> {
+    for prev in code.get(..pc)?.iter().copied().rev() {
+        if prev.a() != reg {
+            continue;
+        }
+        return match prev.opcode() {
+            Opcode32::LoadInt => int_consts
+                .get(prev.bx() as usize)
+                .map(|value| NativeStraightlineValue::I64(value.to_string())),
+            Opcode32::Move => native_local_static_i64_before(code, int_consts, pc, prev.b()),
+            _ => None,
+        };
+    }
+    None
+}
+
 fn native_straightline_call_args(
     regs: &[Option<NativeStraightlineValue>],
     callee: u8,
@@ -935,6 +1073,159 @@ fn native_straightline_call_target(value: NativeStraightlineValue) -> Option<(u1
             captures,
         } => Some((function_index, captures)),
         _ => None,
+    }
+}
+
+fn native_straightline_core_call_method(
+    artifact: &Module32Artifact,
+    args: &[NativeStraightlineValue],
+    globals: &mut [Option<NativeStraightlineValue>],
+    depth: usize,
+    body: &mut String,
+    ssa_index: &mut usize,
+) -> Result<Option<NativeStraightlineValue>> {
+    let [
+        NativeStraightlineValue::List { elements, .. },
+        NativeStraightlineValue::String { value: method, .. },
+        NativeStraightlineValue::ArgList { elements: method_args },
+    ] = args
+    else {
+        return Ok(None);
+    };
+    match method.as_str() {
+        "filter" => {
+            let [callable] = method_args.as_slice() else {
+                return Ok(None);
+            };
+            let Some((function_index, captures)) = native_straightline_call_target(callable.clone()) else {
+                return Ok(None);
+            };
+            let mut filtered = Vec::new();
+            for value in elements {
+                let Some(item) = native_straightline_const_value(value) else {
+                    return Ok(None);
+                };
+                let Some(result) = native_straightline_function_return(
+                    artifact,
+                    function_index as usize,
+                    std::slice::from_ref(&item),
+                    &captures,
+                    globals,
+                    depth + 1,
+                    body,
+                    ssa_index,
+                )?
+                else {
+                    return Ok(None);
+                };
+                let Some(truthy) = native_static_truthy(&result) else {
+                    return Ok(None);
+                };
+                if truthy {
+                    filtered.push(item);
+                }
+            }
+            Ok(native_static_list_from_values(
+                &filtered,
+                format!("@lk_call_method_filter_{}", *ssa_index),
+            ))
+        }
+        "map" => {
+            let [callable] = method_args.as_slice() else {
+                return Ok(None);
+            };
+            let Some((function_index, captures)) = native_straightline_call_target(callable.clone()) else {
+                return Ok(None);
+            };
+            let mut mapped = Vec::new();
+            for value in elements {
+                let Some(item) = native_straightline_const_value(value) else {
+                    return Ok(None);
+                };
+                let Some(result) = native_straightline_function_return(
+                    artifact,
+                    function_index as usize,
+                    &[item],
+                    &captures,
+                    globals,
+                    depth + 1,
+                    body,
+                    ssa_index,
+                )?
+                else {
+                    return Ok(None);
+                };
+                mapped.push(result);
+            }
+            Ok(native_static_list_from_values(
+                &mapped,
+                format!("@lk_call_method_map_{}", *ssa_index),
+            ))
+        }
+        "reduce" => {
+            let [initial, callable] = method_args.as_slice() else {
+                return Ok(None);
+            };
+            let Some((function_index, captures)) = native_straightline_call_target(callable.clone()) else {
+                return Ok(None);
+            };
+            let mut acc = initial.clone();
+            for value in elements {
+                let Some(item) = native_straightline_const_value(value) else {
+                    return Ok(None);
+                };
+                let Some(result) = native_straightline_function_return(
+                    artifact,
+                    function_index as usize,
+                    &[acc, item],
+                    &captures,
+                    globals,
+                    depth + 1,
+                    body,
+                    ssa_index,
+                )?
+                else {
+                    return Ok(None);
+                };
+                acc = result;
+            }
+            Ok(Some(acc))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn native_straightline_const_value(value: &ConstRuntimeValue32Data) -> Option<NativeStraightlineValue> {
+    match value {
+        ConstRuntimeValue32Data::Nil => Some(NativeStraightlineValue::Nil),
+        ConstRuntimeValue32Data::Bool(value) => Some(NativeStraightlineValue::Bool(i64::from(*value).to_string())),
+        ConstRuntimeValue32Data::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
+        ConstRuntimeValue32Data::Float(value) => Some(NativeStraightlineValue::F64(llvm_float_literal(*value))),
+        ConstRuntimeValue32Data::ShortStr(value) => Some(NativeStraightlineValue::String {
+            symbol: String::new(),
+            len: value.chars().count(),
+            key_kind: NativeStringKeyKind::Short,
+            value: native_string_const_value(value)?,
+        }),
+        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
+            ConstHeapValue32Data::LongString(value) => Some(NativeStraightlineValue::String {
+                symbol: String::new(),
+                len: value.chars().count(),
+                key_kind: NativeStringKeyKind::Heap,
+                value: native_string_const_value(value)?,
+            }),
+            ConstHeapValue32Data::List(elements) => Some(NativeStraightlineValue::List {
+                symbol: String::new(),
+                value: String::new(),
+                elements: elements.clone(),
+            }),
+            ConstHeapValue32Data::Map(entries) => Some(NativeStraightlineValue::Map {
+                symbol: String::new(),
+                value: String::new(),
+                entries: entries.clone(),
+            }),
+            ConstHeapValue32Data::UpvalCell(_) => None,
+        },
     }
 }
 

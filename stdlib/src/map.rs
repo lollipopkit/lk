@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow, bail};
 use lk_core::{
     module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
     val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap},
-    vm::{NativeArgs32, NativeRuntime32, RuntimeExport32},
+    vm::{NativeArgs32, NativeRuntime32, RuntimeExport32, call_runtime_value32_runtime},
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -77,6 +77,28 @@ impl MapModule {
             runtime
                 .heap_mut()
                 .alloc(HeapValue::List(TypedList::Mixed(vec![updated, removed]))),
+        ))
+    }
+
+    fn mutate32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "mutate()")?;
+        let values = args.as_slice();
+        let map = map_arg(&values[0], runtime.heap(), "mutate() first argument")?.clone();
+        let map_root = values[0].clone();
+        let callback = values[1].clone();
+        let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
+            bail!("mutate() requires full runtime state");
+        };
+        let roots = [map_root, callback.clone()];
+        state.collect_garbage(roots.iter());
+        let guard = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(map)));
+        let gc_threshold = state.heap().gc_threshold();
+        state.heap_mut().set_gc_threshold(u32::MAX);
+        let result = call_runtime_value32_runtime(callback, &[guard.clone()], state, module, ctx);
+        state.heap_mut().set_gc_threshold(gc_threshold);
+        result?;
+        Ok(RuntimeVal::Obj(
+            state.heap_mut().alloc(HeapValue::List(TypedList::Mixed(vec![guard]))),
         ))
     }
 }
@@ -197,6 +219,7 @@ impl Module for MapModule {
                 RuntimeNativeExport32::plain("get", Self::get32, 2),
                 RuntimeNativeExport32::plain("set", Self::set32, 3),
                 RuntimeNativeExport32::plain("delete", Self::delete32, 2),
+                RuntimeNativeExport32::full_state("mutate", Self::mutate32, 2),
             ],
             &[],
         ))

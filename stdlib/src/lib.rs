@@ -38,8 +38,11 @@ use lk_core::{
     module::ModuleRegistry,
     rt::{self, RuntimePayload},
     val,
-    val::{CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, TypedList},
-    vm::{NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime},
+    val::{CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, Type, TypedList},
+    vm::{
+        NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
+        call_runtime_value32_runtime_with_receiver,
+    },
 };
 use std::sync::Arc;
 
@@ -157,9 +160,9 @@ pub fn register_stdlib_module_time(registry: &mut ModuleRegistry) -> Result<()> 
 /// - println(fmt, ...args): print formatted text with newline; returns nil
 /// - panic([msg]): raise a runtime error with optional message and backtrace
 pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
-    register_runtime_builtin(registry, "print", print32, NativeEntry32::VARIADIC);
-    register_runtime_builtin(registry, "println", println32, NativeEntry32::VARIADIC);
-    register_runtime_builtin(registry, "panic", panic32, NativeEntry32::VARIADIC);
+    register_runtime_builtin_full_state(registry, "print", print32, NativeEntry32::VARIADIC);
+    register_runtime_builtin_full_state(registry, "println", println32, NativeEntry32::VARIADIC);
+    register_runtime_builtin_full_state(registry, "panic", panic32, NativeEntry32::VARIADIC);
 }
 
 pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
@@ -181,13 +184,22 @@ fn register_runtime_builtin(
     registry.register_runtime_builtin(name, NativeFunction32::Plain(function), arity);
 }
 
+fn register_runtime_builtin_full_state(
+    registry: &mut ModuleRegistry,
+    name: &str,
+    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    arity: u16,
+) {
+    registry.register_runtime_builtin(name, NativeFunction32::FullState(function), arity);
+}
+
 fn print32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
-    print!("{}", format_variadic_runtime(args.as_slice(), runtime.heap())?);
+    print!("{}", format_variadic_runtime(args.as_slice(), runtime)?);
     Ok(RuntimeVal::Nil)
 }
 
 fn println32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
-    println!("{}", format_variadic_runtime(args.as_slice(), runtime.heap())?);
+    println!("{}", format_variadic_runtime(args.as_slice(), runtime)?);
     Ok(RuntimeVal::Nil)
 }
 
@@ -195,7 +207,7 @@ fn panic32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     let mut msg = if args.is_empty() {
         "panic".to_string()
     } else {
-        join_runtime_display(args.as_slice(), runtime.heap())?
+        join_runtime_display(args.as_slice(), runtime)?
     };
     let bt = std::backtrace::Backtrace::force_capture();
     msg.push_str("\nBacktrace:\n");
@@ -379,12 +391,12 @@ fn select_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
     )
 }
 
-fn format_variadic_runtime(args: &[RuntimeVal], heap: &HeapStore) -> Result<String> {
+fn format_variadic_runtime(args: &[RuntimeVal], runtime: &mut NativeRuntime32<'_>) -> Result<String> {
     if args.is_empty() {
         return Ok(String::new());
     }
-    let Some(format) = runtime_string_maybe(&args[0], heap)? else {
-        return join_runtime_display(args, heap);
+    let Some(format) = runtime_string_maybe(&args[0], runtime.heap())? else {
+        return join_runtime_display(args, runtime);
     };
     let rest = &args[1..];
     let mut out = String::with_capacity(format.len() + rest.len() * 8);
@@ -394,7 +406,7 @@ fn format_variadic_runtime(args: &[RuntimeVal], heap: &HeapStore) -> Result<Stri
         if ch == '{' && chars.peek() == Some(&'}') {
             chars.next();
             if let Some(value) = rest.get(arg_index) {
-                out.push_str(&runtime_display(value, heap)?);
+                out.push_str(&runtime_display(value, runtime)?);
                 arg_index += 1;
             } else {
                 out.push_str("{}");
@@ -407,24 +419,58 @@ fn format_variadic_runtime(args: &[RuntimeVal], heap: &HeapStore) -> Result<Stri
         if !out.is_empty() {
             out.push(' ');
         }
-        out.push_str(&join_runtime_display(&rest[arg_index..], heap)?);
+        out.push_str(&join_runtime_display(&rest[arg_index..], runtime)?);
     }
     Ok(out)
 }
 
-fn join_runtime_display(args: &[RuntimeVal], heap: &HeapStore) -> Result<String> {
+fn join_runtime_display(args: &[RuntimeVal], runtime: &mut NativeRuntime32<'_>) -> Result<String> {
     let mut out = String::new();
     for (index, value) in args.iter().enumerate() {
         if index > 0 {
             out.push(' ');
         }
-        out.push_str(&runtime_display(value, heap)?);
+        out.push_str(&runtime_display(value, runtime)?);
     }
     Ok(out)
 }
 
-fn runtime_display(value: &RuntimeVal, heap: &HeapStore) -> Result<String> {
-    runtime_display_value(value, heap)
+fn runtime_display(value: &RuntimeVal, runtime: &mut NativeRuntime32<'_>) -> Result<String> {
+    if let Some(value) = runtime_display_show(value, runtime)? {
+        return Ok(value);
+    }
+    runtime_display_value(value, runtime.heap())
+}
+
+fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime32<'_>) -> Result<Option<String>> {
+    let Some(receiver_type) = runtime_display_receiver_type(value, runtime.heap()) else {
+        return Ok(None);
+    };
+    let Some((state, ctx, module)) = runtime.state_ctx_module_mut() else {
+        return Ok(None);
+    };
+    let Some(ctx) = ctx else {
+        return Ok(None);
+    };
+    let Some(method) = ctx
+        .type_checker()
+        .as_ref()
+        .and_then(|tc| tc.registry().get_method(&receiver_type, "show").cloned())
+    else {
+        return Ok(None);
+    };
+    let result = call_runtime_value32_runtime_with_receiver(method, value, &[], state, module, Some(ctx))?;
+    runtime_string_maybe(&result, state.heap()).map(|value| value.map(|value| value.to_string()))
+}
+
+fn runtime_display_receiver_type(value: &RuntimeVal, heap: &HeapStore) -> Option<Type> {
+    let RuntimeVal::Obj(handle) = value else {
+        return None;
+    };
+    let Some(HeapValue::Object(object)) = heap.get(*handle) else {
+        return None;
+    };
+    Some(Type::Named(object.type_name.to_string()))
 }
 
 fn runtime_string(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<Arc<str>> {

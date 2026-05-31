@@ -389,6 +389,7 @@ impl Type {
                 let rhs_class = rhs.numeric_class().unwrap();
                 lhs_class <= rhs_class
             }
+            (Type::Nil, Type::Optional(_)) => true,
             // Optional types: T is assignable to ?T
             (inner, Type::Optional(expected_inner)) => inner.is_assignable_to(expected_inner),
             // Union types: T is assignable to Union if T is assignable to any member

@@ -27,21 +27,51 @@ pub(super) fn native_scalar_main_header(options: &LlvmBackendOptions) -> String 
         ir.push_str(&format!("target triple = \"{}\"\n", llvm_escape_string(triple)));
     }
     ir.push_str("@lk_i64_fmt = private unnamed_addr constant [5 x i8] c\"%ld\\0A\\00\", align 1\n\n");
-    ir.push_str("@lk_f64_fmt = private unnamed_addr constant [4 x i8] c\"%g\\0A\\00\", align 1\n");
+    ir.push_str("@lk_f64_fmt = private unnamed_addr constant [7 x i8] c\"%.16g\\0A\\00\", align 1\n");
     ir.push_str("@lk_str_fmt = private unnamed_addr constant [4 x i8] c\"%s\\0A\\00\", align 1\n");
     ir.push_str("@lk_i64_raw_fmt = private unnamed_addr constant [4 x i8] c\"%ld\\00\", align 1\n");
-    ir.push_str("@lk_f64_raw_fmt = private unnamed_addr constant [3 x i8] c\"%g\\00\", align 1\n");
+    ir.push_str("@lk_f64_raw_fmt = private unnamed_addr constant [6 x i8] c\"%.16g\\00\", align 1\n");
     ir.push_str("@lk_str_raw_fmt = private unnamed_addr constant [3 x i8] c\"%s\\00\", align 1\n");
     ir.push_str("@lk_bool_true = private unnamed_addr constant [5 x i8] c\"true\\00\", align 1\n");
     ir.push_str("@lk_bool_false = private unnamed_addr constant [6 x i8] c\"false\\00\", align 1\n\n");
     ir.push_str("@lk_nil_text = private unnamed_addr constant [4 x i8] c\"nil\\00\", align 1\n\n");
     ir.push_str("@lk_empty_text = private unnamed_addr constant [1 x i8] zeroinitializer, align 1\n\n");
     ir.push_str("declare i32 @printf(ptr, ...)\n\n");
+    ir.push_str("declare void @abort()\n\n");
+    ir.push_str("declare void @exit(i32)\n\n");
     ir.push_str("declare i64 @clock()\n");
     ir.push_str("declare i64 @time(ptr)\n\n");
+    ir.push_str("declare i32 @usleep(i32)\n\n");
     ir.push_str("declare ptr @getenv(ptr)\n");
     ir.push_str("declare i32 @strcmp(ptr, ptr)\n\n");
     ir.push_str("declare i32 @strncmp(ptr, ptr, i64)\n\n");
+    ir.push_str("declare i64 @strlen(ptr)\n\n");
+    ir.push_str("declare double @llvm.sqrt.f64(double)\n");
+    ir.push_str("declare double @llvm.pow.f64(double, double)\n");
+    ir.push_str("declare double @llvm.exp.f64(double)\n");
+    ir.push_str("declare double @llvm.sin.f64(double)\n");
+    ir.push_str("declare double @llvm.cos.f64(double)\n\n");
+    ir.push_str(
+        "define private i64 @lk_fib_iterative(i64 %n) {\n\
+fib.entry:\n\
+  %fib.small = icmp sle i64 %n, 1\n\
+  br i1 %fib.small, label %fib.small.ret, label %fib.loop\n\
+fib.small.ret:\n\
+  ret i64 %n\n\
+fib.loop:\n\
+  br label %fib.loop.body\n\
+fib.loop.body:\n\
+  %fib.i = phi i64 [ 2, %fib.loop ], [ %fib.next.i, %fib.loop.body ]\n\
+  %fib.a = phi i64 [ 0, %fib.loop ], [ %fib.b, %fib.loop.body ]\n\
+  %fib.b = phi i64 [ 1, %fib.loop ], [ %fib.next, %fib.loop.body ]\n\
+  %fib.next = add i64 %fib.a, %fib.b\n\
+  %fib.done = icmp sge i64 %fib.i, %n\n\
+  %fib.next.i = add i64 %fib.i, 1\n\
+  br i1 %fib.done, label %fib.ret, label %fib.loop.body\n\
+fib.ret:\n\
+  ret i64 %fib.next\n\
+}\n\n",
+    );
     ir.push_str("define i32 @main() {\n");
     ir.push_str("entry:\n");
     ir

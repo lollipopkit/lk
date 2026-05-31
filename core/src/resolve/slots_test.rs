@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::super::resolve::slots::*; // when compiled via lib path
+    use crate::resolve::slots::*;
     use crate::stmt::{Program, stmt_parser::StmtParser};
     use crate::token::Tokenizer;
 

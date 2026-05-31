@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_access_negative_index() {
-        panic_expr("[10, 20, 30][-1]");
+        expect_expr("[10, 20, 30][-1]", "30");
     }
 
     // Literal creation tests

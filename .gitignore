@@ -2,7 +2,7 @@ target
 
 flamegraph.svg
 
-*.lkb
+*.lkm
 *.ll
 *.o
 *.elf

@@ -639,13 +639,13 @@ impl Executor32 {
                     self.pc += 1;
                 }
                 Opcode32::ToString => {
-                    let value = self.to_runtime_string(instr.b())?;
+                    let value = self.to_runtime_string_with_display(instr.b(), module, ctx)?;
                     self.write_string(instr.a(), value)?;
                     self.pc += 1;
                 }
                 Opcode32::ConcatString => {
-                    let lhs = self.to_runtime_string(instr.b())?;
-                    let rhs = self.to_runtime_string(instr.c())?;
+                    let lhs = self.to_runtime_string_with_display(instr.b(), module, ctx)?;
+                    let rhs = self.to_runtime_string_with_display(instr.c(), module, ctx)?;
                     self.write_string(instr.a(), format!("{lhs}{rhs}"))?;
                     self.pc += 1;
                 }
@@ -1159,5 +1159,4 @@ pub fn execute_module32_with_globals_heap_and_ctx(
 }
 
 #[cfg(test)]
-#[path = "exec32_tests/mod.rs"]
 mod exec32_tests;

@@ -18,6 +18,9 @@
       "include": "#impl-definition"
     },
     {
+      "include": "#match-arm-or-operator"
+    },
+    {
       "include": "#closures"
     },
     {
@@ -401,7 +404,7 @@
       "patterns": [
         {
           "name": "meta.closure.lk",
-          "begin": "(?<=(?:^|[\\s,;(=\\[{=:!&|+\\-*/<>]))\\|(?!\\|)",
+          "begin": "(?<=(?:^|[\\s,;(=\\[{=:!&|+\\-*/<>]))\\|(?!\\|)(?=\\s*[a-zA-Z_])",
           "end": "\\|",
           "beginCaptures": {
             "0": {
@@ -423,6 +426,14 @@
               "match": ","
             }
           ]
+        }
+      ]
+    },
+    "match-arm-or-operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.or-pattern.lk",
+          "match": "\\|(?!\\|)(?=[^\\n]*=>)"
         }
       ]
     },

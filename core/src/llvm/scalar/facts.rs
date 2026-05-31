@@ -1,0 +1,1492 @@
+use super::{
+    block_helpers::{
+        concat_text_values, control_flow_static_boundaries, kind_symbolic_value, local_static_container_before,
+        local_static_i64_before, mark_static_untaken_return_path, static_callable_value,
+        static_string_i64_map_supported, text_value_from_native,
+    },
+    contains::{
+        local_static_heap_const_before, local_static_i64_value_before, static_index_from_registers,
+        static_int_list_index_value, static_int_range_from_registers, static_object_from_registers,
+        static_slice_from_value,
+    },
+};
+use crate::llvm::{
+    callee_eval::native_direct_call_static_return_value,
+    ir_text::native_relative_target,
+    map_mutate::native_static_map_mutate,
+    output::{emit_native_map_set, emit_native_static_core_call_method, emit_native_static_parse_builtin},
+    straightline_value::{
+        NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
+        native_runtime_string_key_kind, native_static_compare_bool, native_static_global, native_static_i64_binary,
+        native_static_index, native_static_list_from_values, native_static_list_join, native_static_list_push,
+        native_static_load_cell, native_static_map_from_pairs, native_static_map_rest, native_static_set_index,
+        native_static_store_cell, native_static_string_split, native_static_to_iter,
+    },
+};
+use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Function32Data, Instr32, Opcode32};
+mod analysis;
+mod returns;
+mod slots;
+
+pub(in crate::llvm) use super::kind::{NativeScalarFacts, NativeScalarKind};
+use analysis::*;
+use returns::{
+    native_direct_call_return_kind, native_named_call_args, native_static_function_return_kind,
+    peek_recursive_function_base_return_kind, static_call_target, static_global,
+};
+use slots::{native_global_kind, set_native_global_kind, set_native_kind, set_static_global, set_static_value};
+pub(in crate::llvm) fn native_scalar_block_facts_with_statics_and_functions(
+    register_count: usize,
+    global_count: usize,
+    global_names: &[String],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr32],
+    functions: Option<&[Function32Data]>,
+) -> Option<NativeScalarFacts> {
+    if let Some(facts) = native_scalar_block_facts_with_initial(
+        register_count,
+        global_count,
+        global_names,
+        int_consts,
+        strings,
+        heap_values,
+        code,
+        vec![None; register_count],
+        vec![None; register_count],
+        vec![None; global_count],
+        vec![None; global_count],
+        functions,
+        &[],
+        0,
+        &[],
+    ) {
+        return Some(facts);
+    }
+    let Some(all_functions) = functions else {
+        return None;
+    };
+    let mut hints: Vec<(u16, Option<NativeScalarKind>)> = Vec::new();
+    for (func_idx, function) in all_functions.iter().enumerate() {
+        if !function_has_self_recursive_call_direct(function, all_functions, func_idx as u16) {
+            continue;
+        }
+        let hint = peek_recursive_function_base_return_kind(
+            all_functions,
+            func_idx as u16,
+            global_count,
+            global_names,
+            global_kinds_from_fns(global_count),
+        );
+        hints.push((func_idx as u16, hint));
+    }
+    if hints.is_empty() {
+        return None;
+    }
+    if hints.iter().any(|(_, kind)| kind.is_some()) {
+        let resolved: Vec<_> = hints.iter().filter_map(|(i, k)| k.map(|k| (*i, Some(k)))).collect();
+        if let Some(facts) = native_scalar_block_facts_with_initial(
+            register_count,
+            global_count,
+            global_names,
+            int_consts,
+            strings,
+            heap_values,
+            code,
+            vec![None; register_count],
+            vec![None; register_count],
+            vec![None; global_count],
+            vec![None; global_count],
+            functions,
+            &[],
+            0,
+            &resolved,
+        ) {
+            return Some(facts);
+        }
+    }
+    // Final fallback: I64 hints
+    let i64_hints: Vec<_> = hints
+        .iter()
+        .map(|(idx, _)| (*idx, Some(NativeScalarKind::I64)))
+        .collect();
+    native_scalar_block_facts_with_initial(
+        register_count,
+        global_count,
+        global_names,
+        int_consts,
+        strings,
+        heap_values,
+        code,
+        vec![None; register_count],
+        vec![None; register_count],
+        vec![None; global_count],
+        vec![None; global_count],
+        functions,
+        &[],
+        0,
+        &i64_hints,
+    )
+}
+
+pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
+    register_count: usize,
+    global_count: usize,
+    global_names: &[String],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr32],
+    mut kinds: Vec<Option<NativeScalarKind>>,
+    mut static_values: Vec<Option<NativeStraightlineValue>>,
+    mut global_kinds: Vec<Option<NativeScalarKind>>,
+    mut static_globals: Vec<Option<NativeStraightlineValue>>,
+    functions: Option<&[Function32Data]>,
+    static_captures: &[NativeStraightlineValue],
+    depth: usize,
+    recursive_hints: &[(u16, Option<NativeScalarKind>)],
+) -> Option<NativeScalarFacts> {
+    if kinds.len() != register_count
+        || static_values.len() != register_count
+        || global_kinds.len() != global_count
+        || static_globals.len() != global_count
+    {
+        return None;
+    }
+    let mut registers_before = Vec::with_capacity(code.len());
+    let mut globals_before = Vec::with_capacity(code.len());
+    let static_boundaries = control_flow_static_boundaries(code);
+    let mut skip_static_pcs = vec![false; code.len()];
+    for (pc, instr) in code.iter().copied().enumerate() {
+        registers_before.push(kinds.clone());
+        globals_before.push(global_kinds.clone());
+        if skip_static_pcs.get(pc).copied().unwrap_or(false) {
+            continue;
+        }
+        match instr.opcode() {
+            Opcode32::Nop | Opcode32::Jmp => {}
+            Opcode32::LoadNil => {
+                if !set_static_value(
+                    &mut kinds,
+                    &mut static_values,
+                    instr.a(),
+                    Some(NativeScalarKind::Nil),
+                    NativeStraightlineValue::Nil,
+                ) {
+                    return None;
+                }
+            }
+            Opcode32::LoadInt => {
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                    return None;
+                }
+            }
+            Opcode32::LoadFloat => {
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::F64) {
+                    return None;
+                }
+            }
+            Opcode32::LoadBool => {
+                let value = i64::from(instr.b() != 0);
+                if !set_static_value(
+                    &mut kinds,
+                    &mut static_values,
+                    instr.a(),
+                    Some(NativeScalarKind::Bool),
+                    NativeStraightlineValue::Bool(value.to_string()),
+                ) {
+                    return None;
+                }
+            }
+            Opcode32::LoadString => {
+                let Some(value) = strings.get(instr.bx() as usize) else {
+                    return None;
+                };
+                if !set_static_value(
+                    &mut kinds,
+                    &mut static_values,
+                    instr.a(),
+                    Some(NativeScalarKind::StrPtr),
+                    NativeStraightlineValue::String {
+                        symbol: String::new(),
+                        value: value.clone(),
+                        len: value.chars().count(),
+                        key_kind: native_runtime_string_key_kind(value),
+                    },
+                ) {
+                    return None;
+                }
+            }
+            Opcode32::LoadHeapConst => {
+                let Some(value) = heap_values.get(instr.bx() as usize) else {
+                    return None;
+                };
+                // Empty and all-Int lists use DynamicIntList so indexing/push stays native.
+                if let ConstHeapValue32Data::List(values) = value {
+                    if values.is_empty() || values.iter().all(|v| matches!(v, ConstRuntimeValue32Data::Int(_))) {
+                        if !set_static_value(
+                            &mut kinds,
+                            &mut static_values,
+                            instr.a(),
+                            None,
+                            NativeStraightlineValue::DynamicList {
+                                id: pc,
+                                element: NativeListElementKind::I64,
+                            },
+                        ) {
+                            return None;
+                        }
+                        continue;
+                    }
+                }
+                if matches!(value, ConstHeapValue32Data::Map(values) if values.is_empty()) {
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        None,
+                        NativeStraightlineValue::DynamicMap {
+                            id: pc,
+                            key: NativeMapKeyKind::Str,
+                            value: NativeMapValueKind::I64,
+                        },
+                    ) {
+                        return None;
+                    }
+                    continue;
+                }
+                let Some(value) = native_static_heap_const_value(value) else {
+                    return None;
+                };
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), value.0, value.1) {
+                    return None;
+                }
+            }
+            Opcode32::LoadFunction => {
+                if !set_static_value(
+                    &mut kinds,
+                    &mut static_values,
+                    instr.a(),
+                    None,
+                    NativeStraightlineValue::Function(instr.bx()),
+                ) {
+                    return None;
+                }
+            }
+            Opcode32::LoadCapture => {
+                let value = static_captures.get(instr.bx() as usize)?.clone();
+                let kind = static_value_kind(&value);
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                    return None;
+                }
+            }
+            Opcode32::MakeClosure => {
+                if let Some(value) = static_callable_value(functions?, instr, &static_values) {
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        Some(NativeScalarKind::I64),
+                        value,
+                    ) {
+                        return None;
+                    }
+                } else {
+                    kinds[instr.a() as usize] = None;
+                    static_values[instr.a() as usize] = None;
+                }
+            }
+            Opcode32::Move => {
+                if let Some(value) = static_kind(&static_values, instr.b()) {
+                    let kind = native_kind(&kinds, instr.b());
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                        return None;
+                    }
+                    continue;
+                }
+                let kind = native_kind(&kinds, instr.b()).unwrap_or(NativeScalarKind::I64);
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                    return None;
+                }
+            }
+            Opcode32::AddFloat | Opcode32::SubFloat | Opcode32::MulFloat | Opcode32::DivFloat | Opcode32::ModFloat => {
+                let Some(lhs) = native_kind(&kinds, instr.b()) else {
+                    return None;
+                };
+                let Some(rhs) = native_kind(&kinds, instr.c()) else {
+                    return None;
+                };
+                if !matches!(lhs, NativeScalarKind::I64 | NativeScalarKind::F64)
+                    || !matches!(rhs, NativeScalarKind::I64 | NativeScalarKind::F64)
+                {
+                    return None;
+                }
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::F64) {
+                    return None;
+                }
+            }
+            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
+                if let (Some(NativeStraightlineValue::I64(lhs)), Some(NativeStraightlineValue::I64(rhs))) = (
+                    static_kind(&static_values, instr.b())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.b())),
+                    static_kind(&static_values, instr.c())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c())),
+                ) && let Some(value) = native_static_i64_binary(&lhs, &rhs, instr.opcode())
+                {
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        Some(NativeScalarKind::I64),
+                        NativeStraightlineValue::I64(value),
+                    ) {
+                        return None;
+                    }
+                    continue;
+                }
+                if instr.opcode() == Opcode32::AddInt {
+                    let lhs_static = static_kind(&static_values, instr.b());
+                    let rhs_static = static_kind(&static_values, instr.c());
+                    let lhs_kind =
+                        native_kind(&kinds, instr.b()).or_else(|| lhs_static.as_ref().and_then(static_value_kind));
+                    let rhs_kind =
+                        native_kind(&kinds, instr.c()).or_else(|| rhs_static.as_ref().and_then(static_value_kind));
+                    if matches!(lhs_kind, Some(NativeScalarKind::StrPtr))
+                        || matches!(rhs_kind, Some(NativeScalarKind::StrPtr))
+                    {
+                        let lhs =
+                            lhs_static.or_else(|| lhs_kind.and_then(|kind| dynamic_text_part(kind, instr.b())))?;
+                        let rhs =
+                            rhs_static.or_else(|| rhs_kind.and_then(|kind| dynamic_text_part(kind, instr.c())))?;
+                        let text = concat_text_values(lhs, rhs)?;
+                        let kind = static_value_kind(&text);
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, text) {
+                            return None;
+                        }
+                        continue;
+                    }
+                }
+                let Some(lhs) = native_kind(&kinds, instr.b())
+                    .or_else(|| static_kind(&static_values, instr.b()).and_then(|value| static_value_kind(&value)))
+                else {
+                    return None;
+                };
+                let rhs = native_kind(&kinds, instr.c())
+                    .or_else(|| static_kind(&static_values, instr.c()).and_then(|value| static_value_kind(&value)))
+                    .unwrap_or(NativeScalarKind::I64);
+                let lhs_is_i64 = matches!(lhs, NativeScalarKind::I64 | NativeScalarKind::MaybeI64);
+                let rhs_is_i64 = matches!(rhs, NativeScalarKind::I64 | NativeScalarKind::MaybeI64);
+                if (!lhs.is_numeric() && lhs != NativeScalarKind::MaybeI64)
+                    || (!rhs.is_numeric() && rhs != NativeScalarKind::MaybeI64)
+                {
+                    return None;
+                }
+                let out = if lhs_is_i64 && rhs_is_i64 {
+                    NativeScalarKind::I64
+                } else if lhs == NativeScalarKind::F64 || rhs == NativeScalarKind::F64 {
+                    NativeScalarKind::F64
+                } else {
+                    NativeScalarKind::I64
+                };
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), out) {
+                    return None;
+                }
+            }
+            Opcode32::CmpInt
+            | Opcode32::CmpNeInt
+            | Opcode32::CmpLtInt
+            | Opcode32::CmpLeInt
+            | Opcode32::CmpGtInt
+            | Opcode32::CmpGeInt => {
+                if let (Some(lhs), Some(rhs)) = (
+                    static_kind(&static_values, instr.b()),
+                    static_kind(&static_values, instr.c()),
+                ) && let Some(value) = native_static_compare_bool(&lhs, &rhs, instr.opcode())
+                {
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        Some(NativeScalarKind::Bool),
+                        NativeStraightlineValue::Bool(i64::from(value).to_string()),
+                    ) {
+                        return None;
+                    }
+                    continue;
+                }
+                let Some(lhs) = native_kind(&kinds, instr.b())
+                    .or_else(|| static_kind(&static_values, instr.b()).and_then(|value| static_value_kind(&value)))
+                else {
+                    return None;
+                };
+                let rhs = native_kind(&kinds, instr.c())
+                    .or_else(|| static_kind(&static_values, instr.c()).and_then(|value| static_value_kind(&value)))
+                    .unwrap_or(NativeScalarKind::I64);
+                if !lhs.is_numeric() && !matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) {
+                    return None;
+                }
+                if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt)
+                    && lhs != rhs
+                    && (!lhs.is_numeric() || !rhs.is_numeric())
+                    && !matches!(
+                        (lhs, rhs),
+                        (
+                            NativeScalarKind::MaybeI64,
+                            NativeScalarKind::I64 | NativeScalarKind::Nil
+                        ) | (
+                            NativeScalarKind::I64 | NativeScalarKind::Nil,
+                            NativeScalarKind::MaybeI64
+                        ) | (NativeScalarKind::I64, NativeScalarKind::Nil)
+                            | (NativeScalarKind::Nil, NativeScalarKind::I64)
+                            | (NativeScalarKind::StrPtr, NativeScalarKind::Nil)
+                            | (NativeScalarKind::Nil, NativeScalarKind::StrPtr)
+                    )
+                {
+                    return None;
+                }
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::Bool) {
+                    return None;
+                }
+            }
+            Opcode32::Test => {
+                if native_kind(&kinds, instr.a()).is_none() {
+                    return None;
+                }
+                if let Some(NativeStraightlineValue::Bool(value)) = static_kind(&static_values, instr.a()) {
+                    let value = value != "0";
+                    let fallthrough = pc + 1;
+                    let relative = native_relative_target(pc, instr.c() as i8 as i32, code.len())?;
+                    let truthy_target = if instr.b() != 0 { fallthrough } else { relative };
+                    let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
+                    let untaken = if value { falsy_target } else { truthy_target };
+                    mark_static_untaken_return_path(&mut skip_static_pcs, &static_boundaries, code, untaken);
+                }
+            }
+            Opcode32::Not => {
+                let Some(kind) = native_kind(&kinds, instr.b()) else {
+                    return None;
+                };
+                if !matches!(
+                    kind,
+                    NativeScalarKind::Bool
+                        | NativeScalarKind::Nil
+                        | NativeScalarKind::I64
+                        | NativeScalarKind::F64
+                        | NativeScalarKind::StrPtr
+                        | NativeScalarKind::MaybeI64
+                ) {
+                    return None;
+                }
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::Bool) {
+                    return None;
+                }
+            }
+            Opcode32::IsNil | Opcode32::IsList | Opcode32::IsMap => {
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::Bool) {
+                    return None;
+                }
+            }
+            Opcode32::ToString => {
+                let value = static_kind(&static_values, instr.b())
+                    .or_else(|| native_kind(&kinds, instr.b()).and_then(|kind| dynamic_text_part(kind, instr.b())))
+                    .unwrap_or_else(|| dynamic_text_part(NativeScalarKind::I64, instr.b()).unwrap());
+                let Some(text) = text_value_from_native(value) else {
+                    return None;
+                };
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, text) {
+                    return None;
+                }
+            }
+            Opcode32::ConcatString => {
+                let lhs = static_kind(&static_values, instr.b())
+                    .or_else(|| native_kind(&kinds, instr.b()).and_then(|kind| dynamic_text_part(kind, instr.b())))
+                    .unwrap_or_else(|| dynamic_text_part(NativeScalarKind::I64, instr.b()).unwrap());
+                let rhs = static_kind(&static_values, instr.c())
+                    .or_else(|| native_kind(&kinds, instr.c()).and_then(|kind| dynamic_text_part(kind, instr.c())))
+                    .unwrap_or_else(|| dynamic_text_part(NativeScalarKind::I64, instr.c()).unwrap());
+                let Some(text) = concat_text_values(lhs, rhs) else {
+                    return None;
+                };
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, text) {
+                    return None;
+                }
+            }
+            Opcode32::Len => {
+                // If operand is a known static value, try constant-folding
+                if let Some(target) = static_kind(&static_values, instr.b()) {
+                    if native_dynamic_text_len_supported(&target)
+                        && set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64)
+                    {
+                        // Successfully folded Len
+                    } else {
+                        // Static value known but can't fold - still treat as I64 result
+                        set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64);
+                    }
+                } else {
+                    // Dynamic operand - Len always returns I64
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                        return None;
+                    }
+                }
+            }
+            Opcode32::StringSplit => {
+                let Some(target) = static_kind(&static_values, instr.b())
+                    .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()))
+                else {
+                    return None;
+                };
+                let Some(delimiter) = static_kind(&static_values, instr.c()) else {
+                    return None;
+                };
+                if let Some(value) = native_static_string_split(target.clone(), delimiter.clone(), String::new()) {
+                    let kind = static_value_kind(&value);
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                        return None;
+                    }
+                    continue;
+                }
+                let (NativeStraightlineValue::Text(text), NativeStraightlineValue::String { value: delimiter, .. }) =
+                    (target, delimiter)
+                else {
+                    return None;
+                };
+                if !delimiter.is_ascii()
+                    || !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        None,
+                        NativeStraightlineValue::DynamicSplitText { text, delimiter },
+                    )
+                {
+                    return None;
+                }
+            }
+            Opcode32::ListJoin => {
+                let Some(target) = static_kind(&static_values, instr.b()) else {
+                    return None;
+                };
+                let Some(delimiter) = static_kind(&static_values, instr.c()) else {
+                    return None;
+                };
+                if let (
+                    NativeStraightlineValue::DynamicList {
+                        id,
+                        element: NativeListElementKind::Text,
+                    },
+                    NativeStraightlineValue::String { value: delimiter, .. },
+                ) = (&target, &delimiter)
+                {
+                    if !delimiter.is_ascii()
+                        || !set_static_value(
+                            &mut kinds,
+                            &mut static_values,
+                            instr.a(),
+                            None,
+                            NativeStraightlineValue::DynamicJoinedText {
+                                id: *id,
+                                delimiter_len: delimiter.len(),
+                            },
+                        )
+                    {
+                        return None;
+                    }
+                    continue;
+                }
+                if let Some(value) = native_static_list_join(target.clone(), delimiter.clone(), String::new()) {
+                    let kind = static_value_kind(&value);
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                        return None;
+                    }
+                    continue;
+                }
+                let (
+                    NativeStraightlineValue::DynamicSplitText {
+                        text,
+                        delimiter: split_delimiter,
+                    },
+                    NativeStraightlineValue::String {
+                        value: join_delimiter, ..
+                    },
+                ) = (target, delimiter)
+                else {
+                    return None;
+                };
+                if split_delimiter != join_delimiter
+                    || !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        None,
+                        NativeStraightlineValue::Text(text),
+                    )
+                {
+                    return None;
+                }
+            }
+            Opcode32::StringStartsWith => {
+                let Some(prefix) = static_kind(&static_values, instr.c()) else {
+                    return None;
+                };
+                let NativeStraightlineValue::String { value: prefix, .. } = prefix else {
+                    return None;
+                };
+                if let Some(NativeStraightlineValue::String { value: target, .. }) =
+                    static_kind(&static_values, instr.b())
+                {
+                    let value = i64::from(target.starts_with(&prefix)).to_string();
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        Some(NativeScalarKind::Bool),
+                        NativeStraightlineValue::Bool(value),
+                    ) {
+                        return None;
+                    }
+                } else if native_kind(&kinds, instr.b()) == Some(NativeScalarKind::StrPtr) {
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::Bool) {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
+            Opcode32::GetGlobal => {
+                if let Some(value) = global_names
+                    .get(instr.bx() as usize)
+                    .and_then(|name| native_static_global(name))
+                {
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        static_value_kind(&value),
+                        value,
+                    ) {
+                        return None;
+                    }
+                    continue;
+                }
+                if let Some(value) = static_global(&static_globals, instr.bx()) {
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        static_value_kind(&value),
+                        value,
+                    ) {
+                        return None;
+                    }
+                    continue;
+                }
+                let Some(kind) = native_global_kind(&global_kinds, instr.bx()) else {
+                    return None;
+                };
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                    return None;
+                }
+            }
+            Opcode32::SetGlobal => {
+                if let Some(value) = static_kind(&static_values, instr.a()) {
+                    if !set_static_global(&mut static_globals, &mut global_kinds, instr.bx(), value) {
+                        return None;
+                    }
+                } else {
+                    let Some(kind) = native_kind(&kinds, instr.a()) else {
+                        return None;
+                    };
+                    if !set_native_global_kind(&mut global_kinds, &mut static_globals, instr.bx(), kind) {
+                        return None;
+                    }
+                }
+            }
+            Opcode32::GetIndex => {
+                let Some(target) = static_kind(&static_values, instr.b()) else {
+                    // Target not statically known - infer from register kind
+                    let target_kind = native_kind(&kinds, instr.b())?;
+                    if target_kind == NativeScalarKind::I64 || target_kind == NativeScalarKind::MaybeI64 {
+                        // Dynamic list or map access - return I64
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                            return None;
+                        }
+                    } else if target_kind == NativeScalarKind::StrPtr {
+                        // Dynamic string char access - return StrPtr
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::StrPtr) {
+                            return None;
+                        }
+                    } else if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                        return None;
+                    }
+                    continue;
+                };
+                if let Some(value) = static_index_from_registers(
+                    &static_values,
+                    code,
+                    int_consts,
+                    strings,
+                    heap_values,
+                    pc,
+                    instr,
+                    target.clone(),
+                ) {
+                    let kind = static_value_kind(&value);
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                        return None;
+                    }
+                    continue;
+                }
+                if matches!(target, NativeStraightlineValue::Text(_)) {
+                    if native_kind(&kinds, instr.c()) != Some(NativeScalarKind::I64)
+                        || !set_static_value(
+                            &mut kinds,
+                            &mut static_values,
+                            instr.a(),
+                            None,
+                            NativeStraightlineValue::DynamicTextChar,
+                        )
+                    {
+                        return None;
+                    }
+                } else if matches!(
+                    target,
+                    NativeStraightlineValue::DynamicList {
+                        element: NativeListElementKind::I64,
+                        ..
+                    }
+                ) {
+                    let key = static_kind(&static_values, instr.c())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()));
+                    if let Some(key) = key
+                        && let Some(value) =
+                            static_int_list_index_value(code, int_consts, strings, heap_values, &target, &key)
+                    {
+                        if !set_static_value(
+                            &mut kinds,
+                            &mut static_values,
+                            instr.a(),
+                            Some(NativeScalarKind::I64),
+                            value,
+                        ) {
+                            return None;
+                        }
+                    } else if native_kind(&kinds, instr.c()) != Some(NativeScalarKind::I64)
+                        || !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64)
+                    {
+                        return None;
+                    }
+                } else if matches!(
+                    target,
+                    NativeStraightlineValue::DynamicMap {
+                        key: NativeMapKeyKind::Str,
+                        value: NativeMapValueKind::I64,
+                        ..
+                    }
+                ) {
+                    let Some(key) = static_kind(&static_values, instr.c())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()))
+                    else {
+                        return None;
+                    };
+                    if !native_string_int_map_key_supported(&key) {
+                        return None;
+                    }
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::MaybeI64) {
+                        return None;
+                    }
+                } else if let NativeStraightlineValue::Map { entries, .. } = &target
+                    && native_kind(&kinds, instr.c()) == Some(NativeScalarKind::StrPtr)
+                    && static_string_i64_map_supported(entries)
+                {
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::MaybeI64) {
+                        return None;
+                    }
+                } else if let NativeStraightlineValue::List { elements, .. } = &target
+                    && native_kind(&kinds, instr.c()) == Some(NativeScalarKind::I64)
+                {
+                    if let Some(key) = static_kind(&static_values, instr.c())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()))
+                        && let Some(value) = native_static_index(target.clone(), key, String::new())
+                    {
+                        let kind = static_value_kind(&value);
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                            return None;
+                        }
+                    } else {
+                        let kind = if elements.iter().all(|value| {
+                            matches!(
+                                value,
+                                ConstRuntimeValue32Data::ShortStr(_) | ConstRuntimeValue32Data::Heap(_)
+                            )
+                        }) {
+                            NativeScalarKind::StrPtr
+                        } else {
+                            NativeScalarKind::I64
+                        };
+                        if kind == NativeScalarKind::StrPtr {
+                            if !set_static_value(
+                                &mut kinds,
+                                &mut static_values,
+                                instr.a(),
+                                Some(NativeScalarKind::StrPtr),
+                                NativeStraightlineValue::StringPtr(format!("%r{}.slot", instr.a())),
+                            ) {
+                                return None;
+                            }
+                        } else if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                            return None;
+                        }
+                    }
+                } else {
+                    let Some(key) = static_kind(&static_values, instr.c())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()))
+                    else {
+                        return None;
+                    };
+                    if let Some(value) = native_static_index(target.clone(), key, String::new()) {
+                        let kind = static_value_kind(&value);
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                            return None;
+                        }
+                    } else if matches!(target, NativeStraightlineValue::I64(_)) {
+                        // I64 target with I64 key - treat as dynamic list access returning I64
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                            return None;
+                        }
+                    } else if matches!(target, NativeStraightlineValue::StringPtr(_)) {
+                        // StrPtr target - treat as dynamic string char access
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::StrPtr) {
+                            return None;
+                        }
+                    } else {
+                        return None;
+                    }
+                }
+            }
+            Opcode32::SetIndex => {
+                let Some(target) = static_kind(&static_values, instr.a()) else {
+                    return None;
+                };
+                if matches!(
+                    target,
+                    NativeStraightlineValue::DynamicMap {
+                        key: NativeMapKeyKind::Str,
+                        value: NativeMapValueKind::I64,
+                        ..
+                    }
+                ) {
+                    let Some(key) = static_kind(&static_values, instr.b()) else {
+                        return None;
+                    };
+                    if !native_string_int_map_key_supported(&key)
+                        || native_kind(&kinds, instr.c()) != Some(NativeScalarKind::I64)
+                    {
+                        return None;
+                    }
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, target) {
+                        return None;
+                    }
+                } else if matches!(
+                    target,
+                    NativeStraightlineValue::DynamicList {
+                        element: NativeListElementKind::I64,
+                        ..
+                    }
+                ) {
+                    if native_kind(&kinds, instr.b()) != Some(NativeScalarKind::I64)
+                        || native_kind(&kinds, instr.c()) != Some(NativeScalarKind::I64)
+                    {
+                        return None;
+                    }
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, target) {
+                        return None;
+                    }
+                } else {
+                    let Some(key) = static_kind(&static_values, instr.b()) else {
+                        return None;
+                    };
+                    let Some(value) = static_kind(&static_values, instr.c()) else {
+                        return None;
+                    };
+                    let Some(value) = native_static_set_index(target, key, value) else {
+                        return None;
+                    };
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                        return None;
+                    }
+                }
+            }
+            Opcode32::ListPush => {
+                let Some(target) = static_kind(&static_values, instr.a()) else {
+                    return None;
+                };
+                match target {
+                    NativeStraightlineValue::DynamicList {
+                        id,
+                        element: NativeListElementKind::I64,
+                    } => {
+                        if native_kind(&kinds, instr.b()) == Some(NativeScalarKind::I64) {
+                            if !set_static_value(
+                                &mut kinds,
+                                &mut static_values,
+                                instr.a(),
+                                Some(NativeScalarKind::I64),
+                                NativeStraightlineValue::DynamicList {
+                                    id,
+                                    element: NativeListElementKind::I64,
+                                },
+                            ) {
+                                return None;
+                            }
+                        } else {
+                            let Some(value) = static_kind(&static_values, instr.b()) else {
+                                return None;
+                            };
+                            if !native_dynamic_text_len_supported(&value)
+                                || !set_static_value(
+                                    &mut kinds,
+                                    &mut static_values,
+                                    instr.a(),
+                                    None,
+                                    NativeStraightlineValue::DynamicList {
+                                        id,
+                                        element: NativeListElementKind::Text,
+                                    },
+                                )
+                            {
+                                return None;
+                            }
+                        }
+                    }
+                    NativeStraightlineValue::DynamicList {
+                        id,
+                        element: NativeListElementKind::Text,
+                    } => {
+                        let Some(value) = static_kind(&static_values, instr.b()) else {
+                            return None;
+                        };
+                        if !native_dynamic_text_len_supported(&value)
+                            || !set_static_value(
+                                &mut kinds,
+                                &mut static_values,
+                                instr.a(),
+                                None,
+                                NativeStraightlineValue::DynamicList {
+                                    id,
+                                    element: NativeListElementKind::Text,
+                                },
+                            )
+                        {
+                            return None;
+                        }
+                    }
+                    _ => {
+                        let Some(value) = static_kind(&static_values, instr.b()) else {
+                            return None;
+                        };
+                        let Some(value) = native_static_list_push(target, value) else {
+                            return None;
+                        };
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                            return None;
+                        }
+                    }
+                }
+            }
+            Opcode32::NewList => {
+                let start = instr.b() as usize;
+                let end = start.checked_add(instr.c() as usize)?;
+                if end > kinds.len() {
+                    return None;
+                }
+                if instr.c() == 1
+                    && let Some(
+                        value @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }),
+                    ) = static_values.get(start).cloned().flatten()
+                {
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                        return None;
+                    }
+                    continue;
+                }
+                let all_i64 = (start..end).all(|i| match static_values.get(i).and_then(|v| v.as_ref()) {
+                    Some(NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }) => false,
+                    Some(NativeStraightlineValue::I64(s)) if !s.starts_with('%') => true,
+                    _ => kinds.get(i).copied().flatten() == Some(NativeScalarKind::I64),
+                });
+                if all_i64 {
+                    let value = NativeStraightlineValue::DynamicList {
+                        id: pc,
+                        element: NativeListElementKind::I64,
+                    };
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                        return None;
+                    }
+                } else {
+                    let Some(elems) = static_values.get(start..end) else {
+                        return None;
+                    };
+                    let values = elems
+                        .iter()
+                        .enumerate()
+                        .map(|(offset, value)| {
+                            let reg = u8::try_from(start + offset).ok()?;
+                            match value {
+                                Some(NativeStraightlineValue::DynamicList {
+                                    element: NativeListElementKind::I64,
+                                    ..
+                                })
+                                | None => {
+                                    local_static_i64_value_before(code, int_consts, strings, heap_values, pc, reg)
+                                        .or_else(|| local_static_i64_before(code, int_consts, pc, reg))
+                                        .or_else(|| local_static_heap_const_before(code, heap_values, pc, reg))
+                                        .or_else(|| value.clone())
+                                }
+                                _ => value.clone(),
+                            }
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    let value = native_static_list_from_values(&values, String::new())
+                        .unwrap_or(NativeStraightlineValue::ArgList { elements: values });
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                        return None;
+                    }
+                }
+            }
+            Opcode32::Call => {
+                if instr.a() != instr.b() {
+                    return None;
+                }
+                let Some(target) = static_kind(&static_values, instr.b()) else {
+                    kinds[instr.a() as usize] = None;
+                    static_values[instr.a() as usize] = None;
+                    continue;
+                };
+                if let Some((function_index, captures)) = static_call_target(&target) {
+                    let function_index = u8::try_from(function_index).ok()?;
+                    let direct_instr = Instr32::abc(Opcode32::CallDirect, instr.a(), function_index, instr.c());
+                    let kind = native_direct_call_return_kind(
+                        functions?,
+                        direct_instr,
+                        &kinds,
+                        &static_values,
+                        &global_kinds,
+                        &static_globals,
+                        global_count,
+                        global_names,
+                        &captures,
+                        depth,
+                        recursive_hints,
+                    )?;
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                        return None;
+                    }
+                    continue;
+                }
+                let start = instr.b() as usize + 1;
+                let end = start.checked_add(instr.c() as usize)?;
+                let Some(args) = static_values.get(start..end) else {
+                    // Dynamic args - use kind-based fallback
+                    if let Some(kind) = native_builtin_return_kind_dynamic(&target, instr.c()) {
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                            return None;
+                        }
+                    } else {
+                        return None;
+                    }
+                    continue;
+                };
+                let args_vec: Vec<_> = args.iter().cloned().collect();
+                if args_vec.iter().any(|a| a.is_none()) {
+                    let recovered = (start..end)
+                        .map(|reg| {
+                            static_values
+                                .get(reg)
+                                .cloned()
+                                .flatten()
+                                .or_else(|| {
+                                    local_static_heap_const_before(code, heap_values, pc, u8::try_from(reg).ok()?)
+                                })
+                                .or_else(|| {
+                                    local_static_i64_value_before(
+                                        code,
+                                        int_consts,
+                                        strings,
+                                        heap_values,
+                                        pc,
+                                        u8::try_from(reg).ok()?,
+                                    )
+                                })
+                                .or_else(|| local_static_i64_before(code, int_consts, pc, u8::try_from(reg).ok()?))
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    if let Some(args_vec) = recovered
+                        && let Some(kind) = native_builtin_return_kind(target.clone(), &args_vec)
+                    {
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                            return None;
+                        }
+                        continue;
+                    }
+                    if let Some(kind) = native_builtin_return_kind_dynamic(&target, instr.c()) {
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                            return None;
+                        }
+                    } else {
+                        return None;
+                    }
+                    continue;
+                }
+                let args_vec: Vec<NativeStraightlineValue> = args_vec.into_iter().map(|a| a.unwrap()).collect();
+                if matches!(target, NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod)) {
+                    let mut tmp_index = 0usize;
+                    if let Some(value) = emit_native_static_core_call_method(&args_vec, &mut tmp_index) {
+                        let kind = static_value_kind(&value);
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                            return None;
+                        }
+                        continue;
+                    }
+                }
+                if let Some(value) = match target.clone() {
+                    NativeStraightlineValue::Builtin(NativeBuiltin::MapSet) => emit_native_map_set(&args_vec),
+                    NativeStraightlineValue::Builtin(NativeBuiltin::MapMutate) => {
+                        let [target, callable] = args_vec.as_slice() else {
+                            return None;
+                        };
+                        native_static_map_mutate(
+                            functions?,
+                            target.clone(),
+                            callable.clone(),
+                            format!("@lk_map_mutate_{pc}"),
+                        )
+                    }
+                    NativeStraightlineValue::Builtin(builtin) => emit_native_static_parse_builtin(builtin, &args_vec),
+                    _ => None,
+                } {
+                    let kind = static_value_kind(&value);
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                        return None;
+                    }
+                    continue;
+                }
+                if matches!(target, NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod))
+                    && let [
+                        list @ NativeStraightlineValue::List { .. },
+                        NativeStraightlineValue::String { value: method, .. },
+                        NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. },
+                    ] = args_vec.as_slice()
+                    && method == "map"
+                {
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, list.clone()) {
+                        return None;
+                    }
+                    continue;
+                }
+                let Some(kind) = native_builtin_return_kind(target, &args_vec) else {
+                    return None;
+                };
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                    return None;
+                }
+            }
+            Opcode32::CallDirect => {
+                let callee_index = instr.b();
+                if let Some((_, hint)) = recursive_hints.iter().find(|(idx, _)| *idx as u8 == callee_index) {
+                    if let Some(kind) = hint {
+                        let value = kind_symbolic_value(*kind, instr.a());
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), Some(*kind), value) {
+                            return None;
+                        }
+                    } else {
+                        kinds[instr.a() as usize] = None;
+                        static_values[instr.a() as usize] = None;
+                    }
+                } else {
+                    if let Some(value) = native_direct_call_static_return_value(
+                        functions?,
+                        instr,
+                        &static_values,
+                        code,
+                        int_consts,
+                        pc,
+                        &[],
+                        depth,
+                    ) {
+                        let kind = static_value_kind(&value);
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                            return None;
+                        }
+                        continue;
+                    }
+                    let Some(kind) = native_direct_call_return_kind(
+                        functions?,
+                        instr,
+                        &kinds,
+                        &static_values,
+                        &global_kinds,
+                        &static_globals,
+                        global_count,
+                        global_names,
+                        &[],
+                        depth,
+                        recursive_hints,
+                    ) else {
+                        return None;
+                    };
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                        return None;
+                    }
+                }
+            }
+            Opcode32::CallNamed => {
+                let Some(target) = static_kind(&static_values, instr.a()) else {
+                    kinds[instr.a() as usize] = None;
+                    static_values[instr.a() as usize] = None;
+                    continue;
+                };
+                let Some((function_index, captures)) = static_call_target(&target) else {
+                    kinds[instr.a() as usize] = None;
+                    static_values[instr.a() as usize] = None;
+                    continue;
+                };
+                let function = functions?.get(function_index as usize)?;
+                let args = native_named_call_args(
+                    function,
+                    &kinds,
+                    &static_values,
+                    instr.a(),
+                    instr.bx() & 0x7f,
+                    instr.bx() >> 7,
+                )?;
+                if let Some((_, hint)) = recursive_hints.iter().find(|(idx, _)| *idx == function_index) {
+                    // Recursive or skipped call — use hint or mark register unknown
+                    if let Some(kind) = hint {
+                        let value = kind_symbolic_value(*kind, instr.a());
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), Some(*kind), value) {
+                            return None;
+                        }
+                    } else {
+                        kinds[instr.a() as usize] = None;
+                        static_values[instr.a() as usize] = None;
+                    }
+                } else {
+                    let Some(kind) = native_static_function_return_kind(
+                        functions?,
+                        function_index as usize,
+                        &args,
+                        &captures,
+                        &global_kinds,
+                        &static_globals,
+                        global_count,
+                        global_names,
+                        depth,
+                        recursive_hints,
+                    ) else {
+                        return None;
+                    };
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                        return None;
+                    }
+                }
+            }
+            Opcode32::Return => {
+                if instr.b() > 1 {
+                    return None;
+                }
+                if instr.b() == 1 && native_kind(&kinds, instr.a()).is_none() {
+                    return None;
+                }
+            }
+            Opcode32::NewMap => {
+                let start = instr.b() as usize;
+                let Some(width) = (instr.c() as usize).checked_mul(2) else {
+                    return None;
+                };
+                if width == 0 {
+                    let value = NativeStraightlineValue::DynamicMap {
+                        id: pc,
+                        key: NativeMapKeyKind::Str,
+                        value: NativeMapValueKind::I64,
+                    };
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                        return None;
+                    }
+                    continue;
+                }
+                let Some(end) = start.checked_add(width) else {
+                    return None;
+                };
+                let Some(values) = static_values.get(start..end) else {
+                    return None;
+                };
+                let mut pairs = Vec::with_capacity(instr.c() as usize);
+                for pair in values.chunks_exact(2) {
+                    let Some(key) = pair[0].clone() else {
+                        return None;
+                    };
+                    let Some(value) = pair[1].clone() else {
+                        return None;
+                    };
+                    pairs.push((key, value));
+                }
+                let Some(value) = native_static_map_from_pairs(&pairs, String::new()) else {
+                    return None;
+                };
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                    return None;
+                }
+            }
+            Opcode32::NewObject => {
+                let value = static_object_from_registers(&static_values, code, int_consts, pc, instr, String::new())?;
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                    return None;
+                }
+            }
+            Opcode32::Contains => {
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::Bool) {
+                    return None;
+                }
+            }
+            Opcode32::SliceFrom => {
+                let target = static_kind(&static_values, instr.b())
+                    .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()));
+                let Some(start) = static_kind(&static_values, instr.c())
+                    .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()))
+                else {
+                    return None;
+                };
+                let Some(target) = target else {
+                    if native_kind(&kinds, instr.b()) == Some(NativeScalarKind::I64) {
+                        let value = NativeStraightlineValue::DynamicList {
+                            id: pc,
+                            element: NativeListElementKind::I64,
+                        };
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                            return None;
+                        }
+                        continue;
+                    }
+                    return None;
+                };
+                let value = static_slice_from_value(code, heap_values, target, start, String::new());
+                let Some(value) = value else {
+                    return None;
+                };
+                let kind = static_value_kind(&value);
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                    return None;
+                }
+            }
+            Opcode32::MapRest => {
+                let start = instr.b() as usize;
+                let end = start.checked_add(1usize.checked_add(instr.c() as usize)?)?;
+                let values = static_values.get(start..end)?;
+                let target = values.first()?.clone()?;
+                let keys = values[1..].iter().cloned().collect::<Option<Vec<_>>>()?;
+                let value = native_static_map_rest(target, &keys, String::new())?;
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                    return None;
+                }
+            }
+            Opcode32::ToIter => {
+                if let Some(target) = static_kind(&static_values, instr.b())
+                    .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()))
+                {
+                    if let NativeStraightlineValue::DynamicConstListElement { .. } = target {
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, target) {
+                            return None;
+                        }
+                    } else if let Some(value) = native_static_to_iter(target.clone(), String::new()) {
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                            return None;
+                        }
+                    } else if matches!(target, NativeStraightlineValue::I64(_))
+                        || native_kind(&kinds, instr.b()) == Some(NativeScalarKind::I64)
+                    {
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                            return None;
+                        }
+                    } else {
+                        return None;
+                    }
+                } else if native_kind(&kinds, instr.b()) == Some(NativeScalarKind::I64)
+                    || (0..pc).rev().any(|prev_pc| {
+                        code.get(prev_pc)
+                            .copied()
+                            .is_some_and(|prev| prev.a() == instr.b() && prev.opcode() == Opcode32::Call)
+                    })
+                {
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
+            Opcode32::NewRange => {
+                let value =
+                    static_int_range_from_registers(&static_values, code, int_consts, pc, instr, String::new())?;
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                    return None;
+                }
+            }
+            Opcode32::Raise => {}
+            Opcode32::StoreCellVal => {
+                if let (Some(cell), Some(value)) = (
+                    static_kind(&static_values, instr.a()),
+                    static_kind(&static_values, instr.b())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.b())),
+                ) && let Some(cell) = native_static_store_cell(cell, value)
+                {
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        static_value_kind(&cell),
+                        cell,
+                    ) {
+                        return None;
+                    }
+                } else if let Some(kind) = native_kind(&kinds, instr.b()).or_else(|| native_kind(&kinds, instr.a())) {
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                        return None;
+                    }
+                } else {
+                    kinds[instr.a() as usize] = None;
+                    static_values[instr.a() as usize] = None;
+                }
+            }
+            Opcode32::LoadCellVal => {
+                if let Some(cell) = static_kind(&static_values, instr.b()).and_then(native_static_load_cell) {
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        static_value_kind(&cell),
+                        cell,
+                    ) {
+                        return None;
+                    }
+                } else {
+                    let kind = native_kind(&kinds, instr.b()).unwrap_or(NativeScalarKind::I64);
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
+                        return None;
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(NativeScalarFacts {
+        registers_before,
+        globals_before,
+    })
+}
+fn native_kind(kinds: &[Option<NativeScalarKind>], reg: u8) -> Option<NativeScalarKind> {
+    kinds.get(reg as usize).copied().flatten()
+}
+fn static_kind(values: &[Option<NativeStraightlineValue>], reg: u8) -> Option<NativeStraightlineValue> {
+    values.get(reg as usize).cloned().flatten()
+}

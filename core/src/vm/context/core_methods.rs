@@ -79,7 +79,38 @@ fn call_method_positional_runtime(
     positional: MethodPositionalArgs,
     runtime: &mut NativeRuntime32<'_>,
 ) -> anyhow::Result<RuntimeVal> {
-    if let Some(prop) = runtime_access(&receiver, method.as_str(), runtime.heap_mut())? {
+    // Try dispatch for methods that need runtime state BEFORE heap closure
+    let method_str = method.as_str();
+    if matches!(method_str, "filter" | "map" | "reduce") {
+        // Check if receiver is a list
+        let is_list = match &receiver {
+            RuntimeVal::Obj(h) => matches!(runtime.heap().get(*h), Some(HeapValue::List(_))),
+            _ => false,
+        };
+        if is_list {
+            let items: Vec<RuntimeVal> = clone_list(&receiver, runtime.heap_mut())?.into_iter_owned();
+            let pos_args: Vec<RuntimeVal> = match &positional {
+                MethodPositionalArgs::Empty => vec![],
+                MethodPositionalArgs::List(handle) => match runtime.heap().get(*handle) {
+                    Some(HeapValue::List(list)) => list.collect_owned(),
+                    _ => vec![],
+                },
+            };
+            if let Some((state, mut ctx, module)) = runtime.parts_mut() {
+                let result = match method_str {
+                    "filter" => list_filter(&items, &pos_args, state, module, &mut ctx)?,
+                    "map" => list_map(&items, &pos_args, state, module, &mut ctx)?,
+                    "reduce" => list_reduce(&items, &pos_args, state, module, &mut ctx)?,
+                    _ => None,
+                };
+                if let Some(r) = result {
+                    return Ok(r);
+                }
+            }
+            return call_trait_method_runtime(receiver, method, positional, runtime);
+        }
+    }
+    if let Some(prop) = runtime_access(&receiver, method_str, runtime.heap_mut())? {
         if runtime_is_callable(&prop, runtime.heap())? {
             let Some((state, ctx, module)) = runtime.parts_mut() else {
                 bail!("__lk_call_method requires full runtime state for callable receiver");
@@ -91,17 +122,17 @@ fn call_method_positional_runtime(
         }
     }
     if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-        dispatch_map_builtin_method(&receiver, method.as_str(), positional, heap)
+        dispatch_map_builtin_method(&receiver, method_str, positional, heap)
     })? {
         return Ok(result);
     }
     if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-        dispatch_string_builtin_method(&receiver, method.as_str(), positional, heap)
+        dispatch_string_builtin_method(&receiver, method_str, positional, heap)
     })? {
         return Ok(result);
     }
     if let Some(result) = positional.with_slice(runtime.heap_mut(), |positional, heap| {
-        dispatch_list_builtin_method(&receiver, method.as_str(), positional, heap)
+        dispatch_list_builtin_method(&receiver, method_str, positional, heap)
     })? {
         return Ok(result);
     }
@@ -217,6 +248,54 @@ fn dispatch_map_builtin_method(
             };
             Ok(Some(RuntimeVal::Int(len as i64)))
         }
+        "keys" => {
+            if !positional.is_empty() {
+                bail!("map.keys() expects no arguments, got {}", positional.len());
+            }
+            let handle = match receiver {
+                RuntimeVal::Obj(h) => *h,
+                _ => return Ok(None),
+            };
+            let keys = match heap.get(handle) {
+                Some(HeapValue::Map(m)) => {
+                    let mut ks: Vec<RuntimeVal> = Vec::with_capacity(m.len());
+                    for (k, _) in m.entries_iter() {
+                        match k {
+                            RuntimeMapKey::String(ref s) => ks.push(make_string_val(s, heap)),
+                            RuntimeMapKey::ShortStr(ref s) => ks.push(make_string_val(s.as_str(), heap)),
+                            _ => {}
+                        }
+                    }
+                    ks
+                }
+                _ => return Ok(None),
+            };
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(keys))),
+            )))
+        }
+        "values" => {
+            if !positional.is_empty() {
+                bail!("map.values() expects no arguments, got {}", positional.len());
+            }
+            let handle = match receiver {
+                RuntimeVal::Obj(h) => *h,
+                _ => return Ok(None),
+            };
+            let vals = match heap.get(handle) {
+                Some(HeapValue::Map(m)) => {
+                    let mut vs: Vec<RuntimeVal> = Vec::with_capacity(m.len());
+                    for (_, v) in m.entries_iter() {
+                        vs.push(v);
+                    }
+                    vs
+                }
+                _ => return Ok(None),
+            };
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(vals))),
+            )))
+        }
         _ => Ok(None),
     }
 }
@@ -324,6 +403,106 @@ fn dispatch_string_builtin_method(
             }
             Ok(Some(make_string_val(s.trim(), heap)))
         }
+        "is_empty" => {
+            if !positional.is_empty() {
+                bail!("string.is_empty() expects no arguments, got {}", positional.len());
+            }
+            Ok(Some(RuntimeVal::Bool(s.is_empty())))
+        }
+        "lower" => {
+            if !positional.is_empty() {
+                bail!("string.lower() expects no arguments, got {}", positional.len());
+            }
+            Ok(Some(make_string_val(&s.to_lowercase(), heap)))
+        }
+        "upper" => {
+            if !positional.is_empty() {
+                bail!("string.upper() expects no arguments, got {}", positional.len());
+            }
+            Ok(Some(make_string_val(&s.to_uppercase(), heap)))
+        }
+        "find" => {
+            if positional.len() != 1 {
+                bail!("string.find() expects 1 argument (needle), got {}", positional.len());
+            }
+            let needle = extract_string_arc(&positional[0], heap, "string.find() needle")?;
+            match s.find(needle.as_ref()) {
+                Some(pos) => Ok(Some(RuntimeVal::Int(pos as i64))),
+                None => Ok(Some(RuntimeVal::Int(-1))),
+            }
+        }
+        "substring" => {
+            if positional.len() != 2 {
+                bail!(
+                    "string.substring() expects 2 arguments (start, end), got {}",
+                    positional.len()
+                );
+            }
+            let RuntimeVal::Int(start) = &positional[0] else {
+                bail!("string.substring() start must be Int");
+            };
+            let RuntimeVal::Int(end) = &positional[1] else {
+                bail!("string.substring() end must be Int");
+            };
+            let start = *start as usize;
+            let end = *end as usize;
+            let s_len = s.len();
+            let start = start.min(s_len);
+            let end = end.min(s_len);
+            if end <= start {
+                Ok(Some(make_string_val("", heap)))
+            } else {
+                Ok(Some(make_string_val(&s[start..end], heap)))
+            }
+        }
+        "reverse" => {
+            if !positional.is_empty() {
+                bail!("string.reverse() expects no arguments, got {}", positional.len());
+            }
+            let reversed: String = s.chars().rev().collect();
+            Ok(Some(make_string_val(&reversed, heap)))
+        }
+        "repeat" => {
+            if positional.len() != 1 {
+                bail!("string.repeat() expects 1 argument (count), got {}", positional.len());
+            }
+            let RuntimeVal::Int(n) = &positional[0] else {
+                bail!("string.repeat() count must be Int");
+            };
+            if *n <= 0 {
+                return Ok(Some(make_string_val("", heap)));
+            }
+            let repeated: String = s.repeat(*n as usize);
+            Ok(Some(make_string_val(&repeated, heap)))
+        }
+        "chars" => {
+            if !positional.is_empty() {
+                bail!("string.chars() expects no arguments, got {}", positional.len());
+            }
+            let chars: Vec<RuntimeVal> = s
+                .chars()
+                .map(|c| {
+                    let mut buf = [0u8; 4];
+                    let encoded = c.encode_utf8(&mut buf);
+                    let s = String::from(encoded);
+                    RuntimeVal::ShortStr(ShortStr::new(&s).unwrap_or_else(|| ShortStr::new("?").unwrap()))
+                })
+                .collect();
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(chars))),
+            )))
+        }
+        "replace" => {
+            if positional.len() != 2 {
+                bail!(
+                    "string.replace() expects 2 arguments (from, to), got {}",
+                    positional.len()
+                );
+            }
+            let from = extract_string_arc(&positional[0], heap, "string.replace() from")?;
+            let to = extract_string_arc(&positional[1], heap, "string.replace() to")?;
+            Ok(Some(make_string_val(&s.replace(from.as_ref(), to.as_ref()), heap)))
+        }
         _ => Ok(None),
     }
 }
@@ -344,6 +523,175 @@ fn dispatch_list_builtin_method(
         return Ok(None);
     }
     match method {
+        "first" => {
+            if !positional.is_empty() {
+                bail!("list.first() expects no arguments, got {}", positional.len());
+            }
+            let list = clone_list(receiver, heap)?;
+            if list.len() == 0 {
+                return Ok(Some(RuntimeVal::Nil));
+            }
+            let first = list.into_iter_owned().into_iter().next().unwrap_or(RuntimeVal::Nil);
+            Ok(Some(first))
+        }
+        "last" => {
+            if !positional.is_empty() {
+                bail!("list.last() expects no arguments, got {}", positional.len());
+            }
+            let list = clone_list(receiver, heap)?;
+            let items = list.into_iter_owned();
+            let last = items.into_iter().last().unwrap_or(RuntimeVal::Nil);
+            Ok(Some(last))
+        }
+        "get" => {
+            if positional.len() != 1 {
+                bail!("list.get() expects 1 argument (index), got {}", positional.len());
+            }
+            let RuntimeVal::Int(idx) = &positional[0] else {
+                bail!("list.get() index must be Int");
+            };
+            let list = clone_list(receiver, heap)?;
+            if *idx < 0 || *idx as usize >= list.len() {
+                return Ok(Some(RuntimeVal::Nil));
+            }
+            let items = list.into_iter_owned();
+            Ok(Some(items.into_iter().nth(*idx as usize).unwrap_or(RuntimeVal::Nil)))
+        }
+        "skip" => {
+            if positional.len() != 1 {
+                bail!("list.skip() expects 1 argument (count), got {}", positional.len());
+            }
+            let RuntimeVal::Int(n) = &positional[0] else {
+                bail!("list.skip() count must be Int");
+            };
+            let mut list = clone_list(receiver, heap)?;
+            if *n > 0 {
+                list.drain_prefix(*n as usize);
+            }
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(list)))))
+        }
+        "take" => {
+            if positional.len() != 1 {
+                bail!("list.take() expects 1 argument (count), got {}", positional.len());
+            }
+            let RuntimeVal::Int(n) = &positional[0] else {
+                bail!("list.take() count must be Int");
+            };
+            let list = clone_list(receiver, heap)?;
+            let taken = list.take_prefix(*n as usize);
+            Ok(Some(RuntimeVal::Obj(heap.alloc(HeapValue::List(taken)))))
+        }
+        "unique" => {
+            if !positional.is_empty() {
+                bail!("list.unique() expects no arguments, got {}", positional.len());
+            }
+            let items = clone_list(receiver, heap)?.into_iter_owned();
+            let mut unique: Vec<RuntimeVal> = Vec::new();
+            for item in items {
+                if !unique.contains(&item) {
+                    unique.push(item);
+                }
+            }
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(unique))),
+            )))
+        }
+        "concat" => {
+            if positional.len() != 1 {
+                bail!("list.concat() expects 1 argument (list), got {}", positional.len());
+            }
+            let lhs = clone_list(receiver, heap)?.into_iter_owned();
+            let rhs = clone_list(&positional[0], heap)?.into_iter_owned();
+            let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs.into_iter()).collect();
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(merged))),
+            )))
+        }
+        "zip" => {
+            if positional.len() != 1 {
+                bail!("list.zip() expects 1 argument (other list), got {}", positional.len());
+            }
+            let lhs = clone_list(receiver, heap)?.into_iter_owned();
+            let rhs = clone_list(&positional[0], heap)?.into_iter_owned();
+            let mut pairs = Vec::with_capacity(lhs.len().min(rhs.len()));
+            for (a, b) in lhs.into_iter().zip(rhs.into_iter()) {
+                pairs.push(RuntimeVal::Obj(
+                    heap.alloc(HeapValue::List(TypedList::Mixed(vec![a, b]))),
+                ));
+            }
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(pairs))),
+            )))
+        }
+        "flatten" => {
+            if !positional.is_empty() {
+                bail!("list.flatten() expects no arguments, got {}", positional.len());
+            }
+            let items = clone_list(receiver, heap)?.into_iter_owned();
+            let mut flat: Vec<RuntimeVal> = Vec::new();
+            for item in items {
+                if let RuntimeVal::Obj(h) = &item {
+                    if let Some(HeapValue::List(inner)) = heap.get(*h) {
+                        flat.extend(inner.clone().into_iter_owned());
+                        continue;
+                    }
+                }
+                flat.push(item);
+            }
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(flat))),
+            )))
+        }
+        "chunk" => {
+            if positional.len() != 1 {
+                bail!("list.chunk() expects 1 argument (size), got {}", positional.len());
+            }
+            let RuntimeVal::Int(size) = &positional[0] else {
+                bail!("list.chunk() size must be Int");
+            };
+            if *size <= 0 {
+                bail!("list.chunk() size must be positive");
+            }
+            let items = clone_list(receiver, heap)?.into_iter_owned();
+            let mut chunks: Vec<RuntimeVal> = Vec::new();
+            let mut i = 0;
+            while i < items.len() {
+                let end = (i + *size as usize).min(items.len());
+                let chunk: Vec<RuntimeVal> = items[i..end].to_vec();
+                chunks.push(RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(chunk)))));
+                i = end;
+            }
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(chunks))),
+            )))
+        }
+        "enumerate" => {
+            if !positional.is_empty() {
+                bail!("list.enumerate() expects no arguments, got {}", positional.len());
+            }
+            let items = clone_list(receiver, heap)?.into_iter_owned();
+            let mut pairs = Vec::with_capacity(items.len());
+            for (i, item) in items.into_iter().enumerate() {
+                pairs.push(RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(vec![
+                    RuntimeVal::Int(i as i64),
+                    item,
+                ])))));
+            }
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(pairs))),
+            )))
+        }
+        "chain" => {
+            if positional.len() != 1 {
+                bail!("list.chain() expects 1 argument (list), got {}", positional.len());
+            }
+            let lhs = clone_list(receiver, heap)?.into_iter_owned();
+            let rhs = clone_list(&positional[0], heap)?.into_iter_owned();
+            let merged: Vec<RuntimeVal> = lhs.into_iter().chain(rhs.into_iter()).collect();
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(merged))),
+            )))
+        }
         "join" => {
             if positional.len() != 1 {
                 bail!("list.join() expects 1 argument (separator), got {}", positional.len());
@@ -386,6 +734,98 @@ fn list_join_parts(list: &TypedList, heap: &HeapStore) -> anyhow::Result<Vec<Str
             Ok(out)
         }
         _ => bail!("list.join(): list must contain only strings"),
+    }
+}
+
+fn list_filter(
+    items: &[RuntimeVal],
+    args: &[RuntimeVal],
+    state: &mut crate::vm::RuntimeModuleState32,
+    module: Option<&crate::vm::Module32>,
+    ctx: &mut Option<&mut crate::vm::VmContext>,
+) -> anyhow::Result<Option<RuntimeVal>> {
+    if args.len() != 1 {
+        bail!("list.filter() expects 1 argument (predicate), got {}", args.len());
+    }
+    let pred = args[0].clone();
+    let mut filtered = Vec::with_capacity(items.len());
+    for item in items {
+        let result =
+            crate::vm::call_runtime_value32_runtime(pred.clone(), &[item.clone()], state, module, ctx.as_deref_mut())?;
+        let keep = match &result {
+            RuntimeVal::Bool(b) => *b,
+            RuntimeVal::Nil => false,
+            _ => true,
+        };
+        if keep {
+            filtered.push(item.clone());
+        }
+    }
+    let result = TypedList::Mixed(filtered);
+    Ok(Some(RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(result)))))
+}
+
+fn list_map(
+    items: &[RuntimeVal],
+    args: &[RuntimeVal],
+    state: &mut crate::vm::RuntimeModuleState32,
+    module: Option<&crate::vm::Module32>,
+    ctx: &mut Option<&mut crate::vm::VmContext>,
+) -> anyhow::Result<Option<RuntimeVal>> {
+    if args.len() != 1 {
+        bail!("list.map() expects 1 argument (transform), got {}", args.len());
+    }
+    let transform = args[0].clone();
+    let mut mapped = Vec::with_capacity(items.len());
+    for item in items {
+        let result = crate::vm::call_runtime_value32_runtime(
+            transform.clone(),
+            &[item.clone()],
+            state,
+            module,
+            ctx.as_deref_mut(),
+        )?;
+        mapped.push(result);
+    }
+    let result = TypedList::Mixed(mapped);
+    Ok(Some(RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(result)))))
+}
+
+fn list_reduce(
+    items: &[RuntimeVal],
+    args: &[RuntimeVal],
+    state: &mut crate::vm::RuntimeModuleState32,
+    module: Option<&crate::vm::Module32>,
+    ctx: &mut Option<&mut crate::vm::VmContext>,
+) -> anyhow::Result<Option<RuntimeVal>> {
+    if args.len() != 2 {
+        bail!(
+            "list.reduce() expects 2 arguments (initial, accumulator), got {}",
+            args.len()
+        );
+    }
+    let acc_fn = args[1].clone();
+    let mut acc = args[0].clone();
+    for item in items {
+        acc = crate::vm::call_runtime_value32_runtime(
+            acc_fn.clone(),
+            &[acc, item.clone()],
+            state,
+            module,
+            ctx.as_deref_mut(),
+        )?;
+    }
+    Ok(Some(acc))
+}
+
+fn clone_list(receiver: &RuntimeVal, heap: &mut HeapStore) -> anyhow::Result<TypedList> {
+    let handle = match receiver {
+        RuntimeVal::Obj(h) => *h,
+        _ => bail!("expected list receiver"),
+    };
+    match heap.get(handle) {
+        Some(HeapValue::List(list)) => Ok(list.clone()),
+        _ => bail!("expected list receiver"),
     }
 }
 

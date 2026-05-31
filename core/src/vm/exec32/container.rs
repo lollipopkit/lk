@@ -11,7 +11,9 @@ use crate::vm::{
     analysis::{PerfIndexFact, PerfIndexTargetKind, PerfValueKind},
 };
 
-#[derive(Clone, Copy)]
+mod index;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum IndexTargetKind {
     List,
     Map,
@@ -134,72 +136,82 @@ impl Executor32 {
         Ok(RuntimeObject::new(type_name, fields))
     }
 
-    pub(super) fn get_index(
+    fn get_index_slice(
         &mut self,
-        pc: usize,
         target_reg: u8,
-        key_reg: u8,
-        known_string_key: Option<Arc<str>>,
-        index_fact: Option<PerfIndexFact>,
+        start: i64,
+        end: Option<i64>,
+        _step: Option<i64>,
     ) -> Result<RuntimeVal> {
         match self.read(target_reg)? {
-            RuntimeVal::ShortStr(value) => self.index_string(value.as_str(), key_reg),
+            RuntimeVal::ShortStr(value) => {
+                let s: Arc<str> = Arc::<str>::from(value.as_str());
+                self.slice_string_general(s, start, end)
+            }
             RuntimeVal::Obj(handle) => {
                 let handle = *handle;
-                let index_cache = match index_fact {
-                    Some(_) => None,
-                    None => self.cached_or_observed_index_cache(pc, handle, known_string_key.as_ref())?,
-                };
-                let index_fact = index_fact.or_else(|| index_cache.map(|cache| cache.fact));
-                let target_kind = match index_fact.map(|fact| fact.target_kind) {
-                    Some(PerfIndexTargetKind::List) => IndexTargetKind::List,
-                    Some(PerfIndexTargetKind::Map) => IndexTargetKind::Map,
-                    Some(PerfIndexTargetKind::Object) => IndexTargetKind::Object,
-                    Some(PerfIndexTargetKind::String) => IndexTargetKind::String,
-                    Some(PerfIndexTargetKind::Unknown) | None => self.index_target_kind(handle)?,
-                };
-
-                match target_kind {
-                    IndexTargetKind::List => {
-                        self.index_list_handle(handle, key_reg, index_fact.map(|fact| fact.value_kind))
-                    }
-                    IndexTargetKind::Map => {
-                        if let Some(key) = known_string_key.as_ref()
-                            && let Some(value) =
-                                self.lookup_string_map_handle(handle, key, index_fact.map(|fact| fact.value_kind))?
-                        {
-                            return Ok(value);
-                        }
-                        let key = match known_string_key.as_ref() {
-                            Some(key) => runtime_map_string_key(key.clone()),
-                            None => self.map_key_from_register(key_reg)?,
+                match self
+                    .state
+                    .heap
+                    .get(handle)
+                    .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+                {
+                    HeapValue::String(value) => self.slice_string_general(Arc::clone(value), start, end),
+                    HeapValue::List(list) => {
+                        let items = list.collect_owned();
+                        let end = end.unwrap_or(items.len() as i64);
+                        let start = if start < 0 {
+                            (items.len() as i64 + start).max(0)
+                        } else {
+                            start
                         };
-                        Ok(self.lookup_map_handle(handle, &key)?.unwrap_or(RuntimeVal::Nil))
-                    }
-                    IndexTargetKind::Object => {
-                        let key = match known_string_key.as_ref() {
-                            Some(key) => key.clone(),
-                            None => self.object_key_from_register(key_reg)?,
+                        let end = if end < 0 {
+                            (items.len() as i64 + end).max(0)
+                        } else {
+                            end
                         };
-                        let field_slot = index_cache.and_then(|cache| cache.object_field_slot);
-                        Ok(self
-                            .index_object_handle(handle, &key, field_slot)?
-                            .unwrap_or(RuntimeVal::Nil))
+                        let start = start as usize;
+                        let end = end as usize;
+                        let end = end.min(items.len());
+                        let start = start.min(end);
+                        let slice: Vec<RuntimeVal> = items[start..end].to_vec();
+                        Ok(RuntimeVal::Obj(
+                            self.alloc_heap_value(HeapValue::List(TypedList::Mixed(slice))),
+                        ))
                     }
-                    IndexTargetKind::String => {
-                        match self
-                            .state
-                            .heap
-                            .get(handle)
-                            .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
-                        {
-                            HeapValue::String(value) => return self.index_string(value, key_reg),
-                            other => bail!("GetIndex target object changed while indexing: {:?}", heap_kind(other)),
-                        }
-                    }
+                    _ => bail!("Slice target must be string or list"),
                 }
             }
-            other => bail!("GetIndex target expected Obj, got {:?}", other.kind()),
+            other => bail!("Slice target expected string/list, got {:?}", other.kind()),
+        }
+    }
+
+    fn slice_string_general(&mut self, value: Arc<str>, start: i64, end: Option<i64>) -> Result<RuntimeVal> {
+        let s_len = value.len() as i64;
+        let start = if start < 0 {
+            (s_len + start).max(0)
+        } else {
+            start.min(s_len)
+        } as usize;
+        let end = match end {
+            Some(e) => {
+                if e < 0 {
+                    (s_len + e).max(0)
+                } else {
+                    e.min(s_len)
+                }
+            }
+            None => s_len,
+        } as usize;
+        let end = end.min(value.len());
+        let start = start.min(end);
+        let sliced: &str = &value[start..end];
+        if let Some(short) = ShortStr::new(sliced) {
+            Ok(RuntimeVal::ShortStr(short))
+        } else {
+            Ok(RuntimeVal::Obj(
+                self.alloc_heap_value(HeapValue::String(Arc::<str>::from(sliced))),
+            ))
         }
     }
 
@@ -1033,9 +1045,7 @@ impl Executor32 {
         }
     }
 
-    fn index_string(&self, value: &str, key_reg: u8) -> Result<RuntimeVal> {
-        let index =
-            usize::try_from(self.read_int(key_reg)?).map_err(|_| anyhow!("string index must be non-negative"))?;
+    fn index_string_at(&self, value: &str, index: usize) -> Result<RuntimeVal> {
         if value.is_ascii() {
             let Some(byte) = value.as_bytes().get(index).copied() else {
                 return Ok(RuntimeVal::Nil);

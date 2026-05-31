@@ -311,6 +311,64 @@ fn test_generate_semantic_tokens_function_identifier() {
 }
 
 #[test]
+fn test_generate_semantic_tokens_match_or_pattern() {
+    let analyzer = create_analyzer();
+    let content = r#"let day_type = match 6 {
+  1 | 2 | 3 | 4 | 5 => "weekday",
+  6 | 7 => "weekend",
+  _ => "invalid",
+};"#;
+    let tokens = analyzer.generate_semantic_tokens(content);
+
+    const KEYWORD_IDX: u32 = 1;
+    const VARIABLE_IDX: u32 = 2;
+    const STRING_IDX: u32 = 4;
+    const OPERATOR_IDX: u32 = 6;
+
+    let token_texts = semantic_token_texts(content, &tokens);
+
+    assert!(token_texts
+        .iter()
+        .any(|(text, ty)| text == "match" && *ty == KEYWORD_IDX));
+    assert!(token_texts.iter().any(|(text, ty)| text == "|" && *ty == OPERATOR_IDX));
+    assert!(token_texts.iter().any(|(text, ty)| text == "=>" && *ty == OPERATOR_IDX));
+    assert!(token_texts
+        .iter()
+        .any(|(text, ty)| text == "\"weekend\"" && *ty == STRING_IDX));
+    assert!(!token_texts.iter().any(|(text, ty)| text == "_" && *ty == VARIABLE_IDX));
+}
+
+fn semantic_token_texts(content: &str, tokens: &[SemanticToken]) -> Vec<(String, u32)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = Vec::new();
+    let mut line = 0u32;
+    let mut start = 0u32;
+
+    for token in tokens {
+        line += token.delta_line;
+        if token.delta_line == 0 {
+            start += token.delta_start;
+        } else {
+            start = token.delta_start;
+        }
+
+        let text: String = lines
+            .get(line as usize)
+            .map(|line_text| {
+                line_text
+                    .chars()
+                    .skip(start as usize)
+                    .take(token.length as usize)
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push((text, token.token_type));
+    }
+
+    out
+}
+
+#[test]
 fn test_validate_semantic_tokens_accepts_generated_tokens() {
     let analyzer = create_analyzer();
     let content = "let y = foo(1)\nreturn y\n";

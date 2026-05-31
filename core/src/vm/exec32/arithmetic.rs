@@ -102,6 +102,17 @@ fn compare_float_values(opcode: Opcode32, lhs: f64, rhs: f64) -> Result<bool> {
     })
 }
 
+#[inline]
+fn compare_string_values(opcode: Opcode32, lhs: &str, rhs: &str) -> Result<bool> {
+    Ok(match opcode {
+        Opcode32::CmpLtInt => lhs < rhs,
+        Opcode32::CmpLeInt => lhs <= rhs,
+        Opcode32::CmpGtInt => lhs > rhs,
+        Opcode32::CmpGeInt => lhs >= rhs,
+        other => bail!("Opcode32 {:?} is not a string ordering comparison", other),
+    })
+}
+
 impl Executor32 {
     pub(super) fn dynamic_add(&mut self, instr: Instr32) -> Result<()> {
         let (dst, lhs, rhs) = self.stack_abc_indices(instr)?;
@@ -317,12 +328,18 @@ impl Executor32 {
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => float_op(*lhs as f64, *rhs),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => float_op(*lhs, *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => float_op(*lhs, *rhs),
-            (lhs, rhs) => bail!(
-                "{:?} expected Int or Float, got {:?} and {:?}",
-                instr.opcode(),
-                lhs.kind(),
-                rhs.kind()
-            ),
+            (lhs, rhs) => {
+                if let (Some(lhs), Some(rhs)) = (self.runtime_string_value(lhs)?, self.runtime_string_value(rhs)?) {
+                    compare_string_values(instr.opcode(), &lhs, &rhs)?
+                } else {
+                    bail!(
+                        "{:?} expected Int, Float, or String, got {:?} and {:?}",
+                        instr.opcode(),
+                        lhs.kind(),
+                        rhs.kind()
+                    )
+                }
+            }
         };
         self.write_stack_index(dst, RuntimeVal::Bool(value));
         self.pc += 1;
@@ -337,12 +354,18 @@ impl Executor32 {
             (RuntimeVal::Int(lhs), RuntimeVal::Float(rhs)) => compare_float_values(opcode, *lhs as f64, *rhs),
             (RuntimeVal::Float(lhs), RuntimeVal::Int(rhs)) => compare_float_values(opcode, *lhs, *rhs as f64),
             (RuntimeVal::Float(lhs), RuntimeVal::Float(rhs)) => compare_float_values(opcode, *lhs, *rhs),
-            (lhs, rhs) => bail!(
-                "{:?} expected Int or Float, got {:?} and {:?}",
-                opcode,
-                lhs.kind(),
-                rhs.kind()
-            ),
+            (lhs, rhs) => {
+                if let (Some(lhs), Some(rhs)) = (self.runtime_string_value(lhs)?, self.runtime_string_value(rhs)?) {
+                    compare_string_values(opcode, &lhs, &rhs)
+                } else {
+                    bail!(
+                        "{:?} expected Int, Float, or String, got {:?} and {:?}",
+                        opcode,
+                        lhs.kind(),
+                        rhs.kind()
+                    )
+                }
+            }
         }
     }
 

@@ -490,14 +490,22 @@ impl TypeInferenceEngine {
                 // If t is assignable to any, OK; otherwise try to narrow union by t
                 if types.iter().any(|u| t.is_assignable_to(u)) {
                     Ok(())
+                } else if let Some(var) = types.iter().find(|u| matches!(u, Type::Variable(_))).cloned() {
+                    self.add_constraint(var, t);
+                    Ok(())
                 } else {
+                    let union_display = Type::Union(types.clone()).display();
                     // Attempt to find members compatible with t
                     let compatibles: Vec<Type> = types
                         .into_iter()
                         .filter(|u| u.is_assignable_to(&t) || t.is_assignable_to(u))
                         .collect();
                     if compatibles.is_empty() {
-                        Err(anyhow!("Cannot unify {} with union type", t.display()))
+                        Err(anyhow!(
+                            "Cannot unify {} with union type {}",
+                            t.display(),
+                            union_display
+                        ))
                     } else {
                         let narrowed = Self::normalize_union(Type::Union(compatibles));
                         self.add_constraint(narrowed, t.clone());

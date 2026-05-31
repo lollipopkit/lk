@@ -126,6 +126,9 @@ impl Stmt {
                     if matches!(var_type, Type::Variable(_)) {
                         // Refine previously unknown binding with the inferred expression type.
                         type_checker.add_local_type(name.clone(), expr_type.clone());
+                    } else if expr_type.contains_variables() {
+                        // Expression has unresolved type variables; add constraint instead of failing.
+                        type_checker.add_constraint(expr_type, var_type.clone());
                     } else if !type_checker.is_assignable(&expr_type, var_type) {
                         let error_msg = format!(
                             "Type mismatch in assignment: variable '{}' has type {}, but right-hand side has type {}",
@@ -391,6 +394,9 @@ impl Stmt {
                         }
                     }
                 }
+                for ty in &collected_returns {
+                    type_checker.add_constraint(return_placeholder.clone(), ty.clone());
+                }
 
                 type_checker.pop_scope();
 
@@ -424,10 +430,10 @@ impl Stmt {
                     })
                     .collect();
 
-                let resolved_return = type_checker.apply_substitutions(inferred_return, &subs);
+                let resolved_return = normalize_union(vec![type_checker.apply_substitutions(inferred_return, &subs)]);
 
                 fn type_is_unresolved(ty: &Type) -> bool {
-                    matches!(ty, Type::Any) || ty.contains_variables()
+                    matches!(ty, Type::Any)
                 }
 
                 if type_checker.strict_any() {
@@ -481,13 +487,7 @@ impl Stmt {
                 then_stmt,
                 else_stmt,
             } => {
-                let cond_type = condition.type_check(type_checker)?;
-                if !type_checker.is_assignable(&cond_type, &Type::Bool) {
-                    return Err(anyhow!(format!(
-                        "If condition must be Bool, but got {}",
-                        cond_type.display()
-                    )));
-                }
+                condition.type_check(type_checker)?;
 
                 // then 分支
                 type_checker.push_scope();
@@ -532,14 +532,7 @@ impl Stmt {
                 Ok(())
             }
             Stmt::While { condition, body } => {
-                // 条件表达式必须是 Bool 类型
-                let cond_type = condition.type_check(type_checker)?;
-                if !type_checker.is_assignable(&cond_type, &Type::Bool) {
-                    return Err(anyhow!(format!(
-                        "While condition must be Bool, but got {}",
-                        cond_type.display()
-                    )));
-                }
+                condition.type_check(type_checker)?;
 
                 // 检查循环体
                 body.type_check(type_checker)?;
@@ -574,8 +567,8 @@ impl Stmt {
 
                 // 验证可迭代类型
                 match iter_type {
-                    Type::List(_) | Type::String | Type::Map(_, _) => {
-                        // 这些类型都是可迭代的
+                    Type::List(_) | Type::String | Type::Map(_, _) | Type::Any | Type::Variable(_) => {
+                        // 这些类型都是可迭代的（Any和类型变量在运行时确定）
                     }
                     _ => {
                         return Err(anyhow!(format!(

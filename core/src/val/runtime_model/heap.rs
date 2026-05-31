@@ -343,7 +343,7 @@ mod tests {
             Arc::<str>::from("list"),
             RuntimeVal::Obj(list),
         )]))));
-        let object = heap.alloc(HeapValue::Object(super::super::RuntimeObject::new(
+        let object = heap.alloc(HeapValue::Object(crate::val::RuntimeObject::new(
             Arc::<str>::from("Box"),
             BTreeMap::from([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
         )));

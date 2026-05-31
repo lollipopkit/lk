@@ -9,16 +9,15 @@ use crate::{
 };
 
 #[test]
-fn llvm_backend_rejects_static_string_not_to_match_exec32() {
+fn llvm_backend_lowers_static_string_not_to_match_exec32() {
     let tokens = Tokenizer::tokenize(r#"return !("ok");"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let err = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect_err("unsupported llvm shape");
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(
-        err.to_string().contains("LLVM native lowering does not support"),
-        "unexpected error: {err}"
-    );
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
 }
 
 #[test]

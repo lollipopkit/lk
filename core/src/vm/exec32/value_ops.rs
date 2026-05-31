@@ -2,28 +2,90 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{HeapValue, RuntimeVal, ShortStr, TypedList};
+use crate::val::{HeapValue, RuntimeVal, ShortStr, Type, TypedList};
+use crate::vm::{Module32, VmContext, call_runtime_value32_runtime_with_receiver};
 
 use super::{Executor32, heap_kind};
 
 impl Executor32 {
     pub(super) fn to_runtime_string(&self, register: u8) -> Result<String> {
-        match self.read(register)? {
-            RuntimeVal::Nil => Ok("nil".to_string()),
-            RuntimeVal::Bool(value) => Ok(value.to_string()),
-            RuntimeVal::Int(value) => Ok(value.to_string()),
-            RuntimeVal::Float(value) => Ok(value.to_string()),
-            RuntimeVal::ShortStr(value) => Ok(value.as_str().to_string()),
+        self.runtime_value_to_plain_string(self.read(register)?)
+    }
+
+    pub(super) fn to_runtime_string_with_display(
+        &mut self,
+        register: u8,
+        module: Option<&Module32>,
+        ctx: &mut Option<&mut VmContext>,
+    ) -> Result<String> {
+        let value = self.read(register)?.clone();
+        if let Some(text) = self.runtime_value_to_plain_string_maybe(&value)? {
+            return Ok(text);
+        }
+        if let Some(text) = self.try_runtime_display_show(&value, module, ctx)? {
+            return Ok(text);
+        }
+        self.runtime_value_to_plain_string(&value)
+    }
+
+    fn runtime_value_to_plain_string(&self, value: &RuntimeVal) -> Result<String> {
+        match self.runtime_value_to_plain_string_maybe(value)? {
+            Some(value) => Ok(value),
+            None => bail!("object cannot be converted to string: {:?}", value.kind()),
+        }
+    }
+
+    fn runtime_value_to_plain_string_maybe(&self, value: &RuntimeVal) -> Result<Option<String>> {
+        match value {
+            RuntimeVal::Nil => Ok(Some("nil".to_string())),
+            RuntimeVal::Bool(value) => Ok(Some(value.to_string())),
+            RuntimeVal::Int(value) => Ok(Some(value.to_string())),
+            RuntimeVal::Float(value) => Ok(Some(value.to_string())),
+            RuntimeVal::ShortStr(value) => Ok(Some(value.as_str().to_string())),
             RuntimeVal::Obj(handle) => match self
                 .state
                 .heap
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
-                HeapValue::String(value) => Ok(value.to_string()),
-                other => bail!("object cannot be converted to string: {:?}", heap_kind(other)),
+                HeapValue::String(value) => Ok(Some(value.to_string())),
+                _ => Ok(None),
             },
         }
+    }
+
+    fn try_runtime_display_show(
+        &mut self,
+        value: &RuntimeVal,
+        module: Option<&Module32>,
+        ctx: &mut Option<&mut VmContext>,
+    ) -> Result<Option<String>> {
+        let RuntimeVal::Obj(handle) = value else {
+            return Ok(None);
+        };
+        let Some(HeapValue::Object(object)) = self.state.heap.get(*handle) else {
+            return Ok(None);
+        };
+        let receiver_type = Type::Named(object.type_name.to_string());
+        let Some(ctx_ref) = ctx.as_deref_mut() else {
+            return Ok(None);
+        };
+        let Some(method) = ctx_ref
+            .type_checker()
+            .as_ref()
+            .and_then(|tc| tc.registry().get_method(&receiver_type, "show").cloned())
+        else {
+            return Ok(None);
+        };
+        let result = call_runtime_value32_runtime_with_receiver(
+            method,
+            value,
+            &[],
+            &mut self.state,
+            module,
+            Some(ctx_ref),
+        )?;
+        self.runtime_value_to_plain_string_maybe(&result)
     }
 
     pub(super) fn write_string(&mut self, register: u8, value: String) -> Result<()> {

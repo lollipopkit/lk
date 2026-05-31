@@ -157,6 +157,49 @@ fn llvm_backend_lowers_os_clock_and_epoch_without_shell() {
 }
 
 #[test]
+fn llvm_backend_lowers_os_string_builtin_without_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: vec![ImportStmt::Module {
+            module: "os".to_string(),
+        }],
+        module: Module32Data {
+            entry: 0,
+            globals: vec!["os".to_string()],
+            functions: vec![Function32Data {
+                consts: ConstPool32Data {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["hostname".to_string()],
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr32::abx(Opcode32::GetGlobal, 0, 0).raw(),
+                    Instr32::abx(Opcode32::LoadString, 1, 0).raw(),
+                    Instr32::abc(Opcode32::GetIndex, 2, 0, 1).raw(),
+                    Instr32::abc(Opcode32::Move, 3, 2, 0).raw(),
+                    Instr32::abc(Opcode32::Call, 3, 3, 0).raw(),
+                    Instr32::abc(Opcode32::Return, 3, 1, 0).raw(),
+                ],
+                register_count: 4,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("lk-host"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+}
+
+#[test]
 fn llvm_backend_lowers_i64_instr32_arithmetic_ops_without_shell() {
     let artifact = Module32Artifact {
         format: "lk.module32".to_string(),

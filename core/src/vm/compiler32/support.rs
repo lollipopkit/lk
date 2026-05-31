@@ -160,7 +160,7 @@ where
     }
 
     let top_level_lets = collect_top_level_let_names(program);
-    let function_visible_lets = collect_function_visible_top_level_lets(program, &top_level_lets);
+    let function_visible_lets = collect_callable_visible_top_level_lets(program, &top_level_lets);
 
     for stmt in &program.statements {
         match stmt.as_ref() {
@@ -194,24 +194,47 @@ fn collect_top_level_let_names(program: &Program) -> HashSet<String> {
     names
 }
 
-fn collect_function_visible_top_level_lets(program: &Program, top_level_lets: &HashSet<String>) -> HashSet<String> {
+fn collect_callable_visible_top_level_lets(program: &Program, top_level_lets: &HashSet<String>) -> HashSet<String> {
     let mut visible = HashSet::new();
     for stmt in &program.statements {
-        if let Stmt::Function {
-            params,
-            named_params,
-            body,
-            ..
-        } = stmt.as_ref()
-        {
-            for name in collect_function_free_vars(params, named_params, body) {
-                if top_level_lets.contains(&name) {
-                    visible.insert(name);
+        match stmt.as_ref() {
+            Stmt::Function {
+                params,
+                named_params,
+                body,
+                ..
+            } => collect_visible_function_lets(&mut visible, top_level_lets, params, named_params, body),
+            Stmt::Impl { methods, .. } => {
+                for method in methods {
+                    if let Stmt::Function {
+                        params,
+                        named_params,
+                        body,
+                        ..
+                    } = method
+                    {
+                        collect_visible_function_lets(&mut visible, top_level_lets, params, named_params, body);
+                    }
                 }
             }
+            _ => {}
         }
     }
     visible
+}
+
+fn collect_visible_function_lets(
+    visible: &mut HashSet<String>,
+    top_level_lets: &HashSet<String>,
+    params: &[String],
+    named_params: &[NamedParamDecl],
+    body: &Stmt,
+) {
+    for name in collect_function_free_vars(params, named_params, body) {
+        if top_level_lets.contains(&name) {
+            visible.insert(name);
+        }
+    }
 }
 
 fn insert_global_name(names: &mut HashMap<String, u32>, name: String) -> Result<()> {

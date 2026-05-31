@@ -32,7 +32,7 @@ use crate::{
     expr::{Expr, TemplateStringPart},
     operator::{BinOp, UnaryOp},
     stmt::{ForPattern, Program, Stmt},
-    val::{LiteralVal, ShortStr},
+    val::{FunctionNamedParamType, LiteralVal, ShortStr, Type},
 };
 
 use super::{
@@ -165,8 +165,13 @@ impl Compiler32 {
             } => self.lower_for(pattern, iterable, body)?,
             Stmt::Break => self.lower_break()?,
             Stmt::Continue => self.lower_continue()?,
-            Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } | Stmt::Trait { .. } | Stmt::Impl { .. } => {
-            }
+            Stmt::Import(_) | Stmt::Struct { .. } | Stmt::TypeAlias { .. } => {}
+            Stmt::Trait { name, methods } => self.lower_trait_decl(name, methods)?,
+            Stmt::Impl {
+                trait_name,
+                target_type,
+                methods,
+            } => self.lower_impl_decl(trait_name, target_type, methods)?,
             Stmt::Function { name, .. } => self.lower_function_decl(name)?,
             Stmt::Block { statements } => {
                 let watermark = self.next_reg;
@@ -1086,17 +1091,110 @@ impl Compiler32 {
         Ok(())
     }
 
+    fn lower_trait_decl(&mut self, name: &str, methods: &[(String, Type)]) -> Result<()> {
+        let Some(helper) = self.try_load_callable_by_name("__lk_register_trait")? else {
+            return Ok(());
+        };
+        let name = self.lower_val(&LiteralVal::from_str(name))?;
+        let mut entries = Vec::with_capacity(methods.len());
+        for (method_name, method_type) in methods {
+            let method_name = self.lower_val(&LiteralVal::from_str(method_name))?;
+            let method_type = self.lower_val(&LiteralVal::from_str(&method_type.display()))?;
+            entries.push(self.materialize_list(vec![method_name, method_type])?);
+        }
+        let methods = self.materialize_list(entries)?;
+        self.lower_call_window_regs(helper, &[name, methods])?;
+        Ok(())
+    }
+
+    fn lower_impl_decl(&mut self, trait_name: &str, target_type: &Type, methods: &[Stmt]) -> Result<()> {
+        let Some(helper) = self.try_load_callable_by_name("__lk_register_trait_impl")? else {
+            return Ok(());
+        };
+        let trait_name = self.lower_val(&LiteralVal::from_str(trait_name))?;
+        let target_type_text = target_type.display();
+        let target_type_reg = self.lower_val(&LiteralVal::from_str(&target_type_text))?;
+        let mut entries = Vec::with_capacity(methods.len());
+        for method in methods {
+            let Stmt::Function {
+                name,
+                params,
+                param_types,
+                named_params,
+                return_type,
+                body,
+            } = method
+            else {
+                bail!("Compiler32 impl block only supports function methods");
+            };
+            let method_name = self.lower_val(&LiteralVal::from_str(name))?;
+            let method_value = self.compile_impl_method_function(params, named_params, body)?;
+            let method_type = impl_method_type(target_type, params, param_types, named_params, return_type);
+            let method_type = self.lower_val(&LiteralVal::from_str(&method_type.display()))?;
+            entries.push(self.materialize_list(vec![method_name, method_value, method_type])?);
+        }
+        let methods = self.materialize_list(entries)?;
+        self.lower_call_window_regs(helper, &[trait_name, target_type_reg, methods])?;
+        Ok(())
+    }
+
+    fn compile_impl_method_function(
+        &mut self,
+        params: &[String],
+        named_params: &[crate::stmt::NamedParamDecl],
+        body: &Stmt,
+    ) -> Result<u16> {
+        let function_index = self
+            .dynamic_function_base
+            .checked_add(self.pending_functions.len() as u32)
+            .ok_or_else(|| anyhow!("Compiler32 dynamic impl method index overflow"))?;
+        let mut compiled = Self::compile_function_body(
+            params,
+            named_params,
+            body,
+            self.function_names.clone(),
+            self.function_signatures.clone(),
+            self.function_bodies.clone(),
+            self.native_names.clone(),
+            self.global_names.clone(),
+            HashMap::new(),
+            function_index + 1,
+        )?;
+        let dst = self.alloc_reg();
+        self.emit(Instr32::abx(
+            Opcode32::LoadFunction,
+            checked_u8("impl method function dst", dst)?,
+            u16::try_from(function_index)
+                .map_err(|_| anyhow!("Compiler32 impl method index {function_index} exceeds u16"))?,
+        ));
+        self.function.performance.set_register_fact(
+            dst,
+            PerfRegisterFact {
+                callable: PerfCallTargetKind::Closure,
+                ..PerfRegisterFact::default()
+            },
+        );
+        self.pending_functions.push(compiled.function);
+        self.pending_functions.append(&mut compiled.pending_functions);
+        Ok(dst)
+    }
+
     fn load_callable_by_name(&mut self, name: &str) -> Result<u16> {
+        self.try_load_callable_by_name(name)?
+            .ok_or_else(|| anyhow!("Compiler32 undefined callable `{name}`"))
+    }
+
+    fn try_load_callable_by_name(&mut self, name: &str) -> Result<Option<u16>> {
         if self.function_names.contains_key(name) {
-            return self.load_function_by_name(name);
+            return self.load_function_by_name(name).map(Some);
         }
         if self.native_names.contains_key(name) {
-            return self.load_native_by_name(name);
+            return self.load_native_by_name(name).map(Some);
         }
         if let Some(slot) = self.global_names.get(name).copied() {
-            return self.emit_get_global(slot);
+            return self.emit_get_global(slot).map(Some);
         }
-        Err(anyhow!("Compiler32 undefined callable `{name}`"))
+        Ok(None)
     }
 
     fn load_function_by_name(&mut self, name: &str) -> Result<u16> {
@@ -1310,6 +1408,38 @@ impl Compiler32 {
         ));
         self.set_register_kind(dst, bin_op_result_kind(op, flavor));
         Ok(dst)
+    }
+}
+
+fn impl_method_type(
+    target_type: &Type,
+    params: &[String],
+    param_types: &[Option<Type>],
+    named_params: &[crate::stmt::NamedParamDecl],
+    return_type: &Option<Type>,
+) -> Type {
+    let params = params
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            param_types
+                .get(index)
+                .and_then(Clone::clone)
+                .unwrap_or_else(|| if name == "self" { target_type.clone() } else { Type::Any })
+        })
+        .collect();
+    let named_params = named_params
+        .iter()
+        .map(|param| FunctionNamedParamType {
+            name: param.name.clone(),
+            ty: param.type_annotation.clone().unwrap_or(Type::Any),
+            has_default: param.default.is_some(),
+        })
+        .collect();
+    Type::Function {
+        params,
+        named_params,
+        return_type: Box::new(return_type.clone().unwrap_or(Type::Any)),
     }
 }
 

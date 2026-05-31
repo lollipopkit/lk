@@ -5,6 +5,9 @@ use tower_lsp::lsp_types::{Range, SemanticToken};
 
 const SEMANTIC_TOKEN_TYPE_COUNT: u32 = 11;
 const SEMANTIC_TOKEN_MODIFIER_COUNT: u32 = 4;
+const KEYWORD_IDX: u32 = 1;
+const VARIABLE_IDX: u32 = 2;
+const OPERATOR_IDX: u32 = 6;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SemanticTokenValidationSummary {
@@ -16,6 +19,44 @@ pub struct SemanticTokenValidationSummary {
     pub max_line: u32,
     pub max_start: u32,
     pub max_length: u32,
+}
+
+fn semantic_keyword_token(identifier: &str) -> Option<u32> {
+    match identifier {
+        "if" | "else" | "while" | "for" | "in" | "fn" | "return" | "break" | "continue" | "import" | "from" | "as"
+        | "match" | "case" | "default" | "select" | "type" | "trait" | "impl" | "true" | "false" | "nil" | "spawn"
+        | "chan" | "send" | "recv" => Some(KEYWORD_IDX),
+        _ => None,
+    }
+}
+
+fn semantic_operator_len(chars: &[char], index: usize) -> Option<usize> {
+    let current = *chars.get(index)?;
+    let next = chars.get(index + 1).copied();
+    let third = chars.get(index + 2).copied();
+
+    match (current, next, third) {
+        ('.', Some('.'), Some('=')) => Some(3),
+        ('=', Some('='), _)
+        | ('!', Some('='), _)
+        | ('<', Some('='), _)
+        | ('>', Some('='), _)
+        | ('&', Some('&'), _)
+        | ('|', Some('|'), _)
+        | ('-', Some('>'), _)
+        | ('=', Some('>'), _)
+        | ('<', Some('-'), _)
+        | ('?', Some('?'), _)
+        | ('?', Some('.'), _)
+        | ('.', Some('.'), _)
+        | ('+', Some('='), _)
+        | ('-', Some('='), _)
+        | ('*', Some('='), _)
+        | ('/', Some('='), _)
+        | ('%', Some('='), _) => Some(2),
+        ('|', _, _) => Some(1),
+        _ => None,
+    }
 }
 
 impl LkAnalyzer {
@@ -32,12 +73,9 @@ impl LkAnalyzer {
 
         // Define the legend indices (must match the legend in main.rs)
         const COMMENT_IDX: u32 = 0;
-        const KEYWORD_IDX: u32 = 1;
-        const VARIABLE_IDX: u32 = 2;
         const FUNCTION_IDX: u32 = 3;
         const STRING_IDX: u32 = 4;
         const NUMBER_IDX: u32 = 5;
-        const OPERATOR_IDX: u32 = 6;
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -173,17 +211,12 @@ impl LkAnalyzer {
 
                     // Let TextMate scopes drive declaration keyword colors so themes
                     // can render `let`/`const` consistently with Rust-style grammars.
-                    if matches!(identifier.as_str(), "let" | "const") {
+                    if matches!(identifier.as_str(), "let" | "const" | "_") {
                         continue;
                     }
 
                     // Check for keywords
-                    let mut token_idx = match identifier.as_str() {
-                        "if" | "else" | "while" | "fn" | "return" | "break" | "continue" | "import" | "from" | "as"
-                        | "go" | "select" | "case" | "default" | "true" | "false" | "nil" | "spawn" | "chan"
-                        | "send" | "recv" => KEYWORD_IDX,
-                        _ => VARIABLE_IDX,
-                    };
+                    let mut token_idx = semantic_keyword_token(&identifier).unwrap_or(VARIABLE_IDX);
 
                     // If next non-whitespace char is '(', treat as function identifier
                     if token_idx == VARIABLE_IDX {
@@ -200,35 +233,9 @@ impl LkAnalyzer {
                     continue;
                 }
 
-                // Handle operators - only tokenize multi-character operators to reduce density
-                if c == '=' || c == '!' || c == '<' || c == '>' || c == '&' || c == '|' || c == '-' {
-                    let op_start = char_index;
-
-                    // Handle multi-character operators only
-                    if char_index + 1 < len {
-                        let next_char = chars[char_index + 1];
-                        match (c, next_char) {
-                            ('=', '=')
-                            | ('!', '=')
-                            | ('<', '=')
-                            | ('>', '=')
-                            | ('&', '&')
-                            | ('|', '|')
-                            | ('-', '>') => {
-                                char_index += 2;
-                                tokens.push(self.create_token(line_number, op_start, 2, OPERATOR_IDX, 0));
-                                continue;
-                            }
-                            _ => {
-                                // Skip single-character operators entirely
-                                char_index += 1;
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Skip single character operators
-                    char_index += 1;
+                if let Some(op_len) = semantic_operator_len(&chars, char_index) {
+                    tokens.push(self.create_token(line_number, char_index, op_len, OPERATOR_IDX, 0));
+                    char_index += op_len;
                     continue;
                 }
 
@@ -309,12 +316,9 @@ impl LkAnalyzer {
 
         // Define the legend indices (must match the legend in main.rs)
         const COMMENT_IDX: u32 = 0;
-        const KEYWORD_IDX: u32 = 1;
-        const VARIABLE_IDX: u32 = 2;
         const FUNCTION_IDX: u32 = 3;
         const STRING_IDX: u32 = 4;
         const NUMBER_IDX: u32 = 5;
-        const OPERATOR_IDX: u32 = 6;
 
         let lines: Vec<&str> = content_slice.lines().collect();
         if lines.is_empty() {
@@ -461,17 +465,12 @@ impl LkAnalyzer {
                     let slice: &str = &line[ident_start..j];
                     // Let TextMate scopes drive declaration keyword colors so themes
                     // can render `let`/`const` consistently with Rust-style grammars.
-                    if matches!(slice, "let" | "const") {
+                    if matches!(slice, "let" | "const" | "_") {
                         char_index = j;
                         continue;
                     }
 
-                    let mut token_idx = match slice {
-                        "if" | "else" | "while" | "fn" | "return" | "break" | "continue" | "import" | "from" | "as"
-                        | "go" | "select" | "case" | "default" | "true" | "false" | "nil" | "spawn" | "chan"
-                        | "send" | "recv" => KEYWORD_IDX,
-                        _ => VARIABLE_IDX,
-                    };
+                    let mut token_idx = semantic_keyword_token(slice).unwrap_or(VARIABLE_IDX);
                     // Detect function call by peeking next non-whitespace char
                     if token_idx == VARIABLE_IDX {
                         let mut k = j;
@@ -494,39 +493,16 @@ impl LkAnalyzer {
                     continue;
                 }
 
-                // Operators - only tokenize multi-character operators to reduce density
-                if "=!<>|&-".contains(c) {
-                    let op_start = char_index;
-                    if char_index + 1 < len {
-                        let next_char = chars[char_index + 1];
-                        match (c, next_char) {
-                            ('=', '=')
-                            | ('!', '=')
-                            | ('<', '=')
-                            | ('>', '=')
-                            | ('&', '&')
-                            | ('|', '|')
-                            | ('-', '>') => {
-                                let start = op_start.max(start_char_bound);
-                                if start < end_char_bound {
-                                    let capped_len_total = (op_start + 2).saturating_sub(start);
-                                    if capped_len_total > 0 {
-                                        let capped_len = capped_len_total.min(end_char_bound.saturating_sub(start));
-                                        tokens.push(self.create_token(line_number, start, capped_len, OPERATOR_IDX, 0));
-                                    }
-                                }
-                                char_index += 2;
-                                continue;
-                            }
-                            _ => {
-                                // Skip single-character operators entirely
-                                char_index += 1;
-                                continue;
-                            }
+                if let Some(op_len) = semantic_operator_len(&chars, char_index) {
+                    let start = char_index.max(start_char_bound);
+                    if start < end_char_bound {
+                        let capped_len_total = (char_index + op_len).saturating_sub(start);
+                        if capped_len_total > 0 {
+                            let capped_len = capped_len_total.min(end_char_bound.saturating_sub(start));
+                            tokens.push(self.create_token(line_number, start, capped_len, OPERATOR_IDX, 0));
                         }
                     }
-                    // Skip single character operators
-                    char_index += 1;
+                    char_index += op_len;
                     continue;
                 }
 

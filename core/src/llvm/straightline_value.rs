@@ -1,3 +1,6 @@
+mod equality;
+mod modules;
+
 use crate::{
     val::ShortStr,
     vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Opcode32, RuntimeMapKeyData},
@@ -6,11 +9,33 @@ use crate::{
 use super::const_display::{
     native_const_list_display, native_const_map_display, native_const_object_display, native_string_const_value,
 };
+use equality::{
+    native_const_runtime_eq, native_map_entries_are_string_keyed, native_map_entry_keys_match, native_map_key_str,
+    native_map_keys_match, native_static_value_eq,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeStringKeyKind {
     Short,
     Heap,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeListElementKind {
+    I64,
+    Text,
+    #[allow(dead_code)]
+    StrPtr,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeMapKeyKind {
+    Str,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeMapValueKind {
+    I64,
 }
 
 #[derive(Clone)]
@@ -42,18 +67,28 @@ pub(super) enum NativeStraightlineValue {
         value: String,
         entries: Vec<(RuntimeMapKeyData, ConstRuntimeValue32Data)>,
     },
-    DynamicStringIntMap {
+    DynamicMap {
         id: usize,
+        key: NativeMapKeyKind,
+        value: NativeMapValueKind,
     },
-    DynamicIntList {
+    DynamicList {
         id: usize,
+        element: NativeListElementKind,
     },
-    DynamicTextList {
-        id: usize,
+    DynamicConstListElement {
+        elements: Vec<ConstRuntimeValue32Data>,
+        index: String,
     },
     DynamicJoinedText {
         id: usize,
         delimiter_len: usize,
+    },
+    Channel {
+        elements: Vec<ConstRuntimeValue32Data>,
+    },
+    ArgList {
+        elements: Vec<NativeStraightlineValue>,
     },
     Object {
         symbol: String,
@@ -91,23 +126,143 @@ pub(super) enum NativeTextPart {
 pub(super) enum NativeBuiltin {
     Print,
     Println,
+    BitAnd,
+    BitNot,
+    BitOr,
+    Chan,
     CoreCallMethod,
+    CoreMakeStruct,
+    CoreMergeFields,
+    CoreRegisterTrait,
+    CoreRegisterTraitImpl,
+    CoreTypeof,
+    Recv,
+    DatetimeAdd,
+    DatetimeDayOfWeek,
+    DatetimeDayOfYear,
+    DatetimeFormat,
+    DatetimeIsWeekend,
+    DatetimeNow,
+    DatetimeSub,
     OsClock,
     OsEpoch,
+    OsHostname,
+    OsArch,
+    OsName,
+    OsDirCurrent,
+    OsDirTemp,
+    OsDirList,
+    IterRange,
+    IterMap,
+    IterFilter,
+    IterReduce,
+    IterTake,
+    IterSkip,
+    IterChain,
+    IterFlatten,
+    IterUnique,
+    IterChunk,
+    IterEnumerate,
+    IterZip,
+    IoRead,
+    IoStderrWrite,
+    IoStdoutFlush,
+    IoStdoutWrite,
+    IoStdoutWriteln,
+    JsonParse,
+    TomlParse,
+    TimeNow,
+    TimeSleep,
+    TimeSince,
+    TcpClose,
+    TcpConnect,
+    TcpRead,
+    TcpWrite,
+    Send,
+    StreamCollect,
+    StreamFromList,
+    StringLen,
+    YamlParse,
+    MathAbs,
+    MathSqrt,
+    MathFloor,
+    MathCeil,
+    MathRound,
+    MathMin,
+    MathMax,
+    MathPow,
+    MathExp,
+    FibIterative,
+    GreetingsMessage,
+    MathlibDouble,
+    MathSin,
+    MathCos,
+    MapDelete,
+    MapSet,
+    MapMutate,
+    Panic,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeModule {
+    Datetime,
+    Fib,
+    Greetings,
     Os,
     OsEnv,
+    Iter,
+    Io,
+    Json,
+    Math,
+    Mathlib,
+    Map,
+    Toml,
+    Time,
+    Tcp,
+    Stream,
+    String,
+    Yaml,
 }
 
 pub(super) fn native_static_global(name: &str) -> Option<NativeStraightlineValue> {
     match name {
         "print" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Print)),
         "println" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Println)),
+        "__lk_bit_and" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::BitAnd)),
+        "__lk_bit_not" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::BitNot)),
+        "__lk_bit_or" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::BitOr)),
+        "chan" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Chan)),
         "__lk_call_method" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod)),
+        "__lk_make_struct" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreMakeStruct)),
+        "__lk_merge_fields" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreMergeFields)),
+        "__lk_register_trait" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreRegisterTrait)),
+        "__lk_register_trait_impl" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreRegisterTraitImpl)),
+        "typeof" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreTypeof)),
+        "panic" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Panic)),
+        "recv" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Recv)),
+        "send" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::Send)),
+        "datetime" => Some(NativeStraightlineValue::Module(NativeModule::Datetime)),
         "os" => Some(NativeStraightlineValue::Module(NativeModule::Os)),
+        "iter" => Some(NativeStraightlineValue::Module(NativeModule::Iter)),
+        "io" => Some(NativeStraightlineValue::Module(NativeModule::Io)),
+        "json" => Some(NativeStraightlineValue::Module(NativeModule::Json)),
+        "math" => Some(NativeStraightlineValue::Module(NativeModule::Math)),
+        "m" => Some(NativeStraightlineValue::Module(NativeModule::Math)),
+        "abs" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::MathAbs)),
+        "max" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::MathMax)),
+        "min" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::MathMin)),
+        "square_root" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::MathSqrt)),
+        "fib" => Some(NativeStraightlineValue::Module(NativeModule::Fib)),
+        "iterative" => Some(NativeStraightlineValue::Builtin(NativeBuiltin::FibIterative)),
+        "greetings" => Some(NativeStraightlineValue::Module(NativeModule::Greetings)),
+        "mathlib" => Some(NativeStraightlineValue::Module(NativeModule::Mathlib)),
+        "map" => Some(NativeStraightlineValue::Module(NativeModule::Map)),
+        "toml" => Some(NativeStraightlineValue::Module(NativeModule::Toml)),
+        "time" => Some(NativeStraightlineValue::Module(NativeModule::Time)),
+        "tcp" => Some(NativeStraightlineValue::Module(NativeModule::Tcp)),
+        "stream" => Some(NativeStraightlineValue::Module(NativeModule::Stream)),
+        "string_mod" | "string" => Some(NativeStraightlineValue::Module(NativeModule::String)),
+        "yaml" => Some(NativeStraightlineValue::Module(NativeModule::Yaml)),
         _ => None,
     }
 }
@@ -128,10 +283,16 @@ pub(super) fn native_static_to_string_value(
         | NativeStraightlineValue::DynamicSplitText { .. }
         | NativeStraightlineValue::DynamicTextChar => return None,
         NativeStraightlineValue::Cell { .. }
-        | NativeStraightlineValue::DynamicStringIntMap { .. }
-        | NativeStraightlineValue::DynamicIntList { .. }
-        | NativeStraightlineValue::DynamicTextList { .. }
+        | NativeStraightlineValue::DynamicMap {
+            key: NativeMapKeyKind::Str,
+            value: NativeMapValueKind::I64,
+            ..
+        }
+        | NativeStraightlineValue::DynamicList { .. }
+        | NativeStraightlineValue::DynamicConstListElement { .. }
         | NativeStraightlineValue::DynamicJoinedText { .. }
+        | NativeStraightlineValue::Channel { .. }
+        | NativeStraightlineValue::ArgList { .. }
         | NativeStraightlineValue::Error { .. }
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
@@ -264,10 +425,15 @@ pub(super) fn native_static_truthy(value: &NativeStraightlineValue) -> Option<bo
         | NativeStraightlineValue::DynamicTextChar
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
-        | NativeStraightlineValue::DynamicStringIntMap { .. }
-        | NativeStraightlineValue::DynamicIntList { .. }
-        | NativeStraightlineValue::DynamicTextList { .. }
+        | NativeStraightlineValue::DynamicMap {
+            key: NativeMapKeyKind::Str,
+            value: NativeMapValueKind::I64,
+            ..
+        }
+        | NativeStraightlineValue::DynamicList { .. }
+        | NativeStraightlineValue::DynamicConstListElement { .. }
         | NativeStraightlineValue::DynamicJoinedText { .. }
+        | NativeStraightlineValue::Channel { .. }
         | NativeStraightlineValue::Object { .. }
         | NativeStraightlineValue::Cell { .. }
         | NativeStraightlineValue::Error { .. } => Some(true),
@@ -275,6 +441,7 @@ pub(super) fn native_static_truthy(value: &NativeStraightlineValue) -> Option<bo
         NativeStraightlineValue::Builtin(_)
         | NativeStraightlineValue::Module(_)
         | NativeStraightlineValue::Function(_)
+        | NativeStraightlineValue::ArgList { .. }
         | NativeStraightlineValue::Closure { .. } => None,
     }
 }
@@ -374,10 +541,29 @@ pub(super) fn native_static_compare_bool(
             let equal = lhs == rhs;
             Some(if opcode == Opcode32::CmpNeInt { !equal } else { equal })
         }
-        (NativeStraightlineValue::String { value: lhs, .. }, NativeStraightlineValue::String { value: rhs, .. })
+        (NativeStraightlineValue::String { value: lhs, .. }, NativeStraightlineValue::String { value: rhs, .. }) => {
+            Some(match opcode {
+                Opcode32::CmpInt => lhs == rhs,
+                Opcode32::CmpNeInt => lhs != rhs,
+                Opcode32::CmpLtInt => lhs < rhs,
+                Opcode32::CmpLeInt => lhs <= rhs,
+                Opcode32::CmpGtInt => lhs > rhs,
+                Opcode32::CmpGeInt => lhs >= rhs,
+                _ => return None,
+            })
+        }
+        (NativeStraightlineValue::Text(lhs), NativeStraightlineValue::String { value: rhs, .. })
+        | (NativeStraightlineValue::String { value: rhs, .. }, NativeStraightlineValue::Text(lhs))
             if matches!(opcode, Opcode32::CmpInt | Opcode32::CmpNeInt) =>
         {
-            let equal = lhs == rhs;
+            let lhs = native_static_text_string(lhs)?;
+            let equal = &lhs == rhs;
+            Some(if opcode == Opcode32::CmpNeInt { !equal } else { equal })
+        }
+        (NativeStraightlineValue::Text(lhs), NativeStraightlineValue::Text(rhs))
+            if matches!(opcode, Opcode32::CmpInt | Opcode32::CmpNeInt) =>
+        {
+            let equal = native_static_text_string(lhs)? == native_static_text_string(rhs)?;
             Some(if opcode == Opcode32::CmpNeInt { !equal } else { equal })
         }
         (NativeStraightlineValue::Nil, NativeStraightlineValue::Nil)
@@ -385,8 +571,40 @@ pub(super) fn native_static_compare_bool(
         {
             Some(opcode == Opcode32::CmpInt)
         }
+        (NativeStraightlineValue::Nil, _) | (_, NativeStraightlineValue::Nil)
+            if matches!(opcode, Opcode32::CmpInt | Opcode32::CmpNeInt) =>
+        {
+            Some(opcode == Opcode32::CmpNeInt)
+        }
+        (NativeStraightlineValue::List { .. }, NativeStraightlineValue::List { .. })
+        | (NativeStraightlineValue::Map { .. }, NativeStraightlineValue::Map { .. })
+            if matches!(opcode, Opcode32::CmpInt | Opcode32::CmpNeInt) =>
+        {
+            let NativeStraightlineValue::Bool(value) = native_static_collection_equality_bool(lhs, rhs, opcode)? else {
+                return None;
+            };
+            Some(value == "1")
+        }
         _ => None,
     }
+}
+
+pub(super) fn native_static_text_string(parts: &[NativeTextPart]) -> Option<String> {
+    let mut out = String::new();
+    for part in parts {
+        match part {
+            NativeTextPart::I64(value) if !value.starts_with('%') => out.push_str(value),
+            NativeTextPart::F64(value) if !value.starts_with('%') && !value.starts_with("0x") => out.push_str(value),
+            NativeTextPart::Bool(value) if value == "0" => out.push_str("false"),
+            NativeTextPart::Bool(value) if value == "1" => out.push_str("true"),
+            NativeTextPart::Nil => out.push_str("nil"),
+            NativeTextPart::String { value, .. } => out.push_str(value),
+            NativeTextPart::StrPtr(_) | NativeTextPart::Bool(_) | NativeTextPart::I64(_) | NativeTextPart::F64(_) => {
+                return None;
+            }
+        }
+    }
+    Some(out)
 }
 
 pub(super) fn native_static_alias_symbol(value: &NativeStraightlineValue) -> Option<&str> {
@@ -407,7 +625,9 @@ pub(super) fn native_static_container_test(
     let matched = match opcode {
         Opcode32::IsList => matches!(
             value,
-            NativeStraightlineValue::List { .. } | NativeStraightlineValue::String { .. }
+            NativeStraightlineValue::List { .. }
+                | NativeStraightlineValue::String { .. }
+                | NativeStraightlineValue::DynamicList { .. }
         ),
         Opcode32::IsMap => matches!(value, NativeStraightlineValue::Map { .. }),
         _ => return None,
@@ -501,6 +721,93 @@ pub(super) fn native_static_object_from_fields(
     })
 }
 
+pub(super) fn native_static_make_struct(
+    args: &[NativeStraightlineValue],
+    symbol: String,
+) -> Option<NativeStraightlineValue> {
+    if let [
+        NativeStraightlineValue::String { value: type_name, .. },
+        NativeStraightlineValue::Object { fields, .. },
+    ] = args
+    {
+        return Some(NativeStraightlineValue::Object {
+            value: native_const_object_display(type_name, fields)?,
+            symbol,
+            type_name: type_name.clone(),
+            fields: fields.clone(),
+        });
+    }
+    let [
+        NativeStraightlineValue::String { value: type_name, .. },
+        NativeStraightlineValue::Map { entries, .. },
+    ] = args
+    else {
+        return None;
+    };
+    let mut fields = Vec::with_capacity(entries.len());
+    for (key, value) in entries {
+        fields.push((native_map_key_str(key)?.to_string(), value.clone()));
+    }
+    Some(NativeStraightlineValue::Object {
+        value: native_const_object_display(type_name, &fields)?,
+        symbol,
+        type_name: type_name.clone(),
+        fields,
+    })
+}
+
+pub(super) fn native_static_merge_fields(
+    args: &[NativeStraightlineValue],
+    symbol: String,
+) -> Option<NativeStraightlineValue> {
+    let [base, NativeStraightlineValue::Map { entries: overlay, .. }] = args else {
+        return None;
+    };
+    match base {
+        NativeStraightlineValue::Nil => Some(NativeStraightlineValue::Map {
+            value: native_const_map_display(overlay)?,
+            symbol,
+            entries: overlay.clone(),
+        }),
+        NativeStraightlineValue::Map { entries: base, .. } => {
+            let mut entries = base.clone();
+            for (key, value) in overlay {
+                if let Some((_, slot)) = entries
+                    .iter_mut()
+                    .find(|(entry_key, _)| native_map_keys_match(entry_key, key))
+                {
+                    *slot = value.clone();
+                } else {
+                    entries.push((key.clone(), value.clone()));
+                }
+            }
+            Some(NativeStraightlineValue::Map {
+                value: native_const_map_display(&entries)?,
+                symbol,
+                entries,
+            })
+        }
+        NativeStraightlineValue::Object { type_name, fields, .. } => {
+            let mut fields = fields.clone();
+            for (key, value) in overlay {
+                let key = native_map_key_str(key)?.to_string();
+                if let Some((_, slot)) = fields.iter_mut().find(|(field_key, _)| *field_key == key) {
+                    *slot = value.clone();
+                } else {
+                    fields.push((key, value.clone()));
+                }
+            }
+            Some(NativeStraightlineValue::Object {
+                value: native_const_object_display(type_name, &fields)?,
+                symbol,
+                type_name: type_name.clone(),
+                fields,
+            })
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn native_static_int_range(
     start: NativeStraightlineValue,
     end: NativeStraightlineValue,
@@ -542,8 +849,18 @@ pub(super) fn native_static_index(
     symbol: String,
 ) -> Option<NativeStraightlineValue> {
     match target {
+        NativeStraightlineValue::Nil => Some(NativeStraightlineValue::Nil),
         NativeStraightlineValue::String { value, .. } => {
-            let index = native_i64_const_index(key)?;
+            if let NativeStraightlineValue::List { elements, .. } = key {
+                let out = native_static_string_slice(&value, &elements)?;
+                return Some(NativeStraightlineValue::String {
+                    symbol,
+                    len: out.chars().count(),
+                    key_kind: native_runtime_string_key_kind(&out),
+                    value: out,
+                });
+            }
+            let index = native_i64_const_index_for_len(key, value.len())?;
             let Some(ch) = value.chars().nth(index) else {
                 return Some(NativeStraightlineValue::Nil);
             };
@@ -555,11 +872,26 @@ pub(super) fn native_static_index(
             })
         }
         NativeStraightlineValue::List { elements, .. } => {
-            let index = native_i64_const_index(key)?;
+            if let NativeStraightlineValue::List {
+                elements: key_elements, ..
+            } = key
+            {
+                let elements = native_static_list_slice(&elements, &key_elements)?;
+                return Some(NativeStraightlineValue::List {
+                    value: native_const_list_display(&elements)?,
+                    symbol,
+                    elements,
+                });
+            }
+            let index = native_i64_const_index_for_len(key, elements.len())?;
             let Some(value) = elements.get(index) else {
                 return Some(NativeStraightlineValue::Nil);
             };
             native_const_runtime_value(value, symbol)
+        }
+        NativeStraightlineValue::ArgList { elements } => {
+            let index = native_i64_const_index_for_len(key, elements.len())?;
+            elements.get(index).cloned()
         }
         NativeStraightlineValue::Map { entries, .. } => {
             if native_map_entries_are_string_keyed(&entries) {
@@ -595,15 +927,35 @@ pub(super) fn native_static_index(
 }
 
 fn native_static_module_index(module: NativeModule, key: NativeStraightlineValue) -> Option<NativeStraightlineValue> {
-    let NativeStraightlineValue::String { value: key, .. } = key else {
+    modules::native_static_module_index(module, key)
+}
+
+pub(super) fn native_static_map_delete(
+    target: NativeStraightlineValue,
+    key: NativeStraightlineValue,
+    symbol: String,
+) -> Option<NativeStraightlineValue> {
+    let NativeStraightlineValue::Map { mut entries, .. } = target else {
         return None;
     };
-    match (module, key.as_str()) {
-        (NativeModule::Os, "clock") => Some(NativeStraightlineValue::Builtin(NativeBuiltin::OsClock)),
-        (NativeModule::Os, "epoch") => Some(NativeStraightlineValue::Builtin(NativeBuiltin::OsEpoch)),
-        (NativeModule::Os, "env") => Some(NativeStraightlineValue::Module(NativeModule::OsEnv)),
-        _ => None,
-    }
+    let key = native_map_key(key)?;
+    let compare_string_keys = native_map_entries_are_string_keyed(&entries);
+    let mut removed = ConstRuntimeValue32Data::Nil;
+    entries.retain(|(entry_key, value)| {
+        if native_map_entry_keys_match(entry_key, &key, compare_string_keys) {
+            removed = value.clone();
+            false
+        } else {
+            true
+        }
+    });
+    let updated = ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::Map(entries)));
+    let elements = vec![updated, removed];
+    Some(NativeStraightlineValue::List {
+        value: native_const_list_display(&elements)?,
+        symbol,
+        elements,
+    })
 }
 
 pub(super) fn native_static_set_index(
@@ -836,7 +1188,10 @@ pub(super) fn native_straightline_heap_const_value(
     }
 }
 
-fn native_const_runtime_value(value: &ConstRuntimeValue32Data, symbol: String) -> Option<NativeStraightlineValue> {
+pub(super) fn native_const_runtime_value(
+    value: &ConstRuntimeValue32Data,
+    symbol: String,
+) -> Option<NativeStraightlineValue> {
     match value {
         ConstRuntimeValue32Data::Nil => Some(NativeStraightlineValue::Nil),
         ConstRuntimeValue32Data::Bool(value) => Some(NativeStraightlineValue::Bool(i64::from(*value).to_string())),
@@ -875,7 +1230,7 @@ fn native_const_runtime_value(value: &ConstRuntimeValue32Data, symbol: String) -
     }
 }
 
-fn native_runtime_const_value(value: &NativeStraightlineValue) -> Option<ConstRuntimeValue32Data> {
+pub(super) fn native_runtime_const_value(value: &NativeStraightlineValue) -> Option<ConstRuntimeValue32Data> {
     match value {
         NativeStraightlineValue::Nil => Some(ConstRuntimeValue32Data::Nil),
         NativeStraightlineValue::Bool(value) if !value.starts_with('%') => {
@@ -907,9 +1262,14 @@ fn native_runtime_const_value(value: &NativeStraightlineValue) -> Option<ConstRu
             Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::Map(out))))
         }
         NativeStraightlineValue::Object { .. }
-        | NativeStraightlineValue::DynamicStringIntMap { .. }
-        | NativeStraightlineValue::DynamicIntList { .. }
-        | NativeStraightlineValue::DynamicTextList { .. }
+        | NativeStraightlineValue::Channel { .. }
+        | NativeStraightlineValue::DynamicMap {
+            key: NativeMapKeyKind::Str,
+            value: NativeMapValueKind::I64,
+            ..
+        }
+        | NativeStraightlineValue::DynamicList { .. }
+        | NativeStraightlineValue::DynamicConstListElement { .. }
         | NativeStraightlineValue::DynamicJoinedText { .. }
         | NativeStraightlineValue::StringPtr(_)
         | NativeStraightlineValue::Text(_)
@@ -923,6 +1283,7 @@ fn native_runtime_const_value(value: &NativeStraightlineValue) -> Option<ConstRu
         | NativeStraightlineValue::Builtin(_)
         | NativeStraightlineValue::Module(_)
         | NativeStraightlineValue::Function(_)
+        | NativeStraightlineValue::ArgList { .. }
         | NativeStraightlineValue::Closure { .. } => None,
     }
 }
@@ -931,11 +1292,58 @@ fn native_i64_const_index(value: NativeStraightlineValue) -> Option<usize> {
     usize::try_from(native_i64_const_value(value)?).ok()
 }
 
+fn native_i64_const_index_for_len(value: NativeStraightlineValue, len: usize) -> Option<usize> {
+    let index = native_i64_const_value(value)?;
+    if index < 0 {
+        usize::try_from((len as i64).checked_add(index)?).ok()
+    } else {
+        usize::try_from(index).ok()
+    }
+}
+
 fn native_i64_const_value(value: NativeStraightlineValue) -> Option<i64> {
     let NativeStraightlineValue::I64(value) = value else {
         return None;
     };
     native_static_i64(&value)
+}
+
+fn native_static_range_bounds(elements: &[ConstRuntimeValue32Data], len: usize) -> Option<(usize, usize)> {
+    if elements.is_empty() || elements.len() > 3 {
+        return None;
+    }
+    let ConstRuntimeValue32Data::Int(start) = elements.first()? else {
+        return None;
+    };
+    let last = elements.last().and_then(|value| match value {
+        ConstRuntimeValue32Data::Int(value) => value.checked_add(1),
+        _ => None,
+    });
+    let normalize = |index: i64| {
+        if index < 0 {
+            ((len as i64).checked_add(index)?).max(0)
+        } else {
+            index.min(len as i64)
+        }
+        .try_into()
+        .ok()
+    };
+    let start: usize = normalize(*start)?;
+    let end: usize = normalize(last.unwrap_or(len as i64))?.min(len);
+    Some((start.min(end), end))
+}
+
+fn native_static_string_slice(value: &str, elements: &[ConstRuntimeValue32Data]) -> Option<String> {
+    let (start, end) = native_static_range_bounds(elements, value.len())?;
+    Some(value.get(start..end)?.to_string())
+}
+
+fn native_static_list_slice(
+    values: &[ConstRuntimeValue32Data],
+    elements: &[ConstRuntimeValue32Data],
+) -> Option<Vec<ConstRuntimeValue32Data>> {
+    let (start, end) = native_static_range_bounds(elements, values.len())?;
+    Some(values.get(start..end)?.to_vec())
 }
 
 fn native_static_i64(value: &str) -> Option<i64> {
@@ -982,7 +1390,7 @@ fn native_const_string_value(value: &str) -> ConstRuntimeValue32Data {
     }
 }
 
-fn native_const_runtime_string(value: ConstRuntimeValue32Data) -> Option<String> {
+pub(super) fn native_const_runtime_string(value: ConstRuntimeValue32Data) -> Option<String> {
     match value {
         ConstRuntimeValue32Data::ShortStr(value) => Some(value),
         ConstRuntimeValue32Data::Heap(value) => match *value {
@@ -1033,119 +1441,4 @@ fn native_map_key_const_value(key: RuntimeMapKeyData) -> Option<ConstRuntimeValu
         }
         RuntimeMapKeyData::Obj(_) => return None,
     })
-}
-
-fn native_map_keys_match(lhs: &RuntimeMapKeyData, rhs: &RuntimeMapKeyData) -> bool {
-    lhs == rhs
-        || native_map_key_str(lhs)
-            .zip(native_map_key_str(rhs))
-            .is_some_and(|(lhs, rhs)| lhs == rhs)
-}
-
-fn native_map_entries_are_string_keyed(entries: &[(RuntimeMapKeyData, ConstRuntimeValue32Data)]) -> bool {
-    !entries.is_empty() && entries.iter().all(|(key, _)| native_map_key_str(key).is_some())
-}
-
-fn native_map_entry_keys_match(lhs: &RuntimeMapKeyData, rhs: &RuntimeMapKeyData, compare_string_keys: bool) -> bool {
-    if compare_string_keys {
-        native_map_keys_match(lhs, rhs)
-    } else {
-        lhs == rhs
-    }
-}
-
-fn native_map_key_str(key: &RuntimeMapKeyData) -> Option<&str> {
-    match key {
-        RuntimeMapKeyData::ShortStr(value) | RuntimeMapKeyData::String(value) => Some(value),
-        _ => None,
-    }
-}
-
-fn native_static_value_eq(lhs: &NativeStraightlineValue, rhs: &NativeStraightlineValue) -> bool {
-    match (lhs, rhs) {
-        (NativeStraightlineValue::Nil, NativeStraightlineValue::Nil) => true,
-        (NativeStraightlineValue::Bool(lhs), NativeStraightlineValue::Bool(rhs)) => lhs == rhs,
-        (NativeStraightlineValue::I64(lhs), NativeStraightlineValue::I64(rhs)) => lhs == rhs,
-        (NativeStraightlineValue::F64(lhs), NativeStraightlineValue::F64(rhs)) => lhs == rhs,
-        (NativeStraightlineValue::String { value: lhs, .. }, NativeStraightlineValue::String { value: rhs, .. }) => {
-            lhs == rhs
-        }
-        (NativeStraightlineValue::List { elements: lhs, .. }, NativeStraightlineValue::List { elements: rhs, .. }) => {
-            lhs.len() == rhs.len()
-                && lhs
-                    .iter()
-                    .zip(rhs.iter())
-                    .all(|(lhs, rhs)| native_const_runtime_eq(lhs, rhs))
-        }
-        (NativeStraightlineValue::Map { entries: lhs, .. }, NativeStraightlineValue::Map { entries: rhs, .. }) => {
-            let compare_string_keys =
-                native_map_entries_are_string_keyed(lhs) && native_map_entries_are_string_keyed(rhs);
-            lhs.len() == rhs.len()
-                && lhs.iter().all(|(lhs_key, lhs_value)| {
-                    rhs.iter()
-                        .find(|(rhs_key, _)| native_map_entry_keys_match(rhs_key, lhs_key, compare_string_keys))
-                        .is_some_and(|(_, rhs_value)| native_const_runtime_eq(lhs_value, rhs_value))
-                })
-        }
-        (
-            NativeStraightlineValue::Object {
-                type_name: lhs_name,
-                fields: lhs,
-                ..
-            },
-            NativeStraightlineValue::Object {
-                type_name: rhs_name,
-                fields: rhs,
-                ..
-            },
-        ) => {
-            lhs_name == rhs_name
-                && lhs.len() == rhs.len()
-                && lhs.iter().all(|(lhs_key, lhs_value)| {
-                    rhs.iter()
-                        .find(|(rhs_key, _)| rhs_key == lhs_key)
-                        .is_some_and(|(_, rhs_value)| native_const_runtime_eq(lhs_value, rhs_value))
-                })
-        }
-        _ => false,
-    }
-}
-
-fn native_const_runtime_eq(lhs: &ConstRuntimeValue32Data, rhs: &ConstRuntimeValue32Data) -> bool {
-    match (lhs, rhs) {
-        (ConstRuntimeValue32Data::Nil, ConstRuntimeValue32Data::Nil) => true,
-        (ConstRuntimeValue32Data::Bool(lhs), ConstRuntimeValue32Data::Bool(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::Int(lhs), ConstRuntimeValue32Data::Int(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::Float(lhs), ConstRuntimeValue32Data::Float(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::ShortStr(lhs), ConstRuntimeValue32Data::ShortStr(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::Heap(lhs), ConstRuntimeValue32Data::Heap(rhs)) => {
-            native_const_heap_eq(lhs.as_ref(), rhs.as_ref())
-        }
-        _ => false,
-    }
-}
-
-fn native_const_heap_eq(lhs: &ConstHeapValue32Data, rhs: &ConstHeapValue32Data) -> bool {
-    match (lhs, rhs) {
-        (ConstHeapValue32Data::LongString(lhs), ConstHeapValue32Data::LongString(rhs)) => lhs == rhs,
-        (ConstHeapValue32Data::List(lhs), ConstHeapValue32Data::List(rhs)) => {
-            lhs.len() == rhs.len()
-                && lhs
-                    .iter()
-                    .zip(rhs.iter())
-                    .all(|(lhs, rhs)| native_const_runtime_eq(lhs, rhs))
-        }
-        (ConstHeapValue32Data::Map(lhs), ConstHeapValue32Data::Map(rhs)) => {
-            lhs.len() == rhs.len()
-                && lhs.iter().all(|(lhs_key, lhs_value)| {
-                    rhs.iter()
-                        .find(|(rhs_key, _)| rhs_key == lhs_key)
-                        .is_some_and(|(_, rhs_value)| native_const_runtime_eq(lhs_value, rhs_value))
-                })
-        }
-        (ConstHeapValue32Data::UpvalCell(lhs), ConstHeapValue32Data::UpvalCell(rhs)) => {
-            native_const_runtime_eq(lhs.as_ref(), rhs.as_ref())
-        }
-        _ => false,
-    }
 }
