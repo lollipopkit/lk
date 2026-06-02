@@ -15,6 +15,7 @@ use super::ir_text::{llvm_float_literal, native_relative_target};
 use super::options::LlvmBackendOptions;
 use super::output::{emit_native_builtin_call, native_scalar_main_ir, native_straightline_main_ir};
 use super::scalar::blocks::compile_native_scalar_main_blocks;
+use super::scalar::contains::static_iter_builtin_call;
 use super::scalar::facts::native_scalar_block_facts_with_statics_and_functions;
 use super::straightline_value::{
     NativeStraightlineValue, NativeStringKeyKind, native_runtime_string_key_kind, native_static_alias_symbol,
@@ -838,7 +839,19 @@ pub(super) fn compile_native_scalar_main_artifact(
                     if instr.a() as usize >= regs.len() {
                         return Ok(None);
                     }
-                    regs[instr.a() as usize] = emit_native_builtin_call(&mut body, builtin, &args, &mut ssa_index);
+                    regs[instr.a() as usize] = static_iter_builtin_call(
+                        artifact,
+                        &code,
+                        &function.consts.ints,
+                        &function.consts.strings,
+                        &function.consts.heap_values,
+                        builtin,
+                        &args,
+                        &mut globals,
+                        &mut body,
+                        &mut ssa_index,
+                    )
+                    .or_else(|| emit_native_builtin_call(&mut body, builtin, &args, &mut ssa_index));
                     if regs[instr.a() as usize].is_none() {
                         return Ok(None);
                     }
@@ -981,12 +994,6 @@ pub(super) fn compile_native_scalar_main_artifact(
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
-                if matches!(
-                    value,
-                    NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }
-                ) {
-                    return Ok(None);
-                }
                 return Ok(Some(native_straightline_main_ir(options, &body, Some(&value))));
             }
             Opcode32::Nop => {}
@@ -1041,6 +1048,8 @@ pub(super) fn native_scalar_function_needs_blocks(code: &[Instr32]) -> bool {
                 | Opcode32::CmpGeInt
                 | Opcode32::Not
                 | Opcode32::IsNil
+                | Opcode32::SetIndex
+                | Opcode32::ListPush
                 | Opcode32::Test
                 | Opcode32::Jmp
         )

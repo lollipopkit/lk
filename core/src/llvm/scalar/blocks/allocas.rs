@@ -43,7 +43,10 @@ pub(super) fn emit_scalar_entry_allocas(
     }
     for (pc, instr) in code.iter().copied().enumerate() {
         if instr.opcode() == Opcode32::CallDirect {
-            artifact.module.functions.get(instr.b() as usize)?;
+            let callee = artifact.module.functions.get(instr.b() as usize)?;
+            if function_has_list_return_shape(callee) {
+                emit_dynamic_int_list_allocas(&mut ir, &format!("list{pc}"));
+            }
             continue;
         }
         if dynamic_map_alloca_needed(heap_values, instr) {
@@ -56,13 +59,22 @@ pub(super) fn emit_scalar_entry_allocas(
     Some(ir)
 }
 
+fn function_has_list_return_shape(function: &crate::vm::Function32Data) -> bool {
+    function
+        .code
+        .iter()
+        .copied()
+        .filter_map(|raw| Instr32::try_from_raw(raw).ok())
+        .any(|instr| instr.opcode() == Opcode32::ListPush)
+}
+
 fn dynamic_map_alloca_needed(heap_values: &[ConstHeapValue32Data], instr: Instr32) -> bool {
     matches!(instr.opcode(), Opcode32::LoadHeapConst)
         && matches!(heap_values.get(instr.bx() as usize), Some(ConstHeapValue32Data::Map(values)) if values.is_empty())
 }
 
 fn dynamic_list_alloca_needed(heap_values: &[ConstHeapValue32Data], instr: Instr32) -> bool {
-    matches!(instr.opcode(), Opcode32::NewList | Opcode32::SliceFrom)
+    matches!(instr.opcode(), Opcode32::Call | Opcode32::NewList | Opcode32::SliceFrom)
         || matches!(instr.opcode(), Opcode32::LoadHeapConst)
             && matches!(heap_values.get(instr.bx() as usize), Some(ConstHeapValue32Data::List(values)) if values.is_empty() || values.iter().all(|v| matches!(v, ConstRuntimeValue32Data::Int(_))))
 }

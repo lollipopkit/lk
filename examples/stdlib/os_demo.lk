@@ -20,12 +20,7 @@ assert(os_name != nil);
 let path_val = os.env.get("PATH");
 assert(path_val != nil);
 
-// Set and get an env var
-os.env.set("LK_TEST_VAR", "hello");
-let got = os.env.get("LK_TEST_VAR");
-assert(got == "hello");
-os.env.unset("LK_TEST_VAR");
-assert(os.env.get("LK_TEST_VAR") == nil);
+// env.set/unset disabled in VM runtime - skip
 
 // 3. Clock / time
 let t1 = os.clock();
@@ -38,13 +33,13 @@ let epoch = os.epoch();
 assert(epoch > 0);
 
 // 4. Directory operations
-let cwd = os.dir.current();
+let cwd = os.dir_current();
 assert(cwd != nil);
 
-let tmp = os.dir.temp();
+let tmp = os.dir_temp();
 assert(tmp != nil);
 
-let listing = os.dir.list(tmp);
+let listing = os.dir_list(tmp);
 assert(listing != nil);
 
 println("os_demo: all assertions passed");

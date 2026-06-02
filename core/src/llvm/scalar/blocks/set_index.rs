@@ -77,6 +77,33 @@ pub(super) fn emit_set_index_block(
             key: NativeMapKeyKind::Str,
             value: NativeMapValueKind::I64,
         });
+    } else if let NativeStraightlineValue::ArgList { mut elements } = target {
+        let Some(NativeStraightlineValue::I64(index)) = static_regs
+            .get(instr.b() as usize)
+            .and_then(Clone::clone)
+            .or_else(|| local_static_i64_before(code, int_consts, pc, instr.b()))
+        else {
+            return false;
+        };
+        let Some(value) = static_set_value(
+            &NativeStraightlineValue::ArgList {
+                elements: elements.clone(),
+            },
+            static_regs,
+            code,
+            int_consts,
+            strings,
+            pc,
+            instr.c(),
+        ) else {
+            return false;
+        };
+        let index = index.parse::<usize>().ok();
+        let Some(slot) = index.and_then(|index| elements.get_mut(index)) else {
+            return false;
+        };
+        *slot = value;
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::ArgList { elements });
     } else {
         let key = if let Some(key) = static_regs.get(instr.b() as usize).and_then(Clone::clone) {
             key

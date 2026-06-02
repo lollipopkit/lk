@@ -6,19 +6,19 @@ use crate::{
             block_helpers::{
                 concat_text_values, emit_static_scalar_value_store_if_needed, local_heap_kind_before,
                 local_register_kind_before, local_static_container_before, local_static_i64_before,
-                static_register_value_trusted_before, three_regs_in_bounds,
+                static_register_value_trusted_before, text_value_from_reg, three_regs_in_bounds,
             },
             contains::{
                 emit_dynamic_int_list_move, local_static_heap_const_before, local_static_i64_value_before,
                 local_static_index_value_before, local_static_iter_zip_before, local_static_map_rest_before,
-                local_static_string_before, text_value_from_trusted_reg,
+                local_static_object_before, local_static_string_before,
             },
             emit::emit_f64_binary_block,
             facts::{NativeScalarFacts, NativeScalarKind},
         },
         straightline_value::{
-            NativeListElementKind, NativeStraightlineValue, native_static_f64_binary, native_static_list_from_values,
-            native_static_text_string,
+            NativeListElementKind, NativeStraightlineValue, NativeTextPart, native_static_f64_binary,
+            native_static_list_from_values, native_static_text_string,
         },
     },
     vm::{ConstHeapValue32Data, Instr32, Opcode32},
@@ -120,9 +120,65 @@ fn emit_new_list(
         && let Some(value @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. })) =
             static_regs.get(start).cloned().flatten()
     {
-        static_regs[instr.a() as usize] = Some(value);
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::ArgList { elements: vec![value] });
         emit_branch_to_next(ir, pc, code.len());
         return true;
+    }
+    if static_regs.get(start..end).is_some_and(|values| {
+        values.iter().any(|value| {
+            matches!(
+                value,
+                Some(NativeStraightlineValue::List { .. } | NativeStraightlineValue::DynamicList { .. })
+            )
+        })
+    }) {
+        static_regs[instr.a() as usize] = (start..end)
+            .map(|reg| {
+                let reg_u8 = u8::try_from(reg).ok()?;
+                static_regs
+                    .get(reg)
+                    .cloned()
+                    .flatten()
+                    .or_else(|| local_static_i64_value_before(code, int_consts, strings, heap_values, pc, reg_u8))
+                    .or_else(|| local_static_i64_before(code, int_consts, pc, reg_u8))
+                    .or_else(|| local_static_heap_const_before(code, heap_values, pc, reg_u8))
+                    .or_else(|| local_static_string_before(code, strings, pc, reg_u8))
+                    .or_else(|| match facts.register_kind_before(pc, reg_u8) {
+                        Some(NativeScalarKind::I64) => {
+                            let loaded = next_tmp(tmp_index);
+                            ir.push_str(&format!("  {loaded} = load i64, ptr %r{reg}.slot\n"));
+                            Some(NativeStraightlineValue::I64(loaded))
+                        }
+                        Some(NativeScalarKind::MaybeI64) => {
+                            let value = next_tmp(tmp_index);
+                            let present = next_tmp(tmp_index);
+                            ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
+                            ir.push_str(&format!("  {present} = load i64, ptr %r{reg}.present.slot\n"));
+                            Some(NativeStraightlineValue::MaybeI64 { value, present })
+                        }
+                        _ => None,
+                    })
+                    .or_else(|| {
+                        (facts.register_kind_before(pc, reg_u8) == Some(NativeScalarKind::F64)).then(|| {
+                            let loaded = next_tmp(tmp_index);
+                            ir.push_str(&format!("  {loaded} = load double, ptr %r{reg}.slot\n"));
+                            NativeStraightlineValue::F64(loaded)
+                        })
+                    })
+                    .or_else(|| {
+                        (facts.register_kind_before(pc, reg_u8) == Some(NativeScalarKind::Bool)).then(|| {
+                            let loaded = next_tmp(tmp_index);
+                            ir.push_str(&format!("  {loaded} = load i64, ptr %r{reg}.slot\n"));
+                            NativeStraightlineValue::Bool(loaded)
+                        })
+                    })
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(|elements| NativeStraightlineValue::ArgList { elements });
+        if static_regs[instr.a() as usize].is_some() {
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
     }
     let static_i64_values = (start..end)
         .map(|reg| {
@@ -144,9 +200,17 @@ fn emit_new_list(
         return true;
     }
     let static_object_values = (start..end)
-        .map(|reg| match static_regs.get(reg).cloned().flatten()? {
-            value @ NativeStraightlineValue::Object { .. } => Some(value),
-            _ => None,
+        .map(|reg| {
+            let reg_u8 = u8::try_from(reg).ok()?;
+            match static_regs
+                .get(reg)
+                .cloned()
+                .flatten()
+                .or_else(|| local_static_object_before(static_regs, code, int_consts, pc, reg_u8))?
+            {
+                value @ NativeStraightlineValue::Object { .. } => Some(value),
+                _ => None,
+            }
         })
         .collect::<Option<Vec<_>>>();
     if let Some(elements) = static_object_values {
@@ -251,6 +315,21 @@ fn emit_static_list(
             .or_else(|| local_static_string_before(code, strings, pc, u8::try_from(start + offset).ok()?))
             .or_else(|| {
                 let reg = u8::try_from(start + offset).ok()?;
+                if facts.register_kind_before(pc, reg) == Some(NativeScalarKind::F64) {
+                    let loaded = next_tmp(tmp_index);
+                    ir.push_str(&format!("  {loaded} = load double, ptr %r{reg}.slot\n"));
+                    return Some(NativeStraightlineValue::F64(loaded));
+                }
+                if facts.register_kind_before(pc, reg) == Some(NativeScalarKind::I64) {
+                    let loaded = next_tmp(tmp_index);
+                    ir.push_str(&format!("  {loaded} = load i64, ptr %r{reg}.slot\n"));
+                    return Some(NativeStraightlineValue::I64(loaded));
+                }
+                if facts.register_kind_before(pc, reg) == Some(NativeScalarKind::Bool) {
+                    let loaded = next_tmp(tmp_index);
+                    ir.push_str(&format!("  {loaded} = load i64, ptr %r{reg}.slot\n"));
+                    return Some(NativeStraightlineValue::Bool(loaded));
+                }
                 (facts.register_kind_before(pc, reg) == Some(NativeScalarKind::StrPtr)).then(|| {
                     let loaded = next_tmp(tmp_index);
                     ir.push_str(&format!("  {loaded} = load ptr, ptr %r{reg}.slot\n"));
@@ -398,6 +477,7 @@ fn emit_move(
                 | NativeStraightlineValue::DynamicMap { .. }
                 | NativeStraightlineValue::DynamicList { .. }
                 | NativeStraightlineValue::Object { .. }
+                | NativeStraightlineValue::ArgList { .. }
         )
     ) {
         static_regs[instr.a() as usize] = static_regs.get(instr.b() as usize).and_then(Clone::clone);
@@ -408,7 +488,10 @@ fn emit_move(
     let local_kind = local_register_kind_before(code, pc, instr.b());
     let kind = if heap_kind == Some(NativeScalarKind::StrPtr) {
         heap_kind
-    } else if local_kind == Some(NativeScalarKind::StrPtr) {
+    } else if matches!(
+        local_kind,
+        Some(NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr)
+    ) {
         local_kind
     } else {
         facts.register_kind_before(pc, instr.b()).or(local_kind)
@@ -440,11 +523,17 @@ fn emit_move(
                     static_regs,
                 )
             });
+        if kind == NativeScalarKind::MaybeStrPtr {
+            static_regs[instr.a() as usize] = None;
+        }
         let value = next_tmp(tmp_index);
         let ty = kind.llvm_type();
         ir.push_str(&format!("  {value} = load {ty}, ptr %r{}.slot\n", instr.b()));
         ir.push_str(&format!("  store {ty} {value}, ptr %r{}.slot\n", instr.a()));
-        if kind == NativeScalarKind::MaybeI64 {
+        if kind == NativeScalarKind::StrPtr {
+            ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
+        }
+        if matches!(kind, NativeScalarKind::MaybeI64 | NativeScalarKind::MaybeStrPtr) {
             let present = next_tmp(tmp_index);
             ir.push_str(&format!("  {present} = load i64, ptr %r{}.present.slot\n", instr.b()));
             ir.push_str(&format!("  store i64 {present}, ptr %r{}.present.slot\n", instr.a()));
@@ -480,10 +569,8 @@ fn emit_to_string(
     if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
         return false;
     }
-    let Some(value) = text_value_from_trusted_reg(
+    let Some(value) = text_value_from_reg(
         ir,
-        code,
-        pc,
         instr.b(),
         facts.register_kind_before(pc, instr.b()),
         static_regs,
@@ -510,10 +597,8 @@ fn emit_concat_string(
     if !three_regs_in_bounds(register_count, instr) {
         return false;
     }
-    let Some(lhs) = text_value_from_trusted_reg(
+    let Some(lhs) = text_value_from_reg(
         ir,
-        code,
-        pc,
         instr.b(),
         facts.register_kind_before(pc, instr.b()),
         static_regs,
@@ -521,10 +606,8 @@ fn emit_concat_string(
     ) else {
         return false;
     };
-    let Some(rhs) = text_value_from_trusted_reg(
+    let Some(rhs) = text_value_from_reg(
         ir,
-        code,
-        pc,
         instr.c(),
         facts.register_kind_before(pc, instr.c()),
         static_regs,
@@ -550,9 +633,180 @@ fn emit_concat_string(
         emit_branch_to_next(ir, pc, code.len());
         return true;
     }
-    static_regs[instr.a() as usize] = Some(value);
+    if emit_dynamic_text_to_reg(ir, extra_globals, instr.a(), &value, pc, tmp_index).is_some() {
+        static_regs[instr.a() as usize] = Some(value);
+    } else {
+        static_regs[instr.a() as usize] = Some(value);
+    }
     emit_branch_to_next(ir, pc, code.len());
     true
+}
+
+fn emit_dynamic_text_to_reg(
+    ir: &mut String,
+    extra_globals: &mut String,
+    dst: u8,
+    value: &NativeStraightlineValue,
+    pc: usize,
+    tmp_index: &mut usize,
+) -> Option<String> {
+    let NativeStraightlineValue::Text(parts) = value else {
+        return None;
+    };
+    if native_static_text_string(parts).is_some() {
+        return None;
+    }
+    let out = next_tmp(tmp_index);
+    let offset_slot = next_tmp(tmp_index);
+    ir.push_str(&format!(
+        "  {out} = getelementptr [4096 x i8], ptr %r{dst}.text.buf, i64 0, i64 0\n"
+    ));
+    ir.push_str(&format!("  {offset_slot} = alloca i64\n"));
+    ir.push_str(&format!("  store i64 0, ptr {offset_slot}\n"));
+    for (index, part) in parts.iter().enumerate() {
+        emit_text_part_to_buffer(ir, extra_globals, dst, pc, index, part, &out, &offset_slot, tmp_index)?;
+    }
+    let offset = next_tmp(tmp_index);
+    let zero_slot = next_tmp(tmp_index);
+    ir.push_str(&format!("  {offset} = load i64, ptr {offset_slot}\n"));
+    ir.push_str(&format!("  {zero_slot} = getelementptr i8, ptr {out}, i64 {offset}\n"));
+    ir.push_str(&format!("  store i8 0, ptr {zero_slot}\n"));
+    ir.push_str(&format!("  store ptr {out}, ptr %r{dst}.slot\n"));
+    ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
+    Some(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_text_part_to_buffer(
+    ir: &mut String,
+    extra_globals: &mut String,
+    dst: u8,
+    pc: usize,
+    index: usize,
+    part: &NativeTextPart,
+    out: &str,
+    offset_slot: &str,
+    tmp_index: &mut usize,
+) -> Option<()> {
+    match part {
+        NativeTextPart::String { symbol, value } => {
+            let symbol = if symbol.is_empty() {
+                let generated = format!("@lk_text_part_{pc}_{index}");
+                extra_globals.push_str(&llvm_string_constant(&generated, value));
+                generated
+            } else {
+                symbol.clone()
+            };
+            emit_append_ptr_to_buffer(ir, pc, index, &symbol, out, offset_slot, tmp_index);
+        }
+        NativeTextPart::StrPtr(value) => emit_append_ptr_to_buffer(ir, pc, index, value, out, offset_slot, tmp_index),
+        NativeTextPart::I64(value) => {
+            emit_append_formatted_to_buffer(ir, dst, value, "@lk_i64_raw_fmt", out, offset_slot, tmp_index);
+        }
+        NativeTextPart::F64(value) => {
+            emit_append_formatted_to_buffer(ir, dst, value, "@lk_f64_raw_fmt", out, offset_slot, tmp_index);
+        }
+        NativeTextPart::Bool(value) => {
+            let cond = next_tmp(tmp_index);
+            let ptr = next_tmp(tmp_index);
+            ir.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
+            ir.push_str(&format!(
+                "  {ptr} = select i1 {cond}, ptr @lk_bool_true, ptr @lk_bool_false\n"
+            ));
+            emit_append_ptr_to_buffer(ir, pc, index, &ptr, out, offset_slot, tmp_index);
+        }
+        NativeTextPart::Nil => emit_append_ptr_to_buffer(ir, pc, index, "@lk_nil_text", out, offset_slot, tmp_index),
+    }
+    Some(())
+}
+
+fn emit_append_formatted_to_buffer(
+    ir: &mut String,
+    dst: u8,
+    value: &str,
+    fmt: &str,
+    out: &str,
+    offset_slot: &str,
+    tmp_index: &mut usize,
+) {
+    let offset = next_tmp(tmp_index);
+    let dst_ptr = next_tmp(tmp_index);
+    let remaining = next_tmp(tmp_index);
+    let written_i32 = next_tmp(tmp_index);
+    let written = next_tmp(tmp_index);
+    let next = next_tmp(tmp_index);
+    ir.push_str(&format!("  {offset} = load i64, ptr {offset_slot}\n"));
+    ir.push_str(&format!("  {dst_ptr} = getelementptr i8, ptr {out}, i64 {offset}\n"));
+    ir.push_str(&format!("  {remaining} = sub i64 4096, {offset}\n"));
+    let llvm_ty = if fmt == "@lk_f64_raw_fmt" { "double" } else { "i64" };
+    ir.push_str(&format!(
+        "  {written_i32} = call i32 (ptr, i64, ptr, ...) @snprintf(ptr {dst_ptr}, i64 {remaining}, ptr {fmt}, {llvm_ty} {value})\n"
+    ));
+    ir.push_str(&format!("  {written} = sext i32 {written_i32} to i64\n"));
+    ir.push_str(&format!("  {next} = add i64 {offset}, {written}\n"));
+    ir.push_str(&format!("  store i64 {next}, ptr {offset_slot}\n"));
+    ir.push_str(&format!("  store ptr {out}, ptr %r{dst}.slot\n"));
+}
+
+fn emit_append_ptr_to_buffer(
+    ir: &mut String,
+    pc: usize,
+    index: usize,
+    src: &str,
+    out: &str,
+    offset_slot: &str,
+    tmp_index: &mut usize,
+) {
+    let offset = next_tmp(tmp_index);
+    let len = next_tmp(tmp_index);
+    ir.push_str(&format!("  {offset} = load i64, ptr {offset_slot}\n"));
+    ir.push_str(&format!("  {len} = call i64 @strlen(ptr {src})\n"));
+    emit_copy_loop(ir, pc, index, src, out, &offset, &len, tmp_index);
+    let next = next_tmp(tmp_index);
+    ir.push_str(&format!("  {next} = add i64 {offset}, {len}\n"));
+    ir.push_str(&format!("  store i64 {next}, ptr {offset_slot}\n"));
+}
+
+fn emit_copy_loop(
+    ir: &mut String,
+    pc: usize,
+    index: usize,
+    src: &str,
+    dst: &str,
+    dst_offset: &str,
+    len: &str,
+    tmp_index: &mut usize,
+) {
+    let idx_slot = next_tmp(tmp_index);
+    let loop_label = format!("lk_text_{pc}_{index}_loop_{}", *tmp_index);
+    let body_label = format!("lk_text_{pc}_{index}_body_{}", *tmp_index);
+    let done_label = format!("lk_text_{pc}_{index}_done_{}", *tmp_index);
+    ir.push_str(&format!("  {idx_slot} = alloca i64\n"));
+    ir.push_str(&format!("  store i64 0, ptr {idx_slot}\n"));
+    ir.push_str(&format!("  br label %{loop_label}\n"));
+    ir.push_str(&format!("{loop_label}:\n"));
+    let idx = next_tmp(tmp_index);
+    let keep_going = next_tmp(tmp_index);
+    ir.push_str(&format!("  {idx} = load i64, ptr {idx_slot}\n"));
+    ir.push_str(&format!("  {keep_going} = icmp ult i64 {idx}, {len}\n"));
+    ir.push_str(&format!(
+        "  br i1 {keep_going}, label %{body_label}, label %{done_label}\n"
+    ));
+    ir.push_str(&format!("{body_label}:\n"));
+    let src_slot = next_tmp(tmp_index);
+    let ch = next_tmp(tmp_index);
+    let shifted = next_tmp(tmp_index);
+    let dst_slot = next_tmp(tmp_index);
+    let next = next_tmp(tmp_index);
+    ir.push_str(&format!("  {src_slot} = getelementptr i8, ptr {src}, i64 {idx}\n"));
+    ir.push_str(&format!("  {ch} = load i8, ptr {src_slot}\n"));
+    ir.push_str(&format!("  {shifted} = add i64 {dst_offset}, {idx}\n"));
+    ir.push_str(&format!("  {dst_slot} = getelementptr i8, ptr {dst}, i64 {shifted}\n"));
+    ir.push_str(&format!("  store i8 {ch}, ptr {dst_slot}\n"));
+    ir.push_str(&format!("  {next} = add i64 {idx}, 1\n"));
+    ir.push_str(&format!("  store i64 {next}, ptr {idx_slot}\n"));
+    ir.push_str(&format!("  br label %{loop_label}\n"));
+    ir.push_str(&format!("{done_label}:\n"));
 }
 
 fn emit_float_arithmetic(

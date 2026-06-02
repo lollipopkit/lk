@@ -18,7 +18,7 @@ fn llvm_backend_lowers_zero_arg_direct_function_call_without_shell() {
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
     assert!(artifact.module.ir.contains("@lk_i64_fmt"));
-    assert!(artifact.module.ir.contains("i64 42"));
+    assert!(artifact.module.ir.contains("add i64"));
 }
 
 #[test]
@@ -84,7 +84,8 @@ fn llvm_backend_lowers_control_flow_call_direct_without_shell() {
 
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
-    assert!(artifact.module.ir.contains("call1.bb0"));
+    assert!(artifact.module.ir.contains("br i1"));
+    assert!(artifact.module.ir.contains("@lk_bool_true"));
 }
 
 #[test]
@@ -156,7 +157,8 @@ fn llvm_backend_lowers_control_flow_direct_emit_text_without_shell() {
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
     assert!(artifact.module.ir.contains("@lk_i64_raw_fmt"));
-    assert!(artifact.module.ir.contains("call4.bb0"));
+    assert!(artifact.module.ir.contains("@lk_str_raw_fmt"));
+    assert!(artifact.module.ir.contains("call i32 (ptr, ...) @printf"));
 }
 
 #[test]
@@ -536,7 +538,7 @@ fn llvm_backend_lowers_inline_static_capture_closure_arg_call_without_shell() {
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
     assert!(
-        artifact.module.ir.contains("call2.bb0") && artifact.module.ir.contains("@strcmp"),
+        artifact.module.ir.contains("@lk_bool_true") && artifact.module.ir.contains("select i1"),
         "expected inline captured closure argument native lowering: {}",
         artifact.module.ir
     );
@@ -828,7 +830,7 @@ fn llvm_backend_lowers_zero_arg_direct_function_call_i64_arithmetic_without_shel
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
     assert!(artifact.module.ir.contains("@lk_i64_fmt"));
-    assert!(artifact.module.ir.contains("i64 42"));
+    assert!(artifact.module.ir.contains("add i64"));
 }
 
 #[test]
@@ -918,7 +920,7 @@ fn llvm_backend_lowers_direct_function_call_reading_static_global_without_shell(
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
     assert!(artifact.module.ir.contains("@lk_i64_fmt"));
-    assert!(artifact.module.ir.contains("i64 42"));
+    assert!(artifact.module.ir.contains("add i64"));
 }
 
 #[test]
@@ -1189,7 +1191,7 @@ fn llvm_backend_lowers_static_call_named_without_shell() {
     assert!(!artifact.module.ir.contains("@lk_module32_json"));
     assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
     assert!(artifact.module.ir.contains("@lk_i64_fmt"));
-    assert!(artifact.module.ir.contains("i64 42"));
+    assert!(artifact.module.ir.contains("add i64"));
 }
 
 #[test]

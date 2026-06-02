@@ -1,36 +1,92 @@
-mod allocas; mod arithmetic; mod asserts; mod callees; mod channel; mod compare; mod const_lists; mod control;
-mod finalize; mod get_index; mod object_methods; mod runtime_builtins; mod set_index; mod values;
-use self::{allocas::emit_scalar_entry_allocas, arithmetic::emit_int_arithmetic_block, asserts::emit_native_assert_direct_call, callees::{callee_contains_call, callee_is_native_assert}, channel::emit_static_channel_call, compare::emit_compare_block, const_lists::emit_const_list_element_len, control::emit_test_block, finalize::finish_scalar_ir, get_index::emit_get_index_block, object_methods::{static_circle_pi_area_method, static_object_list_map_method}, runtime_builtins::emit_runtime_builtin_call, set_index::emit_set_index_block, values::emit_value_block};
+mod allocas;
+mod arithmetic;
+mod asserts;
+mod call_args;
+mod callees;
+mod cells;
+mod channel;
+mod compare;
+mod const_lists;
+mod control;
+mod finalize;
+mod get_index;
+mod globals;
+mod iter;
+mod len;
+mod list_methods;
+mod list_push;
+mod map_methods;
+mod not;
+mod object_methods;
+mod returns;
+mod runtime_builtins;
+mod set_index;
+mod string_methods;
+mod values;
+use self::{
+    allocas::emit_scalar_entry_allocas,
+    arithmetic::emit_int_arithmetic_block,
+    asserts::emit_native_assert_direct_call,
+    call_args::{
+        emit_recovered_builtin_call_block, emit_runtime_formatted_print_call, static_or_recovered_call_args,
+        static_or_recovered_call_target,
+    },
+    callees::{callee_contains_call, callee_is_native_assert},
+    cells::{emit_load_cell_block, emit_store_cell_block},
+    channel::emit_static_channel_call,
+    compare::emit_compare_block,
+    control::emit_test_block,
+    finalize::finish_scalar_ir,
+    get_index::emit_get_index_block,
+    globals::{emit_get_global_block, emit_set_global_block},
+    iter::emit_to_iter_block,
+    len::emit_len_block,
+    list_methods::{
+        emit_dynamic_f64_list_builtin_call, emit_dynamic_f64_list_builtin_call_from_regs,
+        emit_dynamic_list_method_call_block, emit_dynamic_ptr_list_builtin_call,
+        emit_dynamic_ptr_list_builtin_call_from_regs, emit_list_direct_call, emit_static_i64_list_zip_arglist_call,
+        function_has_list_return_shape,
+    },
+    list_push::emit_list_push_block,
+    map_methods::{emit_dynamic_map_keys_call, emit_dynamic_map_set_call, emit_dynamic_map_values_call},
+    not::emit_not_block,
+    object_methods::{static_circle_pi_area_method, static_object_list_map_method},
+    returns::emit_return_block,
+    runtime_builtins::emit_runtime_builtin_call,
+    set_index::emit_set_index_block,
+    string_methods::emit_string_starts_with_block,
+    values::emit_value_block,
+};
 use super::{
     block_helpers::{
-        clear_control_flow_static_values, control_flow_static_boundaries, emit_dynamic_string_starts_with,
-        emit_native_block_core_call_method, emit_static_direct_call_result, emit_static_formatted_print,
-        emit_static_named_call, emit_static_scalar_value_store_if_needed, local_register_kind_before,
-        local_static_container_before, local_static_i64_before, native_static_string, scalar_arg_value,
-        static_call_args, static_call_target, static_callable_value, static_string_value_trusted_at_call,
-        store_native_scalar_call_result, text_value_from_reg, three_regs_in_bounds,
+        clear_control_flow_static_values, control_flow_static_boundaries, emit_native_block_core_call_method,
+        emit_static_direct_call_result, emit_static_formatted_print, emit_static_named_call,
+        emit_static_scalar_value_store_if_needed, local_register_kind_before, local_static_container_before,
+        local_static_i64_before, native_static_string, static_call_target, static_callable_value,
+        store_native_scalar_call_result, three_regs_in_bounds,
     },
     contains::{
-        emit_static_contains_or_slice_block, emit_static_to_iter_block, emit_static_type_test_block,
-        local_static_callable_before, local_static_index_value_before, local_static_iter_zip_before,
-        local_static_map_rest_before, local_static_string_before, static_int_list_chunk_method,
-        static_int_list_filter_map_method, static_int_list_reduce_method, static_int_list_single_arg_method,
-        static_int_list_zip_method, static_int_range_from_registers, static_iter_builtin_call,
-        static_list_empty_arg_method, static_object_from_registers,
+        emit_static_contains_or_slice_block, emit_static_type_test_block, local_static_callable_before,
+        local_static_heap_const_before, static_int_list_chunk_method, static_int_list_filter_map_method,
+        static_int_list_reduce_method, static_int_list_single_arg_method, static_int_range_from_registers,
+        static_iter_builtin_call, static_list_empty_arg_method, static_object_from_registers,
     },
-    emit::emit_native_return_print,
     facts::{NativeScalarFacts, NativeScalarKind},
     inline::{emit_inline_direct_scalar_call, emit_inline_static_scalar_call},
 };
 use crate::llvm::{
     callee_eval::native_straightline_function_return,
     const_display::llvm_string_constant,
-    dynamic_containers::{emit_dynamic_int_list_push, emit_dynamic_joined_text_len, emit_dynamic_string_int_map_get, emit_dynamic_text_len, emit_dynamic_text_list_push, emit_dynamic_text_list_push_len},
+    dynamic_containers::emit_dynamic_string_int_map_get,
     ir_text::{emit_branch_to_next, native_label, native_relative_target, next_tmp, reg_in_bounds},
     map_mutate::native_static_map_mutate,
     options::LlvmBackendOptions,
     output::{emit_native_builtin_call, emit_native_dynamic_int_list_get_method},
-    straightline_value::{NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue, native_const_runtime_value, native_static_global, native_static_list_join, native_static_list_push, native_static_load_cell, native_static_store_cell, native_static_string_split, native_straightline_heap_const_value},
+    straightline_value::{
+        NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
+        native_const_runtime_value, native_static_list_join, native_static_string_split,
+        native_straightline_heap_const_value,
+    },
     subfunction::compile_native_scalar_subfunction,
 };
 use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Module32Artifact, Opcode32};
@@ -48,6 +104,13 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
     facts: &NativeScalarFacts,
     recursive_indices: &[u16],
 ) -> anyhow::Result<Option<String>> {
+    macro_rules! trace_unsupported {
+        ($pc:expr, $instr:expr) => {
+            if std::env::var_os("LK_LLVM_TRACE_UNSUPPORTED").is_some() {
+                eprintln!("unsupported scalar block pc {}: {:?}", $pc, $instr.opcode());
+            }
+        };
+    }
     let Some(mut ir) = emit_scalar_entry_allocas(artifact, options, register_count, global_count, heap_values, code)
     else {
         return Ok(None);
@@ -181,6 +244,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     facts,
                     &mut tmp_index,
                 ) {
+                    trace_unsupported!(pc, instr);
                     return Ok(None);
                 }
             }
@@ -241,43 +305,20 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
             }
             Opcode32::Not => {
-                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+                if emit_not_block(
+                    &mut ir,
+                    &mut static_regs,
+                    code,
+                    pc,
+                    instr,
+                    register_count,
+                    facts,
+                    &mut tmp_index,
+                )
+                .is_none()
+                {
                     return Ok(None);
                 }
-                let Some(kind) = facts
-                    .register_kind_before(pc, instr.b())
-                    .or_else(|| local_register_kind_before(code, pc, instr.b()))
-                else {
-                    return Ok(None);
-                };
-                match kind {
-                    NativeScalarKind::Bool => {
-                        let value = next_tmp(&mut tmp_index);
-                        let cond = next_tmp(&mut tmp_index);
-                        let out = next_tmp(&mut tmp_index);
-                        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.b()));
-                        ir.push_str(&format!("  {cond} = icmp eq i64 {value}, 0\n"));
-                        ir.push_str(&format!("  {out} = zext i1 {cond} to i64\n"));
-                        ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
-                    }
-                    NativeScalarKind::Nil => {
-                        ir.push_str(&format!("  store i64 1, ptr %r{}.slot\n", instr.a()));
-                    }
-                    NativeScalarKind::I64
-                    | NativeScalarKind::F64
-                    | NativeScalarKind::StrPtr
-                    | NativeScalarKind::MaybeI64 => {
-                        let value = next_tmp(&mut tmp_index);
-                        let cond = next_tmp(&mut tmp_index);
-                        let out = next_tmp(&mut tmp_index);
-                        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.b()));
-                        ir.push_str(&format!("  {cond} = icmp eq i64 {value}, 0\n"));
-                        ir.push_str(&format!("  {out} = zext i1 {cond} to i64\n"));
-                        ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
-                    }
-                }
-                static_regs[instr.a() as usize] = None;
-                emit_branch_to_next(&mut ir, pc, code.len());
             }
             Opcode32::IsNil | Opcode32::IsList | Opcode32::IsMap => {
                 if emit_static_type_test_block(
@@ -305,159 +346,78 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 ir.push_str(&format!("  br label {}\n", native_label(target, code.len())));
             }
             Opcode32::GetGlobal => {
-                if !reg_in_bounds(register_count, instr.a()) || instr.bx() as usize >= global_count {
-                    return Ok(None);
-                }
-                if let Some(value) = global_names
-                    .get(instr.bx() as usize)
-                    .and_then(|name| native_static_global(name))
+                if emit_get_global_block(
+                    &mut ir,
+                    &mut extra_globals,
+                    &mut static_regs,
+                    &static_globals,
+                    global_names,
+                    pc,
+                    instr,
+                    register_count,
+                    global_count,
+                    facts,
+                    &mut tmp_index,
+                    code.len(),
+                )
+                .is_none()
                 {
-                    if store_native_scalar_call_result(
-                        &mut ir,
-                        &mut extra_globals,
-                        &mut static_regs,
-                        instr.a(),
-                        value.clone(),
-                        &mut tmp_index,
-                    )
-                    .is_none()
-                    {
-                        static_regs[instr.a() as usize] = Some(value);
-                    }
-                    emit_branch_to_next(&mut ir, pc, code.len());
-                    continue;
-                }
-                if let Some(value) = static_globals.get(instr.bx() as usize).and_then(Clone::clone) {
-                    if store_native_scalar_call_result(
-                        &mut ir,
-                        &mut extra_globals,
-                        &mut static_regs,
-                        instr.a(),
-                        value.clone(),
-                        &mut tmp_index,
-                    )
-                    .is_none()
-                    {
-                        static_regs[instr.a() as usize] = Some(value);
-                    }
-                    emit_branch_to_next(&mut ir, pc, code.len());
-                    continue;
-                }
-                let Some(kind) = facts.global_kind_before(pc, instr.bx()) else {
                     return Ok(None);
-                };
-                static_regs[instr.a() as usize] = None;
-                let value = next_tmp(&mut tmp_index);
-                let ty = kind.llvm_type();
-                ir.push_str(&format!("  {value} = load {ty}, ptr %g{}.slot\n", instr.bx()));
-                ir.push_str(&format!("  store {ty} {value}, ptr %r{}.slot\n", instr.a()));
-                emit_branch_to_next(&mut ir, pc, code.len());
+                }
             }
             Opcode32::SetGlobal => {
-                if !reg_in_bounds(register_count, instr.a()) || instr.bx() as usize >= global_count {
+                if emit_set_global_block(
+                    &mut ir,
+                    &mut static_regs,
+                    &mut static_globals,
+                    pc,
+                    instr,
+                    register_count,
+                    global_count,
+                    facts,
+                    &mut tmp_index,
+                    code.len(),
+                )
+                .is_none()
+                {
                     return Ok(None);
                 }
-                if let Some(value) = static_regs.get(instr.a() as usize).and_then(Clone::clone) {
-                    static_globals[instr.bx() as usize] = Some(value);
-                    emit_branch_to_next(&mut ir, pc, code.len());
-                    continue;
-                }
-                let Some(kind) = facts.register_kind_before(pc, instr.a()) else {
-                    return Ok(None);
-                };
-                static_globals[instr.bx() as usize] = None;
-                static_regs[instr.a() as usize] = None;
-                let value = next_tmp(&mut tmp_index);
-                let ty = kind.llvm_type();
-                ir.push_str(&format!("  {value} = load {ty}, ptr %r{}.slot\n", instr.a()));
-                ir.push_str(&format!("  store {ty} {value}, ptr %g{}.slot\n", instr.bx()));
-                emit_branch_to_next(&mut ir, pc, code.len());
             }
             Opcode32::Len => {
-                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
-                    return Ok(None);
-                }
-                let target = static_regs
-                    .get(instr.b() as usize)
-                    .and_then(Clone::clone)
-                    .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()))
-                    .or_else(|| local_static_map_rest_before(code, strings, heap_values, pc, instr.b()))
-                    .or_else(|| local_static_index_value_before(code, int_consts, strings, heap_values, pc, instr.b()));
-                let Some(target) = target else {
-                    return Ok(None);
-                };
-                match target {
-                    NativeStraightlineValue::String { value, .. } if value.is_ascii() => {
-                        let len = value.len();
-                        ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
-                        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(len.to_string()));
-                    }
-                    NativeStraightlineValue::Text(parts) => {
-                        if emit_dynamic_text_len(&mut ir, instr.a(), &parts, &mut tmp_index).is_none() {
-                            return Ok(None);
-                        }
-                    }
-                    NativeStraightlineValue::DynamicTextChar => {
-                        ir.push_str(&format!("  store i64 1, ptr %r{}.slot\n", instr.a()));
-                    }
-                    NativeStraightlineValue::List { elements, .. } => {
-                        let len = elements.len();
-                        ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
-                        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(len.to_string()));
-                    }
-                    NativeStraightlineValue::Map { entries, .. } => {
-                        let len = entries.len();
-                        ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
-                        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(len.to_string()));
-                    }
-                    NativeStraightlineValue::DynamicJoinedText { id, delimiter_len } => {
-                        if emit_dynamic_joined_text_len(&mut ir, instr.a(), id, delimiter_len, &mut tmp_index).is_none()
-                        {
-                            return Ok(None);
-                        }
-                    }
-                    NativeStraightlineValue::DynamicList {
-                        id,
-                        element: NativeListElementKind::I64,
-                    } => {
-                        let len = next_tmp(&mut tmp_index);
-                        ir.push_str(&format!("  {len} = load i64, ptr %list{id}.len.slot\n"));
-                        ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
-                    }
-                    NativeStraightlineValue::DynamicConstListElement { elements, index } => {
-                        let Some(value) =
-                            emit_const_list_element_len(&mut ir, &elements, &index, instr.a(), &mut tmp_index)
-                        else {
-                            return Ok(None);
-                        };
-                        static_regs[instr.a() as usize] = Some(value);
-                    }
-                    _ => return Ok(None),
-                }
-                if !matches!(
-                    static_regs.get(instr.a() as usize),
-                    Some(Some(NativeStraightlineValue::I64(_)))
-                ) {
-                    static_regs[instr.a() as usize] = None;
-                }
-                emit_branch_to_next(&mut ir, pc, code.len());
-            }
-            Opcode32::ToIter => {
-                if emit_static_to_iter_block(
+                if emit_len_block(
+                    &mut ir,
                     &mut static_regs,
-                    register_count,
                     code,
                     int_consts,
                     strings,
                     heap_values,
                     pc,
                     instr,
+                    register_count,
+                    facts,
+                    &mut tmp_index,
                 )
                 .is_none()
                 {
                     return Ok(None);
                 }
-                emit_branch_to_next(&mut ir, pc, code.len());
+            }
+            Opcode32::ToIter => {
+                if emit_to_iter_block(
+                    &mut static_regs,
+                    code,
+                    int_consts,
+                    strings,
+                    heap_values,
+                    pc,
+                    instr,
+                    register_count,
+                    &mut ir,
+                )
+                .is_none()
+                {
+                    return Ok(None);
+                }
             }
             Opcode32::StringSplit => {
                 if !three_regs_in_bounds(register_count, instr) {
@@ -542,37 +502,21 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
             Opcode32::StringStartsWith => {
-                if !three_regs_in_bounds(register_count, instr) {
-                    return Ok(None);
-                }
-                let Some(prefix) = static_regs.get(instr.c() as usize).and_then(Clone::clone) else {
-                    return Ok(None);
-                };
-                let NativeStraightlineValue::String { value: prefix, .. } = prefix else {
-                    return Ok(None);
-                };
-                if let Some(NativeStraightlineValue::String { value: target, .. }) =
-                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
-                    && static_string_value_trusted_at_call(code, pc, instr.b())
+                if emit_string_starts_with_block(
+                    &mut ir,
+                    &mut extra_globals,
+                    &mut static_regs,
+                    code,
+                    pc,
+                    instr,
+                    register_count,
+                    facts,
+                    &mut tmp_index,
+                )
+                .is_none()
                 {
-                    let value = i64::from(target.starts_with(&prefix));
-                    ir.push_str(&format!("  store i64 {value}, ptr %r{}.slot\n", instr.a()));
-                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(value.to_string()));
-                } else if facts.register_kind_before(pc, instr.b()) == Some(NativeScalarKind::StrPtr) {
-                    emit_dynamic_string_starts_with(
-                        &mut ir,
-                        &mut extra_globals,
-                        "",
-                        instr.a(),
-                        instr.b(),
-                        &prefix,
-                        &mut tmp_index,
-                    );
-                    static_regs[instr.a() as usize] = None;
-                } else {
                     return Ok(None);
                 }
-                emit_branch_to_next(&mut ir, pc, code.len());
             }
             Opcode32::GetIndex => {
                 if !emit_get_index_block(
@@ -593,87 +537,21 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
             }
             Opcode32::ListPush => {
-                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+                if !emit_list_push_block(
+                    &mut ir,
+                    &mut extra_globals,
+                    &mut static_regs,
+                    code,
+                    int_consts,
+                    heap_values,
+                    pc,
+                    instr,
+                    register_count,
+                    facts,
+                    &mut tmp_index,
+                ) {
                     return Ok(None);
                 }
-                let target = static_regs
-                    .get(instr.a() as usize)
-                    .and_then(Clone::clone)
-                    .or_else(|| local_static_container_before(code, heap_values, pc, instr.a()));
-                let Some(NativeStraightlineValue::DynamicList {
-                    id,
-                    element: NativeListElementKind::I64,
-                }) = target.clone()
-                else {
-                    if let Some(target) = target.clone()
-                        && let Some(value) = static_regs.get(instr.b() as usize).and_then(Clone::clone)
-                        && let Some(value) = native_static_list_push(target, value)
-                    {
-                        static_regs[instr.a() as usize] = Some(value);
-                        emit_branch_to_next(&mut ir, pc, code.len());
-                        continue;
-                    }
-                    if let Some(NativeStraightlineValue::DynamicList {
-                        id,
-                        element: NativeListElementKind::Text,
-                    }) = target
-                    {
-                        let Some(value) = static_regs.get(instr.b() as usize).and_then(Clone::clone) else {
-                            return Ok(None);
-                        };
-                        if emit_dynamic_text_list_push(&mut ir, id, value, &mut tmp_index).is_none() {
-                            return Ok(None);
-                        }
-                        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
-                            id,
-                            element: NativeListElementKind::Text,
-                        });
-                        emit_branch_to_next(&mut ir, pc, code.len());
-                        continue;
-                    }
-                    return Ok(None);
-                };
-                if facts.register_kind_before(pc, instr.b()) == Some(NativeScalarKind::I64)
-                    && !matches!(
-                        static_regs.get(instr.b() as usize).and_then(Clone::clone),
-                        Some(
-                            NativeStraightlineValue::DynamicTextChar
-                                | NativeStraightlineValue::Text(_)
-                                | NativeStraightlineValue::String { .. }
-                                | NativeStraightlineValue::StringPtr(_)
-                        )
-                    )
-                {
-                    if emit_dynamic_int_list_push(&mut ir, id, instr.b(), &mut tmp_index).is_none() {
-                        return Ok(None);
-                    }
-                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
-                        id,
-                        element: NativeListElementKind::I64,
-                    });
-                } else {
-                    let Some(value) = text_value_from_reg(
-                        &mut ir,
-                        instr.b(),
-                        facts.register_kind_before(pc, instr.b()),
-                        &static_regs,
-                        &mut tmp_index,
-                    ) else {
-                        return Ok(None);
-                    };
-                    if emit_dynamic_text_list_push(&mut ir, id, value, &mut tmp_index).is_none() {
-                        if facts.register_kind_before(pc, instr.b()) == Some(NativeScalarKind::StrPtr) {
-                            emit_dynamic_text_list_push_len(&mut ir, id, "1", &mut tmp_index);
-                        } else {
-                            return Ok(None);
-                        }
-                    }
-                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
-                        id,
-                        element: NativeListElementKind::Text,
-                    });
-                }
-                emit_branch_to_next(&mut ir, pc, code.len());
             }
             Opcode32::NewObject => {
                 if !reg_in_bounds(register_count, instr.a()) {
@@ -818,7 +696,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     continue;
                 }
                 let Some(NativeStraightlineValue::Builtin(builtin)) =
-                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
+                    static_or_recovered_call_target(&static_regs, code, global_names, pc, instr.b())
                 else {
                     return Ok(None);
                 };
@@ -839,17 +717,144 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     emit_branch_to_next(&mut ir, pc, code.len());
                     continue;
                 }
-                if let Some(args) = static_call_args(&static_regs, instr.b(), instr.c()) {
+                if builtin == NativeBuiltin::Println
+                    && instr.c() == 1
+                    && let Some(arg) = instr.b().checked_add(1)
+                    && local_register_kind_before(code, pc, arg) == Some(NativeScalarKind::MaybeStrPtr)
+                {
+                    let present = next_tmp(&mut tmp_index);
+                    let cond = next_tmp(&mut tmp_index);
+                    let value = next_tmp(&mut tmp_index);
+                    let text = next_tmp(&mut tmp_index);
+                    ir.push_str(&format!("  {present} = load i64, ptr %r{arg}.present.slot\n"));
+                    ir.push_str(&format!("  {cond} = icmp ne i64 {present}, 0\n"));
+                    ir.push_str(&format!("  {value} = load ptr, ptr %r{arg}.slot\n"));
+                    ir.push_str(&format!("  {text} = select i1 {cond}, ptr {value}, ptr @lk_nil_text\n"));
+                    ir.push_str(&format!("  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {text})\n"));
+                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Nil);
+                    emit_branch_to_next(&mut ir, pc, code.len());
+                    continue;
+                }
+                if emit_runtime_formatted_print_call(
+                    &mut ir,
+                    &mut extra_globals,
+                    builtin,
+                    instr,
+                    code,
+                    strings,
+                    heap_values,
+                    &static_regs,
+                    facts,
+                    pc,
+                    register_count,
+                    &mut tmp_index,
+                ) {
+                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Nil);
+                    emit_branch_to_next(&mut ir, pc, code.len());
+                    continue;
+                }
+                if emit_dynamic_ptr_list_builtin_call_from_regs(
+                    &mut ir,
+                    &mut extra_globals,
+                    &mut static_regs,
+                    instr,
+                    builtin,
+                    facts,
+                    pc,
+                    &mut tmp_index,
+                )
+                .is_some()
+                {
+                    emit_branch_to_next(&mut ir, pc, code.len());
+                    continue;
+                }
+                if emit_dynamic_f64_list_builtin_call_from_regs(
+                    &mut ir,
+                    &mut static_regs,
+                    instr,
+                    builtin,
+                    facts,
+                    pc,
+                    &mut tmp_index,
+                )
+                .is_some()
+                {
+                    emit_branch_to_next(&mut ir, pc, code.len());
+                    continue;
+                }
+                if let Some(mut args) = static_or_recovered_call_args(
+                    &static_regs,
+                    code,
+                    int_consts,
+                    strings,
+                    heap_values,
+                    global_names,
+                    pc,
+                    instr.b(),
+                    instr.c(),
+                ) {
+                    if emit_dynamic_list_method_call_block(
+                        &mut ir,
+                        &mut static_regs,
+                        code,
+                        instr,
+                        pc,
+                        &args,
+                        &mut tmp_index,
+                    ) {
+                        continue;
+                    }
+                    if emit_dynamic_ptr_list_builtin_call(
+                        &mut ir,
+                        &mut extra_globals,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
+                    if emit_dynamic_f64_list_builtin_call(
+                        &mut ir,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
+                    for (offset, arg) in args.iter_mut().enumerate() {
+                        if matches!(arg, NativeStraightlineValue::DynamicList { .. })
+                            && let Some(reg) = instr
+                                .b()
+                                .checked_add(1)
+                                .and_then(|start| start.checked_add(u8::try_from(offset).ok()?))
+                            && let Some(value) = local_static_heap_const_before(code, heap_values, pc, reg)
+                                .or_else(|| local_static_container_before(code, heap_values, pc, reg))
+                        {
+                            *arg = value;
+                        }
+                    }
                     if let [
                         target,
                         NativeStraightlineValue::String { value: method, .. },
-                        callable @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }),
+                        method_args,
                     ] = args.as_slice()
                         && let Some(value) = static_object_list_map_method(
                             artifact,
                             target.clone(),
                             method,
-                            callable.clone(),
+                            method_args.clone(),
                             &mut static_globals,
                             &mut ir,
                             &mut tmp_index,
@@ -862,8 +867,11 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     if let [
                         target,
                         NativeStraightlineValue::String { value: method, .. },
-                        callable @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }),
+                        NativeStraightlineValue::ArgList { elements },
                     ] = args.as_slice()
+                        && let [
+                            callable @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }),
+                        ] = elements.as_slice()
                         && let Some(value) = static_int_list_filter_map_method(
                             artifact,
                             code,
@@ -921,16 +929,15 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                         emit_branch_to_next(&mut ir, pc, code.len());
                         continue;
                     }
-                    if let [
-                        target,
-                        NativeStraightlineValue::String { value: method, .. },
-                        NativeStraightlineValue::List { elements, .. },
-                    ] = args.as_slice()
-                        && method == "zip"
-                        && let Some(value) =
-                            static_int_list_zip_method(code, int_consts, strings, heap_values, target.clone(), elements)
-                    {
-                        static_regs[instr.a() as usize] = Some(value);
+                    if emit_static_i64_list_zip_arglist_call(
+                        &mut static_regs,
+                        code,
+                        int_consts,
+                        strings,
+                        heap_values,
+                        instr,
+                        &args,
+                    ) {
                         emit_branch_to_next(&mut ir, pc, code.len());
                         continue;
                     }
@@ -1069,6 +1076,78 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                         emit_branch_to_next(&mut ir, pc, code.len());
                         continue;
                     }
+                    if emit_dynamic_map_set_call(
+                        &mut ir,
+                        &mut extra_globals,
+                        &mut static_regs,
+                        instr,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
+                    if emit_dynamic_map_values_call(
+                        &mut ir,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
+                    if emit_dynamic_map_keys_call(
+                        &mut ir,
+                        &mut extra_globals,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
+                    if emit_dynamic_ptr_list_builtin_call(
+                        &mut ir,
+                        &mut extra_globals,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
+                    if emit_dynamic_f64_list_builtin_call(
+                        &mut ir,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
                     let value = if let Some(value) = static_iter_builtin_call(
                         artifact,
                         code,
@@ -1127,120 +1206,27 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     }
                     emit_branch_to_next(&mut ir, pc, code.len());
                 } else {
-                    let static_args = (instr.b() as usize + 1..instr.b() as usize + 1 + instr.c() as usize)
-                        .map(|reg| {
-                            local_static_iter_zip_before(
-                                global_names,
-                                code,
-                                int_consts,
-                                strings,
-                                heap_values,
-                                pc,
-                                u8::try_from(reg).ok()?,
-                                &static_regs,
-                            )
-                            .or_else(|| static_regs.get(reg).cloned().flatten())
-                            .or_else(|| {
-                                let reg = u8::try_from(reg).ok()?;
-                                static_string_value_trusted_at_call(code, pc, reg)
-                                    .then(|| local_static_string_before(code, strings, pc, reg))
-                                    .flatten()
-                            })
-                            .or_else(|| {
-                                let reg = u8::try_from(reg).ok()?;
-                                static_string_value_trusted_at_call(code, pc, reg)
-                                    .then(|| local_static_i64_before(code, int_consts, pc, reg))
-                                    .flatten()
-                            })
-                        })
-                        .collect::<Option<Vec<_>>>();
-                    if let Some(args) = static_args {
-                        if let Some(value) = static_iter_builtin_call(
-                            artifact,
-                            code,
-                            int_consts,
-                            strings,
-                            heap_values,
-                            builtin,
-                            &args,
-                            &mut static_globals,
-                            &mut ir,
-                            &mut tmp_index,
-                        ) {
-                            store_native_scalar_call_result(
-                                &mut ir,
-                                &mut extra_globals,
-                                &mut static_regs,
-                                instr.a(),
-                                value,
-                                &mut tmp_index,
-                            );
-                            emit_branch_to_next(&mut ir, pc, code.len());
-                            continue;
-                        }
-                        if let Some(value) =
-                            emit_static_formatted_print(&mut ir, &mut extra_globals, builtin, &args, &mut tmp_index)
-                        {
-                            store_native_scalar_call_result(
-                                &mut ir,
-                                &mut extra_globals,
-                                &mut static_regs,
-                                instr.a(),
-                                value,
-                                &mut tmp_index,
-                            );
-                            emit_branch_to_next(&mut ir, pc, code.len());
-                            continue;
-                        }
-                        if let Some(value) = emit_native_builtin_call(&mut ir, builtin, &args, &mut tmp_index) {
-                            store_native_scalar_call_result(
-                                &mut ir,
-                                &mut extra_globals,
-                                &mut static_regs,
-                                instr.a(),
-                                value,
-                                &mut tmp_index,
-                            );
-                            emit_branch_to_next(&mut ir, pc, code.len());
-                            continue;
-                        }
-                    }
-                    let scalar_args = (instr.b() as usize + 1..instr.b() as usize + 1 + instr.c() as usize)
-                        .map(|reg| scalar_arg_value(&mut ir, "", facts, pc, &static_regs, reg, &mut tmp_index))
-                        .collect::<Option<Vec<_>>>();
-                    if let Some(args) = scalar_args.as_ref()
-                        && let Some(value) = emit_native_builtin_call(&mut ir, builtin, args, &mut tmp_index)
-                    {
-                        store_native_scalar_call_result(
-                            &mut ir,
-                            &mut extra_globals,
-                            &mut static_regs,
-                            instr.a(),
-                            value,
-                            &mut tmp_index,
-                        );
-                        emit_branch_to_next(&mut ir, pc, code.len());
-                        continue;
-                    }
-                    if let Some(args) = scalar_args
-                        && let Some(value) =
-                            emit_static_formatted_print(&mut ir, &mut extra_globals, builtin, &args, &mut tmp_index)
-                    {
-                        store_native_scalar_call_result(
-                            &mut ir,
-                            &mut extra_globals,
-                            &mut static_regs,
-                            instr.a(),
-                            value,
-                            &mut tmp_index,
-                        );
-                        emit_branch_to_next(&mut ir, pc, code.len());
-                        continue;
-                    }
-                    if !emit_runtime_builtin_call(&mut ir, builtin, instr, register_count, facts, pc, &mut tmp_index) {
+                    if !emit_recovered_builtin_call_block(
+                        artifact,
+                        code,
+                        int_consts,
+                        strings,
+                        heap_values,
+                        global_names,
+                        facts,
+                        &mut ir,
+                        &mut extra_globals,
+                        &mut static_regs,
+                        &mut static_globals,
+                        instr,
+                        pc,
+                        builtin,
+                        register_count,
+                        &mut tmp_index,
+                    ) {
+                        trace_unsupported!(pc, instr);
                         return Ok(None);
                     }
-                    emit_branch_to_next(&mut ir, pc, code.len());
                 }
             }
             Opcode32::CallNamed => {
@@ -1260,6 +1246,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 )
                 .is_none()
                 {
+                    trace_unsupported!(pc, instr);
                     return Ok(None);
                 }
                 emit_branch_to_next(&mut ir, pc, code.len());
@@ -1293,6 +1280,25 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     let Some(callee) = artifact.module.functions.get(callee_index as usize) else {
                         return Ok(None);
                     };
+                    if function_has_list_return_shape(callee) {
+                        if emit_list_direct_call(
+                            &mut ir,
+                            &mut extra_globals,
+                            &mut static_regs,
+                            instr,
+                            pc,
+                            callee_index as usize,
+                            facts,
+                            &mut tmp_index,
+                        )
+                        .is_none()
+                        {
+                            return Ok(None);
+                        }
+                        additional_subfn_indices.push(u16::from(callee_index));
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
                     if callee_is_native_assert(callee) {
                         if emit_native_assert_direct_call(
                             &mut ir,
@@ -1413,65 +1419,54 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
             }
             Opcode32::Return => {
-                if instr.b() == 0 {
-                    ir.push_str("  ret i32 0\n");
-                } else if instr.b() == 1 && reg_in_bounds(register_count, instr.a()) {
-                    let Some(kind) = facts
-                        .register_kind_before(pc, instr.a())
-                        .or_else(|| local_register_kind_before(code, pc, instr.a()))
-                    else {
-                        return Ok(None);
-                    };
-                    emit_native_return_print(&mut ir, pc, instr.a(), kind, &mut tmp_index);
-                    ir.push_str("  ret i32 0\n");
-                } else {
+                if emit_return_block(
+                    &mut ir,
+                    &mut extra_globals,
+                    &static_regs,
+                    code,
+                    pc,
+                    instr,
+                    register_count,
+                    facts,
+                    &mut tmp_index,
+                )
+                .is_none()
+                {
                     return Ok(None);
                 }
             }
             Opcode32::StoreCellVal => {
-                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+                if emit_store_cell_block(
+                    &mut ir,
+                    &mut static_regs,
+                    code,
+                    int_consts,
+                    pc,
+                    instr,
+                    register_count,
+                    facts,
+                    &mut tmp_index,
+                )
+                .is_none()
+                {
                     return Ok(None);
                 }
-                if let Some(kind) = facts.register_kind_before(pc, instr.b()) {
-                    let value = next_tmp(&mut tmp_index);
-                    let ty = kind.llvm_type();
-                    ir.push_str(&format!("  {value} = load {ty}, ptr %r{}.slot\n", instr.b()));
-                    ir.push_str(&format!("  store {ty} {value}, ptr %r{}.slot\n", instr.a()));
-                } else {
-                    ir.push_str(&format!("  store i64 0, ptr %r{}.slot\n", instr.a()));
-                }
-                static_regs[instr.a() as usize] = if let (Some(cell), Some(value)) = (
-                    static_regs.get(instr.a() as usize).and_then(Clone::clone),
-                    static_regs
-                        .get(instr.b() as usize)
-                        .and_then(Clone::clone)
-                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.b())),
-                ) {
-                    native_static_store_cell(cell, value)
-                } else {
-                    None
-                };
-                emit_branch_to_next(&mut ir, pc, code.len());
             }
             Opcode32::LoadCellVal => {
-                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+                if emit_load_cell_block(
+                    &mut ir,
+                    &mut static_regs,
+                    code,
+                    pc,
+                    instr,
+                    register_count,
+                    facts,
+                    &mut tmp_index,
+                )
+                .is_none()
+                {
                     return Ok(None);
                 }
-                if let Some(kind) = facts.register_kind_before(pc, instr.b()) {
-                    let value = next_tmp(&mut tmp_index);
-                    let ty = kind.llvm_type();
-                    ir.push_str(&format!("  {value} = load {ty}, ptr %r{}.slot\n", instr.b()));
-                    ir.push_str(&format!("  store {ty} {value}, ptr %r{}.slot\n", instr.a()));
-                } else {
-                    let value = next_tmp(&mut tmp_index);
-                    ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.b()));
-                    ir.push_str(&format!("  store i64 {value}, ptr %r{}.slot\n", instr.a()));
-                }
-                static_regs[instr.a() as usize] = static_regs
-                    .get(instr.b() as usize)
-                    .and_then(Clone::clone)
-                    .and_then(native_static_load_cell);
-                emit_branch_to_next(&mut ir, pc, code.len());
             }
             Opcode32::Nop | Opcode32::Raise => emit_branch_to_next(&mut ir, pc, code.len()),
             _ => return Ok(None),

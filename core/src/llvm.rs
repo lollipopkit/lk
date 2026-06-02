@@ -9,6 +9,7 @@ mod callee_eval;
 mod const_display;
 mod diagnostics;
 mod dynamic_containers;
+mod intrinsics;
 mod ir_text;
 mod map_mutate;
 mod options;

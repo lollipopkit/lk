@@ -1,14 +1,5 @@
-// LK 并发功能演示
-// 展示 spawn, chan, send, recv 等并发原语
-// 注意: 此示例仅展示基本用法。spawn 创建的 task 在主线程退出后自动回收。
 
-// 1. 基本的任务创建
-println("1. Basic Task Creation:");
-let simple_task = spawn(|| 42);
-println("Task created: {}", simple_task);
-
-// 2. 通道操作 (有界缓冲)
-println("\n2. Channel Operations:");
+println("1. Channel Operations:");
 let ch = chan(3);
 println("Created channel with capacity 3");
 
@@ -21,4 +12,11 @@ let msg1 = recv(ch);
 let msg2 = recv(ch);
 println("Received: {} and {}", msg1, msg2);
 
-println("\nDemo completed!");
+let msg3 = recv(ch);
+println("Received: {}", msg3);
+
+send(ch, 99);
+let msg4 = recv(ch);
+println("Received after re-send: {}", msg4);
+
+println("concurrency_demo: completed");

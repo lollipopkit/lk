@@ -16,6 +16,14 @@ pub(super) fn llvm_float_literal(value: f64) -> String {
     }
 }
 
+pub(super) fn native_float_display(value: f64) -> String {
+    if value.is_nan() {
+        "NaN".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
 pub(super) fn emit_branch_to_next(ir: &mut String, pc: usize, code_len: usize) {
     ir.push_str(&format!("  br label {}\n", native_label(pc + 1, code_len)));
 }
@@ -36,7 +44,10 @@ pub(super) fn native_scalar_main_header(options: &LlvmBackendOptions) -> String 
     ir.push_str("@lk_bool_false = private unnamed_addr constant [6 x i8] c\"false\\00\", align 1\n\n");
     ir.push_str("@lk_nil_text = private unnamed_addr constant [4 x i8] c\"nil\\00\", align 1\n\n");
     ir.push_str("@lk_empty_text = private unnamed_addr constant [1 x i8] zeroinitializer, align 1\n\n");
+    ir.push_str("@lk_newline = private unnamed_addr constant [1 x i8] c\"\\0A\", align 1\n\n");
     ir.push_str("declare i32 @printf(ptr, ...)\n\n");
+    ir.push_str("declare i32 @fflush(ptr)\n\n");
+    ir.push_str("declare i64 @write(i32, ptr, i64)\n\n");
     ir.push_str("declare void @abort()\n\n");
     ir.push_str("declare void @exit(i32)\n\n");
     ir.push_str("declare i64 @clock()\n");
@@ -46,6 +57,8 @@ pub(super) fn native_scalar_main_header(options: &LlvmBackendOptions) -> String 
     ir.push_str("declare i32 @strcmp(ptr, ptr)\n\n");
     ir.push_str("declare i32 @strncmp(ptr, ptr, i64)\n\n");
     ir.push_str("declare i64 @strlen(ptr)\n\n");
+    ir.push_str("declare ptr @strdup(ptr)\n\n");
+    ir.push_str("declare i32 @snprintf(ptr, i64, ptr, ...)\n\n");
     ir.push_str("declare double @llvm.sqrt.f64(double)\n");
     ir.push_str("declare double @llvm.pow.f64(double, double)\n");
     ir.push_str("declare double @llvm.exp.f64(double)\n");

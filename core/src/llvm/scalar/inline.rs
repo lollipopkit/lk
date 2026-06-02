@@ -593,7 +593,8 @@ fn emit_inline_direct_scalar_blocks(
                     NativeScalarKind::I64
                     | NativeScalarKind::F64
                     | NativeScalarKind::StrPtr
-                    | NativeScalarKind::MaybeI64 => {
+                    | NativeScalarKind::MaybeI64
+                    | NativeScalarKind::MaybeStrPtr => {
                         let value = next_tmp(tmp_index);
                         let cond = next_tmp(tmp_index);
                         let out = next_tmp(tmp_index);
@@ -653,7 +654,8 @@ fn emit_inline_direct_scalar_blocks(
                     NativeScalarKind::I64
                     | NativeScalarKind::F64
                     | NativeScalarKind::StrPtr
-                    | NativeScalarKind::MaybeI64 => {
+                    | NativeScalarKind::MaybeI64
+                    | NativeScalarKind::MaybeStrPtr => {
                         ir.push_str(&format!(
                             "  br label {}\n",
                             inline_native_label(call_pc, truthy_target, code.len())
@@ -887,6 +889,12 @@ fn emit_inline_direct_scalar_blocks(
                     if instr.b() != 1 || !reg_in_bounds(register_count, instr.a()) {
                         return None;
                     }
+                    if let Some(value) = static_regs.get(instr.a() as usize).and_then(Clone::clone)
+                        && store_native_inline_return_value(ir, extra_globals, dst, call_pc, value, tmp_index).is_some()
+                    {
+                        ir.push_str(&format!("  br label {}\n", native_label(call_pc + 1, caller_code_len)));
+                        continue;
+                    }
                     let kind = facts.register_kind_before(pc, instr.a())?;
                     let value = next_tmp(tmp_index);
                     let ty = kind.llvm_type();
@@ -910,6 +918,53 @@ fn emit_inline_direct_scalar_blocks(
     ));
     let _ = artifact;
     let _ = &mut static_globals;
+    Some(())
+}
+
+fn store_native_inline_return_value(
+    ir: &mut String,
+    extra_globals: &mut String,
+    dst: u8,
+    call_pc: usize,
+    value: NativeStraightlineValue,
+    tmp_index: &mut usize,
+) -> Option<()> {
+    match value {
+        NativeStraightlineValue::I64(value) => {
+            ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
+        }
+        NativeStraightlineValue::F64(value) => {
+            ir.push_str(&format!("  store double {value}, ptr %r{dst}.slot\n"));
+        }
+        NativeStraightlineValue::Bool(value) => {
+            ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
+        }
+        NativeStraightlineValue::Nil => {
+            ir.push_str(&format!("  store i64 0, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 0, ptr %r{dst}.present.slot\n"));
+        }
+        NativeStraightlineValue::String { symbol, value, .. } => {
+            let symbol = if symbol.is_empty() {
+                let symbol = format!("@lk_call{call_pc}_ret_str_{}", *tmp_index);
+                *tmp_index += 1;
+                extra_globals.push_str(&llvm_string_constant(&symbol, &value));
+                symbol
+            } else {
+                if symbol.starts_with("@lk_func") || symbol.starts_with("@lk_static_") {
+                    extra_globals.push_str(&llvm_string_constant(&symbol, &value));
+                }
+                symbol
+            };
+            ir.push_str(&format!("  store ptr {symbol}, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
+        }
+        NativeStraightlineValue::StringPtr(value) => {
+            ir.push_str(&format!("  store ptr {value}, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
+        }
+        _ => return None,
+    }
     Some(())
 }
 

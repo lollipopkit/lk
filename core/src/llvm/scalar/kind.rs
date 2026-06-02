@@ -12,6 +12,7 @@ pub(in crate::llvm) enum NativeScalarKind {
     Nil,
     StrPtr,
     MaybeI64,
+    MaybeStrPtr,
 }
 
 pub(in crate::llvm) struct NativeScalarFacts {
@@ -45,7 +46,7 @@ impl NativeScalarKind {
     pub(in crate::llvm) const fn llvm_type(self) -> &'static str {
         match self {
             Self::F64 => "double",
-            Self::StrPtr => "ptr",
+            Self::StrPtr | Self::MaybeStrPtr => "ptr",
             Self::I64 | Self::Bool | Self::Nil | Self::MaybeI64 => "i64",
         }
     }

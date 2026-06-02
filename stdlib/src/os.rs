@@ -79,6 +79,18 @@ impl Module for OsModule {
         entries.insert(key("dir_list"), callable(&mut heap, dir_list32, 1));
         entries.insert(key("dir_temp"), callable(&mut heap, dir_temp32, 0));
         entries.insert(key("dir_current"), callable(&mut heap, dir_current32, 0));
+        entries.insert(key("file_read"), callable(&mut heap, file_read32, 1));
+        entries.insert(key("file_write"), callable(&mut heap, file_write32, 2));
+        entries.insert(key("file_append"), callable(&mut heap, file_append32, 2));
+        entries.insert(key("file_exists"), callable(&mut heap, file_exists32, 1));
+        entries.insert(key("file_size"), callable(&mut heap, file_size32, 1));
+        entries.insert(key("file_delete"), callable(&mut heap, file_delete32, 1));
+        entries.insert(key("mkdir"), callable(&mut heap, mkdir32, 1));
+        entries.insert(
+            key("path_join"),
+            callable(&mut heap, path_join32, NativeEntry32::VARIADIC),
+        );
+        entries.insert(key("path_sep"), callable(&mut heap, path_sep32, 0));
         entries.insert(key("env"), env_val);
 
         let value = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
@@ -336,4 +348,84 @@ fn string_list_arg(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, context: &
         }
         _ => bail!("{context} must contain only strings"),
     }
+}
+
+// ── File system operations ──────────────────────────────────
+
+fn file_read32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "file_read")?;
+    let path = string_arg(args.get(0).expect("checked arity"), runtime, "file_read path")?;
+    let content = std::fs::read_to_string(&path).map_err(|err| anyhow!("failed to read file '{}': {}", path, err))?;
+    Ok(runtime_string_value(&content, runtime.heap_mut()))
+}
+
+fn file_write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "file_write")?;
+    let values = args.as_slice();
+    let path = string_arg(values.get(0).expect("checked arity"), runtime, "file_write path")?;
+    let content = string_arg(values.get(1).expect("checked arity"), runtime, "file_write content")?;
+    std::fs::write(&path, content.as_bytes()).map_err(|err| anyhow!("failed to write file '{}': {}", path, err))?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn file_append32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 2, "file_append")?;
+    let values = args.as_slice();
+    let path = string_arg(values.get(0).expect("checked arity"), runtime, "file_append path")?;
+    let content = string_arg(values.get(1).expect("checked arity"), runtime, "file_append content")?;
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|err| anyhow!("failed to open file '{}': {}", path, err))?;
+    file.write_all(content.as_bytes())
+        .map_err(|err| anyhow!("failed to append to file '{}': {}", path, err))?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn file_exists32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "file_exists")?;
+    let path = string_arg(args.get(0).expect("checked arity"), runtime, "file_exists path")?;
+    Ok(RuntimeVal::Bool(std::path::Path::new(&path).exists()))
+}
+
+fn file_size32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "file_size")?;
+    let path = string_arg(args.get(0).expect("checked arity"), runtime, "file_size path")?;
+    let metadata = std::fs::metadata(&path).map_err(|err| anyhow!("failed to get metadata for '{}': {}", path, err))?;
+    Ok(RuntimeVal::Int(metadata.len() as i64))
+}
+
+fn file_delete32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "file_delete")?;
+    let path = string_arg(args.get(0).expect("checked arity"), runtime, "file_delete path")?;
+    let result = std::fs::remove_file(&path);
+    Ok(RuntimeVal::Bool(result.is_ok()))
+}
+
+fn mkdir32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    expect_arity(args, 1, "mkdir")?;
+    let path = string_arg(args.get(0).expect("checked arity"), runtime, "mkdir path")?;
+    std::fs::create_dir_all(&path).map_err(|err| anyhow!("failed to create directory '{}': {}", path, err))?;
+    Ok(RuntimeVal::Bool(true))
+}
+
+fn path_join32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    if args.is_empty() {
+        bail!("path_join() requires at least 1 argument");
+    }
+    let values = args.as_slice();
+    let mut path = std::path::PathBuf::new();
+    for value in values {
+        let component = string_arg(value, runtime, "path_join component")?;
+        path.push(component.as_ref() as &std::path::Path);
+    }
+    let result = path.to_string_lossy();
+    Ok(runtime_string_value(&result, runtime.heap_mut()))
+}
+
+fn path_sep32(_args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    no_args(_args, "path_sep")?;
+    Ok(runtime_string_value(std::path::MAIN_SEPARATOR_STR, runtime.heap_mut()))
 }

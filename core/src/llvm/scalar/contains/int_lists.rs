@@ -1,5 +1,6 @@
 use crate::llvm::{
     callee_eval::native_straightline_function_return,
+    const_display::native_const_list_display,
     scalar::block_helpers::{local_static_container_before, local_static_i64_before},
     straightline_value::{
         NativeBuiltin, NativeListElementKind, NativeStraightlineValue, native_const_runtime_value,
@@ -115,33 +116,27 @@ pub(in crate::llvm) fn static_int_list_filter_map_method(
         return None;
     }
     if let NativeStraightlineValue::List { elements, .. } = &target {
-        let (function_index, captures) = static_callable_parts(callable)?;
-        let mut out = Vec::new();
-        for element in elements {
-            let arg = native_const_runtime_value(element, String::new())?;
-            let result = native_straightline_function_return(
-                artifact,
-                function_index as usize,
-                &[arg],
-                &captures,
-                static_globals,
-                0,
-                ir,
-                tmp_index,
-            )
-            .ok()??;
-            match method {
-                "filter" if native_filter_truthy(&result)? => out.push(element.clone()),
-                "filter" => {}
-                "map" => out.push(native_runtime_const_value(&result)?),
-                _ => return None,
-            }
-        }
-        return Some(NativeStraightlineValue::List {
-            value: String::new(),
-            symbol: String::new(),
-            elements: out,
-        });
+        return static_const_list_filter_map_method(
+            artifact,
+            elements,
+            method,
+            callable,
+            static_globals,
+            ir,
+            tmp_index,
+        );
+    }
+    if let NativeStraightlineValue::DynamicList { id, .. } = &target {
+        let elements = static_dynamic_const_list_elements(code, heap_values, *id)?;
+        return static_const_list_filter_map_method(
+            artifact,
+            elements,
+            method,
+            callable,
+            static_globals,
+            ir,
+            tmp_index,
+        );
     }
     let values = static_int_list_values(code, int_consts, strings, heap_values, &target)?;
     let (function_index, captures) = static_callable_parts(callable)?;
@@ -166,10 +161,63 @@ pub(in crate::llvm) fn static_int_list_filter_map_method(
         }
     }
     Some(NativeStraightlineValue::List {
-        value: String::new(),
+        value: native_const_list_display(&out)?,
         symbol: String::new(),
         elements: out,
     })
+}
+
+fn static_const_list_filter_map_method(
+    artifact: &Module32Artifact,
+    elements: &[ConstRuntimeValue32Data],
+    method: &str,
+    callable: NativeStraightlineValue,
+    static_globals: &mut [Option<NativeStraightlineValue>],
+    ir: &mut String,
+    tmp_index: &mut usize,
+) -> Option<NativeStraightlineValue> {
+    let (function_index, captures) = static_callable_parts(callable)?;
+    let mut out = Vec::new();
+    for element in elements {
+        let arg = native_const_runtime_value(element, String::new())?;
+        let result = native_straightline_function_return(
+            artifact,
+            function_index as usize,
+            &[arg],
+            &captures,
+            static_globals,
+            0,
+            ir,
+            tmp_index,
+        )
+        .ok()??;
+        match method {
+            "filter" if native_filter_truthy(&result)? => out.push(element.clone()),
+            "filter" => {}
+            "map" => out.push(native_runtime_const_value(&result)?),
+            _ => return None,
+        }
+    }
+    Some(NativeStraightlineValue::List {
+        value: native_const_list_display(&out)?,
+        symbol: String::new(),
+        elements: out,
+    })
+}
+
+fn static_dynamic_const_list_elements<'a>(
+    code: &[Instr32],
+    heap_values: &'a [ConstHeapValue32Data],
+    id: usize,
+) -> Option<&'a [ConstRuntimeValue32Data]> {
+    let instr = *code.get(id)?;
+    if instr.opcode() != Opcode32::LoadHeapConst {
+        return None;
+    }
+    let ConstHeapValue32Data::List(elements) = heap_values.get(instr.bx() as usize)? else {
+        return None;
+    };
+    Some(elements)
 }
 
 fn static_callable_parts(callable: NativeStraightlineValue) -> Option<(u16, Vec<NativeStraightlineValue>)> {
@@ -270,7 +318,7 @@ pub(in crate::llvm) fn static_int_list_chunk_method(
         ))));
     }
     Some(NativeStraightlineValue::List {
-        value: String::new(),
+        value: native_const_list_display(&elements)?,
         symbol: String::new(),
         elements,
     })
@@ -304,9 +352,9 @@ pub(in crate::llvm) fn static_int_list_zip_method(
                 rhs,
             ])))
         })
-        .collect();
+        .collect::<Vec<_>>();
     Some(NativeStraightlineValue::List {
-        value: String::new(),
+        value: native_const_list_display(&elements)?,
         symbol: String::new(),
         elements,
     })
@@ -333,10 +381,11 @@ pub(in crate::llvm) fn static_int_list_single_arg_method(
             } else {
                 Box::new(lhs.into_iter().skip(count))
             };
+            let elements = iter.map(ConstRuntimeValue32Data::Int).collect::<Vec<_>>();
             Some(NativeStraightlineValue::List {
-                value: String::new(),
+                value: native_const_list_display(&elements)?,
                 symbol: String::new(),
-                elements: iter.map(ConstRuntimeValue32Data::Int).collect(),
+                elements,
             })
         }
         "concat" | "chain" => {
@@ -349,7 +398,7 @@ pub(in crate::llvm) fn static_int_list_single_arg_method(
             let mut elements = lhs.into_iter().map(ConstRuntimeValue32Data::Int).collect::<Vec<_>>();
             elements.extend(rhs.iter().cloned());
             Some(NativeStraightlineValue::List {
-                value: String::new(),
+                value: native_const_list_display(&elements)?,
                 symbol: String::new(),
                 elements,
             })
@@ -379,7 +428,7 @@ pub(in crate::llvm) fn static_list_empty_arg_method(
                     }
                 }
                 return Some(NativeStraightlineValue::List {
-                    value: String::new(),
+                    value: native_const_list_display(&seen)?,
                     symbol: String::new(),
                     elements: seen,
                 });
@@ -390,10 +439,11 @@ pub(in crate::llvm) fn static_list_empty_arg_method(
                     seen.push(value);
                 }
             }
+            let elements = seen.into_iter().map(ConstRuntimeValue32Data::Int).collect::<Vec<_>>();
             Some(NativeStraightlineValue::List {
-                value: String::new(),
+                value: native_const_list_display(&elements)?,
                 symbol: String::new(),
-                elements: seen.into_iter().map(ConstRuntimeValue32Data::Int).collect(),
+                elements,
             })
         }
         "flatten" => {
@@ -411,7 +461,7 @@ pub(in crate::llvm) fn static_list_empty_arg_method(
                 out.extend(values.iter().cloned());
             }
             Some(NativeStraightlineValue::List {
-                value: String::new(),
+                value: native_const_list_display(&out)?,
                 symbol: String::new(),
                 elements: out,
             })
@@ -429,9 +479,9 @@ pub(in crate::llvm) fn static_list_empty_arg_method(
                         value,
                     ])))
                 })
-                .collect();
+                .collect::<Vec<_>>();
             Some(NativeStraightlineValue::List {
-                value: String::new(),
+                value: native_const_list_display(&elements)?,
                 symbol: String::new(),
                 elements,
             })
@@ -525,10 +575,11 @@ pub(in crate::llvm) fn static_iter_builtin_call(
             } else {
                 Box::new(lhs.into_iter().skip(count))
             };
+            let elements = iter.map(ConstRuntimeValue32Data::Int).collect::<Vec<_>>();
             Some(NativeStraightlineValue::List {
-                value: String::new(),
+                value: native_const_list_display(&elements)?,
                 symbol: String::new(),
-                elements: iter.map(ConstRuntimeValue32Data::Int).collect(),
+                elements,
             })
         }
         NativeBuiltin::IterChain => {
@@ -547,7 +598,7 @@ pub(in crate::llvm) fn static_iter_builtin_call(
                 return None;
             }
             Some(NativeStraightlineValue::List {
-                value: String::new(),
+                value: native_const_list_display(&elements)?,
                 symbol: String::new(),
                 elements,
             })
@@ -556,8 +607,24 @@ pub(in crate::llvm) fn static_iter_builtin_call(
             let [target] = args else {
                 return None;
             };
-            let NativeStraightlineValue::List { elements, .. } = target else {
-                return None;
+            let arglist_elements;
+            let elements = match target {
+                NativeStraightlineValue::List { elements, .. } => elements.as_slice(),
+                NativeStraightlineValue::ArgList { elements } => {
+                    arglist_elements = elements
+                        .iter()
+                        .map(|value| {
+                            native_runtime_const_value(value).or_else(|| {
+                                let values = static_int_list_values(code, int_consts, strings, heap_values, value)?;
+                                Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(
+                                    values.into_iter().map(ConstRuntimeValue32Data::Int).collect(),
+                                ))))
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    arglist_elements.as_slice()
+                }
+                _ => return None,
             };
             let mut out = Vec::new();
             for element in elements {
@@ -570,7 +637,7 @@ pub(in crate::llvm) fn static_iter_builtin_call(
                 }
             }
             Some(NativeStraightlineValue::List {
-                value: String::new(),
+                value: native_const_list_display(&out)?,
                 symbol: String::new(),
                 elements: out,
             })
@@ -595,9 +662,9 @@ pub(in crate::llvm) fn static_iter_builtin_call(
                             ConstRuntimeValue32Data::Int(value),
                         ])))
                     })
-                    .collect();
+                    .collect::<Vec<_>>();
                 Some(NativeStraightlineValue::List {
-                    value: String::new(),
+                    value: native_const_list_display(&elements)?,
                     symbol: String::new(),
                     elements,
                 })

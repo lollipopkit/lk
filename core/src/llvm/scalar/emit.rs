@@ -81,7 +81,11 @@ fn emit_numeric_load_as_f64(
             ir.push_str(&format!("  {cast} = sitofp i64 {value} to double\n"));
             cast
         }
-        NativeScalarKind::Bool | NativeScalarKind::Nil | NativeScalarKind::StrPtr | NativeScalarKind::MaybeI64 => {
+        NativeScalarKind::Bool
+        | NativeScalarKind::Nil
+        | NativeScalarKind::StrPtr
+        | NativeScalarKind::MaybeI64
+        | NativeScalarKind::MaybeStrPtr => {
             unreachable!("non-numeric float operand rejected earlier")
         }
     }
@@ -261,6 +265,17 @@ pub(in crate::llvm) fn emit_native_return_print(
         NativeScalarKind::StrPtr => {
             ir.push_str(&format!(
                 "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {value})\n"
+            ));
+        }
+        NativeScalarKind::MaybeStrPtr => {
+            let present = next_tmp(tmp_index);
+            let cond = next_tmp(tmp_index);
+            let text = next_tmp(tmp_index);
+            ir.push_str(&format!("  {present} = load i64, ptr %r{register}.present.slot\n"));
+            ir.push_str(&format!("  {cond} = icmp ne i64 {present}, 0\n"));
+            ir.push_str(&format!("  {text} = select i1 {cond}, ptr {value}, ptr @lk_nil_text\n"));
+            ir.push_str(&format!(
+                "  %print{pc} = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {text})\n"
             ));
         }
         NativeScalarKind::MaybeI64 => {

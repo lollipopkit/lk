@@ -588,12 +588,148 @@ fn dispatch_list_builtin_method(
             let items = clone_list(receiver, heap)?.into_iter_owned();
             let mut unique: Vec<RuntimeVal> = Vec::new();
             for item in items {
-                if !unique.contains(&item) {
+                if !unique.iter().any(|seen| runtime_values_equal(seen, &item)) {
                     unique.push(item);
                 }
             }
             Ok(Some(RuntimeVal::Obj(
                 heap.alloc(HeapValue::List(TypedList::Mixed(unique))),
+            )))
+        }
+        "contains" => {
+            if positional.len() != 1 {
+                bail!("list.contains() expects 1 argument (value), got {}", positional.len());
+            }
+            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            Ok(Some(RuntimeVal::Bool(
+                items.iter().any(|item| runtime_values_equal(item, &positional[0])),
+            )))
+        }
+        "index_of" => {
+            if positional.len() != 1 {
+                bail!("list.index_of() expects 1 argument (value), got {}", positional.len());
+            }
+            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            let index = items
+                .iter()
+                .position(|item| runtime_values_equal(item, &positional[0]))
+                .map(|index| index as i64)
+                .unwrap_or(-1);
+            Ok(Some(RuntimeVal::Int(index)))
+        }
+        "is_empty" => {
+            if !positional.is_empty() {
+                bail!("list.is_empty() expects no arguments, got {}", positional.len());
+            }
+            Ok(Some(RuntimeVal::Bool(clone_list(receiver, heap)?.len() == 0)))
+        }
+        "reverse" => {
+            if !positional.is_empty() {
+                bail!("list.reverse() expects no arguments, got {}", positional.len());
+            }
+            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            items.reverse();
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(items))),
+            )))
+        }
+        "pop" => {
+            if !positional.is_empty() {
+                bail!("list.pop() expects no arguments, got {}", positional.len());
+            }
+            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            Ok(Some(items.into_iter().last().unwrap_or(RuntimeVal::Nil)))
+        }
+        "push" => {
+            if positional.len() != 1 {
+                bail!("list.push() expects 1 argument (value), got {}", positional.len());
+            }
+            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            items.push(positional[0].clone());
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(items))),
+            )))
+        }
+        "slice" => {
+            if positional.is_empty() || positional.len() > 2 {
+                bail!(
+                    "list.slice() expects 1 or 2 arguments (start[, end]), got {}",
+                    positional.len()
+                );
+            }
+            let start = list_index_arg(&positional[0], "list.slice() start")?;
+            let items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            let end = match positional.get(1) {
+                Some(value) => list_index_arg(value, "list.slice() end")?.min(items.len()),
+                None => items.len(),
+            };
+            let sliced = if start >= end {
+                Vec::new()
+            } else {
+                items[start..end].to_vec()
+            };
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(sliced))),
+            )))
+        }
+        "insert" => {
+            if positional.len() != 2 {
+                bail!(
+                    "list.insert() expects 2 arguments (index, value), got {}",
+                    positional.len()
+                );
+            }
+            let index = list_index_arg(&positional[0], "list.insert() index")?;
+            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            if index > items.len() {
+                bail!("list.insert() index {} out of bounds (len={})", index, items.len());
+            }
+            items.insert(index, positional[1].clone());
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(items))),
+            )))
+        }
+        "remove_at" => {
+            if positional.len() != 1 {
+                bail!("list.remove_at() expects 1 argument (index), got {}", positional.len());
+            }
+            let index = list_index_arg(&positional[0], "list.remove_at() index")?;
+            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            if index >= items.len() {
+                bail!("list.remove_at() index {} out of bounds (len={})", index, items.len());
+            }
+            let old = items.remove(index);
+            let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(items))));
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(vec![updated, old]))),
+            )))
+        }
+        "set" => {
+            if positional.len() != 2 {
+                bail!(
+                    "list.set() expects 2 arguments (index, value), got {}",
+                    positional.len()
+                );
+            }
+            let index = list_index_arg(&positional[0], "list.set() index")?;
+            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            let Some(slot) = items.get_mut(index) else {
+                bail!("list.set() index {} out of bounds (len={})", index, items.len());
+            };
+            let old = std::mem::replace(slot, positional[1].clone());
+            let updated = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Mixed(items))));
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(vec![updated, old]))),
+            )))
+        }
+        "sort" => {
+            if !positional.is_empty() {
+                bail!("list.sort() expects no arguments, got {}", positional.len());
+            }
+            let mut items = list_runtime_items(clone_list(receiver, heap)?, heap);
+            items.sort_by(compare_runtime_values);
+            Ok(Some(RuntimeVal::Obj(
+                heap.alloc(HeapValue::List(TypedList::Mixed(items))),
             )))
         }
         "concat" => {
@@ -705,6 +841,73 @@ fn dispatch_list_builtin_method(
             Ok(Some(make_string_val(&joined, heap)))
         }
         _ => Ok(None),
+    }
+}
+
+fn list_index_arg(value: &RuntimeVal, context: &str) -> anyhow::Result<usize> {
+    let RuntimeVal::Int(index) = value else {
+        bail!("{context} must be Int");
+    };
+    if *index < 0 {
+        bail!("{context} must be non-negative");
+    }
+    Ok(*index as usize)
+}
+
+fn list_runtime_items(list: TypedList, heap: &mut HeapStore) -> Vec<RuntimeVal> {
+    match list {
+        TypedList::Mixed(values) => values,
+        TypedList::Int(values) => values.into_iter().map(RuntimeVal::Int).collect(),
+        TypedList::Float(values) => values.into_iter().map(RuntimeVal::Float).collect(),
+        TypedList::Bool(values) => values.into_iter().map(RuntimeVal::Bool).collect(),
+        TypedList::String(values) => values
+            .into_iter()
+            .map(|value| make_string_val(value.as_ref(), heap))
+            .collect(),
+    }
+}
+
+fn runtime_values_equal(left: &RuntimeVal, right: &RuntimeVal) -> bool {
+    match (left, right) {
+        (RuntimeVal::Nil, RuntimeVal::Nil) => true,
+        (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left == right,
+        (RuntimeVal::Int(left), RuntimeVal::Int(right)) => left == right,
+        (RuntimeVal::Float(left), RuntimeVal::Float(right)) => left.to_bits() == right.to_bits(),
+        (RuntimeVal::Int(left), RuntimeVal::Float(right)) => (*left as f64).to_bits() == right.to_bits(),
+        (RuntimeVal::Float(left), RuntimeVal::Int(right)) => left.to_bits() == (*right as f64).to_bits(),
+        (RuntimeVal::ShortStr(left), RuntimeVal::ShortStr(right)) => left.as_str() == right.as_str(),
+        (RuntimeVal::Obj(left), RuntimeVal::Obj(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn compare_runtime_values(left: &RuntimeVal, right: &RuntimeVal) -> std::cmp::Ordering {
+    match (left, right) {
+        (RuntimeVal::Nil, RuntimeVal::Nil) => std::cmp::Ordering::Equal,
+        (RuntimeVal::Bool(left), RuntimeVal::Bool(right)) => left.cmp(right),
+        (RuntimeVal::Int(left), RuntimeVal::Int(right)) => left.cmp(right),
+        (RuntimeVal::Float(left), RuntimeVal::Float(right)) => {
+            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (RuntimeVal::Int(left), RuntimeVal::Float(right)) => {
+            (*left as f64).partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (RuntimeVal::Float(left), RuntimeVal::Int(right)) => {
+            left.partial_cmp(&(*right as f64)).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        (RuntimeVal::ShortStr(left), RuntimeVal::ShortStr(right)) => left.as_str().cmp(right.as_str()),
+        _ => runtime_val_kind_rank(left).cmp(&runtime_val_kind_rank(right)),
+    }
+}
+
+fn runtime_val_kind_rank(value: &RuntimeVal) -> u8 {
+    match value {
+        RuntimeVal::Nil => 0,
+        RuntimeVal::Bool(_) => 1,
+        RuntimeVal::Int(_) => 2,
+        RuntimeVal::Float(_) => 3,
+        RuntimeVal::ShortStr(_) => 4,
+        RuntimeVal::Obj(_) => 5,
     }
 }
 

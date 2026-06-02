@@ -38,7 +38,7 @@ pub(super) fn emit_native_assert_direct_call(
             ir.push_str(&format!("  {value} = load double, ptr %r{arg}.slot\n"));
             ir.push_str(&format!("  {cond} = fcmp one double {value}, 0.0\n"));
         }
-        NativeScalarKind::StrPtr => {
+        NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => {
             ir.push_str(&format!("  {value} = load ptr, ptr %r{arg}.slot\n"));
             ir.push_str(&format!("  {cond} = icmp ne ptr {value}, null\n"));
         }

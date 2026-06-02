@@ -6,8 +6,6 @@ use lk_core::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::runtime_native::runtime_string_arg;
-
 #[derive(Debug)]
 pub struct MapModule;
 
@@ -28,11 +26,9 @@ impl MapModule {
     }
 
     fn keys32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
-        let map = one_map(args, runtime, "keys()")?;
-        let keys = map_keys_list(map);
-        Ok(RuntimeVal::Obj(
-            runtime.heap_mut().alloc(HeapValue::List(TypedList::String(keys))),
-        ))
+        let map = one_map(args, runtime, "keys()")?.clone();
+        let keys = map_keys_list(&map, runtime.heap_mut());
+        Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(keys))))
     }
 
     fn values32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
@@ -45,23 +41,23 @@ impl MapModule {
         expect_arity(args, 2, "has()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "has() first argument")?;
-        let key = runtime_string_arg(&values[1], runtime.heap(), "has() key")?;
-        Ok(RuntimeVal::Bool(map.get(&RuntimeMapKey::String(key)).is_some()))
+        let key = runtime_map_key_arg(&values[1], runtime.heap(), "has() key")?;
+        Ok(RuntimeVal::Bool(map.get(&key).is_some()))
     }
 
     fn get32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "get()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "get() first argument")?;
-        let key = runtime_string_arg(&values[1], runtime.heap(), "get() key")?;
-        Ok(map.get(&RuntimeMapKey::String(key)).unwrap_or(RuntimeVal::Nil))
+        let key = runtime_map_key_arg(&values[1], runtime.heap(), "get() key")?;
+        Ok(map.get(&key).unwrap_or(RuntimeVal::Nil))
     }
 
     fn set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "set()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "set() first argument")?;
-        let key = runtime_string_arg(&values[1], runtime.heap(), "set() key")?;
+        let key = runtime_map_key_arg(&values[1], runtime.heap(), "set() key")?;
         let map = set_map_entry(map, key, values[2].clone());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(map))))
     }
@@ -70,8 +66,8 @@ impl MapModule {
         expect_arity(args, 2, "delete()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "delete() first argument")?;
-        let key = runtime_string_arg(&values[1], runtime.heap(), "delete() key")?;
-        let (map, removed) = delete_map_entry(map, key.as_ref());
+        let key = runtime_map_key_arg(&values[1], runtime.heap(), "delete() key")?;
+        let (map, removed) = delete_map_entry(map, &key);
         let updated = RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(map)));
         Ok(RuntimeVal::Obj(
             runtime
@@ -103,21 +99,19 @@ impl MapModule {
     }
 }
 
-fn set_map_entry(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
+fn set_map_entry(map: &TypedMap, key: RuntimeMapKey, value: RuntimeVal) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut out = BTreeMap::new();
-            let inserted_key = RuntimeMapKey::String(Arc::clone(&key));
-            for (entry_key, entry_value) in entries {
-                if *entry_key != inserted_key {
-                    out.insert(entry_key.clone(), entry_value.clone());
-                }
-            }
-            let mut entries = out;
-            entries.insert(RuntimeMapKey::String(key), value);
+            let mut entries = entries.clone();
+            entries.insert(key, value);
             TypedMap::Mixed(entries)
         }
         TypedMap::StringMixed(entries) => {
+            let Some(key) = key.as_arc_str() else {
+                let mut mixed = string_mixed_to_runtime_map(entries);
+                mixed.insert(key, value);
+                return TypedMap::Mixed(mixed);
+            };
             let mut out = BTreeMap::new();
             for (entry_key, entry_value) in entries.iter() {
                 if entry_key.as_ref() != key.as_ref() {
@@ -129,6 +123,11 @@ fn set_map_entry(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
         }
         TypedMap::StringInt(entries) => match value {
             RuntimeVal::Int(value) => {
+                let Some(key) = key.as_arc_str() else {
+                    let mut mixed = string_int_to_runtime_map(entries);
+                    mixed.insert(key, RuntimeVal::Int(value));
+                    return TypedMap::Mixed(mixed);
+                };
                 let mut out = BTreeMap::new();
                 for (entry_key, entry_value) in entries.iter() {
                     if entry_key.as_ref() != key.as_ref() {
@@ -139,6 +138,11 @@ fn set_map_entry(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
                 TypedMap::StringInt(out)
             }
             value => {
+                let Some(key) = key.as_arc_str() else {
+                    let mut mixed = string_int_to_runtime_map(entries);
+                    mixed.insert(key, value);
+                    return TypedMap::Mixed(mixed);
+                };
                 let mut out = BTreeMap::new();
                 for (entry_key, entry_value) in entries.iter() {
                     if entry_key.as_ref() != key.as_ref() {
@@ -151,6 +155,11 @@ fn set_map_entry(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
         },
         TypedMap::StringFloat(entries) => match value {
             RuntimeVal::Float(value) => {
+                let Some(key) = key.as_arc_str() else {
+                    let mut mixed = string_float_to_runtime_map(entries);
+                    mixed.insert(key, RuntimeVal::Float(value));
+                    return TypedMap::Mixed(mixed);
+                };
                 let mut out = BTreeMap::new();
                 for (entry_key, entry_value) in entries.iter() {
                     if entry_key.as_ref() != key.as_ref() {
@@ -161,6 +170,11 @@ fn set_map_entry(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
                 TypedMap::StringFloat(out)
             }
             value => {
+                let Some(key) = key.as_arc_str() else {
+                    let mut mixed = string_float_to_runtime_map(entries);
+                    mixed.insert(key, value);
+                    return TypedMap::Mixed(mixed);
+                };
                 let mut out = BTreeMap::new();
                 for (entry_key, entry_value) in entries.iter() {
                     if entry_key.as_ref() != key.as_ref() {
@@ -173,6 +187,11 @@ fn set_map_entry(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
         },
         TypedMap::StringBool(entries) => match value {
             RuntimeVal::Bool(value) => {
+                let Some(key) = key.as_arc_str() else {
+                    let mut mixed = string_bool_to_runtime_map(entries);
+                    mixed.insert(key, RuntimeVal::Bool(value));
+                    return TypedMap::Mixed(mixed);
+                };
                 let mut out = BTreeMap::new();
                 for (entry_key, entry_value) in entries.iter() {
                     if entry_key.as_ref() != key.as_ref() {
@@ -183,6 +202,11 @@ fn set_map_entry(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> TypedMap {
                 TypedMap::StringBool(out)
             }
             value => {
+                let Some(key) = key.as_arc_str() else {
+                    let mut mixed = string_bool_to_runtime_map(entries);
+                    mixed.insert(key, value);
+                    return TypedMap::Mixed(mixed);
+                };
                 let mut out = BTreeMap::new();
                 for (entry_key, entry_value) in entries.iter() {
                     if entry_key.as_ref() != key.as_ref() {
@@ -255,21 +279,51 @@ fn map_arg<'a>(value: &RuntimeVal, heap: &'a HeapStore, context: &str) -> Result
     }
 }
 
-fn map_keys_list(map: &TypedMap) -> Vec<std::sync::Arc<str>> {
+fn runtime_map_key_arg(value: &RuntimeVal, heap: &HeapStore, context: &str) -> Result<RuntimeMapKey> {
+    match value {
+        RuntimeVal::Nil => Ok(RuntimeMapKey::Nil),
+        RuntimeVal::Bool(value) => Ok(RuntimeMapKey::Bool(*value)),
+        RuntimeVal::Int(value) => Ok(RuntimeMapKey::Int(*value)),
+        RuntimeVal::ShortStr(value) => Ok(RuntimeMapKey::ShortStr(*value)),
+        RuntimeVal::Obj(handle) => match heap.get(*handle) {
+            Some(HeapValue::String(value)) => Ok(runtime_string_map_key(Arc::clone(value))),
+            Some(_) => Ok(RuntimeMapKey::Obj(*handle)),
+            None => Err(anyhow!("heap object {} out of bounds", handle.index())),
+        },
+        RuntimeVal::Float(_) => bail!("{context} cannot be Float"),
+    }
+}
+
+fn map_keys_list(map: &TypedMap, heap: &mut HeapStore) -> TypedList {
     match map {
         TypedMap::Mixed(entries) => {
             let mut keys = Vec::new();
             for key in entries.keys() {
-                if let Some(key) = key.as_arc_str() {
-                    keys.push(key);
-                }
+                keys.push(runtime_map_key_to_value(key, heap));
             }
-            keys
+            TypedList::Mixed(keys)
         }
-        TypedMap::StringMixed(entries) => copy_string_map_keys(entries),
-        TypedMap::StringInt(entries) => copy_string_map_keys(entries),
-        TypedMap::StringFloat(entries) => copy_string_map_keys(entries),
-        TypedMap::StringBool(entries) => copy_string_map_keys(entries),
+        TypedMap::StringMixed(entries) => TypedList::String(copy_string_map_keys(entries)),
+        TypedMap::StringInt(entries) => TypedList::String(copy_string_map_keys(entries)),
+        TypedMap::StringFloat(entries) => TypedList::String(copy_string_map_keys(entries)),
+        TypedMap::StringBool(entries) => TypedList::String(copy_string_map_keys(entries)),
+    }
+}
+
+fn runtime_map_key_to_value(key: &RuntimeMapKey, heap: &mut HeapStore) -> RuntimeVal {
+    match key {
+        RuntimeMapKey::Nil => RuntimeVal::Nil,
+        RuntimeMapKey::Bool(value) => RuntimeVal::Bool(*value),
+        RuntimeMapKey::Int(value) => RuntimeVal::Int(*value),
+        RuntimeMapKey::ShortStr(value) => RuntimeVal::ShortStr(*value),
+        RuntimeMapKey::String(value) => {
+            if let Some(short) = ShortStr::new(value.as_ref()) {
+                RuntimeVal::ShortStr(short)
+            } else {
+                RuntimeVal::Obj(heap.alloc(HeapValue::String(Arc::clone(value))))
+            }
+        }
+        RuntimeMapKey::Obj(handle) => RuntimeVal::Obj(*handle),
     }
 }
 
@@ -316,6 +370,42 @@ enum RuntimeValueListShape {
     Bool(Vec<bool>),
     String(Vec<MapStringValue>),
     Mixed(Vec<RuntimeVal>),
+}
+
+fn runtime_string_map_key(value: Arc<str>) -> RuntimeMapKey {
+    if let Some(short) = ShortStr::new(&value) {
+        RuntimeMapKey::ShortStr(short)
+    } else {
+        RuntimeMapKey::String(value)
+    }
+}
+
+fn string_mixed_to_runtime_map(entries: &BTreeMap<Arc<str>, RuntimeVal>) -> BTreeMap<RuntimeMapKey, RuntimeVal> {
+    entries
+        .iter()
+        .map(|(key, value)| (runtime_string_map_key(Arc::clone(key)), value.clone()))
+        .collect()
+}
+
+fn string_int_to_runtime_map(entries: &BTreeMap<Arc<str>, i64>) -> BTreeMap<RuntimeMapKey, RuntimeVal> {
+    entries
+        .iter()
+        .map(|(key, value)| (runtime_string_map_key(Arc::clone(key)), RuntimeVal::Int(*value)))
+        .collect()
+}
+
+fn string_float_to_runtime_map(entries: &BTreeMap<Arc<str>, f64>) -> BTreeMap<RuntimeMapKey, RuntimeVal> {
+    entries
+        .iter()
+        .map(|(key, value)| (runtime_string_map_key(Arc::clone(key)), RuntimeVal::Float(*value)))
+        .collect()
+}
+
+fn string_bool_to_runtime_map(entries: &BTreeMap<Arc<str>, bool>) -> BTreeMap<RuntimeMapKey, RuntimeVal> {
+    entries
+        .iter()
+        .map(|(key, value)| (runtime_string_map_key(Arc::clone(key)), RuntimeVal::Bool(*value)))
+        .collect()
 }
 
 enum MapStringValue {
@@ -464,22 +554,17 @@ fn runtime_string_from_map_value(value: &RuntimeVal, heap: &HeapStore) -> Option
     }
 }
 
-fn delete_map_entry(map: &TypedMap, key: &str) -> (TypedMap, RuntimeVal) {
+fn delete_map_entry(map: &TypedMap, key: &RuntimeMapKey) -> (TypedMap, RuntimeVal) {
     match map {
         TypedMap::Mixed(entries) => {
-            let removed_key = RuntimeMapKey::String(Arc::<str>::from(key));
-            let mut removed = RuntimeVal::Nil;
-            let mut out = BTreeMap::new();
-            for (entry_key, value) in entries {
-                if *entry_key == removed_key {
-                    removed = value.clone();
-                } else {
-                    out.insert(entry_key.clone(), value.clone());
-                }
-            }
+            let mut out = entries.clone();
+            let removed = out.remove(key).unwrap_or(RuntimeVal::Nil);
             (TypedMap::Mixed(out), removed)
         }
         TypedMap::StringMixed(entries) => {
+            let Some(key) = key.as_str() else {
+                return (TypedMap::StringMixed(entries.clone()), RuntimeVal::Nil);
+            };
             let mut removed = RuntimeVal::Nil;
             let mut out = BTreeMap::new();
             for (entry_key, value) in entries {
@@ -492,6 +577,9 @@ fn delete_map_entry(map: &TypedMap, key: &str) -> (TypedMap, RuntimeVal) {
             (TypedMap::StringMixed(out), removed)
         }
         TypedMap::StringInt(entries) => {
+            let Some(key) = key.as_str() else {
+                return (TypedMap::StringInt(entries.clone()), RuntimeVal::Nil);
+            };
             let mut removed = RuntimeVal::Nil;
             let mut out = BTreeMap::new();
             for (entry_key, value) in entries {
@@ -504,6 +592,9 @@ fn delete_map_entry(map: &TypedMap, key: &str) -> (TypedMap, RuntimeVal) {
             (TypedMap::StringInt(out), removed)
         }
         TypedMap::StringFloat(entries) => {
+            let Some(key) = key.as_str() else {
+                return (TypedMap::StringFloat(entries.clone()), RuntimeVal::Nil);
+            };
             let mut removed = RuntimeVal::Nil;
             let mut out = BTreeMap::new();
             for (entry_key, value) in entries {
@@ -516,6 +607,9 @@ fn delete_map_entry(map: &TypedMap, key: &str) -> (TypedMap, RuntimeVal) {
             (TypedMap::StringFloat(out), removed)
         }
         TypedMap::StringBool(entries) => {
+            let Some(key) = key.as_str() else {
+                return (TypedMap::StringBool(entries.clone()), RuntimeVal::Nil);
+            };
             let mut removed = RuntimeVal::Nil;
             let mut out = BTreeMap::new();
             for (entry_key, value) in entries {
@@ -614,12 +708,49 @@ mod tests {
             run32_return("import map; return map.get({\"a\":1}, \"b\");")?,
             RuntimeVal::Nil
         );
+        assert_eq!(
+            run32_return("import map; let m=map.set({}, \"a\", \"x\"); return map.has(m, \"a\");")?,
+            RuntimeVal::Bool(true)
+        );
+        assert_eq!(
+            run32_return("import map; let m=map.set({}, \"a\", \"x\"); return map.get(m, \"a\");")?,
+            runtime_short_string("x")
+        );
 
         let values = run32("import map; return map.values({\"a\":1, \"b\":2});")?;
         let values = expect_list(&values);
         assert_eq!(values.len(), 2);
         assert!(values.contains(&RuntimeVal::Int(1)));
         assert!(values.contains(&RuntimeVal::Int(2)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_int_keys_use_mixed_map_backing() -> Result<()> {
+        let result = run32(
+            r#"
+            import map;
+            let counts = {};
+            counts = map.set(counts, 1, 10);
+            counts = map.set(counts, 2, 20);
+            let removed_pair = map.delete(counts, 1);
+            let without = removed_pair[0];
+            return [map.get(counts, 1), map.get(counts, 2), map.values(counts), map.has(without, 1), removed_pair[1]];
+        "#,
+        )?;
+        let values = expect_list(&result);
+        assert_eq!(values.len(), 5);
+        assert_eq!(values[0], RuntimeVal::Int(10));
+        assert_eq!(values[1], RuntimeVal::Int(20));
+        assert_eq!(values[3], RuntimeVal::Bool(false));
+        assert_eq!(values[4], RuntimeVal::Int(10));
+        let RuntimeVal::Obj(values_handle) = values[2] else {
+            panic!("map.values should return a list");
+        };
+        let Some(HeapValue::List(TypedList::Int(map_values))) = result.state.heap().get(values_handle) else {
+            panic!("map.values should keep int list shape");
+        };
+        assert_eq!(map_values.as_slice(), &[10, 20]);
         Ok(())
     }
 

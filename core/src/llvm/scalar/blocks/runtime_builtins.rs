@@ -75,6 +75,17 @@ pub(in crate::llvm) fn emit_runtime_builtin_call(
                         "  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {value})\n"
                     ));
                 }
+                NativeScalarKind::MaybeStrPtr => {
+                    let present = next_tmp(tmp_index);
+                    let cond = next_tmp(tmp_index);
+                    let value = next_tmp(tmp_index);
+                    let text = next_tmp(tmp_index);
+                    ir.push_str(&format!("  {present} = load i64, ptr %r{arg_reg}.present.slot\n"));
+                    ir.push_str(&format!("  {value} = load ptr, ptr %r{arg_reg}.slot\n"));
+                    ir.push_str(&format!("  {cond} = icmp ne i64 {present}, 0\n"));
+                    ir.push_str(&format!("  {text} = select i1 {cond}, ptr {value}, ptr @lk_nil_text\n"));
+                    ir.push_str(&format!("  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {text})\n"));
+                }
             }
             true
         }

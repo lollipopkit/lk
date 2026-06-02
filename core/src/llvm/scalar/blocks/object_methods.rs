@@ -1,5 +1,6 @@
 use crate::llvm::{
     callee_eval::native_straightline_function_return,
+    const_display::native_const_list_display,
     straightline_value::{NativeStraightlineValue, native_runtime_const_value},
 };
 use crate::vm::{ConstRuntimeValue32Data, Module32Artifact};
@@ -45,6 +46,15 @@ pub(super) fn static_object_list_map_method(
     let NativeStraightlineValue::ArgList { elements } = target else {
         return None;
     };
+    let callable = match callable {
+        NativeStraightlineValue::ArgList { elements } => {
+            let [callable] = elements.as_slice() else {
+                return None;
+            };
+            callable.clone()
+        }
+        callable => callable,
+    };
     let (function_index, captures) = match callable {
         NativeStraightlineValue::Function(index) => (index, Vec::new()),
         NativeStraightlineValue::Closure {
@@ -69,7 +79,7 @@ pub(super) fn static_object_list_map_method(
         out.push(native_runtime_const_value(&result)?);
     }
     Some(NativeStraightlineValue::List {
-        value: String::new(),
+        value: native_const_list_display(&out)?,
         symbol: String::new(),
         elements: out,
     })

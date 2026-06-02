@@ -217,6 +217,8 @@ impl Compiler32 {
             .filter(|fact| fact.target_kind != PerfIndexTargetKind::String);
         let (key_reg, key_fact) = self.lower_index_key(key)?;
         let value_reg = self.lower_readonly_operand(value)?;
+        let move_key = set_method_key_move_preferred(key) && !self.is_current_local_slot(key_reg);
+        let move_value = !self.is_current_local_slot(value_reg);
         let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::SetIndex,
@@ -224,13 +226,9 @@ impl Compiler32 {
             checked_u8("method set key", key_reg)?,
             checked_u8("method set value", value_reg)?,
         ));
-        self.function.performance.set_container_move_fact(
-            pc,
-            PerfContainerMoveFact {
-                move_key: set_method_key_move_preferred(key),
-                move_value: true,
-            },
-        );
+        self.function
+            .performance
+            .set_container_move_fact(pc, PerfContainerMoveFact { move_key, move_value });
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
         }
@@ -251,6 +249,7 @@ impl Compiler32 {
     fn lower_push_method_call(&mut self, target: &Expr, value: &Expr) -> Result<u16> {
         let target_reg = self.lower_mutable_method_receiver(target)?;
         let value_reg = self.lower_readonly_operand(value)?;
+        let move_value = !self.is_current_local_slot(value_reg);
         let pc = self.function.code.len();
         self.emit(Instr32::abc(
             Opcode32::ListPush,
@@ -262,7 +261,7 @@ impl Compiler32 {
             pc,
             PerfContainerMoveFact {
                 move_key: false,
-                move_value: true,
+                move_value,
             },
         );
         Ok(target_reg)

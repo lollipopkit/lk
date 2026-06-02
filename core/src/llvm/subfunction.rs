@@ -4,12 +4,18 @@
 //! this module generates a separate LLVM function definition with proper
 //! control flow (Test branching, Jmp jumps).
 
+mod list;
+
 use anyhow::Result;
 
 use crate::vm::{ConstHeapValue32Data, Function32Data, Instr32, Module32Artifact, Opcode32};
 
 use super::{
     const_display::llvm_string_constant,
+    dynamic_containers::{
+        emit_dynamic_int_list_allocas, emit_dynamic_ptr_list_concat, emit_dynamic_ptr_list_copy,
+        emit_dynamic_ptr_list_get, emit_dynamic_ptr_list_push, emit_dynamic_ptr_list_slice, emit_dynamic_ptr_list_take,
+    },
     ir_text::{native_label, native_relative_target, next_tmp},
     output::emit_native_print_text_parts,
     scalar::block_helpers::{
@@ -18,8 +24,14 @@ use super::{
     },
     scalar::emit::{emit_f64_binary_block, emit_i64_binary_block, emit_numeric_compare_block},
     scalar::facts::{NativeScalarFacts, NativeScalarKind, native_scalar_block_facts_with_initial},
-    straightline_value::{NativeStraightlineValue, native_straightline_heap_const_value},
+    straightline_value::{
+        NativeBuiltin, NativeListElementKind, NativeStraightlineValue, native_static_global,
+        native_straightline_heap_const_value,
+    },
 };
+
+const PTR_LIST_PARAM_BASE: usize = 900_000;
+const PTR_LIST_REG_BASE: usize = 800_000;
 
 /// Compile a single user function into a standalone LLVM function definition.
 ///
@@ -48,6 +60,10 @@ pub(super) fn compile_native_scalar_subfunction(
     let register_count = function.register_count as usize;
     let param_count = function.param_count as usize;
     let code_len = code.len();
+
+    if code.iter().any(|instr| instr.opcode() == Opcode32::ListPush) {
+        return Ok(None);
+    }
 
     let Some(callee_facts) = compute_callee_facts(artifact, function, &code)? else {
         return Ok(None);
@@ -171,7 +187,8 @@ pub(super) fn compile_native_scalar_subfunction(
                     NativeScalarKind::I64
                     | NativeScalarKind::F64
                     | NativeScalarKind::StrPtr
-                    | NativeScalarKind::MaybeI64 => {
+                    | NativeScalarKind::MaybeI64
+                    | NativeScalarKind::MaybeStrPtr => {
                         ir.push_str(&format!("  br label {}\n", native_label(truthy_target, code_len)));
                     }
                 }
@@ -234,7 +251,8 @@ pub(super) fn compile_native_scalar_subfunction(
                     NativeScalarKind::I64
                     | NativeScalarKind::F64
                     | NativeScalarKind::StrPtr
-                    | NativeScalarKind::MaybeI64 => {
+                    | NativeScalarKind::MaybeI64
+                    | NativeScalarKind::MaybeStrPtr => {
                         let value = next_tmp(&mut tmp_index);
                         let cond = next_tmp(&mut tmp_index);
                         let out = next_tmp(&mut tmp_index);
@@ -456,7 +474,7 @@ pub(super) fn compile_native_scalar_subfunction(
                             NativeScalarKind::Nil => {
                                 ir.push_str("  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr @lk_nil_text)\n");
                             }
-                            NativeScalarKind::StrPtr => {
+                            NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => {
                                 let val = next_tmp(&mut tmp_index);
                                 ir.push_str(&format!("  {val} = load ptr, ptr %r{arg_reg}.slot\n"));
                                 ir.push_str(&format!("  call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {val})\n"));
@@ -604,11 +622,389 @@ pub(super) fn compile_native_scalar_subfunction(
     Ok(Some(ir))
 }
 
+pub(super) fn compile_native_ptr_list_subfunction(
+    artifact: &Module32Artifact,
+    function_index: usize,
+) -> Result<Option<String>> {
+    let Some(function) = artifact.module.functions.get(function_index) else {
+        return Ok(None);
+    };
+    if function.param_count != 1 || function.capture_count != 0 {
+        return Ok(None);
+    }
+    let Ok(code) = function
+        .code
+        .iter()
+        .copied()
+        .map(Instr32::try_from_raw)
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return Ok(None);
+    };
+    if !code.iter().any(|instr| instr.opcode() == Opcode32::ListPush) {
+        return Ok(None);
+    }
+
+    let register_count = function.register_count as usize;
+    let code_len = code.len();
+    let mut ir = String::new();
+    let mut extra_globals = String::new();
+    let mut static_regs: Vec<Option<NativeStraightlineValue>> = vec![None; register_count];
+    let param_list_id = ptr_list_param_id(function_index, 0);
+    let fn_name = format!("@lk_fn_{function_index}_list");
+    ir.push_str(&format!(
+        "define private void {fn_name}(ptr %arg0.values, ptr %arg0.len.slot, ptr %out.values, ptr %out.len.slot) {{\n"
+    ));
+    ir.push_str("entry:\n");
+    for reg in 0..register_count {
+        ir.push_str(&format!("  %r{reg}.slot = alloca i64\n"));
+        ir.push_str(&format!("  %r{reg}.present.slot = alloca i64\n"));
+        ir.push_str(&format!("  store i64 1, ptr %r{reg}.present.slot\n"));
+        emit_dynamic_int_list_allocas(&mut ir, &format!("list{}", ptr_list_reg_id(function_index, reg)));
+    }
+    emit_dynamic_int_list_allocas(&mut ir, &format!("list{param_list_id}"));
+    for (pc, instr) in code.iter().copied().enumerate() {
+        if ptr_list_alloca_needed(function, instr) || matches!(instr.opcode(), Opcode32::Call) {
+            emit_dynamic_int_list_allocas(&mut ir, &format!("list{pc}"));
+        }
+    }
+    let arg_len = next_tmp(&mut 0usize);
+    ir.push_str(&format!("  {arg_len} = load i64, ptr %arg0.len.slot\n"));
+    ir.push_str(&format!(
+        "  call void @lk_slice_ptr_list(ptr %arg0.values, i64 {arg_len}, i64 0, ptr %list{param_list_id}.ptr.slots, ptr %list{param_list_id}.len.slot)\n"
+    ));
+    ir.push_str("  br label %bb0\n\n");
+    static_regs[0] = Some(NativeStraightlineValue::DynamicList {
+        id: param_list_id,
+        element: NativeListElementKind::StrPtr,
+    });
+
+    let block_targets = find_block_targets(&code, code_len);
+    let mut tmp_index = 1usize;
+    let mut emitted_terminator = true;
+    let mut after_return = false;
+    for (pc, instr) in code.iter().copied().enumerate() {
+        if pc == 0 {
+            ir.push_str("bb0:\n");
+            emitted_terminator = false;
+        } else if block_targets.contains(&pc) {
+            if !emitted_terminator {
+                ir.push_str(&format!("  br label {}\n", native_label(pc, code_len)));
+            }
+            ir.push_str(&format!("{}:\n", native_label(pc, code_len).trim_start_matches('%')));
+            after_return = false;
+            emitted_terminator = false;
+        }
+        if after_return {
+            continue;
+        }
+        emitted_terminator = false;
+        match instr.opcode() {
+            Opcode32::Nop => {}
+            Opcode32::Jmp => {
+                let Some(target) = native_relative_target(pc, instr.sj_arg(), code_len) else {
+                    return Ok(None);
+                };
+                ir.push_str(&format!("  br label {}\n", native_label(target, code_len)));
+                emitted_terminator = true;
+            }
+            Opcode32::Test => {
+                let value = next_tmp(&mut tmp_index);
+                let cond = next_tmp(&mut tmp_index);
+                ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+                ir.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
+                let fallthrough = pc + 1;
+                let Some(relative) = native_relative_target(pc, instr.c() as i8 as i32, code_len) else {
+                    return Ok(None);
+                };
+                let truthy_target = if instr.b() != 0 { fallthrough } else { relative };
+                let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
+                ir.push_str(&format!(
+                    "  br i1 {cond}, label {}, label {}\n",
+                    native_label(truthy_target, code_len),
+                    native_label(falsy_target, code_len)
+                ));
+                emitted_terminator = true;
+            }
+            Opcode32::LoadInt => {
+                let Some(value) = function.consts.ints.get(instr.bx() as usize) else {
+                    return Ok(None);
+                };
+                ir.push_str(&format!("  store i64 {value}, ptr %r{}.slot\n", instr.a()));
+                static_regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(value.to_string()));
+            }
+            Opcode32::LoadHeapConst => {
+                let Some(ConstHeapValue32Data::List(values)) = function.consts.heap_values.get(instr.bx() as usize)
+                else {
+                    return Ok(None);
+                };
+                if !values.is_empty() {
+                    return Ok(None);
+                }
+                let list_id = ptr_list_reg_id(function_index, instr.a() as usize);
+                ir.push_str(&format!("  store i64 0, ptr %list{list_id}.len.slot\n"));
+                static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
+                    id: list_id,
+                    element: NativeListElementKind::StrPtr,
+                });
+            }
+            Opcode32::LoadString => {
+                let Some(value) = function.consts.strings.get(instr.bx() as usize) else {
+                    return Ok(None);
+                };
+                let symbol = format!("@lk_fn{function_index}_list_str_{pc}");
+                extra_globals.push_str(&llvm_string_constant(&symbol, value));
+                ir.push_str(&format!("  store ptr {symbol}, ptr %r{}.slot\n", instr.a()));
+                static_regs[instr.a() as usize] = Some(NativeStraightlineValue::String {
+                    symbol,
+                    value: value.clone(),
+                    len: value.chars().count(),
+                    key_kind: super::straightline_value::NativeStringKeyKind::Short,
+                });
+            }
+            Opcode32::GetGlobal => {
+                let Some(name) = artifact.module.globals.get(instr.bx() as usize) else {
+                    return Ok(None);
+                };
+                static_regs[instr.a() as usize] = native_static_global(name);
+                if static_regs[instr.a() as usize].is_none() {
+                    return Ok(None);
+                }
+            }
+            Opcode32::Move => {
+                if let Some(NativeStraightlineValue::DynamicList { id: src_id, element }) =
+                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
+                {
+                    let dst_id = ptr_list_reg_id(function_index, instr.a() as usize);
+                    if emit_dynamic_ptr_list_copy(&mut ir, src_id, dst_id, &mut tmp_index).is_none() {
+                        return Ok(None);
+                    }
+                    static_regs[instr.a() as usize] =
+                        Some(NativeStraightlineValue::DynamicList { id: dst_id, element });
+                } else {
+                    let value = next_tmp(&mut tmp_index);
+                    ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.b()));
+                    ir.push_str(&format!("  store i64 {value}, ptr %r{}.slot\n", instr.a()));
+                    static_regs[instr.a() as usize] = static_regs.get(instr.b() as usize).and_then(Clone::clone);
+                }
+            }
+            Opcode32::Len => {
+                let Some(NativeStraightlineValue::DynamicList { id, .. }) =
+                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
+                else {
+                    return Ok(None);
+                };
+                let len = next_tmp(&mut tmp_index);
+                ir.push_str(&format!("  {len} = load i64, ptr %list{id}.len.slot\n"));
+                ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
+                static_regs[instr.a() as usize] = None;
+            }
+            Opcode32::AddInt => {
+                emit_i64_binary_block(&mut ir, instr, &mut tmp_index);
+                static_regs[instr.a() as usize] = None;
+            }
+            Opcode32::CmpLtInt | Opcode32::CmpGtInt | Opcode32::CmpInt => {
+                if emit_ptr_list_compare(&mut ir, instr, &static_regs, &mut tmp_index).is_none() {
+                    return Ok(None);
+                }
+                static_regs[instr.a() as usize] = None;
+            }
+            Opcode32::GetIndex => {
+                let Some(NativeStraightlineValue::DynamicList { id, .. }) =
+                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
+                else {
+                    return Ok(None);
+                };
+                let Some(value) = emit_dynamic_ptr_list_get(&mut ir, id, instr.a(), instr.c(), &mut tmp_index) else {
+                    return Ok(None);
+                };
+                static_regs[instr.a() as usize] = Some(NativeStraightlineValue::StringPtr(value));
+            }
+            Opcode32::ListPush => {
+                let Some(NativeStraightlineValue::DynamicList { id, .. }) =
+                    static_regs.get(instr.a() as usize).and_then(Clone::clone)
+                else {
+                    return Ok(None);
+                };
+                if emit_dynamic_ptr_list_push(&mut ir, id, instr.b(), &mut tmp_index).is_none() {
+                    return Ok(None);
+                }
+            }
+            Opcode32::NewList => {
+                let start = instr.b() as usize;
+                let end = start
+                    .checked_add(instr.c() as usize)
+                    .ok_or_else(|| anyhow::anyhow!("arg overflow"))?;
+                static_regs[instr.a() as usize] = static_regs
+                    .get(start..end)
+                    .and_then(|values| values.iter().cloned().collect())
+                    .map(|elements| NativeStraightlineValue::ArgList { elements });
+            }
+            Opcode32::Call => {
+                let Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod)) =
+                    static_regs.get(instr.b() as usize).and_then(Clone::clone)
+                else {
+                    return Ok(None);
+                };
+                if emit_ptr_list_core_method(&mut ir, &mut static_regs, &code, instr, pc, &mut tmp_index).is_none() {
+                    return Ok(None);
+                }
+            }
+            Opcode32::Return => {
+                let Some(NativeStraightlineValue::DynamicList { id, .. }) =
+                    static_regs.get(instr.a() as usize).and_then(Clone::clone)
+                else {
+                    return Ok(None);
+                };
+                let len = next_tmp(&mut tmp_index);
+                let base = next_tmp(&mut tmp_index);
+                ir.push_str(&format!("  {len} = load i64, ptr %list{id}.len.slot\n"));
+                ir.push_str(&format!(
+                    "  {base} = getelementptr [4096 x ptr], ptr %list{id}.ptr.slots, i64 0, i64 0\n"
+                ));
+                ir.push_str(&format!(
+                    "  call void @lk_slice_ptr_list(ptr {base}, i64 {len}, i64 0, ptr %out.values, ptr %out.len.slot)\n"
+                ));
+                ir.push_str("  ret void\n");
+                after_return = true;
+                emitted_terminator = true;
+            }
+            _ => return Ok(None),
+        }
+    }
+    ir.push_str("exit:\n  ret void\n");
+    ir.push_str("}\n");
+    ir.push_str(&extra_globals);
+    Ok(Some(ir))
+}
+
+pub(super) use list::compile_native_i64_list_subfunction;
+
 fn native_return_zero(kind: NativeScalarKind) -> &'static str {
     match kind {
         NativeScalarKind::StrPtr => "null",
         _ => "0",
     }
+}
+
+fn ptr_list_param_id(function_index: usize, param: usize) -> usize {
+    PTR_LIST_PARAM_BASE + function_index.saturating_mul(16) + param
+}
+
+fn ptr_list_reg_id(function_index: usize, reg: usize) -> usize {
+    PTR_LIST_REG_BASE + function_index.saturating_mul(256) + reg
+}
+
+fn ptr_list_alloca_needed(function: &Function32Data, instr: Instr32) -> bool {
+    matches!(instr.opcode(), Opcode32::Call | Opcode32::SliceFrom)
+        || matches!(instr.opcode(), Opcode32::LoadHeapConst)
+            && matches!(
+                function.consts.heap_values.get(instr.bx() as usize),
+                Some(ConstHeapValue32Data::List(values)) if values.is_empty()
+            )
+}
+
+fn emit_ptr_list_compare(
+    ir: &mut String,
+    instr: Instr32,
+    static_regs: &[Option<NativeStraightlineValue>],
+    tmp_index: &mut usize,
+) -> Option<()> {
+    let lhs_is_str = matches!(
+        static_regs.get(instr.b() as usize).and_then(|value| value.as_ref()),
+        Some(NativeStraightlineValue::StringPtr(_) | NativeStraightlineValue::String { .. })
+    );
+    let rhs_is_str = matches!(
+        static_regs.get(instr.c() as usize).and_then(|value| value.as_ref()),
+        Some(NativeStraightlineValue::StringPtr(_) | NativeStraightlineValue::String { .. })
+    );
+    if lhs_is_str || rhs_is_str {
+        let lhs = next_tmp(tmp_index);
+        let rhs = next_tmp(tmp_index);
+        let cmp = next_tmp(tmp_index);
+        let cond = next_tmp(tmp_index);
+        let out = next_tmp(tmp_index);
+        ir.push_str(&format!("  {lhs} = load ptr, ptr %r{}.slot\n", instr.b()));
+        ir.push_str(&format!("  {rhs} = load ptr, ptr %r{}.slot\n", instr.c()));
+        ir.push_str(&format!("  {cmp} = call i32 @strcmp(ptr {lhs}, ptr {rhs})\n"));
+        let op = match instr.opcode() {
+            Opcode32::CmpLtInt => "slt",
+            Opcode32::CmpGtInt => "sgt",
+            Opcode32::CmpInt => "eq",
+            _ => return None,
+        };
+        ir.push_str(&format!("  {cond} = icmp {op} i32 {cmp}, 0\n"));
+        ir.push_str(&format!("  {out} = zext i1 {cond} to i64\n"));
+        ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+        return Some(());
+    }
+    emit_numeric_compare_block(ir, instr, NativeScalarKind::I64, NativeScalarKind::I64, tmp_index);
+    Some(())
+}
+
+fn emit_ptr_list_core_method(
+    ir: &mut String,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    code: &[Instr32],
+    instr: Instr32,
+    pc: usize,
+    tmp_index: &mut usize,
+) -> Option<()> {
+    let start = instr.a() as usize + 1;
+    let end = start.checked_add(instr.c() as usize)?;
+    if end > static_regs.len() || instr.c() != 3 {
+        return None;
+    }
+    let NativeStraightlineValue::DynamicList { id, .. } = static_regs.get(start)?.clone()? else {
+        return None;
+    };
+    let NativeStraightlineValue::String { value: method, .. } = static_regs.get(start + 1)?.clone()? else {
+        return None;
+    };
+    match method.as_str() {
+        "take" => {
+            let arg_list_reg = instr.a().checked_add(3)?;
+            let count_reg = single_arg_list_source_reg_before(code, pc, arg_list_reg)?;
+            emit_dynamic_ptr_list_take(ir, id, pc, count_reg, tmp_index)?;
+        }
+        "skip" => {
+            let arg_list_reg = instr.a().checked_add(3)?;
+            let start_reg = single_arg_list_source_reg_before(code, pc, arg_list_reg)?;
+            emit_dynamic_ptr_list_slice(ir, id, pc, start_reg, tmp_index)?;
+        }
+        "concat" | "chain" => {
+            let arg_list_reg = instr.a().checked_add(3)?;
+            let rhs_reg = single_arg_list_source_reg_before(code, pc, arg_list_reg)?;
+            let NativeStraightlineValue::DynamicList { id: rhs_id, .. } =
+                static_regs.get(rhs_reg as usize).cloned().flatten()?
+            else {
+                return None;
+            };
+            emit_dynamic_ptr_list_concat(ir, id, rhs_id, pc, tmp_index)?;
+        }
+        _ => return None,
+    }
+    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
+        id: pc,
+        element: NativeListElementKind::StrPtr,
+    });
+    Some(())
+}
+
+fn single_arg_list_source_reg_before(code: &[Instr32], pc: usize, reg: u8) -> Option<u8> {
+    let start = pc.saturating_sub(16);
+    for prev_pc in (start..pc).rev() {
+        let prev = code.get(prev_pc).copied()?;
+        if prev.a() != reg {
+            continue;
+        }
+        return match prev.opcode() {
+            Opcode32::Move if prev.b() != reg => single_arg_list_source_reg_before(code, prev_pc, prev.b()),
+            Opcode32::NewList if prev.c() == 1 => Some(prev.b()),
+            _ => None,
+        };
+    }
+    None
 }
 
 /// Find all PCs that are targets of Jmp or Test branch instructions.
@@ -673,6 +1069,7 @@ fn compute_callee_facts(
                     NativeScalarKind::Bool => NativeStraightlineValue::Bool("0".to_string()),
                     NativeScalarKind::Nil => NativeStraightlineValue::Nil,
                     NativeScalarKind::I64 | NativeScalarKind::MaybeI64 => NativeStraightlineValue::I64("0".to_string()),
+                    NativeScalarKind::MaybeStrPtr => NativeStraightlineValue::StringPtr("@lk_empty_text".to_string()),
                 });
             }
 

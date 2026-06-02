@@ -969,6 +969,14 @@ pub(super) fn native_direct_call_static_return_value(
         .map(Instr32::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
+    if code.iter().any(|instr| {
+        matches!(
+            instr.opcode(),
+            Opcode32::Test | Opcode32::Jmp | Opcode32::CallDirect | Opcode32::CallNamed
+        )
+    }) {
+        return None;
+    }
     let mut regs = vec![None; function.register_count as usize];
     for arg in 0..instr.c() as usize {
         let caller_reg = instr.a() as usize + 1 + arg;

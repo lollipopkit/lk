@@ -281,6 +281,146 @@ impl StringModule {
         }
         Ok(runtime_string_value(&out, runtime.heap_mut()))
     }
+
+    fn strip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let (value, pattern) = two_strings(args, runtime, "strip()")?;
+        Ok(value
+            .strip_prefix(pattern.as_ref())
+            .or_else(|| value.strip_suffix(pattern.as_ref()))
+            .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
+    }
+
+    fn strip_prefix32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let (value, prefix) = two_strings(args, runtime, "strip_prefix()")?;
+        Ok(value
+            .strip_prefix(prefix.as_ref())
+            .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
+    }
+
+    fn strip_suffix32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let (value, suffix) = two_strings(args, runtime, "strip_suffix()")?;
+        Ok(value
+            .strip_suffix(suffix.as_ref())
+            .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
+    }
+
+    fn count32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let (value, pattern) = two_strings(args, runtime, "count()")?;
+        if pattern.is_empty() {
+            // Count empty pattern matches between each char + at start and end
+            return Ok(RuntimeVal::Int(value.len() as i64 + 1));
+        }
+        Ok(RuntimeVal::Int(value.matches(pattern.as_ref()).count() as i64))
+    }
+
+    fn pad_left32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        if args.len() < 2 || args.len() > 3 {
+            bail!("pad_left() takes 2 or 3 arguments: string, width[, fill]");
+        }
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], runtime.heap(), "pad_left() string")?;
+        let width = usize_arg(&values[1], "pad_left() width")?;
+        let fill = if values.len() >= 3 {
+            let f = runtime_string_arg(&values[2], runtime.heap(), "pad_left() fill")?;
+            if f.is_empty() {
+                bail!("pad_left() fill must not be empty");
+            }
+            f.to_string()
+        } else {
+            " ".to_string()
+        };
+        if width <= value.len() {
+            return Ok(runtime_string_value(value.as_ref(), runtime.heap_mut()));
+        }
+        let needed = width - value.len();
+        let pad = fill.repeat(needed / fill.len() + 1);
+        let padded = format!("{}{}", &pad[pad.len() - needed..], value.as_ref());
+        Ok(runtime_string_value(&padded, runtime.heap_mut()))
+    }
+
+    fn pad_right32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        if args.len() < 2 || args.len() > 3 {
+            bail!("pad_right() takes 2 or 3 arguments: string, width[, fill]");
+        }
+        let values = args.as_slice();
+        let value = runtime_string_arg(&values[0], runtime.heap(), "pad_right() string")?;
+        let width = usize_arg(&values[1], "pad_right() width")?;
+        let fill = if values.len() >= 3 {
+            let f = runtime_string_arg(&values[2], runtime.heap(), "pad_right() fill")?;
+            if f.is_empty() {
+                bail!("pad_right() fill must not be empty");
+            }
+            f.to_string()
+        } else {
+            " ".to_string()
+        };
+        if width <= value.len() {
+            return Ok(runtime_string_value(value.as_ref(), runtime.heap_mut()));
+        }
+        let needed = width - value.len();
+        let pad = fill.repeat(needed / fill.len() + 1);
+        let padded = format!("{}{}", value.as_ref(), &pad[..needed]);
+        Ok(runtime_string_value(&padded, runtime.heap_mut()))
+    }
+
+    fn to_int32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "to_int()")?;
+        match &args.as_slice()[0] {
+            RuntimeVal::Int(v) => Ok(RuntimeVal::Int(*v)),
+            RuntimeVal::Float(v) => Ok(RuntimeVal::Int(*v as i64)),
+            RuntimeVal::Bool(v) => Ok(RuntimeVal::Int(if *v { 1 } else { 0 })),
+            _ => bail!("to_int() argument must be a number or bool"),
+        }
+    }
+
+    fn to_float32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "to_float()")?;
+        match &args.as_slice()[0] {
+            RuntimeVal::Float(v) => Ok(RuntimeVal::Float(*v)),
+            RuntimeVal::Int(v) => Ok(RuntimeVal::Float(*v as f64)),
+            RuntimeVal::Bool(v) => Ok(RuntimeVal::Float(if *v { 1.0 } else { 0.0 })),
+            _ => bail!("to_float() argument must be a number or bool"),
+        }
+    }
+
+    fn title32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "title()")?;
+        let mut result = String::with_capacity(value.len());
+        let mut capitalize_next = true;
+        for ch in value.chars() {
+            if ch.is_whitespace() {
+                capitalize_next = true;
+                result.push(ch);
+            } else if capitalize_next {
+                for c in ch.to_uppercase() {
+                    result.push(c);
+                }
+                capitalize_next = false;
+            } else {
+                for c in ch.to_lowercase() {
+                    result.push(c);
+                }
+            }
+        }
+        Ok(runtime_string_value(&result, runtime.heap_mut()))
+    }
+
+    fn capitalize32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        let value = one_string(args, runtime, "capitalize()")?;
+        let mut chars = value.chars();
+        let mut result = String::with_capacity(value.len());
+        if let Some(first) = chars.next() {
+            for c in first.to_uppercase() {
+                result.push(c);
+            }
+        }
+        for ch in chars {
+            for c in ch.to_lowercase() {
+                result.push(c);
+            }
+        }
+        Ok(runtime_string_value(&result, runtime.heap_mut()))
+    }
 }
 
 impl Module for StringModule {
@@ -318,6 +458,16 @@ impl Module for StringModule {
                 RuntimeNativeExport32::plain("find", Self::find32, NativeEntry32::VARIADIC),
                 RuntimeNativeExport32::plain("is_empty", Self::is_empty32, 1),
                 RuntimeNativeExport32::plain("format", Self::format32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport32::plain("strip", Self::strip32, 2),
+                RuntimeNativeExport32::plain("strip_prefix", Self::strip_prefix32, 2),
+                RuntimeNativeExport32::plain("strip_suffix", Self::strip_suffix32, 2),
+                RuntimeNativeExport32::plain("count", Self::count32, 2),
+                RuntimeNativeExport32::plain("pad_left", Self::pad_left32, 3),
+                RuntimeNativeExport32::plain("pad_right", Self::pad_right32, 3),
+                RuntimeNativeExport32::plain("to_int", Self::to_int32, 1),
+                RuntimeNativeExport32::plain("to_float", Self::to_float32, 1),
+                RuntimeNativeExport32::plain("title", Self::title32, 1),
+                RuntimeNativeExport32::plain("capitalize", Self::capitalize32, 1),
             ],
             &[],
         ))

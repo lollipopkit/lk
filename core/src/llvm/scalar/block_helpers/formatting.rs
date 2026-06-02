@@ -1,5 +1,6 @@
 use crate::llvm::{
     const_display::{llvm_string_constant, native_const_list_display},
+    ir_text::native_float_display,
     output::emit_native_print_text_parts,
     straightline_value::{NativeBuiltin, NativeStraightlineValue},
 };
@@ -62,6 +63,15 @@ fn emit_static_print_value_raw(
             ));
         }
         NativeStraightlineValue::F64(value) => {
+            if let Ok(parsed) = value.parse::<f64>() {
+                let symbol = format!("@lk_fmt_f64_{}", *tmp_index);
+                *tmp_index += 1;
+                extra_globals.push_str(&llvm_string_constant(&symbol, &native_float_display(parsed)));
+                ir.push_str(&format!(
+                    "  call i32 (ptr, ...) @printf(ptr @lk_str_raw_fmt, ptr {symbol})\n"
+                ));
+                return Some(());
+            }
             ir.push_str(&format!(
                 "  call i32 (ptr, ...) @printf(ptr @lk_f64_raw_fmt, double {value})\n"
             ));

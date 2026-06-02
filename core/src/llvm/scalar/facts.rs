@@ -2,12 +2,12 @@ use super::{
     block_helpers::{
         concat_text_values, control_flow_static_boundaries, kind_symbolic_value, local_static_container_before,
         local_static_i64_before, mark_static_untaken_return_path, static_callable_value,
-        static_string_i64_map_supported, text_value_from_native,
+        static_register_value_trusted_before, static_string_i64_map_supported, text_value_from_native,
     },
     contains::{
-        local_static_heap_const_before, local_static_i64_value_before, static_index_from_registers,
-        static_int_list_index_value, static_int_range_from_registers, static_object_from_registers,
-        static_slice_from_value,
+        local_static_heap_const_before, local_static_i64_value_before, local_static_object_before,
+        static_index_from_registers, static_int_list_index_value, static_int_range_from_registers,
+        static_object_from_registers, static_slice_from_value,
     },
 };
 use crate::llvm::{
@@ -18,118 +18,33 @@ use crate::llvm::{
     straightline_value::{
         NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
         native_runtime_string_key_kind, native_static_compare_bool, native_static_global, native_static_i64_binary,
-        native_static_index, native_static_list_from_values, native_static_list_join, native_static_list_push,
-        native_static_load_cell, native_static_map_from_pairs, native_static_map_rest, native_static_set_index,
-        native_static_store_cell, native_static_string_split, native_static_to_iter,
+        native_static_index, native_static_list_from_values, native_static_list_join, native_static_load_cell,
+        native_static_map_from_pairs, native_static_map_rest, native_static_set_index, native_static_store_cell,
+        native_static_string_split, native_static_to_iter,
     },
 };
 use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Function32Data, Instr32, Opcode32};
 mod analysis;
+mod arg_lists;
+mod entry;
+mod list_push;
+mod list_returns;
+mod map_methods;
 mod returns;
 mod slots;
 
 pub(in crate::llvm) use super::kind::{NativeScalarFacts, NativeScalarKind};
 use analysis::*;
+use arg_lists::*;
+pub(in crate::llvm) use entry::native_scalar_block_facts_with_statics_and_functions;
+use list_push::propagate_list_push;
+use list_returns::dynamic_list_return_value;
+use map_methods::*;
 use returns::{
-    native_direct_call_return_kind, native_named_call_args, native_static_function_return_kind,
-    peek_recursive_function_base_return_kind, static_call_target, static_global,
+    native_direct_call_return_kind, native_named_call_args, native_static_function_return_kind, static_call_target,
+    static_global,
 };
 use slots::{native_global_kind, set_native_global_kind, set_native_kind, set_static_global, set_static_value};
-pub(in crate::llvm) fn native_scalar_block_facts_with_statics_and_functions(
-    register_count: usize,
-    global_count: usize,
-    global_names: &[String],
-    int_consts: &[i64],
-    strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
-    code: &[Instr32],
-    functions: Option<&[Function32Data]>,
-) -> Option<NativeScalarFacts> {
-    if let Some(facts) = native_scalar_block_facts_with_initial(
-        register_count,
-        global_count,
-        global_names,
-        int_consts,
-        strings,
-        heap_values,
-        code,
-        vec![None; register_count],
-        vec![None; register_count],
-        vec![None; global_count],
-        vec![None; global_count],
-        functions,
-        &[],
-        0,
-        &[],
-    ) {
-        return Some(facts);
-    }
-    let Some(all_functions) = functions else {
-        return None;
-    };
-    let mut hints: Vec<(u16, Option<NativeScalarKind>)> = Vec::new();
-    for (func_idx, function) in all_functions.iter().enumerate() {
-        if !function_has_self_recursive_call_direct(function, all_functions, func_idx as u16) {
-            continue;
-        }
-        let hint = peek_recursive_function_base_return_kind(
-            all_functions,
-            func_idx as u16,
-            global_count,
-            global_names,
-            global_kinds_from_fns(global_count),
-        );
-        hints.push((func_idx as u16, hint));
-    }
-    if hints.is_empty() {
-        return None;
-    }
-    if hints.iter().any(|(_, kind)| kind.is_some()) {
-        let resolved: Vec<_> = hints.iter().filter_map(|(i, k)| k.map(|k| (*i, Some(k)))).collect();
-        if let Some(facts) = native_scalar_block_facts_with_initial(
-            register_count,
-            global_count,
-            global_names,
-            int_consts,
-            strings,
-            heap_values,
-            code,
-            vec![None; register_count],
-            vec![None; register_count],
-            vec![None; global_count],
-            vec![None; global_count],
-            functions,
-            &[],
-            0,
-            &resolved,
-        ) {
-            return Some(facts);
-        }
-    }
-    // Final fallback: I64 hints
-    let i64_hints: Vec<_> = hints
-        .iter()
-        .map(|(idx, _)| (*idx, Some(NativeScalarKind::I64)))
-        .collect();
-    native_scalar_block_facts_with_initial(
-        register_count,
-        global_count,
-        global_names,
-        int_consts,
-        strings,
-        heap_values,
-        code,
-        vec![None; register_count],
-        vec![None; register_count],
-        vec![None; global_count],
-        vec![None; global_count],
-        functions,
-        &[],
-        0,
-        &i64_hints,
-    )
-}
-
 pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
     register_count: usize,
     global_count: usize,
@@ -222,36 +137,8 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 let Some(value) = heap_values.get(instr.bx() as usize) else {
                     return None;
                 };
-                // Empty and all-Int lists use DynamicIntList so indexing/push stays native.
-                if let ConstHeapValue32Data::List(values) = value {
-                    if values.is_empty() || values.iter().all(|v| matches!(v, ConstRuntimeValue32Data::Int(_))) {
-                        if !set_static_value(
-                            &mut kinds,
-                            &mut static_values,
-                            instr.a(),
-                            None,
-                            NativeStraightlineValue::DynamicList {
-                                id: pc,
-                                element: NativeListElementKind::I64,
-                            },
-                        ) {
-                            return None;
-                        }
-                        continue;
-                    }
-                }
-                if matches!(value, ConstHeapValue32Data::Map(values) if values.is_empty()) {
-                    if !set_static_value(
-                        &mut kinds,
-                        &mut static_values,
-                        instr.a(),
-                        None,
-                        NativeStraightlineValue::DynamicMap {
-                            id: pc,
-                            key: NativeMapKeyKind::Str,
-                            value: NativeMapValueKind::I64,
-                        },
-                    ) {
+                if let Some(value) = dynamic_heap_container_value(value, pc) {
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
                         return None;
                     }
                     continue;
@@ -399,10 +286,13 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
             | Opcode32::CmpLeInt
             | Opcode32::CmpGtInt
             | Opcode32::CmpGeInt => {
-                if let (Some(lhs), Some(rhs)) = (
-                    static_kind(&static_values, instr.b()),
-                    static_kind(&static_values, instr.c()),
-                ) && let Some(value) = native_static_compare_bool(&lhs, &rhs, instr.opcode())
+                if static_register_value_trusted_before(code, pc, instr.b())
+                    && static_register_value_trusted_before(code, pc, instr.c())
+                    && let (Some(lhs), Some(rhs)) = (
+                        static_kind(&static_values, instr.b()),
+                        static_kind(&static_values, instr.c()),
+                    )
+                    && let Some(value) = native_static_compare_bool(&lhs, &rhs, instr.opcode())
                 {
                     if !set_static_value(
                         &mut kinds,
@@ -423,7 +313,15 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 let rhs = native_kind(&kinds, instr.c())
                     .or_else(|| static_kind(&static_values, instr.c()).and_then(|value| static_value_kind(&value)))
                     .unwrap_or(NativeScalarKind::I64);
-                if !lhs.is_numeric() && !matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) {
+                let ordered_string_compare = matches!(
+                    instr.opcode(),
+                    Opcode32::CmpLtInt | Opcode32::CmpLeInt | Opcode32::CmpGtInt | Opcode32::CmpGeInt
+                ) && lhs == NativeScalarKind::StrPtr
+                    && rhs == NativeScalarKind::StrPtr;
+                if !lhs.is_numeric()
+                    && !ordered_string_compare
+                    && !matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt)
+                {
                     return None;
                 }
                 if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt)
@@ -494,7 +392,8 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 let Some(text) = text_value_from_native(value) else {
                     return None;
                 };
-                if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, text) {
+                let kind = static_value_kind(&text);
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, text) {
                     return None;
                 }
             }
@@ -508,23 +407,23 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 let Some(text) = concat_text_values(lhs, rhs) else {
                     return None;
                 };
-                if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, text) {
+                let kind = static_value_kind(&text);
+                if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, text) {
                     return None;
                 }
             }
             Opcode32::Len => {
-                // If operand is a known static value, try constant-folding
                 if let Some(target) = static_kind(&static_values, instr.b()) {
-                    if native_dynamic_text_len_supported(&target)
-                        && set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64)
+                    if matches!(target, NativeStraightlineValue::DynamicMapIter { .. })
+                        || native_dynamic_text_len_supported(&target)
                     {
-                        // Successfully folded Len
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                            return None;
+                        }
                     } else {
-                        // Static value known but can't fold - still treat as I64 result
                         set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64);
                     }
                 } else {
-                    // Dynamic operand - Len always returns I64
                     if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
                         return None;
                     }
@@ -704,15 +603,12 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
             }
             Opcode32::GetIndex => {
                 let Some(target) = static_kind(&static_values, instr.b()) else {
-                    // Target not statically known - infer from register kind
                     let target_kind = native_kind(&kinds, instr.b())?;
                     if target_kind == NativeScalarKind::I64 || target_kind == NativeScalarKind::MaybeI64 {
-                        // Dynamic list or map access - return I64
                         if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
                             return None;
                         }
                     } else if target_kind == NativeScalarKind::StrPtr {
-                        // Dynamic string char access - return StrPtr
                         if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::StrPtr) {
                             return None;
                         }
@@ -751,6 +647,26 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 } else if matches!(
                     target,
+                    NativeStraightlineValue::DynamicMapIter { .. } | NativeStraightlineValue::DynamicMapEntry { .. }
+                ) {
+                    let index_kind = native_kind(&kinds, instr.c());
+                    let field = static_kind(&static_values, instr.c())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()));
+                    let Some(ok) = propagate_dynamic_map_iter_get_index(
+                        &mut kinds,
+                        &mut static_values,
+                        instr,
+                        target.clone(),
+                        index_kind,
+                        field,
+                    ) else {
+                        return None;
+                    };
+                    if !ok {
+                        return None;
+                    }
+                } else if matches!(
+                    target,
                     NativeStraightlineValue::DynamicList {
                         element: NativeListElementKind::I64,
                         ..
@@ -778,21 +694,36 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 } else if matches!(
                     target,
-                    NativeStraightlineValue::DynamicMap {
-                        key: NativeMapKeyKind::Str,
-                        value: NativeMapValueKind::I64,
+                    NativeStraightlineValue::DynamicList {
+                        element: NativeListElementKind::F64,
                         ..
                     }
                 ) {
-                    let Some(key) = static_kind(&static_values, instr.c())
-                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()))
-                    else {
-                        return None;
-                    };
-                    if !native_string_int_map_key_supported(&key) {
+                    if native_kind(&kinds, instr.c()) != Some(NativeScalarKind::I64)
+                        || !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::F64)
+                    {
                         return None;
                     }
-                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::MaybeI64) {
+                } else if let Some(ok) = {
+                    let key = static_kind(&static_values, instr.c())
+                        .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()));
+                    propagate_dynamic_string_map_get_index(&mut kinds, &mut static_values, instr, &target, key)
+                } {
+                    if !ok {
+                        return None;
+                    }
+                } else if let Some(ok) = {
+                    let index_kind = native_kind(&kinds, instr.c());
+                    propagate_dynamic_i64_map_get_index(&mut kinds, &mut static_values, instr, &target, index_kind)
+                } {
+                    if !ok {
+                        return None;
+                    }
+                } else if let Some(ok) = {
+                    let index_kind = native_kind(&kinds, instr.c());
+                    propagate_dynamic_string_list_get_index(&mut kinds, &mut static_values, instr, &target, index_kind)
+                } {
+                    if !ok {
                         return None;
                     }
                 } else if let NativeStraightlineValue::Map { entries, .. } = &target
@@ -838,6 +769,13 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                             return None;
                         }
                     }
+                } else if let Some(value) =
+                    arg_list_get_index_value(&static_values, &kinds, code, int_consts, pc, instr, target.clone())
+                {
+                    let kind = static_value_kind(&value);
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                        return None;
+                    }
                 } else {
                     let Some(key) = static_kind(&static_values, instr.c())
                         .or_else(|| local_static_i64_before(code, int_consts, pc, instr.c()))
@@ -850,12 +788,10 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                             return None;
                         }
                     } else if matches!(target, NativeStraightlineValue::I64(_)) {
-                        // I64 target with I64 key - treat as dynamic list access returning I64
                         if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
                             return None;
                         }
                     } else if matches!(target, NativeStraightlineValue::StringPtr(_)) {
-                        // StrPtr target - treat as dynamic string char access
                         if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::StrPtr) {
                             return None;
                         }
@@ -902,6 +838,18 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, target) {
                         return None;
                     }
+                } else if let Some(value) = arg_list_set_index_value(
+                    target.clone(),
+                    &static_values,
+                    int_consts,
+                    code,
+                    pc,
+                    instr.b(),
+                    instr.c(),
+                ) {
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                        return None;
+                    }
                 } else {
                     let Some(key) = static_kind(&static_values, instr.b()) else {
                         return None;
@@ -918,80 +866,8 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 }
             }
             Opcode32::ListPush => {
-                let Some(target) = static_kind(&static_values, instr.a()) else {
+                if propagate_list_push(&mut kinds, &mut static_values, instr).is_none() {
                     return None;
-                };
-                match target {
-                    NativeStraightlineValue::DynamicList {
-                        id,
-                        element: NativeListElementKind::I64,
-                    } => {
-                        if native_kind(&kinds, instr.b()) == Some(NativeScalarKind::I64) {
-                            if !set_static_value(
-                                &mut kinds,
-                                &mut static_values,
-                                instr.a(),
-                                Some(NativeScalarKind::I64),
-                                NativeStraightlineValue::DynamicList {
-                                    id,
-                                    element: NativeListElementKind::I64,
-                                },
-                            ) {
-                                return None;
-                            }
-                        } else {
-                            let Some(value) = static_kind(&static_values, instr.b()) else {
-                                return None;
-                            };
-                            if !native_dynamic_text_len_supported(&value)
-                                || !set_static_value(
-                                    &mut kinds,
-                                    &mut static_values,
-                                    instr.a(),
-                                    None,
-                                    NativeStraightlineValue::DynamicList {
-                                        id,
-                                        element: NativeListElementKind::Text,
-                                    },
-                                )
-                            {
-                                return None;
-                            }
-                        }
-                    }
-                    NativeStraightlineValue::DynamicList {
-                        id,
-                        element: NativeListElementKind::Text,
-                    } => {
-                        let Some(value) = static_kind(&static_values, instr.b()) else {
-                            return None;
-                        };
-                        if !native_dynamic_text_len_supported(&value)
-                            || !set_static_value(
-                                &mut kinds,
-                                &mut static_values,
-                                instr.a(),
-                                None,
-                                NativeStraightlineValue::DynamicList {
-                                    id,
-                                    element: NativeListElementKind::Text,
-                                },
-                            )
-                        {
-                            return None;
-                        }
-                    }
-                    _ => {
-                        let Some(value) = static_kind(&static_values, instr.b()) else {
-                            return None;
-                        };
-                        let Some(value) = native_static_list_push(target, value) else {
-                            return None;
-                        };
-                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
-                            return None;
-                        }
-                    }
                 }
             }
             Opcode32::NewList => {
@@ -1001,11 +877,55 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
                 if instr.c() == 1
-                    && let Some(
-                        value @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }),
-                    ) = static_values.get(start).cloned().flatten()
+                    && let Some(value) = single_callable_arg_list(static_values.get(start).cloned().flatten())
                 {
                     if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                        return None;
+                    }
+                    continue;
+                }
+                if let Some(value) = object_arg_list_from_registers(&static_values, code, int_consts, pc, start, end) {
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                        return None;
+                    }
+                    continue;
+                }
+                if static_values.get(start..end).is_some_and(|values| {
+                    values.iter().any(|value| {
+                        matches!(
+                            value,
+                            Some(NativeStraightlineValue::List { .. } | NativeStraightlineValue::DynamicList { .. })
+                        )
+                    })
+                }) {
+                    let Some(values) = static_values.get(start..end) else {
+                        return None;
+                    };
+                    let allow_i64_placeholder = values
+                        .iter()
+                        .any(|value| matches!(value, Some(NativeStraightlineValue::DynamicList { .. })));
+                    let elements = values
+                        .iter()
+                        .enumerate()
+                        .map(|(offset, value)| {
+                            let reg = u8::try_from(start + offset).ok()?;
+                            value
+                                .clone()
+                                .or_else(|| {
+                                    local_static_i64_value_before(code, int_consts, strings, heap_values, pc, reg)
+                                })
+                                .or_else(|| local_static_i64_before(code, int_consts, pc, reg))
+                                .or_else(|| local_static_heap_const_before(code, heap_values, pc, reg))
+                                .or_else(|| dynamic_scalar_placeholder(&kinds, reg, allow_i64_placeholder))
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    if !set_static_value(
+                        &mut kinds,
+                        &mut static_values,
+                        instr.a(),
+                        None,
+                        NativeStraightlineValue::ArgList { elements },
+                    ) {
                         return None;
                     }
                     continue;
@@ -1041,6 +961,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                                     local_static_i64_value_before(code, int_consts, strings, heap_values, pc, reg)
                                         .or_else(|| local_static_i64_before(code, int_consts, pc, reg))
                                         .or_else(|| local_static_heap_const_before(code, heap_values, pc, reg))
+                                        .or_else(|| dynamic_scalar_placeholder(&kinds, reg, true))
                                         .or_else(|| value.clone())
                                 }
                                 _ => value.clone(),
@@ -1086,8 +1007,46 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 }
                 let start = instr.b() as usize + 1;
                 let end = start.checked_add(instr.c() as usize)?;
+                if let Some(ok) = propagate_dynamic_map_set_call(&mut kinds, &mut static_values, instr, &target, start)
+                {
+                    if !ok {
+                        return None;
+                    }
+                    continue;
+                }
+                if let Some(ok) =
+                    propagate_dynamic_map_values_call(&mut kinds, &mut static_values, instr, pc, &target, start)
+                {
+                    if !ok {
+                        return None;
+                    }
+                    continue;
+                }
+                if let Some(ok) =
+                    propagate_dynamic_map_keys_call(&mut kinds, &mut static_values, instr, pc, &target, start)
+                {
+                    if !ok {
+                        return None;
+                    }
+                    continue;
+                }
+                if let Some(ok) =
+                    propagate_dynamic_ptr_list_builtin_call(&mut kinds, &mut static_values, instr, pc, &target, start)
+                {
+                    if !ok {
+                        return None;
+                    }
+                    continue;
+                }
+                if let Some(ok) =
+                    propagate_dynamic_f64_list_builtin_call(&mut kinds, &mut static_values, instr, pc, &target, start)
+                {
+                    if !ok {
+                        return None;
+                    }
+                    continue;
+                }
                 let Some(args) = static_values.get(start..end) else {
-                    // Dynamic args - use kind-based fallback
                     if let Some(kind) = native_builtin_return_kind_dynamic(&target, instr.c()) {
                         if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
                             return None;
@@ -1101,24 +1060,17 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 if args_vec.iter().any(|a| a.is_none()) {
                     let recovered = (start..end)
                         .map(|reg| {
+                            let reg = u8::try_from(reg).ok()?;
                             static_values
-                                .get(reg)
+                                .get(reg as usize)
                                 .cloned()
                                 .flatten()
+                                .or_else(|| local_static_heap_const_before(code, heap_values, pc, reg))
+                                .or_else(|| local_static_object_before(&static_values, code, int_consts, pc, reg))
                                 .or_else(|| {
-                                    local_static_heap_const_before(code, heap_values, pc, u8::try_from(reg).ok()?)
+                                    local_static_i64_value_before(code, int_consts, strings, heap_values, pc, reg)
                                 })
-                                .or_else(|| {
-                                    local_static_i64_value_before(
-                                        code,
-                                        int_consts,
-                                        strings,
-                                        heap_values,
-                                        pc,
-                                        u8::try_from(reg).ok()?,
-                                    )
-                                })
-                                .or_else(|| local_static_i64_before(code, int_consts, pc, u8::try_from(reg).ok()?))
+                                .or_else(|| local_static_i64_before(code, int_consts, pc, reg))
                         })
                         .collect::<Option<Vec<_>>>();
                     if let Some(args_vec) = recovered
@@ -1144,6 +1096,25 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     if let Some(value) = emit_native_static_core_call_method(&args_vec, &mut tmp_index) {
                         let kind = static_value_kind(&value);
                         if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                            return None;
+                        }
+                        continue;
+                    }
+                    if let Some(ok) =
+                        propagate_dynamic_string_list_method_call(&mut kinds, &mut static_values, instr, &args_vec)
+                            .or_else(|| {
+                                propagate_dynamic_i64_list_method_call(&mut kinds, &mut static_values, instr, &args_vec)
+                                    .or_else(|| {
+                                        propagate_dynamic_f64_list_method_call(
+                                            &mut kinds,
+                                            &mut static_values,
+                                            instr,
+                                            &args_vec,
+                                        )
+                                    })
+                            })
+                    {
+                        if !ok {
                             return None;
                         }
                         continue;
@@ -1175,11 +1146,16 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     && let [
                         list @ NativeStraightlineValue::List { .. },
                         NativeStraightlineValue::String { value: method, .. },
-                        NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. },
+                        NativeStraightlineValue::ArgList { elements },
                     ] = args_vec.as_slice()
                     && method == "map"
+                    && matches!(
+                        elements.as_slice(),
+                        [NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }]
+                    )
                 {
-                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, list.clone()) {
+                    let kind = static_value_kind(list);
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, list.clone()) {
                         return None;
                     }
                     continue;
@@ -1219,6 +1195,17 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                             return None;
                         }
                         continue;
+                    }
+                    if let Some(callee) = functions?.get(callee_index as usize) {
+                        let start = instr.a().checked_add(1)? as usize;
+                        let end = start.checked_add(instr.c() as usize)?;
+                        let args = static_values.get(start..end)?;
+                        if let Some(value) = dynamic_list_return_value(callee, args, pc) {
+                            if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                                return None;
+                            }
+                            continue;
+                        }
                     }
                     let Some(kind) = native_direct_call_return_kind(
                         functions?,
@@ -1261,7 +1248,6 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     instr.bx() >> 7,
                 )?;
                 if let Some((_, hint)) = recursive_hints.iter().find(|(idx, _)| *idx == function_index) {
-                    // Recursive or skipped call — use hint or mark register unknown
                     if let Some(kind) = hint {
                         let value = kind_symbolic_value(*kind, instr.a());
                         if !set_static_value(&mut kinds, &mut static_values, instr.a(), Some(*kind), value) {
@@ -1295,7 +1281,11 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 if instr.b() > 1 {
                     return None;
                 }
-                if instr.b() == 1 && native_kind(&kinds, instr.a()).is_none() {
+                if instr.b() == 1
+                    && native_kind(&kinds, instr.a())
+                        .or_else(|| static_kind(&static_values, instr.a()).and_then(|value| static_value_kind(&value)))
+                        .is_none()
+                {
                     return None;
                 }
             }
@@ -1394,7 +1384,11 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 if let Some(target) = static_kind(&static_values, instr.b())
                     .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()))
                 {
-                    if let NativeStraightlineValue::DynamicConstListElement { .. } = target {
+                    if let Some(value) = dynamic_map_to_iter_value(&target) {
+                        if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                            return None;
+                        }
+                    } else if let NativeStraightlineValue::DynamicConstListElement { .. } = target {
                         if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, target) {
                             return None;
                         }

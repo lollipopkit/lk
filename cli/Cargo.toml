@@ -16,11 +16,12 @@ default-run = "lk"
 
 [features]
 default = ["llvm"]
-llvm = ["lk-core/llvm", "dep:llvm-tools"]
+llvm = ["lk-core/llvm", "dep:lkrt", "dep:llvm-tools"]
 
 [dependencies]
 lk-core = { path = "../core", default-features = false }
 lk-stdlib = { path = "../stdlib" }
+lkrt = { path = "../lkrt", optional = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

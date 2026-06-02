@@ -134,7 +134,10 @@ pub(super) fn emit_const_list_element_dynamic_index(
         ir.push_str(&format!("  store ptr {selected}, ptr %r{dst}.slot\n"));
         return Some(NativeStraightlineValue::StringPtr(selected));
     }
-    None
+    Some(NativeStraightlineValue::DynamicConstListElement {
+        elements: elements.to_vec(),
+        index: outer_index.to_string(),
+    })
 }
 
 pub(super) fn emit_const_list_element_len(

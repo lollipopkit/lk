@@ -1,0 +1,13 @@
+[package]
+name = "lkrt"
+description = "Typed native runtime support for LK LLVM AOT binaries"
+version = "0.1.3"
+edition = "2024"
+authors = ["lollipopkit <a@lpkt.cn>"]
+license = "Apache-2.0"
+
+[lib]
+name = "lkrt"
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]

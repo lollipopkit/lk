@@ -63,7 +63,11 @@ pub(super) fn emit_test_block(
         NativeScalarKind::Nil => {
             ir.push_str(&format!("  br label {}\n", native_label(falsy_target, code.len())));
         }
-        NativeScalarKind::I64 | NativeScalarKind::F64 | NativeScalarKind::StrPtr | NativeScalarKind::MaybeI64 => {
+        NativeScalarKind::I64
+        | NativeScalarKind::F64
+        | NativeScalarKind::StrPtr
+        | NativeScalarKind::MaybeI64
+        | NativeScalarKind::MaybeStrPtr => {
             ir.push_str(&format!("  br label {}\n", native_label(truthy_target, code.len())));
         }
     }

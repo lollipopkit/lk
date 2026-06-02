@@ -10,15 +10,15 @@ This document describes the LK language as implemented in this repository (parse
 - Consist of letters, digits, `_`, and `-`. Keywords are reserved. (Be mindful that `-` within identifiers is allowed by the lexer.)
 
 ### Literals
-- String: `"..."` or `'...'` UTF‑8 strings. Supports escapes `\n \r \t \\ \" \' \$ \0`.
-- Raw string (Rust‑style, no escapes/interpolation): `r"..."`, `r#"..."#`, `r##"..."##` (multi‑line allowed).
-- Int: 64‑bit signed, supports leading sign and scientific notation for floats.
-- Float: 64‑bit floating point, supports scientific notation.
+- String: `"..."` or `'...'` UTF-8 strings. Supports escapes `\n \r \t \\ \" \' \$ \0`.
+- Raw string (Rust-style, no escapes/interpolation): `r"..."`, `r#"..."#`, `r##"..."##` (multi-line allowed).
+- Int: 64-bit signed, supports leading sign and scientific notation for floats.
+- Float: 64-bit floating point, supports scientific notation.
 - Bool: `true`, `false`
 - Nil: `nil`
 
 ### Collections
-- List: `[a, b, c]` (heterogeneous allowed). Indexing: `list[0]`. Negative indexing: `list[-1]`. Slice with range: `list[1..3]`. Safe access helpers via stdlib/meta‑methods.
+- List: `[a, b, c]` (heterogeneous allowed). Indexing: `list[0]`. Negative indexing: `list[-1]`. Slice with range: `list[1..3]`. Safe access helpers via stdlib/meta-methods.
 - Map: `{ key: value, ... }`. Bare keys are string keys: `{name: "Alice", age: 30}` is equivalent to `{ "name": "Alice", "age": 30 }`. Keys are evaluated expressions and coerced to strings at runtime (string/int/float/bool); access with `map.key` or `map["key"]`.
 
 ### Template Strings
@@ -34,35 +34,35 @@ This document describes the LK language as implemented in this repository (parse
 - Example: `import io; import json; let data = json.parse(io.read()); return data.req.user.id == 1;`
 
 ### Constants
-- `const name = expr;` — like `let` but immutable. Attempting to reassign a `const` variable is a runtime error.
+- `const name = expr;` - like `let` but immutable. Attempting to reassign a `const` variable is a runtime error.
 
 ### Function Calls and Methods
 - Call any expression: `f(x, y)`, `(g)(z)`.
 - Property access: `expr.field` or `expr[expr]`. Optional chaining: `expr?.field` and `expr?[index]`.
 - Method sugar: `value.method(args...)` dispatches as:
   1) If `value.method` yields a callable (closure/native), call it.
-  2) Else dispatch a registered meta‑method for the value's runtime type, passing the receiver as the first argument (e.g., `"abc".len()`; see stdlib).
+  2) Else dispatch a registered meta-method for the value's runtime type, passing the receiver as the first argument (e.g., `"abc".len()`; see stdlib).
 
 ### Closures
 - Expression form only: `|a, b| a + b`.
-- Block form: `|x| { let y = x + 1; y }` — the last expression is the return value.
+- Block form: `|x| { let y = x + 1; y }` - the last expression is the return value.
 - Closures capture and can mutate variables from the enclosing scope.
 
 ### Ranges
 - `a..b` and `a..=b` produce integer lists when evaluated (inclusive/exclusive end). Used in patterns as well.
-- Explicit step: `a..b..step` — e.g., `0..10..2` produces `[0, 2, 4, 6, 8]`.
+- Explicit step: `a..b..step` - e.g., `0..10..2` produces `[0, 2, 4, 6, 8]`.
 
 ### Nullish Coalescing and Ternary
 - `lhs ?? rhs` yields `lhs` unless it is `nil`, then `rhs`.
-- `cond ? then : else` (right‑associative). In expressions, `cond` must be Bool. In `if`/`while`, truthiness is used (see below).
+- `cond ? then : else` (right-associative). In expressions, `cond` must be Bool. In `if`/`while`, truthiness is used (see below).
 
 ### Bitwise Operators
-- `a & b` — bitwise AND
-- `a | b` — bitwise OR
-- `~a` — bitwise NOT
+- `a & b` - bitwise AND
+- `a | b` - bitwise OR
+- `~a` - bitwise NOT
 
 ### String and Collection Operators
-- `+` supports String + String concatenation. Other string/number mixes are feature‑gated and not enabled by default.
+- `+` supports String + String concatenation. Other string/number mixes are feature-gated and not enabled by default.
 - `"ha" * 3` produces `"hahaha"` (String × Int repetition). `Int × String` also works.
 - `-` between lists returns a new list with elements of the right list removed.
 - `+` between lists concatenates. `+` between a list and a value appends.
@@ -84,11 +84,11 @@ This document describes the LK language as implemented in this repository (parse
 
 ### Notes
 - Division: `Int / Int` returns `Int` when evenly divisible, `Float` otherwise. `math.pow(2, 10)` returns `Float`.
-- Numeric auto‑promotion: `Int + Float → Float`, `Int * Float → Float`.
+- Numeric auto-promotion: `Int + Float → Float`, `Int * Float → Float`.
 
 ## Expressions
 - Literals, lists, maps, variables, calls, property/index access, closures, ranges, logical/comparison, `??`, and `?:`.
-- Concurrency expressions (feature‑gated `concurrency`):
+- Concurrency expressions (feature-gated `concurrency`):
   - `spawn(fn_or_closure)` → Task
   - `chan(capacity?, type?)` → Channel (type is a string like `"Int"`)
   - `send(channel, value)` → Bool
@@ -105,15 +105,15 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 - Wildcard: `_`
 - List destructuring: `[p1, p2, ..rest]`
 - Map destructuring: `{ "key": pat, other: pat, ..rest }` (keys may be string literals or identifiers; rest binds remaining fields)
-- Or‑pattern: `p1 | p2 | p3`
+- Or-pattern: `p1 | p2 | p3`
 - Guarded pattern: `pat if expr`
 - Range pattern: `1..10`, `0..=n`
 
-### For‑loop Patterns
+### For-loop Patterns
 - Support an extended pattern set:
   - Variable: `x`
   - Ignore: `_`
-  - Tuple (comma‑separated): `for i, item in pairs { ... }` — destructures iterable pair items.
+  - Tuple (comma-separated): `for i, item in pairs { ... }` - destructures iterable pair items.
   - Array: `[a, b, ..rest]`
   - Object: `{ "k": v, ... }` (string keys)
 
@@ -131,7 +131,7 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 
 ### Variables
 - Declaration/destructuring: `let pattern [: Type] = expr;`
-- Constant declaration: `const name = expr;` — immutable binding, reassignment is a runtime error.
+- Constant declaration: `const name = expr;` - immutable binding, reassignment is a runtime error.
 - Assignment: `name = expr;`
 - Compound assignment: `name += expr;`, `-=`, `*=`, `/=`, `%=`
 - Index assignment: `arr[i] = expr;`, `arr[i] += expr;`
@@ -144,31 +144,31 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 - Instantiate (literal): `User { id: 1, name: "Ann" }`
 -Instantiate (call sugar): `User(id: 1, name: "Ann")`
 - Access: `user.name`
-- Update syntax: `User { ..existing, field: value }` — copies all fields from `existing`, overriding specified ones.
+- Update syntax: `User { ..existing, field: value }` - copies all fields from `existing`, overriding specified ones.
 
 ### Traits and Impl
 - Trait definition: `trait Area { fn area(self) -> Int; }`
 - Implementation: `impl Area for Rect { fn area(self) -> Int { return self.w * self.h; } }`
 - Methods defined in `impl` blocks are dispatched when calling `value.method()` if no direct property/method matches.
-- Auto‑display: if a type implements `fn show(self) -> String` or `fn display(self) -> String` or `fn to_string(self) -> String`, `println("{}")` and template `${value}` automatically use it for formatting.
+- Auto-display: if a type implements `fn show(self) -> String` or `fn display(self) -> String` or `fn to_string(self) -> String`, `println("{}")` and template `${value}` automatically use it for formatting.
 
 ### Functions
 - Definition: `fn name(param1[: Type], param2[: Type]) [-> Type] { statements }`
 - Parameters and return type are optional; functions return `nil` by default unless `return` is used.
-- First‑class: closures and function values can be passed, returned, and called.
-- Default positional parameters: `fn greet(name, greeting = "hello") { ... }` — parameters with defaults must come after all required positional parameters.
+- First-class: closures and function values can be passed, returned, and called.
+- Default positional parameters: `fn greet(name, greeting = "hello") { ... }` - parameters with defaults must come after all required positional parameters.
 - Named parameters live in an optional trailing block: `fn f(a, b, { flag: Bool = true, label: String }) { ... }`.
 - Defaults are lazily evaluated inside the callee when the argument is omitted; expressions can reference other parameters.
 - Call sites supply named arguments with `name: expr` after the positional tail: `f(1, 2, label: "demo", flag: false)`. Named arguments may appear in any order but must follow all positional ones.
 
 ### Imports
 - Forms:
-  - `import math;` — stdlib module as a namespace
-  - `import "path/to/file.lk";` — file module as a namespace (name is the file stem)
-  - `import { abs, sqrt } from math;` — selected items
-  - `import { f as g } from "m.lk";` — with alias
-  - `import * as m from math;` — namespace alias
-  - `import math as m;` — module alias
+  - `import math;` - stdlib module as a namespace
+  - `import "path/to/file.lk";` - file module as a namespace (name is the file stem)
+  - `import { abs, sqrt } from math;` - selected items
+  - `import { f as g } from "m.lk";` - with alias
+  - `import * as m from math;` - namespace alias
+  - `import math as m;` - module alias
 
 - File import resolution and safety:
   - Files are not automatically visible to each other. Import every cross-file dependency explicitly.
@@ -214,26 +214,35 @@ import "d/d1";    // c/d/d1.lk, available as d1
 - `typeof(value)` returns the runtime type name as a string: `"Int"`, `"Float"`, `"String"`, `"Bool"`, `"Nil"`, `"List"`, `"Map"`, or the struct type name.
 
 ### Stdlib Modules
-Import as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io`, `json`, `yaml`, `toml`, `tcp`. With `concurrency` feature: `task`, `chan`, `time`.
+Import as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`, `os`, `io`, `json`, `yaml`, `toml`, `tcp`. LK-source modules: `alg`, `collections`, `func`, `assert`, `math_ext`. With `concurrency` feature: `task`, `chan`, `time`.
 
-- `math`: constants `pi`, `e`; functions `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `exp`, `sin`, `cos`.
-- `string`: methods (see meta‑methods below).
-- `list`: methods (see meta‑methods below).
+- `math`: constants `pi`, `e`, `inf`, `nan`, `max_int`, `min_int`, `max_float`, `epsilon`; functions `abs`, `sqrt`, `floor`, `ceil`, `round`, `min`, `max`, `pow`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `log`, `log10`, `log2`, `clamp`, `random`, `hypot`, `cbrt`, `sinh`, `cosh`, `tanh`, `trunc`, `fract`, `sign`, `to_int`, `to_float`, `is_nan`, `is_inf`.
+- `string`: methods (see meta-methods below).
+- `list`: methods (see meta-methods below).
 - `map`: `map.len(m)`, `map.keys(m)`, `map.values(m)`, `map.has(m, key)`, `map.get(m, key)`, `map.set(m, key, val)` (returns updated map), `map.delete(m, key)` (returns `[updated_map, removed_value]`).
 - `iter`: module-level list utilities only: `range([start,] end [, step])`, `enumerate(list)`, `zip(list1, list2)`, `take(list, n)`, `skip(list, n)`, `chain(list1, list2)`, `flatten(list)`, `unique(list)`, `chunk(list, size)`, and higher-order ops `map(list, fn)`, `filter(list, fn)`, `reduce(list, init, fn)`.
 - `stream`: module-level lazy pipelines. `stream.from_list(list)`, `stream.range(start, end)`, `stream.iterate(seed, fn)`, `stream.repeat(val)`, `stream.from_channel(ch)`, `stream.map(s, fn)`, `stream.filter(s, fn)`, `stream.take(s, n)`, `stream.skip(s, n)`, `stream.chain(a, b)`, `stream.subscribe(s)`, `stream.next(cursor)`, `stream.collect(stream_or_cursor)`, `stream.next_block(cursor[, timeout_ms])`, `stream.collect_block(stream_or_cursor[, n][, timeout_ms])`.
-- `datetime`: `now()` (microseconds), `format(secs, fmt)`, `add(secs, delta)`, `sub(secs, delta)`, `day_of_week(secs)`, `day_of_year(secs)`, `is_weekend(secs)`.
-- `os`: `hostname()`, `arch()`, `os()`, `clock()`, `epoch()`, `env_get(key)`, `env_set(key, val)`, `env_unset(key)`, `dir_current()`, `dir_temp()`, `dir_list(path)`.
-- `io`: `io.read()` (stdin), `io.stdout_write(s)`, `io.stdout_writeln(s)`, `io.stdout_flush()`, `io.stderr_write(s)`.
+- `datetime`: `now()` (microseconds), `format(secs, fmt)`, `parse(str, fmt)`, `add(secs, delta)`, `sub(secs, delta)`, `day_of_week(secs)`, `day_of_year(secs)`, `is_weekend(secs)`.
+- `os`: `hostname()`, `arch()`, `os()`, `clock()`, `time()`, `epoch()`, `exit(code)`, `exec(cmd, args?, stream?)`, `env_get(key, default?)`, `env`, `dir_current()`, `dir_temp()`, `dir_list(path)`, `file_read(path)`, `file_write(path, content)`, `file_append(path, content)`, `file_exists(path)`, `file_size(path)`, `file_delete(path)`, `mkdir(path)`, `path_join(parts...)`, `path_sep()`.
+- `io`: `io.read()` (stdin), `io.stdin_read([bytes])`, `io.stdin_read_line()`, `io.stdin_read_all()`, `io.stdout_write(s)`, `io.stdout_writeln(s)`, `io.stdout_flush()`, `io.stderr_write(s)`, `io.stderr_writeln(s)`, `io.stderr_flush()`.
 - `json`: `json.parse(string)`.
 - `yaml`: `yaml.parse(string)`.
 - `toml`: `toml.parse(string)`.
-- `tcp`: `tcp.connect(host, port)`, `tcp.write(conn, data)`, `tcp.read(conn, len)`, `tcp.close(conn)`.
-- `time` (concurrency): `time.now()`, `time.sleep(ms)`, `time.since(start, end)`.
+- `tcp`: `tcp.connect(host, port)`, `tcp.bind(host, port)`, `tcp.accept(listener)`, `tcp.write(conn, data)`, `tcp.read(conn, len?)`, `tcp.close(conn)`.
+- `time` (concurrency): `time.now()`, `time.sleep(ms)`, `time.timeout(ms)`, `time.after(ms)`, `time.since(start, end)`.
 
-### Meta‑methods (usable as `value.method()` without importing)
-- String: `len`, `lower`, `upper`, `trim`, `starts_with`, `ends_with`, `contains`, `replace`, `substring`, `split`, `join`, `reverse`, `repeat`, `chars`, `char_at`, `byte_at`, `find`, `is_empty`
-- List: `len`, `push`, `set`, `concat`, `join`, `get`, `first`, `last`, `map`, `filter`, `reduce`, `take`, `skip`, `chain`, `flatten`, `unique`, `chunk`, `enumerate`, `zip`, `to_stream`
+#### LK-Source Stdlib Modules
+These modules are written in LK itself and complement the Rust-native modules with algorithms, data structures, and utilities:
+
+- `alg`: Sorting (`insertion_sort`, `merge_sort`, `quick_sort`), searching (`binary_search`, `linear_search`, `bisect`), classic algorithms (`gcd`, `lcm`, `is_prime`, `sieve`, `fib`, `factorial`, `comb`, `pow_int`), string algorithms (`kmp_search`, `kmp_table`), `shuffle`, `bisect`.
+- `collections`: `stack`/`stack_push`/`stack_pop`/`stack_peek`/`stack_is_empty`/`stack_len`, `queue`/`queue_push`/`queue_pop`/`queue_peek`/`queue_is_empty`/`queue_len`, `set`/`set_add`/`set_remove`/`set_has`/`set_values`/`set_len`/`set_union`/`set_intersection`/`set_difference`/`set_symmetric_difference`, `heap`/`heap_push`/`heap_pop`/`heap_peek`/`heap_len`/`heap_is_empty`, `deque`/`deque_push_front`/`deque_push_back`/`deque_pop_front`/`deque_pop_back`/`deque_peek_front`/`deque_peek_back`/`deque_len`/`deque_is_empty`.
+- `func`: `compose`, `pipe`, `compose_all`, `pipe_all`, `curry2`, `curry3`, `partial1`, `partial2`, `id`, `constant`, `complement`, `both`, `either`, `iterate`, `unfold`, `scan`, `group_by`, `count_by`, `partition`, `flat_map`, `zip_with`, `memoize`, `tap`.
+- `assert`: `assert(cond, msg?)`, `assert_eq(actual, expected, msg?)`, `assert_ne(actual, expected, msg?)`, `assert_nil(value, msg?)`, `assert_not_nil(value, msg?)`, `assert_approx(actual, expected, epsilon?, msg?)`, `assert_false(cond, msg?)`.
+- `math_ext`: `ext_gcd`, `pow_mod`, `mod_inverse`, `totient`, `divisor_count`, `divisor_sum`, `perm`, `collatz_len`, `triangular`, `pentagonal`, `hexagonal`, `is_perfect`, `catalan`, `sign`, `clamp`, `lerp`, `inverse_lerp`, `map_range`. Re-exports `gcd`, `lcm`, `is_prime`, `factorial`, `comb` from `alg`.
+
+### Meta-methods (usable as `value.method()` without importing)
+- String: `len`, `lower`, `upper`, `trim`, `starts_with`, `ends_with`, `contains`, `replace`, `substring`, `split`, `join`, `reverse`, `repeat`, `chars`, `char_at`, `byte_at`, `find`, `is_empty`, `format`
+- List: `len`, `push`, `set`, `concat`, `join`, `get`, `first`, `last`, `map`, `filter`, `reduce`, `take`, `skip`, `chain`, `flatten`, `unique`, `chunk`, `enumerate`, `zip`, `to_stream`, `sort`, `reverse`, `pop`, `insert`, `remove_at`, `contains`, `index_of`, `slice`, `is_empty`
 - Map: `len`, `keys`, `values`, `has`, `get`, `set`, `delete`
 - Stream: `map`, `filter`, `take`, `skip`, `chain`, `subscribe`, `collect`, `collect_block`
 - StreamCursor: `next`, `collect`, `next_block`, `collect_block`
@@ -246,7 +255,7 @@ Import as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`,
 - List index assignment and compound assignment: `arr[1] = 10`, `arr[1] += 5`.
 
 ### List Spread
-- Spread an existing list into a new list: `[0, ..spread_a, 3]` — inserts all elements of `spread_a`.
+- Spread an existing list into a new list: `[0, ..spread_a, 3]` - inserts all elements of `spread_a`.
 
 ## CLI Output
 - REPL and CLI print evaluation results only when the value is not `nil`. This avoids extra lines after statements that return `nil` by default (e.g., `let`, `fn` definitions, `println(...)`). If you need to display `nil`, print it explicitly via `println(nil)` or include it in formatted output.
@@ -263,9 +272,9 @@ Import as needed: `math`, `string`, `list`, `map`, `iter`, `stream`, `datetime`,
 ### Annotations
 - `let x: Int = 1;`
 - `fn f(a: Int, b: String) -> Bool { ... }`
-- Type checking/inference is best‑effort and conservative; runtime remains dynamic.
+- Type checking/inference is best-effort and conservative; runtime remains dynamic.
 
-## Grammar (EBNF‑style)
+## Grammar (EBNF-style)
 
 ### Expressions (precedence from low to high)
 ```
@@ -369,16 +378,16 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - CLI prints a result only when it is not `nil`
 
 ## Runtime Value Types
-- `String` — UTF‑8 strings
-- `Int` — 64‑bit signed integers
-- `Float` — 64‑bit floating point
-- `Bool` — Boolean values
-- `Nil` — Null/undefined value
-- `List` — Ordered collections
-- `Map` — Key‑value maps
-- `Function` — First‑class functions
-- `Object` — Struct instances (with type name and fields)
-- `Task` — Concurrency task handle (feature‑gated)
-- `Channel` — Concurrency channel (feature‑gated)
-- `Stream` — Lazy stream pipeline (feature‑gated)
-- `StreamCursor` — Stream cursor for consuming stream elements
+- `String` - UTF-8 strings
+- `Int` - 64-bit signed integers
+- `Float` - 64-bit floating point
+- `Bool` - Boolean values
+- `Nil` - Null/undefined value
+- `List` - Ordered collections
+- `Map` - Key-value maps
+- `Function` - First-class functions
+- `Object` - Struct instances (with type name and fields)
+- `Task` - Concurrency task handle (feature-gated)
+- `Channel` - Concurrency channel (feature-gated)
+- `Stream` - Lazy stream pipeline (feature-gated)
+- `StreamCursor` - Stream cursor for consuming stream elements

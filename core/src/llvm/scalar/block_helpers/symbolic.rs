@@ -11,5 +11,6 @@ pub(in crate::llvm) fn kind_symbolic_value(kind: NativeScalarKind, reg: u8) -> N
         NativeScalarKind::Nil => NativeStraightlineValue::Nil,
         NativeScalarKind::StrPtr => NativeStraightlineValue::StringPtr(format!("%hint_str_r{reg}")),
         NativeScalarKind::MaybeI64 => NativeStraightlineValue::I64(format!("%hint_maybe_r{reg}")),
+        NativeScalarKind::MaybeStrPtr => NativeStraightlineValue::StringPtr(format!("%hint_maybe_str_r{reg}")),
     }
 }

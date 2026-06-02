@@ -349,6 +349,70 @@ fn compiler32_lowers_push_method_to_list_push_without_list_concat() {
 }
 
 #[test]
+fn compiler32_push_method_does_not_consume_local_argument() {
+    let function = compile_source32(
+        r#"
+        let value = 42;
+        let values = [];
+        values.push(value);
+        return [value, values[0]];
+        "#,
+    )
+    .expect("compile source");
+    let push_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::ListPush)
+        .expect("ListPush");
+    let move_fact = function
+        .performance
+        .container_move(push_pc)
+        .expect("ListPush move fact");
+
+    assert!(!move_fact.move_value, "method push must copy current local arguments");
+    let result = execute32(&function).expect("execute");
+    let crate::val::RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list return");
+    };
+    let Some(crate::val::HeapValue::List(crate::val::TypedList::Int(values))) = result.state.heap.get(handle) else {
+        panic!("expected int list return");
+    };
+    assert_eq!(values, &vec![42, 42]);
+}
+
+#[test]
+fn compiler32_set_method_does_not_consume_local_value_argument() {
+    let function = compile_source32(
+        r#"
+        let value = 42;
+        let values = [0];
+        values.set(0, value);
+        return [value, values[0]];
+        "#,
+    )
+    .expect("compile source");
+    let set_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode() == Opcode32::SetIndex)
+        .expect("SetIndex");
+    let move_fact = function.performance.container_move(set_pc).expect("SetIndex move fact");
+
+    assert!(
+        !move_fact.move_value,
+        "method set must copy current local value arguments"
+    );
+    let result = execute32(&function).expect("execute");
+    let crate::val::RuntimeVal::Obj(handle) = result.returns[0] else {
+        panic!("expected list return");
+    };
+    let Some(crate::val::HeapValue::List(crate::val::TypedList::Int(values))) = result.state.heap.get(handle) else {
+        panic!("expected int list return");
+    };
+    assert_eq!(values, &vec![42, 42]);
+}
+
+#[test]
 fn compiler32_lowers_starts_with_method_to_string_opcode() {
     let function = compile_source32(
         r#"

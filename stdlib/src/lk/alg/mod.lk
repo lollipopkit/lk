@@ -1,0 +1,119 @@
+// Algorithm module — implemented in pure LK.
+// Provides sorting, searching, and classic algorithms.
+
+import math;
+
+/// Greatest common divisor (Euclidean algorithm).
+fn gcd(a, b) {
+  while (b != 0) {
+    let t = a % b;
+    a = b;
+    b = t;
+  }
+  return a;
+}
+
+/// Least common multiple.
+fn lcm(a, b) {
+  if a == 0 || b == 0 { return 0; }
+  return (a * b) / gcd(a, b);
+}
+
+/// Primality test (trial division).
+fn is_prime(n) {
+  if n < 2 { return false; }
+  if n == 2 { return true; }
+  if n % 2 == 0 { return false; }
+  let d = 3;
+  while (d * d <= n) {
+    if n % d == 0 { return false; }
+    d += 2;
+  }
+  return true;
+}
+
+/// Fibonacci (iterative, O(n)).
+fn fib(n) {
+  if n <= 0 { return 0; }
+  if n == 1 { return 1; }
+  let a = 0;
+  let b = 1;
+  let i = 2;
+  while (i <= n) {
+    let t = a + b;
+    a = b;
+    b = t;
+    i += 1;
+  }
+  return b;
+}
+
+/// Factorial (iterative).
+fn factorial(n) {
+  if n < 0 { return 0; }
+  let result = 1;
+  let i = 2;
+  while (i <= n) {
+    result *= i;
+    i += 1;
+  }
+  return result;
+}
+
+/// Binomial coefficient C(n, k).
+fn comb(n, k) {
+  if k < 0 || k > n { return 0; }
+  if k == 0 || k == n { return 1; }
+  if k > n - k { k = n - k; }
+  let result = 1;
+  let i = 1;
+  while (i <= k) {
+    result = result * (n - k + i);
+    result = math.floor(result / i);
+    i += 1;
+  }
+  return result;
+}
+
+/// Linear search — O(n). Returns the index or -1.
+fn linear_search(xs, target) {
+  let i = 0;
+  while (i < xs.len()) {
+    if xs[i] == target { return i; }
+    i += 1;
+  }
+  return -1;
+}
+
+/// Insertion sort — O(n²) stable sort. Good for small or nearly-sorted lists.
+fn insertion_sort(xs, cmp) {
+  if cmp == nil {
+    cmp = |a, b| a < b;
+  }
+  return xs.reduce([], |sorted, item| {
+    let i = 0;
+    while (i < sorted.len() && cmp(sorted[i], item)) {
+      i += 1;
+    }
+    return sorted.take(i).concat([item]).concat(sorted.skip(i));
+  });
+}
+
+/// Power by squaring (integer).
+fn pow_int(base, exp) {
+  if exp < 0 { return 0; }
+  let result = 1;
+  while (exp > 0) {
+    if exp % 2 == 1 { result *= base; }
+    base *= base;
+    exp = math.floor(exp / 2);
+  }
+  return result;
+}
+
+/// Sign of a number: -1, 0, or 1.
+fn sign(n) {
+  if n > 0 { return 1; }
+  if n < 0 { return -1; }
+  return 0;
+}

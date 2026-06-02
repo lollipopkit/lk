@@ -81,7 +81,11 @@ mod tests {
             else {
                 panic!("{name} should use RuntimeNative32");
             };
-            assert!(matches!(function, NativeFunction32::Plain(_)));
+            if matches!(name, "print" | "println" | "panic") {
+                assert!(matches!(function, NativeFunction32::FullState(_)));
+            } else {
+                assert!(matches!(function, NativeFunction32::Plain(_)));
+            }
         }
     }
 

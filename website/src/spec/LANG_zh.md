@@ -215,26 +215,35 @@ import "d/d1";    // c/d/d1.lk，导出名为 d1
 - `typeof(value)` 返回运行时类型名字符串：`"Int"`、`"Float"`、`"String"`、`"Bool"`、`"Nil"`、`"List"`、`"Map"` 或结构体类型名。
 
 ### 标准库模块
-按需导入：`math`、`string`、`list`、`map`、`iter`、`stream`、`datetime`、`os`、`io`、`json`、`yaml`、`toml`、`tcp`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
+按需导入：`math`、`string`、`list`、`map`、`iter`、`stream`、`datetime`、`os`、`io`、`json`、`yaml`、`toml`、`tcp`。LK 源码模块：`alg`、`collections`、`func`、`assert`、`math_ext`。启用 `concurrency` 后支持：`task`、`chan`、`time`。
 
-- `math`：常量 `pi`、`e`；函数 `abs`、`sqrt`、`floor`、`ceil`、`round`、`min`、`max`、`pow`、`exp`、`sin`、`cos`。
+- `math`：常量 `pi`、`e`、`inf`、`nan`、`max_int`、`min_int`、`max_float`、`epsilon`；函数 `abs`、`sqrt`、`floor`、`ceil`、`round`、`min`、`max`、`pow`、`exp`、`sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`atan2`、`log`、`log10`、`log2`、`clamp`、`random`、`hypot`、`cbrt`、`sinh`、`cosh`、`tanh`、`trunc`、`fract`、`sign`、`to_int`、`to_float`、`is_nan`、`is_inf`。
 - `string`：方法（见下方元方法）。
 - `list`：方法（见下方元方法）。
 - `map`：`map.len(m)`、`map.keys(m)`、`map.values(m)`、`map.has(m, key)`、`map.get(m, key)`、`map.set(m, key, val)`（返回更新后的映射）、`map.delete(m, key)`（返回 `[updated_map, removed_value]`）。
 - `iter`：仅提供模块级列表工具：`range([start,] end [, step])`、`enumerate(list)`、`zip(list1, list2)`、`take(list, n)`、`skip(list, n)`、`chain(list1, list2)`、`flatten(list)`、`unique(list)`、`chunk(list, size)`，以及高阶操作 `map(list, fn)`、`filter(list, fn)`、`reduce(list, init, fn)`。
 - `stream`：模块级懒执行管道。`stream.from_list(list)`、`stream.range(start, end)`、`stream.iterate(seed, fn)`、`stream.repeat(val)`、`stream.from_channel(ch)`、`stream.map(s, fn)`、`stream.filter(s, fn)`、`stream.take(s, n)`、`stream.skip(s, n)`、`stream.chain(a, b)`、`stream.subscribe(s)`、`stream.next(cursor)`、`stream.collect(stream_or_cursor)`、`stream.next_block(cursor[, timeout_ms])`、`stream.collect_block(stream_or_cursor[, n][, timeout_ms])`。
-- `datetime`：`now()`（微秒）、`format(secs, fmt)`、`add(secs, delta)`、`sub(secs, delta)`、`day_of_week(secs)`、`day_of_year(secs)`、`is_weekend(secs)`。
-- `os`：`hostname()`、`arch()`、`os()`、`clock()`、`epoch()`、`env_get(key)`、`env_set(key, val)`、`env_unset(key)`、`dir_current()`、`dir_temp()`、`dir_list(path)`。
-- `io`：`io.read()`（stdin）、`io.stdout_write(s)`、`io.stdout_writeln(s)`、`io.stdout_flush()`、`io.stderr_write(s)`。
+- `datetime`：`now()`（微秒）、`format(secs, fmt)`、`parse(str, fmt)`、`add(secs, delta)`、`sub(secs, delta)`、`day_of_week(secs)`、`day_of_year(secs)`、`is_weekend(secs)`。
+- `os`：`hostname()`、`arch()`、`os()`、`clock()`、`time()`、`epoch()`、`exit(code)`、`exec(cmd, args?, stream?)`、`env_get(key, default?)`、`env`、`dir_current()`、`dir_temp()`、`dir_list(path)`、`file_read(path)`、`file_write(path, content)`、`file_append(path, content)`、`file_exists(path)`、`file_size(path)`、`file_delete(path)`、`mkdir(path)`、`path_join(parts...)`、`path_sep()`。
+- `io`：`io.read()`（stdin）、`io.stdin_read([bytpes])`、`io.stdin_read_line()`、`io.stdin_read_all()`、`io.stdout_write(s)`、`io.stdout_writeln(s)`、`io.stdout_flush()`、`io.stderr_write(s)`、`io.stderr_writeln(s)`、`io.stderr_flush()`。
 - `json`：`json.parse(string)`。
 - `yaml`：`yaml.parse(string)`。
 - `toml`：`toml.parse(string)`。
-- `tcp`：`tcp.connect(host, port)`、`tcp.write(conn, data)`、`tcp.read(conn, len)`、`tcp.close(conn)`。
-- `time`（并发）：`time.now()`、`time.sleep(ms)`、`time.since(start, end)`。
+- `tcp`：`tcp.connect(host, port)`、`tcp.bind(host, port)`、`tcp.accept(listener)`、`tcp.write(conn, data)`、`tcp.read(conn, len?)`、`tcp.close(conn)`。
+- `time`（并发）：`time.now()`、`time.sleep(ms)`、`time.timeout(ms)`、`time.after(ms)`、`time.since(start, end)`。
+
+#### LK 源码标准库模块
+这些模块用 LK 语言本身编写，补充 Rust 原生模块的算法、数据结构和工具：
+
+- `alg`：排序（`insertion_sort`、`merge_sort`、`quick_sort`）、搜索（`binary_search`、`linear_search`、`bisect`）、经典算法（`gcd`、`lcm`、`is_prime`、`sieve`、`fib`、`factorial`、`comb`、`pow_int`）、字符串算法（`kmp_search`、`kmp_table`）、`shuffle`、`bisect`。
+- `collections`：`stack`/`stack_push`/`stack_pop`/`stack_peek`/`stack_is_empty`/`stack_len`、`queue`/`queue_push`/`queue_pop`/`queue_peek`/`queue_is_empty`/`queue_len`、`set`/`set_add`/`set_remove`/`set_has`/`set_values`/`set_len`/`set_union`/`set_intersection`/`set_difference`/`set_symmetric_difference`、`heap`/`heap_push`/`heap_pop`/`heap_peek`/`heap_len`/`heap_is_empty`、`deque`/`deque_push_front`/`deque_push_back`/`deque_pop_front`/`deque_pop_back`/`deque_peek_front`/`deque_peek_back`/`deque_len`/`deque_is_empty`。
+- `func`：`compose`、`pipe`、`compose_all`、`pipe_all`、`curry2`、`curry3`、`partial1`、`partial2`、`id`、`constant`、`complement`、`both`、`either`、`iterate`、`unfold`、`scan`、`group_by`、`count_by`、`partition`、`flat_map`、`zip_with`、`memoize`、`tap`。
+- `assert`：`assert(cond, msg?)`、`assert_eq(actual, expected, msg?)`、`assert_ne(actual, expected, msg?)`、`assert_nil(value, msg?)`、`assert_not_nil(value, msg?)`、`assert_approx(actual, expected, epsilon?, msg?)`、`assert_false(cond, msg?)`。
+- `math_ext`：`ext_gcd`、`pow_mod`、`mod_inverse`、`totient`、`divisor_count`、`divisor_sum`、`perm`、`collatz_len`、`triangular`、`pentagonal`、`hexagonal`、`is_perfect`、`catalan`、`sign`、`clamp`、`lerp`、`inverse_lerp`、`map_range`。从 `alg` 重新导出 `gcd`、`lcm`、`is_prime`、`factorial`、`comb`。
 
 ### 元方法（可直接通过 `value.method()` 使用，无需导入）
-- String：`len`、`lower`、`upper`、`trim`、`starts_with`、`ends_with`、`contains`、`replace`、`substring`、`split`、`join`、`reverse`、`repeat`、`chars`、`char_at`、`byte_at`、`find`、`is_empty`
-- List：`len`、`push`、`set`、`concat`、`join`、`get`、`first`、`last`、`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`flatten`、`unique`、`chunk`、`enumerate`、`zip`、`to_stream`
+- String：`len`、`lower`、`upper`、`trim`、`starts_with`、`ends_with`、`contains`、`replace`、`substring`、`split`、`join`、`reverse`、`repeat`、`chars`、`char_at`、`byte_at`、`find`、`is_empty`、`format`
+- List：`len`、`push`、`set`、`concat`、`join`、`get`、`first`、`last`、`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`flatten`、`unique`、`chunk`、`enumerate`、`zip`、`to_stream`、`sort`、`reverse`、`pop`、`insert`、`remove_at`、`contains`、`index_of`、`slice`、`is_empty`
 - Map：`len`、`keys`、`values`、`has`、`get`、`set`、`delete`
 - Stream：`map`、`filter`、`reduce`、`take`、`skip`、`chain`、`subscribe`、`collect`、`collect_block`
 - StreamCursor：`next`、`collect`、`next_block`、`collect_block`

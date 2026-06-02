@@ -169,8 +169,11 @@ benchmark 只在新 VM 闭环后恢复。
     `Op` runtime、BC32、packed executor、quickening、旧 fused op 无源码残留，且不得作为
     compatibility layer 恢复。
 12. 新 VM 闭环后继续恢复 CLI、coverage、bench 和 LLVM true native AOT 覆盖；LLVM/AOT 不恢复
-    Instr32 artifact shell、host executable launcher、LKB 或旧 AOT callable bridge。暂未 native-lowerable
-    的 shape 必须明确报错，直到基于 `Module32Artifact` / `RuntimeVal` / `HeapStore` 完成真正 native 设计。
+    Instr32 artifact shell、host executable launcher、LKB 或旧 AOT callable bridge。最终 native binary
+    可链接 Rust `std`、libc/libm 和小型 typed `lkrt` native runtime，但不得嵌入 `Module32Artifact`、
+    Instr32 executor、`VmContext`、parser、type checker 或 compiler。暂未 native-lowerable 的 shape
+    必须明确报错，直到基于 `Module32Artifact` 编译期边界、typed native ABI 和 monomorphized
+    stdlib lowering 完成真正 native 设计。
 
 ## 测试策略
 

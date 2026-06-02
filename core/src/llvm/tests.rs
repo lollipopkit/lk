@@ -486,21 +486,92 @@ fn llvm_backend_lowers_nil_return_without_artifact_shell() {
 }
 
 #[test]
-fn llvm_backend_rejects_non_scalar_runtime_returns_without_artifact_shell() {
+fn llvm_backend_lowers_static_function_return_display_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("fn f() { return 1; }\nreturn f;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let err = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect_err("unsupported llvm shape");
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(
-        err.to_string().contains("LLVM native lowering does not support"),
-        "unexpected error: {err}"
-    );
-    assert!(
-        err.to_string()
-            .contains("runtime callable returns are not native-lowerable yet"),
-        "unexpected error: {err}"
-    );
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"<fn #1(0 captures)>\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_static_builtin_return_display_without_artifact_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: vec!["print".to_string()],
+            functions: vec![Function32Data {
+                consts: ConstPool32Data {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: Vec::new(),
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr32::abx(Opcode32::GetGlobal, 0, 0).raw(),
+                    Instr32::abc(Opcode32::Return, 0, 1, 0).raw(),
+                ],
+                register_count: 1,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"<native fn print(...)>\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_static_module_builtin_return_display_without_artifact_shell() {
+    let artifact = Module32Artifact {
+        format: "lk.module32".to_string(),
+        version: MODULE32_ARTIFACT_VERSION,
+        imports: Vec::new(),
+        module: Module32Data {
+            entry: 0,
+            globals: vec!["math".to_string()],
+            functions: vec![Function32Data {
+                consts: ConstPool32Data {
+                    ints: Vec::new(),
+                    floats: Vec::new(),
+                    strings: vec!["abs".to_string()],
+                    heap_values: Vec::new(),
+                },
+                code: vec![
+                    Instr32::abx(Opcode32::GetGlobal, 0, 0).raw(),
+                    Instr32::abx(Opcode32::LoadString, 1, 0).raw(),
+                    Instr32::abc(Opcode32::GetIndex, 2, 0, 1).raw(),
+                    Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                ],
+                register_count: 3,
+                param_count: 0,
+                positional_param_count: 0,
+                param_names: Vec::new(),
+                capture_count: 0,
+            }],
+        },
+    };
+
+    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("c\"<native fn abs(1 args)>\\00\""));
 }
 
 #[test]
@@ -1409,5 +1480,6 @@ fn llvm_backend_lowers_static_raise_handler_path_without_artifact_shell() {
 
 mod basic;
 mod direct_calls;
+mod modules;
 mod objects;
 mod strings;

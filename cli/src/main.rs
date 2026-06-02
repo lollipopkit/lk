@@ -469,13 +469,16 @@ fn compile_executable(path: &Path, output: Option<&Path>, options: LlvmBackendOp
 
 #[cfg(feature = "llvm")]
 fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str) -> anyhow::Result<()> {
+    let _ = lkrt::link_anchor();
     let source_path = temp_llvm_source_path(path)?;
     std::fs::write(&source_path, ir).with_context(|| format!("write native LLVM IR {}", source_path.display()))?;
     let clang = clang_command();
-    let output_status = Command::new(&clang)
-        .arg(&source_path)
-        .arg("-o")
-        .arg(output)
+    let mut command = Command::new(&clang);
+    command.arg(&source_path).arg("-o").arg(output);
+    if let Some(staticlib) = lkrt_staticlib_path() {
+        add_force_load_staticlib(&mut command, &staticlib);
+    }
+    let output_status = command
         .output()
         .with_context(|| format!("spawn clang to build native executable {}", output.display()))?;
     let _ = std::fs::remove_file(&source_path);
@@ -487,6 +490,61 @@ fn compile_native_executable_from_llvm(path: &Path, output: &Path, ir: &str) -> 
         );
     }
     Ok(())
+}
+
+#[cfg(feature = "llvm")]
+fn add_force_load_staticlib(command: &mut Command, staticlib: &Path) {
+    if cfg!(target_os = "macos") {
+        command.arg("-Wl,-force_load").arg(staticlib);
+    } else {
+        command
+            .arg("-Wl,--whole-archive")
+            .arg(staticlib)
+            .arg("-Wl,--no-whole-archive");
+    }
+}
+
+#[cfg(feature = "llvm")]
+fn lkrt_staticlib_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("LKRT_STATICLIB") {
+        return Some(PathBuf::from(path));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let file = if cfg!(target_os = "windows") {
+        "lkrt.lib"
+    } else {
+        "liblkrt.a"
+    };
+    let candidate = dir.join(file);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    latest_lkrt_staticlib_in_deps(&dir.join("deps"))
+}
+
+#[cfg(feature = "llvm")]
+fn latest_lkrt_staticlib_in_deps(deps_dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(deps_dir).ok()?;
+    let prefix = if cfg!(target_os = "windows") {
+        "lkrt-"
+    } else {
+        "liblkrt-"
+    };
+    let suffix = if cfg!(target_os = "windows") { ".lib" } else { ".a" };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            if !name.starts_with(prefix) || !name.ends_with(suffix) {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
 }
 
 #[cfg(feature = "llvm")]
@@ -536,6 +594,7 @@ pub(crate) fn build_vm_context(path: &Path) -> anyhow::Result<VmContext> {
         resolver.set_base_dir(parent.to_path_buf());
     }
     configure_package_resolver(&mut resolver, path)?;
+    lk_stdlib::register_stdlib_lk_modules(&mut resolver)?;
     let resolver = Arc::new(resolver);
     Ok(VmContext::new()
         .with_resolver(Arc::clone(&resolver))

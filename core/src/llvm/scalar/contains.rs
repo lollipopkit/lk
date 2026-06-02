@@ -1,7 +1,7 @@
 mod int_lists;
 
 use crate::llvm::{
-    const_display::native_const_list_display,
+    const_display::{llvm_string_constant, native_const_list_display},
     dynamic_containers::{emit_dynamic_int_list_copy, emit_dynamic_int_list_equality, emit_dynamic_int_list_slice},
     ir_text::next_tmp,
     straightline_value::{
@@ -23,9 +23,9 @@ use int_lists::{static_dynamic_int_list_contains, static_dynamic_int_list_slice}
 
 use super::{
     block_helpers::{
-        emit_static_scalar_value_store_if_needed, local_static_container_before, local_static_i64_before,
-        static_register_value_trusted_before, store_native_scalar_call_result, text_value_from_reg,
-        three_regs_in_bounds,
+        emit_static_scalar_value_store_if_needed, local_register_kind_before, local_static_container_before,
+        local_static_i64_before, static_register_value_trusted_before, store_native_scalar_call_result,
+        text_value_from_reg, three_regs_in_bounds,
     },
     facts::{NativeScalarFacts, NativeScalarKind},
 };
@@ -51,6 +51,32 @@ pub(in crate::llvm) fn static_object_from_registers(
         })
         .collect::<Option<Vec<_>>>()?;
     native_static_object_from_fields(&fields, symbol)
+}
+
+pub(in crate::llvm) fn local_static_object_before(
+    values: &[Option<NativeStraightlineValue>],
+    code: &[Instr32],
+    int_consts: &[i64],
+    pc: usize,
+    reg: u8,
+) -> Option<NativeStraightlineValue> {
+    if let Some(value @ NativeStraightlineValue::Object { .. }) = values.get(reg as usize).cloned().flatten() {
+        return Some(value);
+    }
+    for prev_pc in (pc.saturating_sub(128)..pc).rev() {
+        let prev = *code.get(prev_pc)?;
+        if prev.a() != reg {
+            continue;
+        }
+        return match prev.opcode() {
+            Opcode32::NewObject => static_object_from_registers(values, code, int_consts, prev_pc, prev, String::new()),
+            Opcode32::Move if prev.b() != reg => {
+                local_static_object_before(values, code, int_consts, prev_pc, prev.b())
+            }
+            _ => None,
+        };
+    }
+    None
 }
 
 pub(in crate::llvm) fn static_int_range_from_registers(
@@ -314,6 +340,9 @@ pub(in crate::llvm) fn emit_static_to_iter_block(
         return Some(());
     };
     let value = match target {
+        NativeStraightlineValue::DynamicMap { id, key, value } => {
+            NativeStraightlineValue::DynamicMapIter { id, key, value }
+        }
         NativeStraightlineValue::DynamicConstListElement { .. } => target,
         _ => native_static_to_iter(target, String::new()).unwrap_or(NativeStraightlineValue::I64("0".to_string())),
     };
@@ -974,6 +1003,7 @@ pub(in crate::llvm) fn static_int_list_compare_bool(
 
 pub(in crate::llvm) fn emit_static_collection_compare_block(
     ir: &mut String,
+    extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
     code: &[Instr32],
     int_consts: &[i64],
@@ -1006,6 +1036,15 @@ pub(in crate::llvm) fn emit_static_collection_compare_block(
         )
     ) {
         return None;
+    }
+    if let Some((id, elements)) =
+        dynamic_ptr_list_compare_parts(&lhs, &rhs, code, int_consts, strings, heap_values, pc, instr.b()).or_else(
+            || dynamic_ptr_list_compare_parts(&rhs, &lhs, code, int_consts, strings, heap_values, pc, instr.c()),
+        )
+    {
+        emit_dynamic_ptr_static_string_list_compare(ir, extra_globals, instr, pc, id, elements)?;
+        *static_regs.get_mut(instr.a() as usize)? = None;
+        return Some(());
     }
     if let Some((id, elements)) =
         dynamic_text_list_compare_parts(&lhs, &rhs).or_else(|| dynamic_text_list_compare_parts(&rhs, &lhs))
@@ -1191,6 +1230,177 @@ fn dynamic_text_list_compare_parts<'a>(
     Some((id, elements))
 }
 
+fn dynamic_ptr_list_compare_parts<'a>(
+    lhs: &'a NativeStraightlineValue,
+    rhs: &'a NativeStraightlineValue,
+    code: &[Instr32],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValue32Data],
+    pc: usize,
+    lhs_reg: u8,
+) -> Option<(usize, &'a [ConstRuntimeValue32Data])> {
+    let NativeStraightlineValue::DynamicList { id, element } = lhs else {
+        return None;
+    };
+    if *element != NativeListElementKind::StrPtr
+        && !recent_list_push_value_is_strptr(code, int_consts, strings, heap_values, pc, lhs_reg)
+    {
+        return None;
+    }
+    let NativeStraightlineValue::List { elements, .. } = rhs else {
+        return None;
+    };
+    static_string_list_total_len(elements)?;
+    Some((*id, elements))
+}
+
+fn recent_list_push_value_is_strptr(
+    code: &[Instr32],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValue32Data],
+    pc: usize,
+    list_reg: u8,
+) -> bool {
+    for prev_pc in (pc.saturating_sub(64)..pc).rev() {
+        let Some(prev) = code.get(prev_pc).copied() else {
+            return false;
+        };
+        if prev.a() != list_reg {
+            continue;
+        }
+        return prev.opcode() == Opcode32::ListPush
+            && (local_register_kind_before(code, prev_pc, prev.b()) == Some(NativeScalarKind::StrPtr)
+                || local_nested_const_list_field_is_string(code, int_consts, heap_values, prev_pc, prev.b())
+                || local_static_string_index_is_string(code, strings, prev_pc, prev.b()));
+    }
+    false
+}
+
+fn local_nested_const_list_field_is_string(
+    code: &[Instr32],
+    int_consts: &[i64],
+    heap_values: &[ConstHeapValue32Data],
+    pc: usize,
+    value_reg: u8,
+) -> bool {
+    let Some(inner) = previous_writer(code, pc, value_reg) else {
+        return false;
+    };
+    if inner.opcode() != Opcode32::GetIndex {
+        return false;
+    }
+    let Some(NativeStraightlineValue::I64(field)) = local_static_i64_before(code, int_consts, pc, inner.c()) else {
+        return false;
+    };
+    let Some(field) = field.parse::<usize>().ok() else {
+        return false;
+    };
+    let Some(outer) = previous_writer(code, pc, inner.b()) else {
+        return false;
+    };
+    if outer.opcode() != Opcode32::GetIndex {
+        return false;
+    }
+    let Some(NativeStraightlineValue::List { elements, .. }) =
+        local_static_container_before(code, heap_values, pc, outer.b())
+    else {
+        return false;
+    };
+    elements.iter().all(|row| match row {
+        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
+            ConstHeapValue32Data::List(values) => values.get(field).and_then(static_string_value).is_some(),
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
+fn local_static_string_index_is_string(code: &[Instr32], strings: &[String], pc: usize, value_reg: u8) -> bool {
+    let Some(instr) = previous_writer(code, pc, value_reg) else {
+        return false;
+    };
+    instr.opcode() == Opcode32::GetIndex && local_static_string_before(code, strings, pc, instr.b()).is_some()
+}
+
+fn previous_writer(code: &[Instr32], pc: usize, reg: u8) -> Option<Instr32> {
+    for prev_pc in (pc.saturating_sub(64)..pc).rev() {
+        let prev = *code.get(prev_pc)?;
+        if prev.a() == reg {
+            return Some(prev);
+        }
+    }
+    None
+}
+
+fn emit_dynamic_ptr_static_string_list_compare(
+    ir: &mut String,
+    extra_globals: &mut String,
+    instr: Instr32,
+    pc: usize,
+    id: usize,
+    elements: &[ConstRuntimeValue32Data],
+) -> Option<()> {
+    let len = format!("%ptr_list_cmp_len_{pc}");
+    let len_ok = format!("%ptr_list_cmp_len_ok_{pc}");
+    let items_label = format!("ptr.list.cmp.{pc}.items");
+    let done_label = format!("ptr.list.cmp.{pc}.done");
+    ir.push_str(&format!("  {len} = load i64, ptr %list{id}.len.slot\n"));
+    ir.push_str(&format!("  {len_ok} = icmp eq i64 {len}, {}\n", elements.len()));
+    ir.push_str(&format!(
+        "  br i1 {len_ok}, label %{items_label}, label %{done_label}\n"
+    ));
+    ir.push_str(&format!("{items_label}:\n"));
+    let mut ok = "true".to_string();
+    for (index, value) in elements.iter().enumerate() {
+        let expected = static_string_value(value)?;
+        let symbol = format!("@lk_ptr_list_cmp_{pc}_{index}");
+        extra_globals.push_str(&llvm_string_constant(&symbol, &expected));
+        let slot = format!("%ptr_list_cmp_slot_{pc}_{index}");
+        let actual = format!("%ptr_list_cmp_value_{pc}_{index}");
+        let cmp = format!("%ptr_list_cmp_raw_{pc}_{index}");
+        let same = format!("%ptr_list_cmp_same_{pc}_{index}");
+        let next = format!("%ptr_list_cmp_ok_{pc}_{index}");
+        ir.push_str(&format!(
+            "  {slot} = getelementptr [4096 x ptr], ptr %list{id}.ptr.slots, i64 0, i64 {index}\n"
+        ));
+        ir.push_str(&format!("  {actual} = load ptr, ptr {slot}\n"));
+        ir.push_str(&format!("  {cmp} = call i32 @strcmp(ptr {actual}, ptr {symbol})\n"));
+        ir.push_str(&format!("  {same} = icmp eq i32 {cmp}, 0\n"));
+        ir.push_str(&format!("  {next} = and i1 {ok}, {same}\n"));
+        ok = next;
+    }
+    ir.push_str(&format!("  br label %{done_label}\n"));
+    ir.push_str(&format!("{done_label}:\n"));
+    let final_ok = format!("%ptr_list_cmp_final_{pc}");
+    let out = format!("%ptr_list_cmp_out_{pc}");
+    let incoming_ok = if elements.is_empty() { "true" } else { ok.as_str() };
+    ir.push_str(&format!(
+        "  {final_ok} = phi i1 [ false, %bb{pc} ], [ {incoming_ok}, %{items_label} ]\n"
+    ));
+    if instr.opcode() == Opcode32::CmpNeInt {
+        let neg = format!("%ptr_list_cmp_ne_{pc}");
+        ir.push_str(&format!("  {neg} = xor i1 {final_ok}, true\n"));
+        ir.push_str(&format!("  {out} = zext i1 {neg} to i64\n"));
+    } else {
+        ir.push_str(&format!("  {out} = zext i1 {final_ok} to i64\n"));
+    }
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+    Some(())
+}
+
+fn static_string_value(value: &ConstRuntimeValue32Data) -> Option<String> {
+    match value {
+        ConstRuntimeValue32Data::ShortStr(value) => Some(value.as_str().to_string()),
+        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
+            ConstHeapValue32Data::LongString(value) => Some(value.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn static_string_list_total_len(elements: &[ConstRuntimeValue32Data]) -> Option<usize> {
     elements.iter().try_fold(0usize, |total, value| match value {
         ConstRuntimeValue32Data::ShortStr(value) => Some(total + value.len()),
@@ -1211,9 +1421,10 @@ fn static_compare_value(
     pc: usize,
     reg: u8,
 ) -> Option<NativeStraightlineValue> {
-    static_regs
-        .get(reg as usize)
-        .and_then(Clone::clone)
+    let trusted_static = static_register_value_trusted_before(code, pc, reg)
+        .then(|| static_regs.get(reg as usize).and_then(Clone::clone))
+        .flatten();
+    trusted_static
         .or_else(|| local_static_container_before(code, heap_values, pc, reg))
         .or_else(|| local_static_map_rest_before(code, strings, heap_values, pc, reg))
         .or_else(|| local_static_index_value_before(code, int_consts, strings, heap_values, pc, reg))

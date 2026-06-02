@@ -682,6 +682,42 @@ pub fn register_stdlib_globals(registry: &mut ModuleRegistry) {
     register_stdlib_concurrency_globals(registry);
 }
 
+/// Returns a mapping of stdlib module names to their .lk source file paths.
+/// These are LK-language stdlib modules that complement the Rust-native ones.
+pub fn stdlib_lk_modules() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("alg", "alg"),
+        ("collections", "collections"),
+        ("func", "func"),
+        ("assert", "assert"),
+        ("math_ext", "math_ext"),
+    ]
+}
+
+/// Register LK-source stdlib modules on a resolver.
+/// Must be called after Rust-native stdlib modules are registered
+/// (native modules take priority).
+pub fn register_stdlib_lk_modules(resolver: &mut lk_core::stmt::ModuleResolver) -> Result<()> {
+    let lk_dir = lk_dir_path();
+    for (name, sub) in stdlib_lk_modules() {
+        // Only register if no Rust-native module with this name exists
+        if resolver.resolve_runtime_module(name).is_err() {
+            let mod_path = lk_dir.join(sub).join("mod.lk");
+            if mod_path.exists() {
+                resolver.register_package_module(name, mod_path);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Return the directory containing the .lk stdlib source files.
+fn lk_dir_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("lk")
+}
+
 #[cfg(test)]
 mod runtime_registration_tests {
     use super::*;

@@ -1,4 +1,6 @@
-use crate::llvm::subfunction::compile_native_scalar_subfunction;
+use crate::llvm::subfunction::{
+    compile_native_i64_list_subfunction, compile_native_ptr_list_subfunction, compile_native_scalar_subfunction,
+};
 use crate::vm::Module32Artifact;
 
 pub(in crate::llvm) fn prepend_subfunctions(
@@ -11,6 +13,10 @@ pub(in crate::llvm) fn prepend_subfunctions(
     for &index in recursive_indices {
         if let Ok(Some(fn_ir)) = compile_native_scalar_subfunction(artifact, index as usize, recursive_indices) {
             subfunction_ir.push_str(&fn_ir);
+        } else if let Ok(Some(fn_ir)) = compile_native_i64_list_subfunction(artifact, index as usize) {
+            subfunction_ir.push_str(&fn_ir);
+        } else if let Ok(Some(fn_ir)) = compile_native_ptr_list_subfunction(artifact, index as usize) {
+            subfunction_ir.push_str(&fn_ir);
         }
     }
 
@@ -22,6 +28,12 @@ pub(in crate::llvm) fn prepend_subfunctions(
             continue;
         }
         if let Ok(Some(fn_ir)) = compile_native_scalar_subfunction(artifact, index as usize, &all_subfn_indices) {
+            subfunction_ir.push_str(&fn_ir);
+            emitted_subfn.push(index);
+        } else if let Ok(Some(fn_ir)) = compile_native_i64_list_subfunction(artifact, index as usize) {
+            subfunction_ir.push_str(&fn_ir);
+            emitted_subfn.push(index);
+        } else if let Ok(Some(fn_ir)) = compile_native_ptr_list_subfunction(artifact, index as usize) {
             subfunction_ir.push_str(&fn_ir);
             emitted_subfn.push(index);
         }

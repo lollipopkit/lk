@@ -187,6 +187,101 @@ impl MathModule {
     fn max32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
         min_max(args, "max()", |left, right| left > right)
     }
+
+    fn hypot32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 2, "hypot()")?;
+        let values = args.as_slice();
+        let x = number_arg(&values[0], "hypot() first argument")?;
+        let y = number_arg(&values[1], "hypot() second argument")?;
+        Ok(RuntimeVal::Float(x.hypot(y)))
+    }
+
+    fn cbrt32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "cbrt()")?;
+        let value = unary_number(args, "cbrt()")?;
+        Ok(RuntimeVal::Float(value.cbrt()))
+    }
+
+    fn sinh32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        unary_float(args, "sinh()", f64::sinh)
+    }
+
+    fn cosh32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        unary_float(args, "cosh()", f64::cosh)
+    }
+
+    fn tanh32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        unary_float(args, "tanh()", f64::tanh)
+    }
+
+    fn trunc32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "trunc()")?;
+        match args.as_slice()[0] {
+            RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value)),
+            RuntimeVal::Float(value) => Ok(RuntimeVal::Float(value.trunc())),
+            _ => bail!("trunc() argument must be a number"),
+        }
+    }
+
+    fn fract32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "fract()")?;
+        match args.as_slice()[0] {
+            RuntimeVal::Int(_) => Ok(RuntimeVal::Float(0.0)),
+            RuntimeVal::Float(value) => Ok(RuntimeVal::Float(value.fract())),
+            _ => bail!("fract() argument must be a number"),
+        }
+    }
+
+    fn sign32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "sign()")?;
+        match args.as_slice()[0] {
+            RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value.signum())),
+            RuntimeVal::Float(value) => {
+                if value > 0.0 {
+                    Ok(RuntimeVal::Float(1.0))
+                } else if value < 0.0 {
+                    Ok(RuntimeVal::Float(-1.0))
+                } else {
+                    Ok(RuntimeVal::Float(0.0))
+                }
+            }
+            _ => bail!("sign() argument must be a number"),
+        }
+    }
+
+    fn to_int32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "to_int()")?;
+        match args.as_slice()[0] {
+            RuntimeVal::Int(value) => Ok(RuntimeVal::Int(value)),
+            RuntimeVal::Float(value) => Ok(RuntimeVal::Int(value as i64)),
+            RuntimeVal::Bool(value) => Ok(RuntimeVal::Int(if value { 1 } else { 0 })),
+            _ => bail!("to_int() argument must be a number or bool"),
+        }
+    }
+
+    fn to_float32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "to_float()")?;
+        match args.as_slice()[0] {
+            RuntimeVal::Float(value) => Ok(RuntimeVal::Float(value)),
+            RuntimeVal::Int(value) => Ok(RuntimeVal::Float(value as f64)),
+            RuntimeVal::Bool(value) => Ok(RuntimeVal::Float(if value { 1.0 } else { 0.0 })),
+            _ => bail!("to_float() argument must be a number or bool"),
+        }
+    }
+
+    fn is_nan32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "is_nan()")?;
+        Ok(RuntimeVal::Bool(
+            matches!(args.as_slice()[0], RuntimeVal::Float(v) if v.is_nan()),
+        ))
+    }
+
+    fn is_inf32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        expect_arity(args, 1, "is_inf()")?;
+        Ok(RuntimeVal::Bool(
+            matches!(args.as_slice()[0], RuntimeVal::Float(v) if v.is_infinite()),
+        ))
+    }
 }
 
 impl Module for MathModule {
@@ -226,6 +321,18 @@ impl Module for MathModule {
                 RuntimeNativeExport32::plain("max", Self::max32, 2),
                 RuntimeNativeExport32::plain("clamp", Self::clamp32, NativeEntry32::VARIADIC),
                 RuntimeNativeExport32::plain("random", Self::random32, 0),
+                RuntimeNativeExport32::plain("hypot", Self::hypot32, 2),
+                RuntimeNativeExport32::plain("cbrt", Self::cbrt32, 1),
+                RuntimeNativeExport32::plain("sinh", Self::sinh32, 1),
+                RuntimeNativeExport32::plain("cosh", Self::cosh32, 1),
+                RuntimeNativeExport32::plain("tanh", Self::tanh32, 1),
+                RuntimeNativeExport32::plain("trunc", Self::trunc32, 1),
+                RuntimeNativeExport32::plain("fract", Self::fract32, 1),
+                RuntimeNativeExport32::plain("sign", Self::sign32, 1),
+                RuntimeNativeExport32::plain("to_int", Self::to_int32, 1),
+                RuntimeNativeExport32::plain("to_float", Self::to_float32, 1),
+                RuntimeNativeExport32::plain("is_nan", Self::is_nan32, 1),
+                RuntimeNativeExport32::plain("is_inf", Self::is_inf32, 1),
             ],
             &[
                 RuntimeValueExport32::new("pi", RuntimeVal::Float(std::f64::consts::PI)),

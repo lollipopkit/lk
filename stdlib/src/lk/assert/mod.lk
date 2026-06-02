@@ -1,0 +1,61 @@
+// Assertion and testing utilities — implemented in pure LK.
+
+/// Assert that a condition is true. Panics with a message if false.
+fn assert(cond, msg) {
+  if !cond {
+    if msg != nil {
+      panic("assertion failed: ${msg}");
+    }
+    panic("assertion failed");
+  }
+}
+
+/// Assert that two values are equal.
+fn assert_eq(actual, expected, msg) {
+  if actual != expected {
+    if msg != nil {
+      panic("assertion failed: expected ${expected}, got ${actual} — ${msg}");
+    }
+    panic("assertion failed: expected ${expected}, got ${actual}");
+  }
+}
+
+/// Assert that two values are NOT equal.
+fn assert_ne(actual, expected, msg) {
+  if actual == expected {
+    if msg != nil {
+      panic("assertion failed: values should not be equal — ${msg}");
+    }
+    panic("assertion failed: values should not be equal");
+  }
+}
+
+/// Assert that a value is nil.
+fn assert_nil(value, msg) {
+  if value != nil {
+    if msg != nil {
+      panic("assertion failed: expected nil, got ${value} — ${msg}");
+    }
+    panic("assertion failed: expected nil, got ${value}");
+  }
+}
+
+/// Assert that a value is NOT nil.
+fn assert_not_nil(value, msg) {
+  if value == nil {
+    if msg != nil {
+      panic("assertion failed: expected non-nil value — ${msg}");
+    }
+    panic("assertion failed: expected non-nil value");
+  }
+}
+
+/// Assert that a condition is false.
+fn assert_false(cond, msg) {
+  if cond {
+    if msg != nil {
+      panic("assertion failed: expected false — ${msg}");
+    }
+    panic("assertion failed: expected false");
+  }
+}

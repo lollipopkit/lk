@@ -1,7 +1,11 @@
-mod formatting; mod object_display; mod static_direct; mod symbolic;
+mod formatting;
+mod object_display;
+mod static_direct;
+mod symbolic;
 
+use super::{facts::NativeScalarFacts, facts::NativeScalarKind};
 use crate::llvm::{
-    callee_eval::{native_direct_call_static_return_value, native_straightline_function_return},
+    callee_eval::native_straightline_function_return,
     const_display::llvm_string_constant,
     ir_text::{native_relative_target, next_tmp, reg_in_bounds},
     output::emit_native_static_core_call_method,
@@ -13,14 +17,10 @@ use crate::llvm::{
 use crate::vm::{
     ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Module32Artifact, Opcode32, RuntimeMapKeyData,
 };
-
-use super::{facts::NativeScalarFacts, facts::NativeScalarKind};
-
 pub(in crate::llvm) use formatting::emit_static_formatted_print;
 use object_display::native_object_display_text;
 use static_direct::static_direct_call_args;
 pub(in crate::llvm) use symbolic::kind_symbolic_value;
-
 pub(in crate::llvm) fn control_flow_static_boundaries(code: &[Instr32]) -> Vec<bool> {
     let mut boundaries = vec![false; code.len()];
     for (pc, instr) in code.iter().copied().enumerate() {
@@ -65,15 +65,17 @@ pub(in crate::llvm) fn clear_control_flow_static_values(values: &mut [Option<Nat
             Some(
                 NativeStraightlineValue::List { .. }
                     | NativeStraightlineValue::Map { .. }
+                    | NativeStraightlineValue::DisplayMap { .. }
                     | NativeStraightlineValue::Object { .. }
-                    | NativeStraightlineValue::DynamicMap {
-                        key: NativeMapKeyKind::Str,
-                        value: NativeMapValueKind::I64,
-                        ..
-                    }
+                    | NativeStraightlineValue::DynamicMap { .. }
+                    | NativeStraightlineValue::DynamicMapIter { .. }
+                    | NativeStraightlineValue::DynamicMapEntry { .. }
                     | NativeStraightlineValue::DynamicList { .. }
+                    | NativeStraightlineValue::DynamicPairList { .. }
                     | NativeStraightlineValue::DynamicConstListElement { .. }
+                    | NativeStraightlineValue::DynamicArgListElement { .. }
                     | NativeStraightlineValue::DynamicJoinedText { .. }
+                    | NativeStraightlineValue::ArgList { .. }
                     | NativeStraightlineValue::Builtin(_)
                     | NativeStraightlineValue::Module(_)
                     | NativeStraightlineValue::Function(_)
@@ -84,7 +86,6 @@ pub(in crate::llvm) fn clear_control_flow_static_values(values: &mut [Option<Nat
         }
     }
 }
-
 pub(in crate::llvm) fn local_register_kind_before(code: &[Instr32], pc: usize, reg: u8) -> Option<NativeScalarKind> {
     let start = pc.saturating_sub(64);
     let mut nearest = None;
@@ -96,7 +97,7 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr32], pc: usize, r
         let kind = match prev.opcode() {
             Opcode32::LoadInt => Some(NativeScalarKind::I64),
             Opcode32::LoadFloat => Some(NativeScalarKind::F64),
-            Opcode32::LoadString => Some(NativeScalarKind::StrPtr),
+            Opcode32::LoadString | Opcode32::ToString | Opcode32::ConcatString => Some(NativeScalarKind::StrPtr),
             Opcode32::LoadBool
             | Opcode32::Not
             | Opcode32::IsNil
@@ -110,7 +111,13 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr32], pc: usize, r
             Opcode32::Move => local_register_kind_before(code, prev_pc, prev.b()),
             _ => None,
         };
-        if kind == Some(NativeScalarKind::StrPtr) && matches!(nearest, None | Some(NativeScalarKind::Nil)) {
+        if kind == Some(NativeScalarKind::StrPtr) && matches!(nearest, Some(NativeScalarKind::Nil)) {
+            return Some(NativeScalarKind::MaybeStrPtr);
+        }
+        if kind == Some(NativeScalarKind::Nil) && matches!(nearest, Some(NativeScalarKind::StrPtr)) {
+            return Some(NativeScalarKind::MaybeStrPtr);
+        }
+        if kind == Some(NativeScalarKind::StrPtr) && nearest.is_none() {
             return kind;
         }
         if nearest.is_none() {
@@ -148,7 +155,6 @@ pub(in crate::llvm) fn local_heap_kind_before(
     }
     None
 }
-
 pub(in crate::llvm) fn local_compare_kind(
     kind: Option<NativeScalarKind>,
     heap_kind: Option<NativeScalarKind>,
@@ -453,7 +459,6 @@ fn static_untaken_linear_return_path(boundaries: &[bool], code: &[Instr32], star
 pub(in crate::llvm) fn static_register_value_trusted_before(code: &[Instr32], pc_limit: usize, reg: u8) -> bool {
     static_register_value_trusted_before_inner(code, pc_limit, reg, 0)
 }
-
 pub(in crate::llvm) fn static_string_value_trusted_at_call(code: &[Instr32], call_pc: usize, reg: u8) -> bool {
     static_register_value_trusted_before(code, call_pc, reg)
 }
@@ -608,7 +613,15 @@ pub(in crate::llvm) fn emit_static_direct_call_result(
     instr: Instr32,
     tmp_index: &mut usize,
 ) -> Option<()> {
-    let (args, recovered_heap_const) = static_direct_call_args(
+    if artifact
+        .module
+        .functions
+        .get(instr.b() as usize)
+        .is_some_and(callee_has_list_return_shape)
+    {
+        return None;
+    }
+    let (args, _) = static_direct_call_args(
         code,
         int_consts,
         strings,
@@ -618,42 +631,6 @@ pub(in crate::llvm) fn emit_static_direct_call_result(
         instr.a(),
         instr.c(),
     )?;
-    if !recovered_heap_const
-        && !args.iter().any(|value| {
-            matches!(
-                value,
-                NativeStraightlineValue::Function(_)
-                    | NativeStraightlineValue::Closure { .. }
-                    | NativeStraightlineValue::String { .. }
-                    | NativeStraightlineValue::List { .. }
-                    | NativeStraightlineValue::Map { .. }
-                    | NativeStraightlineValue::Object { .. }
-            )
-        })
-        && !artifact
-            .module
-            .functions
-            .get(instr.b() as usize)
-            .is_some_and(|function| function.consts.strings.iter().any(|value| value == "reduce"))
-        && !native_direct_call_static_return_value(
-            &artifact.module.functions,
-            instr,
-            static_regs,
-            code,
-            int_consts,
-            pc,
-            &[],
-            0,
-        )
-        .is_some_and(|value| {
-            matches!(
-                value,
-                NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }
-            )
-        })
-    {
-        return None;
-    }
     let value = native_straightline_function_return(
         artifact,
         instr.b() as usize,
@@ -669,6 +646,14 @@ pub(in crate::llvm) fn emit_static_direct_call_result(
     store_native_scalar_call_result(ir, extra_globals, static_regs, instr.a(), value, tmp_index)
 }
 
+fn callee_has_list_return_shape(function: &crate::vm::Function32Data) -> bool {
+    function
+        .code
+        .iter()
+        .copied()
+        .filter_map(|raw| Instr32::try_from_raw(raw).ok())
+        .any(|instr| instr.opcode() == Opcode32::ListPush)
+}
 #[allow(clippy::too_many_arguments)]
 pub(in crate::llvm) fn scalar_named_call_args(
     function: &crate::vm::Function32Data,
@@ -768,7 +753,7 @@ pub(in crate::llvm) fn scalar_arg_value(
         NativeScalarKind::F64 => Some(NativeStraightlineValue::F64(value)),
         NativeScalarKind::Bool => Some(NativeStraightlineValue::Bool(value)),
         NativeScalarKind::Nil => Some(NativeStraightlineValue::Nil),
-        NativeScalarKind::StrPtr => Some(NativeStraightlineValue::StringPtr(value)),
+        NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => Some(NativeStraightlineValue::StringPtr(value)),
     }
 }
 
@@ -782,6 +767,10 @@ pub(in crate::llvm) fn emit_static_scalar_value_store_if_needed(
             ir.push_str(&format!("  store i64 {value}, ptr %r{reg}.slot\n"));
             ir.push_str(&format!("  store i64 1, ptr %r{reg}.present.slot\n"));
         }
+        NativeStraightlineValue::MaybeI64 { value, present } => {
+            ir.push_str(&format!("  store i64 {value}, ptr %r{reg}.slot\n"));
+            ir.push_str(&format!("  store i64 {present}, ptr %r{reg}.present.slot\n"));
+        }
         NativeStraightlineValue::Bool(value) => {
             ir.push_str(&format!("  store i64 {value}, ptr %r{reg}.slot\n"));
         }
@@ -791,20 +780,24 @@ pub(in crate::llvm) fn emit_static_scalar_value_store_if_needed(
         NativeStraightlineValue::F64(value) => {
             ir.push_str(&format!("  store double {value}, ptr %r{reg}.slot\n"));
         }
+        NativeStraightlineValue::StringPtr(value) => {
+            ir.push_str(&format!("  store ptr {value}, ptr %r{reg}.slot\n"));
+            ir.push_str(&format!("  store i64 1, ptr %r{reg}.present.slot\n"));
+        }
         NativeStraightlineValue::String { .. }
-        | NativeStraightlineValue::StringPtr(_)
         | NativeStraightlineValue::Text(_)
         | NativeStraightlineValue::DynamicTextChar
         | NativeStraightlineValue::DynamicSplitText { .. }
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
-        | NativeStraightlineValue::DynamicMap {
-            key: NativeMapKeyKind::Str,
-            value: NativeMapValueKind::I64,
-            ..
-        }
+        | NativeStraightlineValue::DisplayMap { .. }
+        | NativeStraightlineValue::DynamicMap { .. }
+        | NativeStraightlineValue::DynamicMapIter { .. }
+        | NativeStraightlineValue::DynamicMapEntry { .. }
         | NativeStraightlineValue::DynamicList { .. }
+        | NativeStraightlineValue::DynamicPairList { .. }
         | NativeStraightlineValue::DynamicConstListElement { .. }
+        | NativeStraightlineValue::DynamicArgListElement { .. }
         | NativeStraightlineValue::DynamicJoinedText { .. }
         | NativeStraightlineValue::Channel { .. }
         | NativeStraightlineValue::ArgList { .. }
@@ -843,7 +836,7 @@ fn static_register_value_trusted_before_inner(code: &[Instr32], pc_limit: usize,
         .skip(last_write)
         .take(pc_limit.saturating_sub(last_write) + 1)
         .any(|boundary| boundary);
-    if crosses_boundary {
+    if crosses_boundary || branch_enters_after_write(code, last_write, pc_limit) {
         return false;
     }
     let instr = code[last_write];
@@ -860,6 +853,17 @@ fn static_register_value_trusted_before_inner(code: &[Instr32], pc_limit: usize,
         return false;
     }
     true
+}
+
+fn branch_enters_after_write(code: &[Instr32], last_write: usize, pc_limit: usize) -> bool {
+    code.iter().copied().take(last_write).enumerate().any(|(pc, instr)| {
+        let target = match instr.opcode() {
+            Opcode32::Jmp => native_relative_target(pc, instr.sj_arg(), code.len()),
+            Opcode32::Test => native_relative_target(pc, instr.c() as i8 as i32, code.len()),
+            _ => None,
+        };
+        matches!(target, Some(target) if target > last_write && target <= pc_limit)
+    })
 }
 
 fn register_written_by_enclosing_backedge_loop(code: &[Instr32], pc_limit: usize, reg: u8) -> bool {
@@ -903,24 +907,16 @@ pub(in crate::llvm) fn store_native_scalar_call_result(
 ) -> Option<()> {
     match value {
         NativeStraightlineValue::I64(value) => {
-            static_regs[dst as usize] = None;
+            static_regs[dst as usize] = (!value.starts_with('%')).then(|| NativeStraightlineValue::I64(value.clone()));
             ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
             ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
         }
         NativeStraightlineValue::F64(value) => {
-            static_regs[dst as usize] = if value.starts_with('%') {
-                None
-            } else {
-                Some(NativeStraightlineValue::F64(value.clone()))
-            };
+            static_regs[dst as usize] = (!value.starts_with('%')).then(|| NativeStraightlineValue::F64(value.clone()));
             ir.push_str(&format!("  store double {value}, ptr %r{dst}.slot\n"));
         }
         NativeStraightlineValue::Bool(value) => {
-            static_regs[dst as usize] = if value.starts_with('%') {
-                None
-            } else {
-                Some(NativeStraightlineValue::Bool(value.clone()))
-            };
+            static_regs[dst as usize] = (!value.starts_with('%')).then(|| NativeStraightlineValue::Bool(value.clone()));
             ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
         }
         NativeStraightlineValue::Nil => {
@@ -956,8 +952,11 @@ pub(in crate::llvm) fn store_native_scalar_call_result(
         }
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
+        | NativeStraightlineValue::DisplayMap { .. }
         | NativeStraightlineValue::Object { .. }
         | NativeStraightlineValue::Channel { .. }
+        | NativeStraightlineValue::ArgList { .. }
+        | NativeStraightlineValue::DynamicArgListElement { .. }
         | NativeStraightlineValue::Function(_)
         | NativeStraightlineValue::Closure { .. } => {
             static_regs[dst as usize] = Some(value);
@@ -1198,7 +1197,11 @@ fn emit_numeric_load_as_f64(
             ir.push_str(&format!("  {cast} = sitofp i64 {value} to double\n"));
             cast
         }
-        NativeScalarKind::Bool | NativeScalarKind::Nil | NativeScalarKind::StrPtr | NativeScalarKind::MaybeI64 => {
+        NativeScalarKind::Bool
+        | NativeScalarKind::Nil
+        | NativeScalarKind::StrPtr
+        | NativeScalarKind::MaybeI64
+        | NativeScalarKind::MaybeStrPtr => {
             unreachable!("checked by caller")
         }
     }
@@ -1224,7 +1227,7 @@ pub(in crate::llvm) fn inline_text_value_from_reg(
         NativeScalarKind::F64 => NativeTextPart::F64(value),
         NativeScalarKind::Bool => NativeTextPart::Bool(value),
         NativeScalarKind::Nil => NativeTextPart::Nil,
-        NativeScalarKind::StrPtr => NativeTextPart::StrPtr(value),
+        NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => NativeTextPart::StrPtr(value),
         NativeScalarKind::MaybeI64 => return None,
     };
     Some(NativeStraightlineValue::Text(vec![part]))
@@ -1249,7 +1252,7 @@ pub(in crate::llvm) fn text_value_from_reg(
         NativeScalarKind::F64 => NativeTextPart::F64(value),
         NativeScalarKind::Bool => NativeTextPart::Bool(value),
         NativeScalarKind::Nil => NativeTextPart::Nil,
-        NativeScalarKind::StrPtr => NativeTextPart::StrPtr(value),
+        NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => NativeTextPart::StrPtr(value),
         NativeScalarKind::MaybeI64 => return None,
     };
     Some(NativeStraightlineValue::Text(vec![part]))
@@ -1432,7 +1435,9 @@ pub(in crate::llvm) fn emit_inline_scalar_equality_block(
             ));
             ir.push_str(&format!("  {cmp} = fcmp o{pred} double {lhs}, {rhs}\n"));
         }
-        (NativeScalarKind::StrPtr, _) | (NativeScalarKind::MaybeI64, _) => return None,
+        (NativeScalarKind::StrPtr, _) | (NativeScalarKind::MaybeI64, _) | (NativeScalarKind::MaybeStrPtr, _) => {
+            return None;
+        }
     }
     ir.push_str(&format!("  {out} = zext i1 {cmp} to i64\n"));
     ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));

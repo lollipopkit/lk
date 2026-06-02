@@ -1,5 +1,5 @@
-use crate::typ::type_checker::TypeChecker;
 use crate::expr::Expr;
+use crate::typ::type_checker::TypeChecker;
 use crate::val::Type;
 use anyhow::Result;
 

@@ -77,14 +77,8 @@ impl Executor32 {
         else {
             return Ok(None);
         };
-        let result = call_runtime_value32_runtime_with_receiver(
-            method,
-            value,
-            &[],
-            &mut self.state,
-            module,
-            Some(ctx_ref),
-        )?;
+        let result =
+            call_runtime_value32_runtime_with_receiver(method, value, &[], &mut self.state, module, Some(ctx_ref))?;
         self.runtime_value_to_plain_string_maybe(&result)
     }
 

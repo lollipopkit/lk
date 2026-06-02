@@ -745,6 +745,7 @@ dependencies = [
  "clap",
  "lk-core",
  "lk-stdlib",
+ "lkrt",
  "llvm-tools",
  "predicates",
  "rustyline",
@@ -817,6 +818,10 @@ dependencies = [
  "toml",
  "tracing",
 ]
+
+[[package]]
+name = "lkrt"
+version = "0.1.3"
 
 [[package]]
 name = "llvm-tools"
