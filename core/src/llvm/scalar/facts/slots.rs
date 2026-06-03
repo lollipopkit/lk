@@ -39,6 +39,14 @@ pub(super) fn native_global_kind(kinds: &[Option<NativeScalarKind>], slot: u16) 
     kinds.get(slot as usize).copied().flatten()
 }
 
+pub(super) fn native_kind(kinds: &[Option<NativeScalarKind>], reg: u8) -> Option<NativeScalarKind> {
+    kinds.get(reg as usize).copied().flatten()
+}
+
+pub(super) fn static_kind(values: &[Option<NativeStraightlineValue>], reg: u8) -> Option<NativeStraightlineValue> {
+    values.get(reg as usize).cloned().flatten()
+}
+
 pub(super) fn set_native_global_kind(
     kinds: &mut [Option<NativeScalarKind>],
     static_globals: &mut [Option<NativeStraightlineValue>],

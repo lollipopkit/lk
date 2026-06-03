@@ -42,7 +42,11 @@ fn native_arg_value(
         NativeScalarKind::F64 => Some(NativeStraightlineValue::F64(value)),
         NativeScalarKind::Bool => Some(NativeStraightlineValue::Bool(value)),
         NativeScalarKind::Nil => Some(NativeStraightlineValue::Nil),
-        NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => Some(NativeStraightlineValue::StringPtr(value)),
+        NativeScalarKind::StrPtr => Some(NativeStraightlineValue::StringPtr(value)),
+        NativeScalarKind::MaybeStrPtr => Some(NativeStraightlineValue::MaybeStrPtr {
+            value,
+            present: format!("%call_arg_r{reg}_present"),
+        }),
     }
 }
 

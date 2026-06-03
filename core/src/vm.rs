@@ -16,6 +16,8 @@ mod context;
 mod exec32;
 mod gc32;
 mod ir32;
+#[cfg(test)]
+mod migration_guard;
 mod runtime32;
 #[allow(dead_code)]
 pub(crate) mod ssa;

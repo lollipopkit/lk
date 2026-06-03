@@ -51,7 +51,8 @@ pub(super) fn emit_scalar_entry_allocas(
         }
         if dynamic_map_alloca_needed(heap_values, instr) {
             emit_dynamic_string_int_map_allocas(&mut ir, &format!("map{pc}"));
-        } else if dynamic_list_alloca_needed(heap_values, instr) {
+        }
+        if dynamic_list_alloca_needed(heap_values, instr) {
             emit_dynamic_int_list_allocas(&mut ir, &format!("list{pc}"));
         }
     }
@@ -69,8 +70,9 @@ fn function_has_list_return_shape(function: &crate::vm::Function32Data) -> bool 
 }
 
 fn dynamic_map_alloca_needed(heap_values: &[ConstHeapValue32Data], instr: Instr32) -> bool {
-    matches!(instr.opcode(), Opcode32::LoadHeapConst)
-        && matches!(heap_values.get(instr.bx() as usize), Some(ConstHeapValue32Data::Map(values)) if values.is_empty())
+    matches!(instr.opcode(), Opcode32::Call)
+        || matches!(instr.opcode(), Opcode32::LoadHeapConst)
+            && matches!(heap_values.get(instr.bx() as usize), Some(ConstHeapValue32Data::Map(values)) if values.is_empty())
 }
 
 fn dynamic_list_alloca_needed(heap_values: &[ConstHeapValue32Data], instr: Instr32) -> bool {

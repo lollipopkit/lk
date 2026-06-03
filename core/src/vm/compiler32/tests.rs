@@ -937,6 +937,26 @@ fn compiler32_lowers_nested_closure_captures() {
 }
 
 #[test]
+fn compiler32_lowers_closure_calling_captured_callable_param() {
+    let module = compile_source_module32(
+        r#"
+        fn apply_twice(value, f) {
+            return |extra| f(value + extra);
+        }
+
+        let add_one = |x| x + 1;
+        let apply = apply_twice(40, add_one);
+        return apply(1);
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module32(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
+}
+
+#[test]
 fn compiler32_lowers_mutable_closure_capture_to_upval_cell() {
     let module = compile_source_module32(
         r#"

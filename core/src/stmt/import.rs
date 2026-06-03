@@ -182,7 +182,7 @@ impl ModuleResolver {
             .map_err(|e| anyhow!(e.to_string()))?;
 
         let resolver = Arc::new(self.clone());
-        let mut ctx = VmContext::new_without_core_vm_builtins().with_resolver(resolver);
+        let mut ctx = VmContext::new().with_resolver(resolver);
         let result = program.execute32_with_ctx(&mut ctx)?;
         Ok(result.into_exports())
     }

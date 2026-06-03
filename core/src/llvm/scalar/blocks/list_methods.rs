@@ -6,12 +6,14 @@ use crate::{
             emit_dynamic_f64_list_insert, emit_dynamic_f64_list_pop, emit_dynamic_f64_list_push_new,
             emit_dynamic_f64_list_remove_at, emit_dynamic_f64_list_reverse, emit_dynamic_f64_list_set_new,
             emit_dynamic_f64_list_slice, emit_dynamic_f64_list_slice_range, emit_dynamic_f64_list_sort,
-            emit_dynamic_f64_list_take, emit_dynamic_f64_list_unique, emit_dynamic_int_list_concat,
-            emit_dynamic_int_list_slice, emit_dynamic_int_list_take, emit_dynamic_ptr_list_concat,
-            emit_dynamic_ptr_list_contains, emit_dynamic_ptr_list_index_of, emit_dynamic_ptr_list_insert,
-            emit_dynamic_ptr_list_pop, emit_dynamic_ptr_list_push_new, emit_dynamic_ptr_list_remove_at,
-            emit_dynamic_ptr_list_reverse, emit_dynamic_ptr_list_set_new, emit_dynamic_ptr_list_slice,
-            emit_dynamic_ptr_list_slice_range, emit_dynamic_ptr_list_sort, emit_dynamic_ptr_list_take,
+            emit_dynamic_f64_list_take, emit_dynamic_f64_list_unique, emit_dynamic_i64_list_contains,
+            emit_dynamic_i64_list_index_of, emit_dynamic_i64_list_pop, emit_dynamic_i64_list_reverse,
+            emit_dynamic_int_list_concat, emit_dynamic_int_list_slice, emit_dynamic_int_list_take,
+            emit_dynamic_ptr_list_concat, emit_dynamic_ptr_list_contains, emit_dynamic_ptr_list_index_of,
+            emit_dynamic_ptr_list_insert, emit_dynamic_ptr_list_pop, emit_dynamic_ptr_list_push_new,
+            emit_dynamic_ptr_list_remove_at, emit_dynamic_ptr_list_reverse, emit_dynamic_ptr_list_set_new,
+            emit_dynamic_ptr_list_slice, emit_dynamic_ptr_list_slice_range, emit_dynamic_ptr_list_sort,
+            emit_dynamic_ptr_list_take,
         },
         ir_text::{emit_branch_to_next, llvm_float_literal, next_tmp},
         scalar::{
@@ -324,6 +326,83 @@ pub(super) fn emit_dynamic_f64_list_builtin_call_from_regs(
             });
             return Some(());
         }
+        NativeBuiltin::ListPush => {
+            let value_reg = instr.b().checked_add(2)?;
+            let value = f64_list_arg_from_reg(ir, static_regs, facts, pc, value_reg, tmp_index)?;
+            emit_dynamic_f64_list_push_new(ir, id, pc, &value, tmp_index)?;
+            static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
+                id: pc,
+                element: NativeListElementKind::F64,
+            });
+            return Some(());
+        }
+        NativeBuiltin::ListSlice => {
+            let start_reg = instr.b().checked_add(2)?;
+            let start = ptr_list_i64_arg_from_reg(ir, static_regs, facts, pc, start_reg, tmp_index)?;
+            let end = if instr.c() == 3 {
+                let end_reg = instr.b().checked_add(3)?;
+                Some(ptr_list_i64_arg_from_reg(
+                    ir,
+                    static_regs,
+                    facts,
+                    pc,
+                    end_reg,
+                    tmp_index,
+                )?)
+            } else {
+                None
+            };
+            emit_dynamic_f64_list_slice_range(ir, id, pc, &start, end.as_deref(), tmp_index)?;
+            static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
+                id: pc,
+                element: NativeListElementKind::F64,
+            });
+            return Some(());
+        }
+        NativeBuiltin::ListInsert => {
+            let index_reg = instr.b().checked_add(2)?;
+            let value_reg = instr.b().checked_add(3)?;
+            let index = ptr_list_i64_arg_from_reg(ir, static_regs, facts, pc, index_reg, tmp_index)?;
+            let value = f64_list_arg_from_reg(ir, static_regs, facts, pc, value_reg, tmp_index)?;
+            emit_dynamic_f64_list_insert(ir, id, pc, &index, &value, tmp_index)?;
+            static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
+                id: pc,
+                element: NativeListElementKind::F64,
+            });
+            return Some(());
+        }
+        NativeBuiltin::ListRemoveAt => {
+            let index_reg = instr.b().checked_add(2)?;
+            let index = ptr_list_i64_arg_from_reg(ir, static_regs, facts, pc, index_reg, tmp_index)?;
+            let removed = emit_dynamic_f64_list_remove_at(ir, id, pc, &index, tmp_index)?;
+            static_regs[instr.a() as usize] = Some(NativeStraightlineValue::ArgList {
+                elements: vec![
+                    NativeStraightlineValue::DynamicList {
+                        id: pc,
+                        element: NativeListElementKind::F64,
+                    },
+                    NativeStraightlineValue::F64(removed),
+                ],
+            });
+            return Some(());
+        }
+        NativeBuiltin::ListSet => {
+            let index_reg = instr.b().checked_add(2)?;
+            let value_reg = instr.b().checked_add(3)?;
+            let index = ptr_list_i64_arg_from_reg(ir, static_regs, facts, pc, index_reg, tmp_index)?;
+            let value = f64_list_arg_from_reg(ir, static_regs, facts, pc, value_reg, tmp_index)?;
+            let old = emit_dynamic_f64_list_set_new(ir, id, pc, &index, &value, tmp_index)?;
+            static_regs[instr.a() as usize] = Some(NativeStraightlineValue::ArgList {
+                elements: vec![
+                    NativeStraightlineValue::DynamicList {
+                        id: pc,
+                        element: NativeListElementKind::F64,
+                    },
+                    NativeStraightlineValue::F64(old),
+                ],
+            });
+            return Some(());
+        }
         _ => return None,
     }
     static_regs[instr.a() as usize] = None;
@@ -482,8 +561,15 @@ pub(super) fn emit_dynamic_ptr_list_builtin_call_from_regs(
     pc: usize,
     tmp_index: &mut usize,
 ) -> Option<()> {
-    let expects_needle = matches!(builtin, NativeBuiltin::ListContains | NativeBuiltin::ListIndexOf);
-    if (expects_needle && instr.c() != 2) || (!expects_needle && instr.c() != 1) {
+    let expected_arity = match builtin {
+        NativeBuiltin::ListContains | NativeBuiltin::ListIndexOf => 2,
+        NativeBuiltin::ListPush | NativeBuiltin::ListRemoveAt => 2,
+        NativeBuiltin::ListInsert | NativeBuiltin::ListSet => 3,
+        NativeBuiltin::ListSlice if instr.c() == 2 || instr.c() == 3 => instr.c(),
+        NativeBuiltin::ListPop | NativeBuiltin::ListReverse | NativeBuiltin::ListSort => 1,
+        _ => return None,
+    };
+    if instr.c() != expected_arity {
         return None;
     }
     let list_reg = instr.b().checked_add(1)?;
@@ -642,7 +728,7 @@ fn ptr_list_arg_from_reg(
     None
 }
 
-fn ptr_list_i64_arg_from_reg(
+pub(super) fn ptr_list_i64_arg_from_reg(
     ir: &mut String,
     static_regs: &[Option<NativeStraightlineValue>],
     facts: &NativeScalarFacts,
@@ -650,12 +736,14 @@ fn ptr_list_i64_arg_from_reg(
     reg: u8,
     tmp_index: &mut usize,
 ) -> Option<String> {
-    if let Some(NativeStraightlineValue::I64(value)) = static_regs.get(reg as usize).cloned().flatten() {
+    if let Some(NativeStraightlineValue::I64(value) | NativeStraightlineValue::Bool(value)) =
+        static_regs.get(reg as usize).cloned().flatten()
+    {
         return Some(value);
     }
     if matches!(
         facts.register_kind_before(pc, reg),
-        Some(NativeScalarKind::I64 | NativeScalarKind::MaybeI64)
+        Some(NativeScalarKind::I64 | NativeScalarKind::MaybeI64 | NativeScalarKind::Bool)
     ) {
         let value = next_tmp(tmp_index);
         ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
@@ -696,9 +784,9 @@ fn ptr_list_needle(
     }
 }
 
-fn ptr_list_i64_arg(value: &NativeStraightlineValue) -> Option<String> {
+pub(super) fn ptr_list_i64_arg(value: &NativeStraightlineValue) -> Option<String> {
     match value {
-        NativeStraightlineValue::I64(value) => Some(value.clone()),
+        NativeStraightlineValue::I64(value) | NativeStraightlineValue::Bool(value) => Some(value.clone()),
         _ => None,
     }
 }
@@ -713,78 +801,32 @@ fn f64_list_f64_arg(value: &NativeStraightlineValue) -> Option<String> {
     }
 }
 
-pub(super) fn emit_list_direct_call(
+fn f64_list_arg_from_reg(
     ir: &mut String,
-    extra_globals: &mut String,
-    static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
-    pc: usize,
-    callee_index: usize,
+    static_regs: &[Option<NativeStraightlineValue>],
     facts: &NativeScalarFacts,
+    pc: usize,
+    reg: u8,
     tmp_index: &mut usize,
-) -> Option<()> {
-    let start = instr.a().checked_add(1)? as usize;
-    let end = start.checked_add(instr.c() as usize)?;
-    let call_args = static_regs.get(start..end)?;
-    let element = call_args
-        .iter()
-        .filter_map(|arg| native_list_arg_element_kind(arg.as_ref()?))
-        .next()?;
-    let args = call_args
-        .iter()
-        .enumerate()
-        .map(|(index, arg)| {
-            let reg = u8::try_from(start + index).ok()?;
-            emit_native_list_call_arg(
-                ir,
-                extra_globals,
-                pc,
-                index,
-                reg,
-                arg.clone(),
-                element,
-                facts.register_kind_before(pc, reg),
-                tmp_index,
-            )
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let out_base = emit_native_list_out_base(ir, pc, element, tmp_index);
-    let abi = match element {
-        NativeListElementKind::I64 => {
-            let profile = args
-                .iter()
-                .map(|arg| match arg {
-                    NativeListCallArg::List { .. } => 'l',
-                    NativeListCallArg::I64(_) => 'i',
-                })
-                .collect::<String>();
-            if profile.chars().all(|kind| kind == 'l') {
-                "i64_list".to_string()
-            } else {
-                format!("i64_list_{profile}")
-            }
+) -> Option<String> {
+    if let Some(value) = static_regs.get(reg as usize).cloned().flatten() {
+        return f64_list_f64_arg(&value);
+    }
+    match facts.register_kind_before(pc, reg) {
+        Some(NativeScalarKind::F64) => {
+            let value = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load double, ptr %r{reg}.slot\n"));
+            Some(value)
         }
-        NativeListElementKind::F64 => "f64_list".to_string(),
-        NativeListElementKind::StrPtr | NativeListElementKind::Text => "list".to_string(),
-    };
-    let joined_args = args
-        .into_iter()
-        .map(|arg| match arg {
-            NativeListCallArg::List { base, len_slot } => format!("ptr {base}, ptr {len_slot}"),
-            NativeListCallArg::I64(value) => format!("i64 {value}"),
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    ir.push_str(&format!(
-        "  call void @lk_fn_{callee_index}_{abi}({joined_args}, ptr {out_base}, ptr %list{pc}.len.slot)\n"
-    ));
-    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList { id: pc, element });
-    Some(())
-}
-
-enum NativeListCallArg {
-    List { base: String, len_slot: String },
-    I64(String),
+        Some(NativeScalarKind::I64 | NativeScalarKind::MaybeI64) => {
+            let int_value = next_tmp(tmp_index);
+            let value = next_tmp(tmp_index);
+            ir.push_str(&format!("  {int_value} = load i64, ptr %r{reg}.slot\n"));
+            ir.push_str(&format!("  {value} = sitofp i64 {int_value} to double\n"));
+            Some(value)
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn function_has_list_return_shape(function: &crate::vm::Function32Data) -> bool {
@@ -844,30 +886,6 @@ fn f64_list_method_f64_arg(
     Some(value)
 }
 
-fn static_string_element_symbol(
-    extra_globals: &mut String,
-    pc: usize,
-    index: usize,
-    element: &ConstRuntimeValue32Data,
-) -> Option<String> {
-    match element {
-        ConstRuntimeValue32Data::ShortStr(value) => {
-            let symbol = format!("@lk_call{pc}_arg0_str_{index}");
-            extra_globals.push_str(&llvm_string_constant(&symbol, value));
-            Some(symbol)
-        }
-        ConstRuntimeValue32Data::Heap(value) => {
-            let ConstHeapValue32Data::LongString(value) = value.as_ref() else {
-                return None;
-            };
-            let symbol = format!("@lk_call{pc}_arg0_heap_str_{index}");
-            extra_globals.push_str(&llvm_string_constant(&symbol, value));
-            Some(symbol)
-        }
-        _ => None,
-    }
-}
-
 pub(super) fn emit_dynamic_i64_list_method_call(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
@@ -878,16 +896,16 @@ pub(super) fn emit_dynamic_i64_list_method_call(
     tmp_index: &mut usize,
 ) -> Option<()> {
     let [
-        NativeStraightlineValue::DynamicList {
-            id,
-            element: NativeListElementKind::I64,
-        },
+        NativeStraightlineValue::DynamicList { id, element },
         NativeStraightlineValue::String { value: method, .. },
         method_args,
     ] = args
     else {
         return None;
     };
+    if !matches!(element, NativeListElementKind::I64 | NativeListElementKind::Bool) {
+        return None;
+    }
     match method.as_str() {
         "take" => {
             let count_reg = dynamic_list_method_i64_arg_reg(code, pc, instr)?;
@@ -902,32 +920,97 @@ pub(super) fn emit_dynamic_i64_list_method_call(
                 NativeStraightlineValue::ArgList { elements } => match elements.first()? {
                     NativeStraightlineValue::DynamicList {
                         id: rhs_id,
-                        element: NativeListElementKind::I64,
-                    } => emit_dynamic_int_list_concat(ir, *id, *rhs_id, pc, tmp_index)?,
-                    NativeStraightlineValue::List { elements, .. } => {
-                        emit_dynamic_i64_list_concat_static_rhs(ir, *id, pc, elements, tmp_index)?;
+                        element: rhs_element,
+                    } if rhs_element == element => emit_dynamic_int_list_concat(ir, *id, *rhs_id, pc, tmp_index)?,
+                    NativeStraightlineValue::List { elements, .. }
+                        if list_elements_match_i64_storage(elements, *element) =>
+                    {
+                        emit_dynamic_i64_list_concat_static_rhs(ir, *id, pc, elements, *element, tmp_index)?;
                     }
                     _ => return None,
                 },
                 NativeStraightlineValue::DynamicList {
                     id: rhs_id,
-                    element: NativeListElementKind::I64,
-                } => {
+                    element: rhs_element,
+                } if rhs_element == element => {
                     emit_dynamic_int_list_concat(ir, *id, *rhs_id, pc, tmp_index)?;
                 }
-                NativeStraightlineValue::List { elements, .. } => {
-                    emit_dynamic_i64_list_concat_static_rhs(ir, *id, pc, elements, tmp_index)?;
+                NativeStraightlineValue::List { elements, .. }
+                    if list_elements_match_i64_storage(elements, *element) =>
+                {
+                    emit_dynamic_i64_list_concat_static_rhs(ir, *id, pc, elements, *element, tmp_index)?;
                 }
                 _ => return None,
             };
+        }
+        "contains" | "index_of" => {
+            let needle = i64_list_method_i64_arg(ir, static_regs, code, pc, instr, method_args, tmp_index)?;
+            if method == "contains" {
+                emit_dynamic_i64_list_contains(ir, *id, instr.a(), &needle, tmp_index)?;
+            } else {
+                emit_dynamic_i64_list_index_of(ir, *id, instr.a(), &needle, tmp_index)?;
+            }
+            static_regs[instr.a() as usize] = None;
+            return Some(());
+        }
+        "pop" => {
+            let result = emit_dynamic_i64_list_pop(ir, *id, instr.a(), tmp_index)?;
+            static_regs[instr.a() as usize] = Some(match element {
+                NativeListElementKind::Bool => NativeStraightlineValue::Bool(result),
+                _ => NativeStraightlineValue::I64(result),
+            });
+            return Some(());
+        }
+        "reverse" => {
+            emit_dynamic_i64_list_reverse(ir, *id, pc, tmp_index)?;
         }
         _ => return None,
     }
     static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
         id: pc,
-        element: NativeListElementKind::I64,
+        element: *element,
     });
     Some(())
+}
+
+fn i64_list_method_i64_arg(
+    ir: &mut String,
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr32],
+    pc: usize,
+    instr: Instr32,
+    method_args: &NativeStraightlineValue,
+    tmp_index: &mut usize,
+) -> Option<String> {
+    if let NativeStraightlineValue::ArgList { elements } = method_args
+        && let Some(value) = elements.first().and_then(ptr_list_i64_arg)
+    {
+        return Some(value);
+    }
+    if let NativeStraightlineValue::List { elements, .. } = method_args
+        && let Some(value) = elements.first()
+    {
+        return match value {
+            ConstRuntimeValue32Data::Int(value) => Some(value.to_string()),
+            ConstRuntimeValue32Data::Bool(value) => Some(if *value { "1" } else { "0" }.to_string()),
+            _ => None,
+        };
+    }
+    if instr.c() != 3 {
+        return None;
+    }
+    let arg_list_reg = instr.a().checked_add(3)?;
+    let source_reg = single_arg_list_source_reg_before(code, pc, arg_list_reg).unwrap_or(arg_list_reg);
+    if let Some(value) = static_regs
+        .get(source_reg as usize)
+        .and_then(|value| value.as_ref())
+        .and_then(ptr_list_i64_arg)
+    {
+        return Some(value);
+    }
+    let value = next_tmp(tmp_index);
+    ir.push_str(&format!("  {value} = load i64, ptr %r{source_reg}.slot\n"));
+    Some(value)
 }
 
 pub(super) fn emit_dynamic_f64_list_method_call(
@@ -1025,6 +1108,7 @@ fn emit_dynamic_i64_list_concat_static_rhs(
     lhs_id: usize,
     dst_id: usize,
     elements: &[ConstRuntimeValue32Data],
+    element_kind: NativeListElementKind,
     tmp_index: &mut usize,
 ) -> Option<()> {
     let rhs_values = format!("%list{dst_id}.static.rhs.value.slots");
@@ -1033,8 +1117,12 @@ fn emit_dynamic_i64_list_concat_static_rhs(
     ir.push_str(&format!("  {rhs_values} = alloca [4096 x i64]\n"));
     ir.push_str(&format!("  store i64 {}, ptr {rhs_len_slot}\n", elements.len()));
     for (index, element) in elements.iter().enumerate() {
-        let ConstRuntimeValue32Data::Int(value) = element else {
-            return None;
+        let value = match (element_kind, element) {
+            (NativeListElementKind::I64, ConstRuntimeValue32Data::Int(value)) => value.to_string(),
+            (NativeListElementKind::Bool, ConstRuntimeValue32Data::Bool(value)) => {
+                if *value { "1" } else { "0" }.to_string()
+            }
+            _ => return None,
         };
         let slot = next_tmp(tmp_index);
         ir.push_str(&format!(
@@ -1160,6 +1248,18 @@ fn list_elements_are_i64(elements: &[ConstRuntimeValue32Data]) -> bool {
         .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_)))
 }
 
+fn list_elements_match_i64_storage(elements: &[ConstRuntimeValue32Data], element: NativeListElementKind) -> bool {
+    match element {
+        NativeListElementKind::I64 => elements
+            .iter()
+            .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_))),
+        NativeListElementKind::Bool => elements
+            .iter()
+            .all(|value| matches!(value, ConstRuntimeValue32Data::Bool(_))),
+        _ => false,
+    }
+}
+
 fn emit_static_i64_list_concat_dynamic_rhs(
     ir: &mut String,
     lhs: &[ConstRuntimeValue32Data],
@@ -1232,132 +1332,4 @@ fn emit_static_i64_list_slots(
         "  {base} = getelementptr [4096 x i64], ptr {slots}, i64 0, i64 0\n"
     ));
     Some(base)
-}
-
-fn native_list_arg_element_kind(value: &NativeStraightlineValue) -> Option<NativeListElementKind> {
-    match value {
-        NativeStraightlineValue::DynamicList { element, .. } => Some(*element),
-        NativeStraightlineValue::List { elements, .. } => {
-            if elements
-                .iter()
-                .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_)))
-            {
-                Some(NativeListElementKind::I64)
-            } else if elements.iter().all(|value| match value {
-                ConstRuntimeValue32Data::ShortStr(_) => true,
-                ConstRuntimeValue32Data::Heap(value) => matches!(value.as_ref(), ConstHeapValue32Data::LongString(_)),
-                _ => false,
-            }) {
-                Some(NativeListElementKind::StrPtr)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-fn emit_native_list_call_arg(
-    ir: &mut String,
-    extra_globals: &mut String,
-    pc: usize,
-    arg_index: usize,
-    reg: u8,
-    arg: Option<NativeStraightlineValue>,
-    element: NativeListElementKind,
-    scalar_kind: Option<NativeScalarKind>,
-    tmp_index: &mut usize,
-) -> Option<NativeListCallArg> {
-    match arg {
-        Some(NativeStraightlineValue::DynamicList { id, element: actual }) if actual == element => {
-            let base = next_tmp(tmp_index);
-            let (slot_field, slot_type) = native_list_slot_parts(element);
-            ir.push_str(&format!(
-                "  {base} = getelementptr [4096 x {slot_type}], ptr %list{id}.{slot_field}.slots, i64 0, i64 0\n"
-            ));
-            Some(NativeListCallArg::List {
-                base,
-                len_slot: format!("%list{id}.len.slot"),
-            })
-        }
-        Some(NativeStraightlineValue::List { elements, .. }) if element == NativeListElementKind::I64 => {
-            let values_name = format!("%call{pc}.arg{arg_index}.value.slots");
-            let len_name = format!("%call{pc}.arg{arg_index}.len.slot");
-            ir.push_str(&format!("  {len_name} = alloca i64\n"));
-            ir.push_str(&format!("  {values_name} = alloca [4096 x i64]\n"));
-            ir.push_str(&format!("  store i64 {}, ptr {len_name}\n", elements.len()));
-            for (index, element) in elements.iter().enumerate() {
-                let ConstRuntimeValue32Data::Int(value) = element else {
-                    return None;
-                };
-                let slot = next_tmp(tmp_index);
-                ir.push_str(&format!(
-                    "  {slot} = getelementptr [4096 x i64], ptr {values_name}, i64 0, i64 {index}\n"
-                ));
-                ir.push_str(&format!("  store i64 {value}, ptr {slot}\n"));
-            }
-            let base = next_tmp(tmp_index);
-            ir.push_str(&format!(
-                "  {base} = getelementptr [4096 x i64], ptr {values_name}, i64 0, i64 0\n"
-            ));
-            Some(NativeListCallArg::List {
-                base,
-                len_slot: len_name,
-            })
-        }
-        Some(NativeStraightlineValue::List { elements, .. }) if element != NativeListElementKind::I64 => {
-            let values_name = format!("%call{pc}.arg{arg_index}.ptr.slots");
-            let len_name = format!("%call{pc}.arg{arg_index}.len.slot");
-            ir.push_str(&format!("  {len_name} = alloca i64\n"));
-            ir.push_str(&format!("  {values_name} = alloca [4096 x ptr]\n"));
-            ir.push_str(&format!("  store i64 {}, ptr {len_name}\n", elements.len()));
-            for (index, element) in elements.iter().enumerate() {
-                let symbol = static_string_element_symbol(extra_globals, pc, index, element)?;
-                let slot = next_tmp(tmp_index);
-                ir.push_str(&format!(
-                    "  {slot} = getelementptr [4096 x ptr], ptr {values_name}, i64 0, i64 {index}\n"
-                ));
-                ir.push_str(&format!("  store ptr {symbol}, ptr {slot}\n"));
-            }
-            let base = next_tmp(tmp_index);
-            ir.push_str(&format!(
-                "  {base} = getelementptr [4096 x ptr], ptr {values_name}, i64 0, i64 0\n"
-            ));
-            Some(NativeListCallArg::List {
-                base,
-                len_slot: len_name,
-            })
-        }
-        Some(NativeStraightlineValue::I64(value)) if element == NativeListElementKind::I64 => {
-            Some(NativeListCallArg::I64(value))
-        }
-        None | Some(_) if element == NativeListElementKind::I64 && scalar_kind == Some(NativeScalarKind::I64) => {
-            let value = next_tmp(tmp_index);
-            ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
-            Some(NativeListCallArg::I64(value))
-        }
-        _ => None,
-    }
-}
-
-fn emit_native_list_out_base(
-    ir: &mut String,
-    pc: usize,
-    element: NativeListElementKind,
-    tmp_index: &mut usize,
-) -> String {
-    let out_base = next_tmp(tmp_index);
-    let (slot_field, slot_type) = native_list_slot_parts(element);
-    ir.push_str(&format!(
-        "  {out_base} = getelementptr [4096 x {slot_type}], ptr %list{pc}.{slot_field}.slots, i64 0, i64 0\n"
-    ));
-    out_base
-}
-
-fn native_list_slot_parts(element: NativeListElementKind) -> (&'static str, &'static str) {
-    match element {
-        NativeListElementKind::I64 => ("value", "i64"),
-        NativeListElementKind::F64 => ("f64", "double"),
-        NativeListElementKind::Text | NativeListElementKind::StrPtr => ("ptr", "ptr"),
-    }
 }

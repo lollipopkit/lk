@@ -166,7 +166,7 @@ impl Program {
     }
 
     pub fn execute32(&self) -> Result<crate::vm::Program32Result> {
-        let mut ctx = VmContext::new_without_core_vm_builtins();
+        let mut ctx = VmContext::new();
         self.execute32_with_ctx(&mut ctx)
     }
 

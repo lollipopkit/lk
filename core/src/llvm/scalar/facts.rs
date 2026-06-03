@@ -40,11 +40,8 @@ pub(in crate::llvm) use entry::native_scalar_block_facts_with_statics_and_functi
 use list_push::propagate_list_push;
 use list_returns::dynamic_list_return_value;
 use map_methods::*;
-use returns::{
-    native_direct_call_return_kind, native_named_call_args, native_static_function_return_kind, static_call_target,
-    static_global,
-};
-use slots::{native_global_kind, set_native_global_kind, set_native_kind, set_static_global, set_static_value};
+use returns::*;
+use slots::*;
 pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
     register_count: usize,
     global_count: usize,
@@ -894,7 +891,11 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     values.iter().any(|value| {
                         matches!(
                             value,
-                            Some(NativeStraightlineValue::List { .. } | NativeStraightlineValue::DynamicList { .. })
+                            Some(
+                                NativeStraightlineValue::List { .. }
+                                    | NativeStraightlineValue::DynamicList { .. }
+                                    | NativeStraightlineValue::DynamicMap { .. }
+                            )
                         )
                     })
                 }) {
@@ -1007,23 +1008,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 }
                 let start = instr.b() as usize + 1;
                 let end = start.checked_add(instr.c() as usize)?;
-                if let Some(ok) = propagate_dynamic_map_set_call(&mut kinds, &mut static_values, instr, &target, start)
-                {
-                    if !ok {
-                        return None;
-                    }
-                    continue;
-                }
-                if let Some(ok) =
-                    propagate_dynamic_map_values_call(&mut kinds, &mut static_values, instr, pc, &target, start)
-                {
-                    if !ok {
-                        return None;
-                    }
-                    continue;
-                }
-                if let Some(ok) =
-                    propagate_dynamic_map_keys_call(&mut kinds, &mut static_values, instr, pc, &target, start)
+                if let Some(ok) = propagate_dynamic_map_call(&mut kinds, &mut static_values, instr, pc, &target, start)
                 {
                     if !ok {
                         return None;
@@ -1033,6 +1018,21 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 if let Some(ok) =
                     propagate_dynamic_ptr_list_builtin_call(&mut kinds, &mut static_values, instr, pc, &target, start)
                 {
+                    if !ok {
+                        return None;
+                    }
+                    continue;
+                }
+                if let Some(ok) = propagate_dynamic_i64_list_builtin_call(
+                    &mut kinds,
+                    &mut static_values,
+                    code,
+                    heap_values,
+                    instr,
+                    pc,
+                    &target,
+                    start,
+                ) {
                     if !ok {
                         return None;
                     }
@@ -1115,6 +1115,12 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                             })
                     {
                         if !ok {
+                            return None;
+                        }
+                        continue;
+                    }
+                    if let Some(kind) = dynamic_map_get_method_kind(&args_vec) {
+                        if !set_native_kind(&mut kinds, &mut static_values, instr.a(), kind) {
                             return None;
                         }
                         continue;
@@ -1477,10 +1483,4 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
         registers_before,
         globals_before,
     })
-}
-fn native_kind(kinds: &[Option<NativeScalarKind>], reg: u8) -> Option<NativeScalarKind> {
-    kinds.get(reg as usize).copied().flatten()
-}
-fn static_kind(values: &[Option<NativeStraightlineValue>], reg: u8) -> Option<NativeStraightlineValue> {
-    values.get(reg as usize).cloned().flatten()
 }

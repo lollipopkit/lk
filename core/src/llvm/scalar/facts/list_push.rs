@@ -1,6 +1,6 @@
 use crate::{
     llvm::straightline_value::{NativeListElementKind, NativeStraightlineValue, native_static_list_push},
-    vm::Instr32,
+    vm::{ConstRuntimeValue32Data, Instr32},
 };
 
 use super::{
@@ -51,6 +51,18 @@ pub(super) fn propagate_list_push(
                     NativeStraightlineValue::DynamicList {
                         id,
                         element: NativeListElementKind::F64,
+                    },
+                )
+                .then_some(())
+            } else if native_kind(kinds, instr.b()) == Some(NativeScalarKind::Bool) {
+                set_static_value(
+                    kinds,
+                    static_values,
+                    instr.a(),
+                    Some(NativeScalarKind::I64),
+                    NativeStraightlineValue::DynamicList {
+                        id,
+                        element: NativeListElementKind::Bool,
                     },
                 )
                 .then_some(())
@@ -117,6 +129,21 @@ pub(super) fn propagate_list_push(
                 NativeStraightlineValue::DynamicList {
                     id,
                     element: NativeListElementKind::F64,
+                },
+            ))
+        .then_some(()),
+        NativeStraightlineValue::DynamicList {
+            id,
+            element: NativeListElementKind::Bool,
+        } => (native_kind(kinds, instr.b()) == Some(NativeScalarKind::Bool)
+            && set_static_value(
+                kinds,
+                static_values,
+                instr.a(),
+                Some(NativeScalarKind::I64),
+                NativeStraightlineValue::DynamicList {
+                    id,
+                    element: NativeListElementKind::Bool,
                 },
             ))
         .then_some(()),
@@ -190,24 +217,58 @@ fn static_value(values: &[Option<NativeStraightlineValue>], reg: u8) -> Option<N
 fn dynamic_pair_list_kinds(
     value: Option<&NativeStraightlineValue>,
 ) -> Option<(NativeListElementKind, NativeListElementKind)> {
-    let NativeStraightlineValue::ArgList { elements } = value? else {
-        return None;
+    let (first, second) = match value? {
+        NativeStraightlineValue::ArgList { elements } => {
+            let [first, second] = elements.as_slice() else {
+                return None;
+            };
+            (dynamic_pair_field_kind(first)?, dynamic_pair_field_kind(second)?)
+        }
+        NativeStraightlineValue::List { elements, .. } => {
+            let [first, second] = elements.as_slice() else {
+                return None;
+            };
+            (
+                dynamic_pair_const_field_kind(first)?,
+                dynamic_pair_const_field_kind(second)?,
+            )
+        }
+        _ => return None,
     };
-    let [first, second] = elements.as_slice() else {
-        return None;
-    };
-    let first = dynamic_pair_field_kind(first)?;
-    let second = dynamic_pair_field_kind(second)?;
-    matches!(first, NativeListElementKind::StrPtr).then_some((first, second))
+    dynamic_pair_fields_have_distinct_storage(first, second).then_some((first, second))
 }
 
 fn dynamic_pair_field_kind(value: &NativeStraightlineValue) -> Option<NativeListElementKind> {
     match value {
-        NativeStraightlineValue::I64(_) | NativeStraightlineValue::Bool(_) => Some(NativeListElementKind::I64),
+        NativeStraightlineValue::I64(_) => Some(NativeListElementKind::I64),
+        NativeStraightlineValue::Bool(_) => Some(NativeListElementKind::Bool),
         NativeStraightlineValue::F64(_) => Some(NativeListElementKind::F64),
         NativeStraightlineValue::String { .. } | NativeStraightlineValue::StringPtr(_) => {
             Some(NativeListElementKind::StrPtr)
         }
         _ => None,
+    }
+}
+
+fn dynamic_pair_const_field_kind(value: &ConstRuntimeValue32Data) -> Option<NativeListElementKind> {
+    match value {
+        ConstRuntimeValue32Data::Int(_) => Some(NativeListElementKind::I64),
+        ConstRuntimeValue32Data::Bool(_) => Some(NativeListElementKind::Bool),
+        ConstRuntimeValue32Data::Float(_) => Some(NativeListElementKind::F64),
+        _ => None,
+    }
+}
+
+fn dynamic_pair_fields_have_distinct_storage(first: NativeListElementKind, second: NativeListElementKind) -> bool {
+    match (first, second) {
+        (
+            NativeListElementKind::StrPtr,
+            NativeListElementKind::I64 | NativeListElementKind::Bool | NativeListElementKind::F64,
+        )
+        | (NativeListElementKind::I64 | NativeListElementKind::Bool, NativeListElementKind::F64)
+        | (NativeListElementKind::F64, NativeListElementKind::I64 | NativeListElementKind::Bool)
+        | (NativeListElementKind::F64, NativeListElementKind::StrPtr)
+        | (NativeListElementKind::I64 | NativeListElementKind::Bool, NativeListElementKind::StrPtr) => true,
+        _ => false,
     }
 }

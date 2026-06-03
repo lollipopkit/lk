@@ -1277,7 +1277,10 @@ fn emit_native_print_value(body: &mut String, value: &NativeStraightlineValue, l
         NativeStraightlineValue::I64(value) => {
             body.push_str(&format!("  call i32 (ptr, ...) @printf(ptr {i64_fmt}, i64 {value})\n"))
         }
-        NativeStraightlineValue::MaybeI64 { .. } => return None,
+        NativeStraightlineValue::MaybeI64 { .. }
+        | NativeStraightlineValue::MaybeF64 { .. }
+        | NativeStraightlineValue::MaybeBool { .. }
+        | NativeStraightlineValue::MaybeStrPtr { .. } => return None,
         NativeStraightlineValue::F64(value) => {
             if let Ok(parsed) = value.parse::<f64>() {
                 let display = native_float_display(parsed);

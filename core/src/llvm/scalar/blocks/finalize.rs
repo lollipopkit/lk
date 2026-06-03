@@ -2,8 +2,8 @@ use crate::vm::Module32Artifact;
 
 use crate::llvm::{
     dynamic_containers::{
-        native_dynamic_container_helpers, native_dynamic_f64_list_helpers, native_dynamic_i64_map_helpers,
-        native_dynamic_ptr_list_helpers,
+        native_dynamic_container_helpers, native_dynamic_f64_list_helpers, native_dynamic_i64_list_helpers,
+        native_dynamic_i64_map_helpers, native_dynamic_ptr_list_helpers,
     },
     scalar::subfunctions::prepend_subfunctions,
 };
@@ -23,6 +23,7 @@ pub(super) fn finish_scalar_ir(
     ir.push_str("  ret i32 1\n");
     ir.push_str("}\n");
     ir.push_str(native_dynamic_container_helpers());
+    ir.push_str(native_dynamic_i64_list_helpers());
     ir.push_str(native_dynamic_f64_list_helpers());
     ir.push_str(native_dynamic_i64_map_helpers());
     ir.push_str(native_dynamic_ptr_list_helpers());

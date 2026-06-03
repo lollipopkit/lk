@@ -53,6 +53,348 @@ fn llvm_backend_lowers_static_parse_result_method_call_with_recovered_key_withou
 }
 
 #[test]
+fn llvm_backend_lowers_dynamic_bool_list_module_methods_without_artifact_shell() {
+    let source = r#"
+        import list;
+        let xs = [];
+        for n in [1, 2, 3] {
+            xs = xs.push(n > 1);
+        }
+        return [list.contains(xs, true), list.index_of(xs, true), list.reverse(xs), list.sort(xs), list.pop(xs), xs.concat([false])];
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module =
+        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "list"])
+            .expect("compile module");
+    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_contains_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_index_of_i64_list"));
+    assert!(artifact.module.ir.contains("call void @lk_reverse_i64_list"));
+    assert!(artifact.module.ir.contains("call void @lk_sort_i64_list"));
+    assert!(artifact.module.ir.contains("call void @lk_concat_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_pop_i64_list"));
+    assert!(artifact.module.ir.contains("ret.arg.list."));
+}
+
+#[test]
+fn llvm_backend_lowers_dynamic_bool_list_module_mutators_without_artifact_shell() {
+    let source = r#"
+        import list;
+        let xs = [];
+        for n in [1, 2, 3] {
+            xs = xs.push(n > 1);
+        }
+        return [
+            list.push(xs, false),
+            list.slice(xs, 1, 3),
+            list.insert(xs, 1, false),
+            list.remove_at(xs, 1),
+            list.set(xs, 1, false)
+        ];
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module =
+        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "list"])
+            .expect("compile module");
+    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_push_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_slice_range_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_insert_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_remove_at_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_set_i64_list"));
+}
+
+#[test]
+fn llvm_backend_lowers_dynamic_i64_string_map_has_delete_without_artifact_shell() {
+    let source = r#"
+        import map;
+        let names = {};
+        for n in [1, 2] {
+            names = map.set(names, n, "v${n}");
+        }
+        let removed = map.delete(names, 1);
+        let without = removed[0];
+        return [map.has(names, 1), map.has(names, 3), removed[1], map.has(without, 1), map.values(without), without];
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module = Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "map"])
+        .expect("compile module");
+    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_set_i64_ptr_map"));
+    assert!(artifact.module.ir.contains("lk.delete.i64.map."));
+    assert!(artifact.module.ir.contains("lk.has.i64.map."));
+    assert!(artifact.module.ir.contains("ret.arg.map."));
+}
+
+#[test]
+fn llvm_backend_lowers_dynamic_i64_map_has_delete_without_artifact_shell() {
+    for source in [
+        r#"
+            import map;
+            let counts = {};
+            for n in [1, 2] {
+                counts = map.set(counts, n, n * 10);
+            }
+            let removed = map.delete(counts, 1);
+            let without = removed[0];
+            let old = removed[1];
+            return [map.has(counts, 1), map.has(without, 1), old, map.get(without, 1), map.values(without), without];
+        "#,
+        r#"
+            import map;
+            let weights = {};
+            for n in [1, 2] {
+                weights = map.set(weights, n, n + 0.5);
+            }
+            let removed = map.delete(weights, 1);
+            let without = removed[0];
+            let old = removed[1];
+            return [map.has(weights, 1), map.has(without, 1), old, map.get(without, 1), map.values(without), without];
+        "#,
+        r#"
+            import map;
+            let flags = {};
+            for n in [1, 2] {
+                flags = map.set(flags, n, n == 2);
+            }
+            let removed = map.delete(flags, 1);
+            let without = removed[0];
+            let old = removed[1];
+            return [map.has(flags, 1), map.has(without, 1), old, map.get(without, 1), map.values(without), without];
+        "#,
+    ] {
+        let tokens = Tokenizer::tokenize(&source).expect("tokens");
+        let program = StmtParser::new(&tokens).parse_program().expect("program");
+        let module =
+            Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "map"])
+                .expect("compile module");
+        let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+        let artifact =
+            compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+
+        assert!(!artifact.module.ir.contains("@lk_module32_json"));
+        assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+        assert!(artifact.module.ir.contains("lk.delete.i64.map."));
+        assert!(artifact.module.ir.contains("lk.has.i64.map."));
+        assert!(artifact.module.ir.contains("ret.arg.map."));
+        assert!(artifact.module.ir.contains("nil"));
+    }
+}
+
+#[test]
+fn llvm_backend_lowers_dynamic_string_map_has_delete_without_artifact_shell() {
+    for source in [
+        r#"
+            import map;
+            let weights = {};
+            for n in [1, 2] {
+                weights = map.set(weights, "k${n}", n + 0.5);
+            }
+            let removed = map.delete(weights, "k1");
+            let without = removed[0];
+            return [map.has(weights, "k1"), map.has(weights, "k3"), removed[1], map.has(without, "k1"), map.values(without), without];
+        "#,
+        r#"
+            import map;
+            let flags = {};
+            for n in [1, 2] {
+                flags = map.set(flags, "k${n}", n > 1);
+            }
+            let removed = map.delete(flags, "k1");
+            let without = removed[0];
+            return [map.has(flags, "k1"), map.has(flags, "k3"), removed[1], map.has(without, "k1"), map.values(without), without];
+        "#,
+        r#"
+            import map;
+            let names = {};
+            for n in [1, 2] {
+                names = map.set(names, "k${n}", "v${n}");
+            }
+            let removed = map.delete(names, "k1");
+            let without = removed[0];
+            return [map.has(names, "k1"), map.has(names, "k3"), names["k2"], removed[1], map.has(without, "k1"), map.values(without), without];
+        "#,
+    ] {
+        let tokens = Tokenizer::tokenize(&source).expect("tokens");
+        let program = StmtParser::new(&tokens).parse_program().expect("program");
+        let module =
+            Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "map"])
+                .expect("compile module");
+        let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+        let artifact =
+            compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+
+        assert!(!artifact.module.ir.contains("@lk_module32_json"));
+        assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+        assert!(artifact.module.ir.contains("lk.delete.string.map."));
+        assert!(artifact.module.ir.contains("lk.has.string.map."));
+        assert!(artifact.module.ir.contains("ret.arg.map."));
+    }
+}
+
+#[test]
+fn llvm_backend_lowers_dynamic_string_map_receiver_get_missing_without_artifact_shell() {
+    for (source, maybe_nil_label) in [
+        (
+            r#"
+                import map;
+                let weights = {};
+                for n in [1, 2] {
+                    weights = map.set(weights, "k${n}", n + 0.5);
+                }
+                let removed = map.delete(weights, "k1");
+                let without = removed[0];
+                return [without.get("k1")];
+            "#,
+            "lk_block_return_maybe_f64_nil",
+        ),
+        (
+            r#"
+                import map;
+                let flags = {};
+                for n in [1, 2] {
+                    flags = map.set(flags, "k${n}", n > 1);
+                }
+                let removed = map.delete(flags, "k1");
+                let without = removed[0];
+                return [without.get("k1")];
+            "#,
+            "lk_block_return_maybe_bool_nil",
+        ),
+    ] {
+        let tokens = Tokenizer::tokenize(source).expect("tokens");
+        let program = StmtParser::new(&tokens).parse_program().expect("program");
+        let module =
+            Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "map"])
+                .expect("compile module");
+        let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+        let artifact =
+            compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+
+        assert!(!artifact.module.ir.contains("@lk_module32_json"));
+        assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+        assert!(artifact.module.ir.contains(maybe_nil_label), "{}", artifact.module.ir);
+    }
+}
+
+#[test]
+fn llvm_backend_lowers_dynamic_string_string_map_missing_get_without_artifact_shell() {
+    for expr in ["map.get(without, \"k1\")", "without[\"k1\"]", "without.get(\"k1\")"] {
+        let source = dynamic_string_string_map_missing_get_source(expr);
+        let tokens = Tokenizer::tokenize(&source).expect("tokens");
+        let program = StmtParser::new(&tokens).parse_program().expect("program");
+        let module =
+            Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "map"])
+                .expect("compile module");
+        let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+        let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default())
+            .unwrap_or_else(|err| panic!("{expr}: {err}"));
+
+        assert!(!artifact.module.ir.contains("@lk_module32_json"));
+        assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+        assert!(artifact.module.ir.contains("lk_block_return_maybe_str_nil"));
+    }
+}
+
+fn dynamic_string_string_map_missing_get_source(expr: &str) -> String {
+    format!(
+        r#"
+            import map;
+            let names = {{}};
+            for n in [1, 2] {{
+                names = map.set(names, "k${{n}}", "v${{n}}");
+            }}
+            let removed = map.delete(names, "k1");
+            let without = removed[0];
+            return [{expr}];
+        "#
+    )
+}
+
+#[test]
+fn llvm_backend_lowers_dynamic_i64_list_module_methods_without_artifact_shell() {
+    let source = r#"
+        import list;
+        let xs = [];
+        for n in [1, 2, 3] {
+            xs = xs.push(n * 2);
+        }
+        return [list.contains(xs, 4), list.index_of(xs, 6), list.reverse(xs), list.pop(xs)];
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module =
+        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "list"])
+            .expect("compile module");
+    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_contains_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_index_of_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_reverse_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_pop_i64_list"));
+}
+
+#[test]
+fn llvm_backend_lowers_dynamic_i64_list_module_mutators_without_artifact_shell() {
+    let source = r#"
+        import list;
+        let xs = [];
+        for n in [1, 2, 3] {
+            xs = xs.push(n * 2);
+        }
+        return [
+            list.push(xs, 8),
+            list.slice(xs, 1, 3),
+            list.insert(xs, 1, 9),
+            list.remove_at(xs, 1),
+            list.set(xs, 1, 7)
+        ];
+    "#;
+    let tokens = Tokenizer::tokenize(source).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module =
+        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "list"])
+            .expect("compile module");
+    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
+
+    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module32_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(artifact.module.ir.contains("@lk_push_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_slice_range_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_insert_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_remove_at_i64_list"));
+    assert!(artifact.module.ir.contains("@lk_set_i64_list"));
+}
+
+#[test]
 fn llvm_backend_lowers_block_static_module_return_display_without_artifact_shell() {
     let tokens = Tokenizer::tokenize("if 1 { return iter; }\nreturn nil;").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");

@@ -11,8 +11,11 @@ mod control;
 mod finalize;
 mod get_index;
 mod globals;
+mod i64_list_methods;
 mod iter;
 mod len;
+mod list_builtin_dispatch;
+mod list_direct_calls;
 mod list_methods;
 mod list_push;
 mod map_methods;
@@ -41,14 +44,16 @@ use self::{
     globals::{emit_get_global_block, emit_set_global_block},
     iter::emit_to_iter_block,
     len::emit_len_block,
+    list_builtin_dispatch::{emit_dynamic_list_builtin_call_block, emit_dynamic_list_builtin_call_from_regs_block},
+    list_direct_calls::emit_list_direct_call,
     list_methods::{
-        emit_dynamic_f64_list_builtin_call, emit_dynamic_f64_list_builtin_call_from_regs,
-        emit_dynamic_list_method_call_block, emit_dynamic_ptr_list_builtin_call,
-        emit_dynamic_ptr_list_builtin_call_from_regs, emit_list_direct_call, emit_static_i64_list_zip_arglist_call,
-        function_has_list_return_shape,
+        emit_dynamic_list_method_call_block, emit_static_i64_list_zip_arglist_call, function_has_list_return_shape,
     },
     list_push::emit_list_push_block,
-    map_methods::{emit_dynamic_map_keys_call, emit_dynamic_map_set_call, emit_dynamic_map_values_call},
+    map_methods::{
+        emit_dynamic_map_delete_call, emit_dynamic_map_get_call, emit_dynamic_map_get_method_call,
+        emit_dynamic_map_has_call, emit_dynamic_map_keys_call, emit_dynamic_map_set_call, emit_dynamic_map_values_call,
+    },
     not::emit_not_block,
     object_methods::{static_circle_pi_area_method, static_object_list_map_method},
     returns::emit_return_block,
@@ -77,15 +82,13 @@ use super::{
 use crate::llvm::{
     callee_eval::native_straightline_function_return,
     const_display::llvm_string_constant,
-    dynamic_containers::emit_dynamic_string_int_map_get,
     ir_text::{emit_branch_to_next, native_label, native_relative_target, next_tmp, reg_in_bounds},
     map_mutate::native_static_map_mutate,
     options::LlvmBackendOptions,
     output::{emit_native_builtin_call, emit_native_dynamic_int_list_get_method},
     straightline_value::{
         NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
-        native_const_runtime_value, native_static_list_join, native_static_string_split,
-        native_straightline_heap_const_value,
+        native_static_list_join, native_static_string_split, native_straightline_heap_const_value,
     },
     subfunction::compile_native_scalar_subfunction,
 };
@@ -104,13 +107,6 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
     facts: &NativeScalarFacts,
     recursive_indices: &[u16],
 ) -> anyhow::Result<Option<String>> {
-    macro_rules! trace_unsupported {
-        ($pc:expr, $instr:expr) => {
-            if std::env::var_os("LK_LLVM_TRACE_UNSUPPORTED").is_some() {
-                eprintln!("unsupported scalar block pc {}: {:?}", $pc, $instr.opcode());
-            }
-        };
-    }
     let Some(mut ir) = emit_scalar_entry_allocas(artifact, options, register_count, global_count, heap_values, code)
     else {
         return Ok(None);
@@ -244,7 +240,6 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     facts,
                     &mut tmp_index,
                 ) {
-                    trace_unsupported!(pc, instr);
                     return Ok(None);
                 }
             }
@@ -753,7 +748,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     emit_branch_to_next(&mut ir, pc, code.len());
                     continue;
                 }
-                if emit_dynamic_ptr_list_builtin_call_from_regs(
+                if emit_dynamic_list_builtin_call_from_regs_block(
                     &mut ir,
                     &mut extra_globals,
                     &mut static_regs,
@@ -761,25 +756,11 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     builtin,
                     facts,
                     pc,
+                    code,
+                    heap_values,
+                    code.len(),
                     &mut tmp_index,
-                )
-                .is_some()
-                {
-                    emit_branch_to_next(&mut ir, pc, code.len());
-                    continue;
-                }
-                if emit_dynamic_f64_list_builtin_call_from_regs(
-                    &mut ir,
-                    &mut static_regs,
-                    instr,
-                    builtin,
-                    facts,
-                    pc,
-                    &mut tmp_index,
-                )
-                .is_some()
-                {
-                    emit_branch_to_next(&mut ir, pc, code.len());
+                ) {
                     continue;
                 }
                 if let Some(mut args) = static_or_recovered_call_args(
@@ -804,33 +785,19 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     ) {
                         continue;
                     }
-                    if emit_dynamic_ptr_list_builtin_call(
+                    if emit_dynamic_list_builtin_call_block(
                         &mut ir,
                         &mut extra_globals,
                         &mut static_regs,
                         instr,
                         pc,
+                        code,
+                        heap_values,
+                        code.len(),
                         builtin,
                         &args,
                         &mut tmp_index,
-                    )
-                    .is_some()
-                    {
-                        emit_branch_to_next(&mut ir, pc, code.len());
-                        continue;
-                    }
-                    if emit_dynamic_f64_list_builtin_call(
-                        &mut ir,
-                        &mut static_regs,
-                        instr,
-                        pc,
-                        builtin,
-                        &args,
-                        &mut tmp_index,
-                    )
-                    .is_some()
-                    {
-                        emit_branch_to_next(&mut ir, pc, code.len());
+                    ) {
                         continue;
                     }
                     for (offset, arg) in args.iter_mut().enumerate() {
@@ -973,62 +940,17 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                         emit_branch_to_next(&mut ir, pc, code.len());
                         continue;
                     }
-                    if let [
-                        NativeStraightlineValue::DynamicMap {
-                            id,
-                            key: NativeMapKeyKind::Str,
-                            value: NativeMapValueKind::I64,
-                        },
-                        NativeStraightlineValue::String { value: method, .. },
-                        NativeStraightlineValue::List { elements, .. },
-                    ] = args.as_slice()
-                        && method == "get"
-                        && elements.len() == 1
+                    if emit_dynamic_map_get_method_call(
+                        &mut ir,
+                        &mut extra_globals,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
                     {
-                        let Some(key) = native_const_runtime_value(&elements[0], String::new()) else {
-                            return Ok(None);
-                        };
-                        if emit_dynamic_string_int_map_get(
-                            &mut ir,
-                            &mut extra_globals,
-                            *id,
-                            instr.a(),
-                            key,
-                            &mut tmp_index,
-                        )
-                        .is_none()
-                        {
-                            return Ok(None);
-                        }
-                        static_regs[instr.a() as usize] = None;
-                        emit_branch_to_next(&mut ir, pc, code.len());
-                        continue;
-                    }
-                    if let [
-                        NativeStraightlineValue::DynamicMap {
-                            id,
-                            key: NativeMapKeyKind::Str,
-                            value: NativeMapValueKind::I64,
-                        },
-                        NativeStraightlineValue::String { value: method, .. },
-                        NativeStraightlineValue::ArgList { elements },
-                    ] = args.as_slice()
-                        && method == "get"
-                        && elements.len() == 1
-                    {
-                        if emit_dynamic_string_int_map_get(
-                            &mut ir,
-                            &mut extra_globals,
-                            *id,
-                            instr.a(),
-                            elements[0].clone(),
-                            &mut tmp_index,
-                        )
-                        .is_none()
-                        {
-                            return Ok(None);
-                        }
-                        static_regs[instr.a() as usize] = None;
                         emit_branch_to_next(&mut ir, pc, code.len());
                         continue;
                     }
@@ -1081,6 +1003,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                         &mut extra_globals,
                         &mut static_regs,
                         instr,
+                        pc,
                         builtin,
                         &args,
                         &mut tmp_index,
@@ -1092,6 +1015,51 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     }
                     if emit_dynamic_map_values_call(
                         &mut ir,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
+                    if emit_dynamic_map_get_call(
+                        &mut ir,
+                        &mut extra_globals,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
+                    if emit_dynamic_map_has_call(
+                        &mut ir,
+                        &mut extra_globals,
+                        &mut static_regs,
+                        instr,
+                        pc,
+                        builtin,
+                        &args,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                    {
+                        emit_branch_to_next(&mut ir, pc, code.len());
+                        continue;
+                    }
+                    if emit_dynamic_map_delete_call(
+                        &mut ir,
+                        &mut extra_globals,
                         &mut static_regs,
                         instr,
                         pc,
@@ -1119,33 +1087,19 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                         emit_branch_to_next(&mut ir, pc, code.len());
                         continue;
                     }
-                    if emit_dynamic_ptr_list_builtin_call(
+                    if emit_dynamic_list_builtin_call_block(
                         &mut ir,
                         &mut extra_globals,
                         &mut static_regs,
                         instr,
                         pc,
+                        code,
+                        heap_values,
+                        code.len(),
                         builtin,
                         &args,
                         &mut tmp_index,
-                    )
-                    .is_some()
-                    {
-                        emit_branch_to_next(&mut ir, pc, code.len());
-                        continue;
-                    }
-                    if emit_dynamic_f64_list_builtin_call(
-                        &mut ir,
-                        &mut static_regs,
-                        instr,
-                        pc,
-                        builtin,
-                        &args,
-                        &mut tmp_index,
-                    )
-                    .is_some()
-                    {
-                        emit_branch_to_next(&mut ir, pc, code.len());
+                    ) {
                         continue;
                     }
                     let value = if let Some(value) = static_iter_builtin_call(
@@ -1224,7 +1178,6 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                         register_count,
                         &mut tmp_index,
                     ) {
-                        trace_unsupported!(pc, instr);
                         return Ok(None);
                     }
                 }
@@ -1246,7 +1199,6 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 )
                 .is_none()
                 {
-                    trace_unsupported!(pc, instr);
                     return Ok(None);
                 }
                 emit_branch_to_next(&mut ir, pc, code.len());

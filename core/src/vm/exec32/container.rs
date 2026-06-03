@@ -1173,7 +1173,7 @@ impl Executor32 {
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
-                HeapValue::String(value) => Ok(RuntimeMapKey::String(value.clone())),
+                HeapValue::String(value) => Ok(runtime_map_string_key(value.clone())),
                 other => bail!("object cannot be used as map key: {:?}", heap_kind(other)),
             },
             RuntimeVal::Float(_) => bail!("Float cannot be used as RuntimeMapKey"),

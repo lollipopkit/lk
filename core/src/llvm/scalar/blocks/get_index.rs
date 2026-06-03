@@ -2,10 +2,13 @@ use crate::{
     llvm::{
         const_display::llvm_string_constant,
         dynamic_containers::{
-            emit_dynamic_f64_list_get, emit_dynamic_i64_int_map_get, emit_dynamic_i64_int_map_iter_key,
-            emit_dynamic_i64_int_map_iter_value, emit_dynamic_int_list_get, emit_dynamic_ptr_list_get,
-            emit_dynamic_string_f64_map_get, emit_dynamic_string_f64_map_iter_value, emit_dynamic_string_int_map_get,
-            emit_dynamic_string_int_map_iter_key, emit_dynamic_string_int_map_iter_value,
+            emit_dynamic_f64_list_get, emit_dynamic_i64_f64_map_get, emit_dynamic_i64_f64_map_iter_value,
+            emit_dynamic_i64_int_map_get, emit_dynamic_i64_int_map_iter_key, emit_dynamic_i64_int_map_iter_value,
+            emit_dynamic_i64_ptr_map_get, emit_dynamic_i64_ptr_map_iter_value, emit_dynamic_int_list_get,
+            emit_dynamic_ptr_list_get, emit_dynamic_string_f64_map_get, emit_dynamic_string_f64_map_iter_value,
+            emit_dynamic_string_int_map_get, emit_dynamic_string_int_map_iter_key,
+            emit_dynamic_string_int_map_iter_value, emit_dynamic_string_ptr_map_get,
+            emit_dynamic_string_ptr_map_iter_value,
         },
         ir_text::{emit_branch_to_next, native_relative_target, next_tmp},
         scalar::{
@@ -348,6 +351,22 @@ fn emit_get_index_target(
     }
     if let NativeStraightlineValue::DynamicList {
         id,
+        element: NativeListElementKind::Bool,
+    } = target
+    {
+        let index_kind = facts
+            .register_kind_before(pc, instr.c())
+            .or_else(|| local_register_kind_before(code, pc, instr.c()));
+        if index_kind != Some(NativeScalarKind::I64)
+            || emit_dynamic_int_list_get(ir, id, instr.a(), instr.c(), tmp_index).is_none()
+        {
+            return false;
+        }
+        static_regs[instr.a() as usize] = None;
+        return true;
+    }
+    if let NativeStraightlineValue::DynamicList {
+        id,
         element: NativeListElementKind::StrPtr | NativeListElementKind::Text,
     } = target
     {
@@ -431,14 +450,45 @@ fn emit_get_index_target(
                             }
                         }
                     },
-                    NativeMapValueKind::F64 => {
-                        if key != NativeMapKeyKind::Str {
-                            return false;
+                    NativeMapValueKind::Bool => match key {
+                        NativeMapKeyKind::Str => {
+                            if emit_dynamic_string_int_map_iter_value(ir, id, instr.a(), index_reg, tmp_index).is_none()
+                            {
+                                return false;
+                            }
                         }
-                        if emit_dynamic_string_f64_map_iter_value(ir, id, instr.a(), index_reg, tmp_index).is_none() {
-                            return false;
+                        NativeMapKeyKind::I64 => {
+                            if emit_dynamic_i64_int_map_iter_value(ir, id, instr.a(), index_reg, tmp_index).is_none() {
+                                return false;
+                            }
                         }
-                    }
+                    },
+                    NativeMapValueKind::F64 => match key {
+                        NativeMapKeyKind::Str => {
+                            if emit_dynamic_string_f64_map_iter_value(ir, id, instr.a(), index_reg, tmp_index).is_none()
+                            {
+                                return false;
+                            }
+                        }
+                        NativeMapKeyKind::I64 => {
+                            if emit_dynamic_i64_f64_map_iter_value(ir, id, instr.a(), index_reg, tmp_index).is_none() {
+                                return false;
+                            }
+                        }
+                    },
+                    NativeMapValueKind::StrPtr => match key {
+                        NativeMapKeyKind::Str => {
+                            if emit_dynamic_string_ptr_map_iter_value(ir, id, instr.a(), index_reg, tmp_index).is_none()
+                            {
+                                return false;
+                            }
+                        }
+                        NativeMapKeyKind::I64 => {
+                            if emit_dynamic_i64_ptr_map_iter_value(ir, id, instr.a(), index_reg, tmp_index).is_none() {
+                                return false;
+                            }
+                        }
+                    },
                 }
                 static_regs[instr.a() as usize] = None;
             }
@@ -458,7 +508,11 @@ fn emit_get_index_target(
         if emit_dynamic_string_int_map_get(ir, extra_globals, id, instr.a(), key, tmp_index).is_none() {
             return false;
         }
-        static_regs[instr.a() as usize] = None;
+        let value = next_tmp(tmp_index);
+        let present = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  {present} = load i64, ptr %r{}.present.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::MaybeI64 { value, present });
         return true;
     }
     if let NativeStraightlineValue::DynamicMap {
@@ -476,7 +530,96 @@ fn emit_get_index_target(
         if emit_dynamic_i64_int_map_get(ir, id, instr.a(), instr.c(), tmp_index).is_none() {
             return false;
         }
-        static_regs[instr.a() as usize] = None;
+        let value = next_tmp(tmp_index);
+        let present = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  {present} = load i64, ptr %r{}.present.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::MaybeI64 { value, present });
+        return true;
+    }
+    if let NativeStraightlineValue::DynamicMap {
+        id,
+        key: NativeMapKeyKind::I64,
+        value: NativeMapValueKind::Bool,
+    } = target
+    {
+        let key_kind = facts
+            .register_kind_before(pc, instr.c())
+            .or_else(|| local_register_kind_before(code, pc, instr.c()));
+        if !matches!(key_kind, Some(NativeScalarKind::I64 | NativeScalarKind::MaybeI64)) {
+            return false;
+        }
+        if emit_dynamic_i64_int_map_get(ir, id, instr.a(), instr.c(), tmp_index).is_none() {
+            return false;
+        }
+        let value = next_tmp(tmp_index);
+        let present = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  {present} = load i64, ptr %r{}.present.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::MaybeBool { value, present });
+        return true;
+    }
+    if let NativeStraightlineValue::DynamicMap {
+        id,
+        key: NativeMapKeyKind::I64,
+        value: NativeMapValueKind::F64,
+    } = target
+    {
+        let key_kind = facts
+            .register_kind_before(pc, instr.c())
+            .or_else(|| local_register_kind_before(code, pc, instr.c()));
+        if !matches!(key_kind, Some(NativeScalarKind::I64 | NativeScalarKind::MaybeI64)) {
+            return false;
+        }
+        if emit_dynamic_i64_f64_map_get(ir, id, instr.a(), instr.c(), tmp_index).is_none() {
+            return false;
+        }
+        let value = next_tmp(tmp_index);
+        let present = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load double, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  {present} = load i64, ptr %r{}.present.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::MaybeF64 { value, present });
+        return true;
+    }
+    if let NativeStraightlineValue::DynamicMap {
+        id,
+        key: NativeMapKeyKind::I64,
+        value: NativeMapValueKind::StrPtr,
+    } = target
+    {
+        let key_kind = facts
+            .register_kind_before(pc, instr.c())
+            .or_else(|| local_register_kind_before(code, pc, instr.c()));
+        if !matches!(key_kind, Some(NativeScalarKind::I64 | NativeScalarKind::MaybeI64)) {
+            return false;
+        }
+        if emit_dynamic_i64_ptr_map_get(ir, id, instr.a(), instr.c(), tmp_index).is_none() {
+            return false;
+        }
+        let value = next_tmp(tmp_index);
+        let present = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load ptr, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  {present} = load i64, ptr %r{}.present.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::MaybeStrPtr { value, present });
+        return true;
+    }
+    if let NativeStraightlineValue::DynamicMap {
+        id,
+        key: NativeMapKeyKind::Str,
+        value: NativeMapValueKind::StrPtr,
+    } = target
+    {
+        let Some(key) = static_regs.get(instr.c() as usize).and_then(Clone::clone) else {
+            return false;
+        };
+        if emit_dynamic_string_ptr_map_get(ir, extra_globals, id, pc, instr.a(), key, tmp_index).is_none() {
+            return false;
+        }
+        let value = next_tmp(tmp_index);
+        let present = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load ptr, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  {present} = load i64, ptr %r{}.present.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::MaybeStrPtr { value, present });
         return true;
     }
     if let NativeStraightlineValue::DynamicMap {
@@ -491,7 +634,30 @@ fn emit_get_index_target(
         if emit_dynamic_string_f64_map_get(ir, extra_globals, id, instr.a(), key, tmp_index).is_none() {
             return false;
         }
-        static_regs[instr.a() as usize] = None;
+        let value = next_tmp(tmp_index);
+        let present = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load double, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  {present} = load i64, ptr %r{}.present.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::MaybeF64 { value, present });
+        return true;
+    }
+    if let NativeStraightlineValue::DynamicMap {
+        id,
+        key: NativeMapKeyKind::Str,
+        value: NativeMapValueKind::Bool,
+    } = target
+    {
+        let Some(key) = static_regs.get(instr.c() as usize).and_then(Clone::clone) else {
+            return false;
+        };
+        if emit_dynamic_string_int_map_get(ir, extra_globals, id, instr.a(), key, tmp_index).is_none() {
+            return false;
+        }
+        let value = next_tmp(tmp_index);
+        let present = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  {present} = load i64, ptr %r{}.present.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::MaybeBool { value, present });
         return true;
     }
     if let NativeStraightlineValue::ArgList { elements } = &target {
@@ -977,7 +1143,11 @@ fn store_index_value(
         NativeStraightlineValue::Builtin(_)
         | NativeStraightlineValue::Module(_)
         | NativeStraightlineValue::Function(_)
-        | NativeStraightlineValue::Closure { .. } => {
+        | NativeStraightlineValue::Closure { .. }
+        | NativeStraightlineValue::ArgList { .. }
+        | NativeStraightlineValue::DynamicList { .. }
+        | NativeStraightlineValue::DynamicPairList { .. }
+        | NativeStraightlineValue::DynamicMap { .. } => {
             static_regs[dst as usize] = Some(value);
             Some(())
         }

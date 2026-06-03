@@ -33,6 +33,7 @@ fn value_element_kind(value: &NativeStraightlineValue) -> Option<NativeListEleme
         NativeStraightlineValue::DynamicList { element, .. } => Some(*element),
         NativeStraightlineValue::List { elements, .. } => const_list_element_kind(elements),
         NativeStraightlineValue::I64(_) => Some(NativeListElementKind::I64),
+        NativeStraightlineValue::Bool(_) => Some(NativeListElementKind::Bool),
         NativeStraightlineValue::F64(_) => Some(NativeListElementKind::F64),
         NativeStraightlineValue::String { .. }
         | NativeStraightlineValue::StringPtr(_)
@@ -55,6 +56,12 @@ fn const_list_element_kind(elements: &[ConstRuntimeValue32Data]) -> Option<Nativ
         .all(|value| matches!(value, ConstRuntimeValue32Data::Float(_)))
     {
         return Some(NativeListElementKind::F64);
+    }
+    if elements
+        .iter()
+        .all(|value| matches!(value, ConstRuntimeValue32Data::Bool(_)))
+    {
+        return Some(NativeListElementKind::Bool);
     }
     if elements.iter().all(|value| match value {
         ConstRuntimeValue32Data::ShortStr(_) => true,

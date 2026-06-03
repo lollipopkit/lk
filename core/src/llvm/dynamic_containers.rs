@@ -1,6 +1,8 @@
 mod f64_lists;
+mod i64_lists;
 mod i64_maps;
 mod ptr_lists;
+mod string_maps;
 
 pub(super) use f64_lists::{
     emit_dynamic_f64_list_concat, emit_dynamic_f64_list_contains, emit_dynamic_f64_list_index_of,
@@ -9,12 +11,32 @@ pub(super) use f64_lists::{
     emit_dynamic_f64_list_slice, emit_dynamic_f64_list_slice_range, emit_dynamic_f64_list_sort,
     emit_dynamic_f64_list_take, emit_dynamic_f64_list_unique, native_dynamic_f64_list_helpers,
 };
-pub(super) use i64_maps::native_dynamic_i64_map_helpers;
+pub(super) use i64_lists::{
+    emit_dynamic_i64_list_contains, emit_dynamic_i64_list_index_of, emit_dynamic_i64_list_insert,
+    emit_dynamic_i64_list_pop, emit_dynamic_i64_list_push_new, emit_dynamic_i64_list_remove_at,
+    emit_dynamic_i64_list_reverse, emit_dynamic_i64_list_set_new, emit_dynamic_i64_list_slice_range,
+    emit_dynamic_i64_list_sort, native_dynamic_i64_list_helpers,
+};
+pub(super) use i64_maps::{
+    emit_dynamic_i64_f64_map_delete_key, emit_dynamic_i64_f64_map_get, emit_dynamic_i64_f64_map_get_key,
+    emit_dynamic_i64_f64_map_iter_value, emit_dynamic_i64_f64_map_set, emit_dynamic_i64_f64_map_values,
+    emit_dynamic_i64_int_map_delete_key, emit_dynamic_i64_int_map_get, emit_dynamic_i64_int_map_get_key,
+    emit_dynamic_i64_int_map_iter_key, emit_dynamic_i64_int_map_iter_value, emit_dynamic_i64_int_map_set,
+    emit_dynamic_i64_int_map_values, emit_dynamic_i64_map_has_key, emit_dynamic_i64_map_keys,
+    emit_dynamic_i64_ptr_map_delete_key, emit_dynamic_i64_ptr_map_get, emit_dynamic_i64_ptr_map_get_key,
+    emit_dynamic_i64_ptr_map_iter_value, emit_dynamic_i64_ptr_map_set, emit_dynamic_i64_ptr_map_values,
+    native_dynamic_i64_map_helpers,
+};
 pub(super) use ptr_lists::{
     emit_dynamic_ptr_list_contains, emit_dynamic_ptr_list_index_of, emit_dynamic_ptr_list_insert,
     emit_dynamic_ptr_list_pop, emit_dynamic_ptr_list_push_new, emit_dynamic_ptr_list_remove_at,
     emit_dynamic_ptr_list_reverse, emit_dynamic_ptr_list_set_new, emit_dynamic_ptr_list_slice_range,
     emit_dynamic_ptr_list_sort, native_dynamic_ptr_list_helpers,
+};
+pub(super) use string_maps::{
+    emit_dynamic_string_f64_map_delete, emit_dynamic_string_int_map_delete, emit_dynamic_string_map_has,
+    emit_dynamic_string_ptr_map_delete, emit_dynamic_string_ptr_map_get, emit_dynamic_string_ptr_map_iter_value,
+    emit_dynamic_string_ptr_map_set, emit_dynamic_string_ptr_map_values,
 };
 
 use super::{
@@ -29,6 +51,7 @@ pub(super) fn emit_dynamic_string_int_map_allocas(ir: &mut String, name: &str) {
     ir.push_str(&format!("  %{name}.number.slots = alloca [4096 x i64]\n"));
     ir.push_str(&format!("  %{name}.value.slots = alloca [4096 x i64]\n"));
     ir.push_str(&format!("  %{name}.f64.slots = alloca [4096 x double]\n"));
+    ir.push_str(&format!("  %{name}.ptr.slots = alloca [4096 x ptr]\n"));
 }
 
 pub(super) fn emit_dynamic_int_list_allocas(ir: &mut String, name: &str) {
@@ -451,60 +474,6 @@ pub(super) fn emit_dynamic_string_int_map_get(
     Some(())
 }
 
-pub(super) fn emit_dynamic_i64_int_map_set(
-    ir: &mut String,
-    id: usize,
-    value_reg: u8,
-    key_reg: u8,
-    tmp_index: &mut usize,
-) -> Option<()> {
-    let key = next_tmp(tmp_index);
-    let value = next_tmp(tmp_index);
-    let len = next_tmp(tmp_index);
-    let key_base = next_tmp(tmp_index);
-    let value_base = next_tmp(tmp_index);
-    let next_len = next_tmp(tmp_index);
-    ir.push_str(&format!("  {key} = load i64, ptr %r{key_reg}.slot\n"));
-    ir.push_str(&format!("  {value} = load i64, ptr %r{value_reg}.slot\n"));
-    ir.push_str(&format!("  {len} = load i64, ptr %map{id}.len.slot\n"));
-    ir.push_str(&format!(
-        "  {key_base} = getelementptr [4096 x i64], ptr %map{id}.number.slots, i64 0, i64 0\n"
-    ));
-    ir.push_str(&format!(
-        "  {value_base} = getelementptr [4096 x i64], ptr %map{id}.value.slots, i64 0, i64 0\n"
-    ));
-    ir.push_str(&format!("  {next_len} = call i64 @lk_set_i64_int_map(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, i64 {value})\n"));
-    ir.push_str(&format!("  store i64 {next_len}, ptr %map{id}.len.slot\n"));
-    Some(())
-}
-
-pub(super) fn emit_dynamic_i64_int_map_get(
-    ir: &mut String,
-    id: usize,
-    dst: u8,
-    key_reg: u8,
-    tmp_index: &mut usize,
-) -> Option<()> {
-    let key = next_tmp(tmp_index);
-    let len = next_tmp(tmp_index);
-    let found = next_tmp(tmp_index);
-    let key_base = next_tmp(tmp_index);
-    let value_base = next_tmp(tmp_index);
-    ir.push_str(&format!("  {key} = load i64, ptr %r{key_reg}.slot\n"));
-    ir.push_str(&format!("  {len} = load i64, ptr %map{id}.len.slot\n"));
-    ir.push_str(&format!("  store i64 0, ptr %r{dst}.present.slot\n"));
-    ir.push_str(&format!("  store i64 0, ptr %r{dst}.slot\n"));
-    ir.push_str(&format!(
-        "  {key_base} = getelementptr [4096 x i64], ptr %map{id}.number.slots, i64 0, i64 0\n"
-    ));
-    ir.push_str(&format!(
-        "  {value_base} = getelementptr [4096 x i64], ptr %map{id}.value.slots, i64 0, i64 0\n"
-    ));
-    ir.push_str(&format!("  {found} = call i64 @lk_lookup_i64_int_map(ptr {key_base}, ptr {value_base}, i64 {len}, i64 {key}, ptr %r{dst}.slot)\n"));
-    ir.push_str(&format!("  store i64 {found}, ptr %r{dst}.present.slot\n"));
-    Some(())
-}
-
 pub(super) fn emit_dynamic_string_f64_map_set(
     ir: &mut String,
     extra_globals: &mut String,
@@ -638,46 +607,6 @@ pub(super) fn emit_dynamic_string_int_map_iter_value(
     Some(())
 }
 
-pub(super) fn emit_dynamic_i64_int_map_iter_key(
-    ir: &mut String,
-    id: usize,
-    dst: u8,
-    index_reg: u8,
-    tmp_index: &mut usize,
-) -> Option<()> {
-    let index = next_tmp(tmp_index);
-    let key_slot = next_tmp(tmp_index);
-    let key = next_tmp(tmp_index);
-    ir.push_str(&format!("  {index} = load i64, ptr %r{index_reg}.slot\n"));
-    ir.push_str(&format!(
-        "  {key_slot} = getelementptr [4096 x i64], ptr %map{id}.number.slots, i64 0, i64 {index}\n"
-    ));
-    ir.push_str(&format!("  {key} = load i64, ptr {key_slot}\n"));
-    ir.push_str(&format!("  store i64 {key}, ptr %r{dst}.slot\n"));
-    ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
-    Some(())
-}
-
-pub(super) fn emit_dynamic_i64_int_map_iter_value(
-    ir: &mut String,
-    id: usize,
-    dst: u8,
-    index_reg: u8,
-    tmp_index: &mut usize,
-) -> Option<()> {
-    let index = next_tmp(tmp_index);
-    let value_slot = next_tmp(tmp_index);
-    let value = next_tmp(tmp_index);
-    ir.push_str(&format!("  {index} = load i64, ptr %r{index_reg}.slot\n"));
-    ir.push_str(&format!(
-        "  {value_slot} = getelementptr [4096 x i64], ptr %map{id}.value.slots, i64 0, i64 {index}\n"
-    ));
-    ir.push_str(&format!("  {value} = load i64, ptr {value_slot}\n"));
-    ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
-    ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
-    Some(())
-}
-
 pub(super) fn emit_dynamic_string_f64_map_iter_value(
     ir: &mut String,
     id: usize,
@@ -698,26 +627,6 @@ pub(super) fn emit_dynamic_string_f64_map_iter_value(
 }
 
 pub(super) fn emit_dynamic_string_int_map_values(
-    ir: &mut String,
-    map_id: usize,
-    list_id: usize,
-    tmp_index: &mut usize,
-) -> Option<()> {
-    let len = next_tmp(tmp_index);
-    let map_base = next_tmp(tmp_index);
-    let list_base = next_tmp(tmp_index);
-    ir.push_str(&format!("  {len} = load i64, ptr %map{map_id}.len.slot\n"));
-    ir.push_str(&format!(
-        "  {map_base} = getelementptr [4096 x i64], ptr %map{map_id}.value.slots, i64 0, i64 0\n"
-    ));
-    ir.push_str(&format!(
-        "  {list_base} = getelementptr [4096 x i64], ptr %list{list_id}.value.slots, i64 0, i64 0\n"
-    ));
-    emit_dynamic_value_copy_loop(ir, map_base, list_base, len.clone(), "i64", list_id, tmp_index);
-    Some(())
-}
-
-pub(super) fn emit_dynamic_i64_int_map_values(
     ir: &mut String,
     map_id: usize,
     list_id: usize,
@@ -996,20 +905,36 @@ pub(super) fn emit_dynamic_pair_list_push(
 ) -> Option<()> {
     let first = native_value_expr(first)?;
     let second = native_value_expr(second)?;
-    let NativeValueExpr::Ptr(first) = first else {
+    if !native_pair_values_have_distinct_storage(&first, &second) {
         return None;
-    };
-    let first_copy = next_tmp(tmp_index);
+    }
     let len = next_tmp(tmp_index);
     let first_slot = next_tmp(tmp_index);
     let second_slot = next_tmp(tmp_index);
     let next_len = next_tmp(tmp_index);
-    ir.push_str(&format!("  {first_copy} = call ptr @strdup(ptr {first})\n"));
     ir.push_str(&format!("  {len} = load i64, ptr %list{id}.len.slot\n"));
-    ir.push_str(&format!(
-        "  {first_slot} = getelementptr [4096 x ptr], ptr %list{id}.ptr.slots, i64 0, i64 {len}\n"
-    ));
-    ir.push_str(&format!("  store ptr {first_copy}, ptr {first_slot}\n"));
+    match first {
+        NativeValueExpr::I64(value) => {
+            ir.push_str(&format!(
+                "  {first_slot} = getelementptr [4096 x i64], ptr %list{id}.value.slots, i64 0, i64 {len}\n"
+            ));
+            ir.push_str(&format!("  store i64 {value}, ptr {first_slot}\n"));
+        }
+        NativeValueExpr::F64(value) => {
+            ir.push_str(&format!(
+                "  {first_slot} = getelementptr [4096 x double], ptr %list{id}.f64.slots, i64 0, i64 {len}\n"
+            ));
+            ir.push_str(&format!("  store double {value}, ptr {first_slot}\n"));
+        }
+        NativeValueExpr::Ptr(value) => {
+            let first_copy = next_tmp(tmp_index);
+            ir.push_str(&format!("  {first_copy} = call ptr @strdup(ptr {value})\n"));
+            ir.push_str(&format!(
+                "  {first_slot} = getelementptr [4096 x ptr], ptr %list{id}.ptr.slots, i64 0, i64 {len}\n"
+            ));
+            ir.push_str(&format!("  store ptr {first_copy}, ptr {first_slot}\n"));
+        }
+    }
     match second {
         NativeValueExpr::I64(value) => {
             ir.push_str(&format!(
@@ -1028,6 +953,15 @@ pub(super) fn emit_dynamic_pair_list_push(
     ir.push_str(&format!("  {next_len} = add i64 {len}, 1\n"));
     ir.push_str(&format!("  store i64 {next_len}, ptr %list{id}.len.slot\n"));
     Some(())
+}
+
+fn native_pair_values_have_distinct_storage(first: &NativeValueExpr, second: &NativeValueExpr) -> bool {
+    !matches!(
+        (first, second),
+        (NativeValueExpr::I64(_), NativeValueExpr::I64(_))
+            | (NativeValueExpr::F64(_), NativeValueExpr::F64(_))
+            | (NativeValueExpr::Ptr(_), NativeValueExpr::Ptr(_))
+    )
 }
 
 fn emit_dynamic_value_copy_loop(

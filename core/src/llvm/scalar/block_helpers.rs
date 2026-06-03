@@ -1,5 +1,6 @@
 mod formatting;
 mod object_display;
+mod scalars;
 mod static_direct;
 mod symbolic;
 
@@ -19,6 +20,7 @@ use crate::vm::{
 };
 pub(in crate::llvm) use formatting::emit_static_formatted_print;
 use object_display::native_object_display_text;
+pub(in crate::llvm) use scalars::{emit_static_scalar_value_store_if_needed, scalar_arg_value};
 use static_direct::static_direct_call_args;
 pub(in crate::llvm) use symbolic::kind_symbolic_value;
 pub(in crate::llvm) fn control_flow_static_boundaries(code: &[Instr32]) -> Vec<bool> {
@@ -728,90 +730,6 @@ pub(in crate::llvm) fn scalar_named_call_args(
     args.into_iter().collect()
 }
 
-pub(in crate::llvm) fn scalar_arg_value(
-    ir: &mut String,
-    slot_prefix: &str,
-    facts: &NativeScalarFacts,
-    pc: usize,
-    static_regs: &[Option<NativeStraightlineValue>],
-    reg: usize,
-    tmp_index: &mut usize,
-) -> Option<NativeStraightlineValue> {
-    if let Some(value) = static_regs.get(reg).cloned().flatten() {
-        return Some(value);
-    }
-    let reg = u8::try_from(reg).ok()?;
-    let kind = facts.register_kind_before(pc, reg)?;
-    if kind == NativeScalarKind::Nil {
-        return Some(NativeStraightlineValue::Nil);
-    }
-    let value = next_tmp(tmp_index);
-    let ty = kind.llvm_type();
-    ir.push_str(&format!("  {value} = load {ty}, ptr %{slot_prefix}r{reg}.slot\n"));
-    match kind {
-        NativeScalarKind::I64 | NativeScalarKind::MaybeI64 => Some(NativeStraightlineValue::I64(value)),
-        NativeScalarKind::F64 => Some(NativeStraightlineValue::F64(value)),
-        NativeScalarKind::Bool => Some(NativeStraightlineValue::Bool(value)),
-        NativeScalarKind::Nil => Some(NativeStraightlineValue::Nil),
-        NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => Some(NativeStraightlineValue::StringPtr(value)),
-    }
-}
-
-pub(in crate::llvm) fn emit_static_scalar_value_store_if_needed(
-    ir: &mut String,
-    reg: u8,
-    value: &NativeStraightlineValue,
-) -> Option<()> {
-    match value {
-        NativeStraightlineValue::I64(value) => {
-            ir.push_str(&format!("  store i64 {value}, ptr %r{reg}.slot\n"));
-            ir.push_str(&format!("  store i64 1, ptr %r{reg}.present.slot\n"));
-        }
-        NativeStraightlineValue::MaybeI64 { value, present } => {
-            ir.push_str(&format!("  store i64 {value}, ptr %r{reg}.slot\n"));
-            ir.push_str(&format!("  store i64 {present}, ptr %r{reg}.present.slot\n"));
-        }
-        NativeStraightlineValue::Bool(value) => {
-            ir.push_str(&format!("  store i64 {value}, ptr %r{reg}.slot\n"));
-        }
-        NativeStraightlineValue::Nil => {
-            ir.push_str(&format!("  store i64 0, ptr %r{reg}.slot\n"));
-        }
-        NativeStraightlineValue::F64(value) => {
-            ir.push_str(&format!("  store double {value}, ptr %r{reg}.slot\n"));
-        }
-        NativeStraightlineValue::StringPtr(value) => {
-            ir.push_str(&format!("  store ptr {value}, ptr %r{reg}.slot\n"));
-            ir.push_str(&format!("  store i64 1, ptr %r{reg}.present.slot\n"));
-        }
-        NativeStraightlineValue::String { .. }
-        | NativeStraightlineValue::Text(_)
-        | NativeStraightlineValue::DynamicTextChar
-        | NativeStraightlineValue::DynamicSplitText { .. }
-        | NativeStraightlineValue::List { .. }
-        | NativeStraightlineValue::Map { .. }
-        | NativeStraightlineValue::DisplayMap { .. }
-        | NativeStraightlineValue::DynamicMap { .. }
-        | NativeStraightlineValue::DynamicMapIter { .. }
-        | NativeStraightlineValue::DynamicMapEntry { .. }
-        | NativeStraightlineValue::DynamicList { .. }
-        | NativeStraightlineValue::DynamicPairList { .. }
-        | NativeStraightlineValue::DynamicConstListElement { .. }
-        | NativeStraightlineValue::DynamicArgListElement { .. }
-        | NativeStraightlineValue::DynamicJoinedText { .. }
-        | NativeStraightlineValue::Channel { .. }
-        | NativeStraightlineValue::ArgList { .. }
-        | NativeStraightlineValue::Object { .. }
-        | NativeStraightlineValue::Error { .. }
-        | NativeStraightlineValue::Builtin(_)
-        | NativeStraightlineValue::Module(_)
-        | NativeStraightlineValue::Function(_)
-        | NativeStraightlineValue::Closure { .. }
-        | NativeStraightlineValue::Cell { .. } => {}
-    }
-    Some(())
-}
-
 fn static_register_value_trusted_before_inner(code: &[Instr32], pc_limit: usize, reg: u8, depth: usize) -> bool {
     if depth > 8 {
         return false;
@@ -911,13 +829,37 @@ pub(in crate::llvm) fn store_native_scalar_call_result(
             ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
             ir.push_str(&format!("  store i64 1, ptr %r{dst}.present.slot\n"));
         }
+        NativeStraightlineValue::MaybeI64 { value, present } => {
+            static_regs[dst as usize] = Some(NativeStraightlineValue::MaybeI64 {
+                value: value.clone(),
+                present: present.clone(),
+            });
+            ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 {present}, ptr %r{dst}.present.slot\n"));
+        }
         NativeStraightlineValue::F64(value) => {
             static_regs[dst as usize] = (!value.starts_with('%')).then(|| NativeStraightlineValue::F64(value.clone()));
             ir.push_str(&format!("  store double {value}, ptr %r{dst}.slot\n"));
         }
+        NativeStraightlineValue::MaybeF64 { value, present } => {
+            static_regs[dst as usize] = Some(NativeStraightlineValue::MaybeF64 {
+                value: value.clone(),
+                present: present.clone(),
+            });
+            ir.push_str(&format!("  store double {value}, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 {present}, ptr %r{dst}.present.slot\n"));
+        }
         NativeStraightlineValue::Bool(value) => {
             static_regs[dst as usize] = (!value.starts_with('%')).then(|| NativeStraightlineValue::Bool(value.clone()));
             ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
+        }
+        NativeStraightlineValue::MaybeBool { value, present } => {
+            static_regs[dst as usize] = Some(NativeStraightlineValue::MaybeBool {
+                value: value.clone(),
+                present: present.clone(),
+            });
+            ir.push_str(&format!("  store i64 {value}, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 {present}, ptr %r{dst}.present.slot\n"));
         }
         NativeStraightlineValue::Nil => {
             static_regs[dst as usize] = Some(NativeStraightlineValue::Nil);
@@ -941,6 +883,14 @@ pub(in crate::llvm) fn store_native_scalar_call_result(
         NativeStraightlineValue::StringPtr(value) => {
             static_regs[dst as usize] = Some(NativeStraightlineValue::StringPtr(value.clone()));
             ir.push_str(&format!("  store ptr {value}, ptr %r{dst}.slot\n"));
+        }
+        NativeStraightlineValue::MaybeStrPtr { value, present } => {
+            static_regs[dst as usize] = Some(NativeStraightlineValue::MaybeStrPtr {
+                value: value.clone(),
+                present: present.clone(),
+            });
+            ir.push_str(&format!("  store ptr {value}, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  store i64 {present}, ptr %r{dst}.present.slot\n"));
         }
         NativeStraightlineValue::DynamicList {
             element: NativeListElementKind::I64,
@@ -981,13 +931,34 @@ pub(in crate::llvm) fn store_native_inline_scalar_value(
             ir.push_str(&format!("  store i64 {value}, ptr %call{call_pc}.r{dst}.slot\n"));
             ir.push_str(&format!("  store i64 1, ptr %call{call_pc}.r{dst}.present.slot\n"));
         }
+        NativeStraightlineValue::MaybeI64 { value, present } => {
+            static_regs[dst as usize] = None;
+            ir.push_str(&format!("  store i64 {value}, ptr %call{call_pc}.r{dst}.slot\n"));
+            ir.push_str(&format!(
+                "  store i64 {present}, ptr %call{call_pc}.r{dst}.present.slot\n"
+            ));
+        }
         NativeStraightlineValue::F64(value) => {
             static_regs[dst as usize] = None;
             ir.push_str(&format!("  store double {value}, ptr %call{call_pc}.r{dst}.slot\n"));
         }
+        NativeStraightlineValue::MaybeF64 { value, present } => {
+            static_regs[dst as usize] = None;
+            ir.push_str(&format!("  store double {value}, ptr %call{call_pc}.r{dst}.slot\n"));
+            ir.push_str(&format!(
+                "  store i64 {present}, ptr %call{call_pc}.r{dst}.present.slot\n"
+            ));
+        }
         NativeStraightlineValue::Bool(value) => {
             static_regs[dst as usize] = None;
             ir.push_str(&format!("  store i64 {value}, ptr %call{call_pc}.r{dst}.slot\n"));
+        }
+        NativeStraightlineValue::MaybeBool { value, present } => {
+            static_regs[dst as usize] = None;
+            ir.push_str(&format!("  store i64 {value}, ptr %call{call_pc}.r{dst}.slot\n"));
+            ir.push_str(&format!(
+                "  store i64 {present}, ptr %call{call_pc}.r{dst}.present.slot\n"
+            ));
         }
         NativeStraightlineValue::Nil => {
             static_regs[dst as usize] = None;
@@ -1011,6 +982,16 @@ pub(in crate::llvm) fn store_native_inline_scalar_value(
         NativeStraightlineValue::StringPtr(value) => {
             static_regs[dst as usize] = Some(NativeStraightlineValue::StringPtr(value.clone()));
             ir.push_str(&format!("  store ptr {value}, ptr %call{call_pc}.r{dst}.slot\n"));
+        }
+        NativeStraightlineValue::MaybeStrPtr { value, present } => {
+            static_regs[dst as usize] = Some(NativeStraightlineValue::MaybeStrPtr {
+                value: value.clone(),
+                present: present.clone(),
+            });
+            ir.push_str(&format!("  store ptr {value}, ptr %call{call_pc}.r{dst}.slot\n"));
+            ir.push_str(&format!(
+                "  store i64 {present}, ptr %call{call_pc}.r{dst}.present.slot\n"
+            ));
         }
         NativeStraightlineValue::Object { .. } => {
             static_regs[dst as usize] = Some(value);

@@ -395,7 +395,7 @@ fn native_core_method_return_kind(args: &[NativeStraightlineValue]) -> Option<Na
     if let [
         NativeStraightlineValue::DynamicMap {
             key: NativeMapKeyKind::Str,
-            value: NativeMapValueKind::I64,
+            value,
             ..
         },
         NativeStraightlineValue::String { value: method, .. },
@@ -404,12 +404,17 @@ fn native_core_method_return_kind(args: &[NativeStraightlineValue]) -> Option<Na
         && method == "get"
         && elements.len() == 1
     {
-        return Some(NativeScalarKind::MaybeI64);
+        return match value {
+            NativeMapValueKind::I64 => Some(NativeScalarKind::MaybeI64),
+            NativeMapValueKind::F64 => Some(NativeScalarKind::F64),
+            NativeMapValueKind::Bool => Some(NativeScalarKind::Bool),
+            NativeMapValueKind::StrPtr => Some(NativeScalarKind::MaybeStrPtr),
+        };
     }
     if let [
         NativeStraightlineValue::DynamicMap {
             key: NativeMapKeyKind::Str,
-            value: NativeMapValueKind::I64,
+            value,
             ..
         },
         NativeStraightlineValue::String { value: method, .. },
@@ -418,7 +423,12 @@ fn native_core_method_return_kind(args: &[NativeStraightlineValue]) -> Option<Na
         && method == "get"
         && elements.len() == 1
     {
-        return Some(NativeScalarKind::MaybeI64);
+        return match value {
+            NativeMapValueKind::I64 => Some(NativeScalarKind::MaybeI64),
+            NativeMapValueKind::F64 => Some(NativeScalarKind::F64),
+            NativeMapValueKind::Bool => Some(NativeScalarKind::Bool),
+            NativeMapValueKind::StrPtr => Some(NativeScalarKind::MaybeStrPtr),
+        };
     }
     if let [
         NativeStraightlineValue::DynamicList {
@@ -605,7 +615,9 @@ pub(super) fn dynamic_scalar_placeholder(
         NativeScalarKind::I64 if allow_i64 => Some(NativeStraightlineValue::I64("0".to_string())),
         NativeScalarKind::F64 => Some(NativeStraightlineValue::F64("0.0".to_string())),
         NativeScalarKind::Bool => Some(NativeStraightlineValue::Bool("0".to_string())),
-        NativeScalarKind::StrPtr => Some(NativeStraightlineValue::StringPtr(String::new())),
+        NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => {
+            Some(NativeStraightlineValue::StringPtr(String::new()))
+        }
         _ => None,
     }
 }
@@ -659,6 +671,7 @@ fn native_dynamic_list_element_kind(value: &NativeStraightlineValue) -> Option<N
     match element {
         NativeListElementKind::I64 => Some(NativeScalarKind::I64),
         NativeListElementKind::F64 => Some(NativeScalarKind::F64),
+        NativeListElementKind::Bool => Some(NativeScalarKind::Bool),
         NativeListElementKind::StrPtr | NativeListElementKind::Text => Some(NativeScalarKind::StrPtr),
     }
 }
@@ -678,6 +691,9 @@ pub(in crate::llvm) fn static_value_kind(value: &NativeStraightlineValue) -> Opt
     match value {
         NativeStraightlineValue::I64(_) => Some(NativeScalarKind::I64),
         NativeStraightlineValue::MaybeI64 { .. } => Some(NativeScalarKind::MaybeI64),
+        NativeStraightlineValue::MaybeF64 { .. } => Some(NativeScalarKind::F64),
+        NativeStraightlineValue::MaybeBool { .. } => Some(NativeScalarKind::Bool),
+        NativeStraightlineValue::MaybeStrPtr { .. } => Some(NativeScalarKind::MaybeStrPtr),
         NativeStraightlineValue::F64(_) => Some(NativeScalarKind::F64),
         NativeStraightlineValue::Bool(_) => Some(NativeScalarKind::Bool),
         NativeStraightlineValue::Nil => Some(NativeScalarKind::Nil),

@@ -29,6 +29,8 @@ impl Compiler32 {
 
         let callee = if let Some(local) = self.locals.get(name).copied() {
             local
+        } else if self.capture_names.contains_key(name) {
+            self.lower_var(name)?
         } else {
             self.load_callable_by_name(name)?
         };

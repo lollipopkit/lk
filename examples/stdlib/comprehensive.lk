@@ -47,17 +47,17 @@ assert_.assert_eq(alg.comb(10, 3), 120);
 
 // collections - stack
 let s = collections.stack();
-collections.stack_push(s, 1);
-collections.stack_push(s, 2);
-collections.stack_push(s, 3);
+s = collections.stack_push(s, 1);
+s = collections.stack_push(s, 2);
+s = collections.stack_push(s, 3);
 assert_.assert_eq(collections.stack_peek(s), 3);
 assert_.assert_eq(collections.stack_len(s), 3);
 
 // collections - set
 let my_set = collections.set();
-collections.set_add(my_set, "a");
-collections.set_add(my_set, "b");
-collections.set_add(my_set, "a"); // duplicate
+my_set = collections.set_add(my_set, "a");
+my_set = collections.set_add(my_set, "b");
+my_set = collections.set_add(my_set, "a"); // duplicate
 assert_.assert(collections.set_has(my_set, "a"));
 assert_.assert_eq(collections.set_len(my_set), 2);
 

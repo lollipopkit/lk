@@ -17,8 +17,8 @@ use crate::{
             facts::{NativeScalarFacts, NativeScalarKind},
         },
         straightline_value::{
-            NativeListElementKind, NativeStraightlineValue, NativeTextPart, native_static_f64_binary,
-            native_static_list_from_values, native_static_text_string,
+            NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue, NativeTextPart,
+            native_static_f64_binary, native_static_list_from_values, native_static_text_string,
         },
     },
     vm::{ConstHeapValue32Data, Instr32, Opcode32},
@@ -128,7 +128,11 @@ fn emit_new_list(
         values.iter().any(|value| {
             matches!(
                 value,
-                Some(NativeStraightlineValue::List { .. } | NativeStraightlineValue::DynamicList { .. })
+                Some(
+                    NativeStraightlineValue::List { .. }
+                        | NativeStraightlineValue::DynamicList { .. }
+                        | NativeStraightlineValue::DynamicMap { .. }
+                )
             )
         })
     }) {
@@ -143,30 +147,73 @@ fn emit_new_list(
                     .or_else(|| local_static_i64_before(code, int_consts, pc, reg_u8))
                     .or_else(|| local_static_heap_const_before(code, heap_values, pc, reg_u8))
                     .or_else(|| local_static_string_before(code, strings, pc, reg_u8))
-                    .or_else(|| match facts.register_kind_before(pc, reg_u8) {
-                        Some(NativeScalarKind::I64) => {
-                            let loaded = next_tmp(tmp_index);
-                            ir.push_str(&format!("  {loaded} = load i64, ptr %r{reg}.slot\n"));
-                            Some(NativeStraightlineValue::I64(loaded))
-                        }
-                        Some(NativeScalarKind::MaybeI64) => {
+                    .or_else(|| {
+                        recent_dynamic_i64_map_get_before(static_regs, code, pc, reg_u8).then(|| {
                             let value = next_tmp(tmp_index);
                             let present = next_tmp(tmp_index);
                             ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
                             ir.push_str(&format!("  {present} = load i64, ptr %r{reg}.present.slot\n"));
-                            Some(NativeStraightlineValue::MaybeI64 { value, present })
-                        }
-                        _ => None,
+                            NativeStraightlineValue::MaybeI64 { value, present }
+                        })
                     })
                     .or_else(|| {
-                        (facts.register_kind_before(pc, reg_u8) == Some(NativeScalarKind::F64)).then(|| {
+                        recent_dynamic_i64_ptr_map_get_before(static_regs, code, pc, reg_u8).then(|| {
+                            let value = next_tmp(tmp_index);
+                            let present = next_tmp(tmp_index);
+                            ir.push_str(&format!("  {value} = load ptr, ptr %r{reg}.slot\n"));
+                            ir.push_str(&format!("  {present} = load i64, ptr %r{reg}.present.slot\n"));
+                            NativeStraightlineValue::MaybeStrPtr { value, present }
+                        })
+                    })
+                    .or_else(|| {
+                        match facts
+                            .register_kind_before(pc, reg_u8)
+                            .or_else(|| local_register_kind_before(code, pc, reg_u8))
+                        {
+                            Some(NativeScalarKind::I64) => {
+                                let loaded = next_tmp(tmp_index);
+                                ir.push_str(&format!("  {loaded} = load i64, ptr %r{reg}.slot\n"));
+                                Some(NativeStraightlineValue::I64(loaded))
+                            }
+                            Some(NativeScalarKind::MaybeI64) => {
+                                let value = next_tmp(tmp_index);
+                                let present = next_tmp(tmp_index);
+                                ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
+                                ir.push_str(&format!("  {present} = load i64, ptr %r{reg}.present.slot\n"));
+                                Some(NativeStraightlineValue::MaybeI64 { value, present })
+                            }
+                            Some(NativeScalarKind::StrPtr) => {
+                                let loaded = next_tmp(tmp_index);
+                                ir.push_str(&format!("  {loaded} = load ptr, ptr %r{reg}.slot\n"));
+                                Some(NativeStraightlineValue::StringPtr(loaded))
+                            }
+                            Some(NativeScalarKind::MaybeStrPtr) => {
+                                let value = next_tmp(tmp_index);
+                                let present = next_tmp(tmp_index);
+                                ir.push_str(&format!("  {value} = load ptr, ptr %r{reg}.slot\n"));
+                                ir.push_str(&format!("  {present} = load i64, ptr %r{reg}.present.slot\n"));
+                                Some(NativeStraightlineValue::MaybeStrPtr { value, present })
+                            }
+                            _ => None,
+                        }
+                    })
+                    .or_else(|| {
+                        (facts
+                            .register_kind_before(pc, reg_u8)
+                            .or_else(|| local_register_kind_before(code, pc, reg_u8))
+                            == Some(NativeScalarKind::F64))
+                        .then(|| {
                             let loaded = next_tmp(tmp_index);
                             ir.push_str(&format!("  {loaded} = load double, ptr %r{reg}.slot\n"));
                             NativeStraightlineValue::F64(loaded)
                         })
                     })
                     .or_else(|| {
-                        (facts.register_kind_before(pc, reg_u8) == Some(NativeScalarKind::Bool)).then(|| {
+                        (facts
+                            .register_kind_before(pc, reg_u8)
+                            .or_else(|| local_register_kind_before(code, pc, reg_u8))
+                            == Some(NativeScalarKind::Bool))
+                        .then(|| {
                             let loaded = next_tmp(tmp_index);
                             ir.push_str(&format!("  {loaded} = load i64, ptr %r{reg}.slot\n"));
                             NativeStraightlineValue::Bool(loaded)
@@ -221,7 +268,12 @@ fn emit_new_list(
     let all_i64 = (start..end).all(|i| match static_regs.get(i).and_then(|v| v.as_ref()) {
         Some(NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. }) => false,
         Some(NativeStraightlineValue::I64(s)) if !s.starts_with('%') => true,
-        _ => facts.register_kind_before(pc, i as u8) == Some(NativeScalarKind::I64),
+        _ => {
+            facts
+                .register_kind_before(pc, i as u8)
+                .or_else(|| local_register_kind_before(code, pc, i as u8))
+                == Some(NativeScalarKind::I64)
+        }
     });
     if all_i64 {
         emit_dynamic_i64_list(ir, static_regs, start, end, pc, instr, tmp_index);
@@ -243,6 +295,94 @@ fn emit_new_list(
     }
     emit_branch_to_next(ir, pc, code.len());
     true
+}
+
+fn recent_dynamic_i64_map_get_before(
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr32],
+    pc: usize,
+    reg: u8,
+) -> bool {
+    recent_dynamic_i64_map_get_before_inner(static_regs, code, pc, reg, 0)
+}
+
+fn recent_dynamic_i64_map_get_before_inner(
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr32],
+    pc: usize,
+    reg: u8,
+    depth: usize,
+) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    for prev_pc in (0..pc).rev() {
+        let Some(prev) = code.get(prev_pc).copied() else {
+            return false;
+        };
+        if prev.a() != reg {
+            continue;
+        }
+        return match prev.opcode() {
+            Opcode32::Move if prev.b() != reg => {
+                recent_dynamic_i64_map_get_before_inner(static_regs, code, prev_pc, prev.b(), depth + 1)
+            }
+            Opcode32::GetIndex => matches!(
+                static_regs.get(prev.b() as usize).and_then(|value| value.as_ref()),
+                Some(NativeStraightlineValue::DynamicMap {
+                    key: NativeMapKeyKind::I64,
+                    value: NativeMapValueKind::I64,
+                    ..
+                })
+            ),
+            _ => false,
+        };
+    }
+    false
+}
+
+fn recent_dynamic_i64_ptr_map_get_before(
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr32],
+    pc: usize,
+    reg: u8,
+) -> bool {
+    recent_dynamic_i64_ptr_map_get_before_inner(static_regs, code, pc, reg, 0)
+}
+
+fn recent_dynamic_i64_ptr_map_get_before_inner(
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr32],
+    pc: usize,
+    reg: u8,
+    depth: usize,
+) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    for prev_pc in (0..pc).rev() {
+        let Some(prev) = code.get(prev_pc).copied() else {
+            return false;
+        };
+        if prev.a() != reg {
+            continue;
+        }
+        return match prev.opcode() {
+            Opcode32::Move if prev.b() != reg => {
+                recent_dynamic_i64_ptr_map_get_before_inner(static_regs, code, prev_pc, prev.b(), depth + 1)
+            }
+            Opcode32::GetIndex => matches!(
+                static_regs.get(prev.b() as usize).and_then(|value| value.as_ref()),
+                Some(NativeStraightlineValue::DynamicMap {
+                    key: NativeMapKeyKind::I64,
+                    value: NativeMapValueKind::StrPtr,
+                    ..
+                })
+            ),
+            _ => false,
+        };
+    }
+    false
 }
 
 fn emit_dynamic_i64_list(
@@ -325,10 +465,24 @@ fn emit_static_list(
                     ir.push_str(&format!("  {loaded} = load i64, ptr %r{reg}.slot\n"));
                     return Some(NativeStraightlineValue::I64(loaded));
                 }
+                if facts.register_kind_before(pc, reg) == Some(NativeScalarKind::MaybeI64) {
+                    let value = next_tmp(tmp_index);
+                    let present = next_tmp(tmp_index);
+                    ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
+                    ir.push_str(&format!("  {present} = load i64, ptr %r{reg}.present.slot\n"));
+                    return Some(NativeStraightlineValue::MaybeI64 { value, present });
+                }
                 if facts.register_kind_before(pc, reg) == Some(NativeScalarKind::Bool) {
                     let loaded = next_tmp(tmp_index);
                     ir.push_str(&format!("  {loaded} = load i64, ptr %r{reg}.slot\n"));
                     return Some(NativeStraightlineValue::Bool(loaded));
+                }
+                if facts.register_kind_before(pc, reg) == Some(NativeScalarKind::MaybeStrPtr) {
+                    let value = next_tmp(tmp_index);
+                    let present = next_tmp(tmp_index);
+                    ir.push_str(&format!("  {value} = load ptr, ptr %r{reg}.slot\n"));
+                    ir.push_str(&format!("  {present} = load i64, ptr %r{reg}.present.slot\n"));
+                    return Some(NativeStraightlineValue::MaybeStrPtr { value, present });
                 }
                 (facts.register_kind_before(pc, reg) == Some(NativeScalarKind::StrPtr)).then(|| {
                     let loaded = next_tmp(tmp_index);
@@ -484,8 +638,21 @@ fn emit_move(
         emit_branch_to_next(ir, pc, code.len());
         return true;
     }
+    if let Some(
+        value @ (NativeStraightlineValue::I64(_) | NativeStraightlineValue::Bool(_) | NativeStraightlineValue::F64(_)),
+    ) = static_regs.get(instr.b() as usize).and_then(Clone::clone)
+    {
+        emit_static_scalar_value_store_if_needed(ir, instr.a(), &value);
+        static_regs[instr.a() as usize] = Some(value);
+        emit_branch_to_next(ir, pc, code.len());
+        return true;
+    }
     let heap_kind = local_heap_kind_before(code, heap_values, pc, instr.b());
-    let local_kind = local_register_kind_before(code, pc, instr.b());
+    let local_kind = if register_last_written_by_call_before(code, pc, instr.b()) {
+        None
+    } else {
+        local_register_kind_before(code, pc, instr.b())
+    };
     let kind = if heap_kind == Some(NativeScalarKind::StrPtr) {
         heap_kind
     } else if matches!(
@@ -554,6 +721,19 @@ fn emit_move(
     static_regs[instr.a() as usize] = Some(value);
     emit_branch_to_next(ir, pc, code.len());
     true
+}
+
+fn register_last_written_by_call_before(code: &[Instr32], pc: usize, reg: u8) -> bool {
+    code.iter()
+        .take(pc)
+        .rev()
+        .find(|instr| instr.a() == reg)
+        .is_some_and(|instr| {
+            matches!(
+                instr.opcode(),
+                Opcode32::Call | Opcode32::CallDirect | Opcode32::CallNamed
+            )
+        })
 }
 
 fn emit_to_string(

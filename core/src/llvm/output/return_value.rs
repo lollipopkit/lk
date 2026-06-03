@@ -54,6 +54,15 @@ pub(super) fn emit_native_main_return(ir: &mut String, globals: &mut String, val
                 "  %print = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr {value})\n"
             ));
         }
+        NativeStraightlineValue::MaybeStrPtr { value, present } => {
+            let nil = "@lk_return_maybe_str_nil";
+            ir.push_str(&format!("  %return_maybe_str_present = icmp ne i64 {present}, 0\n"));
+            ir.push_str(&format!(
+                "  %return_maybe_str_text = select i1 %return_maybe_str_present, ptr {value}, ptr {nil}\n"
+            ));
+            ir.push_str("  %print = call i32 (ptr, ...) @printf(ptr @lk_str_fmt, ptr %return_maybe_str_text)\n");
+            globals.push_str(&llvm_string_constant(nil, "nil"));
+        }
         NativeStraightlineValue::Text(parts) => {
             let _ = super::emit_native_print_text_parts(ir, parts, true);
         }
@@ -92,6 +101,8 @@ pub(super) fn emit_native_main_return(ir: &mut String, globals: &mut String, val
         NativeStraightlineValue::DynamicSplitText { .. }
         | NativeStraightlineValue::DynamicTextChar
         | NativeStraightlineValue::MaybeI64 { .. }
+        | NativeStraightlineValue::MaybeF64 { .. }
+        | NativeStraightlineValue::MaybeBool { .. }
         | NativeStraightlineValue::Builtin(_)
         | NativeStraightlineValue::Module(_)
         | NativeStraightlineValue::DynamicMap { .. }

@@ -690,6 +690,7 @@ pub fn stdlib_lk_modules() -> Vec<(&'static str, &'static str)> {
         ("collections", "collections"),
         ("func", "func"),
         ("assert", "assert"),
+        ("assert_", "assert"),
         ("math_ext", "math_ext"),
     ]
 }

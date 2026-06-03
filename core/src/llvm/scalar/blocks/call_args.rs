@@ -20,11 +20,15 @@ use crate::{
 };
 
 use super::{
+    i64_list_methods::{emit_dynamic_i64_list_builtin_call, emit_dynamic_i64_list_builtin_call_from_regs},
     list_methods::{
         emit_dynamic_f64_list_builtin_call, emit_dynamic_f64_list_builtin_call_from_regs,
         emit_dynamic_ptr_list_builtin_call, emit_dynamic_ptr_list_builtin_call_from_regs,
     },
-    map_methods::{emit_dynamic_map_set_call, emit_dynamic_map_values_call},
+    map_methods::{
+        emit_dynamic_map_delete_call, emit_dynamic_map_get_call, emit_dynamic_map_has_call, emit_dynamic_map_set_call,
+        emit_dynamic_map_values_call,
+    },
     runtime_builtins::emit_runtime_builtin_call,
 };
 use crate::llvm::{output::emit_native_builtin_call, scalar::block_helpers::emit_static_formatted_print};
@@ -139,6 +143,22 @@ pub(super) fn emit_recovered_builtin_call_block(
         emit_branch_to_next(ir, pc, code.len());
         return true;
     }
+    if emit_dynamic_i64_list_builtin_call_from_regs(
+        ir,
+        static_regs,
+        code,
+        heap_values,
+        instr,
+        builtin,
+        facts,
+        pc,
+        tmp_index,
+    )
+    .is_some()
+    {
+        emit_branch_to_next(ir, pc, code.len());
+        return true;
+    }
     if emit_dynamic_f64_list_builtin_call_from_regs(ir, static_regs, instr, builtin, facts, pc, tmp_index).is_some() {
         emit_branch_to_next(ir, pc, code.len());
         return true;
@@ -208,7 +228,7 @@ pub(super) fn emit_recovered_builtin_call_block(
             emit_branch_to_next(ir, pc, code.len());
             return true;
         }
-        if emit_dynamic_map_set_call(ir, extra_globals, static_regs, instr, builtin, &args, tmp_index).is_some() {
+        if emit_dynamic_map_set_call(ir, extra_globals, static_regs, instr, pc, builtin, &args, tmp_index).is_some() {
             emit_branch_to_next(ir, pc, code.len());
             return true;
         }
@@ -216,7 +236,26 @@ pub(super) fn emit_recovered_builtin_call_block(
             emit_branch_to_next(ir, pc, code.len());
             return true;
         }
+        if emit_dynamic_map_get_call(ir, extra_globals, static_regs, instr, pc, builtin, &args, tmp_index).is_some() {
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
+        if emit_dynamic_map_has_call(ir, extra_globals, static_regs, instr, pc, builtin, &args, tmp_index).is_some() {
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
+        if emit_dynamic_map_delete_call(ir, extra_globals, static_regs, instr, pc, builtin, &args, tmp_index).is_some()
+        {
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
         if emit_dynamic_ptr_list_builtin_call(ir, extra_globals, static_regs, instr, pc, builtin, &args, tmp_index)
+            .is_some()
+        {
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
+        if emit_dynamic_i64_list_builtin_call(ir, static_regs, code, heap_values, instr, pc, builtin, &args, tmp_index)
             .is_some()
         {
             emit_branch_to_next(ir, pc, code.len());
@@ -241,7 +280,7 @@ pub(super) fn emit_recovered_builtin_call_block(
         })
         .collect::<Option<Vec<_>>>();
     if let Some(args) = scalar_args.as_ref() {
-        if emit_dynamic_map_set_call(ir, extra_globals, static_regs, instr, builtin, args, tmp_index).is_some() {
+        if emit_dynamic_map_set_call(ir, extra_globals, static_regs, instr, pc, builtin, args, tmp_index).is_some() {
             emit_branch_to_next(ir, pc, code.len());
             return true;
         }
@@ -249,7 +288,25 @@ pub(super) fn emit_recovered_builtin_call_block(
             emit_branch_to_next(ir, pc, code.len());
             return true;
         }
+        if emit_dynamic_map_get_call(ir, extra_globals, static_regs, instr, pc, builtin, args, tmp_index).is_some() {
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
+        if emit_dynamic_map_has_call(ir, extra_globals, static_regs, instr, pc, builtin, args, tmp_index).is_some() {
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
+        if emit_dynamic_map_delete_call(ir, extra_globals, static_regs, instr, pc, builtin, args, tmp_index).is_some() {
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
         if emit_dynamic_ptr_list_builtin_call(ir, extra_globals, static_regs, instr, pc, builtin, args, tmp_index)
+            .is_some()
+        {
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
+        if emit_dynamic_i64_list_builtin_call(ir, static_regs, code, heap_values, instr, pc, builtin, args, tmp_index)
             .is_some()
         {
             emit_branch_to_next(ir, pc, code.len());

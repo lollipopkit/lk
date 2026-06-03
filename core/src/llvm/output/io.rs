@@ -41,6 +41,9 @@ fn emit_native_fd_value(body: &mut String, fd: i32, value: &NativeStraightlineVa
         NativeStraightlineValue::DynamicSplitText { .. }
         | NativeStraightlineValue::DynamicTextChar
         | NativeStraightlineValue::MaybeI64 { .. }
+        | NativeStraightlineValue::MaybeF64 { .. }
+        | NativeStraightlineValue::MaybeBool { .. }
+        | NativeStraightlineValue::MaybeStrPtr { .. }
         | NativeStraightlineValue::List { .. }
         | NativeStraightlineValue::Map { .. }
         | NativeStraightlineValue::DisplayMap { .. }

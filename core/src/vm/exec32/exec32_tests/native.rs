@@ -1027,6 +1027,22 @@ fn execute_program32_method_helper_uses_list_handle_positional_args() {
 }
 
 #[test]
+fn program_execute32_installs_core_method_helper_by_default() {
+    let tokens = crate::token::Tokenizer::tokenize(
+        r#"
+        let parts = "red,blue".split(",");
+        return parts.join("|");
+        "#,
+    )
+    .expect("tokenize");
+    let program = crate::stmt::StmtParser::new(&tokens).parse_program().expect("parse");
+
+    let result = program.execute32().expect("execute");
+
+    assert_eq!(result.display_first_return(), "red|blue");
+}
+
+#[test]
 fn execute_program32_imports_typeof_as_runtime_native32() {
     let tokens = crate::token::Tokenizer::tokenize(
         r#"

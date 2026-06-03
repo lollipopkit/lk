@@ -2,15 +2,11 @@ mod display;
 mod equality;
 mod maps;
 mod modules;
-
-use crate::{
-    val::ShortStr,
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Opcode32, RuntimeMapKeyData},
-};
-
+mod strings;
 use super::const_display::{
     native_const_list_display, native_const_map_display, native_const_object_display, native_string_const_value,
 };
+use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Opcode32, RuntimeMapKeyData};
 use display::{native_arg_list_display, native_builtin_display, native_display_map_display, native_module_display};
 use equality::{
     native_display_map_entries_are_string_keyed, native_map_entries_are_string_keyed, native_map_entry_keys_match,
@@ -20,6 +16,8 @@ pub(in crate::llvm) use equality::{
     native_static_collection_equality_bool, native_static_contains, native_static_value_eq,
 };
 pub(super) use maps::{native_static_map_delete, native_static_map_from_pairs, native_static_map_rest};
+use strings::native_const_string_value;
+pub(super) use strings::{native_const_runtime_string, native_runtime_string_key_kind};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeStringKeyKind {
@@ -31,6 +29,7 @@ pub(super) enum NativeStringKeyKind {
 pub(super) enum NativeListElementKind {
     I64,
     F64,
+    Bool,
     Text,
     #[allow(dead_code)]
     StrPtr,
@@ -46,12 +45,26 @@ pub(super) enum NativeMapKeyKind {
 pub(super) enum NativeMapValueKind {
     I64,
     F64,
+    Bool,
+    StrPtr,
 }
 
 #[derive(Clone)]
 pub(super) enum NativeStraightlineValue {
     I64(String),
     MaybeI64 {
+        value: String,
+        present: String,
+    },
+    MaybeF64 {
+        value: String,
+        present: String,
+    },
+    MaybeBool {
+        value: String,
+        present: String,
+    },
+    MaybeStrPtr {
         value: String,
         present: String,
     },
@@ -346,6 +359,9 @@ pub(super) fn native_static_to_string_value(
         NativeStraightlineValue::String { value, .. } => value,
         NativeStraightlineValue::StringPtr(_)
         | NativeStraightlineValue::MaybeI64 { .. }
+        | NativeStraightlineValue::MaybeF64 { .. }
+        | NativeStraightlineValue::MaybeBool { .. }
+        | NativeStraightlineValue::MaybeStrPtr { .. }
         | NativeStraightlineValue::Text(_)
         | NativeStraightlineValue::DynamicSplitText { .. }
         | NativeStraightlineValue::DynamicTextChar => return None,
@@ -457,6 +473,9 @@ pub(super) fn native_static_truthy(value: &NativeStraightlineValue) -> Option<bo
         NativeStraightlineValue::String { .. }
         | NativeStraightlineValue::StringPtr(_)
         | NativeStraightlineValue::MaybeI64 { .. }
+        | NativeStraightlineValue::MaybeF64 { .. }
+        | NativeStraightlineValue::MaybeBool { .. }
+        | NativeStraightlineValue::MaybeStrPtr { .. }
         | NativeStraightlineValue::Text(_)
         | NativeStraightlineValue::DynamicSplitText { .. }
         | NativeStraightlineValue::DynamicTextChar
@@ -1324,6 +1343,9 @@ pub(super) fn native_runtime_const_value(value: &NativeStraightlineValue) -> Opt
         NativeStraightlineValue::Object { .. }
         | NativeStraightlineValue::Channel { .. }
         | NativeStraightlineValue::MaybeI64 { .. }
+        | NativeStraightlineValue::MaybeF64 { .. }
+        | NativeStraightlineValue::MaybeBool { .. }
+        | NativeStraightlineValue::MaybeStrPtr { .. }
         | NativeStraightlineValue::DynamicMap { .. }
         | NativeStraightlineValue::DynamicMapIter { .. }
         | NativeStraightlineValue::DynamicMapEntry { .. }
@@ -1443,38 +1465,11 @@ fn native_map_key(value: NativeStraightlineValue) -> Option<RuntimeMapKeyData> {
     }
 }
 
-fn native_const_string_value(value: &str) -> ConstRuntimeValue32Data {
-    if ShortStr::new(value).is_some() {
-        ConstRuntimeValue32Data::ShortStr(value.to_string())
-    } else {
-        ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::LongString(value.to_string())))
-    }
-}
-
-pub(super) fn native_const_runtime_string(value: ConstRuntimeValue32Data) -> Option<String> {
-    match value {
-        ConstRuntimeValue32Data::ShortStr(value) => Some(value),
-        ConstRuntimeValue32Data::Heap(value) => match *value {
-            ConstHeapValue32Data::LongString(value) => Some(value),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn native_string_key_value(value: NativeStraightlineValue) -> Option<String> {
     match value {
         NativeStraightlineValue::String { value, .. } => Some(value),
         NativeStraightlineValue::StringPtr(_) => None,
         _ => None,
-    }
-}
-
-pub(super) fn native_runtime_string_key_kind(value: &str) -> NativeStringKeyKind {
-    if ShortStr::new(value).is_some() {
-        NativeStringKeyKind::Short
-    } else {
-        NativeStringKeyKind::Heap
     }
 }
 

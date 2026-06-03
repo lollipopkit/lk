@@ -100,6 +100,11 @@ impl MapModule {
 }
 
 fn set_map_entry(map: &TypedMap, key: RuntimeMapKey, value: RuntimeVal) -> TypedMap {
+    if matches!(map, TypedMap::Mixed(entries) if entries.is_empty()) {
+        let mut out = map.clone();
+        out.set(key, value);
+        return out;
+    }
     match map {
         TypedMap::Mixed(entries) => {
             let mut entries = entries.clone();
@@ -751,6 +756,29 @@ mod tests {
             panic!("map.values should keep int list shape");
         };
         assert_eq!(map_values.as_slice(), &[10, 20]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_map_set_counts_dynamic_string_keys() -> Result<()> {
+        let result = run32_return(
+            r#"
+            import map;
+            let words = "the fox the".split(" ");
+            let counts = {};
+            for word in words {
+              let current = map.get(counts, word);
+              if (current == nil) {
+                counts = map.set(counts, word, 1);
+              } else {
+                counts = map.set(counts, word, current + 1);
+              }
+            }
+            return map.get(counts, "the");
+            "#,
+        )?;
+
+        assert_eq!(result, RuntimeVal::Int(2));
         Ok(())
     }
 

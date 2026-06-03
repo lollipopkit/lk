@@ -13,7 +13,7 @@ use crate::{
         },
         straightline_value::{NativeListElementKind, NativeStraightlineValue, native_static_list_push},
     },
-    vm::{ConstHeapValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Opcode32},
 };
 
 pub(super) fn emit_list_push_block(
@@ -57,16 +57,19 @@ pub(super) fn emit_list_push_block(
             }
         }
         if let Some(NativeStraightlineValue::DynamicPairList { id, first, second }) = target.clone()
-            && let Some(NativeStraightlineValue::ArgList { elements }) =
-                static_regs.get(instr.b() as usize).and_then(Clone::clone)
+            && let Some((field_first, field_second)) =
+                dynamic_pair_fields(static_regs.get(instr.b() as usize).and_then(Clone::clone))
         {
-            let [field_first, field_second] = elements.as_slice() else {
+            let Some(next_first) = dynamic_pair_field_kind(&field_first) else {
                 return false;
             };
-            if first != NativeListElementKind::StrPtr || second != dynamic_pair_second_kind(field_second) {
+            let Some(next_second) = dynamic_pair_field_kind(&field_second) else {
+                return false;
+            };
+            if first != next_first || second != next_second {
                 return false;
             }
-            if emit_dynamic_pair_list_push(ir, id, field_first, field_second, tmp_index).is_none() {
+            if emit_dynamic_pair_list_push(ir, id, &field_first, &field_second, tmp_index).is_none() {
                 return false;
             }
             static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicPairList { id, first, second });
@@ -110,6 +113,23 @@ pub(super) fn emit_list_push_block(
         }
         if let Some(NativeStraightlineValue::DynamicList {
             id,
+            element: NativeListElementKind::Bool,
+        }) = target.clone()
+        {
+            if facts.register_kind_before(pc, instr.b()) != Some(NativeScalarKind::Bool)
+                || emit_dynamic_int_list_push(ir, id, instr.b(), tmp_index).is_none()
+            {
+                return false;
+            }
+            static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
+                id,
+                element: NativeListElementKind::Bool,
+            });
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
+        if let Some(NativeStraightlineValue::DynamicList {
+            id,
             element: NativeListElementKind::StrPtr,
         }) = target
         {
@@ -147,16 +167,12 @@ pub(super) fn emit_list_push_block(
         }
         return false;
     };
-    if let Some(NativeStraightlineValue::ArgList { elements }) =
-        static_regs.get(instr.b() as usize).and_then(Clone::clone)
-        && let [first, second] = elements.as_slice()
-        && emit_dynamic_pair_list_push(ir, id, first, second, tmp_index).is_some()
+    if let Some((first, second)) = dynamic_pair_fields(static_regs.get(instr.b() as usize).and_then(Clone::clone))
+        && emit_dynamic_pair_list_push(ir, id, &first, &second, tmp_index).is_some()
     {
-        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicPairList {
-            id,
-            first: NativeListElementKind::StrPtr,
-            second: dynamic_pair_second_kind(second),
-        });
+        let first = dynamic_pair_field_kind(&first).unwrap_or(NativeListElementKind::StrPtr);
+        let second = dynamic_pair_field_kind(&second).unwrap_or(NativeListElementKind::I64);
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicPairList { id, first, second });
     } else if let Some(NativeStraightlineValue::DynamicArgListElement { elements, .. }) =
         static_regs.get(instr.b() as usize).and_then(Clone::clone)
     {
@@ -186,6 +202,14 @@ pub(super) fn emit_list_push_block(
         static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
             id,
             element: NativeListElementKind::F64,
+        });
+    } else if facts.register_kind_before(pc, instr.b()) == Some(NativeScalarKind::Bool) {
+        if emit_dynamic_int_list_push(ir, id, instr.b(), tmp_index).is_none() {
+            return false;
+        }
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
+            id,
+            element: NativeListElementKind::Bool,
         });
     } else {
         let Some(value) = text_value_from_reg(
@@ -247,10 +271,48 @@ pub(super) fn emit_list_push_block(
     true
 }
 
-fn dynamic_pair_second_kind(value: &NativeStraightlineValue) -> NativeListElementKind {
+fn dynamic_pair_field_kind(value: &NativeStraightlineValue) -> Option<NativeListElementKind> {
     match value {
-        NativeStraightlineValue::F64(_) => NativeListElementKind::F64,
-        _ => NativeListElementKind::I64,
+        NativeStraightlineValue::I64(_) => Some(NativeListElementKind::I64),
+        NativeStraightlineValue::Bool(_) => Some(NativeListElementKind::Bool),
+        NativeStraightlineValue::F64(_) => Some(NativeListElementKind::F64),
+        NativeStraightlineValue::String { .. } | NativeStraightlineValue::StringPtr(_) => {
+            Some(NativeListElementKind::StrPtr)
+        }
+        _ => None,
+    }
+}
+
+fn dynamic_pair_fields(
+    value: Option<NativeStraightlineValue>,
+) -> Option<(NativeStraightlineValue, NativeStraightlineValue)> {
+    match value? {
+        NativeStraightlineValue::ArgList { elements } => {
+            let [first, second] = elements.as_slice() else {
+                return None;
+            };
+            Some((first.clone(), second.clone()))
+        }
+        NativeStraightlineValue::List { elements, .. } => {
+            let [first, second] = elements.as_slice() else {
+                return None;
+            };
+            Some((native_pair_const_field(first)?, native_pair_const_field(second)?))
+        }
+        _ => None,
+    }
+}
+
+fn native_pair_const_field(value: &ConstRuntimeValue32Data) -> Option<NativeStraightlineValue> {
+    match value {
+        ConstRuntimeValue32Data::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
+        ConstRuntimeValue32Data::Bool(value) => Some(NativeStraightlineValue::Bool(if *value {
+            "1".to_string()
+        } else {
+            "0".to_string()
+        })),
+        ConstRuntimeValue32Data::Float(value) => Some(NativeStraightlineValue::F64(value.to_string())),
+        _ => None,
     }
 }
 

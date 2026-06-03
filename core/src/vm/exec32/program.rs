@@ -14,7 +14,7 @@ use crate::{
 use super::{Executor32, Program32Result, execute_module32, imports::import_runtime_export};
 
 pub fn execute_program32(program: &Program) -> Result<Program32Result> {
-    let mut ctx = VmContext::new_without_core_vm_builtins();
+    let mut ctx = VmContext::new();
     execute_program32_with_ctx(program, &mut ctx)
 }
 
