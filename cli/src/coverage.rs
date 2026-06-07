@@ -15,7 +15,7 @@ use lk_core::{
 
 use crate::build_vm_context;
 
-pub(crate) fn run_coverage_report(path: &Path, runtime: bool) -> anyhow::Result<()> {
+pub(crate) fn run_coverage_report(path: &Path, disassemble: bool, runtime: bool) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let program = parse_program(&source)?;
     if runtime {
@@ -26,6 +26,9 @@ pub(crate) fn run_coverage_report(path: &Path, runtime: bool) -> anyhow::Result<
             .with_context(|| format!("execute {} for runtime coverage", path.display()))?;
         rt::shutdown_runtime();
         print_static_coverage(path, &result.module);
+        if disassemble {
+            println!("{}", lk_core::vm::disassemble_module(&result.module));
+        }
         if vm_runtime_metrics_enabled() {
             print_runtime_metrics(vm_runtime_metrics_snapshot());
         } else {
@@ -36,6 +39,9 @@ pub(crate) fn run_coverage_report(path: &Path, runtime: bool) -> anyhow::Result<
         let module = compile_program_module_with_ctx(&program, &mut ctx)
             .with_context(|| format!("compile Instr module for {}", path.display()))?;
         print_static_coverage(path, &module);
+        if disassemble {
+            println!("{}", lk_core::vm::disassemble_module(&module));
+        }
     }
 
     Ok(())

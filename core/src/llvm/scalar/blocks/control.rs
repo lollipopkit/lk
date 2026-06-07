@@ -107,6 +107,42 @@ pub(super) fn emit_compare_test_block(
     let Some((taken, fallthrough)) = compare_test_targets(pc, instr, code) else {
         return false;
     };
+    if instr.opcode() == Opcode::TestEqIntI2 {
+        let Some(lhs_kind) = facts
+            .register_kind_before(pc, instr.a())
+            .or_else(|| local_register_kind_before(code, pc, instr.a()))
+        else {
+            return false;
+        };
+        let Some(rhs_kind) = facts
+            .register_kind_before(pc, instr.b())
+            .or_else(|| local_register_kind_before(code, pc, instr.b()))
+        else {
+            return false;
+        };
+        if lhs_kind != NativeScalarKind::I64 || rhs_kind != NativeScalarKind::I64 {
+            return false;
+        }
+        let packed = instr.c();
+        let lhs_value = i64::from(packed >> 4);
+        let rhs_value = i64::from(packed & 0x0f);
+        let lhs = next_tmp(tmp_index);
+        let rhs = next_tmp(tmp_index);
+        let lhs_eq = next_tmp(tmp_index);
+        let rhs_eq = next_tmp(tmp_index);
+        let cond = next_tmp(tmp_index);
+        ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.b()));
+        ir.push_str(&format!("  {lhs_eq} = icmp eq i64 {lhs}, {lhs_value}\n"));
+        ir.push_str(&format!("  {rhs_eq} = icmp eq i64 {rhs}, {rhs_value}\n"));
+        ir.push_str(&format!("  {cond} = and i1 {lhs_eq}, {rhs_eq}\n"));
+        ir.push_str(&format!(
+            "  br i1 {cond}, label {}, label {}\n",
+            native_label(fallthrough, code.len()),
+            native_label(taken, code.len())
+        ));
+        return true;
+    }
     let Some(lhs_kind) = facts
         .register_kind_before(pc, instr.a())
         .or_else(|| local_register_kind_before(code, pc, instr.a()))

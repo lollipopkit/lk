@@ -50,8 +50,14 @@ mod tests {
     fn test_cli_args_accepts_coverage_file() {
         let args = CliArgs::try_parse_from(["lk", "coverage", "bench/workloads_business_algorithms.lk"])
             .expect("should parse coverage command");
-        if let Some(Commands::Coverage { file, runtime }) = args.command {
+        if let Some(Commands::Coverage {
+            file,
+            disassemble,
+            runtime,
+        }) = args.command
+        {
             assert_eq!(file, PathBuf::from("bench/workloads_business_algorithms.lk"));
+            assert!(!disassemble);
             assert!(!runtime);
         } else {
             panic!("expected coverage command");

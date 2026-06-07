@@ -215,6 +215,7 @@ pub enum Opcode {
     TestGtIntI = 87,
     TestGeIntI = 88,
     Move2 = 89,
+    TestEqIntI2 = 90,
 }
 
 impl Opcode {
@@ -314,6 +315,7 @@ impl Opcode {
             87 => Some(Self::TestGtIntI),
             88 => Some(Self::TestGeIntI),
             89 => Some(Self::Move2),
+            90 => Some(Self::TestEqIntI2),
             _ => None,
         }
     }
@@ -368,6 +370,7 @@ impl Opcode {
                 | Self::TestLeIntI
                 | Self::TestGtIntI
                 | Self::TestGeIntI
+                | Self::TestEqIntI2
         )
     }
 

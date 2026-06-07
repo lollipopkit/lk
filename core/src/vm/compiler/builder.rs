@@ -169,6 +169,24 @@ impl Compiler {
         Ok(pc)
     }
 
+    pub(super) fn emit_compare_test_pair_immediate_placeholder(
+        &mut self,
+        lhs: u16,
+        lhs_rhs: u8,
+        rhs: u16,
+        rhs_rhs: u8,
+    ) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::abc(
+            Opcode::TestEqIntI2,
+            checked_u8("pair compare lhs", lhs)?,
+            checked_u8("pair compare rhs", rhs)?,
+            pack_u4_pair(lhs_rhs, rhs_rhs),
+        ));
+        self.emit(Instr::sj(Opcode::Jmp, 0));
+        Ok(pc)
+    }
+
     pub(super) fn emit_raise(&mut self, message: &str) -> Result<()> {
         let const_index = self.push_string(message)?;
         self.emit(Instr::abx(Opcode::Raise, 0, const_index));

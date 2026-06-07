@@ -194,8 +194,8 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
   $: technicalCommands = getTechnicalCommands(locale)
   $: performanceMetric =
     locale === 'zh-CN'
-      ? '当前 workload suite：默认 bytecode VM 仍在优化中；显式 native/AOT 路径约 0.35x vs Lua。'
-      : 'Current workload suite: the default bytecode VM is still being optimized; explicit native/AOT paths are about 0.35x vs Lua.'
+      ? '当前 workload suite：默认 bytecode VM 约 1.03x vs Lua，显式 native/AOT 路径约 0.35x vs Lua。'
+      : 'Current workload suite: the default bytecode VM is about 1.03x vs Lua; explicit native/AOT paths are about 0.35x vs Lua.'
   $: compileStripRuntime = locale === 'zh-CN' ? 'bytecode VM' : 'bytecode VM'
 
   function getRuntimeRows(activeLocale: Locales | undefined): RuntimeRow[] {
@@ -238,7 +238,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         {
           icon: Braces,
           title: 'Opcode specialization',
-          body: '当前 opcode 优化面向通用 operand shape，用于减少解释器里的重复 materialization。',
+          body: '当前 opcode 与 lowering 优化面向通用 operand shape，用于减少解释器里的重复 materialization 和临时寄存器搬运。',
         },
         {
           icon: Code2,
@@ -262,7 +262,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
       {
         icon: Braces,
         title: 'Opcode specialization targets shared shapes',
-        body: 'Current optimization focuses on general operand shapes: Int immediates, compare-test, nil branches, field keys, ConcatN, and Return0/Return1 instead of workload-specific opcodes.',
+        body: 'Current optimization focuses on general operand shapes and lowering: Int immediates, compare-test, nil branches, field keys, ConcatN, Return0/Return1, and fewer temporary-register moves.',
       },
       {
         icon: Code2,
@@ -293,17 +293,19 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
             '`AddIntI`、`MulIntI`、`ModIntI` 覆盖 small-int literal RHS arithmetic。',
             '`BrNil` / `BrNotNil` 覆盖 condition-context nilness branch。',
             '`TestEqIntI` / `TestNeIntI` 覆盖 facts-confirmed Int 与 i8 literal equality compare-test。',
-            '`GetFieldK` / `SetFieldK`、`ConcatN`、`Return0` / `Return1` 覆盖通用 field、string concat 和 return shape。',
+            '`TestEqIntI2` 覆盖 small-int pair condition；`Move2` 覆盖相邻本地赋值链；`GetFieldK` / `SetFieldK`、`ConcatN`、`Return0` / `Return1` 覆盖通用 field、string concat 和 return shape。',
+            '`math.floor(Int-like)` 与外部 `map.get` 支持 direct-to-destination lowering，减少 `Move dst, temp`。',
           ],
         },
         {
           kicker: 'Benchmark evidence',
           title: 'VM 是默认路径，native/AOT 是独立性能路径。',
-          body: '当前 workload suite 的验证命令默认采用 `RUNS=3 EXTRA_RUNS=5`。显式 native/AOT 路径约 `0.35x` vs Lua；默认 bytecode VM 最新复验为 `1.094x` vs Lua。',
+          body: '当前 workload suite 的验证命令默认采用 `RUNS=3 EXTRA_RUNS=5`。显式 native/AOT 路径约 `0.35x` vs Lua；默认 bytecode VM 最新复验为 `1.029x` vs Lua。',
           items: [
             '默认 `lk FILE` 与 `LK_FORCE_VM=1` 都是解释器语义；`LK_NATIVE_RUN=1` 才进入 cached native。',
             'VM/AOT/Lua checksum 保持一致，避免只看 timing。',
             'immediate compare-test A/B 为 `1.077x` vs `1.081x`，收益小但覆盖真实 compare shape。',
+            '本轮 direct-to-destination lowering 后，全 workload 静态 `Move` 降到 `345`。',
           ],
         },
       ]
@@ -328,17 +330,19 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
           '`AddIntI`, `MulIntI`, and `ModIntI` cover small-int literal RHS arithmetic.',
           '`BrNil` / `BrNotNil` cover condition-context nilness branches.',
           '`TestEqIntI` / `TestNeIntI` cover facts-confirmed Int and i8 literal equality compare-test shapes.',
-          '`GetFieldK` / `SetFieldK`, `ConcatN`, and `Return0` / `Return1` cover general field, string concat, and return shapes.',
+          '`TestEqIntI2` covers small-int pair conditions; `Move2` covers adjacent local assignment chains; `GetFieldK` / `SetFieldK`, `ConcatN`, and `Return0` / `Return1` cover general field, string concat, and return shapes.',
+          '`math.floor(Int-like)` and external `map.get` use direct-to-destination lowering to reduce `Move dst, temp`.',
         ],
       },
       {
         kicker: 'Benchmark evidence',
         title: 'The VM is the default path; native/AOT is a separate performance path.',
-        body: 'The current workload suite uses `RUNS=3 EXTRA_RUNS=5` by default. Explicit native/AOT paths are about `0.35x` vs Lua; the latest default bytecode VM validation is `1.094x` vs Lua.',
+        body: 'The current workload suite uses `RUNS=3 EXTRA_RUNS=5` by default. Explicit native/AOT paths are about `0.35x` vs Lua; the latest default bytecode VM validation is `1.029x` vs Lua.',
         items: [
           'Default `lk FILE` and `LK_FORCE_VM=1` both use interpreter semantics; `LK_NATIVE_RUN=1` enters cached native execution.',
           'VM/AOT/Lua checksum validation stays aligned, so timing is not the only signal.',
           'Immediate compare-test A/B measured `1.077x` vs `1.081x`: small benefit, real compare-shape coverage.',
+          'After this direct-to-destination lowering pass, static `Move` count across the workload is down to `345`.',
         ],
       },
     ]

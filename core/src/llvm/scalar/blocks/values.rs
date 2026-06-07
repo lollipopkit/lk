@@ -73,6 +73,7 @@ pub(super) fn emit_value_block(
             facts,
             tmp_index,
         ),
+        Opcode::Move2 => emit_move2_i64(ir, static_regs, code, pc, instr, register_count, facts, tmp_index),
         Opcode::ToString => emit_to_string(ir, static_regs, code, pc, instr, register_count, facts, tmp_index),
         Opcode::ConcatString => emit_concat_string(
             ir,
@@ -745,6 +746,38 @@ fn emit_move(
     };
     emit_static_scalar_value_store_if_needed(ir, instr.a(), &value);
     static_regs[instr.a() as usize] = Some(value);
+    emit_branch_to_next(ir, pc, code.len());
+    true
+}
+
+fn emit_move2_i64(
+    ir: &mut String,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    code: &[Instr],
+    pc: usize,
+    instr: Instr,
+    register_count: usize,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> bool {
+    if !three_regs_in_bounds(register_count, instr) {
+        return false;
+    }
+    if facts.register_kind_before(pc, instr.b()) != Some(NativeScalarKind::I64)
+        || facts.register_kind_before(pc, instr.c()) != Some(NativeScalarKind::I64)
+    {
+        return false;
+    }
+
+    let first = next_tmp(tmp_index);
+    ir.push_str(&format!("  {first} = load i64, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  store i64 {first}, ptr %r{}.slot\n", instr.a()));
+    static_regs[instr.a() as usize] = static_regs.get(instr.b() as usize).and_then(Clone::clone);
+
+    let second = next_tmp(tmp_index);
+    ir.push_str(&format!("  {second} = load i64, ptr %r{}.slot\n", instr.c()));
+    ir.push_str(&format!("  store i64 {second}, ptr %r{}.slot\n", instr.b()));
+    static_regs[instr.b() as usize] = static_regs.get(instr.c() as usize).and_then(Clone::clone);
     emit_branch_to_next(ir, pc, code.len());
     true
 }

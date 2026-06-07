@@ -126,6 +126,9 @@ enum Commands {
         /// Source file to inspect
         #[arg(value_name = "FILE", value_parser = parse_sanitized_path)]
         file: PathBuf,
+        /// Print disassembled VM functions after static coverage
+        #[arg(long)]
+        disassemble: bool,
         /// Execute after static coverage to collect clone/move runtime metrics
         #[arg(long)]
         runtime: bool,
@@ -408,8 +411,12 @@ fn main() -> anyhow::Result<()> {
                 run_type_check(&file)?;
                 return Ok(());
             }
-            Commands::Coverage { file, runtime } => {
-                run_coverage_report(&file, runtime)?;
+            Commands::Coverage {
+                file,
+                disassemble,
+                runtime,
+            } => {
+                run_coverage_report(&file, disassemble, runtime)?;
                 return Ok(());
             }
             Commands::Init { name } => {

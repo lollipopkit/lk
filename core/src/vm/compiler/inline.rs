@@ -120,9 +120,7 @@ impl Compiler {
         match stmt {
             Stmt::Block { statements } => {
                 self.local_rebind_suppression += 1;
-                for stmt in statements {
-                    self.lower_inline_stmt(stmt, result, returns, false)?;
-                }
+                self.lower_inline_stmt_sequence(statements, result, returns)?;
                 self.local_rebind_suppression -= 1;
                 Ok(())
             }
@@ -156,6 +154,26 @@ impl Compiler {
             }
             _ => bail!("Compiler unsupported inline prefix statement"),
         }
+    }
+
+    fn lower_inline_stmt_sequence(
+        &mut self,
+        statements: &[Box<Stmt>],
+        result: u16,
+        returns: &mut InlineReturnPatches,
+    ) -> Result<()> {
+        let mut index = 0;
+        while index < statements.len() {
+            if index + 1 < statements.len()
+                && self.try_lower_move2_assign_pair(statements[index].as_ref(), statements[index + 1].as_ref())?
+            {
+                index += 2;
+            } else {
+                self.lower_inline_stmt(statements[index].as_ref(), result, returns, false)?;
+                index += 1;
+            }
+        }
+        Ok(())
     }
 
     fn lower_inline_return(

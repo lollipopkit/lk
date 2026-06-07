@@ -70,6 +70,16 @@ impl Compiler {
                 self.emit_bin_op_to_register_with_flavor(dst, op, lhs, rhs, flavor)?;
                 Ok(true)
             }
+            Expr::CallExpr(callee, args)
+                if self.is_external_module_call(callee, args, "math", "floor", 1)
+                    && math_floor_arg_is_int_like(&args[0], &self.locals, &self.function.performance) =>
+            {
+                self.try_lower_expr_to_register(dst, &args[0])
+            }
+            Expr::CallExpr(callee, args) if self.is_external_module_call(callee, args, "map", "get", 2) => {
+                self.lower_map_get_function_call_to_register(dst, args)?;
+                Ok(true)
+            }
             _ => Ok(false),
         }
     }
@@ -129,5 +139,58 @@ impl Compiler {
             ),
         }
         Ok(())
+    }
+}
+
+impl Compiler {
+    fn is_external_module_call(
+        &self,
+        callee: &Expr,
+        args: &[Box<Expr>],
+        module: &str,
+        method: &str,
+        arity: usize,
+    ) -> bool {
+        if args.len() != arity {
+            return false;
+        }
+        let Expr::Access(target, field) = callee else {
+            return false;
+        };
+        matches!(target.as_ref(), Expr::Var(name)
+            if name == module
+                && self.global_names.contains_key(name)
+                && !self.locals.contains_key(name)
+                && !self.function_names.contains_key(name)
+                && !self.native_names.contains_key(name))
+            && matches!(field.as_ref(), Expr::Literal(value) if value.as_str() == Some(method))
+    }
+}
+
+fn math_floor_arg_is_int_like(
+    expr: &Expr,
+    locals: &std::collections::HashMap<String, u16>,
+    facts: &crate::vm::analysis::PerformanceFacts,
+) -> bool {
+    match expr {
+        Expr::Paren(inner) => math_floor_arg_is_int_like(inner, locals, facts),
+        Expr::Literal(LiteralVal::Int(_)) => true,
+        Expr::Var(name) => locals
+            .get(name)
+            .copied()
+            .is_some_and(|reg| facts.value_kind(reg) == PerfValueKind::Int),
+        Expr::Bin(lhs, op, rhs)
+            if matches!(
+                op,
+                crate::operator::BinOp::Add
+                    | crate::operator::BinOp::Sub
+                    | crate::operator::BinOp::Mul
+                    | crate::operator::BinOp::Div
+                    | crate::operator::BinOp::Mod
+            ) && super::support::numeric_flavor(lhs, op, rhs) == super::support::NumericFlavor::Int =>
+        {
+            math_floor_arg_is_int_like(lhs, locals, facts) && math_floor_arg_is_int_like(rhs, locals, facts)
+        }
+        _ => false,
     }
 }

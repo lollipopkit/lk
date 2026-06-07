@@ -553,6 +553,11 @@ impl Compiler {
     pub(super) fn emit_condition_false_jumps(&mut self, condition: &Expr) -> Result<Vec<usize>> {
         match condition {
             Expr::And(lhs, rhs) => {
+                if ENABLE_COMPARE_TEST_PAIR_IMMEDIATE_LOWERING
+                    && let Some(pc) = self.try_emit_compare_test_pair_immediate_placeholder(lhs, rhs)?
+                {
+                    return Ok(vec![pc]);
+                }
                 let mut jumps = self.emit_condition_false_jumps(lhs)?;
                 jumps.extend(self.emit_condition_false_jumps(rhs)?);
                 Ok(jumps)
@@ -604,6 +609,30 @@ impl Compiler {
                 Ok(vec![self.emit_test_placeholder(condition)?])
             }
         }
+    }
+
+    fn try_emit_compare_test_pair_immediate_placeholder(&mut self, lhs: &Expr, rhs: &Expr) -> Result<Option<usize>> {
+        let Some((first_name, first_value)) = equality_u4_local_immediate(lhs) else {
+            return Ok(None);
+        };
+        let Some((second_name, second_value)) = equality_u4_local_immediate(rhs) else {
+            return Ok(None);
+        };
+        let Some(first_reg) = self.locals.get(first_name).copied() else {
+            return Ok(None);
+        };
+        let Some(second_reg) = self.locals.get(second_name).copied() else {
+            return Ok(None);
+        };
+        if self.cell_locals.contains(first_name)
+            || self.cell_locals.contains(second_name)
+            || self.function.performance.value_kind(first_reg) != PerfValueKind::Int
+            || self.function.performance.value_kind(second_reg) != PerfValueKind::Int
+        {
+            return Ok(None);
+        }
+        self.emit_compare_test_pair_immediate_placeholder(first_reg, first_value, second_reg, second_value)
+            .map(Some)
     }
 
     fn lower_compare_test_immediate_operands(
@@ -1691,6 +1720,7 @@ fn list_int_key(
 const ENABLE_GET_LIST_LOWERING: bool = false;
 const ENABLE_COMPARE_TEST_LOWERING: bool = true;
 const ENABLE_COMPARE_TEST_IMMEDIATE_LOWERING: bool = true;
+const ENABLE_COMPARE_TEST_PAIR_IMMEDIATE_LOWERING: bool = true;
 
 fn compare_test_opcode(op: &BinOp) -> Option<Opcode> {
     match op {
@@ -1732,6 +1762,31 @@ fn compare_test_immediate_operand(expr: &Expr) -> Option<i8> {
     match expr {
         Expr::Paren(inner) => compare_test_immediate_operand(inner),
         Expr::Literal(LiteralVal::Int(value)) => i8::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn equality_u4_local_immediate(expr: &Expr) -> Option<(&str, u8)> {
+    let Expr::Bin(lhs, BinOp::Eq, rhs) = expr else {
+        return None;
+    };
+    if let Some(name) = simple_local_expr_name(lhs)
+        && let Some(value) = u4_literal(rhs)
+    {
+        return Some((name, value));
+    }
+    if let Some(name) = simple_local_expr_name(rhs)
+        && let Some(value) = u4_literal(lhs)
+    {
+        return Some((name, value));
+    }
+    None
+}
+
+fn u4_literal(expr: &Expr) -> Option<u8> {
+    match expr {
+        Expr::Paren(inner) => u4_literal(inner),
+        Expr::Literal(LiteralVal::Int(value)) => u8::try_from(*value).ok().filter(|value| *value < 16),
         _ => None,
     }
 }

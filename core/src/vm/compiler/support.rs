@@ -507,6 +507,13 @@ pub(super) fn checked_u8(name: &str, value: u16) -> Result<u8> {
     u8::try_from(value).map_err(|_| anyhow!("Compiler {name} register {} exceeds u8 encoding", value))
 }
 
+#[inline]
+pub(super) fn pack_u4_pair(hi: u8, lo: u8) -> u8 {
+    debug_assert!(hi < 16);
+    debug_assert!(lo < 16);
+    (hi << 4) | lo
+}
+
 pub(super) fn int_immediate_operand(op: &BinOp, expr: &Expr) -> Option<i8> {
     let value = match expr {
         Expr::Paren(inner) => return int_immediate_operand(op, inner),

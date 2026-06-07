@@ -465,6 +465,25 @@ impl Executor {
         }
     }
 
+    #[inline(always)]
+    pub(super) fn apply_compare_test_false_branch_unchecked(
+        &mut self,
+        function: &Function,
+        code: &[Instr],
+        value: bool,
+    ) {
+        if let Some(fact) = function.performance.compare_test_branch(self.pc) {
+            self.pc = if value { self.pc + 2 } else { fact.target_pc };
+        } else {
+            let jmp = code[self.pc + 1];
+            if value {
+                self.pc += 2;
+            } else {
+                self.pc = self.relative_pc_unchecked(jmp.sj_arg());
+            }
+        }
+    }
+
     #[inline]
     pub(super) fn fused_bool_branch_fact(
         &self,

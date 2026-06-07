@@ -504,7 +504,6 @@ impl Executor {
                 function.register_count
             );
         }
-
         let collect_metrics = vm_runtime_metrics_enabled();
         self.collect_metrics = collect_metrics;
         let code = &function.code;
@@ -949,6 +948,18 @@ impl Executor {
                         _ => self.compare_test_immediate_value_slow(instr, lhs_idx)?,
                     };
                     self.apply_compare_test_branch_unchecked(function, code, instr, value);
+                }
+                Opcode::TestEqIntI2 => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs_idx = self.stack_index_unchecked(instr.b());
+                    let packed = instr.c();
+                    let lhs_rhs = i64::from(packed >> 4);
+                    let rhs_rhs = i64::from(packed & 0x0f);
+                    let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => *lhs == lhs_rhs && *rhs == rhs_rhs,
+                        _ => false,
+                    };
+                    self.apply_compare_test_false_branch_unchecked(function, code, value);
                 }
                 opcode if opcode.is_int_immediate_compare_test() => {
                     let lhs_idx = self.stack_index_unchecked(instr.a());

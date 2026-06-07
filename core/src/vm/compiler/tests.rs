@@ -513,6 +513,88 @@ fn compiler_lowers_conditional_expression() {
 }
 
 #[test]
+fn compiler_lowers_int_math_floor_directly_into_destination() {
+    let program = parse_program(
+        r#"
+        let lo = 2;
+        let hi = 8;
+        let mid = math.floor((lo + hi) / 2);
+        return mid;
+        "#,
+    );
+    let module =
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("compile module");
+    let function = module.entry_function().expect("entry function");
+
+    let div = function
+        .code
+        .iter()
+        .find(|instr| instr.opcode() == Opcode::DivInt)
+        .expect("expected int division for floor argument");
+    let mid_return = function
+        .code
+        .iter()
+        .find(|instr| instr.opcode() == Opcode::Return1)
+        .expect("expected single return");
+
+    assert_eq!(
+        div.a(),
+        mid_return.a(),
+        "math.floor(Int) should write division directly into the destination local: {:?}",
+        function.code
+    );
+    assert!(
+        !function
+            .code
+            .windows(2)
+            .any(|window| window[0].opcode() == Opcode::DivInt && window[1].opcode() == Opcode::Move),
+        "math.floor(Int) should not emit DivInt followed by a destination Move: {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn compiler_lowers_map_get_directly_into_destination() {
+    let program = parse_program(
+        r#"
+        let values = {"x": 42};
+        let key = "x";
+        let value = map.get(values, key);
+        return value;
+        "#,
+    );
+    let module =
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["map"]).expect("compile module");
+    let function = module.entry_function().expect("entry function");
+
+    let get = function
+        .code
+        .iter()
+        .find(|instr| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK))
+        .expect("expected map.get lowering");
+    let value_return = function
+        .code
+        .iter()
+        .find(|instr| instr.opcode() == Opcode::Return1)
+        .expect("expected single return");
+
+    assert_eq!(
+        get.a(),
+        value_return.a(),
+        "map.get should write directly into the destination local: {:?}",
+        function.code
+    );
+    assert!(
+        !function.code.windows(2).any(
+            |window| matches!(window[0].opcode(), Opcode::GetIndex | Opcode::GetFieldK)
+                && window[1].opcode() == Opcode::Move
+        ),
+        "map.get should not emit GetIndex/GetFieldK followed by a destination Move: {:?}",
+        function.code
+    );
+}
+
+#[test]
 fn compiler_lowers_list_literal_to_heap_list() {
     let function = compile_source("return [1, 2 + 3, \"x\"];").expect("compile source");
 
@@ -1172,6 +1254,63 @@ fn compiler_lowers_mutable_closure_capture_to_upval_cell() {
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
     assert!(opcodes.contains(&Opcode::LoadCellVal));
     assert!(opcodes.contains(&Opcode::StoreCellVal));
+}
+
+#[test]
+fn compiler_lowers_inlined_adjacent_assignment_chain_to_move2() {
+    let module = compile_source_module(
+        r#"
+        fn gcd(a0, b0) {
+            let a = a0;
+            let b = b0;
+            while (b != 0) {
+                let t = a % b;
+                a = b;
+                b = t;
+            }
+            return a;
+        }
+
+        return gcd(120, 84);
+        "#,
+    )
+    .expect("compile module");
+    let entry = &module.functions[module.entry as usize];
+
+    assert!(
+        entry.code.iter().any(|instr| instr.opcode() == Opcode::Move2),
+        "inlined adjacent assignment chain should use Move2: {:?}",
+        entry.code
+    );
+
+    let result = execute_module(&module).expect("execute module");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(12)]);
+}
+
+#[test]
+fn compiler_lowers_pair_immediate_equality_condition_to_single_test() {
+    let function = compile_source(
+        r#"
+        let state = 1;
+        let event = 2;
+        if state == 1 && event == 2 {
+            return 42;
+        }
+        return 0;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::TestEqIntI2),
+        "pair immediate equality should use TestEqIntI2: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
 }
 
 #[test]

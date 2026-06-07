@@ -23,10 +23,11 @@ cargo build --release -p lk-cli
 bench/run_workload_bench.sh
 ```
 
-By default the runner tries to compile and measure native AOT as an additional
-engine. If LLVM is disabled or the current workload artifact is not native
-lowerable yet, AOT is reported as skipped and the VM/Lua benchmark still runs.
-Use `RUN_AOT=0` to skip the compile attempt entirely.
+By default the runner measures the same bytecode VM path used by direct
+`lk file.lk` execution. Use `RUN_AOT=1` to compile and measure native AOT as an
+additional explicit engine. If LLVM is disabled or the current workload artifact
+is not native lowerable yet, AOT is reported as skipped and the VM/Lua benchmark
+still runs.
 
 The runner executes one workload at a time and prints progress to stderr, so a
 slow or stuck workload can be identified directly. Each workload has a timeout
@@ -104,10 +105,21 @@ keeps non-Int fallback code cold. `ConcatN` is enabled for 3+ part template
 strings as a generic multi-register string concatenation opcode; it is not tied
 to a specific workload. `Return0` and `Return1` are enabled for common
 zero-value and single-value return paths while the generic `Return` remains for
-multi-return/old bytecode. Direct `lk file.lk` execution defaults to the
-bytecode VM. Set `LK_NATIVE_RUN=1` to opt into the cached native executable
-fast path when LLVM lowering succeeds; keep `LK_FORCE_VM=1` for interpreter-only
-benchmark/profile runs. The latest opt-in native sample used
+multi-return/old bytecode. `Move2` is enabled for adjacent local assignment
+chains, including direct-call inline blocks; it reduced `gcd_batch` dynamic
+`Move` counts substantially but did not materially change whole-suite geomean.
+`TestEqIntI2` is enabled for facts-confirmed `a == K && b == L` small-int
+condition pairs; it reduces state-machine compare dispatch but is still a small
+interpreter-side improvement rather than a path to the target by itself.
+The compiler also lowers selected calls directly into their destination local:
+`math.floor(Int-like)` writes the proven-integer argument expression into the
+target register, and external `map.get(map, key)` writes `GetFieldK`/`GetIndex`
+into the target register. This reduces temporary-register `Move` instructions
+without adding workload-specific opcodes.
+Direct `lk file.lk` execution defaults to the bytecode VM. Set
+`LK_NATIVE_RUN=1` to opt into the cached native executable fast path when LLVM
+lowering succeeds; keep `LK_FORCE_VM=1` for interpreter-only benchmark/profile
+runs. The latest opt-in native sample used
 `RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30` and was
 checksum-clean: cached-native LK/Lua geomean `0.353x` with a cold native cache
 dir and prewarm. The latest full run with `RUN_AOT=1` reported cached-native LK/Lua
@@ -127,10 +139,10 @@ LK_FORCE_VM=1 RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=60 ba
 
 This is the direct-execution baseline: `lk file.lk` defaults to the bytecode VM,
 so this command intentionally does not use cached native execution. The latest
-checksum-clean run reported LK/Lua geomean `1.094x`. The largest remaining VM
-regressions were `state_machine_transitions` `3.054x`, `prime_trial_division`
-`2.309x`, `stock_max_profit` `1.924x`, `gcd_batch` `1.840x`,
-`config_defaults_merge` `1.713x`, and `matrix_3x3_multiply` `1.526x`.
+checksum-clean run reported LK/Lua geomean `1.029x`. The largest remaining VM
+regressions were `prime_trial_division` `2.132x`, `state_machine_transitions`
+`2.132x`, `stock_max_profit` `1.895x`, `gcd_batch` `1.751x`,
+`config_defaults_merge` `1.675x`, and `route_permission_check` `1.417x`.
 
 ## Adaptive Rerun Policy
 

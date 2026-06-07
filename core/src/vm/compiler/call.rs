@@ -84,10 +84,23 @@ impl Compiler {
         if let Some(value) = self.lower_const_map_get(&args[0], &args[1])? {
             return Ok(value);
         }
+        let dst = self.alloc_reg();
+        self.lower_map_get_function_call_to_register(dst, args)?;
+        Ok(dst)
+    }
+
+    pub(super) fn lower_map_get_function_call_to_register(&mut self, dst: u16, args: &[Box<Expr>]) -> Result<()> {
+        if args.len() != 2 {
+            bail!("Compiler map.get expects 2 args, got {}", args.len());
+        }
+        if let Some(value) = self.lower_const_map_get(&args[0], &args[1])? {
+            let move_source = !self.is_current_local_slot(value);
+            self.emit_move_with_policy(dst, value, "map.get const value", move_source)?;
+            return Ok(());
+        }
         let target = self.lower_readonly_index_operand(&args[0])?;
         let index_fact = index_fact_from_target(&self.function.performance, target);
         let (key, key_fact) = self.lower_readonly_index_key_for_target(target, index_fact, &args[1])?;
-        let dst = self.alloc_reg();
         let pc = self.function.code.len();
         if let Some(const_key) = get_field_key(index_fact, key_fact) {
             self.emit(Instr::abc(
@@ -111,7 +124,7 @@ impl Compiler {
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
         }
-        Ok(dst)
+        Ok(())
     }
 
     fn lower_math_floor_function_call(&mut self, args: &[Box<Expr>]) -> Result<u16> {
