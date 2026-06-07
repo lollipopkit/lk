@@ -104,12 +104,13 @@ keeps non-Int fallback code cold. `ConcatN` is enabled for 3+ part template
 strings as a generic multi-register string concatenation opcode; it is not tied
 to a specific workload. `Return0` and `Return1` are enabled for common
 zero-value and single-value return paths while the generic `Return` remains for
-multi-return/old bytecode. The default `lk file.lk` path now uses a cached
-native executable fast path when LLVM lowering succeeds; set `LK_FORCE_VM=1` to
-measure the pure interpreter. The latest default-sample run used
+multi-return/old bytecode. Direct `lk file.lk` execution defaults to the
+bytecode VM. Set `LK_NATIVE_RUN=1` to opt into the cached native executable
+fast path when LLVM lowering succeeds; keep `LK_FORCE_VM=1` for interpreter-only
+benchmark/profile runs. The latest opt-in native sample used
 `RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30` and was
-checksum-clean: default LK/Lua geomean `0.353x` with a cold native cache dir
-and prewarm. The latest full run with `RUN_AOT=1` reported default LK/Lua
+checksum-clean: cached-native LK/Lua geomean `0.353x` with a cold native cache
+dir and prewarm. The latest full run with `RUN_AOT=1` reported cached-native LK/Lua
 `0.349x`, AOT/Lua `0.350x`, and AOT/LK `1.001x`. A
 precomputed absolute-target table for every `Jmp` was tested and rejected after
 it made `gcd_batch` hit the 30s timeout. `DivIntI` was also tested and rejected
@@ -118,17 +119,30 @@ The next higher-leverage interpreter opcode work should target generic
 control-flow reduction, loop-carried register writes, or existing index
 helper/layout costs rather than workload-specific fused opcodes.
 
+Latest default VM validation:
+
+```bash
+LK_FORCE_VM=1 RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=60 bash bench/run_workload_bench.sh
+```
+
+This is the direct-execution baseline: `lk file.lk` defaults to the bytecode VM,
+so this command intentionally does not use cached native execution. The latest
+checksum-clean run reported LK/Lua geomean `1.094x`. The largest remaining VM
+regressions were `state_machine_transitions` `3.054x`, `prime_trial_division`
+`2.309x`, `stock_max_profit` `1.924x`, `gcd_batch` `1.840x`,
+`config_defaults_merge` `1.713x`, and `matrix_3x3_multiply` `1.526x`.
+
 ## Adaptive Rerun Policy
 
 The runner starts with `RUNS` samples. If any workload is more than 3% slower
 than the documented baseline, or if sample spread exceeds 8%, it runs
 `EXTRA_RUNS` additional full-suite samples before reporting medians.
 
-When the default LK path can use cached native execution, the runner prewarms
-the LK native cache once before timed samples. This mirrors the AOT compile step
+When `LK_NATIVE_RUN=1` enables cached native execution, the runner prewarms the
+LK native cache once before timed samples. This mirrors the AOT compile step
 being outside timed workload runs and prevents the first timed sample from
-including clang/native build time. Set `LK_FORCE_VM=1` or `LK_NATIVE_RUN=0` to
-measure the pure interpreter path instead. `LK_PREWARM_TIMEOUT` controls the
+including clang/native build time. Leave `LK_NATIVE_RUN` unset, or set
+`LK_FORCE_VM=1`, to measure the pure interpreter path instead. `LK_PREWARM_TIMEOUT` controls the
 prewarm timeout and defaults to 120 seconds.
 
 Status thresholds:
@@ -278,9 +292,9 @@ RUN_AOT=1 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_w
 Date: 2026-06-07
 
 This run covers the current 20-workload suite. It validates the architecture-level
-native performance path. The historical table below predates the cached native
-default path, so the first column is the pure interpreter VM from that run.
-Use `LK_FORCE_VM=1` to reproduce interpreter-only timing.
+native performance path. The first column is the pure interpreter VM from that
+run, which matches direct `lk file.lk` default execution. Use `LK_NATIVE_RUN=1`
+only when measuring the cached native opt-in path.
 
 | Workload | LK VM (ms) | LK AOT (ms) | Lua (ms) | VM/Lua | AOT/Lua | AOT/VM | Conf. | Checksum |
 |----------|------------|-------------|----------|--------|---------|--------|-------|----------|

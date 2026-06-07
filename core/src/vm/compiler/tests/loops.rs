@@ -390,7 +390,12 @@ fn compiler_for_range_reuses_body_scalar_literals_before_loop_target() {
     let condition_pc = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI))
+        .position(|instr| {
+            matches!(
+                instr.opcode(),
+                Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI
+            )
+        })
         .expect("expected range condition");
     let loop_target = first_backward_loop_target_after(&function, condition_pc);
 
@@ -528,7 +533,12 @@ fn compiler_while_licm_hoists_constant_loads_out_of_loop() {
     let cmp_idx = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI))
+        .position(|instr| {
+            matches!(
+                instr.opcode(),
+                Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI
+            )
+        })
         .expect("expected CmpNeInt/TestNeInt/TestNeIntI");
 
     // Find the Jmp that goes backward (loop back)
@@ -581,7 +591,12 @@ fn compiler_while_reuses_body_scalar_literals_before_loop_target() {
     let cmp_pc = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI))
+        .position(|instr| {
+            matches!(
+                instr.opcode(),
+                Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI
+            )
+        })
         .expect("expected while condition");
     let loop_target = first_backward_loop_target_after(&function, cmp_pc);
 
@@ -626,7 +641,12 @@ fn compiler_binds_loop_local_literal_to_cached_register_with_copy_on_write() {
     let cmp_pc = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI))
+        .position(|instr| {
+            matches!(
+                instr.opcode(),
+                Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI
+            )
+        })
         .expect("expected while condition");
     let loop_target = first_backward_loop_target_after(&function, cmp_pc) as usize;
     let cached_one = function

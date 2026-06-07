@@ -370,10 +370,14 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 
 ## Notes for CLI Usage
 - Run REPL: `lk`
-- Execute a file (statements): `lk FILE`
+- Execute a file (statements) through the bytecode VM: `lk FILE`
 - Compile to an executable module artifact: `lk compile [FILE]` -> `FILE.lkm`
 - Execute an module artifact: `lk FILE.lkm`
 - Compile to a native executable for LLVM-lowerable shapes: `lk compile exe [FILE]`
+- Optionally run a cached native executable for supported shapes with `LK_NATIVE_RUN=1 lk FILE`. If native lowering or native build fails, execution falls back to the bytecode VM.
+- Disable native opt-in with `LK_FORCE_VM=1` or `LK_VM_ONLY=1`.
+- Override the cached native executable directory with `LK_NATIVE_CACHE_DIR`.
+- The bytecode VM is the default execution path and correctness oracle for native/AOT work.
 - Only relative, sanitized paths are allowed
 - CLI prints a result only when it is not `nil`
 

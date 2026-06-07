@@ -194,6 +194,19 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
+            Opcode::Move2 => {
+                let Some(first) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() || instr.b() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                regs[instr.a() as usize] = Some(first);
+                let Some(second) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                regs[instr.b() as usize] = Some(second);
+            }
             Opcode::GetGlobal => {
                 let value = globals.get(instr.bx() as usize).and_then(Clone::clone).or_else(|| {
                     artifact

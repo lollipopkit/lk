@@ -614,10 +614,7 @@ fn native_run_enabled() -> bool {
     if env_flag("LK_FORCE_VM") || env_flag("LK_VM_ONLY") || env_flag("LK_VM_PROFILE") {
         return false;
     }
-    !matches!(
-        std::env::var("LK_NATIVE_RUN").as_deref(),
-        Ok("0" | "false" | "FALSE" | "no" | "NO")
-    )
+    env_flag("LK_NATIVE_RUN")
 }
 
 #[cfg(feature = "llvm")]
@@ -629,7 +626,7 @@ fn native_trace_enabled() -> bool {
 fn env_flag(name: &str) -> bool {
     matches!(
         std::env::var(name).as_deref(),
-        Ok("1" | "true" | "TRUE" | "yes" | "YES")
+        Ok("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
     )
 }
 

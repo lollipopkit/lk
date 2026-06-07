@@ -1020,7 +1020,12 @@ fn compiler_records_loop_backedge_as_branch_target() {
     let cmp_pc = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI))
+        .position(|instr| {
+            matches!(
+                instr.opcode(),
+                Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI
+            )
+        })
         .expect("loop compare");
     let target = ((loop_backedge.0 as i64) + 1 + i64::from(loop_backedge.1.sj_arg())) as usize;
 

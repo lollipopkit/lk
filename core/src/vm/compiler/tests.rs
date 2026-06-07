@@ -291,6 +291,59 @@ fn compiler_rebind_copy_on_write_preserves_redefined_local_semantics() {
 }
 
 #[test]
+fn compiler_lowers_adjacent_local_rotation_to_move2() {
+    let function = compile_source(
+        r#"
+        let a = 10;
+        let b = 20;
+        let t = 30;
+        {
+            a = b;
+            b = t;
+        }
+        return a * 100 + b;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::Move2),
+        "adjacent local rotation should use Move2: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2030)]);
+}
+
+#[test]
+fn compiler_move2_preserves_sequential_assignment_semantics() {
+    let function = compile_source(
+        r#"
+        let a = 10;
+        let b = 20;
+        {
+            a = b;
+            b = a;
+        }
+        return a * 100 + b;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::Move2),
+        "adjacent self-source assignment should use Move2: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2020)]);
+}
+
+#[test]
 fn compiler_block_assignment_preserves_outer_local_semantics() {
     let function = compile_source(
         r#"

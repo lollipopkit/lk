@@ -371,10 +371,14 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 
 ## CLI 使用说明
 - 运行 REPL：`lk`
-- 执行文件（语句）：`lk FILE`
+- 通过 bytecode VM 执行文件（语句）：`lk FILE`
 - 编译为可执行模块产物：`lk compile [FILE]` -> `FILE.lkm`
 - 执行模块产物：`lk FILE.lkm`
 - 编译为 LLVM 可 native lowering 形状的 native 可执行文件：`lk compile exe [FILE]`
+- 可通过 `LK_NATIVE_RUN=1 lk FILE` 为已支持的 shape 可选启用 cached native executable；如果 native lowering 或 native 构建失败，则回退 bytecode VM。
+- 可通过 `LK_FORCE_VM=1` 或 `LK_VM_ONLY=1` 禁用 native opt-in。
+- 可通过 `LK_NATIVE_CACHE_DIR` 指定 cached native executable 目录。
+- bytecode VM 是默认执行路径，也是 native/AOT 工作的 correctness oracle。
 - 只允许相对且经过清洗的路径。
 - CLI 只在结果非 `nil` 时打印。
 

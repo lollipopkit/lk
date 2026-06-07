@@ -367,7 +367,7 @@ echo "Runs: $BASE_RUNS base + $EXTRA_RUNS adaptive extra when regression/noise i
 echo "Per-workload timeout: ${BENCH_TIMEOUT}s (set BENCH_TIMEOUT=0 to disable)"
 echo "Regression margin: $(awk -v x="$REGRESSION_MARGIN" 'BEGIN { printf "%.1f%%", x * 100 }') vs documented baseline"
 echo "Noise margin: $(awk -v x="$NOISE_MARGIN" 'BEGIN { printf "%.1f%%", x * 100 }') max spread"
-if [ "${LK_FORCE_VM:-0}" != "1" ] && [ "${LK_VM_ONLY:-0}" != "1" ] && [ "${LK_VM_PROFILE:-0}" != "1" ] && [ "${LK_NATIVE_RUN:-1}" != "0" ]; then
+if [ "${LK_FORCE_VM:-0}" != "1" ] && [ "${LK_VM_ONLY:-0}" != "1" ] && [ "${LK_VM_PROFILE:-0}" != "1" ] && [ "${LK_NATIVE_RUN:-0}" = "1" ]; then
   PREWARM_OUT="$TMPDIR/lk_prewarm.out"
   PREWARM_ERR="$TMPDIR/lk_prewarm.err"
   PREWARM_OLD_TIMEOUT="$BENCH_TIMEOUT"

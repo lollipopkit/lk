@@ -192,7 +192,12 @@ fn compiler_inlines_direct_function_with_while_loop() {
     let cmp_pc = entry
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI))
+        .position(|instr| {
+            matches!(
+                instr.opcode(),
+                Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI
+            )
+        })
         .expect("inlined gcd loop should compare b != 0");
     let loop_target = first_backward_jmp_target_after(entry, cmp_pc);
     if entry.code[cmp_pc].opcode() == Opcode::TestNeIntI {

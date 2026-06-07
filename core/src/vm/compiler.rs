@@ -185,12 +185,7 @@ impl Compiler {
                 let cell_locals = self.cell_locals.clone();
                 let const_map_locals = self.const_map_locals.clone();
                 self.local_rebind_suppression += 1;
-                for stmt in statements {
-                    self.lower_stmt(stmt)?;
-                    if self.emitted_return {
-                        break;
-                    }
-                }
+                self.lower_stmt_sequence(statements)?;
                 self.local_rebind_suppression -= 1;
                 self.locals = locals;
                 self.cell_locals = cell_locals;
@@ -201,6 +196,86 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    fn lower_stmt_sequence(&mut self, statements: &[Box<Stmt>]) -> Result<()> {
+        let mut index = 0;
+        while index < statements.len() {
+            if index + 1 < statements.len()
+                && self.try_lower_move2_assign_pair(statements[index].as_ref(), statements[index + 1].as_ref())?
+            {
+                index += 2;
+            } else {
+                self.lower_stmt(statements[index].as_ref())?;
+                index += 1;
+            }
+            if self.emitted_return {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn try_lower_move2_assign_pair(&mut self, first: &Stmt, second: &Stmt) -> Result<bool> {
+        let (
+            Stmt::Assign {
+                name: first_dst,
+                value: first_value,
+                ..
+            },
+            Stmt::Assign {
+                name: second_dst,
+                value: second_value,
+                ..
+            },
+        ) = (first, second)
+        else {
+            return Ok(false);
+        };
+        let Some(first_src) = simple_local_expr_name(first_value) else {
+            return Ok(false);
+        };
+        if first_src != second_dst {
+            return Ok(false);
+        }
+        let Some(second_src) = simple_local_expr_name(second_value) else {
+            return Ok(false);
+        };
+        if first_dst == first_src
+            || self.cell_locals.contains(first_dst)
+            || self.cell_locals.contains(first_src)
+            || self.cell_locals.contains(second_src)
+            || self.const_map_locals.contains_key(first_dst)
+            || self.const_map_locals.contains_key(first_src)
+            || self.const_map_locals.contains_key(second_src)
+        {
+            return Ok(false);
+        }
+        let Some(first_dst_reg) = self.locals.get(first_dst).copied() else {
+            return Ok(false);
+        };
+        let Some(first_src_reg) = self.locals.get(first_src).copied() else {
+            return Ok(false);
+        };
+        let Some(second_src_reg) = self.locals.get(second_src).copied() else {
+            return Ok(false);
+        };
+
+        self.emit(Instr::abc(
+            Opcode::Move2,
+            checked_u8("move2 first dst", first_dst_reg)?,
+            checked_u8("move2 shared slot", first_src_reg)?,
+            checked_u8("move2 second src", second_src_reg)?,
+        ));
+        self.function
+            .performance
+            .copy_register_fact(first_dst_reg, first_src_reg);
+        self.function
+            .performance
+            .copy_register_fact(first_src_reg, second_src_reg);
+        self.clear_const_map_local(first_dst);
+        self.clear_const_map_local(first_src);
+        Ok(true)
     }
 
     fn lower_define(&mut self, name: &str, value: &Expr) -> Result<()> {
@@ -511,7 +586,7 @@ impl Compiler {
                     && let Some((opcode, lhs, rhs)) = self.lower_compare_test_immediate_operands(lhs, op, rhs)?
                 {
                     return Ok(vec![
-                        self.emit_compare_test_immediate_placeholder(opcode, lhs, rhs, false)?
+                        self.emit_compare_test_immediate_placeholder(opcode, lhs, rhs, false)?,
                     ]);
                 }
                 let lhs = self.lower_readonly_operand(lhs)?;

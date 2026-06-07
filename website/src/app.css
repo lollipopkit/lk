@@ -274,6 +274,8 @@ code {
 .hero,
 .feature-band,
 .runtime-section,
+.performance-section,
+.technical-page,
 .stdlib-section,
 .examples-section,
 .start-section,
@@ -467,6 +469,7 @@ h1 {
 
 .feature-band,
 .runtime-section,
+.performance-section,
 .stdlib-section,
 .examples-section,
 .start-section {
@@ -616,6 +619,168 @@ h2 {
 
 .runtime-row span {
   color: var(--ink-soft);
+}
+
+.performance-section {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.metric-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 650;
+}
+
+.metric-strip a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+  color: var(--accent-ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.metric-strip svg {
+  flex: 0 0 auto;
+}
+
+.performance-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.performance-grid article {
+  min-height: 260px;
+  padding: 1.2rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.performance-grid article:nth-child(2n) {
+  background: var(--surface-2);
+}
+
+.performance-grid svg {
+  color: var(--accent);
+}
+
+.performance-grid h3 {
+  margin-top: 1rem;
+  font-size: 1rem;
+}
+
+.performance-grid p {
+  margin-top: 0.75rem;
+  color: var(--ink-soft);
+  font-size: 0.94rem;
+}
+
+.technical-page {
+  padding: clamp(4rem, 9vw, 7rem) 0 clamp(5rem, 10vw, 8rem);
+}
+
+.technical-hero {
+  max-width: 820px;
+}
+
+.technical-hero h1 {
+  max-width: 12ch;
+}
+
+.technical-hero p:last-child {
+  max-width: 68ch;
+  margin-top: 1.4rem;
+  color: var(--ink-soft);
+  font-size: clamp(1rem, 1.4vw, 1.14rem);
+}
+
+.technical-command-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: clamp(2rem, 5vw, 3.5rem);
+}
+
+.technical-command-strip code {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 4.2rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.technical-sections {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.technical-sections article {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.45fr) minmax(0, 1fr);
+  gap: clamp(1rem, 4vw, 3rem);
+  padding: clamp(1.1rem, 2.5vw, 1.5rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card-bg);
+}
+
+.technical-sections article > p:first-child {
+  align-self: start;
+  margin: 0;
+}
+
+.technical-sections h2 {
+  max-width: 16ch;
+  font-size: clamp(1.5rem, 3vw, 2.6rem);
+}
+
+.technical-sections article > p:not(.section-kicker) {
+  color: var(--ink-soft);
+}
+
+.technical-sections ul {
+  grid-column: 2;
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.technical-sections li {
+  position: relative;
+  padding-left: 1rem;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.technical-sections li::before {
+  content: '';
+  position: absolute;
+  top: 0.72em;
+  left: 0;
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .module-cloud {
@@ -1020,6 +1185,9 @@ h2 {
   .spec-layout,
   .section-heading,
   .runtime-section,
+  .performance-grid,
+  .technical-command-strip,
+  .technical-sections article,
   .start-section,
   .example-stack {
     grid-template-columns: 1fr;
@@ -1068,6 +1236,19 @@ h2 {
     gap: 0.5rem;
   }
 
+  .metric-strip {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .metric-strip a {
+    margin-left: 0;
+  }
+
+  .technical-sections ul {
+    grid-column: auto;
+  }
+
   .spec-toc {
     position: static;
     max-height: none;
@@ -1085,6 +1266,8 @@ h2 {
   .spec-layout,
   .feature-band,
   .runtime-section,
+  .performance-section,
+  .technical-page,
   .stdlib-section,
   .examples-section,
   .start-section,

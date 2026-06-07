@@ -195,6 +195,31 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
+            Opcode::Move2 => {
+                let Some(first_kind) = native_kind(&kinds, instr.b()) else {
+                    return None;
+                };
+                let first_static = static_kind(&static_values, instr.b());
+                if let Some(value) = first_static {
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), Some(first_kind), value) {
+                        return None;
+                    }
+                } else if !set_native_kind(&mut kinds, &mut static_values, instr.a(), first_kind) {
+                    return None;
+                }
+
+                let Some(second_kind) = native_kind(&kinds, instr.c()) else {
+                    return None;
+                };
+                let second_static = static_kind(&static_values, instr.c());
+                if let Some(value) = second_static {
+                    if !set_static_value(&mut kinds, &mut static_values, instr.b(), Some(second_kind), value) {
+                        return None;
+                    }
+                } else if !set_native_kind(&mut kinds, &mut static_values, instr.b(), second_kind) {
+                    return None;
+                }
+            }
             Opcode::AddFloat | Opcode::SubFloat | Opcode::MulFloat | Opcode::DivFloat | Opcode::ModFloat => {
                 let Some(lhs) = native_kind(&kinds, instr.b()) else {
                     return None;

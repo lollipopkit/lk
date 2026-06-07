@@ -535,6 +535,13 @@ impl Executor {
                         break;
                     }
                 },
+                Opcode::Move2 => {
+                    let first = *self.read_unchecked(instr.b());
+                    self.write_unchecked(instr.a(), first);
+                    let second = *self.read_unchecked(instr.c());
+                    self.write_unchecked(instr.b(), second);
+                    self.pc += 1;
+                }
                 Opcode::LoadCapture => {
                     self.dispatch_cold(Opcode::LoadCapture, function, module, instr, ctx, collect_metrics)?;
                     let _ = &profile; // suppress unused warning

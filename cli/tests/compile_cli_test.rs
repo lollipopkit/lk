@@ -162,20 +162,36 @@ fn test_llvm_compile_lowers_simple_i64_return_without_vm_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_source_run_uses_cached_native_and_force_vm_fallback() {
+fn test_source_run_defaults_to_vm_and_cached_native_is_opt_in() {
     let dir = unique_tmp_dir("native_cache_run");
     ensure_clean_dir(&dir);
     let cache_dir = dir.join("cache");
     write_file(&dir, "a.lk", "let x = 40; return x + 2;\n");
 
+    let default_vm = run_cli(&dir, ["a.lk"])
+        .env("LK_NATIVE_CACHE_DIR", &cache_dir)
+        .output()
+        .expect("spawn default VM source run");
+    assert!(
+        default_vm.status.success(),
+        "default VM source run failed: {}",
+        String::from_utf8_lossy(&default_vm.stderr)
+    );
+    assert_eq!(String::from_utf8(default_vm.stdout).expect("utf8 stdout").trim(), "42");
+    assert!(
+        !cache_dir.exists(),
+        "direct source run should not populate native cache unless LK_NATIVE_RUN=1"
+    );
+
     for _ in 0..2 {
         let output = run_cli(&dir, ["a.lk"])
+            .env("LK_NATIVE_RUN", "1")
             .env("LK_NATIVE_CACHE_DIR", &cache_dir)
             .output()
-            .expect("spawn source run");
+            .expect("spawn native opt-in source run");
         assert!(
             output.status.success(),
-            "source run failed: {}",
+            "native opt-in source run failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(String::from_utf8(output.stdout).expect("utf8 stdout").trim(), "42");
@@ -186,6 +202,7 @@ fn test_source_run_uses_cached_native_and_force_vm_fallback() {
 
     let vm = run_cli(&dir, ["a.lk"])
         .env("LK_NATIVE_CACHE_DIR", &cache_dir)
+        .env("LK_NATIVE_RUN", "1")
         .env("LK_FORCE_VM", "1")
         .output()
         .expect("spawn forced VM source run");

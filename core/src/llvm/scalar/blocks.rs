@@ -228,6 +228,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
             | Opcode::LoadFloat
             | Opcode::LoadBool
             | Opcode::Move
+            | Opcode::Move2
             | Opcode::ToString
             | Opcode::ConcatString
             | Opcode::ConcatN

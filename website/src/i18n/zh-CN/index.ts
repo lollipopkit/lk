@@ -4,9 +4,10 @@ const zhCN: Translation = {
   meta: {
     lang: 'zh-CN',
     title: 'LK Lang',
-    description: 'LK 是 Rust 编写的 Rust 风格高性能轻量脚本语言，支持 bytecode VM、LLVM IR 和可执行文件路径，包含丰富语法糖',
+    description: 'LK 是 Rust 编写的 Rust 风格高性能轻量脚本语言，支持 bytecode VM、可选 cached native execution、LLVM AOT 和可执行文件路径，包含丰富语法糖',
   },
   nav: {
+    performance: '性能',
     spec: '规范',
     github: 'Github',
     languageLabel: '语言',
@@ -15,7 +16,7 @@ const zhCN: Translation = {
     eyebrow: '用 Rust 编写的 Rust 风格脚本语言',
     title: '高性能 轻量 现代 脚本语言。',
     subtitle:
-      'LK 提供清晰的语法、确定性的 VM 执行、结构化模式匹配和实用标准库，支持模块产物、LLVM IR 和可执行文件路径。',
+      'LK 提供清晰的语法、默认 bytecode VM 执行、可选 cached native execution、结构化模式匹配和实用标准库，适合嵌入业务逻辑与编写自动化脚本。',
     primaryAction: '开始',
     secondaryAction: '查看特性',
     previewLabel: '语法预览',
@@ -50,9 +51,9 @@ const zhCN: Translation = {
   },
   runtime: {
     kicker: '运行时与工具链',
-    title: '从脚本到 VM 执行、诊断和 true-native LLVM。',
+    title: '从脚本到 VM 执行、可选 native cache 和 LLVM AOT。',
     subtitle:
-      'LK 可以运行 REPL、执行 `.lk` 文件、不执行只做类型检查，并把已支持的 shape 降到 true-native LLVM IR，不再保留 artifact shell 或 host launcher fallback。',
+      'LK 可以运行 REPL、默认通过 bytecode VM 执行 `.lk` 文件、不执行只做类型检查，也可以为已支持的 shape 显式启用 cached native executable 或构建 native executable。',
     rows: {
       valueModel: '值模型',
       execution: '执行',

@@ -5,18 +5,19 @@ const en: BaseTranslation = {
     lang: 'en',
     title: 'LK Lang',
     description:
-      'LK is a Rust-like scripting language with a bytecode VM, rich pattern matching, package imports, and a batteries-included standard library.',
+      'LK is a Rust-like scripting language with a bytecode VM, optional cached native execution, LLVM AOT, rich pattern matching, package imports, and a batteries-included standard library.',
   },
   nav: {
+    performance: 'Performance',
     spec: 'Spec',
     github: 'Github',
     languageLabel: 'Language',
   },
   hero: {
     eyebrow: 'Rust-like scripting language written in Rust',
-    title: 'Performant, lightweight, modern language.',
+    title: 'Fast, lightweight, modern language.',
     subtitle:
-      'LK gives you clear syntax, deterministic VM execution, structured pattern matching, and a practical standard library for embedding logic in applications, writing automation scripts, and moving complex decisions out of host code.',
+      'LK gives you clear syntax, deterministic VM execution by default, optional cached native execution, structured pattern matching, and a practical standard library for embedding logic in applications and writing automation scripts.',
     primaryAction: 'Start',
     secondaryAction: 'Read features',
     previewLabel: 'LK syntax preview',
@@ -51,9 +52,9 @@ const en: BaseTranslation = {
   },
   runtime: {
     kicker: 'Runtime and Tooling',
-    title: 'From script to VM execution, diagnostics, and true-native LLVM.',
+    title: 'From script to VM execution, optional native cache, and LLVM AOT.',
     subtitle:
-      'LK can run a REPL, execute `.lk` files, type-check without executing, and lower supported shapes to true-native LLVM IR without artifact-shell or host-launcher fallbacks.',
+      'LK can run a REPL, execute `.lk` files through the bytecode VM by default, type-check without executing, opt into cached native executables for supported shapes, and build explicit native executables.',
     rows: {
       valueModel: 'Value model',
       execution: 'Execution',

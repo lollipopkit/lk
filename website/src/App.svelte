@@ -32,7 +32,7 @@
 
   type NavItem = {
     href: string
-    label: 'spec' | 'github'
+    label: 'performance' | 'spec' | 'github'
     external?: boolean
   }
 
@@ -47,6 +47,24 @@
   type Example = {
     label: string
     code: string
+  }
+
+  type RuntimeRow = {
+    key: 'valueModel' | 'execution' | 'imports' | 'concurrency'
+    text: string
+  }
+
+  type PerformanceCard = {
+    icon: Component
+    title: string
+    body: string
+  }
+
+  type TechnicalSection = {
+    kicker: string
+    title: string
+    body: string
+    items: string[]
   }
 
   type SpecBlock =
@@ -67,6 +85,7 @@
   }
 
   const navItems: NavItem[] = [
+    { href: '/performance', label: 'performance' },
     { href: '/spec', label: 'spec' },
     { href: 'https://github.com/lollipopkit/lk', label: 'github', external: true },
   ]
@@ -129,16 +148,6 @@ match data.req {
     },
   ]
 
-  const runtimeRows: [string, string][] = [
-    ['Value model', 'String, Int, Float, Bool, Nil, List, Map, Function, Object, Iterator, Stream, Task, Channel'],
-    [
-      'Execution',
-      'REPL, source execution, module artifact output, type-check diagnostics, and true-native LLVM IR for supported shapes',
-    ],
-    ['Imports', 'Stdlib modules, selected imports, aliases, namespace imports, sanitized relative file modules, and package workspaces'],
-    ['Concurrency', 'Feature-gated spawn, channels, send, recv, select, task, stream, and blocking collection helpers'],
-  ]
-
   const stdlib: string[] = [
     'math',
     'string',
@@ -178,6 +187,180 @@ import * as config from "config/app";`,
 let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     },
   ]
+
+  $: runtimeRows = getRuntimeRows(locale)
+  $: performanceCards = getPerformanceCards(locale)
+  $: technicalSections = getTechnicalSections(locale)
+  $: technicalCommands = getTechnicalCommands(locale)
+  $: performanceMetric =
+    locale === 'zh-CN'
+      ? '当前 workload suite：默认 bytecode VM 仍在优化中；显式 native/AOT 路径约 0.35x vs Lua。'
+      : 'Current workload suite: the default bytecode VM is still being optimized; explicit native/AOT paths are about 0.35x vs Lua.'
+  $: compileStripRuntime = locale === 'zh-CN' ? 'bytecode VM' : 'bytecode VM'
+
+  function getRuntimeRows(activeLocale: Locales | undefined): RuntimeRow[] {
+    if (activeLocale === 'zh-CN') {
+      return [
+        { key: 'valueModel', text: 'String、Int、Float、Bool、Nil、List、Map、Function、Object、Iterator、Stream、Task、Channel' },
+        {
+          key: 'execution',
+          text: 'REPL、默认 VM 源文件执行、模块产物、类型检查诊断、可选 cached native executable，以及支持 shape 的 true-native LLVM AOT',
+        },
+        { key: 'imports', text: '标准库模块、选择性导入、别名、命名空间导入、安全相对文件模块和 package workspace' },
+        { key: 'concurrency', text: 'Feature-gated spawn、channel、send、recv、select、task、stream 和阻塞收集 helper' },
+      ]
+    }
+
+    return [
+      { key: 'valueModel', text: 'String, Int, Float, Bool, Nil, List, Map, Function, Object, Iterator, Stream, Task, Channel' },
+      {
+        key: 'execution',
+        text: 'REPL, default VM source execution, module artifacts, type-check diagnostics, optional cached native executables, and true-native LLVM AOT for supported shapes',
+      },
+      { key: 'imports', text: 'Stdlib modules, selected imports, aliases, namespace imports, sanitized relative file modules, and package workspaces' },
+      { key: 'concurrency', text: 'Feature-gated spawn, channels, send, recv, select, task, stream, and blocking collection helpers' },
+    ]
+  }
+
+  function getPerformanceCards(activeLocale: Locales | undefined): PerformanceCard[] {
+    if (activeLocale === 'zh-CN') {
+      return [
+        {
+          icon: Cpu,
+          title: '直接执行默认 VM',
+          body: '直接运行 `lk FILE` 时，LK 使用 bytecode VM，行为稳定、易诊断，适合日常脚本执行。',
+        },
+        {
+          icon: Terminal,
+          title: 'native 是显式选择',
+          body: '`LK_NATIVE_RUN=1 lk FILE` 可启用 cached native executable；`lk compile exe FILE` 可显式生成 AOT executable。',
+        },
+        {
+          icon: Braces,
+          title: 'Opcode specialization',
+          body: '当前 opcode 优化面向通用 operand shape，用于减少解释器里的重复 materialization。',
+        },
+        {
+          icon: Code2,
+          title: 'AOT 用于稳定交付',
+          body: 'VM、cached native 和 AOT 使用同一套 workload checksum 校验语义一致性。',
+        },
+      ]
+    }
+
+    return [
+      {
+        icon: Cpu,
+        title: 'Direct execution defaults to the VM',
+        body: 'Running `lk FILE` uses the bytecode VM, keeping everyday script execution stable, diagnosable, and easy to reproduce.',
+      },
+      {
+        icon: Terminal,
+        title: 'The VM remains deterministic',
+        body: 'The bytecode VM is the default correctness oracle and diagnostic execution path. Set `LK_NATIVE_RUN=1` only when you want cached native execution.',
+      },
+      {
+        icon: Braces,
+        title: 'Opcode specialization targets shared shapes',
+        body: 'Current optimization focuses on general operand shapes: Int immediates, compare-test, nil branches, field keys, ConcatN, and Return0/Return1 instead of workload-specific opcodes.',
+      },
+      {
+        icon: Code2,
+        title: 'AOT for explicit delivery',
+        body: '`lk compile exe FILE` takes the native executable path. VM, cached native, and AOT runs share workload checksum validation to keep semantics aligned.',
+      },
+    ]
+  }
+
+  function getTechnicalSections(activeLocale: Locales | undefined): TechnicalSection[] {
+    if (activeLocale === 'zh-CN') {
+      return [
+        {
+          kicker: 'Runtime path',
+          title: '直接执行默认走 bytecode VM。',
+          body: '日常用户运行 `lk FILE` 时使用 VM。cached native execution 是 opt-in 路径，只有设置 `LK_NATIVE_RUN=1` 且 LLVM feature 可用时才会尝试复用 cached native executable。',
+          items: [
+            'cache key 覆盖源文件内容、当前 `lk` executable 路径/mtime 和 CLI package version。',
+            '`LK_NATIVE_CACHE_DIR` 可指定 native cache 目录。',
+            '`LK_FORCE_VM=1` 或 `LK_VM_ONLY=1` 仍可显式禁止 native opt-in，用于 benchmark/profile 场景。',
+          ],
+        },
+        {
+          kicker: 'Opcode work',
+          title: 'Opcode specialization 只覆盖通用 operand shape。',
+          body: '当前优化避免 workload-specific fused opcode，优先消除 register materialization、typed fallback 污染和重复 control-flow 解析。',
+          items: [
+            '`AddIntI`、`MulIntI`、`ModIntI` 覆盖 small-int literal RHS arithmetic。',
+            '`BrNil` / `BrNotNil` 覆盖 condition-context nilness branch。',
+            '`TestEqIntI` / `TestNeIntI` 覆盖 facts-confirmed Int 与 i8 literal equality compare-test。',
+            '`GetFieldK` / `SetFieldK`、`ConcatN`、`Return0` / `Return1` 覆盖通用 field、string concat 和 return shape。',
+          ],
+        },
+        {
+          kicker: 'Benchmark evidence',
+          title: 'VM 是默认路径，native/AOT 是独立性能路径。',
+          body: '当前 workload suite 的验证命令默认采用 `RUNS=3 EXTRA_RUNS=5`。显式 native/AOT 路径约 `0.35x` vs Lua；默认 bytecode VM 最新复验为 `1.094x` vs Lua。',
+          items: [
+            '默认 `lk FILE` 与 `LK_FORCE_VM=1` 都是解释器语义；`LK_NATIVE_RUN=1` 才进入 cached native。',
+            'VM/AOT/Lua checksum 保持一致，避免只看 timing。',
+            'immediate compare-test A/B 为 `1.077x` vs `1.081x`，收益小但覆盖真实 compare shape。',
+          ],
+        },
+      ]
+    }
+
+    return [
+      {
+        kicker: 'Runtime path',
+        title: 'Direct execution uses the bytecode VM by default.',
+        body: 'Users can run `lk FILE` and get VM execution. Cached native execution is opt-in: LK only tries a cached native executable when `LK_NATIVE_RUN=1` is set and the LLVM feature is available.',
+        items: [
+          'The cache key includes source content, current `lk` executable path/mtime, and CLI package version.',
+          '`LK_NATIVE_CACHE_DIR` overrides the native cache directory.',
+          '`LK_FORCE_VM=1` or `LK_VM_ONLY=1` still disables native opt-in for benchmark/profile runs.',
+        ],
+      },
+      {
+        kicker: 'Opcode work',
+        title: 'Opcode specialization targets shared operand shapes.',
+        body: 'Current optimization avoids workload-specific fused opcodes and focuses on removing register materialization, typed fallback pollution, and repeated control-flow decoding.',
+        items: [
+          '`AddIntI`, `MulIntI`, and `ModIntI` cover small-int literal RHS arithmetic.',
+          '`BrNil` / `BrNotNil` cover condition-context nilness branches.',
+          '`TestEqIntI` / `TestNeIntI` cover facts-confirmed Int and i8 literal equality compare-test shapes.',
+          '`GetFieldK` / `SetFieldK`, `ConcatN`, and `Return0` / `Return1` cover general field, string concat, and return shapes.',
+        ],
+      },
+      {
+        kicker: 'Benchmark evidence',
+        title: 'The VM is the default path; native/AOT is a separate performance path.',
+        body: 'The current workload suite uses `RUNS=3 EXTRA_RUNS=5` by default. Explicit native/AOT paths are about `0.35x` vs Lua; the latest default bytecode VM validation is `1.094x` vs Lua.',
+        items: [
+          'Default `lk FILE` and `LK_FORCE_VM=1` both use interpreter semantics; `LK_NATIVE_RUN=1` enters cached native execution.',
+          'VM/AOT/Lua checksum validation stays aligned, so timing is not the only signal.',
+          'Immediate compare-test A/B measured `1.077x` vs `1.081x`: small benefit, real compare-shape coverage.',
+        ],
+      },
+    ]
+  }
+
+  function getTechnicalCommands(activeLocale: Locales | undefined): string[] {
+    if (activeLocale === 'zh-CN') {
+      return [
+        'lk FILE',
+        'LK_NATIVE_RUN=1 lk FILE',
+        'lk compile exe FILE',
+        'LK_FORCE_VM=1 RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 bash bench/run_workload_bench.sh',
+      ]
+    }
+
+    return [
+      'lk FILE',
+      'LK_NATIVE_RUN=1 lk FILE',
+      'lk compile exe FILE',
+      'LK_FORCE_VM=1 RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 bash bench/run_workload_bench.sh',
+    ]
+  }
 
   $: activeLangDocument = locale === 'zh-CN' ? langZhDocument : langDocument
   $: specSections = parseMarkdown(activeLangDocument)
@@ -642,6 +825,39 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         {/each}
       </div>
     </section>
+  {:else if currentPath === '/performance'}
+    <section class="technical-page" aria-labelledby="technical-title">
+      <div class="technical-hero">
+        <p class="eyebrow">{locale === 'zh-CN' ? 'Runtime and Opcode Notes' : 'Runtime and Opcode Notes'}</p>
+        <h1 id="technical-title">{locale === 'zh-CN' ? 'LK 性能路径技术说明。' : 'LK performance path, technically.'}</h1>
+        <p>
+          {locale === 'zh-CN'
+            ? '这一页面向想了解实现细节的用户：默认 bytecode VM、可选 cached native execution、LLVM AOT、Opcode specialization 和 benchmark 证据都集中在这里。'
+            : 'This page is for users who want implementation detail: default bytecode VM execution, optional cached native execution, LLVM AOT, Opcode specialization, and benchmark evidence live here.'}
+        </p>
+      </div>
+
+      <div class="technical-command-strip">
+        {#each technicalCommands as command}
+          <code><Terminal size={16} /> {command}</code>
+        {/each}
+      </div>
+
+      <div class="technical-sections">
+        {#each technicalSections as section, index}
+          <article>
+            <p class="section-kicker"><span>{String(index + 1).padStart(2, '0')}</span>{section.kicker}</p>
+            <h2>{section.title}</h2>
+            <p>{section.body}</p>
+            <ul>
+              {#each section.items as item}
+                <li>{item}</li>
+              {/each}
+            </ul>
+          </article>
+        {/each}
+      </div>
+    </section>
   {:else}
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-copy">
@@ -675,7 +891,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
         <div class="compile-strip">
           <span><Terminal size={16} /> lk request.lk</span>
           <ChevronRight size={16} />
-          <span><Cpu size={16} /> bytecode VM</span>
+          <span><Cpu size={16} /> {compileStripRuntime}</span>
           <ChevronRight size={16} />
           <span><Check size={16} /> diagnostics</span>
         </div>
@@ -720,9 +936,43 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
       <div class="runtime-table" aria-label="Runtime capabilities">
         {#each runtimeRows as row}
           <div class="runtime-row">
-            <strong>{$LL.runtime.rows[row[0] === 'Value model' ? 'valueModel' : row[0] === 'Execution' ? 'execution' : row[0] === 'Imports' ? 'imports' : 'concurrency']()}</strong>
-            <span>{row[1]}</span>
+            <strong>{$LL.runtime.rows[row.key]()}</strong>
+            <span>{row.text}</span>
           </div>
+        {/each}
+      </div>
+    </section>
+
+    <section class="performance-section" id="performance" aria-labelledby="performance-title">
+      <div class="section-heading">
+        <div>
+          <div class="section-kicker">
+            <span>03</span>
+            <p>{locale === 'zh-CN' ? '性能路径' : 'Performance Path'}</p>
+          </div>
+          <h2 id="performance-title">{locale === 'zh-CN' ? '默认快，VM 可验证。' : 'Fast by default, verifiable by VM.'}</h2>
+        </div>
+        <p>
+          {locale === 'zh-CN'
+            ? 'LK 把用户日常运行、可选 native 加速、显式 AOT 交付和解释器诊断分成清晰路径：默认运行固定在 bytecode VM。'
+            : 'LK separates everyday execution, optional native acceleration, explicit AOT delivery, and interpreter diagnostics: the default run path stays on the bytecode VM.'}
+        </p>
+      </div>
+      <div class="metric-strip">
+        <Cpu size={18} />
+        <span>{performanceMetric}</span>
+        <a href="/performance" on:click={(event) => navigate(event, '/performance')}>
+          {locale === 'zh-CN' ? '技术细节' : 'Technical details'}
+          <ArrowRight size={16} />
+        </a>
+      </div>
+      <div class="performance-grid">
+        {#each performanceCards as card}
+          <article>
+            <svelte:component this={card.icon} size={22} />
+            <h3>{card.title}</h3>
+            <p>{card.body}</p>
+          </article>
         {/each}
       </div>
     </section>
@@ -730,7 +980,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     <section class="stdlib-section" id="stdlib" aria-labelledby="stdlib-title">
       <div class="section-heading compact">
         <div class="section-kicker">
-          <span>03</span>
+          <span>04</span>
           <p>{$LL.stdlib.kicker()}</p>
         </div>
         <h2 id="stdlib-title">{$LL.stdlib.title()}</h2>
@@ -765,7 +1015,7 @@ let total = iter.reduce(iter.range(0, 10, 2), 0, |acc, n| acc + n);`,
     <section class="start-section" id="start" aria-labelledby="start-title">
       <div>
         <div class="section-kicker">
-          <span>04</span>
+          <span>05</span>
           <p>{$LL.start.kicker()}</p>
         </div>
         <h2 id="start-title">{$LL.start.title()}</h2>
