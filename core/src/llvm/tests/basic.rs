@@ -69,6 +69,74 @@ fn llvm_backend_lowers_static_map_rest_has_without_shell() {
 }
 
 #[test]
+fn llvm_backend_lowers_dynamic_map_get_field_k_without_shell() {
+    let tokens = Tokenizer::tokenize(
+        r#"
+        let config = {};
+        config.set("retries", 7);
+        let flag = 1;
+        if flag == 1 {
+            return config.retries;
+        }
+        return 0;
+        "#,
+    )
+    .expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module = Compiler::compile_module(&program).expect("module");
+    assert!(
+        module.functions[module.entry as usize]
+            .code
+            .iter()
+            .any(|instr| instr.opcode() == Opcode::GetFieldK),
+        "expected compiler to emit GetFieldK for const string map field"
+    );
+    let artifact = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_lookup_string_int_map"));
+    assert!(artifact.module.ir.contains("store i64 7"));
+}
+
+#[test]
+fn llvm_backend_keeps_dynamic_map_get_field_k_nil_branch_runtime_checked() {
+    let tokens = Tokenizer::tokenize(
+        r#"
+        let config = {};
+        let flag = 1;
+        if flag == 1 {
+            let retries = config.retries;
+            if retries != nil {
+                return retries;
+            }
+            return 3;
+        }
+        return 0;
+        "#,
+    )
+    .expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+    let module = Compiler::compile_module(&program).expect("module");
+    assert!(
+        module.functions[module.entry as usize]
+            .code
+            .iter()
+            .any(|instr| instr.opcode() == Opcode::GetFieldK),
+        "expected compiler to emit GetFieldK for const string map field"
+    );
+    let artifact = ModuleArtifact::new(Vec::new(), &module).expect("module artifact");
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_lookup_string_int_map"));
+    assert!(artifact.module.ir.contains(".present.slot"));
+    assert!(artifact.module.ir.contains("icmp eq i64") || artifact.module.ir.contains("icmp ne i64"));
+}
+
+#[test]
 fn llvm_backend_lowers_static_range_indexing_without_shell() {
     for (source, expected) in [
         (r#"let s = "hello"; return s[1..3];"#, "c\"el\\00\""),

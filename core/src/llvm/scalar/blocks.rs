@@ -230,6 +230,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
             | Opcode::Move
             | Opcode::ToString
             | Opcode::ConcatString
+            | Opcode::ConcatN
             | Opcode::AddFloat
             | Opcode::SubFloat
             | Opcode::MulFloat
@@ -1483,7 +1484,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     emit_branch_to_next(&mut ir, pc, code.len());
                 }
             }
-            Opcode::Return => {
+            opcode if opcode.is_return() => {
                 if emit_return_block(
                     &mut ir,
                     &mut extra_globals,

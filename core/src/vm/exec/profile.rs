@@ -1,7 +1,6 @@
-use crate::vm::Function;
 use crate::vm::analysis::{
     PerfIndexFact, PerfIndexTargetKind, VM_INDEX_KEY_METRIC_COUNT, VmContainerMetric, VmIndexKeyMetric,
-    VmRegisterWriteSource, VmValueCopyMetric,
+    VmRegisterWriteSource,
 };
 #[cfg(any(test, feature = "vm-profile"))]
 use crate::vm::analysis::{
@@ -26,16 +25,6 @@ pub(in crate::vm::exec) fn record_index_key_metric(
 ) {
     if let Some(metrics) = metrics {
         metrics[metric.index()] += 1;
-    }
-}
-
-pub(super) fn move_clone_metric(function: &Function, pc: usize, dst: u16, src: u16) -> VmValueCopyMetric {
-    if function.performance.local_copy(pc).is_some() {
-        VmValueCopyMetric::LocalStore
-    } else if function.performance.is_local_slot(src) && !function.performance.is_local_slot(dst) {
-        VmValueCopyMetric::LocalLoad
-    } else {
-        VmValueCopyMetric::Register
     }
 }
 

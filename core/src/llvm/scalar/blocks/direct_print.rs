@@ -81,7 +81,7 @@ fn helper_ends_with_println_return(function: &FunctionData) -> bool {
         [.., call, ret]
             if call.opcode() == Opcode::Call
                 && call.c() == 1
-                && ret.opcode() == Opcode::Return
-                && ret.b() == 0
+                && ret.opcode().is_return()
+                && ret.return_count() == 0
     )
 }

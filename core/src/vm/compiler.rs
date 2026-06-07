@@ -542,7 +542,43 @@ impl Compiler {
             .iter()
             .filter(|part| !matches!(part, TemplateStringPart::Literal(value) if value.is_empty()))
             .collect::<Vec<_>>();
+        if parts.is_empty() {
+            return self.lower_val(&LiteralVal::from_str(""));
+        }
         let force_single_expr_string = parts.len() == 1;
+
+        // Use ConcatN when we have 3+ parts and they fit in C operand (max 255).
+        // 2-part templates still use ConcatString which is well-supported by LLVM lowering.
+        // ConcatN A B C: concatenate values r[B]..r[B+C-1] into r[A]
+        if parts.len() >= 3 && parts.len() <= 255 {
+            let start_reg = self.alloc_reg();
+            // Allocate contiguous registers for the remaining parts
+            for _ in 1..parts.len() {
+                self.alloc_reg();
+            }
+
+            // Lower each part into its register
+            for (i, part) in parts.iter().enumerate() {
+                let part_reg = self.lower_template_string_part(part, force_single_expr_string)?;
+                let target_reg = start_reg + i as u16;
+                if part_reg != target_reg {
+                    self.emit(Instr::abc(Opcode::Move, target_reg as u8, part_reg as u8, 0));
+                    self.set_register_kind(target_reg, PerfValueKind::String);
+                }
+            }
+
+            let dst = self.alloc_reg();
+            self.emit(Instr::abc(
+                Opcode::ConcatN,
+                checked_u8("template concatn dst", dst)?,
+                checked_u8("template concatn start", start_reg)?,
+                checked_u8("template concatn count", parts.len() as u16)?,
+            ));
+            self.set_register_kind(dst, PerfValueKind::String);
+            return Ok(dst);
+        }
+
+        // Fallback: chain ConcatString for 1 part or 255+ parts
         let mut acc = None;
         for part in parts {
             let part_reg = self.lower_template_string_part(part, force_single_expr_string)?;

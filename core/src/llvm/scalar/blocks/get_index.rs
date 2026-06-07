@@ -218,6 +218,19 @@ pub(super) fn emit_get_field_k_block(
     let Some(target) = target else {
         return false;
     };
+    if emit_dynamic_string_map_field_get(
+        ir,
+        extra_globals,
+        static_regs,
+        pc,
+        instr.a(),
+        target.clone(),
+        key.clone(),
+        tmp_index,
+    ) {
+        emit_branch_to_next(ir, pc, code.len());
+        return true;
+    }
     let Some(value) = native_static_index(target, key, format!("@lk_field_k_value_{}_{}", pc, instr.a())) else {
         return false;
     };
@@ -226,6 +239,81 @@ pub(super) fn emit_get_field_k_block(
     }
     emit_branch_to_next(ir, pc, code.len());
     true
+}
+
+fn emit_dynamic_string_map_field_get(
+    ir: &mut String,
+    extra_globals: &mut String,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    pc: usize,
+    dst: u8,
+    target: NativeStraightlineValue,
+    key: NativeStraightlineValue,
+    tmp_index: &mut usize,
+) -> bool {
+    match target {
+        NativeStraightlineValue::DynamicMap {
+            id,
+            key: NativeMapKeyKind::Str,
+            value: NativeMapValueKind::I64,
+        } => {
+            if emit_dynamic_string_int_map_get(ir, extra_globals, id, dst, key, tmp_index).is_none() {
+                return false;
+            }
+            let value = next_tmp(tmp_index);
+            let present = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load i64, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  {present} = load i64, ptr %r{dst}.present.slot\n"));
+            static_regs[dst as usize] = Some(NativeStraightlineValue::MaybeI64 { value, present });
+            true
+        }
+        NativeStraightlineValue::DynamicMap {
+            id,
+            key: NativeMapKeyKind::Str,
+            value: NativeMapValueKind::F64,
+        } => {
+            if emit_dynamic_string_f64_map_get(ir, extra_globals, id, dst, key, tmp_index).is_none() {
+                return false;
+            }
+            let value = next_tmp(tmp_index);
+            let present = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load double, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  {present} = load i64, ptr %r{dst}.present.slot\n"));
+            static_regs[dst as usize] = Some(NativeStraightlineValue::MaybeF64 { value, present });
+            true
+        }
+        NativeStraightlineValue::DynamicMap {
+            id,
+            key: NativeMapKeyKind::Str,
+            value: NativeMapValueKind::Bool,
+        } => {
+            if emit_dynamic_string_int_map_get(ir, extra_globals, id, dst, key, tmp_index).is_none() {
+                return false;
+            }
+            let value = next_tmp(tmp_index);
+            let present = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load i64, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  {present} = load i64, ptr %r{dst}.present.slot\n"));
+            static_regs[dst as usize] = Some(NativeStraightlineValue::MaybeBool { value, present });
+            true
+        }
+        NativeStraightlineValue::DynamicMap {
+            id,
+            key: NativeMapKeyKind::Str,
+            value: NativeMapValueKind::StrPtr,
+        } => {
+            if emit_dynamic_string_ptr_map_get(ir, extra_globals, id, pc, dst, key, tmp_index).is_none() {
+                return false;
+            }
+            let value = next_tmp(tmp_index);
+            let present = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load ptr, ptr %r{dst}.slot\n"));
+            ir.push_str(&format!("  {present} = load i64, ptr %r{dst}.present.slot\n"));
+            static_regs[dst as usize] = Some(NativeStraightlineValue::MaybeStrPtr { value, present });
+            true
+        }
+        _ => false,
+    }
 }
 
 fn emit_local_new_list_index(

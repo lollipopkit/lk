@@ -6,13 +6,15 @@
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{HeapValue, RuntimeVal, TypedList};
+use std::fmt::Write;
+
+use crate::val::{HeapValue, RuntimeVal, ShortStr, TypedList};
 
 use super::Executor;
 use crate::vm::{
     CallWindow, Function, Instr, Module, Opcode, RegisterIndex, VmContext,
     analysis::{
-        PerfForLoopFact, VmCallMetric, VmContainerMetric, record_branch_op_known_enabled, record_call_op_known_enabled,
+        PerfForLoopFact, VmCallMetric, VmContainerMetric, record_call_op_known_enabled,
         record_container_op_known_enabled,
     },
 };
@@ -283,75 +285,6 @@ impl Executor {
         Ok(())
     }
 
-    pub(super) fn dispatch_br_nil(&mut self, instr: Instr) -> Result<()> {
-        let index = self.stack_index_unchecked(instr.a());
-        if matches!(self.state.stack[index], RuntimeVal::Nil) {
-            self.pc = self.relative_pc(instr.sbx() as i32)?;
-        } else {
-            self.pc += 1;
-        }
-        Ok(())
-    }
-
-    pub(super) fn dispatch_br_not_nil(&mut self, instr: Instr) -> Result<()> {
-        let index = self.stack_index_unchecked(instr.a());
-        if !matches!(self.state.stack[index], RuntimeVal::Nil) {
-            self.pc = self.relative_pc(instr.sbx() as i32)?;
-        } else {
-            self.pc += 1;
-        }
-        Ok(())
-    }
-
-    #[inline]
-    pub(super) fn dispatch_compare_test(&mut self, function: &Function, instr: Instr) -> Result<()> {
-        let value = self.compare_test_value(instr)?;
-        if self.collect_metrics {
-            record_branch_op_known_enabled(true);
-        }
-        if let Some(fact) = function.performance.compare_test_branch(self.pc) {
-            if value == (instr.c() != 0) {
-                self.pc = fact.target_pc;
-            } else {
-                self.pc += 2;
-            }
-            return Ok(());
-        }
-        let jmp_pc = self.pc + 1;
-        let jmp = *function
-            .code
-            .get(jmp_pc)
-            .ok_or_else(|| anyhow!("compare-test at pc {} missing Jmp", self.pc))?;
-        if jmp.opcode() != Opcode::Jmp {
-            bail!("compare-test at pc {} expected Jmp at pc {jmp_pc}", self.pc);
-        }
-        if value == (instr.c() != 0) {
-            self.pc = self.relative_pc_from(jmp_pc, jmp.sj_arg())?;
-        } else {
-            self.pc += 2;
-        }
-        Ok(())
-    }
-
-    #[inline]
-    fn compare_test_value(&self, instr: Instr) -> Result<bool> {
-        let lhs_idx = self.stack_index_unchecked(instr.a());
-        let rhs_idx = self.stack_index_unchecked(instr.b());
-        if let (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) = (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
-            Ok(match instr.opcode() {
-                Opcode::TestEqInt => lhs == rhs,
-                Opcode::TestNeInt => lhs != rhs,
-                Opcode::TestLtInt => lhs < rhs,
-                Opcode::TestLeInt => lhs <= rhs,
-                Opcode::TestGtInt => lhs > rhs,
-                Opcode::TestGeInt => lhs >= rhs,
-                _ => unreachable!("opcode matched by caller"),
-            })
-        } else {
-            self.compare_test_value_slow(instr, lhs_idx, rhs_idx)
-        }
-    }
-
     #[cold]
     #[inline(never)]
     pub(super) fn compare_test_value_slow(&self, instr: Instr, lhs_idx: usize, rhs_idx: usize) -> Result<bool> {
@@ -388,11 +321,6 @@ impl Executor {
             }
             _ => unreachable!("opcode matched by caller"),
         })
-    }
-
-    pub(super) fn dispatch_jmp(&mut self, instr: Instr) -> Result<()> {
-        self.pc = self.relative_pc(instr.sj_arg())?;
-        Ok(())
     }
 
     #[cold]
@@ -609,6 +537,101 @@ impl Executor {
             Opcode::SetGlobal => self.dispatch_set_global(function, instr)?,
             _ => unreachable!("dispatch_cold called for non-cold opcode: {:?}", opcode),
         }
+        Ok(())
+    }
+
+    /// Dispatch ConcatN: concatenate C values from registers B to B+C-1 into A.
+    /// Like Lua's OP_CONCAT, this first measures total length, then allocates once.
+    /// Fast paths: all ShortStr/Int/Float parts that fit in ShortStr (7 bytes or fewer).
+    pub(super) fn dispatch_concat_n(
+        &mut self,
+        instr: Instr,
+        module: Option<&Module>,
+        ctx: &mut Option<&mut VmContext>,
+    ) -> Result<()> {
+        let start = instr.b() as usize;
+        let count = instr.c() as usize;
+        if count == 0 {
+            self.write_string(instr.a(), String::new())?;
+            self.pc += 1;
+            return Ok(());
+        }
+        if count == 1 {
+            let s = self.to_runtime_string_with_display(start as u8, module, ctx)?;
+            self.write_string(instr.a(), s)?;
+            self.pc += 1;
+            return Ok(());
+        }
+        self.collect_pending_garbage();
+
+        // Fast path: all ShortStr/Int/Float and result fits ShortStr (7 bytes or fewer)
+        let mut short_buf = [0u8; 7];
+        let mut short_len: usize = 0;
+        let mut all_short = true;
+        'a: for i in 0..count {
+            let reg = (start + i) as u8;
+            let val = self.read_unchecked(reg);
+            match &val {
+                RuntimeVal::ShortStr(s) => {
+                    let bytes = s.as_str().as_bytes();
+                    if short_len + bytes.len() <= 7 {
+                        short_buf[short_len..short_len + bytes.len()].copy_from_slice(bytes);
+                        short_len += bytes.len();
+                    } else {
+                        all_short = false;
+                        break 'a;
+                    }
+                }
+                RuntimeVal::Int(n) => {
+                    let n_str = n.to_string();
+                    if short_len + n_str.len() <= 7 {
+                        short_buf[short_len..short_len + n_str.len()].copy_from_slice(n_str.as_bytes());
+                        short_len += n_str.len();
+                    } else {
+                        all_short = false;
+                        break 'a;
+                    }
+                }
+                _ => {
+                    all_short = false;
+                    break 'a;
+                }
+            }
+        }
+
+        if all_short && short_len > 0 {
+            let result_str = std::str::from_utf8(&short_buf[..short_len]).unwrap_or("");
+            if let Some(short) = ShortStr::new(result_str) {
+                self.write_unchecked(instr.a(), RuntimeVal::ShortStr(short));
+                self.pc += 1;
+                return Ok(());
+            }
+        }
+
+        // General path: build result string with pre-allocated buffer
+        let mut result = String::with_capacity(64);
+        for i in 0..count {
+            let reg = (start + i) as u8;
+            let val = self.read_unchecked(reg);
+            match &val {
+                RuntimeVal::ShortStr(s) => result.push_str(s.as_str()),
+                RuntimeVal::Int(n) => write!(result, "{}", n)?,
+                RuntimeVal::Float(f) => write!(result, "{}", f)?,
+                RuntimeVal::Bool(b) => result.push_str(if *b { "true" } else { "false" }),
+                RuntimeVal::Nil => result.push_str("nil"),
+                RuntimeVal::Obj(handle) => {
+                    if let Some(HeapValue::String(s)) = self.state.heap.get(*handle) {
+                        result.push_str(s.as_ref());
+                    } else {
+                        let s = self.to_runtime_string_with_display(reg, module, ctx)?;
+                        result.push_str(&s);
+                    }
+                }
+            }
+        }
+
+        self.write_string(instr.a(), result)?;
+        self.pc += 1;
         Ok(())
     }
 }

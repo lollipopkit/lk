@@ -244,13 +244,13 @@ impl Compiler {
     }
 
     pub(super) fn emit_return(&mut self, base: u16) -> Result<()> {
-        self.emit(Instr::abc(Opcode::Return, checked_u8("return base", base)?, 1, 0));
+        self.emit(Instr::abc(Opcode::Return1, checked_u8("return base", base)?, 0, 0));
         self.emitted_return = true;
         Ok(())
     }
 
     pub(super) fn emit_empty_return(&mut self) {
-        self.emit(Instr::abc(Opcode::Return, 0, 0, 0));
+        self.emit(Instr::abc(Opcode::Return0, 0, 0, 0));
         self.emitted_return = true;
     }
 
@@ -360,7 +360,7 @@ fn build_control_flow_facts(code: &[Instr], performance: &PerformanceFacts) -> R
                 )?;
                 mark_block_start(pc + 1, code.len(), &mut block_starts);
             }
-            Opcode::Return | Opcode::Raise => {
+            opcode if opcode.is_return() || opcode == Opcode::Raise => {
                 mark_block_start(pc + 1, code.len(), &mut block_starts);
             }
             _ => {}

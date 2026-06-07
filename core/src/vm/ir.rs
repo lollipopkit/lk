@@ -205,6 +205,9 @@ pub enum Opcode {
     GetList = 77,
     MulIntI = 78,
     ModIntI = 79,
+    ConcatN = 80,
+    Return0 = 81,
+    Return1 = 82,
 }
 
 impl Opcode {
@@ -294,6 +297,9 @@ impl Opcode {
             77 => Some(Self::GetList),
             78 => Some(Self::MulIntI),
             79 => Some(Self::ModIntI),
+            80 => Some(Self::ConcatN),
+            81 => Some(Self::Return0),
+            82 => Some(Self::Return1),
             _ => None,
         }
     }
@@ -338,6 +344,11 @@ impl Opcode {
             self,
             Self::TestEqInt | Self::TestNeInt | Self::TestLtInt | Self::TestLeInt | Self::TestGtInt | Self::TestGeInt
         )
+    }
+
+    #[inline]
+    pub const fn is_return(self) -> bool {
+        matches!(self, Self::Return | Self::Return0 | Self::Return1)
     }
 }
 
@@ -473,6 +484,21 @@ impl Instr {
     #[inline]
     pub const fn sj_arg(self) -> i32 {
         self.ax_arg() as i32 - Self::SJ_BIAS
+    }
+
+    #[inline]
+    pub const fn return_base(self) -> u8 {
+        self.a()
+    }
+
+    #[inline]
+    pub fn return_count(self) -> u8 {
+        match self.opcode() {
+            Opcode::Return0 => 0,
+            Opcode::Return1 => 1,
+            Opcode::Return => self.b(),
+            _ => 0,
+        }
     }
 
     pub fn disassemble(self) -> String {

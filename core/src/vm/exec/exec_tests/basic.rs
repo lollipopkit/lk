@@ -6,7 +6,7 @@ use crate::vm::{
         PerfContainerBuildFact, PerfIndexFact, PerfIndexTargetKind, PerfKeyFact, PerfRegisterCopyFact, PerfValueKind,
         PerformanceFacts,
     },
-    vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+    vm_runtime_metrics_reset,
 };
 #[test]
 fn execute_returns_int_arithmetic_result() {

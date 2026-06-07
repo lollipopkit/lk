@@ -309,7 +309,7 @@ fn compile_native_i64_list_subfunction_profile(
                     return Ok(None);
                 }
             }
-            Opcode::Return => {
+            opcode if opcode.is_return() && instr.return_count() == 1 => {
                 let Some(NativeStraightlineValue::DynamicList { id, .. }) =
                     static_regs.get(instr.a() as usize).and_then(Clone::clone)
                 else {

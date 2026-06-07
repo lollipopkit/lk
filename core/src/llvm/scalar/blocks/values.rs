@@ -85,6 +85,18 @@ pub(super) fn emit_value_block(
             facts,
             tmp_index,
         ),
+        // ConcatN: concatenate N values from consecutive registers
+        Opcode::ConcatN => emit_concat_n(
+            ir,
+            extra_globals,
+            static_regs,
+            code,
+            pc,
+            instr,
+            register_count,
+            facts,
+            tmp_index,
+        ),
         Opcode::AddFloat | Opcode::SubFloat | Opcode::MulFloat | Opcode::DivFloat | Opcode::ModFloat => {
             emit_float_arithmetic(ir, static_regs, code, pc, instr, register_count, facts, tmp_index)
         }
@@ -813,6 +825,66 @@ fn emit_concat_string(
         let symbol = format!("@lk_concat_str_{pc}");
         extra_globals.push_str(&llvm_string_constant(&symbol, &text));
         ir.push_str(&format!("  store ptr {symbol}, ptr %r{}.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::String {
+            symbol,
+            len: text.chars().count(),
+            key_kind: crate::llvm::straightline_value::native_runtime_string_key_kind(&text),
+            value: text,
+        });
+        emit_branch_to_next(ir, pc, code.len());
+        return true;
+    }
+    if emit_dynamic_text_to_reg(ir, extra_globals, instr.a(), &value, pc, tmp_index).is_some() {
+        static_regs[instr.a() as usize] = Some(value);
+    } else {
+        static_regs[instr.a() as usize] = Some(value);
+    }
+    emit_branch_to_next(ir, pc, code.len());
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_concat_n(
+    ir: &mut String,
+    extra_globals: &mut String,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    code: &[Instr],
+    pc: usize,
+    instr: Instr,
+    register_count: usize,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> bool {
+    let start = instr.b();
+    let count = instr.c() as usize;
+    if (instr.a() as usize) >= register_count || (start as usize) + count > register_count || count == 0 {
+        return false;
+    }
+    // Collect text parts from consecutive registers
+    let mut all_parts: Vec<NativeTextPart> = Vec::new();
+    for i in 0..count {
+        let reg = start + i as u8;
+        let Some(part) = text_value_from_reg(ir, reg, facts.register_kind_before(pc, reg), static_regs, tmp_index)
+        else {
+            return false;
+        };
+        if let NativeStraightlineValue::Text(parts) = part {
+            all_parts.extend(parts);
+        } else {
+            return false;
+        }
+    }
+    let value = NativeStraightlineValue::Text(all_parts);
+    if let NativeStraightlineValue::Text(parts) = &value
+        && let Some(text) = native_static_text_string(parts)
+    {
+        let symbol = format!("@lk_concat_str_{pc}");
+        extra_globals.push_str(&llvm_string_constant(&symbol, &text));
+        ir.push_str(&format!(
+            "  store ptr {symbol}, ptr %r{}.slot
+",
+            instr.a()
+        ));
         static_regs[instr.a() as usize] = Some(NativeStraightlineValue::String {
             symbol,
             len: text.chars().count(),

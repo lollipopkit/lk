@@ -823,6 +823,32 @@ pub(super) fn native_straightline_function_return(
                     value,
                 });
             }
+            Opcode::ConcatN => {
+                // N-ary concat: collect string parts from consecutive registers.
+                let count = instr.c() as usize;
+                let mut parts = Vec::new();
+                for i in 0..count {
+                    let reg_idx = instr.b() as usize + i;
+                    let Some(NativeStraightlineValue::String { value: part, .. }) =
+                        regs.get(reg_idx).and_then(Clone::clone)
+                    else {
+                        return Ok(None);
+                    };
+                    parts.push(part);
+                }
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                let symbol = format!("@lk_func{function_index}_concat_str_{}", *ssa_index);
+                *ssa_index += 1;
+                let value = parts.join("");
+                regs[instr.a() as usize] = Some(NativeStraightlineValue::String {
+                    symbol,
+                    len: value.chars().count(),
+                    key_kind: native_runtime_string_key_kind(&value),
+                    value,
+                });
+            }
             Opcode::StringStartsWith => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
@@ -1051,11 +1077,11 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode::Return => {
-                if instr.b() == 0 {
+            opcode if opcode.is_return() => {
+                if instr.return_count() == 0 {
                     return Ok(Some(NativeStraightlineValue::Nil));
                 }
-                if instr.b() != 1 {
+                if instr.return_count() != 1 {
                     return Ok(None);
                 }
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
@@ -1160,9 +1186,9 @@ pub(super) fn native_direct_call_static_return_value(
             Opcode::Move => {
                 *regs.get_mut(instr.a() as usize)? = regs.get(instr.b() as usize)?.clone();
             }
-            Opcode::Return if instr.b() == 0 => return Some(NativeStraightlineValue::Nil),
-            Opcode::Return if instr.b() == 1 => return regs.get(instr.a() as usize)?.clone(),
-            Opcode::Return => return None,
+            opcode if opcode.is_return() && instr.return_count() == 0 => return Some(NativeStraightlineValue::Nil),
+            opcode if opcode.is_return() && instr.return_count() == 1 => return regs.get(instr.a() as usize)?.clone(),
+            opcode if opcode.is_return() => return None,
             Opcode::Nop => {}
             _ => return None,
         }

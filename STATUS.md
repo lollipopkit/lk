@@ -2,18 +2,18 @@
 
 ## 目标与约束
 
-- 当前核心目标：真实 workload geomean `< 0.5x` vs Lua；允许 native/AOT 作为架构级性能路径。
+- 当前核心目标：真实 workload geomean `< 0.5x` vs Lua；允许 native/AOT 作为架构级性能路径。默认 `lk file.lk` 已接入 cached native executable fast path；纯解释器可用 `LK_FORCE_VM=1` 强制运行。
 - 当前优化阶段：避免 benchmark-shaped 专门 opcode，优先做通用 VM/compiler/LLVM 优化。7-bit opcode + metadata format 基础迁移已完成，后续新增 opcode 应只做 Lua-style operand-shape specialization。`ForLoopI` 是此前为了验证数值 range loop 热路径而临时复用 `Extra = 62` 的历史例外，不应继续作为复用保留槽的先例。
 - 安全约束：除 LLVM 部分外不能使用 `unsafe`，因此非 LLVM VM 解释器不走 unchecked raw pointer、`assume` 或 computed-goto 方案。
 - 维护约束：单个 Rust 源文件不超过 1500 行；当前 `core/src` 已满足该约束。
 
 ## 当前结论
 
-LK VM 已从“泛化解释器 + 大量运行时 materialization”推进到“compiler facts 驱动的轻量 lowering + typed fast path”。解释器 VM 在当前 20 项 workload suite 上尚未达到 `<0.5x`；当前达标路径是 `lk compile exe` native/AOT。当前 opcode 方向已经完成基础 encoding 迁移：`Opcode` 空间从 64 slot 扩到 128 slot，`InstrFormat` 改由 `OpcodeInfo` metadata 决定，`ABC.C` 恢复 8 bit。`AddIntI`、`MulIntI` 和 `ModIntI` 已作为通用 integer immediate operand-shape opcode 落地，覆盖真实 small-int add/sub/mul/mod literal RHS hot path；本轮普通 release 默认样本 `RUNS=3 EXTRA_RUNS=5` 的 VM/Lua geomean 为 `1.253x`，checksum 全部一致，但仍远未达到 `<0.5x`。本轮还接入了 `BrTrue` / `BrFalse` opcode 的 VM/LLVM 支持，但默认 compiler lowering 仍保留 `Test + Jmp`，因为启用单条 branch 的低样本 wall-clock 退化；随后新增 `BrNil` / `BrNotNil`，只在 condition-context 的 `x == nil` / `x != nil` 默认启用，并接入 VM/LLVM/control-flow facts。typed compare-test 现在记录已 patch 后的 absolute target pc，VM hot path 避免重复读取/校验后继 `Jmp`，并把非 Int fallback 拆到 cold helper。下一步如果继续做控制流，应优先做 compare-branch 直接 lowering 或 hot-loop/native path，而不是简单替换 `Test + Jmp` trampoline。
+LK VM 已从“泛化解释器 + 大量运行时 materialization”推进到“compiler facts 驱动的轻量 lowering + typed fast path”。解释器 VM 在当前 20 项 workload suite 上尚未达到 `<0.5x`；当前达标路径是 `lk compile exe` native/AOT。当前 opcode 方向已经完成基础 encoding 迁移：`Opcode` 空间从 64 slot 扩到 128 slot，`InstrFormat` 改由 `OpcodeInfo` metadata 决定，`ABC.C` 恢复 8 bit。`AddIntI`、`MulIntI` 和 `ModIntI` 已作为通用 integer immediate operand-shape opcode 落地，覆盖真实 small-int add/sub/mul/mod literal RHS hot path；`ConcatN` 已作为 3+ part template/multi-register string concat opcode落地；`Return0` / `Return1` 已作为 Lua-style 常见返回路径 opcode 落地。最新普通 release 默认样本 `RUN_AOT=1 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30` 的 VM/Lua geomean 为 `1.063x`，AOT/Lua geomean 为 `0.351x`，VM/Lua/AOT checksum 全部一致，但解释器 VM 仍远未达到 `<0.5x`。本轮还接入了 `BrTrue` / `BrFalse` opcode 的 VM/LLVM 支持，但默认 compiler lowering 仍保留 `Test + Jmp`，因为启用单条 branch 的低样本 wall-clock 退化；随后新增 `BrNil` / `BrNotNil`，只在 condition-context 的 `x == nil` / `x != nil` 默认启用，并接入 VM/LLVM/control-flow facts。typed compare-test 现在记录已 patch 后的 absolute target pc，VM hot path 避免重复读取/校验后继 `Jmp` 并把非 Int fallback 拆到 cold helper；`TestEqInt` / `TestNeInt` 另有直接 dispatch arm，减少最热 equality compare-test 的二级 opcode match。尝试为所有 `Jmp` 预计算 absolute target 的方案导致 `gcd_batch` timeout，已回退；尝试新增 `DivIntI` 后 VM geomean 退到约 `1.073x` / `1.078x`，已回退。下一步如果继续做控制流，应优先做 compare-branch 直接 lowering 或 hot-loop/native path，而不是简单替换 `Test + Jmp` trampoline。
 
-`run_function_inner` 仍是主要结构风险：主循环是 `match instr.opcode()`，其中混有热路径、fallback、错误构造、metrics、container/call 逻辑。问题不是 `match` 本身，而是热 arm 里仍有多层分支和 `Result` slow path 污染。拆分方向应是保留主循环最短热路径，把 dynamic fallback 和错误构造放到 cold helper。本轮新增 `GetFieldK` / `SetFieldK` 已把一部分 const string key 的 map/object 读写从泛化 `GetIndex` / `SetIndex` 中拆出来，但默认 VM geomean 仍未达标。
+`run_function_inner` 仍是主要结构风险：主循环是 `match instr.opcode()`，其中混有热路径、fallback、错误构造、metrics、container/call 逻辑。问题不是 `match` 本身，而是热 arm 里仍有多层分支和 `Result` slow path 污染。拆分方向应是保留主循环最短热路径，把 dynamic fallback 和错误构造放到 cold helper。`GetFieldK` / `SetFieldK` 已把一部分 const string key 的 map/object 读写从泛化 `GetIndex` / `SetIndex` 中拆出来，`ConcatN` 已减少多段 template 的 binary concat/materialization，但默认 VM geomean 仍未达标。
 
-当前 AOT/native 路径已在 20 项 workload suite 的 `RUNS=3` 复验中达到 `<0.5x` vs Lua；VM 解释器本身仍未达到该目标。后续如果目标以默认 `lk` VM 为准，仍需继续优化解释器或让默认性能路径接入 native；如果允许 `lk compile exe`/native 作为性能路径，则当前主要剩余工作是扩大复验样本、降低 AOT 慢项，并处理 dynamic string-map/template path。
+当前 AOT/native 路径已在 20 项 workload suite 的 `RUNS=3 EXTRA_RUNS=5` 复验中达到 `<0.5x` vs Lua；默认 `lk file.lk` 现在会优先复用 cached native executable，native lowering 或构建失败时静默回退 VM。这样默认 LK 性能路径已达到 `<0.5x`，但纯解释器 VM 本身仍未达到该目标。后续如果目标严格以 `LK_FORCE_VM=1` 的解释器为准，仍需继续优化解释器；如果允许默认 `lk` 性能路径使用 native，则当前主要剩余工作是降低 native 慢项，尤其是 dynamic string-map runtime helper、typed map mutation 和 template path。
 
 ## 性能证据
 
@@ -31,16 +31,29 @@ RUN_AOT=0 RUNS=6 EXTRA_RUNS=6 bash bench/run_workload_bench.sh
 ### 当前 AOT 低样本结果
 
 ```bash
-RUN_AOT=1 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
+RUN_AOT=1 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
 ```
 
-- suite：20 项 workload，包含新增的 customer/event/config/template/state-machine 场景。
-- VM/Lua geometric mean：`1.028x`
-- AOT/Lua geometric mean：`0.474x`
-- AOT/VM geometric mean：`0.462x`
+- suite：20 项 workload，包含 customer/event/config/template/state-machine 场景。
+- VM/Lua geometric mean：`1.063x`
+- AOT/Lua geometric mean：`0.351x`
+- AOT/VM geometric mean：`0.331x`
 - checksum 全部一致。
-- AOT 明显慢项：`template_render_mix` `3.463x`、`event_join_by_id` `2.104x`、`two_sum_map` `2.075x`、`histogram_group_count` `1.803x`、`inventory_reorder` `1.513x` vs Lua；这些主要受 dynamic string key/map runtime split/helper 调用和 template string construction 影响，应作为下一轮 AOT hot path 优化对象。
+- AOT 明显慢项：`event_join_by_id` `2.207x`、`two_sum_map` `2.030x`、`histogram_group_count` `1.857x`、`inventory_reorder` `1.479x`、`template_render_mix` `1.065x` vs Lua；这些主要受 dynamic string key/map runtime split/helper 调用和 template string construction 影响，应作为下一轮 AOT hot path 优化对象。
 - `state_machine_transitions` 曾用静态 map + dynamic template transition key，导致 native facts 无法分类；当前已改为显式 transition branches，保留状态机场景但避免 mixed optional map lookup 阻断整包 AOT。
+
+### 当前默认 LK 低样本结果
+
+默认 `lk file.lk` 在 LLVM feature 可用、未设置 `LK_FORCE_VM=1` / `LK_NATIVE_RUN=0` / `LK_VM_PROFILE=1` 时会先尝试 cached native executable。cache key 包含源文件内容、当前 `lk` executable 路径/mtime 和 CLI package version；同一 source 首次运行可能触发 compile，后续 filtered workload 复用同一个 native executable。native lowering 或 clang 构建失败时回退现有 VM 解释器。
+
+```bash
+RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
+```
+
+- 默认 LK/Lua geometric mean：`0.353x`（冷 cache dir + prewarm 后，VM-only runner）
+- full runner 复验：默认 LK/Lua `0.349x`，AOT/Lua `0.350x`，AOT/LK `1.001x`
+- checksum 全部一致。
+- 该结果是默认 LK 性能路径，不是 `LK_FORCE_VM=1` 纯解释器结果。
 
 ### 当前低样本结果
 
@@ -61,9 +74,9 @@ RUN_AOT=0 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_w
 - `GetFieldK` / `SetFieldK` 已作为 Map/Object + 短字符串 literal key 的通用 operand-shape opcode落地。profile coverage 显示 `GetFieldK:405733`、`SetFieldK:144990`，同时 `GetIndex` 降到 `2674709`、`SetIndex` 降到 `1043867`。该优化覆盖 `map.get`、字段访问、rewritten set-index 和 `.set(...)` statement/expression，不改变 mutable map/object 的 runtime lookup/write 语义；wall-clock 低样本仍有明显波动。
 - `GetList` 已实现 VM/compiler/LLVM 支持，但默认关闭。它曾覆盖 `GetList:1219200`，把 `GetIndex` 降到 `1455509`，但 release 低样本 geomean 退到约 `1.198x` / `1.216x`；因此当前不作为默认 lowering 保留。
 - 当前明显慢项：`template_render_mix` `3.762x`、`state_machine_transitions` `2.090x`、`gcd_batch` `2.046x`、`config_defaults_merge` `1.623x`、`prime_trial_division` `1.505x` vs Lua；其中 `gcd_batch` 低样本噪声明显。
-- 下一步 VM opcode 优化不应针对单个 workload；控制流方向应只继续 typed compare-test / compare-branch，不要对 unknown/dynamic 比较启用；容器方向可继续评估 `GetI/SetI`，返回路径可评估 `Return0/Return1`。仅把 `Test + Jmp` 改成 `BrTrue/BrFalse` 暂不保留为默认优化。
+- 下一步 VM opcode 优化不应针对单个 workload；控制流方向应只继续 typed compare-test / compare-branch，不要对 unknown/dynamic 比较启用；容器方向可继续评估 `GetI/SetI`，返回路径的 `Return0/Return1` 已落地但收益很小。仅把 `Test + Jmp` 改成 `BrTrue/BrFalse`、把所有 `Jmp` 改成 absolute target cache，或增加 `DivIntI` 暂不保留为默认优化。
 - runner 已改成逐 workload 运行并打印进度，默认 `BENCH_TIMEOUT=30`，可用 `BENCH_PROGRESS=0` 静默进度；Lua 侧也支持 `LK_WORKLOAD_FILTER`，避免静默全量 suite 被误判为死循环。
-- 最新默认 VM validation 使用 `RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh`。结果为 geomean `1.253x`，checksum 全部一致；主要慢项仍是 `template_render_mix` `3.867x`、`state_machine_transitions` `3.126x`、`prime_trial_division` `2.226x`、`stock_max_profit` `1.801x`、`config_defaults_merge` `1.730x`、`gcd_batch` `1.637x`。本轮验证过把 `ConcatString` 的 GC check 下沉到 heap-allocation 路径，字符串单项有轻微波动但整体 geomean 复跑退到 `1.32x` 左右，已回退。
+- 最新默认 VM validation 使用 `RUN_AOT=1 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh`。结果为 VM/Lua geomean `1.063x`，AOT/Lua geomean `0.351x`，checksum 全部一致；主要 VM 慢项仍是 `state_machine_transitions` `2.852x`、`prime_trial_division` `2.399x`、`stock_max_profit` `1.822x`、`config_defaults_merge` `1.770x`、`gcd_batch` `1.641x`、`matrix_3x3_multiply` `1.441x`。`ConcatN` 明显改善多段 template/string 场景：`template_render_mix` 为 `0.803x`、`log_parse_filter` 为 `0.246x`、`string_key_hash` 为 `0.490x`。本轮验证过把 `ConcatString` 的 GC check 下沉到 heap-allocation 路径，字符串单项有轻微波动但整体 geomean 复跑退到 `1.32x` 左右，已回退；本轮也验证过 absolute `Jmp` target cache 会导致 `gcd_batch` timeout，已回退；`DivIntI` 覆盖 17 条静态 opcode 但默认样本退化，已回退。继续验证过的通用 VM 微调也未保留：把 `ForLoopI` 拆成正/负 step 与 inclusive/exclusive 四个 opcode 后，VM-only 默认样本退到 `1.075x`；把连续 `Move` 批处理的 next-op 检查改成直接边界判断后退到 `1.072x`；把 `DivInt` / `ModInt` 的 zero-divisor 错误构造拆到 cold helper 后退到 `1.079x`。这些结果说明当前瓶颈不是简单 match arm 形状，而是更系统的 loop/control-flow、register-write 与 native/hot-loop 路径。
 
 ### 当前 coverage smoke
 
@@ -153,10 +166,12 @@ for f in examples/syntax/*.lk; do perl -e 'alarm 30; exec @ARGV' target/debug/lk
 - 语句上下文的 mutating method call，例如 `map.set(k, v);`，只生成 runtime set opcode；动态 key/list 写入保留 `SetIndex`，Map/Object + 短字符串 literal key 写入使用 `SetFieldK`，不再 materialize 未使用的 `nil` 返回值。
 - 表达式上下文的 `let x = map.set(k, v);` 仍保留 `nil` 结果语义。
 - 字符串 literal `.len()` 直接 lower 成 `LoadInt(char_count)`；非 ASCII 使用字符数语义。
+- 3+ part template string 现在 lower 为 `ConcatN`，把连续 parts 寄存器一次拼接为结果字符串；2-part template 仍使用 `ConcatString`，单表达式 template 仍保留必要 `ToString`。
 - 编译期识别 `string_expr.split(sep).join(sep).len()`，在接收者可静态确认为字符串且分隔符是同一个 literal/local 时直接 lower 为 `string_expr.len()`；这避免 `log_parse_filter` 中重复 materialize split list 和 joined string。
 - 已知 `Map` / `Object` 目标上的短字符串 literal key 不再生成 `LoadString` key register；读路径使用 `GetFieldK`，写路径使用 `SetFieldK`。动态 key 或非 Map/Object 目标仍保留 `GetIndex` / `SetIndex`。
 - 只读本地 const map 上的 `map.get(local, "literal")` 在 string key 且 int value 时直接 lower 成 scalar load；loop const collector 会把这类 fold 出来的 scalar value 纳入循环前缓存，避免 `role_levels` 这类只读表 lookup 在循环分支中反复 `LoadInt`；循环体内新建的 map 不记录该 fact，`.set` / rewritten set-index / assignment 会清除 fact，避免 mutable loop-local map 被错误折叠。
 - 裸 `return;` 和函数/程序隐式返回直接发出 `Return 0 0 0`，不再生成 `LoadNil + Return count=1`。
+- 裸 `return;` 和函数/程序隐式返回现在发出 `Return0`；单值 `return value` 发出 `Return1`。旧 `Return A B` 仍保留给多返回值和手写/旧 artifact，VM 与 LLVM lowering 使用统一 return count 语义。
 - `ReturnValues::None.into_vec()` 规范化为 `[RuntimeVal::Nil]`，保持外部 `ExecResult.returns` 语义。
 - 普通 `while` 和 direct-inline `while` 的 loop-back target 都会跳过 condition 前缀里的 scalar const loads，避免热循环每轮重复 materialize `LoadInt` / `LoadString` 条件常量。
 - 普通 `while`、direct-inline `while` 和 range `for` 会为 loop body 中的标量 literal 建立 loop-local cache。cached literal register 会纳入 live register floor，并被视为不可消费源，避免 `SetIndex` / `ListPush` / move policy 把缓存值写成 `nil`。
@@ -190,8 +205,9 @@ for f in examples/syntax/*.lk; do perl -e 'alarm 30; exec @ARGV' target/debug/lk
 - `FunctionData` 在内存中的 `ModuleArtifact` 转换里保留 `Function.performance`，但序列化时跳过该字段。
 - LLVM `GetIndex` / `SetIndex` 的 scalar block、straightline、callee eval、map mutate 路径统一使用 `native_known_string_key`；`GetFieldK` / `SetFieldK` 已同步接入 LLVM straightline、callee eval、scalar facts 和 scalar block lowering。
 - 这保证 compiler 的 key materialization elision 不会让 native lowering 退回动态 key 路径。
+- LLVM scalar block 已补齐 dynamic string-map `GetFieldK` lowering，const field key 可以复用 dynamic string map get helper；optional `Maybe*` 静态值经过 `BrNil` / `BrNotNil` 时不再被误判为确定非 nil，而是读取 `present.slot`。这修复了 AOT `config_defaults_merge` 等稀疏 map/default 场景的 checksum mismatch。
 - AOT 全 workload 的 entry scalar facts 阻塞已推进：`"n${i}"` 这类静态字符串前缀 + 动态整数后缀的 string-int map key 现在可被 facts 接受，`GetIndex` / `SetIndex` 的 known-string-key 占位寄存器也能推断 `DynamicMap<String, Int>` 返回/写入 kind。
-- AOT 全 workload executable 现在可以生成，并且 `bench/workloads_business_algorithms.lk` 的 15 个 workload checksum 已与 VM 全部一致。
+- AOT 全 workload executable 现在可以生成，并且 `bench/workloads_business_algorithms.lk` 的 20 个 workload checksum 已与 VM/Lua 全部一致。
 - 本轮修正了 AOT string-key dynamic map 和 optional compare 的几个语义缺口：
   - dynamic string-int map `SetIndex` 对非 const string key 使用当前 key pointer 做 runtime prefix/number split，避免模板 key 的源寄存器在后续算术中被复用后读到陈旧 suffix。
   - dynamic text `len()` 对 `StrPtr` 部分改为 `strlen`，修复 `status=${status}` 这类模板长度。
@@ -310,22 +326,21 @@ branch-heavy workload 仍有大量 typed branch：
 cargo fmt --all -- --check
 cargo test -p lk-core --lib
 cargo build --release -p lk-cli
-RUN_AOT=0 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
-RUN_AOT=0 RUNS=6 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
+RUN_AOT=1 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
 for f in examples/syntax/*.lk; do perl -e 'alarm 30; exec @ARGV' target/release/lk "$f" >/tmp/lk_syntax.out || exit $?; done
 target/release/lk compile exe bench/workloads_business_algorithms.lk --output /tmp/lk-workloads-aot-check
 target/release/lk bench/workloads_business_algorithms.lk
 /tmp/lk-workloads-aot-check
-RUN_AOT=1 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
 ```
 
 结果：
 
 - `cargo fmt --all -- --check`: pass
-- `cargo test -p lk-core --lib`: `898 passed`
+- `cargo test -p lk-core --lib`: `904 passed`
 - `cargo build --release -p lk-cli`: pass
 - `target/release/lk compile exe bench/workloads_business_algorithms.lk --output /tmp/lk-workloads-aot-check`: pass，生成 `/tmp/lk-workloads-aot-check`
-- `target/release/lk bench/workloads_business_algorithms.lk` 与 `/tmp/lk-workloads-aot-check`: 15 个 workload checksum 全部一致
+- `target/release/lk bench/workloads_business_algorithms.lk` 与 `/tmp/lk-workloads-aot-check`: 20 个 workload checksum 全部一致
+- `RUN_AOT=1 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh`: pass，20 个 workload VM/Lua/AOT checksum 全部一致，VM/Lua geomean `1.064x`，AOT/Lua geomean `0.351x`
 - release workload benchmark: checksum 全部一致；VM/Lua `RUNS=3` geomean `0.890x`，`RUNS=6` geomean `0.889x`
 - release workload benchmark with AOT: checksum 全部一致；VM/Lua 低样本 geomean `0.964x`，AOT/Lua 低样本 geomean `0.450x`
 - syntax smoke: `examples/syntax/*.lk` 全部通过，30 秒 alarm 未触发

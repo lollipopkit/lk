@@ -540,15 +540,14 @@ pub(in crate::llvm) fn native_return_kind_from_facts(
     code: &[Instr],
     facts: &NativeScalarFacts,
 ) -> Option<NativeScalarKind> {
-    use crate::vm::Opcode;
     let mut return_kind = None;
     for (pc, instr) in code.iter().copied().enumerate() {
-        if instr.opcode() != Opcode::Return {
+        if !instr.opcode().is_return() {
             continue;
         }
-        let kind = if instr.b() == 0 {
+        let kind = if instr.return_count() == 0 {
             NativeScalarKind::Nil
-        } else if instr.b() == 1 {
+        } else if instr.return_count() == 1 {
             facts.register_kind_before(pc, instr.a())?
         } else {
             return None;

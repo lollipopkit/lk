@@ -100,16 +100,36 @@ not to justify workload-specific fused opcodes.
 Current opcode evidence: `AddIntI`, `MulIntI`, and `ModIntI` cover real
 small-int literal RHS arithmetic paths in this suite. Typed compare-test now
 uses compiler control-flow facts to jump directly to the patched target pc and
-keeps non-Int fallback code cold. The latest default-sample VM run is
-checksum-clean at `1.253x` geomean. The next higher-leverage opcode work should
-target generic control-flow reduction, loop-carried register writes, or existing
-index helper/layout costs rather than workload-specific fused opcodes.
+keeps non-Int fallback code cold. `ConcatN` is enabled for 3+ part template
+strings as a generic multi-register string concatenation opcode; it is not tied
+to a specific workload. `Return0` and `Return1` are enabled for common
+zero-value and single-value return paths while the generic `Return` remains for
+multi-return/old bytecode. The default `lk file.lk` path now uses a cached
+native executable fast path when LLVM lowering succeeds; set `LK_FORCE_VM=1` to
+measure the pure interpreter. The latest default-sample run used
+`RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30` and was
+checksum-clean: default LK/Lua geomean `0.353x` with a cold native cache dir
+and prewarm. The latest full run with `RUN_AOT=1` reported default LK/Lua
+`0.349x`, AOT/Lua `0.350x`, and AOT/LK `1.001x`. A
+precomputed absolute-target table for every `Jmp` was tested and rejected after
+it made `gcd_batch` hit the 30s timeout. `DivIntI` was also tested and rejected
+because it covered static division literals but regressed interpreter geomean.
+The next higher-leverage interpreter opcode work should target generic
+control-flow reduction, loop-carried register writes, or existing index
+helper/layout costs rather than workload-specific fused opcodes.
 
 ## Adaptive Rerun Policy
 
 The runner starts with `RUNS` samples. If any workload is more than 3% slower
 than the documented baseline, or if sample spread exceeds 8%, it runs
 `EXTRA_RUNS` additional full-suite samples before reporting medians.
+
+When the default LK path can use cached native execution, the runner prewarms
+the LK native cache once before timed samples. This mirrors the AOT compile step
+being outside timed workload runs and prevents the first timed sample from
+including clang/native build time. Set `LK_FORCE_VM=1` or `LK_NATIVE_RUN=0` to
+measure the pure interpreter path instead. `LK_PREWARM_TIMEOUT` controls the
+prewarm timeout and defaults to 120 seconds.
 
 Status thresholds:
 - `ahead`: LK/Lua <= 0.95x
@@ -252,42 +272,43 @@ The remaining gap (target ≤1.10x) is primarily due to:
 Command:
 
 ```bash
-RUN_AOT=1 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
+RUN_AOT=1 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
 ```
 
 Date: 2026-06-07
 
 This run covers the current 20-workload suite. It validates the architecture-level
-native performance path; the interpreter VM ratio is shown separately by the
-runner and is not yet below `<0.5x`.
+native performance path. The historical table below predates the cached native
+default path, so the first column is the pure interpreter VM from that run.
+Use `LK_FORCE_VM=1` to reproduce interpreter-only timing.
 
 | Workload | LK VM (ms) | LK AOT (ms) | Lua (ms) | VM/Lua | AOT/Lua | AOT/VM | Conf. | Checksum |
 |----------|------------|-------------|----------|--------|---------|--------|-------|----------|
-| gcd_batch | 5.824 | 2.387 | 5.484 | 1.062x | 0.435x | 0.410x | high | 312000 |
-| prime_trial_division | 0.516 | 0.168 | 0.362 | 1.425x | 0.464x | 0.326x | low | 2935471 |
-| binary_search | 21.847 | 9.544 | 33.678 | 0.649x | 0.283x | 0.437x | high | 243950176 |
-| two_sum_map | 17.211 | 58.846 | 28.365 | 0.607x | 2.075x | 3.419x | high | 200000 |
-| sliding_window_sum | 14.115 | 2.620 | 14.406 | 0.980x | 0.182x | 0.186x | medium | 653998251 |
-| matrix_3x3_multiply | 1.347 | 0.247 | 0.995 | 1.354x | 0.248x | 0.183x | medium | 7973557 |
-| stock_max_profit | 6.745 | 2.122 | 6.262 | 1.077x | 0.339x | 0.315x | medium | 2974296 |
-| histogram_group_count | 23.562 | 55.280 | 30.663 | 0.768x | 1.803x | 2.346x | medium | 903000 |
-| string_key_hash | 4.401 | 3.570 | 5.006 | 0.879x | 0.713x | 0.811x | medium | 3495227553454 |
-| order_score_pipeline | 1.462 | 0.715 | 2.217 | 0.659x | 0.323x | 0.489x | low | 18815414 |
-| log_parse_filter | 127.935 | 132.393 | 152.716 | 0.838x | 0.867x | 1.035x | high | 916180 |
-| cart_pricing_rules | 1.058 | 0.185 | 1.490 | 0.710x | 0.124x | 0.175x | high | 2221125 |
-| route_permission_check | 2.003 | 0.478 | 2.224 | 0.901x | 0.215x | 0.239x | medium | 6208494 |
-| inventory_reorder | 16.225 | 30.449 | 20.131 | 0.806x | 1.513x | 1.877x | high | 1915398 |
-| fraud_rule_scoring | 7.042 | 1.616 | 7.907 | 0.891x | 0.204x | 0.229x | medium | 3242465 |
-| customer_ltv_segments | 8.712 | 1.334 | 9.874 | 0.882x | 0.135x | 0.153x | high | 15510171 |
-| event_join_by_id | 27.012 | 68.769 | 32.683 | 0.826x | 2.104x | 2.546x | high | 3855449 |
-| config_defaults_merge | 19.160 | 2.860 | 11.969 | 1.601x | 0.239x | 0.149x | high | 8313856 |
-| template_render_mix | 38.205 | 34.626 | 9.999 | 3.821x | 3.463x | 0.906x | high | 2489053 |
-| state_machine_transitions | 7.317 | 0.727 | 2.756 | 2.655x | 0.264x | 0.099x | medium | 2108535 |
+| gcd_batch | 9.335 | 2.295 | 5.606 | 1.665x | 0.409x | 0.246x | medium | 312000 |
+| prime_trial_division | 0.876 | 0.153 | 0.397 | 2.207x | 0.385x | 0.175x | low | 2935471 |
+| binary_search | 37.866 | 9.350 | 33.110 | 1.144x | 0.282x | 0.247x | medium | 243950176 |
+| two_sum_map | 18.782 | 55.423 | 28.451 | 0.660x | 1.948x | 2.951x | medium | 200000 |
+| sliding_window_sum | 18.137 | 2.406 | 14.771 | 1.228x | 0.163x | 0.133x | medium | 653998251 |
+| matrix_3x3_multiply | 1.487 | 0.212 | 0.965 | 1.541x | 0.220x | 0.143x | medium | 7973557 |
+| stock_max_profit | 11.464 | 1.666 | 6.210 | 1.846x | 0.268x | 0.145x | low | 2974296 |
+| histogram_group_count | 25.182 | 55.738 | 30.073 | 0.837x | 1.853x | 2.213x | high | 903000 |
+| string_key_hash | 2.330 | 1.736 | 4.921 | 0.473x | 0.353x | 0.745x | medium | 3495227553454 |
+| order_score_pipeline | 1.742 | 0.547 | 2.267 | 0.768x | 0.241x | 0.314x | low | 18815414 |
+| log_parse_filter | 38.760 | 40.677 | 152.313 | 0.254x | 0.267x | 1.049x | high | 916180 |
+| cart_pricing_rules | 1.400 | 0.158 | 1.506 | 0.930x | 0.105x | 0.113x | medium | 2221125 |
+| route_permission_check | 3.413 | 0.281 | 2.248 | 1.518x | 0.125x | 0.082x | medium | 6208494 |
+| inventory_reorder | 17.859 | 29.097 | 20.006 | 0.893x | 1.454x | 1.629x | medium | 1915398 |
+| fraud_rule_scoring | 8.470 | 1.192 | 7.619 | 1.112x | 0.156x | 0.141x | medium | 3242465 |
+| customer_ltv_segments | 10.279 | 1.098 | 9.821 | 1.047x | 0.112x | 0.107x | medium | 15510171 |
+| event_join_by_id | 29.591 | 69.248 | 32.708 | 0.905x | 2.117x | 2.340x | high | 3855449 |
+| config_defaults_merge | 20.506 | 2.447 | 12.234 | 1.676x | 0.200x | 0.119x | medium | 8313856 |
+| template_render_mix | 8.350 | 10.661 | 10.146 | 0.823x | 1.051x | 1.277x | medium | 2489053 |
+| state_machine_transitions | 8.924 | 0.426 | 2.941 | 3.034x | 0.145x | 0.048x | low | 2108535 |
 
-Samples: 3 per engine.
-**Geometric mean VM/Lua: 1.028x**.
-**Geometric mean AOT/Lua: 0.474x**.
-**Geometric mean AOT/VM: 0.462x**.
+Samples: 8 per engine.
+**Geometric mean VM/Lua: 1.063x**.
+**Geometric mean AOT/Lua: 0.351x**.
+**Geometric mean AOT/VM: 0.331x**.
 
 The remaining AOT regressions are concentrated in dynamic string-key map
 workloads and template-heavy formatting. These should be optimized before
@@ -381,6 +402,13 @@ when adjacent moves are consumed inside one dispatch arm.
 An attempted follow-up that stored static range `step_value` in
 `PerfForLoopFact` regressed low-sample geomean and was reverted; `ForLoopI`
 continues to read the step register.
+Another attempted follow-up split `ForLoopI` into four positive/negative and
+inclusive/exclusive opcode shapes. With `LK_FORCE_VM=1 RUN_AOT=0 RUNS=3
+EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30`, interpreter geomean regressed
+to `1.075x`, so the split was reverted. Simplifying the continuous
+`Move` next-op check regressed to `1.072x`, and moving `DivInt` / `ModInt`
+zero-divisor construction into a cold helper regressed to `1.079x`; neither is
+kept as a default optimization.
 
 The normal release VM now uses a zero-sized no-op runtime profile frame when
 `vm-profile` is not enabled; opcode histogram, register write source, and

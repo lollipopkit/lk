@@ -47,13 +47,13 @@ use super::{
     VmContext,
     analysis::{
         PerfIndexTargetKind, VmCallMetric, VmContainerMetric, VmRegisterWriteSource, record_call_op_known_enabled,
-        record_container_op_known_enabled, record_copy_policy_clone, vm_runtime_metrics_enabled,
+        record_container_op_known_enabled, vm_runtime_metrics_enabled,
     },
 };
 #[cfg(test)]
 use super::{Compiler, GlobalSlot};
 use handler::{ErrorHandler, LanguageRaise};
-use profile::{RuntimeProfileFrame, index_metric_kind, move_clone_metric};
+use profile::{RuntimeProfileFrame, index_metric_kind};
 use return_values::ReturnValues;
 use support::*;
 
@@ -543,7 +543,9 @@ impl Executor {
                     self.dispatch_cold(Opcode::LoadCellVal, function, module, instr, ctx, collect_metrics)?;
                     let _ = &profile; // suppress unused warning
                 }
-                Opcode::StoreCellVal => self.dispatch_cold(Opcode::StoreCellVal, function, module, instr, ctx, collect_metrics)?,
+                Opcode::StoreCellVal => {
+                    self.dispatch_cold(Opcode::StoreCellVal, function, module, instr, ctx, collect_metrics)?
+                }
                 Opcode::LoadFunction => {
                     self.dispatch_cold(Opcode::LoadFunction, function, module, instr, ctx, collect_metrics)?;
                     let _ = &profile; // suppress unused warning
@@ -729,6 +731,10 @@ impl Executor {
                     self.dispatch_concat_string(instr, module, ctx)?;
                     profile.record_write_source(VmRegisterWriteSource::String, collect_metrics);
                 }
+                Opcode::ConcatN => {
+                    self.dispatch_concat_n(instr, module, ctx)?;
+                    profile.record_write_source(VmRegisterWriteSource::String, collect_metrics);
+                }
                 Opcode::StringStartsWith => {
                     self.dispatch_cold(Opcode::StringStartsWith, function, module, instr, ctx, collect_metrics)?;
                 }
@@ -874,10 +880,16 @@ impl Executor {
                     self.dispatch_cold(Opcode::MapRest, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::Raise => self.dispatch_cold(Opcode::Raise, function, module, instr, ctx, collect_metrics)?,
-                Opcode::TryBegin => self.dispatch_cold(Opcode::TryBegin, function, module, instr, ctx, collect_metrics)?,
-                Opcode::TryEnd => { self.dispatch_cold(Opcode::TryEnd, function, module, instr, ctx, collect_metrics)?; }
+                Opcode::TryBegin => {
+                    self.dispatch_cold(Opcode::TryBegin, function, module, instr, ctx, collect_metrics)?
+                }
+                Opcode::TryEnd => {
+                    self.dispatch_cold(Opcode::TryEnd, function, module, instr, ctx, collect_metrics)?;
+                }
                 Opcode::Test => self.dispatch_cold(Opcode::Test, function, module, instr, ctx, collect_metrics)?,
-                Opcode::BrFalse => self.dispatch_cold(Opcode::BrFalse, function, module, instr, ctx, collect_metrics)?,
+                Opcode::BrFalse => {
+                    self.dispatch_cold(Opcode::BrFalse, function, module, instr, ctx, collect_metrics)?
+                }
                 Opcode::BrTrue => self.dispatch_cold(Opcode::BrTrue, function, module, instr, ctx, collect_metrics)?,
                 Opcode::BrNil => {
                     let index = self.stack_index_unchecked(instr.a());
@@ -894,6 +906,24 @@ impl Executor {
                     } else {
                         self.pc += 1;
                     }
+                }
+                Opcode::TestEqInt => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs_idx = self.stack_index_unchecked(instr.b());
+                    let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => lhs == rhs,
+                        _ => self.compare_test_value_slow(instr, lhs_idx, rhs_idx)?,
+                    };
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
+                }
+                Opcode::TestNeInt => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs_idx = self.stack_index_unchecked(instr.b());
+                    let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => lhs != rhs,
+                        _ => self.compare_test_value_slow(instr, lhs_idx, rhs_idx)?,
+                    };
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
                 }
                 opcode if opcode.is_compare_test() => {
                     let lhs_idx = self.stack_index_unchecked(instr.a());
@@ -916,21 +946,7 @@ impl Executor {
                             v => v,
                         },
                     };
-                    if let Some(fact) = function.performance.compare_test_branch(self.pc) {
-                        self.pc = if value == (instr.c() != 0) {
-                            fact.target_pc
-                        } else {
-                            self.pc + 2
-                        };
-                    } else {
-                        let jmp_pc = self.pc + 1;
-                        let jmp = code[jmp_pc];
-                        if value == (instr.c() != 0) {
-                            self.pc = self.relative_pc_unchecked(jmp.sj_arg());
-                        } else {
-                            self.pc += 2;
-                        }
-                    }
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
                 }
                 Opcode::Jmp => {
                     self.pc = self.relative_pc_unchecked(instr.sj_arg());
@@ -1201,11 +1217,24 @@ impl Executor {
                     profile.record_write_source(VmRegisterWriteSource::Global, collect_metrics);
                     self.pc += 1;
                 }
-                Opcode::SetGlobal => self.dispatch_cold(Opcode::SetGlobal, function, module, instr, ctx, collect_metrics)?,
+                Opcode::SetGlobal => {
+                    self.dispatch_cold(Opcode::SetGlobal, function, module, instr, ctx, collect_metrics)?
+                }
                 Opcode::Return => {
                     self.collect_pending_garbage();
                     profile.flush(collect_metrics);
                     return self.take_return_values(instr.a(), instr.b());
+                }
+                Opcode::Return0 => {
+                    self.collect_pending_garbage();
+                    profile.flush(collect_metrics);
+                    return Ok(ReturnValues::None);
+                }
+                Opcode::Return1 => {
+                    self.collect_pending_garbage();
+                    profile.flush(collect_metrics);
+                    let index = self.stack_index_unchecked(instr.a());
+                    return Ok(ReturnValues::One(std::mem::take(&mut self.state.stack[index])));
                 }
                 other => bail!("Opcode {:?} is not implemented in Executor yet", other),
             }

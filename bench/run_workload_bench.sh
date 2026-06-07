@@ -14,6 +14,7 @@ AOT_ENABLED=0
 PROFILE_WORKLOADS="${PROFILE_WORKLOADS:-0}"
 BENCH_TIMEOUT="${BENCH_TIMEOUT:-30}"
 BENCH_PROGRESS="${BENCH_PROGRESS:-1}"
+LK_PREWARM_TIMEOUT="${LK_PREWARM_TIMEOUT:-120}"
 
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
@@ -366,6 +367,20 @@ echo "Runs: $BASE_RUNS base + $EXTRA_RUNS adaptive extra when regression/noise i
 echo "Per-workload timeout: ${BENCH_TIMEOUT}s (set BENCH_TIMEOUT=0 to disable)"
 echo "Regression margin: $(awk -v x="$REGRESSION_MARGIN" 'BEGIN { printf "%.1f%%", x * 100 }') vs documented baseline"
 echo "Noise margin: $(awk -v x="$NOISE_MARGIN" 'BEGIN { printf "%.1f%%", x * 100 }') max spread"
+if [ "${LK_FORCE_VM:-0}" != "1" ] && [ "${LK_VM_ONLY:-0}" != "1" ] && [ "${LK_VM_PROFILE:-0}" != "1" ] && [ "${LK_NATIVE_RUN:-1}" != "0" ]; then
+  PREWARM_OUT="$TMPDIR/lk_prewarm.out"
+  PREWARM_ERR="$TMPDIR/lk_prewarm.err"
+  PREWARM_OLD_TIMEOUT="$BENCH_TIMEOUT"
+  BENCH_TIMEOUT="$LK_PREWARM_TIMEOUT"
+  if LK_WORKLOAD_FILTER="${WORKLOADS[0]}" run_with_timeout "$PREWARM_OUT" "$PREWARM_ERR" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk"; then
+    echo "LK native cache: prewarmed (timeout ${LK_PREWARM_TIMEOUT}s)"
+  else
+    echo "LK native cache prewarm failed or timed out after ${LK_PREWARM_TIMEOUT}s" >&2
+    sed 's/^/  /' "$PREWARM_ERR" >&2
+    exit 1
+  fi
+  BENCH_TIMEOUT="$PREWARM_OLD_TIMEOUT"
+fi
 if [ "$PROFILE_WORKLOADS" != "0" ]; then
   echo "VM profile: enabled, one extra filtered LK run per workload"
 fi
@@ -463,7 +478,7 @@ TOTAL_RUNS=$(awk 'END { print NR }' "$TMPDIR/lk_${WORKLOADS[0]}.dat")
 
 if [ "$AOT_ENABLED" = "1" ]; then
   table_widths=(28 10 10 10 10 10 10 8 10 11 8)
-  printf "%-28s %10s %10s %10s %10s %10s %10s %8s %10s %11s %s\n" "Workload" "LK VM" "LK AOT" "Lua" "VM/Lua" "AOT/Lua" "AOT/VM" "Noise" "Conf." "Status" "Checksum"
+  printf "%-28s %10s %10s %10s %10s %10s %10s %8s %10s %11s %s\n" "Workload" "LK" "LK AOT" "Lua" "LK/Lua" "AOT/Lua" "AOT/LK" "Noise" "Conf." "Status" "Checksum"
   print_separator "${table_widths[@]}"
 else
   table_widths=(28 10 10 10 8 10 11 8)
@@ -533,7 +548,7 @@ echo "Geometric mean ratio: ${geo_ratio}x"
 if [ "$AOT_ENABLED" = "1" ]; then
   echo "AOT backend: $AOT_BACKEND"
   echo "AOT geometric mean ratio: ${aot_geo_ratio}x vs Lua"
-  echo "AOT/VM geometric mean ratio: ${aot_vm_geo_ratio}x"
+  echo "AOT/LK geometric mean ratio: ${aot_vm_geo_ratio}x"
 elif [ "$RUN_AOT" != "0" ]; then
   echo "AOT backend: skipped"
 fi

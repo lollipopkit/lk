@@ -436,6 +436,30 @@ impl Executor {
         Ok(true)
     }
 
+    #[inline(always)]
+    pub(super) fn apply_compare_test_branch_unchecked(
+        &mut self,
+        function: &Function,
+        code: &[Instr],
+        instr: Instr,
+        value: bool,
+    ) {
+        if let Some(fact) = function.performance.compare_test_branch(self.pc) {
+            self.pc = if value == (instr.c() != 0) {
+                fact.target_pc
+            } else {
+                self.pc + 2
+            };
+        } else {
+            let jmp = code[self.pc + 1];
+            if value == (instr.c() != 0) {
+                self.pc = self.relative_pc_unchecked(jmp.sj_arg());
+            } else {
+                self.pc += 2;
+            }
+        }
+    }
+
     #[inline]
     pub(super) fn fused_bool_branch_fact(
         &self,
@@ -495,12 +519,6 @@ impl Executor {
     #[inline(always)]
     pub(super) fn relative_pc_unchecked(&self, offset: i32) -> usize {
         (self.pc as i64 + 1 + offset as i64) as usize
-    }
-
-    /// Unchecked relative PC from a given base — elides bounds check.
-    #[inline(always)]
-    pub(super) fn relative_pc_from_unchecked(pc: usize, offset: i32) -> usize {
-        (pc as i64 + 1 + offset as i64) as usize
     }
 
     #[cold]

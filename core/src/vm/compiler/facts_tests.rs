@@ -450,7 +450,7 @@ fn compiler_does_not_copy_returned_local() {
     let return_instr = function
         .code
         .iter()
-        .find(|instr| instr.opcode() == Opcode::Return)
+        .find(|instr| instr.opcode().is_return())
         .expect("Return");
     assert!(
         function.performance.is_local_slot(return_instr.a() as u16),

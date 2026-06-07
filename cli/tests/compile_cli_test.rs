@@ -162,6 +162,45 @@ fn test_llvm_compile_lowers_simple_i64_return_without_vm_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
+fn test_source_run_uses_cached_native_and_force_vm_fallback() {
+    let dir = unique_tmp_dir("native_cache_run");
+    ensure_clean_dir(&dir);
+    let cache_dir = dir.join("cache");
+    write_file(&dir, "a.lk", "let x = 40; return x + 2;\n");
+
+    for _ in 0..2 {
+        let output = run_cli(&dir, ["a.lk"])
+            .env("LK_NATIVE_CACHE_DIR", &cache_dir)
+            .output()
+            .expect("spawn source run");
+        assert!(
+            output.status.success(),
+            "source run failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).expect("utf8 stdout").trim(), "42");
+    }
+
+    let cache_entries = fs::read_dir(&cache_dir).expect("read native cache").count();
+    assert_eq!(cache_entries, 1, "expected one cached native executable");
+
+    let vm = run_cli(&dir, ["a.lk"])
+        .env("LK_NATIVE_CACHE_DIR", &cache_dir)
+        .env("LK_FORCE_VM", "1")
+        .output()
+        .expect("spawn forced VM source run");
+    assert!(
+        vm.status.success(),
+        "forced VM source run failed: {}",
+        String::from_utf8_lossy(&vm.stderr)
+    );
+    assert_eq!(String::from_utf8(vm.stdout).expect("utf8 stdout").trim(), "42");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
 fn test_llvm_compile_lowers_unused_stdlib_import_metadata() {
     let dir = unique_tmp_dir("llvm_unused_stdlib_import");
     ensure_clean_dir(&dir);

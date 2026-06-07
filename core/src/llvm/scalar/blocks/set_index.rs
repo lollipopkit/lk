@@ -268,6 +268,25 @@ fn dynamic_text_key_before(
             )?);
             Some(NativeStraightlineValue::Text(parts))
         }
+        Opcode::ConcatN => {
+            // N-ary concat: collect parts from r[B]..r[B+C-1]
+            let count = prev.c() as usize;
+            let mut parts =
+                dynamic_text_parts_before(ir, static_regs, code, strings, write_pc, prev.b(), facts, tmp_index)?;
+            for i in 1..count {
+                parts.extend(dynamic_text_parts_before(
+                    ir,
+                    static_regs,
+                    code,
+                    strings,
+                    write_pc,
+                    prev.b() + i as u8,
+                    facts,
+                    tmp_index,
+                )?);
+            }
+            Some(NativeStraightlineValue::Text(parts))
+        }
         Opcode::ToString => {
             dynamic_text_parts_before(ir, static_regs, code, strings, write_pc, prev.b(), facts, tmp_index)
                 .map(NativeStraightlineValue::Text)

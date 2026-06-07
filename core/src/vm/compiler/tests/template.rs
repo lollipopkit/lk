@@ -47,6 +47,7 @@ fn compiler_template_string_starts_from_first_part() {
     assert_eq!(load_string_count(&function, ""), 0);
     assert_eq!(opcode_count(&function, Opcode::ToString), 0);
     assert_eq!(opcode_count(&function, Opcode::ConcatString), 1);
+    assert_eq!(opcode_count(&function, Opcode::ConcatN), 0);
 
     let bucket = load_int_register(&function, 7);
     let concat = function
@@ -78,9 +79,31 @@ fn compiler_template_string_skips_to_string_for_string_parts() {
     assert_eq!(load_string_count(&function, ""), 0);
     assert_eq!(opcode_count(&function, Opcode::ToString), 0);
     assert_eq!(opcode_count(&function, Opcode::ConcatString), 1);
+    assert_eq!(opcode_count(&function, Opcode::ConcatN), 0);
 
     let result = execute(&function).expect("execute");
     assert_eq!(returned_string(&result), "status=ok");
+}
+
+#[test]
+fn compiler_template_string_uses_concat_n_for_three_or_more_parts() {
+    let function = compile_source(
+        r#"
+        let name = "api";
+        let shard = 7;
+        let key = "svc:${name}:${shard}";
+        return key;
+        "#,
+    )
+    .expect("compile source");
+
+    assert_eq!(load_string_count(&function, ""), 0);
+    assert_eq!(opcode_count(&function, Opcode::ToString), 0);
+    assert_eq!(opcode_count(&function, Opcode::ConcatString), 0);
+    assert_eq!(opcode_count(&function, Opcode::ConcatN), 1);
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(returned_string(&result), "svc:api:7");
 }
 
 #[test]

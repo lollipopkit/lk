@@ -22,11 +22,11 @@ pub(super) fn emit_return_block(
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
 ) -> Option<()> {
-    if instr.b() == 0 {
+    if instr.return_count() == 0 {
         ir.push_str("  ret i32 0\n");
         return Some(());
     }
-    if instr.b() != 1 || !reg_in_bounds(register_count, instr.a()) {
+    if instr.return_count() != 1 || !reg_in_bounds(register_count, instr.a()) {
         return None;
     }
     let static_value = static_regs.get(instr.a() as usize).and_then(Clone::clone);

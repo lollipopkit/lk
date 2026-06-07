@@ -948,13 +948,13 @@ fn emit_inline_direct_scalar_blocks(
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
             Opcode::CallDirect => return None,
-            Opcode::Return => {
-                if instr.b() == 0 {
+            opcode if opcode.is_return() => {
+                if instr.return_count() == 0 {
                     // void/nil return: store nil into caller dst and jump to next
                     ir.push_str(&format!("  store i64 0, ptr %r{dst}.slot\n"));
                     ir.push_str(&format!("  br label {}\n", native_label(call_pc + 1, caller_code_len)));
                 } else {
-                    if instr.b() != 1 || !reg_in_bounds(register_count, instr.a()) {
+                    if instr.return_count() != 1 || !reg_in_bounds(register_count, instr.a()) {
                         return None;
                     }
                     if let Some(value) = static_regs.get(instr.a() as usize).and_then(Clone::clone)

@@ -415,9 +415,9 @@ fn compiler_elides_nil_load_for_empty_return_paths() {
         let return_instr = function
             .code
             .iter()
-            .find(|instr| instr.opcode() == Opcode::Return)
+            .find(|instr| instr.opcode().is_return())
             .expect("Return");
-        assert_eq!(return_instr.b(), 0, "empty return should use Return count=0");
+        assert_eq!(return_instr.return_count(), 0, "empty return should use Return count=0");
 
         let result = execute(&function).expect("execute");
         assert_eq!(result.returns, vec![crate::val::RuntimeVal::Nil]);

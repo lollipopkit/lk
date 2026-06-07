@@ -401,14 +401,14 @@ pub(super) fn compile_native_scalar_subfunction(
                     return Ok(None);
                 }
             }
-            Opcode::Return => {
-                if instr.b() == 0 {
+            opcode if opcode.is_return() => {
+                if instr.return_count() == 0 {
                     ir.push_str(&format!(
                         "  ret {} {}\n",
                         return_kind.llvm_type(),
                         native_return_zero(return_kind)
                     ));
-                } else if instr.b() == 1 && (instr.a() as usize) < register_count {
+                } else if instr.return_count() == 1 && (instr.a() as usize) < register_count {
                     let Some(kind) = callee_facts.register_kind_before(pc, instr.a()) else {
                         return Ok(None);
                     };
@@ -631,6 +631,10 @@ pub(super) fn compile_native_scalar_subfunction(
                 };
                 static_regs[instr.a() as usize] = Some(value);
                 emitted_terminator = false;
+            }
+            Opcode::ConcatN => {
+                // N-ary concat: fallback for now; static folding is complex.
+                return Ok(None);
             }
             _ => {
                 return Ok(None);
@@ -908,7 +912,7 @@ pub(super) fn compile_native_ptr_list_subfunction(
                     return Ok(None);
                 }
             }
-            Opcode::Return => {
+            opcode if opcode.is_return() && instr.return_count() == 1 => {
                 let Some(NativeStraightlineValue::DynamicList { id, .. }) =
                     static_regs.get(instr.a() as usize).and_then(Clone::clone)
                 else {
@@ -1276,7 +1280,7 @@ fn callsite_param_kind_candidates(
 fn determine_return_kind(code: &[Instr], facts: &NativeScalarFacts) -> Option<NativeScalarKind> {
     let mut return_kind: Option<NativeScalarKind> = None;
     for (pc, instr) in code.iter().copied().enumerate() {
-        if instr.opcode() != Opcode::Return || instr.b() != 1 {
+        if !instr.opcode().is_return() || instr.return_count() != 1 {
             continue;
         }
         let kind = facts.register_kind_before(pc, instr.a())?;

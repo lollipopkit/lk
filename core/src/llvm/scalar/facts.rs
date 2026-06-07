@@ -472,6 +472,13 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
+            Opcode::ConcatN => {
+                // ConcatN: concatenate multiple register operands into a string.
+                // Static folding of N-ary concat is complex; mark result as StrPtr only.
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::StrPtr) {
+                    return None;
+                }
+            }
             Opcode::Len => {
                 if let Some(target) = static_kind(&static_values, instr.b()) {
                     if matches!(target, NativeStraightlineValue::DynamicMapIter { .. })
@@ -1387,11 +1394,11 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode::Return => {
-                if instr.b() > 1 {
+            opcode if opcode.is_return() => {
+                if instr.return_count() > 1 {
                     return None;
                 }
-                if instr.b() == 1
+                if instr.return_count() == 1
                     && native_kind(&kinds, instr.a())
                         .or_else(|| static_kind(&static_values, instr.a()).and_then(|value| static_value_kind(&value)))
                         .is_none()

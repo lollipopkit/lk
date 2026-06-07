@@ -868,6 +868,32 @@ pub(super) fn compile_native_scalar_main_artifact(
                     value,
                 });
             }
+            Opcode::ConcatN => {
+                // N-ary concat: collect string parts from consecutive registers.
+                let count = instr.c() as usize;
+                let mut parts = Vec::new();
+                for i in 0..count {
+                    let reg_idx = instr.b() as usize + i;
+                    let Some(NativeStraightlineValue::String { value: part, .. }) =
+                        regs.get(reg_idx).and_then(Clone::clone)
+                    else {
+                        return Ok(None);
+                    };
+                    parts.push(part);
+                }
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                let symbol = format!("@lk_concat_str_{}", ssa_index);
+                ssa_index += 1;
+                let value = parts.join("");
+                regs[instr.a() as usize] = Some(NativeStraightlineValue::String {
+                    symbol,
+                    len: value.chars().count(),
+                    key_kind: native_runtime_string_key_kind(&value),
+                    value,
+                });
+            }
             Opcode::StringStartsWith => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
@@ -1112,11 +1138,11 @@ pub(super) fn compile_native_scalar_main_artifact(
                 ssa_index += 1;
                 next_pc = catch_pc;
             }
-            Opcode::Return => {
-                if instr.b() == 0 {
+            opcode if opcode.is_return() => {
+                if instr.return_count() == 0 {
                     return Ok(Some(native_scalar_main_ir(options, &body, None)));
                 }
-                if instr.b() != 1 {
+                if instr.return_count() != 1 {
                     return Ok(None);
                 }
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+#[cfg(feature = "llvm")]
 use std::process::Command;
 use std::sync::{Arc, Once};
 
@@ -6,8 +7,9 @@ static PERF_TRACE_INIT: Once = Once::new();
 const DEFAULT_TRACE_FILTER: &str = "lk::vm::alloc=trace,lk::vm::slowpath=debug,lk_core=info,lk_cli=info";
 
 use clap::{Parser, Subcommand, ValueEnum};
+#[cfg(feature = "llvm")]
+use lk_core::llvm::{LlvmBackendOptions, OptLevel};
 use lk_core::{
-    llvm::{LlvmBackendOptions, OptLevel},
     module::ModuleRegistry,
     package::{PackageGraph, PackageModule},
     rt,
@@ -454,6 +456,11 @@ fn main() -> anyhow::Result<()> {
     let input =
         String::from_utf8(raw).map_err(|e| anyhow::anyhow!("Input file is not valid UTF-8 LK source: {}", e))?;
 
+    #[cfg(feature = "llvm")]
+    if try_execute_cached_native(&safe, input.as_bytes())? {
+        return Ok(());
+    }
+
     // Initialize runtime for concurrency if enabled
     if let Err(e) = rt::init_runtime() {
         diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
@@ -537,13 +544,158 @@ fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<(
 
 #[cfg(feature = "llvm")]
 fn compile_executable(path: &Path, output: Option<&Path>, options: LlvmBackendOptions) -> anyhow::Result<()> {
-    let artifact = compile_instr_artifact(path)?;
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
+    compile_executable_to_path(path, &output, options)?;
+    println!("{}", output.display());
+    Ok(())
+}
+
+#[cfg(feature = "llvm")]
+fn compile_executable_to_path(path: &Path, output: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
+    let artifact = compile_instr_artifact(path)?;
     let llvm = lk_core::llvm::compile_module_artifact_to_llvm(&artifact, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
     compile_native_executable_from_llvm(path, &output, &llvm.module.ir)?;
-    println!("{}", output.display());
     Ok(())
+}
+
+#[cfg(feature = "llvm")]
+fn try_execute_cached_native(path: &Path, source: &[u8]) -> anyhow::Result<bool> {
+    if !native_run_enabled() {
+        return Ok(false);
+    }
+    let Some(output) = cached_native_executable_path(path, source)? else {
+        return Ok(false);
+    };
+    if !output.exists() {
+        let tmp = native_cache_tmp_path(&output);
+        let options = LlvmBackendOptions {
+            module_name: module_name_from_path(path),
+            ..LlvmBackendOptions::default()
+        };
+        if let Err(err) = compile_executable_to_path(path, &tmp, options) {
+            let _ = std::fs::remove_file(&tmp);
+            if native_trace_enabled() {
+                diagnostic::warning(format_args!("Native cache build skipped: {err:#}"));
+            }
+            return Ok(false);
+        }
+        if let Err(err) = std::fs::rename(&tmp, &output) {
+            let _ = std::fs::remove_file(&tmp);
+            if output.exists() {
+                // Another process won the same cache race.
+            } else {
+                if native_trace_enabled() {
+                    diagnostic::warning(format_args!("Native cache install failed: {err}"));
+                }
+                return Ok(false);
+            }
+        }
+    }
+
+    let status = match Command::new(&output).status() {
+        Ok(status) => status,
+        Err(err) => {
+            let _ = std::fs::remove_file(&output);
+            if native_trace_enabled() {
+                diagnostic::warning(format_args!("Native cache run failed: {err}"));
+            }
+            return Ok(false);
+        }
+    };
+    if status.success() {
+        return Ok(true);
+    }
+    anyhow::bail!("cached native executable exited with status {status}");
+}
+
+#[cfg(feature = "llvm")]
+fn native_run_enabled() -> bool {
+    if env_flag("LK_FORCE_VM") || env_flag("LK_VM_ONLY") || env_flag("LK_VM_PROFILE") {
+        return false;
+    }
+    !matches!(
+        std::env::var("LK_NATIVE_RUN").as_deref(),
+        Ok("0" | "false" | "FALSE" | "no" | "NO")
+    )
+}
+
+#[cfg(feature = "llvm")]
+fn native_trace_enabled() -> bool {
+    env_flag("LK_NATIVE_TRACE")
+}
+
+#[cfg(feature = "llvm")]
+fn env_flag(name: &str) -> bool {
+    matches!(
+        std::env::var(name).as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+#[cfg(feature = "llvm")]
+fn cached_native_executable_path(path: &Path, source: &[u8]) -> anyhow::Result<Option<PathBuf>> {
+    let cache_dir = std::env::var_os("LK_NATIVE_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("lk-native-cache"));
+    std::fs::create_dir_all(&cache_dir).with_context(|| format!("create native cache {}", cache_dir.display()))?;
+    let source_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let exe = std::env::current_exe().ok();
+    let mut hash = Fnv64::new();
+    hash.bytes(source_path.to_string_lossy().as_bytes());
+    hash.bytes(source);
+    hash.bytes(env!("CARGO_PKG_VERSION").as_bytes());
+    if let Some(exe) = exe.as_ref() {
+        hash.bytes(exe.to_string_lossy().as_bytes());
+        if let Ok(meta) = exe.metadata() {
+            hash.u64(meta.len());
+            hash_modified(&mut hash, &meta);
+        }
+    }
+    Ok(Some(cache_dir.join(format!("lk-native-{:016x}", hash.finish()))))
+}
+
+#[cfg(feature = "llvm")]
+fn native_cache_tmp_path(output: &Path) -> PathBuf {
+    let file = output.file_name().and_then(|file| file.to_str()).unwrap_or("lk-native");
+    output.with_file_name(format!("{file}.tmp-{}", std::process::id()))
+}
+
+#[cfg(feature = "llvm")]
+fn hash_modified(hash: &mut Fnv64, meta: &std::fs::Metadata) {
+    if let Ok(modified) = meta.modified()
+        && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+    {
+        hash.u64(duration.as_secs());
+        hash.u64(u64::from(duration.subsec_nanos()));
+    }
+}
+
+#[cfg(feature = "llvm")]
+struct Fnv64(u64);
+
+#[cfg(feature = "llvm")]
+impl Fnv64 {
+    fn new() -> Self {
+        Self(0xcbf29ce484222325)
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+        self.0 ^= 0xff;
+        self.0 = self.0.wrapping_mul(0x100000001b3);
+    }
+
+    fn u64(&mut self, value: u64) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
 }
 
 #[cfg(feature = "llvm")]

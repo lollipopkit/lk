@@ -215,7 +215,15 @@ fn emit_nil_branch_block(
     let Some(taken) = native_relative_target(pc, instr.sbx() as i32, code.len()) else {
         return false;
     };
-    if let Some(value) = static_regs.get(instr.a() as usize).and_then(|value| value.as_ref()) {
+    if let Some(value) = static_regs.get(instr.a() as usize).and_then(|value| value.as_ref())
+        && !matches!(
+            value,
+            NativeStraightlineValue::MaybeI64 { .. }
+                | NativeStraightlineValue::MaybeF64 { .. }
+                | NativeStraightlineValue::MaybeBool { .. }
+                | NativeStraightlineValue::MaybeStrPtr { .. }
+        )
+    {
         let is_nil = matches!(value, NativeStraightlineValue::Nil);
         let branch_taken =
             (instr.opcode() == Opcode::BrNil && is_nil) || (instr.opcode() == Opcode::BrNotNil && !is_nil);

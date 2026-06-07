@@ -47,12 +47,6 @@ impl Executor {
         }
     }
 
-    #[inline(always)]
-    pub(super) fn take_unchecked(&mut self, register: u8) -> RuntimeVal {
-        let index = self.stack_index_unchecked(register);
-        std::mem::take(&mut self.state.stack[index])
-    }
-
     #[inline]
     pub(super) fn take(&mut self, register: u8) -> Result<RuntimeVal> {
         let index = self.stack_index(register)?;

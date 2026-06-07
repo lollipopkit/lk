@@ -126,9 +126,12 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr], pc: usize, reg
             | Opcode::Len
             | Opcode::ForLoopI => Some(NativeScalarKind::I64),
             Opcode::LoadFloat => Some(NativeScalarKind::F64),
-            Opcode::LoadString | Opcode::ToString | Opcode::ConcatString | Opcode::StringSplit | Opcode::ListJoin => {
-                Some(NativeScalarKind::StrPtr)
-            }
+            Opcode::LoadString
+            | Opcode::ToString
+            | Opcode::ConcatString
+            | Opcode::ConcatN
+            | Opcode::StringSplit
+            | Opcode::ListJoin => Some(NativeScalarKind::StrPtr),
             Opcode::LoadBool
             | Opcode::Not
             | Opcode::IsNil
@@ -408,7 +411,7 @@ fn mark_static_untaken_merge_path(skip_pcs: &mut [bool], code: &[Instr], start: 
         }
         let instr = code[pc];
         match instr.opcode() {
-            Opcode::Return => return true,
+            opcode if opcode.is_return() => return true,
             Opcode::Jmp => {
                 let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len()) else {
                     return marked_any;
@@ -454,7 +457,7 @@ fn predecessor_counts(code: &[Instr]) -> Vec<usize> {
                     *count += 1;
                 }
             }
-            Opcode::Return => {}
+            opcode if opcode.is_return() => {}
             _ => {
                 if let Some(count) = predecessors.get_mut(pc + 1) {
                     *count += 1;
@@ -487,7 +490,7 @@ fn static_untaken_linear_return_path(boundaries: &[bool], code: &[Instr], start:
         }
         path.push(pc);
         match instr.opcode() {
-            Opcode::Return => return Some(path),
+            opcode if opcode.is_return() => return Some(path),
             Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::ForLoopI => return None,
             opcode if opcode.is_compare_test() => return None,
             _ => {
@@ -809,8 +812,9 @@ fn static_register_value_trusted_before_inner(code: &[Instr], pc_limit: usize, r
         .any(|instr| {
             matches!(
                 instr.opcode(),
-                Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::ForLoopI | Opcode::Return
-            ) || instr.opcode().is_compare_test()
+                Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::ForLoopI
+            ) || instr.opcode().is_return()
+                || instr.opcode().is_compare_test()
         })
     {
         return false;
@@ -847,13 +851,13 @@ fn instr_writes_register(instr: Instr, reg: u8) -> bool {
                 | Opcode::Test
                 | Opcode::BrFalse
                 | Opcode::BrTrue
-                | Opcode::Return
                 | Opcode::SetGlobal
                 | Opcode::Raise
                 | Opcode::TryBegin
                 | Opcode::TryEnd
                 | Opcode::Wide
         )
+        && !instr.opcode().is_return()
 }
 
 pub(in crate::llvm) fn store_native_scalar_call_result(

@@ -189,7 +189,7 @@ fn unsupported_runtime_return_reason(
                 let value = *callable_globals.get(instr.bx() as usize)?;
                 *callable_regs.get_mut(instr.a() as usize)? = value;
             }
-            Opcode::Return if instr.b() == 1 => {
+            opcode if opcode.is_return() && instr.return_count() == 1 => {
                 if let Some(kind) = callable_regs.get(instr.a() as usize).copied().flatten() {
                     return Some(format!(
                         "runtime callable returns are not native-lowerable yet: Return at pc {pc} returns a {kind} value from r{}",
@@ -197,7 +197,7 @@ fn unsupported_runtime_return_reason(
                     ));
                 }
             }
-            Opcode::Return => {}
+            opcode if opcode.is_return() => {}
             _ => {
                 if reg_writes_a(instr.opcode()) {
                     *callable_regs.get_mut(instr.a() as usize)? = None;
@@ -222,9 +222,8 @@ fn reg_writes_a(opcode: Opcode) -> bool {
             | Opcode::BrFalse
             | Opcode::BrTrue
             | Opcode::Jmp
-            | Opcode::Return
             | Opcode::Nop
-    )
+    ) && !opcode.is_return()
 }
 
 fn unsupported_scalar_block_opcode_reason(artifact: &ModuleArtifact, code: &[Instr]) -> Option<String> {
