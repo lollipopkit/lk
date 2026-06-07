@@ -536,25 +536,25 @@ impl Executor {
                     }
                 },
                 Opcode::LoadCapture => {
-                    self.dispatch_load_capture(instr)?;
-                    profile.record_write_source(VmRegisterWriteSource::Other, collect_metrics);
+                    self.dispatch_cold(Opcode::LoadCapture, function, module, instr, ctx, collect_metrics)?;
+                    let _ = &profile; // suppress unused warning
                 }
                 Opcode::LoadCellVal => {
-                    self.dispatch_load_cell_val(instr)?;
-                    profile.record_write_source(VmRegisterWriteSource::Other, collect_metrics);
+                    self.dispatch_cold(Opcode::LoadCellVal, function, module, instr, ctx, collect_metrics)?;
+                    let _ = &profile; // suppress unused warning
                 }
-                Opcode::StoreCellVal => self.dispatch_store_cell_val(function, instr)?,
+                Opcode::StoreCellVal => self.dispatch_cold(Opcode::StoreCellVal, function, module, instr, ctx, collect_metrics)?,
                 Opcode::LoadFunction => {
-                    self.dispatch_load_function(instr, module)?;
-                    profile.record_write_source(VmRegisterWriteSource::Other, collect_metrics);
+                    self.dispatch_cold(Opcode::LoadFunction, function, module, instr, ctx, collect_metrics)?;
+                    let _ = &profile; // suppress unused warning
                 }
                 Opcode::MakeClosure => {
-                    self.dispatch_make_closure(instr, module)?;
-                    profile.record_write_source(VmRegisterWriteSource::Other, collect_metrics);
+                    self.dispatch_cold(Opcode::MakeClosure, function, module, instr, ctx, collect_metrics)?;
+                    let _ = &profile; // suppress unused warning
                 }
                 Opcode::LoadNative => {
-                    self.dispatch_load_native(instr, module)?;
-                    profile.record_write_source(VmRegisterWriteSource::Other, collect_metrics);
+                    self.dispatch_cold(Opcode::LoadNative, function, module, instr, ctx, collect_metrics)?;
+                    let _ = &profile; // suppress unused warning
                 }
                 Opcode::AddInt => {
                     let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
@@ -711,60 +711,32 @@ impl Executor {
                     self.pc += 1;
                 }
                 Opcode::Not => {
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    let old_pc = self.pc;
-                    self.dispatch_not(function, instr)?;
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    if collect_metrics && self.pc == old_pc + 1 {
-                        profile.record_write_source(VmRegisterWriteSource::Compare, collect_metrics);
-                    }
+                    self.dispatch_cold(Opcode::Not, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::IsNil => {
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    let old_pc = self.pc;
-                    self.dispatch_is_nil(function, instr)?;
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    if collect_metrics && self.pc == old_pc + 1 {
-                        profile.record_write_source(VmRegisterWriteSource::Compare, collect_metrics);
-                    }
+                    self.dispatch_cold(Opcode::IsNil, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::IsList => {
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    let old_pc = self.pc;
-                    self.dispatch_is_list(function, instr)?;
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    if collect_metrics && self.pc == old_pc + 1 {
-                        profile.record_write_source(VmRegisterWriteSource::Compare, collect_metrics);
-                    }
+                    self.dispatch_cold(Opcode::IsList, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::IsMap => {
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    let old_pc = self.pc;
-                    self.dispatch_is_map(function, instr)?;
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    if collect_metrics && self.pc == old_pc + 1 {
-                        profile.record_write_source(VmRegisterWriteSource::Compare, collect_metrics);
-                    }
+                    self.dispatch_cold(Opcode::IsMap, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::ToString => {
-                    self.dispatch_to_string(instr, module, ctx)?;
-                    profile.record_write_source(VmRegisterWriteSource::String, collect_metrics);
+                    self.dispatch_cold(Opcode::ToString, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::ConcatString => {
                     self.dispatch_concat_string(instr, module, ctx)?;
                     profile.record_write_source(VmRegisterWriteSource::String, collect_metrics);
                 }
                 Opcode::StringStartsWith => {
-                    self.dispatch_string_starts_with(instr)?;
-                    profile.record_write_source(VmRegisterWriteSource::String, collect_metrics);
+                    self.dispatch_cold(Opcode::StringStartsWith, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::StringSplit => {
-                    self.dispatch_string_split(instr)?;
-                    profile.record_write_source(VmRegisterWriteSource::String, collect_metrics);
+                    self.dispatch_cold(Opcode::StringSplit, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::ListJoin => {
-                    self.dispatch_list_join(instr)?;
-                    profile.record_write_source(VmRegisterWriteSource::String, collect_metrics);
+                    self.dispatch_cold(Opcode::ListJoin, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::CmpInt => {
                     let (_dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
@@ -893,28 +865,20 @@ impl Executor {
                     }
                 }
                 Opcode::Contains => {
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    let old_pc = self.pc;
-                    self.dispatch_contains(function, instr)?;
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    if collect_metrics && self.pc == old_pc + 1 {
-                        profile.record_write_source(VmRegisterWriteSource::Compare, collect_metrics);
-                    }
+                    self.dispatch_cold(Opcode::Contains, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::SliceFrom => {
-                    self.dispatch_slice_from(instr)?;
-                    profile.record_write_source(VmRegisterWriteSource::Container, collect_metrics);
+                    self.dispatch_cold(Opcode::SliceFrom, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::MapRest => {
-                    self.dispatch_map_rest(instr)?;
-                    profile.record_write_source(VmRegisterWriteSource::Container, collect_metrics);
+                    self.dispatch_cold(Opcode::MapRest, function, module, instr, ctx, collect_metrics)?;
                 }
-                Opcode::Raise => self.dispatch_raise(function, instr)?,
-                Opcode::TryBegin => self.dispatch_try_begin(instr)?,
-                Opcode::TryEnd => self.dispatch_try_end(),
-                Opcode::Test => self.dispatch_test(instr)?,
-                Opcode::BrFalse => self.dispatch_br_false(instr)?,
-                Opcode::BrTrue => self.dispatch_br_true(instr)?,
+                Opcode::Raise => self.dispatch_cold(Opcode::Raise, function, module, instr, ctx, collect_metrics)?,
+                Opcode::TryBegin => self.dispatch_cold(Opcode::TryBegin, function, module, instr, ctx, collect_metrics)?,
+                Opcode::TryEnd => { self.dispatch_cold(Opcode::TryEnd, function, module, instr, ctx, collect_metrics)?; }
+                Opcode::Test => self.dispatch_cold(Opcode::Test, function, module, instr, ctx, collect_metrics)?,
+                Opcode::BrFalse => self.dispatch_cold(Opcode::BrFalse, function, module, instr, ctx, collect_metrics)?,
+                Opcode::BrTrue => self.dispatch_cold(Opcode::BrTrue, function, module, instr, ctx, collect_metrics)?,
                 Opcode::BrNil => {
                     let index = self.stack_index_unchecked(instr.a());
                     if matches!(self.state.stack[index], RuntimeVal::Nil) {
@@ -998,7 +962,7 @@ impl Executor {
                             (false, false) => next > end,
                         };
                         if keep_going {
-                            self.pc = self.relative_pc(fact.jump_offset)?;
+                            self.pc = self.relative_pc_unchecked(fact.jump_offset);
                         } else {
                             self.pc += 1;
                         }
@@ -1039,12 +1003,10 @@ impl Executor {
                     self.pc += 1;
                 }
                 Opcode::NewObject => {
-                    self.dispatch_new_object(instr, collect_metrics)?;
-                    profile.record_write_source(VmRegisterWriteSource::Container, collect_metrics);
+                    self.dispatch_cold(Opcode::NewObject, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::NewRange => {
-                    self.dispatch_new_range(instr, collect_metrics)?;
-                    profile.record_write_source(VmRegisterWriteSource::Container, collect_metrics);
+                    self.dispatch_cold(Opcode::NewRange, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::Len => {
                     self.dispatch_len(instr, collect_metrics)?;
@@ -1230,13 +1192,7 @@ impl Executor {
                     self.pc += 1;
                 }
                 Opcode::CallNamed => {
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    let old_pc = self.pc;
-                    self.dispatch_call_named(function, module, instr, ctx, collect_metrics)?;
-                    #[cfg(any(test, feature = "vm-profile"))]
-                    if collect_metrics && self.pc == old_pc + 1 {
-                        profile.record_write_source(VmRegisterWriteSource::CallReturn, collect_metrics);
-                    }
+                    self.dispatch_cold(Opcode::CallNamed, function, module, instr, ctx, collect_metrics)?;
                 }
                 Opcode::GetGlobal => {
                     let slot = self.global_slot_from_fact_cache_or_instr(function, instr);
@@ -1245,7 +1201,7 @@ impl Executor {
                     profile.record_write_source(VmRegisterWriteSource::Global, collect_metrics);
                     self.pc += 1;
                 }
-                Opcode::SetGlobal => self.dispatch_set_global(function, instr)?,
+                Opcode::SetGlobal => self.dispatch_cold(Opcode::SetGlobal, function, module, instr, ctx, collect_metrics)?,
                 Opcode::Return => {
                     self.collect_pending_garbage();
                     profile.flush(collect_metrics);

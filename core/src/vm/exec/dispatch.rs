@@ -527,4 +527,88 @@ impl Executor {
         self.pc += 1;
         Ok(())
     }
+
+    /// Dispatch cold opcodes that are rarely executed in hot loops.
+    /// Moving these to a separate `#[inline(never)]` function reduces the main
+    /// dispatch loop code size, improving I-cache behavior for the hot path.
+    #[inline(never)]
+    pub(super) fn dispatch_cold(
+        &mut self,
+        opcode: Opcode,
+        function: &Function,
+        module: Option<&Module>,
+        instr: Instr,
+        ctx: &mut Option<&mut VmContext>,
+        collect_metrics: bool,
+    ) -> Result<()> {
+        match opcode {
+            Opcode::LoadCapture => {
+                self.dispatch_load_capture(instr)?;
+            }
+            Opcode::LoadCellVal => {
+                self.dispatch_load_cell_val(instr)?;
+            }
+            Opcode::StoreCellVal => self.dispatch_store_cell_val(function, instr)?,
+            Opcode::LoadFunction => {
+                self.dispatch_load_function(instr, module)?;
+            }
+            Opcode::MakeClosure => {
+                self.dispatch_make_closure(instr, module)?;
+            }
+            Opcode::LoadNative => {
+                self.dispatch_load_native(instr, module)?;
+            }
+            Opcode::Not => {
+                self.dispatch_not(function, instr)?;
+            }
+            Opcode::IsNil => {
+                self.dispatch_is_nil(function, instr)?;
+            }
+            Opcode::IsList => {
+                self.dispatch_is_list(function, instr)?;
+            }
+            Opcode::IsMap => {
+                self.dispatch_is_map(function, instr)?;
+            }
+            Opcode::ToString => {
+                self.dispatch_to_string(instr, module, ctx)?;
+            }
+            Opcode::StringStartsWith => {
+                self.dispatch_string_starts_with(instr)?;
+            }
+            Opcode::StringSplit => {
+                self.dispatch_string_split(instr)?;
+            }
+            Opcode::ListJoin => {
+                self.dispatch_list_join(instr)?;
+            }
+            Opcode::Contains => {
+                self.dispatch_contains(function, instr)?;
+            }
+            Opcode::SliceFrom => {
+                self.dispatch_slice_from(instr)?;
+            }
+            Opcode::MapRest => {
+                self.dispatch_map_rest(instr)?;
+            }
+            Opcode::Raise => self.dispatch_raise(function, instr)?,
+            Opcode::TryBegin => self.dispatch_try_begin(instr)?,
+            Opcode::TryEnd => self.dispatch_try_end(),
+            Opcode::Test => self.dispatch_test(instr)?,
+            Opcode::BrFalse => self.dispatch_br_false(instr)?,
+            Opcode::BrTrue => self.dispatch_br_true(instr)?,
+            Opcode::NewObject => {
+                self.dispatch_new_object(instr, collect_metrics)?;
+            }
+            Opcode::NewRange => {
+                self.dispatch_new_range(instr, collect_metrics)?;
+            }
+            Opcode::CallNamed => {
+                self.dispatch_call_named(function, module, instr, ctx, collect_metrics)?;
+            }
+            Opcode::SetGlobal => self.dispatch_set_global(function, instr)?,
+            _ => unreachable!("dispatch_cold called for non-cold opcode: {:?}", opcode),
+        }
+        Ok(())
+    }
 }
