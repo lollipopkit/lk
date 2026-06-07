@@ -12,7 +12,7 @@ mod heap;
 
 pub use heap::{HeapRef, HeapStore};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RuntimeVal {
     Nil,
     Bool(bool),

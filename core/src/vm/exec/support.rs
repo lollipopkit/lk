@@ -490,6 +490,19 @@ impl Executor {
         Ok(next as usize)
     }
 
+    /// Unchecked relative PC — elides bounds check. Use only when the offset
+    /// is compiler-generated and known-valid.
+    #[inline(always)]
+    pub(super) fn relative_pc_unchecked(&self, offset: i32) -> usize {
+        (self.pc as i64 + 1 + offset as i64) as usize
+    }
+
+    /// Unchecked relative PC from a given base — elides bounds check.
+    #[inline(always)]
+    pub(super) fn relative_pc_from_unchecked(pc: usize, offset: i32) -> usize {
+        (pc as i64 + 1 + offset as i64) as usize
+    }
+
     #[cold]
     #[inline(never)]
     pub(super) fn jump_before_start_error<T>() -> Result<T> {

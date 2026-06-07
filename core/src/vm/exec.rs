@@ -528,31 +528,12 @@ impl Executor {
                 }
                 Opcode::Move => loop {
                     let instr = code[self.pc];
-                    let value = match self.read_unchecked(instr.b()) {
-                        RuntimeVal::Obj(_) => {
-                            let move_fact = function.performance.register_copy(self.pc);
-                            if move_fact.is_some_and(|fact| fact.move_source) {
-                                self.take_unchecked(instr.b())
-                            } else {
-                                let value = self.read_unchecked(instr.b()).clone();
-                                if collect_metrics {
-                                    record_copy_policy_clone(
-                                        move_clone_metric(function, self.pc, instr.a() as u16, instr.b() as u16),
-                                        true,
-                                    );
-                                }
-                                value
-                            }
-                        }
-                        value => value.clone(),
-                    };
+                    let value = *self.read_unchecked(instr.b());
                     self.write_unchecked(instr.a(), value);
-                    profile.record_write_source(VmRegisterWriteSource::Move, collect_metrics);
                     self.pc += 1;
                     if !matches!(code.get(self.pc).copied().map(Instr::opcode), Some(Opcode::Move)) {
                         break;
                     }
-                    profile.record_opcode(Opcode::Move, collect_metrics);
                 },
                 Opcode::LoadCapture => {
                     self.dispatch_load_capture(instr)?;
@@ -934,10 +915,62 @@ impl Executor {
                 Opcode::Test => self.dispatch_test(instr)?,
                 Opcode::BrFalse => self.dispatch_br_false(instr)?,
                 Opcode::BrTrue => self.dispatch_br_true(instr)?,
-                Opcode::BrNil => self.dispatch_br_nil(instr)?,
-                Opcode::BrNotNil => self.dispatch_br_not_nil(instr)?,
-                opcode if opcode.is_compare_test() => self.dispatch_compare_test(function, instr)?,
-                Opcode::Jmp => self.dispatch_jmp(instr)?,
+                Opcode::BrNil => {
+                    let index = self.stack_index_unchecked(instr.a());
+                    if matches!(self.state.stack[index], RuntimeVal::Nil) {
+                        self.pc = self.relative_pc_unchecked(instr.sbx() as i32);
+                    } else {
+                        self.pc += 1;
+                    }
+                }
+                Opcode::BrNotNil => {
+                    let index = self.stack_index_unchecked(instr.a());
+                    if !matches!(self.state.stack[index], RuntimeVal::Nil) {
+                        self.pc = self.relative_pc_unchecked(instr.sbx() as i32);
+                    } else {
+                        self.pc += 1;
+                    }
+                }
+                opcode if opcode.is_compare_test() => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs_idx = self.stack_index_unchecked(instr.b());
+                    let int_result = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => Some(match instr.opcode() {
+                            Opcode::TestEqInt => lhs == rhs,
+                            Opcode::TestNeInt => lhs != rhs,
+                            Opcode::TestLtInt => lhs < rhs,
+                            Opcode::TestLeInt => lhs <= rhs,
+                            Opcode::TestGtInt => lhs > rhs,
+                            Opcode::TestGeInt => lhs >= rhs,
+                            _ => unreachable!(),
+                        }),
+                        _ => None,
+                    };
+                    let value = match int_result {
+                        Some(v) => v,
+                        None => match self.compare_test_value_slow(instr, lhs_idx, rhs_idx)? {
+                            v => v,
+                        },
+                    };
+                    if let Some(fact) = function.performance.compare_test_branch(self.pc) {
+                        self.pc = if value == (instr.c() != 0) {
+                            fact.target_pc
+                        } else {
+                            self.pc + 2
+                        };
+                    } else {
+                        let jmp_pc = self.pc + 1;
+                        let jmp = code[jmp_pc];
+                        if value == (instr.c() != 0) {
+                            self.pc = self.relative_pc_unchecked(jmp.sj_arg());
+                        } else {
+                            self.pc += 2;
+                        }
+                    }
+                }
+                Opcode::Jmp => {
+                    self.pc = self.relative_pc_unchecked(instr.sj_arg());
+                }
                 Opcode::ForLoopI => {
                     let Some(fact) = function.performance.for_loop(self.pc).copied() else {
                         bail!("ForLoopI missing performance fact at pc {}", self.pc);

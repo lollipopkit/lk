@@ -354,7 +354,7 @@ impl Executor {
 
     #[cold]
     #[inline(never)]
-    fn compare_test_value_slow(&self, instr: Instr, lhs_idx: usize, rhs_idx: usize) -> Result<bool> {
+    pub(super) fn compare_test_value_slow(&self, instr: Instr, lhs_idx: usize, rhs_idx: usize) -> Result<bool> {
         Ok(match instr.opcode() {
             Opcode::TestEqInt | Opcode::TestNeInt => {
                 let equal = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
