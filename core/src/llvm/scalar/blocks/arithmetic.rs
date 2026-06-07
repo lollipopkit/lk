@@ -8,7 +8,7 @@ use crate::{
                 three_regs_in_bounds,
             },
             contains::{local_static_heap_const_before, text_value_from_trusted_reg},
-            emit::{emit_i64_add_immediate_block, emit_i64_binary_block},
+            emit::{emit_i64_binary_block, emit_i64_immediate_block},
             facts::{NativeScalarFacts, NativeScalarKind},
         },
         straightline_value::{NativeStraightlineValue, native_static_i64_binary},
@@ -76,7 +76,7 @@ pub(super) fn emit_int_arithmetic_block(
     true
 }
 
-pub(super) fn emit_add_int_immediate_block(
+pub(super) fn emit_int_immediate_block(
     ir: &mut String,
     code: &[Instr],
     pc: usize,
@@ -99,7 +99,7 @@ pub(super) fn emit_add_int_immediate_block(
         return false;
     }
     static_regs[instr.a() as usize] = None;
-    emit_i64_add_immediate_block(ir, instr, tmp_index);
+    emit_i64_immediate_block(ir, instr, tmp_index);
     emit_branch_to_next(ir, pc, code_len);
     true
 }
@@ -120,7 +120,7 @@ fn local_arithmetic_index_kind_before(code: &[Instr], pc: usize, reg: u8) -> Opt
         if prev.a() != reg {
             continue;
         }
-        return (prev.opcode() == Opcode::GetIndex).then_some(NativeScalarKind::MaybeI64);
+        return matches!(prev.opcode(), Opcode::GetIndex | Opcode::GetList).then_some(NativeScalarKind::MaybeI64);
     }
     None
 }

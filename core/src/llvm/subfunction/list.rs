@@ -277,7 +277,7 @@ fn compile_native_i64_list_subfunction_profile(
                 );
                 static_regs[instr.a() as usize] = None;
             }
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 let Some(NativeStraightlineValue::DynamicList { id, .. }) =
                     static_regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {

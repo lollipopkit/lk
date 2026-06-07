@@ -1228,7 +1228,7 @@ fn local_dynamic_const_list_element_source_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 let Some(NativeStraightlineValue::List { elements, .. }) =
                     local_static_container_before(code, heap_values, prev_pc, prev.b())
                 else {

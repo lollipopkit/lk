@@ -507,15 +507,16 @@ pub(super) fn checked_u8(name: &str, value: u16) -> Result<u8> {
     u8::try_from(value).map_err(|_| anyhow!("Compiler {name} register {} exceeds u8 encoding", value))
 }
 
-pub(super) fn int_immediate_delta(op: &BinOp, expr: &Expr) -> Option<i8> {
+pub(super) fn int_immediate_operand(op: &BinOp, expr: &Expr) -> Option<i8> {
     let value = match expr {
-        Expr::Paren(inner) => return int_immediate_delta(op, inner),
+        Expr::Paren(inner) => return int_immediate_operand(op, inner),
         Expr::Literal(crate::val::LiteralVal::Int(value)) => *value,
         _ => return None,
     };
     match op {
         BinOp::Add => i8::try_from(value).ok(),
         BinOp::Sub => value.checked_neg().and_then(|value| i8::try_from(value).ok()),
+        BinOp::Mul | BinOp::Mod if value != 0 => i8::try_from(value).ok(),
         _ => None,
     }
 }

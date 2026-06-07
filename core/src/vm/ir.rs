@@ -202,6 +202,9 @@ pub enum Opcode {
     TestGeInt = 74,
     GetFieldK = 75,
     SetFieldK = 76,
+    GetList = 77,
+    MulIntI = 78,
+    ModIntI = 79,
 }
 
 impl Opcode {
@@ -288,6 +291,9 @@ impl Opcode {
             74 => Some(Self::TestGeInt),
             75 => Some(Self::GetFieldK),
             76 => Some(Self::SetFieldK),
+            77 => Some(Self::GetList),
+            78 => Some(Self::MulIntI),
+            79 => Some(Self::ModIntI),
             _ => None,
         }
     }
@@ -330,12 +336,7 @@ impl Opcode {
     pub const fn is_compare_test(self) -> bool {
         matches!(
             self,
-            Self::TestEqInt
-                | Self::TestNeInt
-                | Self::TestLtInt
-                | Self::TestLeInt
-                | Self::TestGtInt
-                | Self::TestGeInt
+            Self::TestEqInt | Self::TestNeInt | Self::TestLtInt | Self::TestLeInt | Self::TestGtInt | Self::TestGeInt
         )
     }
 }

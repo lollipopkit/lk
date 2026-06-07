@@ -29,11 +29,21 @@ pub(in crate::llvm) fn emit_i64_binary_block(ir: &mut String, instr: Instr, tmp_
     ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
 }
 
-pub(in crate::llvm) fn emit_i64_add_immediate_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
+pub(in crate::llvm) fn emit_i64_immediate_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
     let lhs = next_tmp(tmp_index);
     let out = next_tmp(tmp_index);
+    let op = match instr.opcode() {
+        Opcode::AddIntI => "add",
+        Opcode::MulIntI => "mul",
+        Opcode::ModIntI => "srem",
+        _ => unreachable!("opcode matched by caller"),
+    };
     ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
-    ir.push_str(&format!("  {out} = add i64 {lhs}, {}\n", instr.sc()));
+    if instr.opcode() == Opcode::ModIntI && instr.sc() == 0 {
+        ir.push_str("  br label %lk_divisor_zero\n");
+        return;
+    }
+    ir.push_str(&format!("  {out} = {op} i64 {lhs}, {}\n", instr.sc()));
     ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
     ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
 }

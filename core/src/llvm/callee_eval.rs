@@ -275,19 +275,34 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(name));
             }
-            Opcode::AddIntI => {
+            Opcode::AddIntI | Opcode::MulIntI | Opcode::ModIntI => {
                 let Some(NativeStraightlineValue::I64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
                     return Ok(None);
                 };
                 let rhs = instr.sc() as i64;
+                if instr.opcode() == Opcode::ModIntI && rhs == 0 {
+                    return Ok(None);
+                }
                 let name = if lhs.starts_with('%') {
+                    let op = match instr.opcode() {
+                        Opcode::AddIntI => "add",
+                        Opcode::MulIntI => "mul",
+                        Opcode::ModIntI => "srem",
+                        _ => unreachable!("opcode matched above"),
+                    };
                     let name = format!("%f{function_index}_r{}_{}", instr.a(), *ssa_index);
                     *ssa_index += 1;
-                    body.push_str(&format!("  {name} = add i64 {lhs}, {rhs}\n"));
+                    body.push_str(&format!("  {name} = {op} i64 {lhs}, {rhs}\n"));
                     name
                 } else if let Ok(lhs) = lhs.parse::<i64>() {
-                    lhs.wrapping_add(rhs).to_string()
+                    match instr.opcode() {
+                        Opcode::AddIntI => lhs.wrapping_add(rhs),
+                        Opcode::MulIntI => lhs.wrapping_mul(rhs),
+                        Opcode::ModIntI => lhs.wrapping_rem(rhs),
+                        _ => unreachable!("opcode matched above"),
+                    }
+                    .to_string()
                 } else {
                     return Ok(None);
                 };
@@ -501,7 +516,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };

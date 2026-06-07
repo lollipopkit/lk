@@ -22,7 +22,9 @@ use super::{
         concat_text_values, emit_static_formatted_print, local_heap_kind_before, local_register_kind_before,
         scalar_arg_value, text_value_from_reg,
     },
-    scalar::emit::{emit_f64_binary_block, emit_i64_binary_block, emit_numeric_compare_block},
+    scalar::emit::{
+        emit_f64_binary_block, emit_i64_binary_block, emit_i64_immediate_block, emit_numeric_compare_block,
+    },
     scalar::facts::{NativeScalarFacts, NativeScalarKind, native_scalar_block_facts_with_initial},
     straightline_value::{
         NativeBuiltin, NativeListElementKind, NativeStraightlineValue, native_static_global,
@@ -307,6 +309,13 @@ pub(super) fn compile_native_scalar_subfunction(
                     return Ok(None);
                 }
                 emit_i64_binary_block(&mut ir, instr, &mut tmp_index);
+                static_regs[instr.a() as usize] = None;
+            }
+            Opcode::AddIntI | Opcode::MulIntI | Opcode::ModIntI => {
+                if (instr.a() as usize) >= register_count || (instr.b() as usize) >= register_count {
+                    return Ok(None);
+                }
+                emit_i64_immediate_block(&mut ir, instr, &mut tmp_index);
                 static_regs[instr.a() as usize] = None;
             }
             Opcode::CmpInt
@@ -858,7 +867,7 @@ pub(super) fn compile_native_ptr_list_subfunction(
                 }
                 static_regs[instr.a() as usize] = None;
             }
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 let Some(NativeStraightlineValue::DynamicList { id, .. }) =
                     static_regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {

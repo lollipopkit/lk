@@ -12,8 +12,8 @@ use super::Executor;
 use crate::vm::{
     CallWindow, Function, Instr, Module, Opcode, RegisterIndex, VmContext,
     analysis::{
-        PerfForLoopFact, VmCallMetric, VmContainerMetric, record_call_op_known_enabled,
-        record_branch_op_known_enabled, record_container_op_known_enabled,
+        PerfForLoopFact, VmCallMetric, VmContainerMetric, record_branch_op_known_enabled, record_call_op_known_enabled,
+        record_container_op_known_enabled,
     },
 };
 
@@ -305,6 +305,18 @@ impl Executor {
 
     #[inline]
     pub(super) fn dispatch_compare_test(&mut self, function: &Function, instr: Instr) -> Result<()> {
+        let value = self.compare_test_value(instr)?;
+        if self.collect_metrics {
+            record_branch_op_known_enabled(true);
+        }
+        if let Some(fact) = function.performance.compare_test_branch(self.pc) {
+            if value == (instr.c() != 0) {
+                self.pc = fact.target_pc;
+            } else {
+                self.pc += 2;
+            }
+            return Ok(());
+        }
         let jmp_pc = self.pc + 1;
         let jmp = *function
             .code
@@ -312,10 +324,6 @@ impl Executor {
             .ok_or_else(|| anyhow!("compare-test at pc {} missing Jmp", self.pc))?;
         if jmp.opcode() != Opcode::Jmp {
             bail!("compare-test at pc {} expected Jmp at pc {jmp_pc}", self.pc);
-        }
-        let value = self.compare_test_value(instr)?;
-        if self.collect_metrics {
-            record_branch_op_known_enabled(true);
         }
         if value == (instr.c() != 0) {
             self.pc = self.relative_pc_from(jmp_pc, jmp.sj_arg())?;
@@ -330,7 +338,7 @@ impl Executor {
         let lhs_idx = self.stack_index_unchecked(instr.a());
         let rhs_idx = self.stack_index_unchecked(instr.b());
         if let (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) = (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
-            return Ok(match instr.opcode() {
+            Ok(match instr.opcode() {
                 Opcode::TestEqInt => lhs == rhs,
                 Opcode::TestNeInt => lhs != rhs,
                 Opcode::TestLtInt => lhs < rhs,
@@ -338,8 +346,15 @@ impl Executor {
                 Opcode::TestGtInt => lhs > rhs,
                 Opcode::TestGeInt => lhs >= rhs,
                 _ => unreachable!("opcode matched by caller"),
-            });
+            })
+        } else {
+            self.compare_test_value_slow(instr, lhs_idx, rhs_idx)
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn compare_test_value_slow(&self, instr: Instr, lhs_idx: usize, rhs_idx: usize) -> Result<bool> {
         Ok(match instr.opcode() {
             Opcode::TestEqInt | Opcode::TestNeInt => {
                 let equal = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {

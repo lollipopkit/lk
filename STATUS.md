@@ -9,7 +9,7 @@
 
 ## 当前结论
 
-LK VM 已从“泛化解释器 + 大量运行时 materialization”推进到“compiler facts 驱动的轻量 lowering + typed fast path”。解释器 VM 在当前 20 项 workload suite 上尚未达到 `<0.5x`；当前达标路径是 `lk compile exe` native/AOT。当前 opcode 方向已经完成基础 encoding 迁移：`Opcode` 空间从 64 slot 扩到 128 slot，`InstrFormat` 改由 `OpcodeInfo` metadata 决定，`ABC.C` 恢复 8 bit。`AddIntI` 已作为第一个通用 operand-shape opcode 落地并覆盖真实 small-int add/sub hot path，但 release 低样本没有改善 geomean。本轮还接入了 `BrTrue` / `BrFalse` opcode 的 VM/LLVM 支持，但默认 compiler lowering 仍保留 `Test + Jmp`，因为启用单条 branch 的低样本 wall-clock 退化；随后新增 `BrNil` / `BrNotNil`，只在 condition-context 的 `x == nil` / `x != nil` 默认启用，并接入 VM/LLVM/control-flow facts。下一步如果继续做控制流，应优先做 compare-branch 直接 lowering 或 hot-loop/native path，而不是简单替换 `Test + Jmp` trampoline。
+LK VM 已从“泛化解释器 + 大量运行时 materialization”推进到“compiler facts 驱动的轻量 lowering + typed fast path”。解释器 VM 在当前 20 项 workload suite 上尚未达到 `<0.5x`；当前达标路径是 `lk compile exe` native/AOT。当前 opcode 方向已经完成基础 encoding 迁移：`Opcode` 空间从 64 slot 扩到 128 slot，`InstrFormat` 改由 `OpcodeInfo` metadata 决定，`ABC.C` 恢复 8 bit。`AddIntI`、`MulIntI` 和 `ModIntI` 已作为通用 integer immediate operand-shape opcode 落地，覆盖真实 small-int add/sub/mul/mod literal RHS hot path；本轮普通 release 默认样本 `RUNS=3 EXTRA_RUNS=5` 的 VM/Lua geomean 为 `1.253x`，checksum 全部一致，但仍远未达到 `<0.5x`。本轮还接入了 `BrTrue` / `BrFalse` opcode 的 VM/LLVM 支持，但默认 compiler lowering 仍保留 `Test + Jmp`，因为启用单条 branch 的低样本 wall-clock 退化；随后新增 `BrNil` / `BrNotNil`，只在 condition-context 的 `x == nil` / `x != nil` 默认启用，并接入 VM/LLVM/control-flow facts。typed compare-test 现在记录已 patch 后的 absolute target pc，VM hot path 避免重复读取/校验后继 `Jmp`，并把非 Int fallback 拆到 cold helper。下一步如果继续做控制流，应优先做 compare-branch 直接 lowering 或 hot-loop/native path，而不是简单替换 `Test + Jmp` trampoline。
 
 `run_function_inner` 仍是主要结构风险：主循环是 `match instr.opcode()`，其中混有热路径、fallback、错误构造、metrics、container/call 逻辑。问题不是 `match` 本身，而是热 arm 里仍有多层分支和 `Result` slow path 污染。拆分方向应是保留主循环最短热路径，把 dynamic fallback 和错误构造放到 cold helper。本轮新增 `GetFieldK` / `SetFieldK` 已把一部分 const string key 的 map/object 读写从泛化 `GetIndex` / `SetIndex` 中拆出来，但默认 VM geomean 仍未达标。
 
@@ -50,17 +50,20 @@ RUN_AOT=1 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_w
 RUN_AOT=0 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
 ```
 
-- Geometric mean LK/Lua：`1.142x`，checksum 全部一致。
-- 本轮结果包含当前 20 项 workload suite、7-bit opcode encoding 基础迁移，以及 `AddIntI` 通用 operand-shape opcode。`AddIntI` 已接入 VM、compiler、LLVM lowering 和 profile counters。
+- Geometric mean LK/Lua：当前低样本多次复测约 `1.139x` 到 `1.220x`，checksum 全部一致。低样本波动明显，不能把单次 `1.139x` 当成稳定基线。
+- 本轮结果包含当前 20 项 workload suite、7-bit opcode encoding 基础迁移，以及 `AddIntI` / `MulIntI` / `ModIntI` 通用 operand-shape opcode。它们已接入 VM、compiler、LLVM lowering 和 profile counters。
 - profile 证实 `AddIntI` 动态出现：`gcd_batch` `160000`、`order_score_pipeline` `270000`、`config_defaults_merge` `180000`、`fraud_rule_scoring` `151717`。但该 opcode 只替代部分 small-int add/sub，release wall-clock 低样本未改善。
+- `MulIntI` / `ModIntI` 覆盖了更热的 literal RHS numeric shape：profile 显示 `MulIntI` 出现在 `binary_search:1440409`、`stock_max_profit:1080000`、`gcd_batch:160000`，`ModIntI` 出现在 `log_parse_filter:782684`、`inventory_reorder:478001`、`config_defaults_merge:435000`、`route_permission_check:360002`。普通 release 低样本 geomean `1.139x`，checksum 全部一致；但 `gcd_batch` / `stock_max_profit` 噪声较高，需要正式多样本复验后再当作基线。
 - `BrTrue` / `BrFalse` opcode 已接入 IR、VM dispatch、control-flow facts、LLVM scalar/straightline/subfunction lowering 和 fused bool branch fact，但 compiler 默认不发该 opcode；启用单条 branch 形状的低样本 VM/Lua geomean 约 `1.219x`，未优于当前默认路径。
 - condition-context short-circuit lowering 已用于普通 `if` / `while` / conditional expression，并扩展到 direct-inline `if` / `while`；`&&` / `||` 条件不再强制 materialize 中间 bool。
 - `BrNil` / `BrNotNil` 已作为通用 nilness branch opcode 落地，覆盖 `x == nil` / `x != nil` 条件分支。profile 显示 `config_defaults_merge` 出现 `BrNotNil:360000`，release 低样本 geomean 从前一轮约 `1.197x` 降到 `1.131x`；`config_defaults_merge` 从约 `1.802x` 降到 `1.679x`。
 - Lua-style compare-test opcode 已接入 VM/compiler/LLVM/control-flow facts，并默认只对 facts-confirmed `Int/Int` condition-context 比较启用。全量 unknown/dynamic compare-test lowering 已验证会退化，低样本 geomean 约 `1.234x`；typed-only lowering 后低样本 geomean 约 `1.217x`，checksum 全部一致。profile 显示主要覆盖 `gcd_batch TestNeInt:737372`、`state_machine_transitions TestEqInt:1114278`、`config_defaults_merge TestEqInt:540000`。该结果说明 compare-test 应作为 typed operand-shape opcode 保留，不应对动态比较默认启用。
-- `GetFieldK` / `SetFieldK` 已作为 Map/Object + 短字符串 literal key 的通用 operand-shape opcode 落地。profile coverage 显示 `GetFieldK:405733`、`SetFieldK:144990`，同时 `GetIndex` 降到 `2674709`、`SetIndex` 降到 `1043867`。该优化覆盖 `map.get`、字段访问、rewritten set-index 和 `.set(...)` statement/expression，不改变 mutable map/object 的 runtime lookup/write 语义。
-- 当前明显慢项：`template_render_mix` `3.767x`、`state_machine_transitions` `2.624x`、`config_defaults_merge` `1.679x`、`prime_trial_division` `1.566x`、`stock_max_profit` `1.455x` vs Lua。
+- `GetFieldK` / `SetFieldK` 已作为 Map/Object + 短字符串 literal key 的通用 operand-shape opcode落地。profile coverage 显示 `GetFieldK:405733`、`SetFieldK:144990`，同时 `GetIndex` 降到 `2674709`、`SetIndex` 降到 `1043867`。该优化覆盖 `map.get`、字段访问、rewritten set-index 和 `.set(...)` statement/expression，不改变 mutable map/object 的 runtime lookup/write 语义；wall-clock 低样本仍有明显波动。
+- `GetList` 已实现 VM/compiler/LLVM 支持，但默认关闭。它曾覆盖 `GetList:1219200`，把 `GetIndex` 降到 `1455509`，但 release 低样本 geomean 退到约 `1.198x` / `1.216x`；因此当前不作为默认 lowering 保留。
+- 当前明显慢项：`template_render_mix` `3.762x`、`state_machine_transitions` `2.090x`、`gcd_batch` `2.046x`、`config_defaults_merge` `1.623x`、`prime_trial_division` `1.505x` vs Lua；其中 `gcd_batch` 低样本噪声明显。
 - 下一步 VM opcode 优化不应针对单个 workload；控制流方向应只继续 typed compare-test / compare-branch，不要对 unknown/dynamic 比较启用；容器方向可继续评估 `GetI/SetI`，返回路径可评估 `Return0/Return1`。仅把 `Test + Jmp` 改成 `BrTrue/BrFalse` 暂不保留为默认优化。
 - runner 已改成逐 workload 运行并打印进度，默认 `BENCH_TIMEOUT=30`，可用 `BENCH_PROGRESS=0` 静默进度；Lua 侧也支持 `LK_WORKLOAD_FILTER`，避免静默全量 suite 被误判为死循环。
+- 最新默认 VM validation 使用 `RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh`。结果为 geomean `1.253x`，checksum 全部一致；主要慢项仍是 `template_render_mix` `3.867x`、`state_machine_transitions` `3.126x`、`prime_trial_division` `2.226x`、`stock_max_profit` `1.801x`、`config_defaults_merge` `1.730x`、`gcd_batch` `1.637x`。本轮验证过把 `ConcatString` 的 GC check 下沉到 heap-allocation 路径，字符串单项有轻微波动但整体 geomean 复跑退到 `1.32x` 左右，已回退。
 
 ### 当前 coverage smoke
 
@@ -93,10 +96,10 @@ RUN_AOT=0 PROFILE_WORKLOADS=1 RUNS=1 EXTRA_RUNS=0 bash bench/run_workload_bench.
 
 本轮 profile-enabled coverage 显示，主要动态调度热点已经非常明确：
 
-- 全 suite coverage: `AddInt` 约 `8.36M`，`Move` 约 `8.62M`，`ModInt` 约 `6.74M`，`MulInt` 约 `5.20M`，`ForLoopI` 约 `3.93M`，`Jmp` 约 `3.50M`；`GetFieldK` 约 `406K`，`SetFieldK` 约 `145K`。
-- `gcd_batch`: `Move`、`TestNeInt`、`Jmp`、`ModInt`、`AddIntI` 主导，说明 tight numeric while loop 已不再主要被 literal materialization 压住，而是被 loop/control-flow 和 register writes 压住。
-- `binary_search`: `AddInt`、`ForLoopI`、`Move`、`CmpLeInt`、`MulInt` 主导，适合优先做数值 loop、compare branch lowering 和 `Move` 消除。
-- `route_permission_check` 已通过只读 const map + literal string key + int value fold 消掉角色表 lookup；`fraud_rule_scoring` 仍由 `ModInt`、`AddInt`、`CmpInt`、`Jmp` 以及字符串 load 主导。
+- 全 suite coverage: `AddInt` 约 `8.36M`，`Move` 约 `8.62M`，`ForLoopI` 约 `3.93M`，`Jmp` 约 `3.50M`；默认启用路径中 `MulIntI` 覆盖约 `2.9M+`，`ModIntI` 覆盖约 `3.6M+`，`GetFieldK` 约 `406K`，`SetFieldK` 约 `145K`。`GetList` 候选曾覆盖约 `1.22M`，但因 wall-clock 退化已关闭默认 lowering。
+- `gcd_batch`: `Move`、`TestNeInt`、`Jmp`、`ModInt`、`AddIntI`、`MulIntI` 主导，说明 tight numeric while loop 已不再主要被 literal materialization 压住，而是被 loop/control-flow、dynamic modulo 和 register writes 压住。
+- `binary_search`: `Jmp`、`Move`、`AddInt`、`MulIntI`、`AddIntI`、`DivInt` 主导，适合优先做数值 loop、compare branch lowering 和 `Move` 消除。
+- `route_permission_check` 已通过只读 const map + literal string key + int value fold 消掉角色表 lookup；`fraud_rule_scoring` 仍由 `ModIntI`、`Move`、`TestEqInt`、`AddInt`、`MulIntI` 以及字符串/index 路径主导。
 
 最新 profile-enabled 低样本 write-source counters：
 

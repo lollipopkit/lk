@@ -117,6 +117,8 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr], pc: usize, reg
             Opcode::LoadInt
             | Opcode::AddInt
             | Opcode::AddIntI
+            | Opcode::MulIntI
+            | Opcode::ModIntI
             | Opcode::SubInt
             | Opcode::MulInt
             | Opcode::DivInt
@@ -808,8 +810,7 @@ fn static_register_value_trusted_before_inner(code: &[Instr], pc_limit: usize, r
             matches!(
                 instr.opcode(),
                 Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::ForLoopI | Opcode::Return
-            )
-                || instr.opcode().is_compare_test()
+            ) || instr.opcode().is_compare_test()
         })
     {
         return false;

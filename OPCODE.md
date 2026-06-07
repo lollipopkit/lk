@@ -26,7 +26,7 @@
 - `Extra` / `Wide` 仍需要重新整理为长期 `ExtraArg` 语义。
 - `GetIndex` / `SetIndex` 过于泛化，很多已知 facts 需要运行时反复查询。
 
-因此，后续可以新增 opcode，但必须满足两点：一是基于当前 7-bit encoding，不复用保留槽；二是只加入 counters 证明过的通用 operand-shape opcode。当前已加入 `AddIntI`、`BrNil` / `BrNotNil`、typed compare-test，以及 `GetFieldK` / `SetFieldK`；后续候选包括 compare-branch、`GetI` / `SetI`、`Return0` / `Return1`，不能加入 workload-specific fused opcode。
+因此，后续可以新增 opcode，但必须满足两点：一是基于当前 7-bit encoding，不复用保留槽；二是只加入 counters 证明过的通用 operand-shape opcode。当前已加入 `AddIntI` / `MulIntI` / `ModIntI`、`BrNil` / `BrNotNil`、typed compare-test，以及 `GetFieldK` / `SetFieldK`；后续候选包括 compare-branch、`GetI` / `SetI`、`Return0` / `Return1`，不能加入 workload-specific fused opcode。
 
 ## Lua 可借鉴点
 
@@ -92,10 +92,19 @@ format 由 `OpcodeInfo` 决定，不再写入 instruction bits。当前 metadata
 - `DivFloat`
 - `ModFloat`
 - `AddIntI`
+- `MulIntI`
+- `ModIntI`
 
 已实现一个整数 immediate opcode：`AddIntI A B sC`。`x -= 3` 和 step `-1` 都编译成 `AddIntI` 的负 immediate。不要加 `SubIntI`，它浪费 opcode，也容易制造方向 bug。
 
 当前 `AddIntI` 已接入 VM dispatch、compiler lowering、LLVM straightline/scalar lowering 和动态 opcode histogram。profile 显示它确实覆盖 `gcd_batch`、`order_score_pipeline`、`config_defaults_merge` 等 workload 的 small-int add/sub hot path；但 release 低样本 geomean 没有改善，因此它不是 `<0.5x` 的主路径。
+
+本轮新增同一类通用 immediate arithmetic opcode：
+
+- `MulIntI A B sC`: `A = B * sC`
+- `ModIntI A B sC`: `A = B % sC`
+
+compiler 只在 RHS 是 `i8` 范围内的 int literal，且 register facts 确认 LHS 为 `Int` 时默认发射；`ModIntI` 不对 literal `0` 发射，VM 和 LLVM lowering 仍保留 divisor-zero 防护。它们已接入 VM dispatch、compiler lowering、LLVM straightline/callee/scalar/subfunction lowering 和 tests。profile 显示覆盖是真实通用数值 shape：`MulIntI` 出现在 `binary_search:1440409`、`stock_max_profit:1080000`、`gcd_batch:160000`，`ModIntI` 出现在 `log_parse_filter:782684`、`inventory_reorder:478001`、`config_defaults_merge:435000`、`route_permission_check:360002`。普通 release 低样本 `RUN_AOT=0 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh` geomean 为 `1.139x`，checksum 全部一致；其中 `gcd_batch` 和 `stock_max_profit` 有较高噪声，仍需要正式多样本复验。
 
 `AddK` / `SubK` / `MulK` / `DivK` / `ModK` 可以等动态 opcode histogram 证明收益后再加。
 
@@ -132,6 +141,8 @@ format 由 `OpcodeInfo` 决定，不再写入 instruction bits。当前 metadata
 
 验证结论：全量动态 compare-test lowering 会退化，低样本 geomean 约 `1.234x`；原因是动态比较 fallback 成本高于省下的 bool materialization。收窄为 facts-confirmed `Int/Int` 后，低样本 geomean 约 `1.217x`，profile 显示 `gcd_batch TestNeInt:737372`、`state_machine_transitions TestEqInt:1114278`、`config_defaults_merge TestEqInt:540000`。因此 compare-test 可以作为通用 typed operand-shape opcode 保留，但不应对 unknown/dynamic 比较默认启用。
 
+当前 compare-test VM hot path 继续按 Lua-style “test opcode consumes following jump” 形状工作，但 compiler control-flow facts 会记录后继 `Jmp` patch 后的 absolute target pc，避免执行时重复读取、校验后继 `Jmp` 并重新计算 relative target；非 Int/Int fallback 已拆到 cold helper，避免动态比较和错误构造污染 typed hot helper。默认样本验证命令 `RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh` 的最新 geomean 为 `1.253x`，checksum 全部一致；这仍不是 `<0.5x` 达标结果，只能说明 typed compare-test 方向可继续作为通用 control-flow 优化推进。
+
 长期可选两种方案：
 
 - Lua-style compare opcode 作为 test，并约定下一条是 jump。
@@ -167,7 +178,13 @@ format 由 `OpcodeInfo` 决定，不再写入 instruction bits。当前 metadata
 
 - profile coverage: `GetFieldK:405733`、`SetFieldK:144990`。
 - `GetIndex` 动态计数降到 `2674709`，`SetIndex` 动态计数降到 `1043867`。
-- release 低样本 `RUN_AOT=0 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh` geomean 为 `1.142x`，checksum 全部一致。
+- release 低样本 `RUN_AOT=0 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh` 在多次复测中约 `1.142x` 到 `1.220x`，checksum 全部一致；因此只能把它视为减少泛化 index dispatch 的通用结构优化，不能声称已经带来稳定 wall-clock 大幅收益。
+
+另一个已验证但默认关闭的候选：
+
+- `GetList A B C`: `A = B[C]`，其中 compiler facts 必须确认 `B` 是 `List` 且 `C` 是 `Int`。
+
+该 opcode 动态覆盖很高，profile coverage 曾显示 `GetList:1219200`，并把 `GetIndex` 降到 `1455509`。但 release 低样本 geomean 退到约 `1.198x` / `1.216x`，即使 handler 改回 `try_get_known_list_index` 的无错误热路径仍无收益；当前通过 `ENABLE_GET_LIST_LOWERING = false` 保留实现但不默认发射。后续若继续做 list 方向，应优先改现有 `GetIndex` list fact fast path 或 list backing layout，而不是仅把它拆成新 opcode。
 
 后续再考虑 Lua-style integer key specialization：
 
@@ -205,8 +222,8 @@ encoding 稳定后再补齐：
 
 1. 继续当前少量专门 opcode 的通用优化：measurement、facts preservation、materialization elision、typed fast path、hot/cold helper；不要新增 benchmark-shaped opcode。
 2. 增加 dynamic opcode histogram 和 key/index/write-source counters。
-3. 7-bit opcode + metadata encoding 已完成基础迁移；`AddIntI` 和 `BrNil` / `BrNotNil` 已作为通用 operand-shape opcode 落地。
-4. `BrTrue/BrFalse` 支持已接入但默认不启用；`GetFieldK/SetFieldK` 已作为 const string field operand-shape opcode 落地。下一步优先做 `GetI/SetI`、`Return0/Return1`，或继续 facts-confirmed compare-branch 直接 lowering。
+3. 7-bit opcode + metadata encoding 已完成基础迁移；`AddIntI` / `MulIntI` / `ModIntI` 和 `BrNil` / `BrNotNil` 已作为通用 operand-shape opcode 落地。
+4. `BrTrue/BrFalse` 支持已接入但默认不启用；`GetFieldK/SetFieldK` 已作为 const string field operand-shape opcode 落地。typed compare-test 已增加 target-pc control-flow fact 和 cold fallback split。下一步优先做 `GetI/SetI`、`Return0/Return1`，或继续 facts-confirmed compare-branch 直接 lowering。
 5. 如果目标继续压到 geomean `< 0.5x`，优先把 native/AOT、template JIT 或 hot-loop lowering 做成主性能路径；解释器 opcode 迁移用于恢复扩展空间和降低通用 dispatch/materialization 成本，不应通过堆 workload-specific opcode 来追这个目标。
 
 ## 明确不做

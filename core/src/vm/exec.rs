@@ -603,6 +603,34 @@ impl Executor {
                         lhs => bail!("AddIntI expected Int lhs, got {:?}", lhs.kind()),
                     }
                 }
+                Opcode::MulIntI => {
+                    let dst = instr.a() as usize;
+                    let lhs_idx = instr.b() as usize;
+                    match &self.state.stack[lhs_idx] {
+                        RuntimeVal::Int(lhs) => {
+                            self.state.stack[dst] = RuntimeVal::Int(lhs.wrapping_mul(instr.sc() as i64));
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            self.pc += 1;
+                        }
+                        lhs => bail!("MulIntI expected Int lhs, got {:?}", lhs.kind()),
+                    }
+                }
+                Opcode::ModIntI => {
+                    let dst = instr.a() as usize;
+                    let lhs_idx = instr.b() as usize;
+                    let rhs = instr.sc() as i64;
+                    if rhs == 0 {
+                        bail!("ModIntI divisor is zero");
+                    }
+                    match &self.state.stack[lhs_idx] {
+                        RuntimeVal::Int(lhs) => {
+                            self.state.stack[dst] = RuntimeVal::Int(*lhs % rhs);
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            self.pc += 1;
+                        }
+                        lhs => bail!("ModIntI expected Int lhs, got {:?}", lhs.kind()),
+                    }
+                }
                 Opcode::SubInt => {
                     let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
                     let lhs = &self.state.stack[lhs_idx];
@@ -1048,6 +1076,19 @@ impl Executor {
                         index_fact,
                         profile.index_key_metrics(collect_metrics),
                     )?;
+                    self.write_unchecked(instr.a(), value);
+                    profile.record_write_source(VmRegisterWriteSource::Index, collect_metrics);
+                    self.pc += 1;
+                }
+                Opcode::GetList => {
+                    if collect_metrics {
+                        record_container_op_known_enabled(VmContainerMetric::List);
+                    }
+                    let value = if let Some(value) = self.try_get_known_list_index(instr.b(), instr.c()) {
+                        value
+                    } else {
+                        self.get_list_index(instr.b(), instr.c())?
+                    };
                     self.write_unchecked(instr.a(), value);
                     profile.record_write_source(VmRegisterWriteSource::Index, collect_metrics);
                     self.pc += 1;

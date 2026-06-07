@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 
 use crate::vm::analysis::{
-    PerfContainerFact, PerfControlFlowFacts, PerfFusedBoolBranchFact, PerfLocalCopyFact, PerfRegisterCopyFact,
-    PerfRegisterFact, PerfValueFact, PerfValueKind, PerformanceFacts,
+    PerfCompareTestBranchFact, PerfContainerFact, PerfControlFlowFacts, PerfFusedBoolBranchFact, PerfLocalCopyFact,
+    PerfRegisterCopyFact, PerfRegisterFact, PerfValueFact, PerfValueKind, PerformanceFacts,
 };
 
 use super::{Compiler, ConstHeapValue, Function, Instr, Opcode, support::*};
@@ -298,6 +298,7 @@ fn build_control_flow_facts(code: &[Instr], performance: &PerformanceFacts) -> R
     let mut branch_targets = vec![false; code.len()];
     let mut block_starts = vec![false; code.len()];
     let mut fused_bool_branches = vec![None; code.len()];
+    let mut compare_test_branches = vec![None; code.len()];
     block_starts[0] = true;
 
     for (pc, instr) in code.iter().copied().enumerate() {
@@ -333,7 +334,9 @@ fn build_control_flow_facts(code: &[Instr], performance: &PerformanceFacts) -> R
                 if jmp.opcode() != Opcode::Jmp {
                     bail!("Compiler compare-test expected Jmp at pc {}", pc + 1);
                 }
-                mark_relative_target(pc + 1, jmp.sj_arg(), code.len(), &mut branch_targets, &mut block_starts)?;
+                let target_pc = relative_target(pc + 1, jmp.sj_arg(), code.len())?;
+                compare_test_branches[pc] = Some(PerfCompareTestBranchFact { target_pc });
+                mark_target(target_pc, code.len(), &mut branch_targets, &mut block_starts)?;
                 mark_block_start(pc + 2, code.len(), &mut block_starts);
             }
             Opcode::Jmp => {
@@ -379,6 +382,7 @@ fn build_control_flow_facts(code: &[Instr], performance: &PerformanceFacts) -> R
         block_ids,
         branch_targets,
         fused_bool_branches,
+        compare_test_branches,
     })
 }
 
@@ -436,11 +440,16 @@ fn mark_relative_target(
     branch_targets: &mut [bool],
     block_starts: &mut [bool],
 ) -> Result<()> {
+    let target = relative_target(pc, offset, len)?;
+    mark_target(target, len, branch_targets, block_starts)
+}
+
+fn relative_target(pc: usize, offset: i32, len: usize) -> Result<usize> {
     let target = pc as i64 + 1 + offset as i64;
     if target < 0 || target > len as i64 {
         bail!("Compiler branch target {target} out of bounds at pc {pc}");
     }
-    mark_target(target as usize, len, branch_targets, block_starts)
+    Ok(target as usize)
 }
 
 fn mark_target(target: usize, len: usize, branch_targets: &mut [bool], block_starts: &mut [bool]) -> Result<()> {

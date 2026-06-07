@@ -30,7 +30,7 @@ mod string_split;
 mod values;
 use self::{
     allocas::emit_scalar_entry_allocas,
-    arithmetic::{emit_add_int_immediate_block, emit_int_arithmetic_block},
+    arithmetic::{emit_int_arithmetic_block, emit_int_immediate_block},
     asserts::emit_native_assert_direct_call,
     call_args::{
         emit_recovered_builtin_call_block, emit_runtime_formatted_print_call, static_or_recovered_call_args,
@@ -271,8 +271,8 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode::AddIntI => {
-                if !emit_add_int_immediate_block(
+            Opcode::AddIntI | Opcode::MulIntI | Opcode::ModIntI => {
+                if !emit_int_immediate_block(
                     &mut ir,
                     code,
                     pc,
@@ -570,7 +570,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 if !emit_get_index_block(
                     &mut ir,
                     &mut extra_globals,

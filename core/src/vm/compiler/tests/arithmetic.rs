@@ -28,6 +28,33 @@ fn compiler_lowers_small_int_literal_add_sub_to_add_int_immediate() {
 }
 
 #[test]
+fn compiler_lowers_small_int_literal_mul_mod_to_int_immediates() {
+    let function = compile_source(
+        r#"
+        let value = 10;
+        let scaled = value * 3;
+        let bucket = scaled % 7;
+        return bucket;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::MulIntI),
+        "small integer multiply literal should lower to MulIntI: {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::ModIntI),
+        "small non-zero modulo literal should lower to ModIntI: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(2)]);
+}
+
+#[test]
 fn compiler_accumulates_int_add_chain_into_compound_target() {
     let function = compile_source(
         r#"
@@ -92,7 +119,7 @@ fn compiler_reuses_preloaded_loop_const_for_folded_compound_add_term() {
     let mul_count = function
         .code
         .iter()
-        .filter(|instr| instr.opcode() == Opcode::MulInt)
+        .filter(|instr| matches!(instr.opcode(), Opcode::MulInt | Opcode::MulIntI))
         .count();
     assert_eq!(
         mul_count, 1,

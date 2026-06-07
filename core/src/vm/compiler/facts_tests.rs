@@ -839,7 +839,7 @@ fn compiler_records_index_target_shape_facts() {
         .code
         .iter()
         .enumerate()
-        .filter(|(_, instr)| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK))
+        .filter(|(_, instr)| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK | Opcode::GetList))
         .filter_map(|(pc, _)| function.performance.index_op(pc).copied())
         .collect::<Vec<_>>();
 
@@ -911,6 +911,35 @@ fn compiler_records_control_flow_facts_after_jump_patching() {
 
     let result = execute(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(1)]);
+}
+
+#[test]
+fn compiler_records_compare_test_branch_fact_after_jump_patching() {
+    let function = compile_source(
+        r#"
+        let lhs = 1;
+        let rhs = 2;
+        let value = 0;
+        if lhs < rhs {
+            value = 7;
+        }
+        return value;
+        "#,
+    );
+
+    let test_pc = function
+        .code
+        .iter()
+        .position(|instr| instr.opcode().is_compare_test())
+        .expect("compare-test");
+    let jmp = function.code.get(test_pc + 1).copied().expect("compare-test follower");
+    assert_eq!(jmp.opcode(), Opcode::Jmp);
+    let fact = function
+        .performance
+        .compare_test_branch(test_pc)
+        .expect("compare-test branch fact");
+    let target_pc = ((test_pc + 1) as i64 + 1 + i64::from(jmp.sj_arg())) as usize;
+    assert_eq!(fact.target_pc, target_pc);
 }
 
 #[test]

@@ -769,7 +769,7 @@ fn local_static_index_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 let target =
                     local_static_value_before(code, int_consts, strings, heap_values, global_names, prev_pc, prev.b())?;
                 let key =

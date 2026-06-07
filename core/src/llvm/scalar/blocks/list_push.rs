@@ -336,7 +336,7 @@ fn emit_nested_const_list_string_field_for_push(
     tmp_index: &mut usize,
 ) -> Option<()> {
     let inner = previous_writer(code, pc, value_reg)?;
-    if inner.opcode() != Opcode::GetIndex {
+    if !matches!(inner.opcode(), Opcode::GetIndex | Opcode::GetList) {
         return None;
     }
     let NativeStraightlineValue::I64(field) = local_static_i64_before(code, int_consts, pc, inner.c())? else {
@@ -344,7 +344,7 @@ fn emit_nested_const_list_string_field_for_push(
     };
     let field = field.parse::<usize>().ok()?;
     let outer = previous_writer(code, pc, inner.b())?;
-    if outer.opcode() != Opcode::GetIndex {
+    if !matches!(outer.opcode(), Opcode::GetIndex | Opcode::GetList) {
         return None;
     }
     let NativeStraightlineValue::List { elements, .. } =

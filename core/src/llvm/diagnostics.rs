@@ -92,7 +92,7 @@ fn call_has_static_target(
         let defines_target = match check.opcode() {
             Opcode::Move => check.a() == target_reg,
             Opcode::GetGlobal => check.a() == target_reg,
-            Opcode::GetIndex => check.a() == target_reg,
+            Opcode::GetIndex | Opcode::GetList => check.a() == target_reg,
             Opcode::LoadFunction => check.a() == target_reg,
             Opcode::MakeClosure => check.a() == target_reg,
             _ => false,
@@ -115,7 +115,7 @@ fn call_has_static_target(
                     Instr::abc(Opcode::Call, check.b(), check.b(), 0),
                 );
             }
-            Opcode::GetIndex => return true,
+            Opcode::GetIndex | Opcode::GetList => return true,
             Opcode::LoadFunction | Opcode::MakeClosure => return true,
             _ => return false,
         }

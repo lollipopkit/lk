@@ -790,7 +790,7 @@ fn local_static_value_before(
             Opcode::LoadHeapConst => {
                 native_straightline_heap_const_value(0, instr.bx(), heap_values.get(instr.bx() as usize)?)
             }
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 let target = local_static_value_before(
                     global_names,
                     code,

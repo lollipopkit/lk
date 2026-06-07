@@ -366,15 +366,24 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode::AddIntI => {
+            Opcode::AddIntI | Opcode::MulIntI | Opcode::ModIntI => {
                 if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
                     return None;
                 }
                 static_regs[instr.a() as usize] = None;
                 let lhs = crate::llvm::ir_text::next_tmp(tmp_index);
                 let out = crate::llvm::ir_text::next_tmp(tmp_index);
+                let op = match instr.opcode() {
+                    Opcode::AddIntI => "add",
+                    Opcode::MulIntI => "mul",
+                    Opcode::ModIntI => "srem",
+                    _ => unreachable!("opcode matched above"),
+                };
+                if instr.opcode() == Opcode::ModIntI && instr.sc() == 0 {
+                    return None;
+                }
                 ir.push_str(&format!("  {lhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.b()));
-                ir.push_str(&format!("  {out} = add i64 {lhs}, {}\n", instr.sc()));
+                ir.push_str(&format!("  {out} = {op} i64 {lhs}, {}\n", instr.sc()));
                 ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
                 ir.push_str(&format!(
                     "  store i64 1, ptr %call{call_pc}.r{}.present.slot\n",
@@ -455,7 +464,7 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
@@ -652,14 +661,8 @@ fn emit_inline_direct_scalar_blocks(
                 let rhs = next_tmp(tmp_index);
                 let cond = next_tmp(tmp_index);
                 let branch_cond = next_tmp(tmp_index);
-                ir.push_str(&format!(
-                    "  {lhs} = load i64, ptr %call{call_pc}.r{}.slot\n",
-                    instr.a()
-                ));
-                ir.push_str(&format!(
-                    "  {rhs} = load i64, ptr %call{call_pc}.r{}.slot\n",
-                    instr.b()
-                ));
+                ir.push_str(&format!("  {lhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.a()));
+                ir.push_str(&format!("  {rhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.b()));
                 ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
                 if instr.c() != 0 {
                     ir.push_str(&format!("  {branch_cond} = xor i1 {cond}, false\n"));

@@ -4,7 +4,7 @@ set -uo pipefail
 
 BENCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE_RUNS="${RUNS:-3}"
-EXTRA_RUNS="${EXTRA_RUNS:-3}"
+EXTRA_RUNS="${EXTRA_RUNS:-5}"
 REGRESSION_MARGIN="${REGRESSION_MARGIN:-0.03}"
 NOISE_MARGIN="${NOISE_MARGIN:-0.08}"
 LK_BIN="/Users/lk/proj/lk/target/release/lk"

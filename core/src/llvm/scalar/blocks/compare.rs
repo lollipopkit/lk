@@ -164,12 +164,16 @@ fn emit_get_index_nil_compare(
     if !matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt) {
         return None;
     }
-    let maybe_reg = if last_write_opcode_before(code, pc, instr.b()) == Some(Opcode::GetIndex)
-        && local_direct_load_nil_before(code, pc, instr.c())
+    let maybe_reg = if matches!(
+        last_write_opcode_before(code, pc, instr.b()),
+        Some(Opcode::GetIndex | Opcode::GetList)
+    ) && local_direct_load_nil_before(code, pc, instr.c())
     {
         instr.b()
-    } else if last_write_opcode_before(code, pc, instr.c()) == Some(Opcode::GetIndex)
-        && local_direct_load_nil_before(code, pc, instr.b())
+    } else if matches!(
+        last_write_opcode_before(code, pc, instr.c()),
+        Some(Opcode::GetIndex | Opcode::GetList)
+    ) && local_direct_load_nil_before(code, pc, instr.b())
     {
         instr.c()
     } else {

@@ -13,7 +13,7 @@ execute real runtime work.
 - **Methodology**: Each workload measures internal elapsed time, excluding
   process startup overhead.
 - **Correctness gate**: LK and Lua checksums must match for every workload.
-- **Default sampling**: 5 base samples, with adaptive reruns when results are
+- **Default sampling**: 3 base samples, with 5 adaptive reruns when results are
   noisy or appear regressed against the documented baseline.
 
 ## How to Run
@@ -97,10 +97,13 @@ state-machine style control flow. It should be used to guide generic VM/opcode
 work such as operand-shape specialization and branch/materialization reduction,
 not to justify workload-specific fused opcodes.
 
-Current opcode evidence: `AddIntI` covers real small-int add/sub paths in this
-suite, but low-sample release timing did not improve geomean by itself. The
-next higher-leverage opcode work should target generic control-flow reduction
-such as `Test + Jmp` compaction or compare-branch lowering.
+Current opcode evidence: `AddIntI`, `MulIntI`, and `ModIntI` cover real
+small-int literal RHS arithmetic paths in this suite. Typed compare-test now
+uses compiler control-flow facts to jump directly to the patched target pc and
+keeps non-Int fallback code cold. The latest default-sample VM run is
+checksum-clean at `1.253x` geomean. The next higher-leverage opcode work should
+target generic control-flow reduction, loop-carried register writes, or existing
+index helper/layout costs rather than workload-specific fused opcodes.
 
 ## Adaptive Rerun Policy
 
@@ -349,10 +352,12 @@ RUN_AOT=0 RUNS=1 EXTRA_RUNS=0 PROFILE_WORKLOADS=1 BENCH_PROGRESS=0 BENCH_TIMEOUT
 
 The profile table now includes `VM Dynamic Opcode Top-6 by Workload`,
 `VM Register Write Source Top-6 by Workload`, and `VM Index Key Top-6 by
-Workload`. The latest coverage profile shows aggregate dynamic `LoadInt`
-at about `1.30M`; the remaining top dispatch pressure is now `AddInt`
-(`~8.10M`), `Move` (`~6.06M`), `ModInt` (`~4.99M`), `MulInt` (`~4.48M`),
-`ForLoopI` (`~3.25M`), `Jmp` (`~3.19M`), and typed compare opcodes.
+Workload`. The latest coverage profile shows aggregate dynamic immediate
+arithmetic coverage in the multi-million range: `MulIntI` covers hot multiply
+literal RHS paths and `ModIntI` covers hot modulo literal RHS paths. The
+remaining top dispatch pressure is now `AddInt`, `Move`, `ForLoopI`, `Jmp`,
+dynamic `ModInt` where the divisor is not a small literal, and typed compare
+opcodes.
 Map/list/string-heavy workloads still show the expected `GetIndex`, `SetIndex`,
 `ConcatString`, and `LoadString` pressure, but readonly string-int const map
 lookups can now fold before `GetIndex`.

@@ -174,7 +174,7 @@ pub(in crate::llvm) fn emit_static_map_iter_value_get(
         if pair.a() != pair_reg {
             continue;
         }
-        if pair.opcode() != Opcode::GetIndex {
+        if !matches!(pair.opcode(), Opcode::GetIndex | Opcode::GetList) {
             return Some(false);
         }
         if let Some(NativeStraightlineValue::I64(key)) = key.as_ref()
@@ -415,7 +415,7 @@ pub(in crate::llvm) fn local_static_i64_value_before(
             Opcode::Move if prev.b() != reg => {
                 local_static_i64_value_before(code, int_consts, strings, heap_values, prev_pc, prev.b())
             }
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 let target = local_static_container_before(code, heap_values, prev_pc, prev.b())
                     .or_else(|| local_static_map_rest_before(code, strings, heap_values, prev_pc, prev.b()))
                     .or_else(|| {
@@ -451,7 +451,7 @@ pub(in crate::llvm) fn local_static_index_value_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 let target = local_static_container_before(code, heap_values, prev_pc, prev.b())
                     .or_else(|| local_static_map_rest_before(code, strings, heap_values, prev_pc, prev.b()))
                     .or_else(|| {
@@ -1317,7 +1317,7 @@ fn local_nested_const_list_field_is_string(
     let Some(inner) = previous_writer(code, pc, value_reg) else {
         return false;
     };
-    if inner.opcode() != Opcode::GetIndex {
+    if !matches!(inner.opcode(), Opcode::GetIndex | Opcode::GetList) {
         return false;
     }
     let Some(NativeStraightlineValue::I64(field)) = local_static_i64_before(code, int_consts, pc, inner.c()) else {
@@ -1329,7 +1329,7 @@ fn local_nested_const_list_field_is_string(
     let Some(outer) = previous_writer(code, pc, inner.b()) else {
         return false;
     };
-    if outer.opcode() != Opcode::GetIndex {
+    if !matches!(outer.opcode(), Opcode::GetIndex | Opcode::GetList) {
         return false;
     }
     let Some(NativeStraightlineValue::List { elements, .. }) =
@@ -1350,7 +1350,8 @@ fn local_static_string_index_is_string(code: &[Instr], strings: &[String], pc: u
     let Some(instr) = previous_writer(code, pc, value_reg) else {
         return false;
     };
-    instr.opcode() == Opcode::GetIndex && local_static_string_before(code, strings, pc, instr.b()).is_some()
+    matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetList)
+        && local_static_string_before(code, strings, pc, instr.b()).is_some()
 }
 
 fn previous_writer(code: &[Instr], pc: usize, reg: u8) -> Option<Instr> {

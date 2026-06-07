@@ -5,9 +5,10 @@ use crate::{expr::Expr, operator::BinOp, val::LiteralVal};
 use crate::vm::analysis::{PerfCellMoveFact, PerfContainerMoveFact, PerfIndexTargetKind, PerfValueKind};
 
 use super::{
-    Compiler, Instr, Opcode, checked_u8, get_field_key,
+    Compiler, Instr, Opcode, checked_u8,
     facts::index_fact_from_target,
-    support::int_immediate_delta,
+    get_field_key,
+    support::int_immediate_operand,
     support::{NumericFlavor, numeric_flavor, simple_local_expr_name},
 };
 
@@ -112,7 +113,7 @@ impl Compiler {
     }
 
     fn try_lower_int_immediate_compound_assign(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<bool> {
-        let Some(delta) = int_immediate_delta(op, value) else {
+        let Some(immediate) = int_immediate_operand(op, value) else {
             return Ok(false);
         };
         let Some(lhs) = self.locals.get(name).copied() else {
@@ -122,7 +123,7 @@ impl Compiler {
             return Ok(false);
         }
         let (dst, rebind_dst) = self.local_write_slot(lhs);
-        self.emit_add_int_immediate_to_register(dst, lhs, delta)?;
+        self.emit_int_immediate_to_register(dst, op, lhs, immediate)?;
         if rebind_dst {
             self.insert_local(name.to_string(), dst);
         }

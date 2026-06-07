@@ -245,11 +245,17 @@ pub struct PerfFusedBoolBranchFact {
     pub fallthrough_pc_delta: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PerfCompareTestBranchFact {
+    pub target_pc: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PerfControlFlowFacts {
     pub block_ids: Vec<u32>,
     pub branch_targets: Vec<bool>,
     pub fused_bool_branches: Vec<Option<PerfFusedBoolBranchFact>>,
+    pub compare_test_branches: Vec<Option<PerfCompareTestBranchFact>>,
 }
 
 impl PerformanceFacts {
@@ -329,6 +335,10 @@ impl PerformanceFacts {
 
     pub fn fused_bool_branch(&self, pc: usize) -> Option<PerfFusedBoolBranchFact> {
         self.control_flow.fused_bool_branches.get(pc).copied().flatten()
+    }
+
+    pub fn compare_test_branch(&self, pc: usize) -> Option<PerfCompareTestBranchFact> {
+        self.control_flow.compare_test_branches.get(pc).copied().flatten()
     }
 
     pub fn has_control_flow_fact_slot(&self, pc: usize) -> bool {

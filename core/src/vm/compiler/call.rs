@@ -11,8 +11,9 @@ use crate::{
 };
 
 use super::{
-    Compiler, Instr, Opcode, get_field_key,
+    Compiler, Instr, Opcode,
     facts::{expr_static_value_kind, index_fact_from_target},
+    get_field_key,
     support::{FunctionSignature, checked_u8, simple_local_expr_name},
 };
 

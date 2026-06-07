@@ -142,7 +142,11 @@ pub(super) fn emit_compare_test_block(
     {
         let lhs = next_tmp(tmp_index);
         let rhs = next_tmp(tmp_index);
-        let pred = if instr.opcode() == Opcode::TestEqInt { "eq" } else { "ne" };
+        let pred = if instr.opcode() == Opcode::TestEqInt {
+            "eq"
+        } else {
+            "ne"
+        };
         ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.a()));
         ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.b()));
         ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
@@ -213,8 +217,8 @@ fn emit_nil_branch_block(
     };
     if let Some(value) = static_regs.get(instr.a() as usize).and_then(|value| value.as_ref()) {
         let is_nil = matches!(value, NativeStraightlineValue::Nil);
-        let branch_taken = (instr.opcode() == Opcode::BrNil && is_nil)
-            || (instr.opcode() == Opcode::BrNotNil && !is_nil);
+        let branch_taken =
+            (instr.opcode() == Opcode::BrNil && is_nil) || (instr.opcode() == Opcode::BrNotNil && !is_nil);
         let target = if branch_taken { taken } else { fallthrough };
         let untaken = if branch_taken { fallthrough } else { taken };
         mark_static_untaken_return_path(skip_static_pcs, static_boundaries, code, untaken);
@@ -229,7 +233,11 @@ fn emit_nil_branch_block(
     };
     match kind {
         NativeScalarKind::Nil => {
-            let target = if instr.opcode() == Opcode::BrNil { taken } else { fallthrough };
+            let target = if instr.opcode() == Opcode::BrNil {
+                taken
+            } else {
+                fallthrough
+            };
             ir.push_str(&format!("  br label {}\n", native_label(target, code.len())));
         }
         NativeScalarKind::MaybeI64 | NativeScalarKind::MaybeStrPtr => {
@@ -248,7 +256,11 @@ fn emit_nil_branch_block(
             ));
         }
         NativeScalarKind::Bool | NativeScalarKind::I64 | NativeScalarKind::F64 | NativeScalarKind::StrPtr => {
-            let target = if instr.opcode() == Opcode::BrNotNil { taken } else { fallthrough };
+            let target = if instr.opcode() == Opcode::BrNotNil {
+                taken
+            } else {
+                fallthrough
+            };
             ir.push_str(&format!("  br label {}\n", native_label(target, code.len())));
         }
     }

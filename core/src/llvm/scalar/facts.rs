@@ -17,11 +17,10 @@ use crate::llvm::{
     output::{emit_native_map_set, emit_native_static_core_call_method, emit_native_static_parse_builtin},
     straightline_value::{
         NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
-        NativeStringKeyKind,
-        NativeTextPart, native_runtime_string_key_kind, native_static_compare_bool, native_static_global,
-        native_static_i64_binary, native_static_index, native_static_list_from_values, native_static_list_join,
-        native_static_load_cell, native_static_map_from_pairs, native_static_map_rest, native_static_set_index,
-        native_static_store_cell, native_static_to_iter,
+        NativeStringKeyKind, NativeTextPart, native_runtime_string_key_kind, native_static_compare_bool,
+        native_static_global, native_static_i64_binary, native_static_index, native_static_list_from_values,
+        native_static_list_join, native_static_load_cell, native_static_map_from_pairs, native_static_map_rest,
+        native_static_set_index, native_static_store_cell, native_static_to_iter,
     },
 };
 use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, Opcode};
@@ -279,7 +278,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode::AddIntI => {
+            Opcode::AddIntI | Opcode::MulIntI | Opcode::ModIntI => {
                 let lhs = native_kind(&kinds, instr.b()).unwrap_or(NativeScalarKind::I64);
                 if !matches!(lhs, NativeScalarKind::I64 | NativeScalarKind::MaybeI64) {
                     return None;
@@ -383,8 +382,8 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 }
                 if let Some(value) = static_kind(&static_values, instr.a()) {
                     let is_nil = matches!(value, NativeStraightlineValue::Nil);
-                    let branch_taken = (instr.opcode() == Opcode::BrNil && is_nil)
-                        || (instr.opcode() == Opcode::BrNotNil && !is_nil);
+                    let branch_taken =
+                        (instr.opcode() == Opcode::BrNil && is_nil) || (instr.opcode() == Opcode::BrNotNil && !is_nil);
                     let fallthrough = pc + 1;
                     let relative = native_relative_target(pc, instr.sbx() as i32, code.len())?;
                     let untaken = if branch_taken { fallthrough } else { relative };
@@ -399,8 +398,10 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 if jmp.opcode() != Opcode::Jmp {
                     return None;
                 }
-                if let (Some(lhs), Some(rhs)) = (static_kind(&static_values, instr.a()), static_kind(&static_values, instr.b()))
-                    && let Some(value) = static_compare_test_value(instr.opcode(), &lhs, &rhs)
+                if let (Some(lhs), Some(rhs)) = (
+                    static_kind(&static_values, instr.a()),
+                    static_kind(&static_values, instr.b()),
+                ) && let Some(value) = static_compare_test_value(instr.opcode(), &lhs, &rhs)
                 {
                     let branch_taken = value == (instr.c() != 0);
                     let fallthrough = pc + 2;
@@ -639,7 +640,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode::GetIndex => {
+            Opcode::GetIndex | Opcode::GetList => {
                 let Some(target) = static_kind(&static_values, instr.b()) else {
                     let target_kind = native_kind(&kinds, instr.b())?;
                     if target_kind == NativeScalarKind::I64 || target_kind == NativeScalarKind::MaybeI64 {

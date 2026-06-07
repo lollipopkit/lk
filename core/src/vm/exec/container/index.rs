@@ -9,6 +9,29 @@ use super::{Executor, IndexTargetKind, heap_kind, record_index_key_metric, runti
 
 impl Executor {
     #[inline(always)]
+    pub(in crate::vm::exec) fn get_list_index(&self, target_reg: u8, key_reg: u8) -> Result<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = self.read_unchecked(target_reg) else {
+            bail!("GetList target expected Obj");
+        };
+        let RuntimeVal::Int(index) = self.read_unchecked(key_reg) else {
+            bail!("GetList key must be Int");
+        };
+        let Some(HeapValue::List(list)) = self.state.heap.get(*handle) else {
+            bail!("GetList target object changed while reading list");
+        };
+        let index = if *index < 0 {
+            let index = list.len() as i64 + *index;
+            if index < 0 {
+                return Ok(RuntimeVal::Nil);
+            }
+            index as usize
+        } else {
+            *index as usize
+        };
+        Ok(self.get_typed_list_element(list, index))
+    }
+
+    #[inline(always)]
     pub(in crate::vm::exec) fn try_get_known_list_index(&self, target_reg: u8, key_reg: u8) -> Option<RuntimeVal> {
         let RuntimeVal::Obj(handle) = self.read_unchecked(target_reg) else {
             return None;

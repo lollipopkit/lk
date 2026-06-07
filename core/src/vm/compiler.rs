@@ -303,7 +303,14 @@ impl Compiler {
         let (key, key_fact) = self.lower_index_key_for_target(target, index_fact, key)?;
         let dst = self.alloc_reg();
         let pc = self.function.code.len();
-        if let Some(const_key) = get_field_key(index_fact, key_fact) {
+        if list_int_key(index_fact, &self.function.performance, key) {
+            self.emit(Instr::abc(
+                Opcode::GetList,
+                checked_u8("list get dst", dst)?,
+                checked_u8("list get target", target)?,
+                checked_u8("list get key", key)?,
+            ));
+        } else if let Some(const_key) = get_field_key(index_fact, key_fact) {
             self.emit(Instr::abc(
                 Opcode::GetFieldK,
                 checked_u8("field dst", dst)?,
@@ -383,7 +390,14 @@ impl Compiler {
         let index_fact = index_fact_from_target(&self.function.performance, target);
         let (key, key_fact) = self.lower_index_key_for_target(target, index_fact, key)?;
         let pc = self.function.code.len();
-        if let Some(const_key) = get_field_key(index_fact, key_fact) {
+        if list_int_key(index_fact, &self.function.performance, key) {
+            self.emit(Instr::abc(
+                Opcode::GetList,
+                checked_u8("optional list dst", dst)?,
+                checked_u8("optional list target", target)?,
+                checked_u8("optional list key", key)?,
+            ));
+        } else if let Some(const_key) = get_field_key(index_fact, key_fact) {
             self.emit(Instr::abc(
                 Opcode::GetFieldK,
                 checked_u8("optional field dst", dst)?,
@@ -1380,7 +1394,7 @@ impl Compiler {
     fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {
         let static_flavor = numeric_flavor(lhs, op, rhs);
         let lhs = self.lower_readonly_operand(lhs)?;
-        if let Some(delta) = int_immediate_delta(op, rhs) {
+        if let Some(immediate) = int_immediate_operand(op, rhs) {
             let dst = self.alloc_reg();
             let flavor = if self.function.performance.value_kind(lhs) == PerfValueKind::Int {
                 Some(NumericFlavor::Int)
@@ -1388,7 +1402,7 @@ impl Compiler {
                 None
             };
             if flavor == Some(static_flavor) {
-                return self.emit_add_int_immediate_to_register(dst, lhs, delta);
+                return self.emit_int_immediate_to_register(dst, op, lhs, immediate);
             }
         }
         let rhs = self.lower_readonly_operand(rhs)?;
@@ -1451,12 +1465,18 @@ impl Compiler {
         Ok(dst)
     }
 
-    fn emit_add_int_immediate_to_register(&mut self, dst: u16, lhs: u16, delta: i8) -> Result<u16> {
+    fn emit_int_immediate_to_register(&mut self, dst: u16, op: &BinOp, lhs: u16, immediate: i8) -> Result<u16> {
+        let opcode = match op {
+            BinOp::Add | BinOp::Sub => Opcode::AddIntI,
+            BinOp::Mul => Opcode::MulIntI,
+            BinOp::Mod => Opcode::ModIntI,
+            _ => unreachable!("int immediate operand only supports arithmetic ops"),
+        };
         self.emit(Instr::abc(
-            Opcode::AddIntI,
+            opcode,
             checked_u8("dst", dst)?,
             checked_u8("lhs", lhs)?,
-            delta as u8,
+            immediate as u8,
         ));
         self.set_register_kind(dst, PerfValueKind::Int);
         Ok(dst)
@@ -1518,6 +1538,17 @@ fn get_field_key(
     (key <= u8::MAX as u16).then_some(key)
 }
 
+fn list_int_key(
+    index_fact: Option<crate::vm::analysis::PerfIndexFact>,
+    facts: &crate::vm::analysis::PerformanceFacts,
+    key: u16,
+) -> bool {
+    ENABLE_GET_LIST_LOWERING
+        && index_fact.is_some_and(|fact| fact.target_kind == crate::vm::analysis::PerfIndexTargetKind::List)
+        && facts.value_kind(key) == crate::vm::analysis::PerfValueKind::Int
+}
+
+const ENABLE_GET_LIST_LOWERING: bool = false;
 const ENABLE_COMPARE_TEST_LOWERING: bool = true;
 
 fn compare_test_opcode(op: &BinOp) -> Option<Opcode> {
