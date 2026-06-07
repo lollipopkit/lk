@@ -507,6 +507,13 @@ impl Compiler {
                 Ok(vec![self.emit_branch_placeholder(Opcode::BrNil, value)?])
             }
             Expr::Bin(lhs, op, rhs) if compare_test_opcode(op).is_some() => {
+                if ENABLE_COMPARE_TEST_IMMEDIATE_LOWERING
+                    && let Some((opcode, lhs, rhs)) = self.lower_compare_test_immediate_operands(lhs, op, rhs)?
+                {
+                    return Ok(vec![
+                        self.emit_compare_test_immediate_placeholder(opcode, lhs, rhs, false)?
+                    ]);
+                }
                 let lhs = self.lower_readonly_operand(lhs)?;
                 let rhs = self.lower_readonly_operand(rhs)?;
                 if ENABLE_COMPARE_TEST_LOWERING && compare_test_operands_are_int(&self.function.performance, lhs, rhs) {
@@ -522,6 +529,28 @@ impl Compiler {
                 Ok(vec![self.emit_test_placeholder(condition)?])
             }
         }
+    }
+
+    fn lower_compare_test_immediate_operands(
+        &mut self,
+        lhs: &Expr,
+        op: &BinOp,
+        rhs: &Expr,
+    ) -> Result<Option<(Opcode, u16, i8)>> {
+        if let Some(immediate) = compare_test_immediate_operand(rhs) {
+            let lhs = self.lower_readonly_operand(lhs)?;
+            if self.function.performance.value_kind(lhs) == PerfValueKind::Int {
+                return Ok(compare_test_immediate_opcode(op).map(|opcode| (opcode, lhs, immediate)));
+            }
+            return Ok(None);
+        }
+        if let Some(immediate) = compare_test_immediate_operand(lhs) {
+            let rhs = self.lower_readonly_operand(rhs)?;
+            if self.function.performance.value_kind(rhs) == PerfValueKind::Int {
+                return Ok(reverse_compare_test_immediate_opcode(op).map(|opcode| (opcode, rhs, immediate)));
+            }
+        }
+        Ok(None)
     }
 
     pub(super) fn patch_condition_false_jumps(&mut self, jumps: Vec<usize>, target: usize) -> Result<()> {
@@ -1586,6 +1615,7 @@ fn list_int_key(
 
 const ENABLE_GET_LIST_LOWERING: bool = false;
 const ENABLE_COMPARE_TEST_LOWERING: bool = true;
+const ENABLE_COMPARE_TEST_IMMEDIATE_LOWERING: bool = true;
 
 fn compare_test_opcode(op: &BinOp) -> Option<Opcode> {
     match op {
@@ -1595,6 +1625,38 @@ fn compare_test_opcode(op: &BinOp) -> Option<Opcode> {
         BinOp::Le => Some(Opcode::TestLeInt),
         BinOp::Gt => Some(Opcode::TestGtInt),
         BinOp::Ge => Some(Opcode::TestGeInt),
+        _ => None,
+    }
+}
+
+fn compare_test_immediate_opcode(op: &BinOp) -> Option<Opcode> {
+    match op {
+        BinOp::Eq => Some(Opcode::TestEqIntI),
+        BinOp::Ne => Some(Opcode::TestNeIntI),
+        BinOp::Lt => Some(Opcode::TestLtIntI),
+        BinOp::Le => Some(Opcode::TestLeIntI),
+        BinOp::Gt => Some(Opcode::TestGtIntI),
+        BinOp::Ge => Some(Opcode::TestGeIntI),
+        _ => None,
+    }
+}
+
+fn reverse_compare_test_immediate_opcode(op: &BinOp) -> Option<Opcode> {
+    match op {
+        BinOp::Eq => Some(Opcode::TestEqIntI),
+        BinOp::Ne => Some(Opcode::TestNeIntI),
+        BinOp::Lt => Some(Opcode::TestGtIntI),
+        BinOp::Le => Some(Opcode::TestGeIntI),
+        BinOp::Gt => Some(Opcode::TestLtIntI),
+        BinOp::Ge => Some(Opcode::TestLeIntI),
+        _ => None,
+    }
+}
+
+fn compare_test_immediate_operand(expr: &Expr) -> Option<i8> {
+    match expr {
+        Expr::Paren(inner) => compare_test_immediate_operand(inner),
+        Expr::Literal(LiteralVal::Int(value)) => i8::try_from(*value).ok(),
         _ => None,
     }
 }

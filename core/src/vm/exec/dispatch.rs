@@ -324,6 +324,38 @@ impl Executor {
     }
 
     #[cold]
+    #[inline(never)]
+    pub(super) fn compare_test_immediate_value_slow(&self, instr: Instr, lhs_idx: usize) -> Result<bool> {
+        let rhs = i64::from(instr.sc());
+        Ok(match instr.opcode() {
+            Opcode::TestEqIntI | Opcode::TestNeIntI => {
+                let equal = match &self.state.stack[lhs_idx] {
+                    RuntimeVal::Int(lhs) => *lhs == rhs,
+                    RuntimeVal::Float(lhs) => *lhs == rhs as f64,
+                    _ => false,
+                };
+                if instr.opcode() == Opcode::TestEqIntI {
+                    equal
+                } else {
+                    !equal
+                }
+            }
+            Opcode::TestLtIntI | Opcode::TestLeIntI | Opcode::TestGtIntI | Opcode::TestGeIntI => {
+                let lhs = self.number_value(&self.state.stack[lhs_idx])?;
+                let rhs = rhs as f64;
+                match instr.opcode() {
+                    Opcode::TestLtIntI => lhs < rhs,
+                    Opcode::TestLeIntI => lhs <= rhs,
+                    Opcode::TestGtIntI => lhs > rhs,
+                    Opcode::TestGeIntI => lhs >= rhs,
+                    _ => unreachable!("opcode matched above"),
+                }
+            }
+            _ => unreachable!("opcode matched by caller"),
+        })
+    }
+
+    #[cold]
     pub(super) fn dispatch_for_loop_i(&mut self, instr: Instr, fact: PerfForLoopFact) -> Result<()> {
         let index = self.read_int(instr.a())?;
         let end = self.read_int(instr.b())?;

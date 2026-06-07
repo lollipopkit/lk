@@ -943,6 +943,63 @@ fn compiler_records_compare_test_branch_fact_after_jump_patching() {
 }
 
 #[test]
+fn compiler_lowers_condition_int_literal_compare_to_immediate_test() {
+    let function = compile_source(
+        r#"
+        let lhs = 3;
+        let value = 0;
+        if lhs < 4 {
+            value += 1;
+        }
+        if 2 < lhs {
+            value += 10;
+        }
+        if lhs != 3 {
+            value += 100;
+        } else {
+            value += 1000;
+        }
+        return value;
+        "#,
+    );
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::TestLtIntI),
+        "lhs < literal should lower to TestLtIntI: {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::TestGtIntI),
+        "literal < lhs should reverse to TestGtIntI: {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::TestNeIntI),
+        "lhs != literal should lower to TestNeIntI: {:?}",
+        function.code
+    );
+    for (pc, _) in function
+        .code
+        .iter()
+        .enumerate()
+        .filter(|(_, instr)| instr.opcode().is_int_immediate_compare_test())
+    {
+        assert_eq!(
+            function.code.get(pc + 1).map(|instr| instr.opcode()),
+            Some(Opcode::Jmp),
+            "immediate compare-test must consume following Jmp"
+        );
+        assert!(
+            function.performance.compare_test_branch(pc).is_some(),
+            "immediate compare-test should record patched branch fact"
+        );
+    }
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![RuntimeVal::Int(1011)]);
+}
+
+#[test]
 fn compiler_records_loop_backedge_as_branch_target() {
     let function = compile_source(
         r#"
@@ -963,7 +1020,7 @@ fn compiler_records_loop_backedge_as_branch_target() {
     let cmp_pc = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt))
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI))
         .expect("loop compare");
     let target = ((loop_backedge.0 as i64) + 1 + i64::from(loop_backedge.1.sj_arg())) as usize;
 

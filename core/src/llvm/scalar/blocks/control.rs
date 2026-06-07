@@ -99,7 +99,9 @@ pub(super) fn emit_compare_test_block(
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
 ) -> bool {
-    if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+    if !reg_in_bounds(register_count, instr.a())
+        || (!instr.opcode().is_int_immediate_compare_test() && !reg_in_bounds(register_count, instr.b()))
+    {
         return false;
     }
     let Some((taken, fallthrough)) = compare_test_targets(pc, instr, code) else {
@@ -111,11 +113,16 @@ pub(super) fn emit_compare_test_block(
     else {
         return false;
     };
-    let Some(rhs_kind) = facts
-        .register_kind_before(pc, instr.b())
-        .or_else(|| local_register_kind_before(code, pc, instr.b()))
-    else {
-        return false;
+    let rhs_kind = if instr.opcode().is_int_immediate_compare_test() {
+        NativeScalarKind::I64
+    } else {
+        let Some(kind) = facts
+            .register_kind_before(pc, instr.b())
+            .or_else(|| local_register_kind_before(code, pc, instr.b()))
+        else {
+            return false;
+        };
+        kind
     };
     let cond = next_tmp(tmp_index);
     if lhs_kind == NativeScalarKind::I64 && rhs_kind == NativeScalarKind::I64 {
@@ -123,9 +130,14 @@ pub(super) fn emit_compare_test_block(
             return false;
         };
         let lhs = next_tmp(tmp_index);
-        let rhs = next_tmp(tmp_index);
         ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.a()));
-        ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.b()));
+        let rhs = if instr.opcode().is_int_immediate_compare_test() {
+            i64::from(instr.sc()).to_string()
+        } else {
+            let rhs = next_tmp(tmp_index);
+            ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.b()));
+            rhs
+        };
         ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
     } else if lhs_kind == NativeScalarKind::F64 && rhs_kind == NativeScalarKind::F64 {
         let Some(pred) = compare_test_f64_pred(instr.opcode()) else {
@@ -153,7 +165,12 @@ pub(super) fn emit_compare_test_block(
     } else {
         return false;
     }
-    let branch_cond = if instr.c() != 0 {
+    let jump_when = if instr.opcode().is_int_immediate_compare_test() {
+        instr.b() != 0
+    } else {
+        instr.c() != 0
+    };
+    let branch_cond = if jump_when {
         cond
     } else {
         let inverted = next_tmp(tmp_index);
@@ -178,12 +195,12 @@ fn compare_test_targets(pc: usize, _instr: Instr, code: &[Instr]) -> Option<(usi
 
 fn compare_test_i64_pred(opcode: Opcode) -> Option<&'static str> {
     Some(match opcode {
-        Opcode::TestEqInt => "eq",
-        Opcode::TestNeInt => "ne",
-        Opcode::TestLtInt => "slt",
-        Opcode::TestLeInt => "sle",
-        Opcode::TestGtInt => "sgt",
-        Opcode::TestGeInt => "sge",
+        Opcode::TestEqInt | Opcode::TestEqIntI => "eq",
+        Opcode::TestNeInt | Opcode::TestNeIntI => "ne",
+        Opcode::TestLtInt | Opcode::TestLtIntI => "slt",
+        Opcode::TestLeInt | Opcode::TestLeIntI => "sle",
+        Opcode::TestGtInt | Opcode::TestGtIntI => "sgt",
+        Opcode::TestGeInt | Opcode::TestGeIntI => "sge",
         _ => return None,
     })
 }

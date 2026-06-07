@@ -925,6 +925,39 @@ impl Executor {
                     };
                     self.apply_compare_test_branch_unchecked(function, code, instr, value);
                 }
+                Opcode::TestEqIntI => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs = i64::from(instr.sc());
+                    let value = match &self.state.stack[lhs_idx] {
+                        RuntimeVal::Int(lhs) => *lhs == rhs,
+                        _ => self.compare_test_immediate_value_slow(instr, lhs_idx)?,
+                    };
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
+                }
+                Opcode::TestNeIntI => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs = i64::from(instr.sc());
+                    let value = match &self.state.stack[lhs_idx] {
+                        RuntimeVal::Int(lhs) => *lhs != rhs,
+                        _ => self.compare_test_immediate_value_slow(instr, lhs_idx)?,
+                    };
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
+                }
+                opcode if opcode.is_int_immediate_compare_test() => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs = i64::from(instr.sc());
+                    let value = match &self.state.stack[lhs_idx] {
+                        RuntimeVal::Int(lhs) => match opcode {
+                            Opcode::TestLtIntI => *lhs < rhs,
+                            Opcode::TestLeIntI => *lhs <= rhs,
+                            Opcode::TestGtIntI => *lhs > rhs,
+                            Opcode::TestGeIntI => *lhs >= rhs,
+                            _ => unreachable!("immediate compare-test matched above"),
+                        },
+                        _ => self.compare_test_immediate_value_slow(instr, lhs_idx)?,
+                    };
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
+                }
                 opcode if opcode.is_compare_test() => {
                     let lhs_idx = self.stack_index_unchecked(instr.a());
                     let rhs_idx = self.stack_index_unchecked(instr.b());

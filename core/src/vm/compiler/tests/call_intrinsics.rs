@@ -192,22 +192,26 @@ fn compiler_inlines_direct_function_with_while_loop() {
     let cmp_pc = entry
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpNeInt | Opcode::TestNeInt))
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI))
         .expect("inlined gcd loop should compare b != 0");
-    let zero_load_pc = entry
-        .code
-        .iter()
-        .enumerate()
-        .take(cmp_pc)
-        .rev()
-        .find(|(_, instr)| instr.opcode() == Opcode::LoadInt)
-        .map(|(pc, _)| pc)
-        .expect("inlined gcd loop should load zero before compare");
     let loop_target = first_backward_jmp_target_after(entry, cmp_pc);
-    assert!(
-        loop_target >= cmp_pc as i64,
-        "inlined while LICM should skip LoadInt at {zero_load_pc}, but loop back targets {loop_target}"
-    );
+    if entry.code[cmp_pc].opcode() == Opcode::TestNeIntI {
+        assert!(loop_target >= cmp_pc as i64);
+    } else {
+        let zero_load_pc = entry
+            .code
+            .iter()
+            .enumerate()
+            .take(cmp_pc)
+            .rev()
+            .find(|(_, instr)| instr.opcode() == Opcode::LoadInt)
+            .map(|(pc, _)| pc)
+            .expect("inlined gcd loop should load zero before compare");
+        assert!(
+            loop_target >= cmp_pc as i64,
+            "inlined while LICM should skip LoadInt at {zero_load_pc}, but loop back targets {loop_target}"
+        );
+    }
 
     let result = execute_module(&module).expect("execute module");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(21)]);

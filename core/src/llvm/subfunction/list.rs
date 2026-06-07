@@ -175,7 +175,6 @@ fn compile_native_i64_list_subfunction_profile(
             }
             opcode if opcode.is_compare_test() => {
                 let lhs = next_tmp(&mut tmp_index);
-                let rhs = next_tmp(&mut tmp_index);
                 let cond = next_tmp(&mut tmp_index);
                 let branch_cond = next_tmp(&mut tmp_index);
                 let Some((taken, fallthrough)) = compare_test_targets(code, pc, code_len) else {
@@ -185,9 +184,20 @@ fn compile_native_i64_list_subfunction_profile(
                     return Ok(None);
                 };
                 ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.a()));
-                ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.b()));
+                let rhs = if opcode.is_int_immediate_compare_test() {
+                    i64::from(instr.sc()).to_string()
+                } else {
+                    let rhs = next_tmp(&mut tmp_index);
+                    ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.b()));
+                    rhs
+                };
                 ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
-                if instr.c() != 0 {
+                let jump_when = if opcode.is_int_immediate_compare_test() {
+                    instr.b() != 0
+                } else {
+                    instr.c() != 0
+                };
+                if jump_when {
                     ir.push_str(&format!("  {branch_cond} = xor i1 {cond}, false\n"));
                 } else {
                     ir.push_str(&format!("  {branch_cond} = xor i1 {cond}, true\n"));
@@ -644,12 +654,12 @@ fn compare_test_targets(code: &[Instr], pc: usize, code_len: usize) -> Option<(u
 
 fn compare_test_i64_pred(opcode: Opcode) -> Option<&'static str> {
     Some(match opcode {
-        Opcode::TestEqInt => "eq",
-        Opcode::TestNeInt => "ne",
-        Opcode::TestLtInt => "slt",
-        Opcode::TestLeInt => "sle",
-        Opcode::TestGtInt => "sgt",
-        Opcode::TestGeInt => "sge",
+        Opcode::TestEqInt | Opcode::TestEqIntI => "eq",
+        Opcode::TestNeInt | Opcode::TestNeIntI => "ne",
+        Opcode::TestLtInt | Opcode::TestLtIntI => "slt",
+        Opcode::TestLeInt | Opcode::TestLeIntI => "sle",
+        Opcode::TestGtInt | Opcode::TestGtIntI => "sgt",
+        Opcode::TestGeInt | Opcode::TestGeIntI => "sge",
         _ => return None,
     })
 }

@@ -1055,10 +1055,10 @@ pub(super) fn compile_native_scalar_main_artifact(
                 regs[instr.a() as usize] = Some(value);
             }
             opcode if opcode.is_compare_test() => {
-                let (Some(lhs), Some(rhs)) = (
-                    regs.get(instr.a() as usize).and_then(Clone::clone),
-                    regs.get(instr.b() as usize).and_then(Clone::clone),
-                ) else {
+                let Some(lhs) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(rhs) = compare_test_rhs_static_value(opcode, instr, &regs) else {
                     return Ok(None);
                 };
                 let Some(compare_opcode) = compare_test_compare_opcode(instr.opcode()) else {
@@ -1074,7 +1074,11 @@ pub(super) fn compile_native_scalar_main_artifact(
                 let Some(target) = native_relative_target(pc + 1, jmp.sj_arg(), code.len()) else {
                     return Ok(None);
                 };
-                next_pc = if value == (instr.c() != 0) { target } else { pc + 2 };
+                next_pc = if value == compare_test_jump_when(opcode, instr) {
+                    target
+                } else {
+                    pc + 2
+                };
             }
             Opcode::Test | Opcode::BrFalse | Opcode::BrTrue => {
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
@@ -1298,12 +1302,32 @@ fn collect_self_recursive_indices(functions: &[crate::vm::FunctionData]) -> Vec<
 
 fn compare_test_compare_opcode(opcode: Opcode) -> Option<Opcode> {
     Some(match opcode {
-        Opcode::TestEqInt => Opcode::CmpInt,
-        Opcode::TestNeInt => Opcode::CmpNeInt,
-        Opcode::TestLtInt => Opcode::CmpLtInt,
-        Opcode::TestLeInt => Opcode::CmpLeInt,
-        Opcode::TestGtInt => Opcode::CmpGtInt,
-        Opcode::TestGeInt => Opcode::CmpGeInt,
+        Opcode::TestEqInt | Opcode::TestEqIntI => Opcode::CmpInt,
+        Opcode::TestNeInt | Opcode::TestNeIntI => Opcode::CmpNeInt,
+        Opcode::TestLtInt | Opcode::TestLtIntI => Opcode::CmpLtInt,
+        Opcode::TestLeInt | Opcode::TestLeIntI => Opcode::CmpLeInt,
+        Opcode::TestGtInt | Opcode::TestGtIntI => Opcode::CmpGtInt,
+        Opcode::TestGeInt | Opcode::TestGeIntI => Opcode::CmpGeInt,
         _ => return None,
     })
+}
+
+fn compare_test_rhs_static_value(
+    opcode: Opcode,
+    instr: Instr,
+    regs: &[Option<NativeStraightlineValue>],
+) -> Option<NativeStraightlineValue> {
+    if opcode.is_int_immediate_compare_test() {
+        Some(NativeStraightlineValue::I64(i64::from(instr.sc()).to_string()))
+    } else {
+        regs.get(instr.b() as usize).and_then(Clone::clone)
+    }
+}
+
+fn compare_test_jump_when(opcode: Opcode, instr: Instr) -> bool {
+    if opcode.is_int_immediate_compare_test() {
+        instr.b() != 0
+    } else {
+        instr.c() != 0
+    }
 }

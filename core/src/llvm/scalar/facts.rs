@@ -391,19 +391,29 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 }
             }
             opcode if opcode.is_compare_test() => {
-                if native_kind(&kinds, instr.a()).is_none() || native_kind(&kinds, instr.b()).is_none() {
+                if native_kind(&kinds, instr.a()).is_none()
+                    || (!opcode.is_int_immediate_compare_test() && native_kind(&kinds, instr.b()).is_none())
+                {
                     return None;
                 }
                 let jmp = code.get(pc + 1).copied()?;
                 if jmp.opcode() != Opcode::Jmp {
                     return None;
                 }
-                if let (Some(lhs), Some(rhs)) = (
-                    static_kind(&static_values, instr.a()),
-                    static_kind(&static_values, instr.b()),
-                ) && let Some(value) = static_compare_test_value(instr.opcode(), &lhs, &rhs)
+                let rhs = if opcode.is_int_immediate_compare_test() {
+                    Some(NativeStraightlineValue::I64(i64::from(instr.sc()).to_string()))
+                } else {
+                    static_kind(&static_values, instr.b())
+                };
+                if let (Some(lhs), Some(rhs)) = (static_kind(&static_values, instr.a()), rhs)
+                    && let Some(value) = static_compare_test_value(instr.opcode(), &lhs, &rhs)
                 {
-                    let branch_taken = value == (instr.c() != 0);
+                    let jump_when = if opcode.is_int_immediate_compare_test() {
+                        instr.b() != 0
+                    } else {
+                        instr.c() != 0
+                    };
+                    let branch_taken = value == jump_when;
                     let fallthrough = pc + 2;
                     let relative = native_relative_target(pc + 1, jmp.sj_arg(), code.len())?;
                     let untaken = if branch_taken { fallthrough } else { relative };
@@ -1604,12 +1614,12 @@ fn static_compare_test_value(
     rhs: &NativeStraightlineValue,
 ) -> Option<bool> {
     let compare_opcode = match opcode {
-        Opcode::TestEqInt => Opcode::CmpInt,
-        Opcode::TestNeInt => Opcode::CmpNeInt,
-        Opcode::TestLtInt => Opcode::CmpLtInt,
-        Opcode::TestLeInt => Opcode::CmpLeInt,
-        Opcode::TestGtInt => Opcode::CmpGtInt,
-        Opcode::TestGeInt => Opcode::CmpGeInt,
+        Opcode::TestEqInt | Opcode::TestEqIntI => Opcode::CmpInt,
+        Opcode::TestNeInt | Opcode::TestNeIntI => Opcode::CmpNeInt,
+        Opcode::TestLtInt | Opcode::TestLtIntI => Opcode::CmpLtInt,
+        Opcode::TestLeInt | Opcode::TestLeIntI => Opcode::CmpLeInt,
+        Opcode::TestGtInt | Opcode::TestGtIntI => Opcode::CmpGtInt,
+        Opcode::TestGeInt | Opcode::TestGeIntI => Opcode::CmpGeInt,
         _ => return None,
     };
     native_static_compare_bool(lhs, rhs, compare_opcode)

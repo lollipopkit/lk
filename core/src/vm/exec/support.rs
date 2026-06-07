@@ -444,15 +444,20 @@ impl Executor {
         instr: Instr,
         value: bool,
     ) {
+        let jump_when = if instr.opcode().is_int_immediate_compare_test() {
+            instr.b() != 0
+        } else {
+            instr.c() != 0
+        };
         if let Some(fact) = function.performance.compare_test_branch(self.pc) {
-            self.pc = if value == (instr.c() != 0) {
+            self.pc = if value == jump_when {
                 fact.target_pc
             } else {
                 self.pc + 2
             };
         } else {
             let jmp = code[self.pc + 1];
-            if value == (instr.c() != 0) {
+            if value == jump_when {
                 self.pc = self.relative_pc_unchecked(jmp.sj_arg());
             } else {
                 self.pc += 2;

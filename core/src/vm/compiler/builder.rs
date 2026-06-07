@@ -151,6 +151,24 @@ impl Compiler {
         Ok(pc)
     }
 
+    pub(super) fn emit_compare_test_immediate_placeholder(
+        &mut self,
+        opcode: Opcode,
+        lhs: u16,
+        rhs: i8,
+        jump_when: bool,
+    ) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::abc(
+            opcode,
+            checked_u8("compare lhs", lhs)?,
+            u8::from(jump_when),
+            rhs as u8,
+        ));
+        self.emit(Instr::sj(Opcode::Jmp, 0));
+        Ok(pc)
+    }
+
     pub(super) fn emit_raise(&mut self, message: &str) -> Result<()> {
         let const_index = self.push_string(message)?;
         self.emit(Instr::abx(Opcode::Raise, 0, const_index));

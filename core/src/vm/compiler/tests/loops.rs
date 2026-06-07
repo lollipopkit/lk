@@ -390,7 +390,7 @@ fn compiler_for_range_reuses_body_scalar_literals_before_loop_target() {
     let condition_pc = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt))
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI))
         .expect("expected range condition");
     let loop_target = first_backward_loop_target_after(&function, condition_pc);
 
@@ -528,19 +528,8 @@ fn compiler_while_licm_hoists_constant_loads_out_of_loop() {
     let cmp_idx = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpNeInt | Opcode::TestNeInt))
-        .expect("expected CmpNeInt/TestNeInt");
-
-    // Find a LoadInt before CmpNeInt (the constant 0)
-    let load_int_idx = function
-        .code
-        .iter()
-        .enumerate()
-        .take(cmp_idx)
-        .rev()
-        .find(|(_, instr)| instr.opcode() == Opcode::LoadInt)
-        .map(|(i, _)| i)
-        .expect("expected LoadInt before CmpNeInt");
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpNeInt | Opcode::TestNeInt | Opcode::TestNeIntI))
+        .expect("expected CmpNeInt/TestNeInt/TestNeIntI");
 
     // Find the Jmp that goes backward (loop back)
     let jmp_back_idx = function
@@ -557,14 +546,13 @@ fn compiler_while_licm_hoists_constant_loads_out_of_loop() {
     let jmp_offset = function.code[jmp_back_idx].sj_arg();
     let jmp_target = jmp_back_idx as i64 + 1 + jmp_offset as i64;
 
-    // With LICM, the loop-back target should skip constant loads:
-    // it should target cmp_idx or later, not load_int_idx.
+    // With LICM or immediate compare-test, the loop-back target should skip
+    // condition constant loads and target cmp_idx or later.
     assert!(
         jmp_target >= cmp_idx as i64,
-        "LICM: loop-back Jmp at {} targets {} but should skip LoadInt at {} (target should be >= {})",
+        "LICM: loop-back Jmp at {} targets {} but should skip condition literal loads (target should be >= {})",
         jmp_back_idx,
         jmp_target,
-        load_int_idx,
         cmp_idx,
     );
 
@@ -593,7 +581,7 @@ fn compiler_while_reuses_body_scalar_literals_before_loop_target() {
     let cmp_pc = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt))
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI))
         .expect("expected while condition");
     let loop_target = first_backward_loop_target_after(&function, cmp_pc);
 
@@ -638,7 +626,7 @@ fn compiler_binds_loop_local_literal_to_cached_register_with_copy_on_write() {
     let cmp_pc = function
         .code
         .iter()
-        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt))
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt | Opcode::TestLtIntI))
         .expect("expected while condition");
     let loop_target = first_backward_loop_target_after(&function, cmp_pc) as usize;
     let cached_one = function

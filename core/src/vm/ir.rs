@@ -208,6 +208,12 @@ pub enum Opcode {
     ConcatN = 80,
     Return0 = 81,
     Return1 = 82,
+    TestEqIntI = 83,
+    TestNeIntI = 84,
+    TestLtIntI = 85,
+    TestLeIntI = 86,
+    TestGtIntI = 87,
+    TestGeIntI = 88,
 }
 
 impl Opcode {
@@ -300,6 +306,12 @@ impl Opcode {
             80 => Some(Self::ConcatN),
             81 => Some(Self::Return0),
             82 => Some(Self::Return1),
+            83 => Some(Self::TestEqIntI),
+            84 => Some(Self::TestNeIntI),
+            85 => Some(Self::TestLtIntI),
+            86 => Some(Self::TestLeIntI),
+            87 => Some(Self::TestGtIntI),
+            88 => Some(Self::TestGeIntI),
             _ => None,
         }
     }
@@ -342,7 +354,31 @@ impl Opcode {
     pub const fn is_compare_test(self) -> bool {
         matches!(
             self,
-            Self::TestEqInt | Self::TestNeInt | Self::TestLtInt | Self::TestLeInt | Self::TestGtInt | Self::TestGeInt
+            Self::TestEqInt
+                | Self::TestNeInt
+                | Self::TestLtInt
+                | Self::TestLeInt
+                | Self::TestGtInt
+                | Self::TestGeInt
+                | Self::TestEqIntI
+                | Self::TestNeIntI
+                | Self::TestLtIntI
+                | Self::TestLeIntI
+                | Self::TestGtIntI
+                | Self::TestGeIntI
+        )
+    }
+
+    #[inline]
+    pub const fn is_int_immediate_compare_test(self) -> bool {
+        matches!(
+            self,
+            Self::TestEqIntI
+                | Self::TestNeIntI
+                | Self::TestLtIntI
+                | Self::TestLeIntI
+                | Self::TestGtIntI
+                | Self::TestGeIntI
         )
     }
 
