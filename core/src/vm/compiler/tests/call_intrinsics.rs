@@ -143,8 +143,8 @@ fn compiler_inline_if_condition_reuses_readonly_local() {
     let test_pc = entry
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::Test)
-        .expect("Test");
+        .position(|instr| matches!(instr.opcode(), Opcode::Test | Opcode::BrFalse | Opcode::BrTrue))
+        .expect("conditional branch");
     let condition = entry.code[test_pc].a();
     assert!(
         entry.performance.is_local_slot(condition as u16),
@@ -192,7 +192,7 @@ fn compiler_inlines_direct_function_with_while_loop() {
     let cmp_pc = entry
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::CmpNeInt)
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpNeInt | Opcode::TestNeInt))
         .expect("inlined gcd loop should compare b != 0");
     let zero_load_pc = entry
         .code
@@ -393,8 +393,11 @@ fn compiler_drops_set_method_nil_result_for_statement() {
     .expect("compile source");
 
     assert!(
-        function.code.iter().any(|instr| instr.opcode() == Opcode::SetIndex),
-        "method set statement should still lower to SetIndex"
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK)),
+        "method set statement should still lower to runtime set opcode"
     );
     assert_eq!(
         function
@@ -421,8 +424,11 @@ fn compiler_lowers_set_method_preserving_nil_result() {
     .expect("compile source");
 
     assert!(
-        function.code.iter().any(|instr| instr.opcode() == Opcode::SetIndex),
-        "method set should lower to SetIndex"
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK)),
+        "method set should lower to runtime set opcode"
     );
     let result = execute(&function).expect("execute");
     let crate::val::RuntimeVal::Obj(handle) = result.returns[0] else {
@@ -728,7 +734,10 @@ fn compiler_does_not_fold_const_map_get_after_mutation() {
     let entry = module.entry_function().expect("entry");
 
     assert!(
-        entry.code.iter().any(|instr| instr.opcode() == Opcode::GetIndex),
+        entry
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK)),
         "mutated const map local must keep runtime lookup semantics: {:?}",
         entry.code
     );
@@ -762,7 +771,10 @@ fn compiler_does_not_fold_loop_local_mutated_empty_map_get() {
     let entry = module.entry_function().expect("entry");
 
     assert!(
-        entry.code.iter().any(|instr| instr.opcode() == Opcode::GetIndex),
+        entry
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK)),
         "loop-local mutable map lookups must remain dynamic: {:?}",
         entry.code
     );
@@ -784,7 +796,10 @@ fn compiler_lowers_math_floor_of_int_to_identity() {
     let entry = module.entry_function().expect("entry");
 
     assert!(
-        entry.code.iter().any(|instr| instr.opcode() == Opcode::AddInt),
+        entry
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::AddInt | Opcode::AddIntI)),
         "integer argument should be lowered before floor"
     );
     assert!(

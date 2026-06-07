@@ -687,8 +687,11 @@ fn compiler_lowers_rewritten_list_assignment_to_set_index() {
     .expect("compile source");
 
     assert!(
-        function.code.iter().any(|instr| instr.opcode() == Opcode::SetIndex),
-        "expected SetIndex in {:?}",
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK)),
+        "expected runtime set opcode in {:?}",
         function.code
     );
 
@@ -709,8 +712,11 @@ fn compiler_lowers_rewritten_map_assignment_to_set_index() {
     .expect("compile source");
 
     assert!(
-        function.code.iter().any(|instr| instr.opcode() == Opcode::SetIndex),
-        "expected SetIndex in {:?}",
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK)),
+        "expected runtime set opcode in {:?}",
         function.code
     );
 
@@ -731,8 +737,11 @@ fn compiler_lowers_rewritten_object_assignment_to_set_index() {
     .expect("compile source");
 
     assert!(
-        function.code.iter().any(|instr| instr.opcode() == Opcode::SetIndex),
-        "expected SetIndex in {:?}",
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK)),
+        "expected runtime set opcode in {:?}",
         function.code
     );
 

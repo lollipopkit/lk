@@ -275,6 +275,27 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(name));
             }
+            Opcode::AddIntI => {
+                let Some(NativeStraightlineValue::I64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
+                else {
+                    return Ok(None);
+                };
+                let rhs = instr.sc() as i64;
+                let name = if lhs.starts_with('%') {
+                    let name = format!("%f{function_index}_r{}_{}", instr.a(), *ssa_index);
+                    *ssa_index += 1;
+                    body.push_str(&format!("  {name} = add i64 {lhs}, {rhs}\n"));
+                    name
+                } else if let Ok(lhs) = lhs.parse::<i64>() {
+                    lhs.wrapping_add(rhs).to_string()
+                } else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(name));
+            }
             Opcode::AddFloat | Opcode::SubFloat | Opcode::MulFloat | Opcode::DivFloat | Opcode::ModFloat => {
                 let Some(NativeStraightlineValue::F64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
@@ -500,6 +521,32 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
+            Opcode::GetFieldK => {
+                let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(key_text) = function.consts.strings.get(instr.c() as usize) else {
+                    return Ok(None);
+                };
+                if instr.a() as usize >= regs.len() {
+                    return Ok(None);
+                }
+                let Some(key_value) = native_string_const_value(key_text) else {
+                    return Ok(None);
+                };
+                let key = NativeStraightlineValue::String {
+                    symbol: String::new(),
+                    value: key_value,
+                    len: key_text.len(),
+                    key_kind: NativeStringKeyKind::Short,
+                };
+                let symbol = format!("@lk_func{function_index}_field_k_str_{}", *ssa_index);
+                *ssa_index += 1;
+                regs[instr.a() as usize] = native_static_index(target, key, symbol);
+                if regs[instr.a() as usize].is_none() {
+                    return Ok(None);
+                }
+            }
             Opcode::SetIndex => {
                 let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
@@ -511,6 +558,31 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 };
                 let Some(value) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(value) = native_static_set_index(target, key, value) else {
+                    return Ok(None);
+                };
+                native_replace_static_aliases(&mut regs, globals, instr.a() as usize, &value);
+                regs[instr.a() as usize] = Some(value);
+            }
+            Opcode::SetFieldK => {
+                let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
+                    return Ok(None);
+                };
+                let Some(key_text) = function.consts.strings.get(instr.c() as usize) else {
+                    return Ok(None);
+                };
+                let Some(key_value) = native_string_const_value(key_text) else {
+                    return Ok(None);
+                };
+                let key = NativeStraightlineValue::String {
+                    symbol: String::new(),
+                    value: key_value,
+                    len: key_text.len(),
+                    key_kind: NativeStringKeyKind::Short,
+                };
+                let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
                 let Some(value) = native_static_set_index(target, key, value) else {
@@ -785,7 +857,29 @@ pub(super) fn native_straightline_function_return(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode::Test => {
+            opcode if opcode.is_compare_test() => {
+                let (Some(lhs), Some(rhs)) = (
+                    regs.get(instr.a() as usize).and_then(Clone::clone),
+                    regs.get(instr.b() as usize).and_then(Clone::clone),
+                ) else {
+                    return Ok(None);
+                };
+                let Some(compare_opcode) = compare_test_compare_opcode(instr.opcode()) else {
+                    return Ok(None);
+                };
+                let Some(value) = native_static_compare_bool(&lhs, &rhs, compare_opcode) else {
+                    return Ok(None);
+                };
+                let jmp = code.get(pc + 1).copied().filter(|instr| instr.opcode() == Opcode::Jmp);
+                let Some(jmp) = jmp else {
+                    return Ok(None);
+                };
+                let Some(target) = native_relative_target(pc + 1, jmp.sj_arg(), code.len()) else {
+                    return Ok(None);
+                };
+                next_pc = if value == (instr.c() != 0) { target } else { pc + 2 };
+            }
+            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue => {
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -793,11 +887,25 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 };
                 let fallthrough = pc + 1;
-                let Some(relative) = native_relative_target(pc, instr.c() as i8 as i32, code.len()) else {
+                let Some(relative) = (match instr.opcode() {
+                    Opcode::Test => native_relative_target(pc, instr.c() as i8 as i32, code.len()),
+                    Opcode::BrFalse | Opcode::BrTrue => native_relative_target(pc, instr.sbx() as i32, code.len()),
+                    _ => None,
+                }) else {
                     return Ok(None);
                 };
-                let truthy_target = if instr.b() != 0 { fallthrough } else { relative };
-                let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
+                let truthy_target =
+                    if matches!(instr.opcode(), Opcode::Test if instr.b() == 0) || instr.opcode() == Opcode::BrTrue {
+                        relative
+                    } else {
+                        fallthrough
+                    };
+                let falsy_target =
+                    if matches!(instr.opcode(), Opcode::Test if instr.b() != 0) || instr.opcode() == Opcode::BrFalse {
+                        relative
+                    } else {
+                        fallthrough
+                    };
                 next_pc = if truthy { truthy_target } else { falsy_target };
             }
             Opcode::Jmp => {
@@ -979,7 +1087,7 @@ pub(super) fn native_direct_call_static_return_value(
     if code.iter().any(|instr| {
         matches!(
             instr.opcode(),
-            Opcode::Test | Opcode::Jmp | Opcode::CallDirect | Opcode::CallNamed
+            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::Jmp | Opcode::CallDirect | Opcode::CallNamed
         )
     }) {
         return None;
@@ -1329,4 +1437,16 @@ fn native_replace_static_aliases(
             *global = Some(value.clone());
         }
     }
+}
+
+fn compare_test_compare_opcode(opcode: Opcode) -> Option<Opcode> {
+    Some(match opcode {
+        Opcode::TestEqInt => Opcode::CmpInt,
+        Opcode::TestNeInt => Opcode::CmpNeInt,
+        Opcode::TestLtInt => Opcode::CmpLtInt,
+        Opcode::TestLeInt => Opcode::CmpLeInt,
+        Opcode::TestGtInt => Opcode::CmpGtInt,
+        Opcode::TestGeInt => Opcode::CmpGeInt,
+        _ => return None,
+    })
 }

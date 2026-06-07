@@ -10,7 +10,7 @@ use crate::{
             emit_dynamic_string_int_map_iter_value, emit_dynamic_string_ptr_map_get,
             emit_dynamic_string_ptr_map_iter_value,
         },
-        ir_text::{emit_branch_to_next, native_relative_target, next_tmp},
+        ir_text::{emit_branch_to_next, native_relative_target, next_tmp, reg_in_bounds},
         known_key::native_known_string_key,
         scalar::{
             block_helpers::{
@@ -29,7 +29,7 @@ use crate::{
             facts::{NativeScalarFacts, NativeScalarKind},
         },
         straightline_value::{
-            NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
+            NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue, NativeStringKeyKind,
             native_const_runtime_string, native_static_arg_list_display, native_static_index,
         },
     },
@@ -181,6 +181,51 @@ pub(super) fn emit_get_index_block(
         emit_branch_to_next(ir, pc, code.len());
     }
     ok
+}
+
+pub(super) fn emit_get_field_k_block(
+    ir: &mut String,
+    extra_globals: &mut String,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    code: &[Instr],
+    int_consts: &[i64],
+    strings: &[String],
+    heap_values: &[ConstHeapValueData],
+    _function: &FunctionData,
+    pc: usize,
+    instr: Instr,
+    register_count: usize,
+    tmp_index: &mut usize,
+) -> bool {
+    if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+        return false;
+    }
+    let Some(key_text) = strings.get(instr.c() as usize) else {
+        return false;
+    };
+    let key = NativeStraightlineValue::String {
+        symbol: String::new(),
+        value: key_text.clone(),
+        len: key_text.len(),
+        key_kind: NativeStringKeyKind::Short,
+    };
+    let target = static_regs
+        .get(instr.b() as usize)
+        .and_then(Clone::clone)
+        .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()))
+        .or_else(|| local_static_map_rest_before(code, strings, heap_values, pc, instr.b()))
+        .or_else(|| local_static_index_value_before(code, int_consts, strings, heap_values, pc, instr.b()));
+    let Some(target) = target else {
+        return false;
+    };
+    let Some(value) = native_static_index(target, key, format!("@lk_field_k_value_{}_{}", pc, instr.a())) else {
+        return false;
+    };
+    if store_index_value(ir, extra_globals, static_regs, instr.a(), value, tmp_index).is_none() {
+        return false;
+    }
+    emit_branch_to_next(ir, pc, code.len());
+    true
 }
 
 fn emit_local_new_list_index(
@@ -337,12 +382,13 @@ fn dominating_static_string_before(
 }
 
 fn last_write_before(code: &[Instr], pc: usize, reg: u8) -> Option<(usize, Instr)> {
-    code.iter()
-        .copied()
-        .take(pc)
-        .enumerate()
-        .rev()
-        .find(|(_, instr)| instr.a() == reg && !matches!(instr.opcode(), Opcode::Nop | Opcode::Jmp | Opcode::Test))
+    code.iter().copied().take(pc).enumerate().rev().find(|(_, instr)| {
+        instr.a() == reg
+            && !matches!(
+                instr.opcode(),
+                Opcode::Nop | Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue
+            )
+    })
 }
 
 fn branch_before_write_can_skip_to(code: &[Instr], write_pc: usize, pc: usize) -> bool {
@@ -354,6 +400,7 @@ fn branch_before_write_can_skip_to(code: &[Instr], write_pc: usize, pc: usize) -
             let target = match instr.opcode() {
                 Opcode::Jmp => native_relative_target(branch_pc, instr.sj_arg(), code.len()),
                 Opcode::Test => native_relative_target(branch_pc, instr.c() as i8 as i32, code.len()),
+                Opcode::BrFalse | Opcode::BrTrue => native_relative_target(branch_pc, instr.sbx() as i32, code.len()),
                 _ => None,
             };
             matches!(target, Some(target) if target > write_pc && target <= pc)

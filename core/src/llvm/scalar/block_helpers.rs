@@ -25,24 +25,19 @@ pub(in crate::llvm) fn control_flow_static_boundaries(code: &[Instr]) -> Vec<boo
     let mut boundaries = vec![false; code.len()];
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
-            Opcode::Test => {
-                if pc + 1 < code.len() {
+            Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil
+                if !instr.opcode().is_compare_test() =>
+            {
+                if instr.opcode() != Opcode::Jmp && pc + 1 < code.len() {
                     boundaries[pc + 1] = true;
                 }
-                if let Some(target) = native_relative_target(pc, instr.c() as i8 as i32, code.len())
-                    && target < code.len()
-                    && target > pc
-                {
-                    boundaries[target] = true;
-                }
+                mark_forward_boundary(code, pc, instr, &mut boundaries);
             }
-            Opcode::Jmp => {
-                if let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len())
-                    && target < code.len()
-                    && target > pc
-                {
-                    boundaries[target] = true;
+            opcode if opcode.is_compare_test() => {
+                if pc + 2 < code.len() {
+                    boundaries[pc + 2] = true;
                 }
+                mark_forward_boundary(code, pc, instr, &mut boundaries);
             }
             _ => {}
         }
@@ -56,6 +51,30 @@ pub(in crate::llvm) fn control_flow_static_boundaries(code: &[Instr]) -> Vec<boo
         boundaries[0] = false;
     }
     boundaries
+}
+
+fn mark_forward_boundary(code: &[Instr], pc: usize, instr: Instr, boundaries: &mut [bool]) {
+    if let Some(target) = branch_target(code, pc, instr)
+        && target < code.len()
+        && target > pc
+    {
+        boundaries[target] = true;
+    }
+}
+
+fn branch_target(code: &[Instr], pc: usize, instr: Instr) -> Option<usize> {
+    match instr.opcode() {
+        Opcode::Jmp => native_relative_target(pc, instr.sj_arg(), code.len()),
+        Opcode::Test => native_relative_target(pc, instr.c() as i8 as i32, code.len()),
+        Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil => {
+            native_relative_target(pc, instr.sbx() as i32, code.len())
+        }
+        opcode if opcode.is_compare_test() => {
+            let jmp = code.get(pc + 1).copied()?;
+            (jmp.opcode() == Opcode::Jmp).then(|| native_relative_target(pc + 1, jmp.sj_arg(), code.len()))?
+        }
+        _ => None,
+    }
 }
 
 pub(in crate::llvm) fn clear_control_flow_static_values(values: &mut [Option<NativeStraightlineValue>]) {
@@ -97,6 +116,7 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr], pc: usize, reg
         let kind = match prev.opcode() {
             Opcode::LoadInt
             | Opcode::AddInt
+            | Opcode::AddIntI
             | Opcode::SubInt
             | Opcode::MulInt
             | Opcode::DivInt
@@ -393,7 +413,8 @@ fn mark_static_untaken_merge_path(skip_pcs: &mut [bool], code: &[Instr], start: 
                 };
                 pc = target;
             }
-            Opcode::Test => return marked_any,
+            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue => return marked_any,
+            opcode if opcode.is_compare_test() => return marked_any,
             _ => {
                 let Some(next) = pc.checked_add(1) else {
                     return marked_any;
@@ -409,18 +430,23 @@ fn predecessor_counts(code: &[Instr]) -> Vec<usize> {
     let mut predecessors = vec![0usize; code.len() + 1];
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
-            Opcode::Jmp => {
-                if let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len())
+            Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue => {
+                if instr.opcode() != Opcode::Jmp
+                    && let Some(count) = predecessors.get_mut(pc + 1)
+                {
+                    *count += 1;
+                }
+                if let Some(target) = branch_target(code, pc, instr)
                     && let Some(count) = predecessors.get_mut(target)
                 {
                     *count += 1;
                 }
             }
-            Opcode::Test => {
-                if let Some(count) = predecessors.get_mut(pc + 1) {
+            opcode if opcode.is_compare_test() => {
+                if let Some(count) = predecessors.get_mut(pc + 2) {
                     *count += 1;
                 }
-                if let Some(target) = native_relative_target(pc, instr.c() as i8 as i32, code.len())
+                if let Some(target) = branch_target(code, pc, instr)
                     && let Some(count) = predecessors.get_mut(target)
                 {
                     *count += 1;
@@ -460,7 +486,8 @@ fn static_untaken_linear_return_path(boundaries: &[bool], code: &[Instr], start:
         path.push(pc);
         match instr.opcode() {
             Opcode::Return => return Some(path),
-            Opcode::Jmp | Opcode::Test | Opcode::ForLoopI => return None,
+            Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::ForLoopI => return None,
+            opcode if opcode.is_compare_test() => return None,
             _ => {
                 pc = pc.checked_add(1)?;
                 first = false;
@@ -780,8 +807,9 @@ fn static_register_value_trusted_before_inner(code: &[Instr], pc_limit: usize, r
         .any(|instr| {
             matches!(
                 instr.opcode(),
-                Opcode::Jmp | Opcode::Test | Opcode::ForLoopI | Opcode::Return
+                Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::ForLoopI | Opcode::Return
             )
+                || instr.opcode().is_compare_test()
         })
     {
         return false;
@@ -791,12 +819,7 @@ fn static_register_value_trusted_before_inner(code: &[Instr], pc_limit: usize, r
 
 fn branch_enters_after_write(code: &[Instr], last_write: usize, pc_limit: usize) -> bool {
     code.iter().copied().take(last_write).enumerate().any(|(pc, instr)| {
-        let target = match instr.opcode() {
-            Opcode::Jmp => native_relative_target(pc, instr.sj_arg(), code.len()),
-            Opcode::Test => native_relative_target(pc, instr.c() as i8 as i32, code.len()),
-            _ => None,
-        };
-        matches!(target, Some(target) if target > last_write && target <= pc_limit)
+        matches!(branch_target(code, pc, instr), Some(target) if target > last_write && target <= pc_limit)
     })
 }
 
@@ -821,6 +844,8 @@ fn instr_writes_register(instr: Instr, reg: u8) -> bool {
             Opcode::Nop
                 | Opcode::Jmp
                 | Opcode::Test
+                | Opcode::BrFalse
+                | Opcode::BrTrue
                 | Opcode::Return
                 | Opcode::SetGlobal
                 | Opcode::Raise

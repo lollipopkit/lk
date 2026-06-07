@@ -2,18 +2,18 @@
 
 ## 目标与约束
 
-- 当前核心目标：真实 workload geomean `< 0.9x` vs Lua。
-- 当前优化阶段：避免 benchmark-shaped 专门 opcode，优先做通用 VM/compiler/LLVM 优化。`ForLoopI` 是本轮为了验证数值 range loop 热路径而临时复用 `Extra = 62` 的例外；长期仍应迁移到 7-bit opcode + metadata table，而不是继续挤占当前 64-slot encoding。
+- 当前核心目标：真实 workload geomean `< 0.5x` vs Lua；允许 native/AOT 作为架构级性能路径。
+- 当前优化阶段：避免 benchmark-shaped 专门 opcode，优先做通用 VM/compiler/LLVM 优化。7-bit opcode + metadata format 基础迁移已完成，后续新增 opcode 应只做 Lua-style operand-shape specialization。`ForLoopI` 是此前为了验证数值 range loop 热路径而临时复用 `Extra = 62` 的历史例外，不应继续作为复用保留槽的先例。
 - 安全约束：除 LLVM 部分外不能使用 `unsafe`，因此非 LLVM VM 解释器不走 unchecked raw pointer、`assume` 或 computed-goto 方案。
 - 维护约束：单个 Rust 源文件不超过 1500 行；当前 `core/src` 已满足该约束。
 
 ## 当前结论
 
-LK VM 已从“泛化解释器 + 大量运行时 materialization”推进到“compiler facts 驱动的轻量 lowering + typed fast path”。下一步继续优化时，优先级仍应是测量、container/index/string、register writes、branch lowering，而不是立即引入 workload-specific opcode。
+LK VM 已从“泛化解释器 + 大量运行时 materialization”推进到“compiler facts 驱动的轻量 lowering + typed fast path”。解释器 VM 在当前 20 项 workload suite 上尚未达到 `<0.5x`；当前达标路径是 `lk compile exe` native/AOT。当前 opcode 方向已经完成基础 encoding 迁移：`Opcode` 空间从 64 slot 扩到 128 slot，`InstrFormat` 改由 `OpcodeInfo` metadata 决定，`ABC.C` 恢复 8 bit。`AddIntI` 已作为第一个通用 operand-shape opcode 落地并覆盖真实 small-int add/sub hot path，但 release 低样本没有改善 geomean。本轮还接入了 `BrTrue` / `BrFalse` opcode 的 VM/LLVM 支持，但默认 compiler lowering 仍保留 `Test + Jmp`，因为启用单条 branch 的低样本 wall-clock 退化；随后新增 `BrNil` / `BrNotNil`，只在 condition-context 的 `x == nil` / `x != nil` 默认启用，并接入 VM/LLVM/control-flow facts。下一步如果继续做控制流，应优先做 compare-branch 直接 lowering 或 hot-loop/native path，而不是简单替换 `Test + Jmp` trampoline。
 
-`run_function_inner` 仍是主要结构风险：主循环是 `match instr.opcode()`，其中混有热路径、fallback、错误构造、metrics、container/call 逻辑。问题不是 `match` 本身，而是热 arm 里仍有多层分支和 `Result` slow path 污染。拆分方向应是保留主循环最短热路径，把 dynamic fallback 和错误构造放到 cold helper。
+`run_function_inner` 仍是主要结构风险：主循环是 `match instr.opcode()`，其中混有热路径、fallback、错误构造、metrics、container/call 逻辑。问题不是 `match` 本身，而是热 arm 里仍有多层分支和 `Result` slow path 污染。拆分方向应是保留主循环最短热路径，把 dynamic fallback 和错误构造放到 cold helper。本轮新增 `GetFieldK` / `SetFieldK` 已把一部分 const string key 的 map/object 读写从泛化 `GetIndex` / `SetIndex` 中拆出来，但默认 VM geomean 仍未达标。
 
-当前 AOT/native 路径已能在低样本 workload geomean 上超过 Lua，但 VM 解释器本身仍未稳定低于 `<0.9x`。后续如果目标以默认 `lk` VM 为准，仍需继续优化解释器；如果允许 `lk compile exe`/native 作为性能路径，则当前主要剩余工作是 AOT 慢项和正式多样本复验。
+当前 AOT/native 路径已在 20 项 workload suite 的 `RUNS=3` 复验中达到 `<0.5x` vs Lua；VM 解释器本身仍未达到该目标。后续如果目标以默认 `lk` VM 为准，仍需继续优化解释器或让默认性能路径接入 native；如果允许 `lk compile exe`/native 作为性能路径，则当前主要剩余工作是扩大复验样本、降低 AOT 慢项，并处理 dynamic string-map/template path。
 
 ## 性能证据
 
@@ -34,11 +34,13 @@ RUN_AOT=0 RUNS=6 EXTRA_RUNS=6 bash bench/run_workload_bench.sh
 RUN_AOT=1 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
 ```
 
-- VM/Lua geometric mean：`0.964x`
-- AOT/Lua geometric mean：`0.450x`
-- AOT/VM geometric mean：`0.466x`
+- suite：20 项 workload，包含新增的 customer/event/config/template/state-machine 场景。
+- VM/Lua geometric mean：`1.028x`
+- AOT/Lua geometric mean：`0.474x`
+- AOT/VM geometric mean：`0.462x`
 - checksum 全部一致。
-- AOT 明显慢项：`two_sum_map` `1.845x`、`histogram_group_count` `1.863x`、`inventory_reorder` `1.516x` vs Lua；这些主要受 dynamic string-int map runtime split/helper 调用影响，应作为下一轮 AOT hot path 优化对象。
+- AOT 明显慢项：`template_render_mix` `3.463x`、`event_join_by_id` `2.104x`、`two_sum_map` `2.075x`、`histogram_group_count` `1.803x`、`inventory_reorder` `1.513x` vs Lua；这些主要受 dynamic string key/map runtime split/helper 调用和 template string construction 影响，应作为下一轮 AOT hot path 优化对象。
+- `state_machine_transitions` 曾用静态 map + dynamic template transition key，导致 native facts 无法分类；当前已改为显式 transition branches，保留状态机场景但避免 mixed optional map lookup 阻断整包 AOT。
 
 ### 当前低样本结果
 
@@ -48,12 +50,16 @@ RUN_AOT=1 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_w
 RUN_AOT=0 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
 ```
 
-- Geometric mean LK/Lua：`0.889x`；上一轮 AOT 复验中的 VM/Lua 为 `0.964x`，AOT/Lua 为 `0.450x`
-- 本轮最终复验普通 release `RUNS=6 EXTRA_RUNS=0` 中位数为 `0.889x`，checksum 全部一致，已低于 `<0.9x` 目标。
-- 本轮 `RUNS=3 EXTRA_RUNS=0` 曾测到 `0.890x`；`RUNS=6` 中 `matrix_3x3_multiply`、`order_score_pipeline`、`route_permission_check` 仍有 low-confidence 噪声，但整体 geomean 和 checksum 已有更强复验证据。
-- 相对 2026-06-04 正式基线改善约 `60.2%`
-- 最差 workload 仍集中在 `matrix_3x3_multiply`、`stock_max_profit`、`prime_trial_division`；`sliding_window_sum` 已降到 `0.945x`，`string_key_hash` 已因字符串 indexed-for value elision 降到 `0.891x`。
-- `two_sum_map` 达到 `0.598x`，`binary_search` 达到 `0.659x`，`histogram_group_count` 达到 `0.803x`，`inventory_reorder` 达到 `0.825x`，`log_parse_filter` 达到 `0.843x`，说明原始 opcode 数不是唯一瓶颈；branch lowering、numeric loop-carried writes、list ops 和 fraud/stock 规则分支仍是后续稳固 margin 的方向。
+- Geometric mean LK/Lua：`1.142x`，checksum 全部一致。
+- 本轮结果包含当前 20 项 workload suite、7-bit opcode encoding 基础迁移，以及 `AddIntI` 通用 operand-shape opcode。`AddIntI` 已接入 VM、compiler、LLVM lowering 和 profile counters。
+- profile 证实 `AddIntI` 动态出现：`gcd_batch` `160000`、`order_score_pipeline` `270000`、`config_defaults_merge` `180000`、`fraud_rule_scoring` `151717`。但该 opcode 只替代部分 small-int add/sub，release wall-clock 低样本未改善。
+- `BrTrue` / `BrFalse` opcode 已接入 IR、VM dispatch、control-flow facts、LLVM scalar/straightline/subfunction lowering 和 fused bool branch fact，但 compiler 默认不发该 opcode；启用单条 branch 形状的低样本 VM/Lua geomean 约 `1.219x`，未优于当前默认路径。
+- condition-context short-circuit lowering 已用于普通 `if` / `while` / conditional expression，并扩展到 direct-inline `if` / `while`；`&&` / `||` 条件不再强制 materialize 中间 bool。
+- `BrNil` / `BrNotNil` 已作为通用 nilness branch opcode 落地，覆盖 `x == nil` / `x != nil` 条件分支。profile 显示 `config_defaults_merge` 出现 `BrNotNil:360000`，release 低样本 geomean 从前一轮约 `1.197x` 降到 `1.131x`；`config_defaults_merge` 从约 `1.802x` 降到 `1.679x`。
+- Lua-style compare-test opcode 已接入 VM/compiler/LLVM/control-flow facts，并默认只对 facts-confirmed `Int/Int` condition-context 比较启用。全量 unknown/dynamic compare-test lowering 已验证会退化，低样本 geomean 约 `1.234x`；typed-only lowering 后低样本 geomean 约 `1.217x`，checksum 全部一致。profile 显示主要覆盖 `gcd_batch TestNeInt:737372`、`state_machine_transitions TestEqInt:1114278`、`config_defaults_merge TestEqInt:540000`。该结果说明 compare-test 应作为 typed operand-shape opcode 保留，不应对动态比较默认启用。
+- `GetFieldK` / `SetFieldK` 已作为 Map/Object + 短字符串 literal key 的通用 operand-shape opcode 落地。profile coverage 显示 `GetFieldK:405733`、`SetFieldK:144990`，同时 `GetIndex` 降到 `2674709`、`SetIndex` 降到 `1043867`。该优化覆盖 `map.get`、字段访问、rewritten set-index 和 `.set(...)` statement/expression，不改变 mutable map/object 的 runtime lookup/write 语义。
+- 当前明显慢项：`template_render_mix` `3.767x`、`state_machine_transitions` `2.624x`、`config_defaults_merge` `1.679x`、`prime_trial_division` `1.566x`、`stock_max_profit` `1.455x` vs Lua。
+- 下一步 VM opcode 优化不应针对单个 workload；控制流方向应只继续 typed compare-test / compare-branch，不要对 unknown/dynamic 比较启用；容器方向可继续评估 `GetI/SetI`，返回路径可评估 `Return0/Return1`。仅把 `Test + Jmp` 改成 `BrTrue/BrFalse` 暂不保留为默认优化。
 - runner 已改成逐 workload 运行并打印进度，默认 `BENCH_TIMEOUT=30`，可用 `BENCH_PROGRESS=0` 静默进度；Lua 侧也支持 `LK_WORKLOAD_FILTER`，避免静默全量 suite 被误判为死循环。
 
 ### 当前 coverage smoke
@@ -67,11 +73,13 @@ cargo run -p lk-cli -- coverage --runtime bench/workloads_business_algorithms.lk
 结果：
 
 - checksum 全部保持一致
-- `instructions`: `1583`
-- `LoadNil`: `12`
-- `LoadString`: `113`
-- `GetIndex`: `58`
-- `SetIndex`: `11`
+- `instructions`: `2067`
+- `LoadNil`: `14`
+- `LoadString`: `151`
+- `GetFieldK`: `9`
+- `GetIndex`: `68`
+- `SetFieldK`: `8`
+- `SetIndex`: `9`
 - `Return`: `14`
 - 未启用 `vm-profile` 的普通构建会打印 `Runtime metrics: disabled; rebuild with --features vm-profile to collect counters`，不再展示容易误读的全 0 runtime counters。
 - 启用 `vm-profile` 时，runtime coverage 会打印 `dynamic_opcodes` 完整直方图、`register_write_sources` 和 `index_key_metrics`；CLI 的 `VM profile:` 单行会输出 `top_opcodes=...` / `write_sources=...` / `index_keys=...`，benchmark runner 在 profile 表后展示每个 workload 的 Top-6 动态 opcode、register write source 与 index key metric。
@@ -85,8 +93,8 @@ RUN_AOT=0 PROFILE_WORKLOADS=1 RUNS=1 EXTRA_RUNS=0 bash bench/run_workload_bench.
 
 本轮 profile-enabled coverage 显示，主要动态调度热点已经非常明确：
 
-- 全 suite coverage: `AddInt` 约 `8.10M`，`Move` 约 `6.06M`，`ModInt` 约 `4.99M`，`MulInt` 约 `4.48M`，`ForLoopI` 约 `3.25M`，`Jmp` 约 `3.19M`；`LoadInt` 约 `1.30M`。
-- `gcd_batch`: `Move`、`Jmp`、`CmpNeInt`、`ModInt`、`AddInt` 主导，说明 tight numeric while loop 已不再主要被 literal materialization 压住，而是被 loop/control-flow 和 register writes 压住。
+- 全 suite coverage: `AddInt` 约 `8.36M`，`Move` 约 `8.62M`，`ModInt` 约 `6.74M`，`MulInt` 约 `5.20M`，`ForLoopI` 约 `3.93M`，`Jmp` 约 `3.50M`；`GetFieldK` 约 `406K`，`SetFieldK` 约 `145K`。
+- `gcd_batch`: `Move`、`TestNeInt`、`Jmp`、`ModInt`、`AddIntI` 主导，说明 tight numeric while loop 已不再主要被 literal materialization 压住，而是被 loop/control-flow 和 register writes 压住。
 - `binary_search`: `AddInt`、`ForLoopI`、`Move`、`CmpLeInt`、`MulInt` 主导，适合优先做数值 loop、compare branch lowering 和 `Move` 消除。
 - `route_permission_check` 已通过只读 const map + literal string key + int value fold 消掉角色表 lookup；`fraud_rule_scoring` 仍由 `ModInt`、`AddInt`、`CmpInt`、`Jmp` 以及字符串 load 主导。
 
@@ -139,11 +147,11 @@ for f in examples/syntax/*.lk; do perl -e 'alarm 30; exec @ARGV' target/debug/lk
 
 ### Compiler lowering
 
-- 语句上下文的 mutating method call，例如 `map.set(k, v);`，只生成 `SetIndex`，不再 materialize 未使用的 `nil` 返回值。
+- 语句上下文的 mutating method call，例如 `map.set(k, v);`，只生成 runtime set opcode；动态 key/list 写入保留 `SetIndex`，Map/Object + 短字符串 literal key 写入使用 `SetFieldK`，不再 materialize 未使用的 `nil` 返回值。
 - 表达式上下文的 `let x = map.set(k, v);` 仍保留 `nil` 结果语义。
 - 字符串 literal `.len()` 直接 lower 成 `LoadInt(char_count)`；非 ASCII 使用字符数语义。
 - 编译期识别 `string_expr.split(sep).join(sep).len()`，在接收者可静态确认为字符串且分隔符是同一个 literal/local 时直接 lower 为 `string_expr.len()`；这避免 `log_parse_filter` 中重复 materialize split list 和 joined string。
-- 已知 `Map` / `Object` 目标上的短字符串 literal key 不再生成 `LoadString` key register；`GetIndex` / `SetIndex` 复用 target register 作为占位，并保留 `PerfKeyFact.const_key`。
+- 已知 `Map` / `Object` 目标上的短字符串 literal key 不再生成 `LoadString` key register；读路径使用 `GetFieldK`，写路径使用 `SetFieldK`。动态 key 或非 Map/Object 目标仍保留 `GetIndex` / `SetIndex`。
 - 只读本地 const map 上的 `map.get(local, "literal")` 在 string key 且 int value 时直接 lower 成 scalar load；loop const collector 会把这类 fold 出来的 scalar value 纳入循环前缓存，避免 `role_levels` 这类只读表 lookup 在循环分支中反复 `LoadInt`；循环体内新建的 map 不记录该 fact，`.set` / rewritten set-index / assignment 会清除 fact，避免 mutable loop-local map 被错误折叠。
 - 裸 `return;` 和函数/程序隐式返回直接发出 `Return 0 0 0`，不再生成 `LoadNil + Return count=1`。
 - `ReturnValues::None.into_vec()` 规范化为 `[RuntimeVal::Nil]`，保持外部 `ExecResult.returns` 语义。
@@ -177,7 +185,7 @@ for f in examples/syntax/*.lk; do perl -e 'alarm 30; exec @ARGV' target/debug/lk
 ### LLVM / native lowering
 
 - `FunctionData` 在内存中的 `ModuleArtifact` 转换里保留 `Function.performance`，但序列化时跳过该字段。
-- LLVM `GetIndex` / `SetIndex` 的 scalar block、straightline、callee eval、map mutate 路径统一使用 `native_known_string_key`。
+- LLVM `GetIndex` / `SetIndex` 的 scalar block、straightline、callee eval、map mutate 路径统一使用 `native_known_string_key`；`GetFieldK` / `SetFieldK` 已同步接入 LLVM straightline、callee eval、scalar facts 和 scalar block lowering。
 - 这保证 compiler 的 key materialization elision 不会让 native lowering 退回动态 key 路径。
 - AOT 全 workload 的 entry scalar facts 阻塞已推进：`"n${i}"` 这类静态字符串前缀 + 动态整数后缀的 string-int map key 现在可被 facts 接受，`GetIndex` / `SetIndex` 的 known-string-key 占位寄存器也能推断 `DynamicMap<String, Int>` 返回/写入 kind。
 - AOT 全 workload executable 现在可以生成，并且 `bench/workloads_business_algorithms.lk` 的 15 个 workload checksum 已与 VM 全部一致。
@@ -286,7 +294,7 @@ branch-heavy workload 仍有大量 typed branch：
 
 ## 不建议
 
-- 当前阶段不新增 `ListFoldAdd`、`MapValuesFoldAdd`、`GetFieldK` 这类专门 opcode。
+- 当前阶段不新增 `ListFoldAdd`、`MapValuesFoldAdd` 这类 workload-shaped 专门 opcode；`GetFieldK` / `SetFieldK` 已按 Lua-style operand-shape specialization 落地。
 - 不用函数指针跳表替代 `match` 作为默认路线；indirect call 可能损失 inlining 和分支预测。
 - 不盲目给所有 helper 加 `#[inline(always)]`。
 - 不在非 LLVM VM 路径使用 `unsafe`。

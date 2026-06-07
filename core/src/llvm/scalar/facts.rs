@@ -17,6 +17,7 @@ use crate::llvm::{
     output::{emit_native_map_set, emit_native_static_core_call_method, emit_native_static_parse_builtin},
     straightline_value::{
         NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
+        NativeStringKeyKind,
         NativeTextPart, native_runtime_string_key_kind, native_static_compare_bool, native_static_global,
         native_static_i64_binary, native_static_index, native_static_list_from_values, native_static_list_join,
         native_static_load_cell, native_static_map_from_pairs, native_static_map_rest, native_static_set_index,
@@ -278,6 +279,15 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
+            Opcode::AddIntI => {
+                let lhs = native_kind(&kinds, instr.b()).unwrap_or(NativeScalarKind::I64);
+                if !matches!(lhs, NativeScalarKind::I64 | NativeScalarKind::MaybeI64) {
+                    return None;
+                }
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                    return None;
+                }
+            }
             Opcode::CmpInt
             | Opcode::CmpNeInt
             | Opcode::CmpLtInt
@@ -345,17 +355,57 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode::Test => {
+            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue => {
                 if native_kind(&kinds, instr.a()).is_none() {
                     return None;
                 }
                 if let Some(NativeStraightlineValue::Bool(value)) = static_kind(&static_values, instr.a()) {
                     let value = value != "0";
                     let fallthrough = pc + 1;
-                    let relative = native_relative_target(pc, instr.c() as i8 as i32, code.len())?;
-                    let truthy_target = if instr.b() != 0 { fallthrough } else { relative };
-                    let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
+                    let relative = match instr.opcode() {
+                        Opcode::Test => native_relative_target(pc, instr.c() as i8 as i32, code.len())?,
+                        Opcode::BrFalse | Opcode::BrTrue => native_relative_target(pc, instr.sbx() as i32, code.len())?,
+                        _ => return None,
+                    };
+                    let truthy_takes =
+                        matches!(instr.opcode(), Opcode::Test if instr.b() == 0) || instr.opcode() == Opcode::BrTrue;
+                    let falsy_takes =
+                        matches!(instr.opcode(), Opcode::Test if instr.b() != 0) || instr.opcode() == Opcode::BrFalse;
+                    let truthy_target = if truthy_takes { relative } else { fallthrough };
+                    let falsy_target = if falsy_takes { relative } else { fallthrough };
                     let untaken = if value { falsy_target } else { truthy_target };
+                    mark_static_untaken_return_path(&mut skip_static_pcs, &static_boundaries, code, untaken);
+                }
+            }
+            Opcode::BrNil | Opcode::BrNotNil => {
+                if native_kind(&kinds, instr.a()).is_none() {
+                    return None;
+                }
+                if let Some(value) = static_kind(&static_values, instr.a()) {
+                    let is_nil = matches!(value, NativeStraightlineValue::Nil);
+                    let branch_taken = (instr.opcode() == Opcode::BrNil && is_nil)
+                        || (instr.opcode() == Opcode::BrNotNil && !is_nil);
+                    let fallthrough = pc + 1;
+                    let relative = native_relative_target(pc, instr.sbx() as i32, code.len())?;
+                    let untaken = if branch_taken { fallthrough } else { relative };
+                    mark_static_untaken_return_path(&mut skip_static_pcs, &static_boundaries, code, untaken);
+                }
+            }
+            opcode if opcode.is_compare_test() => {
+                if native_kind(&kinds, instr.a()).is_none() || native_kind(&kinds, instr.b()).is_none() {
+                    return None;
+                }
+                let jmp = code.get(pc + 1).copied()?;
+                if jmp.opcode() != Opcode::Jmp {
+                    return None;
+                }
+                if let (Some(lhs), Some(rhs)) = (static_kind(&static_values, instr.a()), static_kind(&static_values, instr.b()))
+                    && let Some(value) = static_compare_test_value(instr.opcode(), &lhs, &rhs)
+                {
+                    let branch_taken = value == (instr.c() != 0);
+                    let fallthrough = pc + 2;
+                    let relative = native_relative_target(pc + 1, jmp.sj_arg(), code.len())?;
+                    let untaken = if branch_taken { fallthrough } else { relative };
                     mark_static_untaken_return_path(&mut skip_static_pcs, &static_boundaries, code, untaken);
                 }
             }
@@ -788,6 +838,36 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
+            Opcode::GetFieldK => {
+                let Some(key) = field_key_value(strings, instr) else {
+                    return None;
+                };
+                let Some(target) = static_kind(&static_values, instr.b()) else {
+                    let target_kind = native_kind(&kinds, instr.b())?;
+                    let result_kind = match target_kind {
+                        NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => NativeScalarKind::MaybeStrPtr,
+                        _ => NativeScalarKind::I64,
+                    };
+                    if !set_native_kind(&mut kinds, &mut static_values, instr.a(), result_kind) {
+                        return None;
+                    }
+                    continue;
+                };
+                if let Some(value) = native_static_index(target.clone(), key.clone(), String::new()) {
+                    let kind = static_value_kind(&value);
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
+                        return None;
+                    }
+                } else if let Some(ok) =
+                    propagate_dynamic_string_map_get_index(&mut kinds, &mut static_values, instr, &target, Some(key))
+                {
+                    if !ok {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+            }
             Opcode::SetIndex => {
                 let Some(target) = static_kind(&static_values, instr.a()) else {
                     return None;
@@ -842,6 +922,39 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                         return None;
                     };
                     let Some(value) = static_kind(&static_values, instr.c()) else {
+                        return None;
+                    };
+                    let Some(value) = native_static_set_index(target, key, value) else {
+                        return None;
+                    };
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
+                        return None;
+                    }
+                }
+            }
+            Opcode::SetFieldK => {
+                let Some(target) = static_kind(&static_values, instr.a()) else {
+                    return None;
+                };
+                let Some(key) = field_key_value(strings, instr) else {
+                    return None;
+                };
+                if matches!(
+                    target,
+                    NativeStraightlineValue::DynamicMap {
+                        key: NativeMapKeyKind::Str,
+                        value: NativeMapValueKind::I64,
+                        ..
+                    }
+                ) {
+                    if native_kind(&kinds, instr.b()) != Some(NativeScalarKind::I64) {
+                        return None;
+                    }
+                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, target) {
+                        return None;
+                    }
+                } else {
+                    let Some(value) = static_kind(&static_values, instr.b()) else {
                         return None;
                     };
                     let Some(value) = native_static_set_index(target, key, value) else {
@@ -1474,5 +1587,32 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
     Some(NativeScalarFacts {
         registers_before,
         globals_before,
+    })
+}
+
+fn static_compare_test_value(
+    opcode: Opcode,
+    lhs: &NativeStraightlineValue,
+    rhs: &NativeStraightlineValue,
+) -> Option<bool> {
+    let compare_opcode = match opcode {
+        Opcode::TestEqInt => Opcode::CmpInt,
+        Opcode::TestNeInt => Opcode::CmpNeInt,
+        Opcode::TestLtInt => Opcode::CmpLtInt,
+        Opcode::TestLeInt => Opcode::CmpLeInt,
+        Opcode::TestGtInt => Opcode::CmpGtInt,
+        Opcode::TestGeInt => Opcode::CmpGeInt,
+        _ => return None,
+    };
+    native_static_compare_bool(lhs, rhs, compare_opcode)
+}
+
+fn field_key_value(strings: &[String], instr: Instr) -> Option<NativeStraightlineValue> {
+    let value = strings.get(instr.c() as usize)?;
+    Some(NativeStraightlineValue::String {
+        symbol: String::new(),
+        value: value.clone(),
+        len: value.len(),
+        key_kind: NativeStringKeyKind::Short,
     })
 }

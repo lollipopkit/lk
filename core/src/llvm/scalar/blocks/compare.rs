@@ -192,7 +192,13 @@ fn last_write_opcode_before(code: &[Instr], pc: usize, reg: u8) -> Option<Opcode
         .copied()
         .take(pc)
         .rev()
-        .find(|instr| instr.a() == reg && !matches!(instr.opcode(), Opcode::Nop | Opcode::Jmp | Opcode::Test))
+        .find(|instr| {
+            instr.a() == reg
+                && !matches!(
+                    instr.opcode(),
+                    Opcode::Nop | Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue
+                )
+        })
         .map(|instr| instr.opcode())
 }
 

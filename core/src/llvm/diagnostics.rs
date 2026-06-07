@@ -213,11 +213,14 @@ fn reg_writes_a(opcode: Opcode) -> bool {
         opcode,
         Opcode::SetGlobal
             | Opcode::SetIndex
+            | Opcode::SetFieldK
             | Opcode::StoreCellVal
             | Opcode::TryBegin
             | Opcode::TryEnd
             | Opcode::Raise
             | Opcode::Test
+            | Opcode::BrFalse
+            | Opcode::BrTrue
             | Opcode::Jmp
             | Opcode::Return
             | Opcode::Nop

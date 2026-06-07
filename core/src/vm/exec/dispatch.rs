@@ -10,10 +10,10 @@ use crate::val::{HeapValue, RuntimeVal, TypedList};
 
 use super::Executor;
 use crate::vm::{
-    CallWindow, Function, Instr, Module, RegisterIndex, VmContext,
+    CallWindow, Function, Instr, Module, Opcode, RegisterIndex, VmContext,
     analysis::{
         PerfForLoopFact, VmCallMetric, VmContainerMetric, record_call_op_known_enabled,
-        record_container_op_known_enabled,
+        record_branch_op_known_enabled, record_container_op_known_enabled,
     },
 };
 
@@ -263,6 +263,116 @@ impl Executor {
             self.pc = self.relative_pc(instr.c() as i8 as i32)?;
         }
         Ok(())
+    }
+
+    pub(super) fn dispatch_br_false(&mut self, instr: Instr) -> Result<()> {
+        if self.truthy_unchecked(instr.a()) {
+            self.pc += 1;
+        } else {
+            self.pc = self.relative_pc(instr.sbx() as i32)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn dispatch_br_true(&mut self, instr: Instr) -> Result<()> {
+        if self.truthy_unchecked(instr.a()) {
+            self.pc = self.relative_pc(instr.sbx() as i32)?;
+        } else {
+            self.pc += 1;
+        }
+        Ok(())
+    }
+
+    pub(super) fn dispatch_br_nil(&mut self, instr: Instr) -> Result<()> {
+        let index = self.stack_index_unchecked(instr.a());
+        if matches!(self.state.stack[index], RuntimeVal::Nil) {
+            self.pc = self.relative_pc(instr.sbx() as i32)?;
+        } else {
+            self.pc += 1;
+        }
+        Ok(())
+    }
+
+    pub(super) fn dispatch_br_not_nil(&mut self, instr: Instr) -> Result<()> {
+        let index = self.stack_index_unchecked(instr.a());
+        if !matches!(self.state.stack[index], RuntimeVal::Nil) {
+            self.pc = self.relative_pc(instr.sbx() as i32)?;
+        } else {
+            self.pc += 1;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    pub(super) fn dispatch_compare_test(&mut self, function: &Function, instr: Instr) -> Result<()> {
+        let jmp_pc = self.pc + 1;
+        let jmp = *function
+            .code
+            .get(jmp_pc)
+            .ok_or_else(|| anyhow!("compare-test at pc {} missing Jmp", self.pc))?;
+        if jmp.opcode() != Opcode::Jmp {
+            bail!("compare-test at pc {} expected Jmp at pc {jmp_pc}", self.pc);
+        }
+        let value = self.compare_test_value(instr)?;
+        if self.collect_metrics {
+            record_branch_op_known_enabled(true);
+        }
+        if value == (instr.c() != 0) {
+            self.pc = self.relative_pc_from(jmp_pc, jmp.sj_arg())?;
+        } else {
+            self.pc += 2;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn compare_test_value(&self, instr: Instr) -> Result<bool> {
+        let lhs_idx = self.stack_index_unchecked(instr.a());
+        let rhs_idx = self.stack_index_unchecked(instr.b());
+        if let (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) = (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+            return Ok(match instr.opcode() {
+                Opcode::TestEqInt => lhs == rhs,
+                Opcode::TestNeInt => lhs != rhs,
+                Opcode::TestLtInt => lhs < rhs,
+                Opcode::TestLeInt => lhs <= rhs,
+                Opcode::TestGtInt => lhs > rhs,
+                Opcode::TestGeInt => lhs >= rhs,
+                _ => unreachable!("opcode matched by caller"),
+            });
+        }
+        Ok(match instr.opcode() {
+            Opcode::TestEqInt | Opcode::TestNeInt => {
+                let equal = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                    (RuntimeVal::Int(l), RuntimeVal::Int(r)) => l == r,
+                    (RuntimeVal::Int(l), RuntimeVal::Float(r)) => (*l as f64) == *r,
+                    (RuntimeVal::Float(l), RuntimeVal::Int(r)) => *l == (*r as f64),
+                    (RuntimeVal::Float(l), RuntimeVal::Float(r)) => l == r,
+                    (RuntimeVal::Bool(l), RuntimeVal::Bool(r)) => l == r,
+                    (RuntimeVal::ShortStr(l), RuntimeVal::ShortStr(r)) => l == r,
+                    (RuntimeVal::Nil, RuntimeVal::Nil) => true,
+                    (RuntimeVal::Nil, _) | (_, RuntimeVal::Nil) => false,
+                    (RuntimeVal::Obj(l), RuntimeVal::Obj(r)) if l == r => true,
+                    _ => self.values_equal(instr.a(), instr.b())?,
+                };
+                if instr.opcode() == Opcode::TestEqInt {
+                    equal
+                } else {
+                    !equal
+                }
+            }
+            Opcode::TestLtInt | Opcode::TestLeInt | Opcode::TestGtInt | Opcode::TestGeInt => {
+                let lhs = self.number_value(&self.state.stack[lhs_idx])?;
+                let rhs = self.number_value(&self.state.stack[rhs_idx])?;
+                match instr.opcode() {
+                    Opcode::TestLtInt => lhs < rhs,
+                    Opcode::TestLeInt => lhs <= rhs,
+                    Opcode::TestGtInt => lhs > rhs,
+                    Opcode::TestGeInt => lhs >= rhs,
+                    _ => unreachable!("opcode matched above"),
+                }
+            }
+            _ => unreachable!("opcode matched by caller"),
+        })
     }
 
     pub(super) fn dispatch_jmp(&mut self, instr: Instr) -> Result<()> {

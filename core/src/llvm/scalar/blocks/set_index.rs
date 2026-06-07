@@ -9,8 +9,8 @@ use crate::llvm::{
         facts::{NativeScalarFacts, NativeScalarKind},
     },
     straightline_value::{
-        NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue, NativeTextPart,
-        native_static_i64_binary, native_static_index, native_static_set_index,
+        NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue, NativeStringKeyKind,
+        NativeTextPart, native_static_i64_binary, native_static_index, native_static_set_index,
     },
 };
 use crate::vm::{FunctionData, Instr, Opcode};
@@ -115,6 +115,65 @@ pub(super) fn emit_set_index_block(
             return false;
         };
         let Some(value) = static_set_value(&target, static_regs, code, int_consts, strings, pc, instr.c()) else {
+            return false;
+        };
+        let Some(value) = native_static_set_index(target, key, value) else {
+            return false;
+        };
+        static_regs[instr.a() as usize] = Some(value.clone());
+        update_recent_move_alias(static_regs, code, pc, instr.a(), value);
+    }
+    emit_branch_to_next(ir, pc, code_len);
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_set_field_k_block(
+    ir: &mut String,
+    extra_globals: &mut String,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    code: &[Instr],
+    int_consts: &[i64],
+    strings: &[String],
+    function: &FunctionData,
+    register_count: usize,
+    pc: usize,
+    instr: Instr,
+    code_len: usize,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> bool {
+    let _ = function;
+    if instr.a() as usize >= register_count || instr.b() as usize >= register_count {
+        return false;
+    }
+    let Some(target) = static_regs.get(instr.a() as usize).and_then(Clone::clone) else {
+        return false;
+    };
+    let Some(key) = set_field_key(strings, instr) else {
+        return false;
+    };
+    if let NativeStraightlineValue::DynamicMap {
+        id,
+        key: NativeMapKeyKind::Str,
+        value: NativeMapValueKind::I64,
+    } = target
+    {
+        let Some(value_kind) = facts.register_kind_before(pc, instr.b()) else {
+            return false;
+        };
+        if value_kind != NativeScalarKind::I64
+            || emit_dynamic_string_int_map_set(ir, extra_globals, id, instr.b(), key, tmp_index).is_none()
+        {
+            return false;
+        }
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicMap {
+            id,
+            key: NativeMapKeyKind::Str,
+            value: NativeMapValueKind::I64,
+        });
+    } else {
+        let Some(value) = static_set_value(&target, static_regs, code, int_consts, strings, pc, instr.b()) else {
             return false;
         };
         let Some(value) = native_static_set_index(target, key, value) else {
@@ -283,12 +342,13 @@ fn text_parts_from_value(value: NativeStraightlineValue) -> Option<Vec<NativeTex
 }
 
 fn last_write_before(code: &[Instr], pc: usize, reg: u8) -> Option<(usize, Instr)> {
-    code.iter()
-        .copied()
-        .take(pc)
-        .enumerate()
-        .rev()
-        .find(|(_, instr)| instr.a() == reg && !matches!(instr.opcode(), Opcode::Nop | Opcode::Jmp | Opcode::Test))
+    code.iter().copied().take(pc).enumerate().rev().find(|(_, instr)| {
+        instr.a() == reg
+            && !matches!(
+                instr.opcode(),
+                Opcode::Nop | Opcode::Jmp | Opcode::Test | Opcode::BrFalse | Opcode::BrTrue
+            )
+    })
 }
 
 fn known_set_key(extra_globals: &mut String, function: &FunctionData, pc: usize) -> Option<NativeStraightlineValue> {
@@ -297,6 +357,16 @@ fn known_set_key(extra_globals: &mut String, function: &FunctionData, pc: usize)
         extra_globals.push_str(&llvm_string_constant(symbol, value));
     }
     Some(key)
+}
+
+fn set_field_key(strings: &[String], instr: Instr) -> Option<NativeStraightlineValue> {
+    let value = strings.get(instr.c() as usize)?;
+    Some(NativeStraightlineValue::String {
+        symbol: String::new(),
+        value: value.clone(),
+        len: value.len(),
+        key_kind: NativeStringKeyKind::Short,
+    })
 }
 
 fn update_recent_move_alias(
@@ -357,6 +427,7 @@ fn local_static_i64_expr_before(
                 local_static_i64_expr_before(target, static_regs, code, int_consts, strings, prev_pc, prev.b())
             }
             Opcode::GetIndex => local_static_object_index(target, code, strings, prev_pc, prev.c()),
+            Opcode::GetFieldK => local_static_object_field(target, strings, prev),
             Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
                 let NativeStraightlineValue::I64(lhs) =
                     static_i64_operand(target, static_regs, code, int_consts, strings, prev_pc, prev.b())?
@@ -400,5 +471,20 @@ fn local_static_object_index(
     key_reg: u8,
 ) -> Option<NativeStraightlineValue> {
     let key = local_static_string_before(code, strings, pc, key_reg)?;
+    native_static_index(target.clone(), key, String::new())
+}
+
+fn local_static_object_field(
+    target: &NativeStraightlineValue,
+    strings: &[String],
+    instr: Instr,
+) -> Option<NativeStraightlineValue> {
+    let key_text = strings.get(instr.c() as usize)?;
+    let key = NativeStraightlineValue::String {
+        symbol: String::new(),
+        value: key_text.clone(),
+        len: key_text.len(),
+        key_kind: NativeStringKeyKind::Short,
+    };
     native_static_index(target.clone(), key, String::new())
 }

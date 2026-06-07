@@ -449,3 +449,181 @@ if should_run("fraud_rule_scoring") {
     t1 = os.clock();
     emit("fraud_rule_scoring", checksum, t0, t1);
 }
+
+if should_run("customer_ltv_segments") {
+    t0 = os.clock();
+    checksum = 0;
+    let ltv_rounds = 1600 + (seed - seed);
+    let customer_n = 48 + (seed - seed);
+    for r in 1..=ltv_rounds {
+        let spends = [];
+        let ages = [];
+        let tier_scores = [];
+        let region_bonus = [];
+        for i in 0..customer_n {
+            let bonus = 0;
+            if (((i + r) % 5) == 0) {
+                bonus = 17;
+            } else if (((i + r) % 7) == 0) {
+                bonus = 23;
+            }
+            let tier_score = 1;
+            if (((i * 3 + r) % 11) == 0) {
+                tier_score = 5;
+            } else if (((i + r) % 3) == 0) {
+                tier_score = 2;
+            }
+            let spend = ((i * 97) + (r * 31)) % 5000;
+            spends.push(spend);
+            ages.push((i + r) % 37);
+            tier_scores.push(tier_score);
+            region_bonus.push(bonus);
+        }
+        for i in 0..customer_n {
+            let spend = spends[i];
+            let age = ages[i];
+            let score = math.floor(spend / 25) + age;
+            checksum += score * tier_scores[i] + region_bonus[i];
+        }
+    }
+    t1 = os.clock();
+    emit("customer_ltv_segments", checksum, t0, t1);
+}
+
+if should_run("event_join_by_id") {
+    t0 = os.clock();
+    checksum = 0;
+    let join_rounds = 1800 + (seed - seed);
+    let user_n = 64 + (seed - seed);
+    let event_n = 96 + (seed - seed);
+    for r in 1..=join_rounds {
+        let user_plans = {};
+        let user_quotas = {};
+        for i in 0..user_n {
+            let plan = 1;
+            if (((i + r) % 13) == 0) {
+                plan = 3;
+            } else if (((i + r) % 5) == 0) {
+                plan = 2;
+            }
+            user_plans.set("u${i}", plan);
+            user_quotas.set("u${i}", ((i * 17) + r) % 1000);
+        }
+        for e in 0..event_n {
+            let uid = "u${(e * 7 + r) % user_n}";
+            let quota = map.get(user_quotas, uid);
+            if quota != nil {
+                let plan = map.get(user_plans, uid);
+                checksum += quota % 31;
+                if plan == 3 {
+                    checksum += 41;
+                } else if plan == 2 {
+                    checksum += 11;
+                } else {
+                    checksum += 3;
+                }
+            }
+        }
+    }
+    t1 = os.clock();
+    emit("event_join_by_id", checksum, t0, t1);
+}
+
+if should_run("config_defaults_merge") {
+    t0 = os.clock();
+    checksum = 0;
+    let config_rounds = 90000 + (seed - seed);
+    for i in 1..=config_rounds {
+        let config = {};
+        if ((i % 2) == 0) { config.set("retries", i % 9); }
+        if ((i % 3) == 0) { config.set("timeout", 30 + (i % 17)); }
+        if ((i % 5) == 0) { config.set("region", 2); }
+        if ((i % 7) == 0) { config.set("mode", 2); }
+        let retries = map.get(config, "retries");
+        if retries == nil { retries = 3; }
+        let timeout = map.get(config, "timeout");
+        if timeout == nil { timeout = 25; }
+        let region = map.get(config, "region");
+        if region == nil { region = 1; }
+        let mode = map.get(config, "mode");
+        if mode == nil { mode = 1; }
+        checksum += retries * 13 + timeout;
+        if region == 2 { checksum += 17; } else { checksum += 5; }
+        if mode == 2 { checksum += 29; } else { checksum += 7; }
+    }
+    t1 = os.clock();
+    emit("config_defaults_merge", checksum, t0, t1);
+}
+
+if should_run("template_render_mix") {
+    t0 = os.clock();
+    checksum = 0;
+    let render_rounds = 26000 + (seed - seed);
+    for i in 1..=render_rounds {
+        let level = "info";
+        if ((i % 17) == 0) {
+            level = "error";
+        } else if ((i % 5) == 0) {
+            level = "warn";
+        }
+        let path = "/api/orders/${i % 97}/line/${i % 11}";
+        let msg = "tenant=t${i % 31};level=${level};path=${path};latency=${(i * 37) % 1000}";
+        checksum += msg.len() + path.len();
+        if msg.starts_with("tenant=t1") {
+            checksum += 19;
+        }
+        if level == "error" {
+            checksum += 101;
+        } else if level == "warn" {
+            checksum += 13;
+        }
+    }
+    t1 = os.clock();
+    emit("template_render_mix", checksum, t0, t1);
+}
+
+if should_run("state_machine_transitions") {
+    t0 = os.clock();
+    checksum = 0;
+    let transition_rounds = 120000 + (seed - seed);
+    let state = 1;
+    for i in 1..=transition_rounds {
+        let event = 1;
+        if state == 2 {
+            if ((i % 7) == 0) { event = 3; } else { event = 2; }
+        } else if state == 3 {
+            event = 4;
+        } else if state == 4 {
+            event = 5;
+        } else if state == 6 {
+            event = 6;
+        }
+        let next = 0;
+        if state == 1 && event == 1 {
+            next = 2;
+        } else if state == 2 && event == 2 {
+            next = 3;
+        } else if state == 2 && event == 3 {
+            next = 6;
+        } else if state == 3 && event == 4 {
+            next = 4;
+        } else if state == 4 && event == 5 {
+            next = 5;
+        } else if state == 6 && event == 6 {
+            next = 5;
+        }
+        if next == 0 {
+            state = 1;
+            checksum += 1;
+        } else {
+            state = next;
+            checksum += state + event;
+            if state == 5 {
+                state = 1;
+                checksum += 37;
+            }
+        }
+    }
+    t1 = os.clock();
+    emit("state_machine_transitions", checksum, t0, t1);
+}

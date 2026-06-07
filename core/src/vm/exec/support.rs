@@ -429,9 +429,9 @@ impl Executor {
             record_branch_op_known_enabled(true);
         }
         if value == fact.jump_when {
-            self.pc = self.relative_pc_from(self.pc + 2, fact.jump_offset)?;
+            self.pc = self.relative_pc_from(self.pc + fact.jump_base_pc_delta, fact.jump_offset)?;
         } else {
-            self.pc += 3;
+            self.pc += fact.fallthrough_pc_delta;
         }
         Ok(true)
     }
@@ -450,15 +450,29 @@ impl Executor {
         if function.performance.has_control_flow_fact_slot(self.pc) {
             return None;
         }
-        let test = function.code.get(self.pc + 1).copied()?;
-        if test.opcode() != Opcode::Test || test.a() != result_reg || test.c() != 1 {
+        let branch = function.code.get(self.pc + 1).copied()?;
+        if branch.a() != result_reg {
+            return None;
+        }
+        if branch.opcode() == Opcode::BrFalse || branch.opcode() == Opcode::BrTrue {
+            return Some(PerfFusedBoolBranchFact {
+                result_reg,
+                jump_when: branch.opcode() == Opcode::BrTrue,
+                jump_offset: branch.sbx() as i32,
+                jump_base_pc_delta: 1,
+                fallthrough_pc_delta: 2,
+            });
+        }
+        if branch.opcode() != Opcode::Test || branch.c() != 1 {
             return None;
         }
         let jmp = function.code.get(self.pc + 2).copied()?;
         (jmp.opcode() == Opcode::Jmp).then_some(PerfFusedBoolBranchFact {
             result_reg,
-            jump_when: test.b() != 0,
+            jump_when: branch.b() != 0,
             jump_offset: jmp.sj_arg(),
+            jump_base_pc_delta: 2,
+            fallthrough_pc_delta: 3,
         })
     }
 

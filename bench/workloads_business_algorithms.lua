@@ -431,3 +431,181 @@ if should_run("fraud_rule_scoring") then
   t1 = os.clock()
   emit("fraud_rule_scoring", checksum, t0, t1)
 end
+
+if should_run("customer_ltv_segments") then
+  t0 = os.clock()
+  checksum = 0
+  local ltv_rounds = 1600 + (seed - seed)
+  local customer_n = 48 + (seed - seed)
+  for r = 1, ltv_rounds do
+    local spends = {}
+    local ages = {}
+    local tier_scores = {}
+    local region_bonus = {}
+    for i = 0, customer_n - 1 do
+      local bonus = 0
+      if ((i + r) % 5) == 0 then
+        bonus = 17
+      elseif ((i + r) % 7) == 0 then
+        bonus = 23
+      end
+      local tier_score = 1
+      if (((i * 3) + r) % 11) == 0 then
+        tier_score = 5
+      elseif ((i + r) % 3) == 0 then
+        tier_score = 2
+      end
+      local spend = ((i * 97) + (r * 31)) % 5000
+      spends[#spends + 1] = spend
+      ages[#ages + 1] = (i + r) % 37
+      tier_scores[#tier_scores + 1] = tier_score
+      region_bonus[#region_bonus + 1] = bonus
+    end
+    for i = 0, customer_n - 1 do
+      local spend = spends[i + 1]
+      local age = ages[i + 1]
+      local score = math.floor(spend / 25) + age
+      checksum = checksum + (score * tier_scores[i + 1]) + region_bonus[i + 1]
+    end
+  end
+  t1 = os.clock()
+  emit("customer_ltv_segments", checksum, t0, t1)
+end
+
+if should_run("event_join_by_id") then
+  t0 = os.clock()
+  checksum = 0
+  local join_rounds = 1800 + (seed - seed)
+  local user_n = 64 + (seed - seed)
+  local event_n = 96 + (seed - seed)
+  for r = 1, join_rounds do
+    local user_plans = {}
+    local user_quotas = {}
+    for i = 0, user_n - 1 do
+      local plan = 1
+      if ((i + r) % 13) == 0 then
+        plan = 3
+      elseif ((i + r) % 5) == 0 then
+        plan = 2
+      end
+      user_plans["u" .. i] = plan
+      user_quotas["u" .. i] = ((i * 17) + r) % 1000
+    end
+    for e = 0, event_n - 1 do
+      local uid = "u" .. (((e * 7) + r) % user_n)
+      local quota = user_quotas[uid]
+      if quota ~= nil then
+        local plan = user_plans[uid]
+        checksum = checksum + (quota % 31)
+        if plan == 3 then
+          checksum = checksum + 41
+        elseif plan == 2 then
+          checksum = checksum + 11
+        else
+          checksum = checksum + 3
+        end
+      end
+    end
+  end
+  t1 = os.clock()
+  emit("event_join_by_id", checksum, t0, t1)
+end
+
+if should_run("config_defaults_merge") then
+  t0 = os.clock()
+  checksum = 0
+  local config_rounds = 90000 + (seed - seed)
+  for i = 1, config_rounds do
+    local config = {}
+    if (i % 2) == 0 then config["retries"] = i % 9 end
+    if (i % 3) == 0 then config["timeout"] = 30 + (i % 17) end
+    if (i % 5) == 0 then config["region"] = 2 end
+    if (i % 7) == 0 then config["mode"] = 2 end
+    local retries = config["retries"]
+    if retries == nil then retries = 3 end
+    local timeout = config["timeout"]
+    if timeout == nil then timeout = 25 end
+    local region = config["region"]
+    if region == nil then region = 1 end
+    local mode = config["mode"]
+    if mode == nil then mode = 1 end
+    checksum = checksum + (retries * 13) + timeout
+    if region == 2 then checksum = checksum + 17 else checksum = checksum + 5 end
+    if mode == 2 then checksum = checksum + 29 else checksum = checksum + 7 end
+  end
+  t1 = os.clock()
+  emit("config_defaults_merge", checksum, t0, t1)
+end
+
+if should_run("template_render_mix") then
+  t0 = os.clock()
+  checksum = 0
+  local render_rounds = 26000 + (seed - seed)
+  for i = 1, render_rounds do
+    local level = "info"
+    if (i % 17) == 0 then
+      level = "error"
+    elseif (i % 5) == 0 then
+      level = "warn"
+    end
+    local path = "/api/orders/" .. (i % 97) .. "/line/" .. (i % 11)
+    local msg = "tenant=t" .. (i % 31) .. ";level=" .. level .. ";path=" .. path .. ";latency=" .. ((i * 37) % 1000)
+    checksum = checksum + #msg + #path
+    if string.sub(msg, 1, #"tenant=t1") == "tenant=t1" then
+      checksum = checksum + 19
+    end
+    if level == "error" then
+      checksum = checksum + 101
+    elseif level == "warn" then
+      checksum = checksum + 13
+    end
+  end
+  t1 = os.clock()
+  emit("template_render_mix", checksum, t0, t1)
+end
+
+if should_run("state_machine_transitions") then
+  t0 = os.clock()
+  checksum = 0
+  local transition_rounds = 120000 + (seed - seed)
+  local state = 1
+  for i = 1, transition_rounds do
+    local event = 1
+    if state == 2 then
+      if (i % 7) == 0 then event = 3 else event = 2 end
+    elseif state == 3 then
+      event = 4
+    elseif state == 4 then
+      event = 5
+    elseif state == 6 then
+      event = 6
+    end
+    local next_state = 0
+    if state == 1 and event == 1 then
+      next_state = 2
+    elseif state == 2 and event == 2 then
+      next_state = 3
+    elseif state == 2 and event == 3 then
+      next_state = 6
+    elseif state == 3 and event == 4 then
+      next_state = 4
+    elseif state == 4 and event == 5 then
+      next_state = 5
+    elseif state == 6 and event == 6 then
+      next_state = 5
+    end
+    if next_state == 0 then
+      state = 1
+      checksum = checksum + 1
+    else
+      state = next_state
+      checksum = checksum + state + event
+      if state == 5 then
+        state = 1
+        checksum = checksum + 37
+      end
+    end
+  end
+  t1 = os.clock()
+  emit("state_machine_transitions", checksum, t0, t1)
+end

@@ -27,8 +27,8 @@ fn compiler_records_container_move_fact_for_rewritten_set_index() {
     let set_index_pc = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::SetIndex)
-        .expect("SetIndex");
+        .position(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK))
+        .expect("set index opcode");
     let fact = function
         .performance
         .container_move(set_index_pc)
@@ -179,26 +179,26 @@ fn compiler_reuses_local_set_index_target_and_value() {
         "#,
     );
 
-    let set_index_pc = function
+    let set_pc = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::SetIndex)
-        .expect("SetIndex");
-    let instr = function.code[set_index_pc];
+        .position(|instr| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK))
+        .expect("set index opcode");
+    let instr = function.code[set_pc];
     let fact = function
         .performance
-        .container_move(set_index_pc)
+        .container_move(set_pc)
         .expect("container move fact");
 
     assert!(
         function.performance.is_local_slot(instr.a() as u16),
-        "SetIndex should mutate the local target directly"
+        "set opcode should mutate the local target directly"
     );
     assert!(
-        function.performance.is_local_slot(instr.c() as u16),
-        "SetIndex should read the local value directly"
+        function.performance.is_local_slot(instr.b() as u16),
+        "SetFieldK should read the local value directly"
     );
-    assert!(!fact.move_value, "SetIndex must keep current local values readable");
+    assert!(!fact.move_value, "set opcode must keep current local values readable");
 
     let result = execute(&function).expect("execute");
     assert!(matches!(result.returns.as_slice(), [RuntimeVal::Obj(_)]));
@@ -222,7 +222,7 @@ fn compiler_records_set_index_target_shape_facts() {
         .code
         .iter()
         .enumerate()
-        .filter(|(_, instr)| instr.opcode() == Opcode::SetIndex)
+        .filter(|(_, instr)| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK))
         .filter_map(|(pc, _)| function.performance.index_op(pc).copied())
         .collect::<Vec<_>>();
 
@@ -262,13 +262,18 @@ fn compiler_records_short_string_key_fact_for_set_index() {
         .code
         .iter()
         .enumerate()
-        .filter(|(_, instr)| instr.opcode() == Opcode::SetIndex)
+        .filter(|(_, instr)| matches!(instr.opcode(), Opcode::SetIndex | Opcode::SetFieldK))
         .filter_map(|(pc, _)| {
-            function
-                .performance
-                .known_key(pc)
-                .and_then(|fact| fact.const_key)
-                .and_then(|key| function.consts.string(key))
+            let instr = function.code[pc];
+            match instr.opcode() {
+                Opcode::SetFieldK => function.consts.string(instr.c() as u16),
+                Opcode::SetIndex => function
+                    .performance
+                    .known_key(pc)
+                    .and_then(|fact| fact.const_key)
+                    .and_then(|key| function.consts.string(key)),
+                _ => None,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -291,33 +296,25 @@ fn compiler_elides_known_map_and_object_set_key_materialization() {
         "#,
     );
 
-    let set_indexes = function
+    let set_fields = function
         .code
         .iter()
         .enumerate()
-        .filter(|(_, instr)| instr.opcode() == Opcode::SetIndex)
+        .filter(|(_, instr)| instr.opcode() == Opcode::SetFieldK)
         .collect::<Vec<_>>();
 
-    assert_eq!(set_indexes.len(), 2, "expected map and object SetIndex");
-    for (pc, instr) in set_indexes {
+    assert_eq!(set_fields.len(), 2, "expected map and object SetFieldK");
+    for (pc, instr) in set_fields {
         assert_eq!(
-            instr.b(),
-            instr.a(),
-            "known Map/Object string key should reuse the target register as key placeholder"
+            function.consts.string(instr.c() as u16).is_some(),
+            true,
+            "SetFieldK should carry the const key index inline"
         );
         assert!(
             pc.checked_sub(1)
                 .and_then(|prev| function.code.get(prev))
                 .is_none_or(|prev| prev.opcode() != Opcode::LoadString),
-            "known Map/Object string key should not materialize a LoadString immediately before SetIndex"
-        );
-        assert!(
-            function
-                .performance
-                .known_key(pc)
-                .and_then(|fact| fact.const_key)
-                .is_some(),
-            "SetIndex should still carry the const key fact"
+            "known Map/Object string key should not materialize a LoadString immediately before SetFieldK"
         );
     }
 
@@ -522,14 +519,19 @@ fn compiler_reuses_local_range_pattern_bound() {
     let upper_cmp = function
         .code
         .iter()
-        .find(|instr| instr.opcode() == Opcode::CmpLtInt)
+        .find(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt))
         .expect("upper range comparison");
+    let (lhs, rhs) = if upper_cmp.opcode().is_compare_test() {
+        (upper_cmp.a(), upper_cmp.b())
+    } else {
+        (upper_cmp.b(), upper_cmp.c())
+    };
     assert!(
-        function.performance.is_local_slot(upper_cmp.b() as u16),
+        function.performance.is_local_slot(lhs as u16),
         "range pattern should compare the local scrutinee directly"
     );
     assert!(
-        function.performance.is_local_slot(upper_cmp.c() as u16),
+        function.performance.is_local_slot(rhs as u16),
         "range pattern should compare against the local upper bound directly"
     );
 
@@ -759,14 +761,12 @@ fn compiler_reuses_current_local_for_global_assignment() {
 fn compiler_records_short_string_key_fact_for_get_index() {
     let function = compile_source(r#"return {"answer": 42}.answer;"#);
 
-    let get_index_pc = function
+    let get_field = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::GetIndex)
-        .expect("GetIndex");
-    let key_fact = function.performance.known_key(get_index_pc).expect("key fact");
-    let const_key = key_fact.const_key.expect("const key");
-    assert_eq!(function.consts.string(const_key), Some("answer"));
+        .find(|instr| instr.opcode() == Opcode::GetFieldK)
+        .expect("GetFieldK");
+    assert_eq!(function.consts.string(get_field.c() as u16), Some("answer"));
 
     let result = execute(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(42)]);
@@ -782,33 +782,24 @@ fn compiler_elides_known_map_and_object_get_key_materialization() {
         "#,
     );
 
-    let get_indexes = function
+    let get_fields = function
         .code
         .iter()
         .enumerate()
-        .filter(|(_, instr)| instr.opcode() == Opcode::GetIndex)
+        .filter(|(_, instr)| instr.opcode() == Opcode::GetFieldK)
         .collect::<Vec<_>>();
 
-    assert_eq!(get_indexes.len(), 2, "expected map and object GetIndex");
-    for (pc, instr) in get_indexes {
-        assert_eq!(
-            instr.c(),
-            instr.b(),
-            "known Map/Object string key should reuse the target register as key placeholder"
+    assert_eq!(get_fields.len(), 2, "expected map and object GetFieldK");
+    for (pc, instr) in get_fields {
+        assert!(
+            function.consts.string(instr.c() as u16).is_some(),
+            "GetFieldK should carry the const key index inline"
         );
         assert!(
             pc.checked_sub(1)
                 .and_then(|prev| function.code.get(prev))
                 .is_none_or(|prev| prev.opcode() != Opcode::LoadString),
-            "known Map/Object string key should not materialize a LoadString immediately before GetIndex"
-        );
-        assert!(
-            function
-                .performance
-                .known_key(pc)
-                .and_then(|fact| fact.const_key)
-                .is_some(),
-            "GetIndex should still carry the const key fact"
+            "known Map/Object string key should not materialize a LoadString immediately before GetFieldK"
         );
     }
 
@@ -848,7 +839,7 @@ fn compiler_records_index_target_shape_facts() {
         .code
         .iter()
         .enumerate()
-        .filter(|(_, instr)| instr.opcode() == Opcode::GetIndex)
+        .filter(|(_, instr)| matches!(instr.opcode(), Opcode::GetIndex | Opcode::GetFieldK))
         .filter_map(|(pc, _)| function.performance.index_op(pc).copied())
         .collect::<Vec<_>>();
 
@@ -891,26 +882,32 @@ fn compiler_records_control_flow_facts_after_jump_patching() {
         "#,
     );
 
-    let test_pc = function
+    let branch_pc = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::Test)
-        .expect("Test");
+        .position(|instr| matches!(instr.opcode(), Opcode::Test | Opcode::BrFalse | Opcode::BrTrue))
+        .expect("conditional branch");
     let jmp_pc = function
         .code
         .iter()
         .position(|instr| instr.opcode() == Opcode::Jmp)
         .expect("Jmp");
-    let test = function.code[test_pc];
+    let branch = function.code[branch_pc];
     let jmp = function.code[jmp_pc];
-    let test_taken = ((test_pc as i64) + 1 + i64::from(test.c() as i8)) as usize;
+    let branch_taken = match branch.opcode() {
+        Opcode::Test => ((branch_pc as i64) + 1 + i64::from(branch.c() as i8)) as usize,
+        Opcode::BrFalse | Opcode::BrTrue => ((branch_pc as i64) + 1 + i64::from(branch.sbx())) as usize,
+        _ => unreachable!(),
+    };
     let jmp_target = ((jmp_pc as i64) + 1 + i64::from(jmp.sj_arg())) as usize;
 
-    assert!(function.performance.is_branch_target(test_pc + 1));
-    assert!(function.performance.is_branch_target(test_taken));
+    if branch.opcode() == Opcode::Test {
+        assert!(function.performance.is_branch_target(branch_pc + 1));
+    }
+    assert!(function.performance.is_branch_target(branch_taken));
     assert!(function.performance.is_branch_target(jmp_target));
-    assert!(!function.performance.same_block(test_pc, test_pc + 1));
-    assert!(!function.performance.same_block(test_pc + 1, test_taken));
+    assert!(!function.performance.same_block(branch_pc, branch_pc + 1));
+    assert!(!function.performance.same_block(branch_pc + 1, branch_taken));
 
     let result = execute(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(1)]);
@@ -937,17 +934,19 @@ fn compiler_records_loop_backedge_as_branch_target() {
     let cmp_pc = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::CmpLtInt)
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt))
         .expect("loop compare");
     let target = ((loop_backedge.0 as i64) + 1 + i64::from(loop_backedge.1.sj_arg())) as usize;
 
     assert!(function.performance.is_branch_target(target));
     assert!(!function.performance.same_block(loop_backedge.0, target));
-    let fused = function
-        .performance
-        .fused_bool_branch(cmp_pc)
-        .expect("compare branch fusion fact");
-    assert_eq!(fused.result_reg, function.code[cmp_pc].a());
+    if function.code[cmp_pc].opcode() == Opcode::CmpLtInt {
+        let fused = function
+            .performance
+            .fused_bool_branch(cmp_pc)
+            .expect("compare branch fusion fact");
+        assert_eq!(fused.result_reg, function.code[cmp_pc].a());
+    }
 
     let result = execute(&function).expect("execute");
     assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(3)]);

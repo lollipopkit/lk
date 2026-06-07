@@ -57,6 +57,13 @@ impl Compiler {
             Expr::Bin(lhs, op, rhs) => {
                 let static_flavor = super::support::numeric_flavor(lhs, op, rhs);
                 let lhs = self.lower_readonly_operand(lhs)?;
+                if let Some(delta) = super::support::int_immediate_delta(op, rhs)
+                    && self.function.performance.value_kind(lhs) == PerfValueKind::Int
+                    && static_flavor == super::support::NumericFlavor::Int
+                {
+                    self.emit_add_int_immediate_to_register(dst, lhs, delta)?;
+                    return Ok(true);
+                }
                 let rhs = self.lower_readonly_operand(rhs)?;
                 let flavor = super::facts::numeric_flavor_from_register_facts(&self.function.performance, op, lhs, rhs)
                     .unwrap_or(static_flavor);

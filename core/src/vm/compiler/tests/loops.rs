@@ -390,7 +390,7 @@ fn compiler_for_range_reuses_body_scalar_literals_before_loop_target() {
     let condition_pc = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::CmpLtInt)
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt))
         .expect("expected range condition");
     let loop_target = first_backward_loop_target_after(&function, condition_pc);
 
@@ -528,8 +528,8 @@ fn compiler_while_licm_hoists_constant_loads_out_of_loop() {
     let cmp_idx = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::CmpNeInt)
-        .expect("expected CmpNeInt");
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpNeInt | Opcode::TestNeInt))
+        .expect("expected CmpNeInt/TestNeInt");
 
     // Find a LoadInt before CmpNeInt (the constant 0)
     let load_int_idx = function
@@ -593,7 +593,7 @@ fn compiler_while_reuses_body_scalar_literals_before_loop_target() {
     let cmp_pc = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::CmpLtInt)
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt))
         .expect("expected while condition");
     let loop_target = first_backward_loop_target_after(&function, cmp_pc);
 
@@ -638,7 +638,7 @@ fn compiler_binds_loop_local_literal_to_cached_register_with_copy_on_write() {
     let cmp_pc = function
         .code
         .iter()
-        .position(|instr| instr.opcode() == Opcode::CmpLtInt)
+        .position(|instr| matches!(instr.opcode(), Opcode::CmpLtInt | Opcode::TestLtInt))
         .expect("expected while condition");
     let loop_target = first_backward_loop_target_after(&function, cmp_pc) as usize;
     let cached_one = function

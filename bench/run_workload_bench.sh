@@ -35,6 +35,11 @@ WORKLOADS=(
   route_permission_check
   inventory_reorder
   fraud_rule_scoring
+  customer_ltv_segments
+  event_join_by_id
+  config_defaults_merge
+  template_render_mix
+  state_machine_transitions
 )
 
 median_of() {

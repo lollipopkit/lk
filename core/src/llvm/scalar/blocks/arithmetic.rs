@@ -8,7 +8,7 @@ use crate::{
                 three_regs_in_bounds,
             },
             contains::{local_static_heap_const_before, text_value_from_trusted_reg},
-            emit::emit_i64_binary_block,
+            emit::{emit_i64_add_immediate_block, emit_i64_binary_block},
             facts::{NativeScalarFacts, NativeScalarKind},
         },
         straightline_value::{NativeStraightlineValue, native_static_i64_binary},
@@ -73,6 +73,34 @@ pub(super) fn emit_int_arithmetic_block(
         return false;
     }
     emit_branch_to_next(ir, pc, code.len());
+    true
+}
+
+pub(super) fn emit_add_int_immediate_block(
+    ir: &mut String,
+    code: &[Instr],
+    pc: usize,
+    instr: Instr,
+    register_count: usize,
+    facts: &NativeScalarFacts,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    tmp_index: &mut usize,
+    code_len: usize,
+) -> bool {
+    if instr.a() as usize >= register_count
+        || instr.b() as usize >= register_count
+        || !matches!(
+            local_register_kind_before(code, pc, instr.b())
+                .or_else(|| facts.register_kind_before(pc, instr.b()))
+                .or_else(|| static_reg_kind(static_regs, instr.b())),
+            Some(NativeScalarKind::I64 | NativeScalarKind::MaybeI64)
+        )
+    {
+        return false;
+    }
+    static_regs[instr.a() as usize] = None;
+    emit_i64_add_immediate_block(ir, instr, tmp_index);
+    emit_branch_to_next(ir, pc, code_len);
     true
 }
 

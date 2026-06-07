@@ -366,6 +366,22 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
+            Opcode::AddIntI => {
+                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+                    return None;
+                }
+                static_regs[instr.a() as usize] = None;
+                let lhs = crate::llvm::ir_text::next_tmp(tmp_index);
+                let out = crate::llvm::ir_text::next_tmp(tmp_index);
+                ir.push_str(&format!("  {lhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.b()));
+                ir.push_str(&format!("  {out} = add i64 {lhs}, {}\n", instr.sc()));
+                ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
+                ir.push_str(&format!(
+                    "  store i64 1, ptr %call{call_pc}.r{}.present.slot\n",
+                    instr.a()
+                ));
+                emit_inline_branch_to_next(ir, call_pc, pc, code.len());
+            }
             Opcode::ToString => {
                 if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
                     return None;
@@ -621,15 +637,64 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = None;
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode::Test => {
+            opcode if opcode.is_compare_test() => {
+                if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
+                    return None;
+                }
+                let jmp = code.get(pc + 1).copied()?;
+                if jmp.opcode() != Opcode::Jmp {
+                    return None;
+                }
+                let taken = native_relative_target(pc + 1, jmp.sj_arg(), code.len())?;
+                let fallthrough = pc + 2;
+                let pred = compare_test_i64_pred(instr.opcode())?;
+                let lhs = next_tmp(tmp_index);
+                let rhs = next_tmp(tmp_index);
+                let cond = next_tmp(tmp_index);
+                let branch_cond = next_tmp(tmp_index);
+                ir.push_str(&format!(
+                    "  {lhs} = load i64, ptr %call{call_pc}.r{}.slot\n",
+                    instr.a()
+                ));
+                ir.push_str(&format!(
+                    "  {rhs} = load i64, ptr %call{call_pc}.r{}.slot\n",
+                    instr.b()
+                ));
+                ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
+                if instr.c() != 0 {
+                    ir.push_str(&format!("  {branch_cond} = xor i1 {cond}, false\n"));
+                } else {
+                    ir.push_str(&format!("  {branch_cond} = xor i1 {cond}, true\n"));
+                }
+                ir.push_str(&format!(
+                    "  br i1 {branch_cond}, label {}, label {}\n",
+                    inline_native_label(call_pc, taken, code.len()),
+                    inline_native_label(call_pc, fallthrough, code.len())
+                ));
+            }
+            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
                 }
                 let kind = facts.register_kind_before(pc, instr.a())?;
                 let fallthrough = pc + 1;
-                let relative = native_relative_target(pc, instr.c() as i8 as i32, code.len())?;
-                let truthy_target = if instr.b() != 0 { fallthrough } else { relative };
-                let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
+                let relative = match instr.opcode() {
+                    Opcode::Test => native_relative_target(pc, instr.c() as i8 as i32, code.len())?,
+                    Opcode::BrFalse | Opcode::BrTrue => native_relative_target(pc, instr.sbx() as i32, code.len())?,
+                    _ => return None,
+                };
+                let truthy_target =
+                    if matches!(instr.opcode(), Opcode::Test if instr.b() == 0) || instr.opcode() == Opcode::BrTrue {
+                        relative
+                    } else {
+                        fallthrough
+                    };
+                let falsy_target =
+                    if matches!(instr.opcode(), Opcode::Test if instr.b() != 0) || instr.opcode() == Opcode::BrFalse {
+                        relative
+                    } else {
+                        fallthrough
+                    };
                 match kind {
                     NativeScalarKind::Bool => {
                         let value = next_tmp(tmp_index);
@@ -977,4 +1042,16 @@ fn static_call_target(value: NativeStraightlineValue) -> Option<(u16, Vec<Native
         } => Some((function_index, captures)),
         _ => None,
     }
+}
+
+fn compare_test_i64_pred(opcode: Opcode) -> Option<&'static str> {
+    Some(match opcode {
+        Opcode::TestEqInt => "eq",
+        Opcode::TestNeInt => "ne",
+        Opcode::TestLtInt => "slt",
+        Opcode::TestLeInt => "sle",
+        Opcode::TestGtInt => "sgt",
+        Opcode::TestGeInt => "sge",
+        _ => return None,
+    })
 }

@@ -14,7 +14,10 @@ pub(super) fn callee_is_native_assert(callee: &FunctionData) -> bool {
         return false;
     };
     if !matches!(code.first().copied().map(Instr::opcode), Some(Opcode::Not))
-        || !matches!(code.get(1).copied().map(Instr::opcode), Some(Opcode::Test))
+        || !matches!(
+            code.get(1).copied().map(Instr::opcode),
+            Some(Opcode::Test | Opcode::BrFalse | Opcode::BrTrue)
+        )
     {
         return false;
     }

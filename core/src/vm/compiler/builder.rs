@@ -116,16 +116,7 @@ impl Compiler {
 
     pub(super) fn emit_test_placeholder(&mut self, condition: u16) -> Result<usize> {
         let pc = self.function.code.len();
-        // Trampoline pair: Test (c=1 skips the Jmp when condition matches) + Jmp to the real target.
-        // patch_test_false/true_jump fills in the Jmp offset; the Test field B is set to the
-        // inverted sense so that a matching condition falls through to the Jmp.
-        self.emit(Instr::abc(
-            Opcode::Test,
-            checked_u8("test condition", condition)?,
-            1, // placeholder; overwritten by patch_test_jump
-            1, // C=1: jump to pc+2 (body) when condition does NOT match the Jmp path
-        ));
-        // Always emit a Jmp placeholder immediately after; patch_test_jump will set its offset.
+        self.emit(Instr::abc(Opcode::Test, checked_u8("test condition", condition)?, 1, 1));
         self.emit(Instr::sj(Opcode::Jmp, 0));
         Ok(pc)
     }
@@ -134,6 +125,30 @@ impl Compiler {
         let pc = self.function.code.len();
         self.emit(Instr::sj(Opcode::Jmp, 0));
         pc
+    }
+
+    pub(super) fn emit_branch_placeholder(&mut self, opcode: Opcode, condition: u16) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::as_bx(opcode, checked_u8("branch condition", condition)?, 0));
+        Ok(pc)
+    }
+
+    pub(super) fn emit_compare_test_placeholder(
+        &mut self,
+        opcode: Opcode,
+        lhs: u16,
+        rhs: u16,
+        jump_when: bool,
+    ) -> Result<usize> {
+        let pc = self.function.code.len();
+        self.emit(Instr::abc(
+            opcode,
+            checked_u8("compare lhs", lhs)?,
+            checked_u8("compare rhs", rhs)?,
+            u8::from(jump_when),
+        ));
+        self.emit(Instr::sj(Opcode::Jmp, 0));
+        Ok(pc)
     }
 
     pub(super) fn emit_raise(&mut self, message: &str) -> Result<()> {
@@ -158,15 +173,6 @@ impl Compiler {
     }
 
     fn patch_test_jump(&mut self, pc: usize, target: usize, expected: u8) -> Result<()> {
-        // Trampoline scheme: the Test instruction (at `pc`) skips 1 ahead (c=1) when the
-        // condition does NOT satisfy the exit path, landing at pc+2 (body/continuation).
-        // When the condition DOES satisfy the exit path, it falls through to pc+1 (the Jmp)
-        // which carries the potentially-large offset to `target`.
-        //
-        // expected=1 (patch_test_false_jump): we want to jump to `target` when FALSY.
-        //   Test B=0, c=1: TRUTHY → jump to pc+2 (body); FALSY → fallthrough to Jmp[target].
-        // expected=0 (patch_test_true_jump): we want to jump to `target` when TRUTHY.
-        //   Test B=1, c=1: FALSY → jump to pc+2 (continuation); TRUTHY → fallthrough to Jmp[target].
         let instr = *self
             .function
             .code
@@ -175,10 +181,8 @@ impl Compiler {
         if instr.opcode() != Opcode::Test {
             bail!("Compiler expected Test at patch pc {pc}");
         }
-        // Inverted B: when expected=1, we set B=0 (jump to pc+2 on truthy, fallthrough on falsy).
         let test_b: u8 = 1 - expected;
         self.function.code[pc] = Instr::abc(Opcode::Test, instr.a(), test_b, 1);
-        // Patch the Jmp placeholder at pc+1 to jump to `target`.
         self.patch_jmp(pc + 1, target)
     }
 
@@ -193,6 +197,34 @@ impl Compiler {
         }
         self.function.code[pc] = Instr::sj(Opcode::Jmp, jump_offset(pc, target)?);
         Ok(())
+    }
+
+    pub(super) fn patch_branch(&mut self, pc: usize, target: usize) -> Result<()> {
+        let instr = *self
+            .function
+            .code
+            .get(pc)
+            .ok_or_else(|| anyhow!("Compiler branch patch pc {pc} out of bounds"))?;
+        if !matches!(
+            instr.opcode(),
+            Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil
+        ) {
+            bail!("Compiler expected branch at patch pc {pc}");
+        }
+        self.function.code[pc] = Instr::as_bx(instr.opcode(), instr.a(), jump_offset(pc, target)? as i16);
+        Ok(())
+    }
+
+    pub(super) fn patch_compare_test_jump(&mut self, pc: usize, target: usize) -> Result<()> {
+        let instr = *self
+            .function
+            .code
+            .get(pc)
+            .ok_or_else(|| anyhow!("Compiler compare-test patch pc {pc} out of bounds"))?;
+        if !instr.opcode().is_compare_test() {
+            bail!("Compiler expected compare-test at patch pc {pc}");
+        }
+        self.patch_jmp(pc + 1, target)
     }
 
     pub(super) fn push_int(&mut self, value: i64) -> Result<u16> {
@@ -283,6 +315,27 @@ fn build_control_flow_facts(code: &[Instr], performance: &PerformanceFacts) -> R
                     &mut block_starts,
                 )?;
             }
+            Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil => {
+                mark_relative_target(
+                    pc,
+                    instr.sbx() as i32,
+                    code.len(),
+                    &mut branch_targets,
+                    &mut block_starts,
+                )?;
+                mark_block_start(pc + 1, code.len(), &mut block_starts);
+            }
+            opcode if opcode.is_compare_test() => {
+                let jmp = code
+                    .get(pc + 1)
+                    .copied()
+                    .ok_or_else(|| anyhow!("Compiler compare-test missing Jmp at pc {pc}"))?;
+                if jmp.opcode() != Opcode::Jmp {
+                    bail!("Compiler compare-test expected Jmp at pc {}", pc + 1);
+                }
+                mark_relative_target(pc + 1, jmp.sj_arg(), code.len(), &mut branch_targets, &mut block_starts)?;
+                mark_block_start(pc + 2, code.len(), &mut block_starts);
+            }
             Opcode::Jmp => {
                 mark_relative_target(pc, instr.sj_arg(), code.len(), &mut branch_targets, &mut block_starts)?;
                 mark_block_start(pc + 1, code.len(), &mut block_starts);
@@ -333,18 +386,29 @@ fn fused_bool_branch_fact(code: &[Instr], pc: usize, instr: Instr) -> Option<Per
     if !opcode_writes_bool_result(instr.opcode()) {
         return None;
     }
-    let test = code.get(pc + 1).copied()?;
-    if test.opcode() != Opcode::Test || test.a() != instr.a() || test.c() != 1 {
+    let branch = code.get(pc + 1).copied()?;
+    if branch.a() != instr.a() {
+        return None;
+    }
+    if branch.opcode() == Opcode::BrFalse || branch.opcode() == Opcode::BrTrue {
+        return Some(PerfFusedBoolBranchFact {
+            result_reg: instr.a(),
+            jump_when: branch.opcode() == Opcode::BrTrue,
+            jump_offset: branch.sbx() as i32,
+            jump_base_pc_delta: 1,
+            fallthrough_pc_delta: 2,
+        });
+    }
+    if branch.opcode() != Opcode::Test || branch.c() != 1 {
         return None;
     }
     let jmp = code.get(pc + 2).copied()?;
-    if jmp.opcode() != Opcode::Jmp {
-        return None;
-    }
-    Some(PerfFusedBoolBranchFact {
+    (jmp.opcode() == Opcode::Jmp).then_some(PerfFusedBoolBranchFact {
         result_reg: instr.a(),
-        jump_when: test.b() != 0,
+        jump_when: branch.b() != 0,
         jump_offset: jmp.sj_arg(),
+        jump_base_pc_delta: 2,
+        fallthrough_pc_delta: 3,
     })
 }
 

@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::{
-    Compiler, Instr, Opcode,
+    Compiler, Instr, Opcode, get_field_key,
     facts::{expr_static_value_kind, index_fact_from_target},
     support::{FunctionSignature, checked_u8, simple_local_expr_name},
 };
@@ -88,16 +88,25 @@ impl Compiler {
         let (key, key_fact) = self.lower_readonly_index_key_for_target(target, index_fact, &args[1])?;
         let dst = self.alloc_reg();
         let pc = self.function.code.len();
-        self.emit(Instr::abc(
-            Opcode::GetIndex,
-            checked_u8("map.get dst", dst)?,
-            checked_u8("map.get target", target)?,
-            checked_u8("map.get key", key)?,
-        ));
-        self.function.performance.clear_register(dst);
-        if let Some(fact) = key_fact {
-            self.function.performance.set_key_fact(pc, fact);
+        if let Some(const_key) = get_field_key(index_fact, key_fact) {
+            self.emit(Instr::abc(
+                Opcode::GetFieldK,
+                checked_u8("map.get field dst", dst)?,
+                checked_u8("map.get field target", target)?,
+                checked_u8("map.get field key", const_key)?,
+            ));
+        } else {
+            self.emit(Instr::abc(
+                Opcode::GetIndex,
+                checked_u8("map.get dst", dst)?,
+                checked_u8("map.get target", target)?,
+                checked_u8("map.get key", key)?,
+            ));
+            if let Some(fact) = key_fact {
+                self.function.performance.set_key_fact(pc, fact);
+            }
         }
+        self.function.performance.clear_register(dst);
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
         }
@@ -282,20 +291,29 @@ impl Compiler {
         let move_key = set_method_key_move_preferred(key) && !self.is_current_local_slot(key_reg);
         let move_value = !self.is_current_local_slot(value_reg);
         let pc = self.function.code.len();
-        self.emit(Instr::abc(
-            Opcode::SetIndex,
-            checked_u8("method set target", target_reg)?,
-            checked_u8("method set key", key_reg)?,
-            checked_u8("method set value", value_reg)?,
-        ));
+        if let Some(const_key) = get_field_key(index_fact, key_fact) {
+            self.emit(Instr::abc(
+                Opcode::SetFieldK,
+                checked_u8("method set field target", target_reg)?,
+                checked_u8("method set field value", value_reg)?,
+                checked_u8("method set field key", const_key)?,
+            ));
+        } else {
+            self.emit(Instr::abc(
+                Opcode::SetIndex,
+                checked_u8("method set target", target_reg)?,
+                checked_u8("method set key", key_reg)?,
+                checked_u8("method set value", value_reg)?,
+            ));
+            if let Some(fact) = key_fact {
+                self.function.performance.set_key_fact(pc, fact);
+            }
+        }
         self.function
             .performance
             .set_container_move_fact(pc, PerfContainerMoveFact { move_key, move_value });
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
-        }
-        if let Some(fact) = key_fact {
-            self.function.performance.set_key_fact(pc, fact);
         }
         Ok(())
     }

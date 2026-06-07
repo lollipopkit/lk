@@ -5,7 +5,7 @@ use crate::llvm::{
     dynamic_containers::{emit_dynamic_int_list_copy, emit_dynamic_int_list_equality, emit_dynamic_int_list_slice},
     ir_text::next_tmp,
     straightline_value::{
-        NativeListElementKind, NativeStraightlineValue, native_runtime_string_key_kind,
+        NativeListElementKind, NativeStraightlineValue, NativeStringKeyKind, native_runtime_string_key_kind,
         native_static_collection_equality_bool, native_static_compare_bool, native_static_container_test,
         native_static_contains, native_static_index, native_static_int_range, native_static_list_from_values,
         native_static_map_rest, native_static_object_from_fields, native_static_slice_from, native_static_to_iter,
@@ -462,6 +462,21 @@ pub(in crate::llvm) fn local_static_index_value_before(
                     .or_else(|| local_static_i64_before(code, int_consts, prev_pc, prev.c()))?;
                 native_static_index(target.clone(), key.clone(), String::new())
                     .or_else(|| static_int_list_index_value(code, int_consts, strings, heap_values, &target, &key))
+            }
+            Opcode::GetFieldK => {
+                let target = local_static_container_before(code, heap_values, prev_pc, prev.b())
+                    .or_else(|| local_static_map_rest_before(code, strings, heap_values, prev_pc, prev.b()))
+                    .or_else(|| {
+                        local_static_index_value_before(code, int_consts, strings, heap_values, prev_pc, prev.b())
+                    })?;
+                let key_text = strings.get(prev.c() as usize)?;
+                let key = NativeStraightlineValue::String {
+                    symbol: String::new(),
+                    value: key_text.clone(),
+                    len: key_text.len(),
+                    key_kind: NativeStringKeyKind::Short,
+                };
+                native_static_index(target, key, String::new())
             }
             Opcode::SliceFrom => {
                 let target = local_static_container_before(code, heap_values, prev_pc, prev.b())

@@ -156,19 +156,16 @@ pub(super) fn compile_native_scalar_subfunction(
                 emitted_terminator = true;
             }
 
-            Opcode::Test => {
+            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue => {
                 if (instr.a() as usize) >= register_count {
                     return Ok(None);
                 }
                 let Some(kind) = callee_facts.register_kind_before(pc, instr.a()) else {
                     return Ok(None);
                 };
-                let fallthrough = pc + 1;
-                let Some(relative) = native_relative_target(pc, instr.c() as i8 as i32, code_len) else {
+                let Some((truthy_target, falsy_target)) = branch_truthy_falsy_targets(pc, instr, code_len) else {
                     return Ok(None);
                 };
-                let truthy_target = if instr.b() != 0 { fallthrough } else { relative };
-                let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
                 match kind {
                     NativeScalarKind::Bool => {
                         let value = next_tmp(&mut tmp_index);
@@ -192,6 +189,35 @@ pub(super) fn compile_native_scalar_subfunction(
                         ir.push_str(&format!("  br label {}\n", native_label(truthy_target, code_len)));
                     }
                 }
+                emitted_terminator = true;
+            }
+            opcode if opcode.is_compare_test() => {
+                if (instr.a() as usize) >= register_count || (instr.b() as usize) >= register_count {
+                    return Ok(None);
+                }
+                let Some((taken, fallthrough)) = compare_test_targets(&code, pc, code_len) else {
+                    return Ok(None);
+                };
+                let Some(pred) = compare_test_i64_pred(instr.opcode()) else {
+                    return Ok(None);
+                };
+                let lhs = next_tmp(&mut tmp_index);
+                let rhs = next_tmp(&mut tmp_index);
+                let cond = next_tmp(&mut tmp_index);
+                let branch_cond = next_tmp(&mut tmp_index);
+                ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.a()));
+                ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.b()));
+                ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
+                if instr.c() != 0 {
+                    ir.push_str(&format!("  {branch_cond} = xor i1 {cond}, false\n"));
+                } else {
+                    ir.push_str(&format!("  {branch_cond} = xor i1 {cond}, true\n"));
+                }
+                ir.push_str(&format!(
+                    "  br i1 {branch_cond}, label {}, label {}\n",
+                    native_label(taken, code_len),
+                    native_label(fallthrough, code_len)
+                ));
                 emitted_terminator = true;
             }
 
@@ -708,21 +734,44 @@ pub(super) fn compile_native_ptr_list_subfunction(
                 ir.push_str(&format!("  br label {}\n", native_label(target, code_len)));
                 emitted_terminator = true;
             }
-            Opcode::Test => {
+            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue => {
                 let value = next_tmp(&mut tmp_index);
                 let cond = next_tmp(&mut tmp_index);
                 ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
                 ir.push_str(&format!("  {cond} = icmp ne i64 {value}, 0\n"));
-                let fallthrough = pc + 1;
-                let Some(relative) = native_relative_target(pc, instr.c() as i8 as i32, code_len) else {
+                let Some((truthy_target, falsy_target)) = branch_truthy_falsy_targets(pc, instr, code_len) else {
                     return Ok(None);
                 };
-                let truthy_target = if instr.b() != 0 { fallthrough } else { relative };
-                let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
                 ir.push_str(&format!(
                     "  br i1 {cond}, label {}, label {}\n",
                     native_label(truthy_target, code_len),
                     native_label(falsy_target, code_len)
+                ));
+                emitted_terminator = true;
+            }
+            opcode if opcode.is_compare_test() => {
+                let Some((taken, fallthrough)) = compare_test_targets(&code, pc, code_len) else {
+                    return Ok(None);
+                };
+                let Some(pred) = compare_test_i64_pred(instr.opcode()) else {
+                    return Ok(None);
+                };
+                let lhs = next_tmp(&mut tmp_index);
+                let rhs = next_tmp(&mut tmp_index);
+                let cond = next_tmp(&mut tmp_index);
+                let branch_cond = next_tmp(&mut tmp_index);
+                ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.a()));
+                ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.b()));
+                ir.push_str(&format!("  {cond} = icmp {pred} i64 {lhs}, {rhs}\n"));
+                if instr.c() != 0 {
+                    ir.push_str(&format!("  {branch_cond} = xor i1 {cond}, false\n"));
+                } else {
+                    ir.push_str(&format!("  {branch_cond} = xor i1 {cond}, true\n"));
+                }
+                ir.push_str(&format!(
+                    "  br i1 {branch_cond}, label {}, label {}\n",
+                    native_label(taken, code_len),
+                    native_label(fallthrough, code_len)
                 ));
                 emitted_terminator = true;
             }
@@ -1017,10 +1066,20 @@ fn find_block_targets(code: &[Instr], code_len: usize) -> Vec<usize> {
                     targets.push(target);
                 }
             }
-            Opcode::Test => {
-                if let Some(relative) = native_relative_target(pc, instr.c() as i8 as i32, code_len) {
-                    targets.push(relative);
-                    targets.push(pc + 1); // fall-through
+            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue => {
+                if let Some((truthy, falsy)) = branch_truthy_falsy_targets(pc, instr, code_len) {
+                    targets.push(truthy);
+                    targets.push(falsy);
+                }
+            }
+            opcode if opcode.is_compare_test() => {
+                if let Some(jmp) = code.get(pc + 1).copied()
+                    && jmp.opcode() == Opcode::Jmp
+                {
+                    if let Some(target) = native_relative_target(pc + 1, jmp.sj_arg(), code_len) {
+                        targets.push(target);
+                    }
+                    targets.push(pc + 2);
                 }
             }
             _ => {}
@@ -1029,6 +1088,46 @@ fn find_block_targets(code: &[Instr], code_len: usize) -> Vec<usize> {
     targets.sort();
     targets.dedup();
     targets
+}
+
+fn branch_truthy_falsy_targets(pc: usize, instr: Instr, code_len: usize) -> Option<(usize, usize)> {
+    let fallthrough = pc + 1;
+    let relative = match instr.opcode() {
+        Opcode::Test => native_relative_target(pc, instr.c() as i8 as i32, code_len)?,
+        Opcode::BrFalse | Opcode::BrTrue => native_relative_target(pc, instr.sbx() as i32, code_len)?,
+        _ => return None,
+    };
+    let truthy = if matches!(instr.opcode(), Opcode::Test if instr.b() == 0) || instr.opcode() == Opcode::BrTrue {
+        relative
+    } else {
+        fallthrough
+    };
+    let falsy = if matches!(instr.opcode(), Opcode::Test if instr.b() != 0) || instr.opcode() == Opcode::BrFalse {
+        relative
+    } else {
+        fallthrough
+    };
+    Some((truthy, falsy))
+}
+
+fn compare_test_targets(code: &[Instr], pc: usize, code_len: usize) -> Option<(usize, usize)> {
+    let jmp = code.get(pc + 1).copied()?;
+    if jmp.opcode() != Opcode::Jmp {
+        return None;
+    }
+    Some((native_relative_target(pc + 1, jmp.sj_arg(), code_len)?, pc + 2))
+}
+
+fn compare_test_i64_pred(opcode: Opcode) -> Option<&'static str> {
+    Some(match opcode {
+        Opcode::TestEqInt => "eq",
+        Opcode::TestNeInt => "ne",
+        Opcode::TestLtInt => "slt",
+        Opcode::TestLeInt => "sle",
+        Opcode::TestGtInt => "sgt",
+        Opcode::TestGeInt => "sge",
+        _ => return None,
+    })
 }
 
 fn compute_callee_facts(

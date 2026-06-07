@@ -5,8 +5,9 @@ use crate::{expr::Expr, operator::BinOp, val::LiteralVal};
 use crate::vm::analysis::{PerfCellMoveFact, PerfContainerMoveFact, PerfIndexTargetKind, PerfValueKind};
 
 use super::{
-    Compiler, Instr, Opcode, checked_u8,
+    Compiler, Instr, Opcode, checked_u8, get_field_key,
     facts::index_fact_from_target,
+    support::int_immediate_delta,
     support::{NumericFlavor, numeric_flavor, simple_local_expr_name},
 };
 
@@ -58,6 +59,10 @@ impl Compiler {
     }
 
     pub(super) fn lower_compound_assign(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<()> {
+        if self.try_lower_int_immediate_compound_assign(name, op, value)? {
+            self.clear_const_map_local(name);
+            return Ok(());
+        }
         if self.try_lower_additive_compound_assign(name, op, value)? {
             self.clear_const_map_local(name);
             return Ok(());
@@ -104,6 +109,24 @@ impl Compiler {
         }
         self.clear_const_map_local(name);
         Ok(())
+    }
+
+    fn try_lower_int_immediate_compound_assign(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<bool> {
+        let Some(delta) = int_immediate_delta(op, value) else {
+            return Ok(false);
+        };
+        let Some(lhs) = self.locals.get(name).copied() else {
+            return Ok(false);
+        };
+        if self.cell_locals.contains(name) || self.function.performance.value_kind(lhs) != PerfValueKind::Int {
+            return Ok(false);
+        }
+        let (dst, rebind_dst) = self.local_write_slot(lhs);
+        self.emit_add_int_immediate_to_register(dst, lhs, delta)?;
+        if rebind_dst {
+            self.insert_local(name.to_string(), dst);
+        }
+        Ok(true)
     }
 
     fn try_lower_additive_compound_assign(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<bool> {
@@ -256,20 +279,29 @@ impl Compiler {
         let value = self.lower_readonly_operand(value)?;
         let move_value = !self.is_current_local_slot(value);
         let pc = self.function.code.len();
-        self.emit(Instr::abc(
-            Opcode::SetIndex,
-            checked_u8("set index target", target)?,
-            checked_u8("set index key", key)?,
-            checked_u8("set index value", value)?,
-        ));
+        if let Some(const_key) = get_field_key(index_fact, key_fact) {
+            self.emit(Instr::abc(
+                Opcode::SetFieldK,
+                checked_u8("set field target", target)?,
+                checked_u8("set field value", value)?,
+                checked_u8("set field key", const_key)?,
+            ));
+        } else {
+            self.emit(Instr::abc(
+                Opcode::SetIndex,
+                checked_u8("set index target", target)?,
+                checked_u8("set index key", key)?,
+                checked_u8("set index value", value)?,
+            ));
+            if let Some(fact) = key_fact {
+                self.function.performance.set_key_fact(pc, fact);
+            }
+        }
         self.function
             .performance
             .set_container_move_fact(pc, PerfContainerMoveFact { move_key, move_value });
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
-        }
-        if let Some(fact) = key_fact {
-            self.function.performance.set_key_fact(pc, fact);
         }
         Ok(())
     }

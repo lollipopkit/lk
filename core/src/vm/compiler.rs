@@ -303,16 +303,25 @@ impl Compiler {
         let (key, key_fact) = self.lower_index_key_for_target(target, index_fact, key)?;
         let dst = self.alloc_reg();
         let pc = self.function.code.len();
-        self.emit(Instr::abc(
-            Opcode::GetIndex,
-            checked_u8("index dst", dst)?,
-            checked_u8("index target", target)?,
-            checked_u8("index key", key)?,
-        ));
-        self.function.performance.clear_register(dst);
-        if let Some(fact) = key_fact {
-            self.function.performance.set_key_fact(pc, fact);
+        if let Some(const_key) = get_field_key(index_fact, key_fact) {
+            self.emit(Instr::abc(
+                Opcode::GetFieldK,
+                checked_u8("field dst", dst)?,
+                checked_u8("field target", target)?,
+                checked_u8("field key", const_key)?,
+            ));
+        } else {
+            self.emit(Instr::abc(
+                Opcode::GetIndex,
+                checked_u8("index dst", dst)?,
+                checked_u8("index target", target)?,
+                checked_u8("index key", key)?,
+            ));
+            if let Some(fact) = key_fact {
+                self.function.performance.set_key_fact(pc, fact);
+            }
         }
+        self.function.performance.clear_register(dst);
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
         }
@@ -374,16 +383,25 @@ impl Compiler {
         let index_fact = index_fact_from_target(&self.function.performance, target);
         let (key, key_fact) = self.lower_index_key_for_target(target, index_fact, key)?;
         let pc = self.function.code.len();
-        self.emit(Instr::abc(
-            Opcode::GetIndex,
-            checked_u8("optional get dst", dst)?,
-            checked_u8("optional get target", target)?,
-            checked_u8("optional get key", key)?,
-        ));
-        self.function.performance.clear_register(dst);
-        if let Some(fact) = key_fact {
-            self.function.performance.set_key_fact(pc, fact);
+        if let Some(const_key) = get_field_key(index_fact, key_fact) {
+            self.emit(Instr::abc(
+                Opcode::GetFieldK,
+                checked_u8("optional field dst", dst)?,
+                checked_u8("optional field target", target)?,
+                checked_u8("optional field key", const_key)?,
+            ));
+        } else {
+            self.emit(Instr::abc(
+                Opcode::GetIndex,
+                checked_u8("optional get dst", dst)?,
+                checked_u8("optional get target", target)?,
+                checked_u8("optional get key", key)?,
+            ));
+            if let Some(fact) = key_fact {
+                self.function.performance.set_key_fact(pc, fact);
+            }
         }
+        self.function.performance.clear_register(dst);
         if let Some(fact) = index_fact {
             self.function.performance.set_index_fact(pc, fact);
         }
@@ -441,6 +459,68 @@ impl Compiler {
             }
         }
         Ok(dst)
+    }
+
+    pub(super) fn emit_condition_false_jumps(&mut self, condition: &Expr) -> Result<Vec<usize>> {
+        match condition {
+            Expr::And(lhs, rhs) => {
+                let mut jumps = self.emit_condition_false_jumps(lhs)?;
+                jumps.extend(self.emit_condition_false_jumps(rhs)?);
+                Ok(jumps)
+            }
+            Expr::Or(lhs, rhs) => {
+                let lhs = self.lower_readonly_operand(lhs)?;
+                let skip_rhs = self.emit_test_placeholder(lhs)?;
+                let jumps = self.emit_condition_false_jumps(rhs)?;
+                let end = self.function.code.len();
+                self.patch_test_true_jump(skip_rhs, end)?;
+                Ok(jumps)
+            }
+            Expr::Bin(lhs, BinOp::Eq, rhs) if expr_is_nil_literal(lhs) => {
+                let value = self.lower_readonly_operand(rhs)?;
+                Ok(vec![self.emit_branch_placeholder(Opcode::BrNotNil, value)?])
+            }
+            Expr::Bin(lhs, BinOp::Eq, rhs) if expr_is_nil_literal(rhs) => {
+                let value = self.lower_readonly_operand(lhs)?;
+                Ok(vec![self.emit_branch_placeholder(Opcode::BrNotNil, value)?])
+            }
+            Expr::Bin(lhs, BinOp::Ne, rhs) if expr_is_nil_literal(lhs) => {
+                let value = self.lower_readonly_operand(rhs)?;
+                Ok(vec![self.emit_branch_placeholder(Opcode::BrNil, value)?])
+            }
+            Expr::Bin(lhs, BinOp::Ne, rhs) if expr_is_nil_literal(rhs) => {
+                let value = self.lower_readonly_operand(lhs)?;
+                Ok(vec![self.emit_branch_placeholder(Opcode::BrNil, value)?])
+            }
+            Expr::Bin(lhs, op, rhs) if compare_test_opcode(op).is_some() => {
+                let lhs = self.lower_readonly_operand(lhs)?;
+                let rhs = self.lower_readonly_operand(rhs)?;
+                if ENABLE_COMPARE_TEST_LOWERING && compare_test_operands_are_int(&self.function.performance, lhs, rhs) {
+                    let opcode = compare_test_opcode(op).expect("checked compare-test opcode");
+                    return Ok(vec![self.emit_compare_test_placeholder(opcode, lhs, rhs, false)?]);
+                }
+                let dst = self.alloc_reg();
+                let condition = self.emit_bin_op_to_register(dst, op, lhs, rhs)?;
+                Ok(vec![self.emit_test_placeholder(condition)?])
+            }
+            _ => {
+                let condition = self.lower_readonly_operand(condition)?;
+                Ok(vec![self.emit_test_placeholder(condition)?])
+            }
+        }
+    }
+
+    pub(super) fn patch_condition_false_jumps(&mut self, jumps: Vec<usize>, target: usize) -> Result<()> {
+        for jump in jumps {
+            match self.function.code.get(jump).copied().map(Instr::opcode) {
+                Some(Opcode::BrNil | Opcode::BrNotNil | Opcode::BrFalse | Opcode::BrTrue) => {
+                    self.patch_branch(jump, target)?;
+                }
+                Some(opcode) if opcode.is_compare_test() => self.patch_compare_test_jump(jump, target)?,
+                _ => self.patch_test_false_jump(jump, target)?,
+            }
+        }
+        Ok(())
     }
 
     fn lower_template_string(&mut self, parts: &[TemplateStringPart]) -> Result<u16> {
@@ -619,15 +699,14 @@ impl Compiler {
     }
 
     fn lower_conditional(&mut self, condition: &Expr, then_expr: &Expr, else_expr: &Expr) -> Result<u16> {
-        let condition = self.lower_readonly_operand(condition)?;
         let dst = self.alloc_reg();
-        let test_pc = self.emit_test_placeholder(condition)?;
+        let false_jumps = self.emit_condition_false_jumps(condition)?;
 
         self.lower_expr_to_register(dst, then_expr, "conditional then")?;
         let jmp_end = self.emit_jmp_placeholder();
 
         let else_start = self.function.code.len();
-        self.patch_test_false_jump(test_pc, else_start)?;
+        self.patch_condition_false_jumps(false_jumps, else_start)?;
         self.lower_expr_to_register(dst, else_expr, "conditional else")?;
 
         let end = self.function.code.len();
@@ -689,8 +768,7 @@ impl Compiler {
 
     fn lower_if(&mut self, condition: &Expr, then_stmt: &Stmt, else_stmt: Option<&Stmt>) -> Result<()> {
         let watermark = self.next_reg;
-        let condition = self.lower_readonly_operand(condition)?;
-        let test_pc = self.emit_test_placeholder(condition)?;
+        let false_jumps = self.emit_condition_false_jumps(condition)?;
 
         self.emitted_return = false;
         self.local_rebind_suppression += 1;
@@ -702,7 +780,7 @@ impl Compiler {
         if let Some(else_stmt) = else_stmt {
             let jmp_end = (!then_returns).then(|| self.emit_jmp_placeholder());
             let else_start = self.function.code.len();
-            self.patch_test_false_jump(test_pc, else_start)?;
+            self.patch_condition_false_jumps(false_jumps, else_start)?;
 
             self.emitted_return = false;
             self.local_rebind_suppression += 1;
@@ -718,7 +796,7 @@ impl Compiler {
             self.emitted_return = then_returns && else_returns;
         } else {
             let end = self.function.code.len();
-            self.patch_test_false_jump(test_pc, end)?;
+            self.patch_condition_false_jumps(false_jumps, end)?;
             self.emitted_return = false;
         }
 
@@ -729,11 +807,11 @@ impl Compiler {
         let watermark = self.next_reg;
         self.begin_loop_scalar_const_scope(condition, body)?;
         let condition_start = self.function.code.len();
-        let condition = self.lower_readonly_operand(condition)?;
-        let test_pc = self.emit_test_placeholder(condition)?;
+        let false_jumps = self.emit_condition_false_jumps(condition)?;
         // Scalar constant loads in the condition can run once before the first
         // iteration; loop-back jumps resume at the first real condition op.
-        let loop_start = self.function.code[condition_start..test_pc]
+        let condition_end = self.function.code.len();
+        let loop_start = self.function.code[condition_start..condition_end]
             .iter()
             .enumerate()
             .find_map(|(i, instr)| {
@@ -757,7 +835,7 @@ impl Compiler {
         }
 
         let end = self.function.code.len();
-        self.patch_test_false_jump(test_pc, end)?;
+        self.patch_condition_false_jumps(false_jumps, end)?;
         for pc in loop_patch.breaks {
             self.patch_jmp(pc, end)?;
         }
@@ -1302,6 +1380,17 @@ impl Compiler {
     fn lower_bin(&mut self, lhs: &Expr, op: &BinOp, rhs: &Expr) -> Result<u16> {
         let static_flavor = numeric_flavor(lhs, op, rhs);
         let lhs = self.lower_readonly_operand(lhs)?;
+        if let Some(delta) = int_immediate_delta(op, rhs) {
+            let dst = self.alloc_reg();
+            let flavor = if self.function.performance.value_kind(lhs) == PerfValueKind::Int {
+                Some(NumericFlavor::Int)
+            } else {
+                None
+            };
+            if flavor == Some(static_flavor) {
+                return self.emit_add_int_immediate_to_register(dst, lhs, delta);
+            }
+        }
         let rhs = self.lower_readonly_operand(rhs)?;
         let dst = self.alloc_reg();
         let flavor =
@@ -1361,6 +1450,17 @@ impl Compiler {
         self.set_register_kind(dst, bin_op_result_kind(op, flavor));
         Ok(dst)
     }
+
+    fn emit_add_int_immediate_to_register(&mut self, dst: u16, lhs: u16, delta: i8) -> Result<u16> {
+        self.emit(Instr::abc(
+            Opcode::AddIntI,
+            checked_u8("dst", dst)?,
+            checked_u8("lhs", lhs)?,
+            delta as u8,
+        ));
+        self.set_register_kind(dst, PerfValueKind::Int);
+        Ok(dst)
+    }
 }
 
 fn impl_method_type(
@@ -1393,6 +1493,47 @@ fn impl_method_type(
         named_params,
         return_type: Box::new(return_type.clone().unwrap_or(Type::Any)),
     }
+}
+
+fn expr_is_nil_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Paren(inner) => expr_is_nil_literal(inner),
+        Expr::Literal(LiteralVal::Nil) => true,
+        _ => false,
+    }
+}
+
+fn get_field_key(
+    index_fact: Option<crate::vm::analysis::PerfIndexFact>,
+    key_fact: Option<crate::vm::analysis::PerfKeyFact>,
+) -> Option<u16> {
+    let index_fact = index_fact?;
+    if !matches!(
+        index_fact.target_kind,
+        crate::vm::analysis::PerfIndexTargetKind::Map | crate::vm::analysis::PerfIndexTargetKind::Object
+    ) {
+        return None;
+    }
+    let key = key_fact?.const_key?;
+    (key <= u8::MAX as u16).then_some(key)
+}
+
+const ENABLE_COMPARE_TEST_LOWERING: bool = true;
+
+fn compare_test_opcode(op: &BinOp) -> Option<Opcode> {
+    match op {
+        BinOp::Eq => Some(Opcode::TestEqInt),
+        BinOp::Ne => Some(Opcode::TestNeInt),
+        BinOp::Lt => Some(Opcode::TestLtInt),
+        BinOp::Le => Some(Opcode::TestLeInt),
+        BinOp::Gt => Some(Opcode::TestGtInt),
+        BinOp::Ge => Some(Opcode::TestGeInt),
+        _ => None,
+    }
+}
+
+fn compare_test_operands_are_int(facts: &crate::vm::analysis::PerformanceFacts, lhs: u16, rhs: u16) -> bool {
+    facts.value_kind(lhs) == PerfValueKind::Int && facts.value_kind(rhs) == PerfValueKind::Int
 }
 
 #[derive(Debug)]

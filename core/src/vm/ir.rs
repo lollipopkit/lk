@@ -29,7 +29,7 @@ pub struct ConstPool {
 }
 
 impl ConstPool {
-    const MAX_ABX_CONSTS: usize = 1 << 15;
+    const MAX_ABX_CONSTS: usize = 1 << 16;
 
     pub fn push_int(&mut self, value: i64) -> Result<u16> {
         push_const(&mut self.ints, value, "int")
@@ -189,11 +189,24 @@ pub enum Opcode {
     TryEnd = 61,
     ForLoopI = 62,
     Wide = 63,
+    AddIntI = 64,
+    BrFalse = 65,
+    BrTrue = 66,
+    BrNil = 67,
+    BrNotNil = 68,
+    TestEqInt = 69,
+    TestNeInt = 70,
+    TestLtInt = 71,
+    TestLeInt = 72,
+    TestGtInt = 73,
+    TestGeInt = 74,
+    GetFieldK = 75,
+    SetFieldK = 76,
 }
 
 impl Opcode {
-    /// Number of valid opcodes (all values 0..64 map to a valid variant).
-    pub const COUNT: u8 = 64;
+    /// Number of opcode slots available in the current 7-bit encoding.
+    pub const COUNT: u8 = 128;
 
     #[inline]
     pub const fn from_bits(bits: u8) -> Option<Self> {
@@ -262,6 +275,19 @@ impl Opcode {
             61 => Some(Self::TryEnd),
             62 => Some(Self::ForLoopI),
             63 => Some(Self::Wide),
+            64 => Some(Self::AddIntI),
+            65 => Some(Self::BrFalse),
+            66 => Some(Self::BrTrue),
+            67 => Some(Self::BrNil),
+            68 => Some(Self::BrNotNil),
+            69 => Some(Self::TestEqInt),
+            70 => Some(Self::TestNeInt),
+            71 => Some(Self::TestLtInt),
+            72 => Some(Self::TestLeInt),
+            73 => Some(Self::TestGtInt),
+            74 => Some(Self::TestGeInt),
+            75 => Some(Self::GetFieldK),
+            76 => Some(Self::SetFieldK),
             _ => None,
         }
     }
@@ -276,27 +302,67 @@ impl Opcode {
             Self::LoadNil | Self::LoadBool | Self::LoadInt | Self::LoadFloat | Self::LoadString
         )
     }
+
+    #[inline]
+    pub const fn info(self) -> OpcodeInfo {
+        OpcodeInfo {
+            format: match self {
+                Self::Jmp => InstrFormat::Sj,
+                Self::Raise
+                | Self::GetGlobal
+                | Self::SetGlobal
+                | Self::LoadInt
+                | Self::LoadFloat
+                | Self::LoadString
+                | Self::LoadHeapConst
+                | Self::LoadCapture
+                | Self::LoadFunction
+                | Self::LoadNative
+                | Self::CallNamed => InstrFormat::Abx,
+                Self::TryBegin | Self::BrFalse | Self::BrTrue | Self::BrNil | Self::BrNotNil => InstrFormat::AsBx,
+                Self::TryEnd | Self::Wide => InstrFormat::Ax,
+                _ => InstrFormat::Abc,
+            },
+        }
+    }
+
+    #[inline]
+    pub const fn is_compare_test(self) -> bool {
+        matches!(
+            self,
+            Self::TestEqInt
+                | Self::TestNeInt
+                | Self::TestLtInt
+                | Self::TestLeInt
+                | Self::TestGtInt
+                | Self::TestGeInt
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpcodeInfo {
+    pub format: InstrFormat,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Instr(u32);
 
 impl Instr {
-    const OPCODE_BITS: u32 = 6;
-    const FORMAT_BITS: u32 = 3;
+    const OPCODE_BITS: u32 = 7;
     const OP_SHIFT: u32 = 0;
-    const FORMAT_SHIFT: u32 = Self::OP_SHIFT + Self::OPCODE_BITS;
-    const A_SHIFT: u32 = Self::FORMAT_SHIFT + Self::FORMAT_BITS;
-    const B_SHIFT: u32 = Self::A_SHIFT + 8;
-    const C_SHIFT: u32 = Self::B_SHIFT + 8; // B is now 8 bits wide
+    const A_SHIFT: u32 = Self::OP_SHIFT + Self::OPCODE_BITS;
+    const K_SHIFT: u32 = Self::A_SHIFT + 8;
+    const B_SHIFT: u32 = Self::K_SHIFT + 1;
+    const C_SHIFT: u32 = Self::B_SHIFT + 8;
     const AX_SHIFT: u32 = Self::A_SHIFT;
+    const BX_SHIFT: u32 = Self::K_SHIFT;
     const OP_MASK: u32 = (1 << Self::OPCODE_BITS) - 1;
-    const FORMAT_MASK: u32 = (1 << Self::FORMAT_BITS) - 1;
     const BYTE_MASK: u32 = 0xFF;
     const B_MASK: u32 = 0xFF;
-    const C_MASK: u32 = 0x7F;
-    const BX_MASK: u32 = 0x7FFF;
-    const AX_MASK: u32 = (1 << 23) - 1;
+    const C_MASK: u32 = 0xFF;
+    const BX_MASK: u32 = 0xFFFF;
+    const AX_MASK: u32 = (1 << 25) - 1;
     const SJ_MASK: u32 = Self::AX_MASK;
     const SBX_BIAS: i32 = (Self::BX_MASK as i32) >> 1;
     const SJ_BIAS: i32 = (Self::SJ_MASK as i32) >> 1;
@@ -311,10 +377,6 @@ impl Instr {
         if Opcode::from_bits(opcode).is_none() {
             bail!("invalid Instr opcode bits: {opcode}");
         }
-        let format = ((raw >> Self::FORMAT_SHIFT) & Self::FORMAT_MASK) as u8;
-        if InstrFormat::from_bits(format).is_none() {
-            bail!("invalid Instr format bits: {format}");
-        }
         Ok(Self(raw))
     }
 
@@ -326,16 +388,13 @@ impl Instr {
 
     #[inline]
     pub fn format(self) -> InstrFormat {
-        InstrFormat::from_bits(((self.0 >> Self::FORMAT_SHIFT) & Self::FORMAT_MASK) as u8)
-            .expect("Instr format is validated at construction")
+        self.opcode().info().format
     }
 
     #[inline]
     pub const fn abc(op: Opcode, a: u8, b: u8, c: u8) -> Self {
-        debug_assert!(c < 128);
         Self(
             ((op as u32) << Self::OP_SHIFT)
-                | ((InstrFormat::Abc as u32) << Self::FORMAT_SHIFT)
                 | ((a as u32) << Self::A_SHIFT)
                 | (((b as u32) & Self::B_MASK) << Self::B_SHIFT)
                 | (((c as u32) & Self::C_MASK) << Self::C_SHIFT),
@@ -344,12 +403,10 @@ impl Instr {
 
     #[inline]
     pub const fn abx(op: Opcode, a: u8, bx: u16) -> Self {
-        debug_assert!(bx < (1 << 15));
         Self(
             ((op as u32) << Self::OP_SHIFT)
-                | ((InstrFormat::Abx as u32) << Self::FORMAT_SHIFT)
                 | ((a as u32) << Self::A_SHIFT)
-                | (((bx as u32) & Self::BX_MASK) << Self::B_SHIFT),
+                | (((bx as u32) & Self::BX_MASK) << Self::BX_SHIFT),
         )
     }
 
@@ -359,31 +416,22 @@ impl Instr {
         debug_assert!(encoded <= Self::BX_MASK);
         Self(
             ((op as u32) << Self::OP_SHIFT)
-                | ((InstrFormat::AsBx as u32) << Self::FORMAT_SHIFT)
                 | ((a as u32) << Self::A_SHIFT)
-                | ((encoded & Self::BX_MASK) << Self::B_SHIFT),
+                | ((encoded & Self::BX_MASK) << Self::BX_SHIFT),
         )
     }
 
     #[inline]
     pub const fn ax(op: Opcode, ax: u32) -> Self {
         debug_assert!(ax <= Self::AX_MASK);
-        Self(
-            ((op as u32) << Self::OP_SHIFT)
-                | ((InstrFormat::Ax as u32) << Self::FORMAT_SHIFT)
-                | ((ax & Self::AX_MASK) << Self::AX_SHIFT),
-        )
+        Self(((op as u32) << Self::OP_SHIFT) | ((ax & Self::AX_MASK) << Self::AX_SHIFT))
     }
 
     #[inline]
     pub const fn sj(op: Opcode, sj: i32) -> Self {
         let encoded = (sj + Self::SJ_BIAS) as u32;
         debug_assert!(encoded <= Self::SJ_MASK);
-        Self(
-            ((op as u32) << Self::OP_SHIFT)
-                | ((InstrFormat::Sj as u32) << Self::FORMAT_SHIFT)
-                | ((encoded & Self::SJ_MASK) << Self::AX_SHIFT),
-        )
+        Self(((op as u32) << Self::OP_SHIFT) | ((encoded & Self::SJ_MASK) << Self::AX_SHIFT))
     }
 
     #[inline]
@@ -402,8 +450,13 @@ impl Instr {
     }
 
     #[inline]
+    pub const fn sc(self) -> i8 {
+        self.c() as i8
+    }
+
+    #[inline]
     pub const fn bx(self) -> u16 {
-        ((self.0 >> Self::B_SHIFT) & Self::BX_MASK) as u16
+        ((self.0 >> Self::BX_SHIFT) & Self::BX_MASK) as u16
     }
 
     #[inline]
@@ -538,25 +591,25 @@ mod tests {
 
     #[test]
     fn abc_round_trips_opcode_format_and_registers() {
-        let instr = Instr::abc(Opcode::AddInt, 1, 2, 3);
+        let instr = Instr::abc(Opcode::AddInt, 1, 2, 255);
 
         assert_eq!(instr.opcode(), Opcode::AddInt);
         assert_eq!(instr.format(), InstrFormat::Abc);
         assert_eq!(instr.a(), 1);
         assert_eq!(instr.b(), 2);
-        assert_eq!(instr.c(), 3);
+        assert_eq!(instr.c(), 255);
     }
 
     #[test]
     fn abx_and_asbx_share_payload_layout() {
         let load = Instr::abx(Opcode::LoadString, 4, 12_345);
-        let jump = Instr::as_bx(Opcode::Jmp, 0, -123);
+        let handler = Instr::as_bx(Opcode::TryBegin, 0, -123);
 
         assert_eq!(load.format(), InstrFormat::Abx);
         assert_eq!(load.a(), 4);
         assert_eq!(load.bx(), 12_345);
-        assert_eq!(jump.format(), InstrFormat::AsBx);
-        assert_eq!(jump.sbx(), -123);
+        assert_eq!(handler.format(), InstrFormat::AsBx);
+        assert_eq!(handler.sbx(), -123);
     }
 
     #[test]
@@ -607,12 +660,12 @@ mod tests {
     }
 
     #[test]
-    fn instr_decoder_rejects_unaligned_or_invalid_format_words() {
+    fn instr_decoder_rejects_unaligned_or_invalid_opcode_words() {
         let unaligned = [0_u8, 1, 2];
         assert!(decode_instr(&unaligned).is_err());
 
-        let invalid_format = (7_u32 << Instr::FORMAT_SHIFT).to_le_bytes();
-        assert!(decode_instr(&invalid_format).is_err());
+        let invalid_opcode = 127_u32.to_le_bytes();
+        assert!(decode_instr(&invalid_opcode).is_err());
     }
 
     #[test]

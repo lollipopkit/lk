@@ -241,6 +241,8 @@ pub struct PerfFusedBoolBranchFact {
     pub result_reg: u8,
     pub jump_when: bool,
     pub jump_offset: i32,
+    pub jump_base_pc_delta: usize,
+    pub fallthrough_pc_delta: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -554,7 +556,7 @@ pub struct VmRuntimeMetrics {
     pub index_key_metrics: [u64; VM_INDEX_KEY_METRIC_COUNT],
 }
 
-pub const VM_OPCODE_COUNT: usize = 64;
+pub const VM_OPCODE_COUNT: usize = 128;
 pub const VM_REGISTER_WRITE_SOURCE_COUNT: usize = 10;
 pub const VM_INDEX_KEY_METRIC_COUNT: usize = 8;
 pub const VM_REGISTER_WRITE_SOURCE_NAMES: [&str; VM_REGISTER_WRITE_SOURCE_COUNT] = [

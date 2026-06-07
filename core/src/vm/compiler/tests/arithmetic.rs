@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn compiler_lowers_small_int_literal_add_sub_to_add_int_immediate() {
+    let function = compile_source(
+        r#"
+        let total = 10;
+        total += 1;
+        let adjusted = total - 2;
+        return adjusted;
+        "#,
+    )
+    .expect("compile source");
+
+    let immediate_count = function
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode::AddIntI)
+        .count();
+    assert_eq!(
+        immediate_count, 2,
+        "small integer add/sub literals should lower to AddIntI: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(9)]);
+}
+
+#[test]
 fn compiler_accumulates_int_add_chain_into_compound_target() {
     let function = compile_source(
         r#"

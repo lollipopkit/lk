@@ -30,7 +30,7 @@ mod string_split;
 mod values;
 use self::{
     allocas::emit_scalar_entry_allocas,
-    arithmetic::emit_int_arithmetic_block,
+    arithmetic::{emit_add_int_immediate_block, emit_int_arithmetic_block},
     asserts::emit_native_assert_direct_call,
     call_args::{
         emit_recovered_builtin_call_block, emit_runtime_formatted_print_call, static_or_recovered_call_args,
@@ -40,10 +40,10 @@ use self::{
     cells::{emit_load_cell_block, emit_store_cell_block},
     channel::emit_static_channel_call,
     compare::emit_compare_block,
-    control::emit_test_block,
+    control::{emit_compare_test_block, emit_for_loop_i_block, emit_test_block},
     direct_print::emit_direct_emit_helper_call,
     finalize::finish_scalar_ir,
-    get_index::emit_get_index_block,
+    get_index::{emit_get_field_k_block, emit_get_index_block},
     globals::{emit_get_global_block, emit_set_global_block},
     iter::emit_to_iter_block,
     len::emit_len_block,
@@ -61,7 +61,7 @@ use self::{
     object_methods::{static_circle_pi_area_method, static_object_list_map_method},
     returns::emit_return_block,
     runtime_builtins::emit_runtime_builtin_call,
-    set_index::emit_set_index_block,
+    set_index::{emit_set_field_k_block, emit_set_index_block},
     string_methods::emit_string_starts_with_block,
     string_split::emit_string_split_block,
     values::emit_value_block,
@@ -271,6 +271,21 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
+            Opcode::AddIntI => {
+                if !emit_add_int_immediate_block(
+                    &mut ir,
+                    code,
+                    pc,
+                    instr,
+                    register_count,
+                    facts,
+                    &mut static_regs,
+                    &mut tmp_index,
+                    code.len(),
+                ) {
+                    return Ok(None);
+                }
+            }
             Opcode::CmpInt
             | Opcode::CmpNeInt
             | Opcode::CmpLtInt
@@ -294,7 +309,23 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode::Test => {
+            opcode if opcode.is_compare_test() => {
+                if !emit_compare_test_block(
+                    &mut ir,
+                    &mut skip_static_pcs,
+                    &static_boundaries,
+                    &static_regs,
+                    code,
+                    pc,
+                    instr,
+                    register_count,
+                    facts,
+                    &mut tmp_index,
+                ) {
+                    return Ok(None);
+                }
+            }
+            Opcode::Test | Opcode::BrFalse | Opcode::BrTrue | Opcode::BrNil | Opcode::BrNotNil => {
                 if !emit_test_block(
                     &mut ir,
                     &mut skip_static_pcs,
@@ -352,39 +383,21 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 ir.push_str(&format!("  br label {}\n", native_label(target, code.len())));
             }
             Opcode::ForLoopI => {
-                if !three_regs_in_bounds(register_count, instr) {
-                    return Ok(None);
-                }
                 let Some(fact) = function.performance.for_loop(pc) else {
                     return Ok(None);
                 };
-                let Some(target) = native_relative_target(pc, fact.jump_offset, code.len()) else {
+                if !emit_for_loop_i_block(
+                    &mut ir,
+                    &mut static_regs,
+                    code,
+                    pc,
+                    instr,
+                    register_count,
+                    *fact,
+                    &mut tmp_index,
+                ) {
                     return Ok(None);
-                };
-                let index = next_tmp(&mut tmp_index);
-                let end = next_tmp(&mut tmp_index);
-                let step = next_tmp(&mut tmp_index);
-                let next = next_tmp(&mut tmp_index);
-                let cond = next_tmp(&mut tmp_index);
-                ir.push_str(&format!("  {index} = load i64, ptr %r{}.slot\n", instr.a()));
-                ir.push_str(&format!("  {end} = load i64, ptr %r{}.slot\n", instr.b()));
-                ir.push_str(&format!("  {step} = load i64, ptr %r{}.slot\n", instr.c()));
-                ir.push_str(&format!("  {next} = add i64 {index}, {step}\n"));
-                ir.push_str(&format!("  store i64 {next}, ptr %r{}.slot\n", instr.a()));
-                ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
-                let pred = match (fact.positive_step, fact.inclusive) {
-                    (true, true) => "sle",
-                    (true, false) => "slt",
-                    (false, true) => "sge",
-                    (false, false) => "sgt",
-                };
-                ir.push_str(&format!("  {cond} = icmp {pred} i64 {next}, {end}\n"));
-                ir.push_str(&format!(
-                    "  br i1 {cond}, label {}, label {}\n",
-                    native_label(target, code.len()),
-                    native_label(pc + 1, code.len())
-                ));
-                static_regs[instr.a() as usize] = None;
+                }
             }
             Opcode::GetGlobal => {
                 if emit_get_global_block(
@@ -576,6 +589,24 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
+            Opcode::GetFieldK => {
+                if !emit_get_field_k_block(
+                    &mut ir,
+                    &mut extra_globals,
+                    &mut static_regs,
+                    code,
+                    int_consts,
+                    strings,
+                    heap_values,
+                    function,
+                    pc,
+                    instr,
+                    register_count,
+                    &mut tmp_index,
+                ) {
+                    return Ok(None);
+                }
+            }
             Opcode::ListPush => {
                 if !emit_list_push_block(
                     &mut ir,
@@ -635,6 +666,25 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
             }
             Opcode::SetIndex => {
                 if !emit_set_index_block(
+                    &mut ir,
+                    &mut extra_globals,
+                    &mut static_regs,
+                    code,
+                    int_consts,
+                    strings,
+                    function,
+                    register_count,
+                    pc,
+                    instr,
+                    code.len(),
+                    facts,
+                    &mut tmp_index,
+                ) {
+                    return Ok(None);
+                }
+            }
+            Opcode::SetFieldK => {
+                if !emit_set_field_k_block(
                     &mut ir,
                     &mut extra_globals,
                     &mut static_regs,

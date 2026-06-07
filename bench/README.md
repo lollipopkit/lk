@@ -63,7 +63,10 @@ LK_WORKLOAD_FILTER=two_sum_map lua bench/workloads_business_algorithms.lua
 ## Workloads
 
 `run_workload_bench.sh` runs one LK script and one equivalent Lua script, each
-containing 15 common business/interview-style algorithm workloads.
+containing 20 common business/interview-style algorithm workloads. The suite is
+intended to prepare opcode design with broad runtime evidence: each workload
+mixes language features that naturally occur together instead of targeting one
+specific opcode in isolation.
 
 | Workload | What it stresses |
 |----------|------------------|
@@ -82,6 +85,22 @@ containing 15 common business/interview-style algorithm workloads.
 | `route_permission_check` | permission checks, path prefix matching, branch-heavy routing |
 | `inventory_reorder` | inventory aggregation, list building, map update, join |
 | `fraud_rule_scoring` | rule scoring, map membership, string prefix checks |
+| `customer_ltv_segments` | list of map records, field reads, segmentation branches, numeric scoring |
+| `event_join_by_id` | dynamic string IDs, map-of-records lookup, nested field reads |
+| `config_defaults_merge` | sparse maps, nil/default handling, mixed scalar/string branches |
+| `template_render_mix` | template construction, string length/prefix checks, branch-heavy formatting |
+| `state_machine_transitions` | state transition branches, repeated comparisons, string state updates |
+
+The suite is intentionally broad: it covers numeric loops, maps, lists, strings,
+business-rule branches, config/default handling, joins, templates, and
+state-machine style control flow. It should be used to guide generic VM/opcode
+work such as operand-shape specialization and branch/materialization reduction,
+not to justify workload-specific fused opcodes.
+
+Current opcode evidence: `AddIntI` covers real small-int add/sub paths in this
+suite, but low-sample release timing did not improve geomean by itself. The
+next higher-leverage opcode work should target generic control-flow reduction
+such as `Test + Jmp` compaction or compare-branch lowering.
 
 ## Adaptive Rerun Policy
 
@@ -162,10 +181,10 @@ This validation run measures the VM artifact path, not native AOT.
 
 ## Current Bottlenecks
 
-The real workload suite is the completion gate for claiming broad VM
-performance improvements. LK is now ahead or close on several loop-heavy
-workloads, but the geometric mean is still behind Lua, so microbenchmark wins
-are not considered sufficient evidence.
+The real workload suite is the completion gate for claiming broad performance
+improvements. The VM path is now ahead or close on many loop-heavy workloads,
+but the current `<0.5x` target is met by the native AOT path, not by the
+interpreter VM path.
 
 Primary bottlenecks:
 - General VM overhead in realistic while loops and function calls
@@ -176,6 +195,7 @@ Primary bottlenecks:
   copies
 - String conversion and string-key construction
 - Map/list memory layout and cache locality
+- AOT dynamic string-key map helpers and template string construction
 
 ## Files
 
@@ -223,6 +243,52 @@ The remaining gap (target ≤1.10x) is primarily due to:
 - Typed container fast path not yet reducing branch count
 - String interning not yet implemented
 - Dispatch loop overhead (measurement-enabled checks)
+
+## Latest AOT Validation (2026-06-07)
+
+Command:
+
+```bash
+RUN_AOT=1 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
+```
+
+Date: 2026-06-07
+
+This run covers the current 20-workload suite. It validates the architecture-level
+native performance path; the interpreter VM ratio is shown separately by the
+runner and is not yet below `<0.5x`.
+
+| Workload | LK VM (ms) | LK AOT (ms) | Lua (ms) | VM/Lua | AOT/Lua | AOT/VM | Conf. | Checksum |
+|----------|------------|-------------|----------|--------|---------|--------|-------|----------|
+| gcd_batch | 5.824 | 2.387 | 5.484 | 1.062x | 0.435x | 0.410x | high | 312000 |
+| prime_trial_division | 0.516 | 0.168 | 0.362 | 1.425x | 0.464x | 0.326x | low | 2935471 |
+| binary_search | 21.847 | 9.544 | 33.678 | 0.649x | 0.283x | 0.437x | high | 243950176 |
+| two_sum_map | 17.211 | 58.846 | 28.365 | 0.607x | 2.075x | 3.419x | high | 200000 |
+| sliding_window_sum | 14.115 | 2.620 | 14.406 | 0.980x | 0.182x | 0.186x | medium | 653998251 |
+| matrix_3x3_multiply | 1.347 | 0.247 | 0.995 | 1.354x | 0.248x | 0.183x | medium | 7973557 |
+| stock_max_profit | 6.745 | 2.122 | 6.262 | 1.077x | 0.339x | 0.315x | medium | 2974296 |
+| histogram_group_count | 23.562 | 55.280 | 30.663 | 0.768x | 1.803x | 2.346x | medium | 903000 |
+| string_key_hash | 4.401 | 3.570 | 5.006 | 0.879x | 0.713x | 0.811x | medium | 3495227553454 |
+| order_score_pipeline | 1.462 | 0.715 | 2.217 | 0.659x | 0.323x | 0.489x | low | 18815414 |
+| log_parse_filter | 127.935 | 132.393 | 152.716 | 0.838x | 0.867x | 1.035x | high | 916180 |
+| cart_pricing_rules | 1.058 | 0.185 | 1.490 | 0.710x | 0.124x | 0.175x | high | 2221125 |
+| route_permission_check | 2.003 | 0.478 | 2.224 | 0.901x | 0.215x | 0.239x | medium | 6208494 |
+| inventory_reorder | 16.225 | 30.449 | 20.131 | 0.806x | 1.513x | 1.877x | high | 1915398 |
+| fraud_rule_scoring | 7.042 | 1.616 | 7.907 | 0.891x | 0.204x | 0.229x | medium | 3242465 |
+| customer_ltv_segments | 8.712 | 1.334 | 9.874 | 0.882x | 0.135x | 0.153x | high | 15510171 |
+| event_join_by_id | 27.012 | 68.769 | 32.683 | 0.826x | 2.104x | 2.546x | high | 3855449 |
+| config_defaults_merge | 19.160 | 2.860 | 11.969 | 1.601x | 0.239x | 0.149x | high | 8313856 |
+| template_render_mix | 38.205 | 34.626 | 9.999 | 3.821x | 3.463x | 0.906x | high | 2489053 |
+| state_machine_transitions | 7.317 | 0.727 | 2.756 | 2.655x | 0.264x | 0.099x | medium | 2108535 |
+
+Samples: 3 per engine.
+**Geometric mean VM/Lua: 1.028x**.
+**Geometric mean AOT/Lua: 0.474x**.
+**Geometric mean AOT/VM: 0.462x**.
+
+The remaining AOT regressions are concentrated in dynamic string-key map
+workloads and template-heavy formatting. These should be optimized before
+raising confidence with a larger quiet-machine run.
 
 ## Latest Low-Sample Direction Check (2026-06-06)
 

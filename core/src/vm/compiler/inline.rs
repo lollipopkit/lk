@@ -182,8 +182,7 @@ impl Compiler {
         returns: &mut InlineReturnPatches,
     ) -> Result<()> {
         let watermark = self.next_reg;
-        let condition = self.lower_readonly_operand(condition)?;
-        let test_pc = self.emit_test_placeholder(condition)?;
+        let false_jumps = self.emit_condition_false_jumps(condition)?;
 
         self.local_rebind_suppression += 1;
         self.lower_inline_stmt(then_stmt, result, returns, false)?;
@@ -193,7 +192,7 @@ impl Compiler {
         if let Some(else_stmt) = else_stmt {
             let jmp_end = self.emit_jmp_placeholder();
             let else_start = self.function.code.len();
-            self.patch_test_false_jump(test_pc, else_start)?;
+            self.patch_condition_false_jumps(false_jumps, else_start)?;
 
             self.local_rebind_suppression += 1;
             self.lower_inline_stmt(else_stmt, result, returns, false)?;
@@ -204,7 +203,7 @@ impl Compiler {
             self.patch_jmp(jmp_end, end)?;
         } else {
             let end = self.function.code.len();
-            self.patch_test_false_jump(test_pc, end)?;
+            self.patch_condition_false_jumps(false_jumps, end)?;
         }
         self.emitted_return = false;
         Ok(())
@@ -220,9 +219,9 @@ impl Compiler {
         let watermark = self.next_reg;
         self.begin_loop_scalar_const_scope(condition, body)?;
         let condition_start = self.function.code.len();
-        let condition = self.lower_readonly_operand(condition)?;
-        let test_pc = self.emit_test_placeholder(condition)?;
-        let loop_start = self.function.code[condition_start..test_pc]
+        let false_jumps = self.emit_condition_false_jumps(condition)?;
+        let condition_end = self.function.code.len();
+        let loop_start = self.function.code[condition_start..condition_end]
             .iter()
             .enumerate()
             .find_map(|(i, instr)| {
@@ -242,7 +241,7 @@ impl Compiler {
         self.patch_jmp(jmp_back, loop_start)?;
 
         let end = self.function.code.len();
-        self.patch_test_false_jump(test_pc, end)?;
+        self.patch_condition_false_jumps(false_jumps, end)?;
         self.emitted_return = false;
         self.end_loop_scalar_const_scope();
         self.next_reg = watermark;

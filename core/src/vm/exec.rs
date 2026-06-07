@@ -591,6 +591,18 @@ impl Executor {
                         }
                     }
                 }
+                Opcode::AddIntI => {
+                    let dst = instr.a() as usize;
+                    let lhs_idx = instr.b() as usize;
+                    match &self.state.stack[lhs_idx] {
+                        RuntimeVal::Int(lhs) => {
+                            self.state.stack[dst] = RuntimeVal::Int(lhs.wrapping_add(instr.sc() as i64));
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            self.pc += 1;
+                        }
+                        lhs => bail!("AddIntI expected Int lhs, got {:?}", lhs.kind()),
+                    }
+                }
                 Opcode::SubInt => {
                     let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
                     let lhs = &self.state.stack[lhs_idx];
@@ -892,6 +904,11 @@ impl Executor {
                 Opcode::TryBegin => self.dispatch_try_begin(instr)?,
                 Opcode::TryEnd => self.dispatch_try_end(),
                 Opcode::Test => self.dispatch_test(instr)?,
+                Opcode::BrFalse => self.dispatch_br_false(instr)?,
+                Opcode::BrTrue => self.dispatch_br_true(instr)?,
+                Opcode::BrNil => self.dispatch_br_nil(instr)?,
+                Opcode::BrNotNil => self.dispatch_br_not_nil(instr)?,
+                opcode if opcode.is_compare_test() => self.dispatch_compare_test(function, instr)?,
                 Opcode::Jmp => self.dispatch_jmp(instr)?,
                 Opcode::ForLoopI => {
                     let Some(fact) = function.performance.for_loop(self.pc).copied() else {
@@ -1015,6 +1032,26 @@ impl Executor {
                     profile.record_write_source(VmRegisterWriteSource::Index, collect_metrics);
                     self.pc += 1;
                 }
+                Opcode::GetFieldK => {
+                    let index_fact = self.static_index_fact(function);
+                    if collect_metrics {
+                        record_container_op_known_enabled(index_metric_kind(index_fact));
+                    }
+                    let Some(key) = function.consts.string(instr.c() as u16) else {
+                        bail!("GetFieldK const string index {} out of bounds", instr.c());
+                    };
+                    let value = self.get_index(
+                        self.pc,
+                        instr.b(),
+                        instr.b(),
+                        Some(key),
+                        index_fact,
+                        profile.index_key_metrics(collect_metrics),
+                    )?;
+                    self.write_unchecked(instr.a(), value);
+                    profile.record_write_source(VmRegisterWriteSource::Index, collect_metrics);
+                    self.pc += 1;
+                }
                 Opcode::SetIndex => {
                     let move_value = function
                         .performance
@@ -1050,6 +1087,31 @@ impl Executor {
                         move_key,
                         move_value,
                         known_string_key,
+                        index_fact,
+                        profile.index_key_metrics(collect_metrics),
+                    )?;
+                    self.pc += 1;
+                }
+                Opcode::SetFieldK => {
+                    let move_value = function
+                        .performance
+                        .container_move(self.pc)
+                        .is_some_and(|fact| fact.move_value);
+                    let index_fact = self.static_index_fact(function);
+                    let Some(key) = function.consts.string(instr.c() as u16) else {
+                        bail!("SetFieldK const string index {} out of bounds", instr.c());
+                    };
+                    if collect_metrics {
+                        record_container_op_known_enabled(index_metric_kind(index_fact));
+                    }
+                    self.set_index(
+                        self.pc,
+                        instr.a(),
+                        instr.a(),
+                        instr.b(),
+                        false,
+                        move_value,
+                        Some(key),
                         index_fact,
                         profile.index_key_metrics(collect_metrics),
                     )?;

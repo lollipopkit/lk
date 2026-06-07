@@ -29,6 +29,15 @@ pub(in crate::llvm) fn emit_i64_binary_block(ir: &mut String, instr: Instr, tmp_
     ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
 }
 
+pub(in crate::llvm) fn emit_i64_add_immediate_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
+    let lhs = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {out} = add i64 {lhs}, {}\n", instr.sc()));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+    ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
+}
+
 pub(in crate::llvm) fn emit_f64_binary_block(
     ir: &mut String,
     instr: Instr,
