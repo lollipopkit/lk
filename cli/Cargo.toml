@@ -17,6 +17,7 @@ default-run = "lk"
 [features]
 default = ["llvm"]
 llvm = ["lk-core/llvm", "dep:lkrt", "dep:llvm-tools"]
+vm-profile = ["lk-core/vm-profile"]
 
 [dependencies]
 lk-core = { path = "../core", default-features = false }

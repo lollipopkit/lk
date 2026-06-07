@@ -13,18 +13,18 @@ use crate::{
         },
         straightline_value::{NativeListElementKind, NativeStraightlineValue, native_static_list_push},
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, Opcode},
 };
 
 pub(super) fn emit_list_push_block(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -303,15 +303,15 @@ fn dynamic_pair_fields(
     }
 }
 
-fn native_pair_const_field(value: &ConstRuntimeValue32Data) -> Option<NativeStraightlineValue> {
+fn native_pair_const_field(value: &ConstRuntimeValueData) -> Option<NativeStraightlineValue> {
     match value {
-        ConstRuntimeValue32Data::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
-        ConstRuntimeValue32Data::Bool(value) => Some(NativeStraightlineValue::Bool(if *value {
+        ConstRuntimeValueData::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
+        ConstRuntimeValueData::Bool(value) => Some(NativeStraightlineValue::Bool(if *value {
             "1".to_string()
         } else {
             "0".to_string()
         })),
-        ConstRuntimeValue32Data::Float(value) => Some(NativeStraightlineValue::F64(value.to_string())),
+        ConstRuntimeValueData::Float(value) => Some(NativeStraightlineValue::F64(value.to_string())),
         _ => None,
     }
 }
@@ -328,15 +328,15 @@ fn dynamic_ptr_value_expr(value: &NativeStraightlineValue) -> Option<String> {
 fn emit_nested_const_list_string_field_for_push(
     ir: &mut String,
     extra_globals: &mut String,
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     value_reg: u8,
     tmp_index: &mut usize,
 ) -> Option<()> {
     let inner = previous_writer(code, pc, value_reg)?;
-    if inner.opcode() != Opcode32::GetIndex {
+    if inner.opcode() != Opcode::GetIndex {
         return None;
     }
     let NativeStraightlineValue::I64(field) = local_static_i64_before(code, int_consts, pc, inner.c())? else {
@@ -344,7 +344,7 @@ fn emit_nested_const_list_string_field_for_push(
     };
     let field = field.parse::<usize>().ok()?;
     let outer = previous_writer(code, pc, inner.b())?;
-    if outer.opcode() != Opcode32::GetIndex {
+    if outer.opcode() != Opcode::GetIndex {
         return None;
     }
     let NativeStraightlineValue::List { elements, .. } =
@@ -367,7 +367,7 @@ fn emit_nested_const_list_string_field_for_push(
     matches!(value, NativeStraightlineValue::StringPtr(_)).then_some(())
 }
 
-fn previous_writer(code: &[Instr32], pc: usize, reg: u8) -> Option<Instr32> {
+fn previous_writer(code: &[Instr], pc: usize, reg: u8) -> Option<Instr> {
     for prev_pc in (pc.saturating_sub(64)..pc).rev() {
         let prev = *code.get(prev_pc)?;
         if prev.a() == reg {

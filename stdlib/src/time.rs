@@ -1,13 +1,13 @@
 //! Time module for LK concurrency.
 //!
-//! Module-level functions use RuntimeNative32.
+//! Module-level functions use RuntimeNative.
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{self, Module, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{self, ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     rt::{RuntimePayload, with_runtime},
     val::{ChannelValue, HeapValue, RuntimeVal, Type},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32},
+    vm::{NativeArgs, NativeFunction, NativeRuntime, RuntimeExport},
 };
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,7 +21,7 @@ impl Default for TimeModule {
     }
 }
 
-impl Module for TimeModule {
+impl ModuleProvider for TimeModule {
     fn name(&self) -> &str {
         "time"
     }
@@ -35,22 +35,22 @@ impl Module for TimeModule {
     }
 
     fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        registry.register_runtime_builtin("time::sleep", NativeFunction32::Plain(time_sleep32), 1);
-        registry.register_runtime_builtin("time::timeout", NativeFunction32::Plain(time_timeout32), 1);
-        registry.register_runtime_builtin("time::after", NativeFunction32::Plain(time_after32), 1);
-        registry.register_runtime_builtin("time::now", NativeFunction32::Plain(time_now32), 0);
-        registry.register_runtime_builtin("time::since", NativeFunction32::Plain(time_since32), 2);
+        registry.register_runtime_builtin("time::sleep", NativeFunction::Plain(time_sleep), 1);
+        registry.register_runtime_builtin("time::timeout", NativeFunction::Plain(time_timeout), 1);
+        registry.register_runtime_builtin("time::after", NativeFunction::Plain(time_after), 1);
+        registry.register_runtime_builtin("time::now", NativeFunction::Plain(time_now), 0);
+        registry.register_runtime_builtin("time::since", NativeFunction::Plain(time_since), 2);
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::plain("sleep", time_sleep32, 1),
-                RuntimeNativeExport32::plain("timeout", time_timeout32, 1),
-                RuntimeNativeExport32::plain("after", time_after32, 1),
-                RuntimeNativeExport32::plain("now", time_now32, 0),
-                RuntimeNativeExport32::plain("since", time_since32, 2),
+                RuntimeNativeExport::plain("sleep", time_sleep, 1),
+                RuntimeNativeExport::plain("timeout", time_timeout, 1),
+                RuntimeNativeExport::plain("after", time_after, 1),
+                RuntimeNativeExport::plain("now", time_now, 0),
+                RuntimeNativeExport::plain("since", time_since, 2),
             ],
             &[],
         ))
@@ -63,7 +63,7 @@ impl TimeModule {
     }
 }
 
-fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         return Ok(());
     }
@@ -85,7 +85,7 @@ fn epoch_millis() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
 }
 
-fn runtime_channel(id: u64, capacity: i64, inner_type: Type, runtime: &mut NativeRuntime32<'_>) -> RuntimeVal {
+fn runtime_channel(id: u64, capacity: i64, inner_type: Type, runtime: &mut NativeRuntime<'_>) -> RuntimeVal {
     RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Channel(Arc::new(ChannelValue {
         id,
         capacity: Some(capacity),
@@ -93,7 +93,7 @@ fn runtime_channel(id: u64, capacity: i64, inner_type: Type, runtime: &mut Nativ
     }))))
 }
 
-fn time_sleep32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn time_sleep(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "time.sleep()")?;
     let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.sleep()")?;
     with_runtime(|runtime| {
@@ -106,26 +106,26 @@ fn time_sleep32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> R
     .map_err(|err| anyhow!("Failed to sleep: {err}"))
 }
 
-fn time_timeout32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn time_timeout(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "time.timeout()")?;
     let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.timeout()")?;
     let channel_id = spawn_timer(duration_ms, RuntimeVal::Nil)?;
     Ok(runtime_channel(channel_id, 1, Type::Nil, runtime))
 }
 
-fn time_after32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn time_after(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "time.after()")?;
     let duration_ms = numeric_millis(args.get(0).expect("checked arity"), "time.after()")?;
     let channel_id = spawn_timer(duration_ms, RuntimeVal::Int(epoch_millis()))?;
     Ok(runtime_channel(channel_id, 1, Type::Int, runtime))
 }
 
-fn time_now32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn time_now(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 0, "time.now()")?;
     Ok(RuntimeVal::Int(epoch_millis()))
 }
 
-fn time_since32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn time_since(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "time.since()")?;
     let values = args.as_slice();
     let start = numeric_millis(&values[0], "time.since()")?;
@@ -158,34 +158,34 @@ fn spawn_timer(duration_ms: i64, payload: RuntimeVal) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::vm::{NativeFunction32, RuntimeModuleState32};
+    use lk_core::vm::{NativeFunction, RuntimeModuleState};
 
-    fn time_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn time_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&TimeModule::new(), name)
     }
 
-    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState32) -> Result<RuntimeVal> {
+    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState) -> Result<RuntimeVal> {
         let (_, function) = time_native(name)?;
-        let NativeFunction32::Plain(function) = function else {
-            bail!("{name} must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative");
         };
-        let mut runtime = NativeRuntime32::new(state, None, None);
-        function(NativeArgs32::new(args), &mut runtime)
+        let mut runtime = NativeRuntime::new(state, None, None);
+        function(NativeArgs::new(args), &mut runtime)
     }
 
     #[test]
-    fn time_exports_use_runtime_native32() -> Result<()> {
+    fn time_exports_use_runtime_native() -> Result<()> {
         for name in ["sleep", "timeout", "after", "now", "since"] {
             let (arity, function) = time_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
-            assert_ne!(arity, lk_core::vm::NativeEntry32::VARIADIC);
+            assert!(matches!(function, NativeFunction::Plain(_)));
+            assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC);
         }
         Ok(())
     }
 
     #[test]
     fn time_now_and_since_return_runtime_ints() -> Result<()> {
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         assert!(matches!(call("now", &[], &mut state)?, RuntimeVal::Int(value) if value > 0));
         assert_eq!(
             call("since", &[RuntimeVal::Int(100), RuntimeVal::Float(175.0)], &mut state)?,
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn time_timeout_and_after_return_channels() -> Result<()> {
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         for (name, expected_type) in [("timeout", Type::Nil), ("after", Type::Int)] {
             let value = call(name, &[RuntimeVal::Int(0)], &mut state)?;
             let RuntimeVal::Obj(handle) = value else {
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn time_sleep_accepts_zero_duration() -> Result<()> {
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         assert_eq!(call("sleep", &[RuntimeVal::Int(0)], &mut state)?, RuntimeVal::Nil);
         Ok(())
     }

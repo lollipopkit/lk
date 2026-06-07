@@ -609,6 +609,7 @@ fn dynamic_string_int_key_parts(
     for part in prefix_parts {
         if let NativeTextPart::String { symbol, value } = part
             && *value == prefix
+            && !symbol.is_empty()
         {
             return Some((symbol.clone(), number.clone()));
         }

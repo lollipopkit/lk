@@ -1,16 +1,16 @@
 //! Channel module for LK.
 //!
-//! The module-level API uses the RuntimeNative32 ABI. Global concurrency
+//! The module-level API uses the RuntimeNative ABI. Global concurrency
 //! builtins are still registered separately while compiler lowering is being
 //! migrated.
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{self, Module, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{self, ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     rt,
     rt::RuntimePayload,
     val::{ChannelValue, HeapStore, HeapValue, RuntimeVal, TypedList},
-    vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32},
+    vm::{NativeArgs, NativeFunction, NativeRuntime, RuntimeExport},
 };
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ impl Default for ChannelModule {
     }
 }
 
-impl Module for ChannelModule {
+impl ModuleProvider for ChannelModule {
     fn name(&self) -> &str {
         "chan"
     }
@@ -37,24 +37,24 @@ impl Module for ChannelModule {
     }
 
     fn register(&self, registry: &mut module::ModuleRegistry) -> Result<()> {
-        registry.register_runtime_builtin("chan::close", NativeFunction32::Plain(chan_close32), 1);
-        registry.register_runtime_builtin("chan::len", NativeFunction32::Plain(chan_len32), 1);
-        registry.register_runtime_builtin("chan::capacity", NativeFunction32::Plain(chan_capacity32), 1);
-        registry.register_runtime_builtin("chan::is_closed", NativeFunction32::Plain(chan_is_closed32), 1);
-        registry.register_runtime_builtin("chan::try_send", NativeFunction32::Plain(chan_try_send32), 2);
-        registry.register_runtime_builtin("chan::try_recv", NativeFunction32::Plain(chan_try_recv32), 1);
+        registry.register_runtime_builtin("chan::close", NativeFunction::Plain(chan_close), 1);
+        registry.register_runtime_builtin("chan::len", NativeFunction::Plain(chan_len), 1);
+        registry.register_runtime_builtin("chan::capacity", NativeFunction::Plain(chan_capacity), 1);
+        registry.register_runtime_builtin("chan::is_closed", NativeFunction::Plain(chan_is_closed), 1);
+        registry.register_runtime_builtin("chan::try_send", NativeFunction::Plain(chan_try_send), 2);
+        registry.register_runtime_builtin("chan::try_recv", NativeFunction::Plain(chan_try_recv), 1);
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::plain("close", chan_close32, 1),
-                RuntimeNativeExport32::plain("len", chan_len32, 1),
-                RuntimeNativeExport32::plain("capacity", chan_capacity32, 1),
-                RuntimeNativeExport32::plain("is_closed", chan_is_closed32, 1),
-                RuntimeNativeExport32::plain("try_send", chan_try_send32, 2),
-                RuntimeNativeExport32::plain("try_recv", chan_try_recv32, 1),
+                RuntimeNativeExport::plain("close", chan_close, 1),
+                RuntimeNativeExport::plain("len", chan_len, 1),
+                RuntimeNativeExport::plain("capacity", chan_capacity, 1),
+                RuntimeNativeExport::plain("is_closed", chan_is_closed, 1),
+                RuntimeNativeExport::plain("try_send", chan_try_send, 2),
+                RuntimeNativeExport::plain("try_recv", chan_try_recv, 1),
             ],
             &[],
         ))
@@ -67,7 +67,7 @@ impl ChannelModule {
     }
 }
 
-fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         return Ok(());
     }
@@ -90,7 +90,7 @@ fn channel_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Result<Arc<C
     }
 }
 
-fn pair(ok: bool, value: RuntimeVal, runtime: &mut NativeRuntime32<'_>) -> RuntimeVal {
+fn pair(ok: bool, value: RuntimeVal, runtime: &mut NativeRuntime<'_>) -> RuntimeVal {
     RuntimeVal::Obj(
         runtime
             .heap_mut()
@@ -98,7 +98,7 @@ fn pair(ok: bool, value: RuntimeVal, runtime: &mut NativeRuntime32<'_>) -> Runti
     )
 }
 
-fn chan_close32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chan_close(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.close()")?;
     let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.close()")?;
     rt::with_runtime(|runtime| runtime.close_channel(channel.id))
@@ -106,25 +106,25 @@ fn chan_close32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Re
     Ok(RuntimeVal::Nil)
 }
 
-fn chan_len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chan_len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.len()")?;
     let _ = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.len()")?;
     Ok(RuntimeVal::Int(0))
 }
 
-fn chan_capacity32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chan_capacity(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.capacity()")?;
     let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.capacity()")?;
     Ok(RuntimeVal::Int(channel.capacity.unwrap_or(0)))
 }
 
-fn chan_is_closed32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chan_is_closed(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.is_closed()")?;
     let _ = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.is_closed()")?;
     Ok(RuntimeVal::Bool(false))
 }
 
-fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chan_try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "chan.try_send()")?;
     let values = args.as_slice();
     let channel = channel_arg(&values[0], runtime.heap(), "chan.try_send()")?;
@@ -134,7 +134,7 @@ fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
     Ok(RuntimeVal::Bool(sent))
 }
 
-fn chan_try_recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chan_try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "chan.try_recv()")?;
     let channel = channel_arg(args.get(0).expect("checked arity"), runtime.heap(), "chan.try_recv()")?;
     match rt::with_runtime(|rt| rt.try_recv(channel.id))
@@ -150,10 +150,10 @@ mod tests {
     use super::*;
     use lk_core::{
         val::{ShortStr, Type},
-        vm::{NativeFunction32, RuntimeModuleState32},
+        vm::{NativeFunction, RuntimeModuleState},
     };
 
-    fn chan_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn chan_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&ChannelModule::new(), name)
     }
 
@@ -168,13 +168,13 @@ mod tests {
         )))))
     }
 
-    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState32) -> Result<RuntimeVal> {
+    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState) -> Result<RuntimeVal> {
         let (_, function) = chan_native(name)?;
-        let NativeFunction32::Plain(function) = function else {
-            bail!("{name} must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative");
         };
-        let mut runtime = NativeRuntime32::new(state, None, None);
-        function(NativeArgs32::new(args), &mut runtime)
+        let mut runtime = NativeRuntime::new(state, None, None);
+        function(NativeArgs::new(args), &mut runtime)
     }
 
     fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
@@ -197,18 +197,18 @@ mod tests {
     }
 
     #[test]
-    fn chan_exports_use_runtime_native32() -> Result<()> {
+    fn chan_exports_use_runtime_native() -> Result<()> {
         for name in ["close", "len", "capacity", "is_closed", "try_send", "try_recv"] {
             let (arity, function) = chan_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
-            assert_ne!(arity, lk_core::vm::NativeEntry32::VARIADIC);
+            assert!(matches!(function, NativeFunction::Plain(_)));
+            assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC);
         }
         Ok(())
     }
 
     #[test]
     fn chan_capacity_len_and_is_closed_use_runtime_channel() -> Result<()> {
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let channel = runtime_channel(3, state.heap_mut())?;
         assert_eq!(
             call("capacity", std::slice::from_ref(&channel), &mut state)?,
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn chan_try_send_and_recv_round_trips_runtime_values() -> Result<()> {
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let channel = runtime_channel(1, state.heap_mut())?;
         let value = RuntimeVal::ShortStr(ShortStr::new("payload").expect("short string"));
         assert_eq!(
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn chan_try_recv_empty_returns_false_nil_pair() -> Result<()> {
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let channel = runtime_channel(1, state.heap_mut())?;
         let received = call("try_recv", std::slice::from_ref(&channel), &mut state)?;
         assert_eq!(

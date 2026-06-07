@@ -22,14 +22,14 @@ use crate::{
         },
         straightline_value::{NativeBuiltin, NativeListElementKind, NativeStraightlineValue},
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, Opcode},
 };
 
 pub(super) fn emit_dynamic_string_list_method_call(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
-    instr: Instr32,
+    code: &[Instr],
+    instr: Instr,
     pc: usize,
     args: &[NativeStraightlineValue],
     tmp_index: &mut usize,
@@ -82,8 +82,8 @@ pub(super) fn emit_dynamic_string_list_method_call(
 pub(super) fn emit_dynamic_list_method_call(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
-    instr: Instr32,
+    code: &[Instr],
+    instr: Instr,
     pc: usize,
     args: &[NativeStraightlineValue],
     tmp_index: &mut usize,
@@ -97,8 +97,8 @@ pub(super) fn emit_dynamic_list_method_call(
 pub(super) fn emit_dynamic_list_method_call_block(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
-    instr: Instr32,
+    code: &[Instr],
+    instr: Instr,
     pc: usize,
     args: &[NativeStraightlineValue],
     tmp_index: &mut usize,
@@ -112,11 +112,11 @@ pub(super) fn emit_dynamic_list_method_call_block(
 
 pub(super) fn emit_static_i64_list_zip_arglist_call(
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
-    instr: Instr32,
+    heap_values: &[ConstHeapValueData],
+    instr: Instr,
     args: &[NativeStraightlineValue],
 ) -> bool {
     let [
@@ -151,7 +151,7 @@ pub(super) fn emit_static_i64_list_zip_arglist_call(
 pub(super) fn emit_dynamic_f64_list_builtin_call(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
@@ -262,7 +262,7 @@ pub(super) fn emit_dynamic_f64_list_builtin_call(
 pub(super) fn emit_dynamic_f64_list_builtin_call_from_regs(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     builtin: NativeBuiltin,
     facts: &NativeScalarFacts,
     pc: usize,
@@ -413,7 +413,7 @@ pub(super) fn emit_dynamic_ptr_list_builtin_call(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
@@ -555,7 +555,7 @@ pub(super) fn emit_dynamic_ptr_list_builtin_call_from_regs(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     builtin: NativeBuiltin,
     facts: &NativeScalarFacts,
     pc: usize,
@@ -829,16 +829,16 @@ fn f64_list_arg_from_reg(
     }
 }
 
-pub(super) fn function_has_list_return_shape(function: &crate::vm::Function32Data) -> bool {
+pub(super) fn function_has_list_return_shape(function: &crate::vm::FunctionData) -> bool {
     function
         .code
         .iter()
         .copied()
-        .filter_map(|raw| Instr32::try_from_raw(raw).ok())
-        .any(|instr| instr.opcode() == Opcode32::ListPush)
+        .filter_map(|raw| Instr::try_from_raw(raw).ok())
+        .any(|instr| instr.opcode() == Opcode::ListPush)
 }
 
-fn dynamic_list_method_i64_arg_reg(code: &[Instr32], pc: usize, instr: Instr32) -> Option<u8> {
+fn dynamic_list_method_i64_arg_reg(code: &[Instr], pc: usize, instr: Instr) -> Option<u8> {
     if instr.c() != 3 {
         return None;
     }
@@ -849,9 +849,9 @@ fn dynamic_list_method_i64_arg_reg(code: &[Instr32], pc: usize, instr: Instr32) 
 fn f64_list_method_f64_arg(
     ir: &mut String,
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     method_args: &NativeStraightlineValue,
     tmp_index: &mut usize,
 ) -> Option<String> {
@@ -864,8 +864,8 @@ fn f64_list_method_f64_arg(
         && let Some(value) = elements.first()
     {
         return match value {
-            ConstRuntimeValue32Data::Float(value) => Some(llvm_float_literal(*value)),
-            ConstRuntimeValue32Data::Int(value) => Some(llvm_float_literal(*value as f64)),
+            ConstRuntimeValueData::Float(value) => Some(llvm_float_literal(*value)),
+            ConstRuntimeValueData::Int(value) => Some(llvm_float_literal(*value as f64)),
             _ => None,
         };
     }
@@ -889,8 +889,8 @@ fn f64_list_method_f64_arg(
 pub(super) fn emit_dynamic_i64_list_method_call(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
-    instr: Instr32,
+    code: &[Instr],
+    instr: Instr,
     pc: usize,
     args: &[NativeStraightlineValue],
     tmp_index: &mut usize,
@@ -976,9 +976,9 @@ pub(super) fn emit_dynamic_i64_list_method_call(
 fn i64_list_method_i64_arg(
     ir: &mut String,
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     method_args: &NativeStraightlineValue,
     tmp_index: &mut usize,
 ) -> Option<String> {
@@ -991,8 +991,8 @@ fn i64_list_method_i64_arg(
         && let Some(value) = elements.first()
     {
         return match value {
-            ConstRuntimeValue32Data::Int(value) => Some(value.to_string()),
-            ConstRuntimeValue32Data::Bool(value) => Some(if *value { "1" } else { "0" }.to_string()),
+            ConstRuntimeValueData::Int(value) => Some(value.to_string()),
+            ConstRuntimeValueData::Bool(value) => Some(if *value { "1" } else { "0" }.to_string()),
             _ => None,
         };
     }
@@ -1016,8 +1016,8 @@ fn i64_list_method_i64_arg(
 pub(super) fn emit_dynamic_f64_list_method_call(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
-    instr: Instr32,
+    code: &[Instr],
+    instr: Instr,
     pc: usize,
     args: &[NativeStraightlineValue],
     tmp_index: &mut usize,
@@ -1087,7 +1087,7 @@ pub(super) fn emit_dynamic_f64_list_method_call(
     Some(())
 }
 
-fn single_arg_list_source_reg_before(code: &[Instr32], pc: usize, reg: u8) -> Option<u8> {
+fn single_arg_list_source_reg_before(code: &[Instr], pc: usize, reg: u8) -> Option<u8> {
     let start = pc.saturating_sub(16);
     for prev_pc in (start..pc).rev() {
         let prev = code.get(prev_pc).copied()?;
@@ -1095,8 +1095,8 @@ fn single_arg_list_source_reg_before(code: &[Instr32], pc: usize, reg: u8) -> Op
             continue;
         }
         return match prev.opcode() {
-            Opcode32::Move if prev.b() != reg => single_arg_list_source_reg_before(code, prev_pc, prev.b()),
-            Opcode32::NewList if prev.c() == 1 => Some(prev.b()),
+            Opcode::Move if prev.b() != reg => single_arg_list_source_reg_before(code, prev_pc, prev.b()),
+            Opcode::NewList if prev.c() == 1 => Some(prev.b()),
             _ => None,
         };
     }
@@ -1107,19 +1107,19 @@ fn emit_dynamic_i64_list_concat_static_rhs(
     ir: &mut String,
     lhs_id: usize,
     dst_id: usize,
-    elements: &[ConstRuntimeValue32Data],
+    elements: &[ConstRuntimeValueData],
     element_kind: NativeListElementKind,
     tmp_index: &mut usize,
 ) -> Option<()> {
     let rhs_values = format!("%list{dst_id}.static.rhs.value.slots");
     let rhs_len_slot = format!("%list{dst_id}.static.rhs.len.slot");
-    ir.push_str(&format!("  {rhs_len_slot} = alloca i64\n"));
-    ir.push_str(&format!("  {rhs_values} = alloca [4096 x i64]\n"));
+    ir.push_str(&format!("  {rhs_len_slot} = call ptr @malloc(i64 8)\n"));
+    ir.push_str(&format!("  {rhs_values} = call ptr @malloc(i64 32768)\n"));
     ir.push_str(&format!("  store i64 {}, ptr {rhs_len_slot}\n", elements.len()));
     for (index, element) in elements.iter().enumerate() {
         let value = match (element_kind, element) {
-            (NativeListElementKind::I64, ConstRuntimeValue32Data::Int(value)) => value.to_string(),
-            (NativeListElementKind::Bool, ConstRuntimeValue32Data::Bool(value)) => {
+            (NativeListElementKind::I64, ConstRuntimeValueData::Int(value)) => value.to_string(),
+            (NativeListElementKind::Bool, ConstRuntimeValueData::Bool(value)) => {
                 if *value { "1" } else { "0" }.to_string()
             }
             _ => return None,
@@ -1156,18 +1156,18 @@ fn emit_dynamic_f64_list_concat_static_rhs(
     ir: &mut String,
     lhs_id: usize,
     dst_id: usize,
-    elements: &[ConstRuntimeValue32Data],
+    elements: &[ConstRuntimeValueData],
     tmp_index: &mut usize,
 ) -> Option<()> {
     let rhs_values = format!("%list{dst_id}.static.rhs.f64.slots");
     let rhs_len_slot = format!("%list{dst_id}.static.rhs.len.slot");
-    ir.push_str(&format!("  {rhs_len_slot} = alloca i64\n"));
-    ir.push_str(&format!("  {rhs_values} = alloca [4096 x double]\n"));
+    ir.push_str(&format!("  {rhs_len_slot} = call ptr @malloc(i64 8)\n"));
+    ir.push_str(&format!("  {rhs_values} = call ptr @malloc(i64 32768)\n"));
     ir.push_str(&format!("  store i64 {}, ptr {rhs_len_slot}\n", elements.len()));
     for (index, element) in elements.iter().enumerate() {
         let value = match element {
-            ConstRuntimeValue32Data::Float(value) => llvm_float_literal(*value),
-            ConstRuntimeValue32Data::Int(value) => llvm_float_literal(*value as f64),
+            ConstRuntimeValueData::Float(value) => llvm_float_literal(*value),
+            ConstRuntimeValueData::Int(value) => llvm_float_literal(*value as f64),
             _ => return None,
         };
         let slot = next_tmp(tmp_index);
@@ -1201,7 +1201,7 @@ fn emit_dynamic_f64_list_concat_static_rhs(
 fn emit_static_i64_list_method_call(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     args: &[NativeStraightlineValue],
     tmp_index: &mut usize,
@@ -1242,27 +1242,27 @@ fn first_list_method_arg(value: &NativeStraightlineValue) -> Option<&NativeStrai
     }
 }
 
-fn list_elements_are_i64(elements: &[ConstRuntimeValue32Data]) -> bool {
+fn list_elements_are_i64(elements: &[ConstRuntimeValueData]) -> bool {
     elements
         .iter()
-        .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_)))
+        .all(|value| matches!(value, ConstRuntimeValueData::Int(_)))
 }
 
-fn list_elements_match_i64_storage(elements: &[ConstRuntimeValue32Data], element: NativeListElementKind) -> bool {
+fn list_elements_match_i64_storage(elements: &[ConstRuntimeValueData], element: NativeListElementKind) -> bool {
     match element {
         NativeListElementKind::I64 => elements
             .iter()
-            .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_))),
+            .all(|value| matches!(value, ConstRuntimeValueData::Int(_))),
         NativeListElementKind::Bool => elements
             .iter()
-            .all(|value| matches!(value, ConstRuntimeValue32Data::Bool(_))),
+            .all(|value| matches!(value, ConstRuntimeValueData::Bool(_))),
         _ => false,
     }
 }
 
 fn emit_static_i64_list_concat_dynamic_rhs(
     ir: &mut String,
-    lhs: &[ConstRuntimeValue32Data],
+    lhs: &[ConstRuntimeValueData],
     rhs_id: usize,
     dst_id: usize,
     tmp_index: &mut usize,
@@ -1288,8 +1288,8 @@ fn emit_static_i64_list_concat_dynamic_rhs(
 
 fn emit_static_i64_list_concat_static_rhs(
     ir: &mut String,
-    lhs: &[ConstRuntimeValue32Data],
-    rhs: &[ConstRuntimeValue32Data],
+    lhs: &[ConstRuntimeValueData],
+    rhs: &[ConstRuntimeValueData],
     dst_id: usize,
     tmp_index: &mut usize,
 ) -> Option<()> {
@@ -1312,13 +1312,13 @@ fn emit_static_i64_list_slots(
     ir: &mut String,
     name: &str,
     dst_id: usize,
-    elements: &[ConstRuntimeValue32Data],
+    elements: &[ConstRuntimeValueData],
     tmp_index: &mut usize,
 ) -> Option<String> {
     let slots = format!("%list{dst_id}.static.{name}.slots");
-    ir.push_str(&format!("  {slots} = alloca [4096 x i64]\n"));
+    ir.push_str(&format!("  {slots} = call ptr @malloc(i64 32768)\n"));
     for (index, element) in elements.iter().enumerate() {
-        let ConstRuntimeValue32Data::Int(value) = element else {
+        let ConstRuntimeValueData::Int(value) = element else {
             return None;
         };
         let slot = next_tmp(tmp_index);

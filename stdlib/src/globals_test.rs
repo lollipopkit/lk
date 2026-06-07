@@ -8,7 +8,7 @@ mod tests {
         stmt::stmt_parser::StmtParser,
         token::Tokenizer,
         val::{CallableValue, HeapValue, RuntimeVal, TypedList},
-        vm::{self, NativeFunction32},
+        vm::{self, NativeFunction},
     };
 
     #[test]
@@ -28,7 +28,7 @@ mod tests {
         let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
-        let result = program.execute32_with_ctx(&mut env)?;
+        let result = program.execute_with_ctx(&mut env)?;
         assert_eq!(result.first_return(), &RuntimeVal::Int(42));
         Ok(())
     }
@@ -48,7 +48,7 @@ mod tests {
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = program.execute32_with_ctx(&mut env);
+            let _ = program.execute_with_ctx(&mut env);
         }));
 
         assert!(result.is_err(), "expected panic, but code did not panic");
@@ -56,7 +56,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stdlib_globals_use_runtime_native32_abi() {
+    fn test_stdlib_globals_use_runtime_native_abi() {
         let mut registry = module::ModuleRegistry::new();
         crate::register_stdlib_globals(&mut registry);
 
@@ -77,20 +77,20 @@ mod tests {
             let RuntimeVal::Obj(handle) = export.value() else {
                 panic!("{name} should be heap callable");
             };
-            let Some(HeapValue::Callable(CallableValue::RuntimeNative32 { function, .. })) = state.heap().get(*handle)
+            let Some(HeapValue::Callable(CallableValue::RuntimeNative { function, .. })) = state.heap().get(*handle)
             else {
-                panic!("{name} should use RuntimeNative32");
+                panic!("{name} should use RuntimeNative");
             };
             if matches!(name, "print" | "println" | "panic") {
-                assert!(matches!(function, NativeFunction32::FullState(_)));
+                assert!(matches!(function, NativeFunction::FullState(_)));
             } else {
-                assert!(matches!(function, NativeFunction32::Plain(_)));
+                assert!(matches!(function, NativeFunction::Plain(_)));
             }
         }
     }
 
     #[test]
-    fn test_global_channel_helpers_execute_on_runtime_native32() -> Result<()> {
+    fn test_global_channel_helpers_execute_on_runtime_native() -> Result<()> {
         let source = r#"
             let ch = chan(2);
             send(ch, 7);
@@ -107,7 +107,7 @@ mod tests {
         let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
 
-        let result = program.execute32_with_ctx(&mut env)?;
+        let result = program.execute_with_ctx(&mut env)?;
         let RuntimeVal::Obj(handle) = result.first_return() else {
             panic!("expected list object");
         };

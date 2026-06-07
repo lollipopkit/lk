@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 const FORBIDDEN_TOKENS: &[(&str, &str)] = &[
-    ("Frame32", "shared stack Executor32 must remain the VM call hot path"),
+    ("struct Frame", "shared stack Executor must remain the VM call hot path"),
     ("enum Op {", "runtime must not reintroduce the old Op instruction enum"),
     (
         "struct Op {",

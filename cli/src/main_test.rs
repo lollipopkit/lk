@@ -69,6 +69,8 @@ mod tests {
             list_ops: 6,
             map_ops: 7,
             string_ops: 8,
+            index_key_metrics: [8, 7, 6, 5, 4, 3, 2, 1],
+            register_write_sources: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             copy_policy_heap_clones: 9,
             register_copy_heap_clones: 10,
             local_copy_heap_clones: 12,
@@ -86,6 +88,10 @@ mod tests {
         assert!(line.contains("branches=3"));
         assert!(line.contains("typed_branches=4"));
         assert!(line.contains("containers=5"));
+        assert!(line.contains("write_sources=other:10,string:9,global:8,call_return:7,index:6,container:5"));
+        assert!(line.contains(
+            "index_keys=known_string_key:8,dynamic_register_key:7,runtime_map_key:6,direct_string_key:5,typed_map_direct:4,generic_map_lookup:3"
+        ));
         assert!(line.contains("val_clones=9"));
         assert!(line.contains("heap_clones=9"));
         assert!(line.contains("container_copy_heap_clones=17"));

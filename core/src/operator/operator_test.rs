@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use crate::vm::execute_source32;
+    use crate::vm::execute_source;
 
     fn expect_expr(expr: &str, expected_display: &str) {
-        let result = execute_source32(&format!("return {expr};")).expect("execute source");
+        let result = execute_source(&format!("return {expr};")).expect("execute source");
         assert_eq!(result.display_first_return(), expected_display);
     }
 

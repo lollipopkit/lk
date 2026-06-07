@@ -5,7 +5,7 @@ use crate::val::RuntimeVal;
 mod strings;
 mod types;
 
-pub use types::{FunctionNamedParamType, ShortStr, Type};
+pub use types::{FunctionNamedParamType, ShortStr, ShortStrOrStr, Type};
 
 #[derive(Debug, Clone)]
 pub struct TaskValue {

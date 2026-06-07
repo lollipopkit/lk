@@ -1,11 +1,11 @@
-use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Opcode32, RuntimeMapKeyData};
+use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, Opcode, RuntimeMapKeyData};
 
 use super::{
     NativeStraightlineValue, native_const_runtime_value, native_map_key, native_static_equality_bool,
     native_string_key_value, native_string_map_key_value,
 };
 
-pub(super) fn native_map_entries_are_string_keyed(entries: &[(RuntimeMapKeyData, ConstRuntimeValue32Data)]) -> bool {
+pub(super) fn native_map_entries_are_string_keyed(entries: &[(RuntimeMapKeyData, ConstRuntimeValueData)]) -> bool {
     !entries.is_empty() && entries.iter().all(|(key, _)| native_map_key_str(key).is_some())
 }
 
@@ -125,9 +125,9 @@ pub(in crate::llvm) fn native_static_value_eq(lhs: &NativeStraightlineValue, rhs
 pub(in crate::llvm) fn native_static_collection_equality_bool(
     lhs: &NativeStraightlineValue,
     rhs: &NativeStraightlineValue,
-    opcode: Opcode32,
+    opcode: Opcode,
 ) -> Option<NativeStraightlineValue> {
-    if !matches!(opcode, Opcode32::CmpInt | Opcode32::CmpNeInt) {
+    if !matches!(opcode, Opcode::CmpInt | Opcode::CmpNeInt) {
         return None;
     }
     let equal = match (lhs, rhs) {
@@ -219,31 +219,31 @@ pub(in crate::llvm) fn native_static_contains(
     Some(NativeStraightlineValue::Bool(i64::from(contains).to_string()))
 }
 
-pub(super) fn native_const_runtime_eq(lhs: &ConstRuntimeValue32Data, rhs: &ConstRuntimeValue32Data) -> bool {
+pub(super) fn native_const_runtime_eq(lhs: &ConstRuntimeValueData, rhs: &ConstRuntimeValueData) -> bool {
     match (lhs, rhs) {
-        (ConstRuntimeValue32Data::Nil, ConstRuntimeValue32Data::Nil) => true,
-        (ConstRuntimeValue32Data::Bool(lhs), ConstRuntimeValue32Data::Bool(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::Int(lhs), ConstRuntimeValue32Data::Int(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::Float(lhs), ConstRuntimeValue32Data::Float(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::ShortStr(lhs), ConstRuntimeValue32Data::ShortStr(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::Heap(lhs), ConstRuntimeValue32Data::Heap(rhs)) => {
+        (ConstRuntimeValueData::Nil, ConstRuntimeValueData::Nil) => true,
+        (ConstRuntimeValueData::Bool(lhs), ConstRuntimeValueData::Bool(rhs)) => lhs == rhs,
+        (ConstRuntimeValueData::Int(lhs), ConstRuntimeValueData::Int(rhs)) => lhs == rhs,
+        (ConstRuntimeValueData::Float(lhs), ConstRuntimeValueData::Float(rhs)) => lhs == rhs,
+        (ConstRuntimeValueData::ShortStr(lhs), ConstRuntimeValueData::ShortStr(rhs)) => lhs == rhs,
+        (ConstRuntimeValueData::Heap(lhs), ConstRuntimeValueData::Heap(rhs)) => {
             native_const_heap_eq(lhs.as_ref(), rhs.as_ref())
         }
         _ => false,
     }
 }
 
-fn native_const_heap_eq(lhs: &ConstHeapValue32Data, rhs: &ConstHeapValue32Data) -> bool {
+fn native_const_heap_eq(lhs: &ConstHeapValueData, rhs: &ConstHeapValueData) -> bool {
     match (lhs, rhs) {
-        (ConstHeapValue32Data::LongString(lhs), ConstHeapValue32Data::LongString(rhs)) => lhs == rhs,
-        (ConstHeapValue32Data::List(lhs), ConstHeapValue32Data::List(rhs)) => {
+        (ConstHeapValueData::LongString(lhs), ConstHeapValueData::LongString(rhs)) => lhs == rhs,
+        (ConstHeapValueData::List(lhs), ConstHeapValueData::List(rhs)) => {
             lhs.len() == rhs.len()
                 && lhs
                     .iter()
                     .zip(rhs.iter())
                     .all(|(lhs, rhs)| native_const_runtime_eq(lhs, rhs))
         }
-        (ConstHeapValue32Data::Map(lhs), ConstHeapValue32Data::Map(rhs)) => {
+        (ConstHeapValueData::Map(lhs), ConstHeapValueData::Map(rhs)) => {
             lhs.len() == rhs.len()
                 && lhs.iter().all(|(lhs_key, lhs_value)| {
                     rhs.iter()
@@ -251,7 +251,7 @@ fn native_const_heap_eq(lhs: &ConstHeapValue32Data, rhs: &ConstHeapValue32Data) 
                         .is_some_and(|(_, rhs_value)| native_const_runtime_eq(lhs_value, rhs_value))
                 })
         }
-        (ConstHeapValue32Data::UpvalCell(lhs), ConstHeapValue32Data::UpvalCell(rhs)) => {
+        (ConstHeapValueData::UpvalCell(lhs), ConstHeapValueData::UpvalCell(rhs)) => {
             native_const_runtime_eq(lhs.as_ref(), rhs.as_ref())
         }
         _ => false,

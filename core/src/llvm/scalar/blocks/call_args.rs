@@ -16,7 +16,7 @@ use crate::{
             native_static_global, native_static_index, native_static_object_from_fields,
         },
     },
-    vm::{ConstHeapValue32Data, Instr32, Module32Artifact, Opcode32},
+    vm::{ConstHeapValueData, Instr, ModuleArtifact, Opcode},
 };
 
 use super::{
@@ -35,10 +35,10 @@ use crate::llvm::{output::emit_native_builtin_call, scalar::block_helpers::emit_
 
 pub(super) fn static_or_recovered_call_args(
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     global_names: &[String],
     pc: usize,
     callee: u8,
@@ -73,7 +73,7 @@ pub(super) fn static_or_recovered_call_args(
 
 pub(super) fn static_or_recovered_call_target(
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     global_names: &[String],
     pc: usize,
     callee: u8,
@@ -87,18 +87,18 @@ pub(super) fn static_or_recovered_call_target(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_recovered_builtin_call_block(
-    artifact: &Module32Artifact,
-    code: &[Instr32],
+    artifact: &ModuleArtifact,
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     global_names: &[String],
     facts: &NativeScalarFacts,
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
     static_globals: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     register_count: usize,
@@ -337,7 +337,7 @@ pub(super) fn emit_recovered_builtin_call_block(
 }
 
 fn trusted_static_call_arg(
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
     reg: u8,
     value: NativeStraightlineValue,
@@ -361,10 +361,10 @@ pub(super) fn emit_runtime_formatted_print_call(
     ir: &mut String,
     extra_globals: &mut String,
     builtin: NativeBuiltin,
-    instr: Instr32,
-    code: &[Instr32],
+    instr: Instr,
+    code: &[Instr],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     static_regs: &[Option<NativeStraightlineValue>],
     facts: &NativeScalarFacts,
     pc: usize,
@@ -422,7 +422,7 @@ pub(super) fn emit_runtime_formatted_print_call(
 fn runtime_formatted_print_arg_support(
     facts: &NativeScalarFacts,
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     strings: &[String],
     pc: usize,
     reg: u8,
@@ -527,7 +527,7 @@ fn trusted_scalar_arg_value(
     pc: usize,
     static_regs: &[Option<NativeStraightlineValue>],
     reg: usize,
-    code: &[Instr32],
+    code: &[Instr],
     force_slot_string: bool,
     tmp_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
@@ -582,10 +582,10 @@ fn scalar_slot_arg_value(
 }
 
 fn local_static_call_result_before(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     global_names: &[String],
     pc: usize,
     reg: u8,
@@ -596,10 +596,10 @@ fn local_static_call_result_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::Move if prev.b() != reg => {
+            Opcode::Move if prev.b() != reg => {
                 local_static_call_result_before(code, int_consts, strings, heap_values, global_names, prev_pc, prev.b())
             }
-            Opcode32::Call if prev.a() == prev.b() => {
+            Opcode::Call if prev.a() == prev.b() => {
                 let target =
                     local_static_value_before(code, int_consts, strings, heap_values, global_names, prev_pc, prev.b())?;
                 let args = local_static_call_args(
@@ -628,10 +628,10 @@ fn local_static_call_result_before(
 }
 
 fn local_static_call_args(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     global_names: &[String],
     pc: usize,
     callee: u8,
@@ -655,10 +655,10 @@ fn local_static_call_args(
 }
 
 fn local_static_value_before(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     global_names: &[String],
     pc: usize,
     reg: u8,
@@ -674,10 +674,10 @@ fn local_static_value_before(
 }
 
 fn local_static_object_before(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     global_names: &[String],
     pc: usize,
     reg: u8,
@@ -688,7 +688,7 @@ fn local_static_object_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::NewObject => {
+            Opcode::NewObject => {
                 let start = prev.b() as usize;
                 let width = (prev.c() as usize).checked_mul(2)?.checked_add(1)?;
                 let fields = (start..start.checked_add(width)?)
@@ -706,7 +706,7 @@ fn local_static_object_before(
                     .collect::<Option<Vec<_>>>()?;
                 native_static_object_from_fields(&fields, String::new())
             }
-            Opcode32::Move if prev.b() != reg => {
+            Opcode::Move if prev.b() != reg => {
                 local_static_object_before(code, int_consts, strings, heap_values, global_names, prev_pc, prev.b())
             }
             _ => None,
@@ -716,10 +716,10 @@ fn local_static_object_before(
 }
 
 fn local_static_new_list_before(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     global_names: &[String],
     pc: usize,
     reg: u8,
@@ -730,7 +730,7 @@ fn local_static_new_list_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::NewList => {
+            Opcode::NewList => {
                 let start = prev.b();
                 let end = start.checked_add(prev.c())?;
                 let elements = (start..end)
@@ -745,7 +745,7 @@ fn local_static_new_list_before(
                     elements,
                 })
             }
-            Opcode32::Move if prev.b() != reg => {
+            Opcode::Move if prev.b() != reg => {
                 local_static_new_list_before(code, int_consts, strings, heap_values, global_names, prev_pc, prev.b())
             }
             _ => None,
@@ -755,10 +755,10 @@ fn local_static_new_list_before(
 }
 
 fn local_static_index_before(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     global_names: &[String],
     pc: usize,
     reg: u8,
@@ -769,14 +769,14 @@ fn local_static_index_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::GetIndex => {
+            Opcode::GetIndex => {
                 let target =
                     local_static_value_before(code, int_consts, strings, heap_values, global_names, prev_pc, prev.b())?;
                 let key =
                     local_static_value_before(code, int_consts, strings, heap_values, global_names, prev_pc, prev.c())?;
                 native_static_index(target, key, String::new())
             }
-            Opcode32::Move if prev.b() != reg => {
+            Opcode::Move if prev.b() != reg => {
                 local_static_index_before(code, int_consts, strings, heap_values, global_names, prev_pc, prev.b())
             }
             _ => None,
@@ -786,7 +786,7 @@ fn local_static_index_before(
 }
 
 fn local_static_global_before(
-    code: &[Instr32],
+    code: &[Instr],
     global_names: &[String],
     pc: usize,
     reg: u8,
@@ -797,33 +797,28 @@ fn local_static_global_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::GetGlobal => global_names
+            Opcode::GetGlobal => global_names
                 .get(prev.bx() as usize)
                 .and_then(|name| native_static_global(name)),
-            Opcode32::Move if prev.b() != reg => local_static_global_before(code, global_names, prev_pc, prev.b()),
+            Opcode::Move if prev.b() != reg => local_static_global_before(code, global_names, prev_pc, prev.b()),
             _ => None,
         };
     }
     None
 }
 
-fn local_static_i64_before(
-    code: &[Instr32],
-    int_consts: &[i64],
-    pc: usize,
-    reg: u8,
-) -> Option<NativeStraightlineValue> {
+fn local_static_i64_before(code: &[Instr], int_consts: &[i64], pc: usize, reg: u8) -> Option<NativeStraightlineValue> {
     for prev_pc in (pc.saturating_sub(128)..pc).rev() {
         let prev = *code.get(prev_pc)?;
         if prev.a() != reg {
             continue;
         }
         return match prev.opcode() {
-            Opcode32::LoadInt => int_consts
+            Opcode::LoadInt => int_consts
                 .get(prev.bx() as usize)
                 .map(|value| NativeStraightlineValue::I64(value.to_string())),
-            Opcode32::LoadBool => Some(NativeStraightlineValue::Bool(i64::from(prev.b() != 0).to_string())),
-            Opcode32::Move if prev.b() != reg => local_static_i64_before(code, int_consts, prev_pc, prev.b()),
+            Opcode::LoadBool => Some(NativeStraightlineValue::Bool(i64::from(prev.b() != 0).to_string())),
+            Opcode::Move if prev.b() != reg => local_static_i64_before(code, int_consts, prev_pc, prev.b()),
             _ => None,
         };
     }
@@ -831,7 +826,7 @@ fn local_static_i64_before(
 }
 
 fn local_static_string_before(
-    code: &[Instr32],
+    code: &[Instr],
     strings: &[String],
     pc: usize,
     reg: u8,
@@ -842,7 +837,7 @@ fn local_static_string_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::LoadString => {
+            Opcode::LoadString => {
                 let value = strings.get(prev.bx() as usize)?;
                 Some(NativeStraightlineValue::String {
                     symbol: String::new(),
@@ -851,7 +846,7 @@ fn local_static_string_before(
                     key_kind: native_runtime_string_key_kind(value),
                 })
             }
-            Opcode32::Move if prev.b() != reg => local_static_string_before(code, strings, prev_pc, prev.b()),
+            Opcode::Move if prev.b() != reg => local_static_string_before(code, strings, prev_pc, prev.b()),
             _ => None,
         };
     }
@@ -859,8 +854,8 @@ fn local_static_string_before(
 }
 
 fn local_static_heap_const_before(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     reg: u8,
 ) -> Option<NativeStraightlineValue> {
@@ -870,12 +865,12 @@ fn local_static_heap_const_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::LoadHeapConst => crate::llvm::straightline_value::native_straightline_heap_const_value(
+            Opcode::LoadHeapConst => crate::llvm::straightline_value::native_straightline_heap_const_value(
                 0,
                 prev.bx(),
                 heap_values.get(prev.bx() as usize)?,
             ),
-            Opcode32::Move if prev.b() != reg => local_static_heap_const_before(code, heap_values, prev_pc, prev.b()),
+            Opcode::Move if prev.b() != reg => local_static_heap_const_before(code, heap_values, prev_pc, prev.b()),
             _ => None,
         };
     }

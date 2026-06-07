@@ -8,7 +8,7 @@ use crate::llvm::straightline_value::{
     NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
     NativeTextPart, native_static_index, native_straightline_heap_const_value,
 };
-use crate::vm::Instr32;
+use crate::vm::Instr;
 
 /// Determine the return kind of a builtin function dynamically (unknown target).
 pub(in crate::llvm) fn native_builtin_return_kind_dynamic(
@@ -537,13 +537,13 @@ fn native_static_string_method_known(method: &str) -> bool {
 
 /// Extract the return kind from scalar facts for a function's code.
 pub(in crate::llvm) fn native_return_kind_from_facts(
-    code: &[Instr32],
+    code: &[Instr],
     facts: &NativeScalarFacts,
 ) -> Option<NativeScalarKind> {
-    use crate::vm::Opcode32;
+    use crate::vm::Opcode;
     let mut return_kind = None;
     for (pc, instr) in code.iter().copied().enumerate() {
-        if instr.opcode() != Opcode32::Return {
+        if instr.opcode() != Opcode::Return {
             continue;
         }
         let kind = if instr.b() == 0 {
@@ -580,16 +580,16 @@ pub(in crate::llvm) fn native_string_int_map_key_supported(value: &NativeStraigh
     let NativeStraightlineValue::Text(parts) = value else {
         return matches!(value, NativeStraightlineValue::String { value, .. } if value.is_ascii());
     };
-    let Some((last, prefix)) = parts.split_last() else {
+    let Some((last, prefix_parts)) = parts.split_last() else {
         return false;
     };
-    if !prefix.is_empty() {
+    if prefix_parts.is_empty() {
         return false;
     }
-    matches!(
-        last,
-        NativeTextPart::I64(_) | NativeTextPart::String { .. } | NativeTextPart::StrPtr(_)
-    )
+    matches!(last, NativeTextPart::I64(_))
+        && prefix_parts
+            .iter()
+            .all(|part| matches!(part, NativeTextPart::String { .. }))
 }
 
 /// Check whether a value supports `Len` operation in static analysis.
@@ -624,16 +624,16 @@ pub(super) fn dynamic_scalar_placeholder(
 
 /// Check if a function has a CallDirect instruction targeting itself.
 pub(in crate::llvm) fn function_has_self_recursive_call_direct(
-    function: &crate::vm::Function32Data,
-    _all_functions: &[crate::vm::Function32Data],
+    function: &crate::vm::FunctionData,
+    _all_functions: &[crate::vm::FunctionData],
     func_idx: u16,
 ) -> bool {
-    use crate::vm::Opcode32;
+    use crate::vm::Opcode;
     function.code.iter().any(|&raw| {
-        let Ok(instr) = crate::vm::Instr32::try_from_raw(raw) else {
+        let Ok(instr) = crate::vm::Instr::try_from_raw(raw) else {
             return false;
         };
-        instr.opcode() == Opcode32::CallDirect && instr.b() as u16 == func_idx
+        instr.opcode() == Opcode::CallDirect && instr.b() as u16 == func_idx
     })
 }
 
@@ -644,7 +644,7 @@ pub(in crate::llvm) fn global_kinds_from_fns(global_count: usize) -> Vec<Option<
 
 /// Resolve a heap constant to its static straightline value.
 pub(in crate::llvm) fn native_static_heap_const_value(
-    value: &crate::vm::ConstHeapValue32Data,
+    value: &crate::vm::ConstHeapValueData,
 ) -> Option<(Option<NativeScalarKind>, NativeStraightlineValue)> {
     let value = native_straightline_heap_const_value(0, 0, value)?;
     let kind = static_value_kind(&value);

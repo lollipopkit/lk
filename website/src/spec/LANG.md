@@ -371,8 +371,8 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ## Notes for CLI Usage
 - Run REPL: `lk`
 - Execute a file (statements): `lk FILE`
-- Compile to an executable Instr32 module artifact: `lk compile [FILE]` -> `FILE.lkm`
-- Execute an Instr32 module artifact: `lk FILE.lkm`
+- Compile to an executable module artifact: `lk compile [FILE]` -> `FILE.lkm`
+- Execute an module artifact: `lk FILE.lkm`
 - Compile to a native executable for LLVM-lowerable shapes: `lk compile exe [FILE]`
 - Only relative, sanitized paths are allowed
 - CLI prints a result only when it is not `nil`

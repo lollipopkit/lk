@@ -1,17 +1,18 @@
 //! Straight-line (branch-free) LLVM IR lowering for scalar entry functions.
 //!
-//! Walks `Instr32` opcodes that can be resolved to pure LLVM values without
+//! Walks `Instr` opcodes that can be resolved to pure LLVM values without
 //! branches or phi nodes.  Unsupported opcodes or value shapes cause the
 //! lowering to return `None`, which the backend interprets as "unsupported"
 //! and reports via the diagnostic module.
 
 use anyhow::Result;
 
-use crate::vm::{ConstHeapValue32Data, Instr32, Module32Artifact, Opcode32};
+use crate::vm::{ConstHeapValueData, Instr, ModuleArtifact, Opcode};
 
 use super::callee_eval::{native_straightline_function_return, native_straightline_named_call_args};
 use super::const_display::{native_const_list_display, native_const_map_display, native_string_const_value};
 use super::ir_text::{llvm_float_literal, native_relative_target};
+use super::known_key::native_known_string_key;
 use super::options::LlvmBackendOptions;
 use super::output::{emit_native_builtin_call, native_scalar_main_ir, native_straightline_main_ir};
 use super::scalar::blocks::compile_native_scalar_main_blocks;
@@ -30,7 +31,7 @@ use super::straightline_value::{
 };
 
 pub(super) fn compile_native_scalar_main_artifact(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     options: &LlvmBackendOptions,
 ) -> Result<Option<String>> {
     let Some(function) = artifact.module.functions.get(artifact.module.entry as usize) else {
@@ -44,7 +45,7 @@ pub(super) fn compile_native_scalar_main_artifact(
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()?;
     let body = String::new();
     if code.is_empty() {
@@ -96,19 +97,19 @@ pub(super) fn compile_native_scalar_main_artifact(
         let instr = code[pc];
         let mut next_pc = pc + 1;
         match instr.opcode() {
-            Opcode32::LoadNil => {
+            Opcode::LoadNil => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Nil);
             }
-            Opcode32::LoadBool => {
+            Opcode::LoadBool => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(i64::from(instr.b() != 0).to_string()));
             }
-            Opcode32::LoadInt => {
+            Opcode::LoadInt => {
                 let Some(value) = function.consts.ints.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -117,7 +118,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(value.to_string()));
             }
-            Opcode32::LoadFloat => {
+            Opcode::LoadFloat => {
                 let Some(value) = function.consts.floats.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -126,7 +127,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::F64(llvm_float_literal(*value)));
             }
-            Opcode32::LoadString => {
+            Opcode::LoadString => {
                 let Some(value) = function.consts.strings.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -143,7 +144,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                     value,
                 });
             }
-            Opcode32::LoadHeapConst => {
+            Opcode::LoadHeapConst => {
                 let Some(value) = function.consts.heap_values.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -151,7 +152,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                     return Ok(None);
                 }
                 regs[instr.a() as usize] = match value {
-                    ConstHeapValue32Data::LongString(value) => {
+                    ConstHeapValueData::LongString(value) => {
                         let Some(value) = native_string_const_value(value) else {
                             return Ok(None);
                         };
@@ -162,7 +163,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                             value,
                         })
                     }
-                    ConstHeapValue32Data::List(values) => {
+                    ConstHeapValueData::List(values) => {
                         let Some(value) = native_const_list_display(values) else {
                             return Ok(None);
                         };
@@ -172,7 +173,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                             elements: values.clone(),
                         })
                     }
-                    ConstHeapValue32Data::Map(values) => {
+                    ConstHeapValueData::Map(values) => {
                         let Some(value) = native_const_map_display(values) else {
                             return Ok(None);
                         };
@@ -182,17 +183,17 @@ pub(super) fn compile_native_scalar_main_artifact(
                             entries: values.clone(),
                         })
                     }
-                    ConstHeapValue32Data::UpvalCell(value) => Some(NativeStraightlineValue::Cell {
+                    ConstHeapValueData::UpvalCell(value) => Some(NativeStraightlineValue::Cell {
                         symbol: format!("@lk_const_heap_cell_{}", instr.bx()),
                         value: Box::new(match value.as_ref() {
-                            crate::vm::ConstRuntimeValue32Data::Nil => NativeStraightlineValue::Nil,
-                            crate::vm::ConstRuntimeValue32Data::Bool(value) => {
+                            crate::vm::ConstRuntimeValueData::Nil => NativeStraightlineValue::Nil,
+                            crate::vm::ConstRuntimeValueData::Bool(value) => {
                                 NativeStraightlineValue::Bool(i64::from(*value).to_string())
                             }
-                            crate::vm::ConstRuntimeValue32Data::Int(value) => {
+                            crate::vm::ConstRuntimeValueData::Int(value) => {
                                 NativeStraightlineValue::I64(value.to_string())
                             }
-                            crate::vm::ConstRuntimeValue32Data::Float(value) => {
+                            crate::vm::ConstRuntimeValueData::Float(value) => {
                                 NativeStraightlineValue::F64(llvm_float_literal(*value))
                             }
                             _ => return Ok(None),
@@ -200,13 +201,13 @@ pub(super) fn compile_native_scalar_main_artifact(
                     }),
                 };
             }
-            Opcode32::LoadFunction => {
+            Opcode::LoadFunction => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Function(instr.bx()));
             }
-            Opcode32::MakeClosure => {
+            Opcode::MakeClosure => {
                 let Some(function) = artifact.module.functions.get(instr.b() as usize) else {
                     return Ok(None);
                 };
@@ -228,7 +229,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                     captures,
                 });
             }
-            Opcode32::LoadCellVal => {
+            Opcode::LoadCellVal => {
                 let Some(cell) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -240,7 +241,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::StoreCellVal => {
+            Opcode::StoreCellVal => {
                 let Some(cell) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -253,7 +254,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 native_replace_static_aliases(&mut regs, &mut globals, instr.a() as usize, &value);
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::Move => {
+            Opcode::Move => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -262,7 +263,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::SetGlobal => {
+            Opcode::SetGlobal => {
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -271,7 +272,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 *global = Some(value);
             }
-            Opcode32::GetGlobal => {
+            Opcode::GetGlobal => {
                 let value = globals.get(instr.bx() as usize).and_then(Clone::clone).or_else(|| {
                     artifact
                         .module
@@ -287,7 +288,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
+            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
                 let Some(NativeStraightlineValue::I64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
                     return Ok(None);
@@ -299,17 +300,17 @@ pub(super) fn compile_native_scalar_main_artifact(
                 let name = if let Some(value) = native_static_i64_binary(&lhs, &rhs, instr.opcode()) {
                     value
                 } else {
-                    if matches!(instr.opcode(), Opcode32::DivInt | Opcode32::ModInt)
+                    if matches!(instr.opcode(), Opcode::DivInt | Opcode::ModInt)
                         && !native_static_i64_divisor_nonzero(&rhs).unwrap_or(false)
                     {
                         return Ok(None);
                     }
                     let op = match instr.opcode() {
-                        Opcode32::AddInt => "add",
-                        Opcode32::SubInt => "sub",
-                        Opcode32::MulInt => "mul",
-                        Opcode32::DivInt => "sdiv",
-                        Opcode32::ModInt => "srem",
+                        Opcode::AddInt => "add",
+                        Opcode::SubInt => "sub",
+                        Opcode::MulInt => "mul",
+                        Opcode::DivInt => "sdiv",
+                        Opcode::ModInt => "srem",
                         _ => unreachable!("opcode matched above"),
                     };
                     let name = format!("%r{}_{}", instr.a(), ssa_index);
@@ -322,7 +323,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(name));
             }
-            Opcode32::AddFloat | Opcode32::SubFloat | Opcode32::MulFloat | Opcode32::DivFloat | Opcode32::ModFloat => {
+            Opcode::AddFloat | Opcode::SubFloat | Opcode::MulFloat | Opcode::DivFloat | Opcode::ModFloat => {
                 let Some(NativeStraightlineValue::F64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
                     return Ok(None);
@@ -334,17 +335,17 @@ pub(super) fn compile_native_scalar_main_artifact(
                 let name = if let Some(value) = native_static_f64_binary(&lhs, &rhs, instr.opcode()) {
                     value
                 } else {
-                    if matches!(instr.opcode(), Opcode32::DivFloat | Opcode32::ModFloat)
+                    if matches!(instr.opcode(), Opcode::DivFloat | Opcode::ModFloat)
                         && !native_static_f64_divisor_nonzero(&rhs).unwrap_or(false)
                     {
                         return Ok(None);
                     }
                     let op = match instr.opcode() {
-                        Opcode32::AddFloat => "fadd",
-                        Opcode32::SubFloat => "fsub",
-                        Opcode32::MulFloat => "fmul",
-                        Opcode32::DivFloat => "fdiv",
-                        Opcode32::ModFloat => "frem",
+                        Opcode::AddFloat => "fadd",
+                        Opcode::SubFloat => "fsub",
+                        Opcode::MulFloat => "fmul",
+                        Opcode::DivFloat => "fdiv",
+                        Opcode::ModFloat => "frem",
                         _ => unreachable!("opcode matched above"),
                     };
                     let name = format!("%r{}_{}", instr.a(), ssa_index);
@@ -357,12 +358,12 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::F64(name));
             }
-            Opcode32::CmpInt
-            | Opcode32::CmpNeInt
-            | Opcode32::CmpLtInt
-            | Opcode32::CmpLeInt
-            | Opcode32::CmpGtInt
-            | Opcode32::CmpGeInt => {
+            Opcode::CmpInt
+            | Opcode::CmpNeInt
+            | Opcode::CmpLtInt
+            | Opcode::CmpLeInt
+            | Opcode::CmpGtInt
+            | Opcode::CmpGeInt => {
                 let Some(lhs) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -380,34 +381,34 @@ pub(super) fn compile_native_scalar_main_artifact(
                 let (op, ty, lhs, rhs) = match (lhs, rhs) {
                     (NativeStraightlineValue::I64(lhs), NativeStraightlineValue::I64(rhs)) => {
                         let op = match instr.opcode() {
-                            Opcode32::CmpInt => "icmp eq",
-                            Opcode32::CmpNeInt => "icmp ne",
-                            Opcode32::CmpLtInt => "icmp slt",
-                            Opcode32::CmpLeInt => "icmp sle",
-                            Opcode32::CmpGtInt => "icmp sgt",
-                            Opcode32::CmpGeInt => "icmp sge",
+                            Opcode::CmpInt => "icmp eq",
+                            Opcode::CmpNeInt => "icmp ne",
+                            Opcode::CmpLtInt => "icmp slt",
+                            Opcode::CmpLeInt => "icmp sle",
+                            Opcode::CmpGtInt => "icmp sgt",
+                            Opcode::CmpGeInt => "icmp sge",
                             _ => unreachable!("opcode matched above"),
                         };
                         (op, "i64", lhs, rhs)
                     }
                     (NativeStraightlineValue::F64(lhs), NativeStraightlineValue::F64(rhs)) => {
                         let op = match instr.opcode() {
-                            Opcode32::CmpInt => "fcmp oeq",
-                            Opcode32::CmpNeInt => "fcmp une",
-                            Opcode32::CmpLtInt => "fcmp olt",
-                            Opcode32::CmpLeInt => "fcmp ole",
-                            Opcode32::CmpGtInt => "fcmp ogt",
-                            Opcode32::CmpGeInt => "fcmp oge",
+                            Opcode::CmpInt => "fcmp oeq",
+                            Opcode::CmpNeInt => "fcmp une",
+                            Opcode::CmpLtInt => "fcmp olt",
+                            Opcode::CmpLeInt => "fcmp ole",
+                            Opcode::CmpGtInt => "fcmp ogt",
+                            Opcode::CmpGeInt => "fcmp oge",
                             _ => unreachable!("opcode matched above"),
                         };
                         (op, "double", lhs, rhs)
                     }
                     (NativeStraightlineValue::Bool(lhs), NativeStraightlineValue::Bool(rhs))
-                        if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) =>
+                        if matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt) =>
                     {
                         let op = match instr.opcode() {
-                            Opcode32::CmpInt => "icmp eq",
-                            Opcode32::CmpNeInt => "icmp ne",
+                            Opcode::CmpInt => "icmp eq",
+                            Opcode::CmpNeInt => "icmp ne",
                             _ => unreachable!("opcode matched by guard"),
                         };
                         (op, "i64", lhs, rhs)
@@ -415,7 +416,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                     (
                         NativeStraightlineValue::String { value: lhs, .. },
                         NativeStraightlineValue::String { value: rhs, .. },
-                    ) if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) => {
+                    ) if matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt) => {
                         if instr.a() as usize >= regs.len() {
                             return Ok(None);
                         }
@@ -424,9 +425,9 @@ pub(super) fn compile_native_scalar_main_artifact(
                         continue;
                     }
                     (NativeStraightlineValue::Nil, NativeStraightlineValue::Nil)
-                        if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) =>
+                        if matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt) =>
                     {
-                        let value = i64::from(instr.opcode() == Opcode32::CmpInt).to_string();
+                        let value = i64::from(instr.opcode() == Opcode::CmpInt).to_string();
                         if instr.a() as usize >= regs.len() {
                             return Ok(None);
                         }
@@ -457,7 +458,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(out));
             }
-            Opcode32::Not => {
+            Opcode::Not => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -482,14 +483,14 @@ pub(super) fn compile_native_scalar_main_artifact(
                     }
                 };
             }
-            Opcode32::IsNil => {
+            Opcode::IsNil => {
                 if regs.get(instr.b() as usize).and_then(Clone::clone).is_none() || instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
                 let is_nil = matches!(regs.get(instr.b() as usize), Some(Some(NativeStraightlineValue::Nil)));
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(i64::from(is_nil).to_string()));
             }
-            Opcode32::IsList | Opcode32::IsMap => {
+            Opcode::IsList | Opcode::IsMap => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -501,7 +502,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::Len => {
+            Opcode::Len => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -513,7 +514,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::ToIter => {
+            Opcode::ToIter => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -527,11 +528,13 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::GetIndex => {
+            Opcode::GetIndex => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
-                let Some(key) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                let Some(key) = native_known_string_key(function, pc, format!("@lk_known_key_{pc}"))
+                    .or_else(|| regs.get(instr.c() as usize).and_then(Clone::clone))
+                else {
                     return Ok(None);
                 };
                 if instr.a() as usize >= regs.len() {
@@ -544,11 +547,13 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::SetIndex => {
+            Opcode::SetIndex => {
                 let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
-                let Some(key) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                let Some(key) = native_known_string_key(function, pc, format!("@lk_known_set_key_{pc}"))
+                    .or_else(|| regs.get(instr.b() as usize).and_then(Clone::clone))
+                else {
                     return Ok(None);
                 };
                 let Some(value) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
@@ -560,7 +565,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 native_replace_static_aliases(&mut regs, &mut globals, instr.a() as usize, &value);
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::ListPush => {
+            Opcode::ListPush => {
                 let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -573,7 +578,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 native_replace_static_aliases(&mut regs, &mut globals, instr.a() as usize, &value);
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::Contains => {
+            Opcode::Contains => {
                 let Some(needle) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -588,7 +593,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::SliceFrom => {
+            Opcode::SliceFrom => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -605,7 +610,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::MapRest => {
+            Opcode::MapRest => {
                 let start = instr.b() as usize;
                 let Some(width) = 1usize.checked_add(instr.c() as usize) else {
                     return Ok(None);
@@ -632,7 +637,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::NewList => {
+            Opcode::NewList => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
@@ -653,7 +658,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::NewMap => {
+            Opcode::NewMap => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
@@ -684,7 +689,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::NewRange => {
+            Opcode::NewRange => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
@@ -711,7 +716,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::NewObject => {
+            Opcode::NewObject => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
@@ -738,7 +743,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::ToString => {
+            Opcode::ToString => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -752,7 +757,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::ConcatString => {
+            Opcode::ConcatString => {
                 let Some(NativeStraightlineValue::String { value: lhs, .. }) =
                     regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
@@ -776,7 +781,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                     value,
                 });
             }
-            Opcode32::StringStartsWith => {
+            Opcode::StringStartsWith => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -791,7 +796,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::StringSplit => {
+            Opcode::StringSplit => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -808,7 +813,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::ListJoin => {
+            Opcode::ListJoin => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -825,7 +830,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::Call => {
+            Opcode::Call => {
                 if instr.a() != instr.b() {
                     return Ok(None);
                 }
@@ -879,7 +884,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::CallDirect => {
+            Opcode::CallDirect => {
                 let Some(args) = native_straightline_call_args(&regs, instr.a(), instr.c()) else {
                     return Ok(None);
                 };
@@ -901,7 +906,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::CallNamed => {
+            Opcode::CallNamed => {
                 let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -936,7 +941,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::Test => {
+            Opcode::Test => {
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -951,24 +956,24 @@ pub(super) fn compile_native_scalar_main_artifact(
                 let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
                 next_pc = if truthy { truthy_target } else { falsy_target };
             }
-            Opcode32::Jmp => {
+            Opcode::Jmp => {
                 let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len()) else {
                     return Ok(None);
                 };
                 next_pc = target;
             }
-            Opcode32::TryBegin => {
+            Opcode::TryBegin => {
                 let Some(catch_pc) = native_relative_target(pc, instr.sbx() as i32, code.len()) else {
                     return Ok(None);
                 };
                 handlers.push((instr.a(), catch_pc));
             }
-            Opcode32::TryEnd => {
+            Opcode::TryEnd => {
                 if handlers.pop().is_none() {
                     return Ok(None);
                 }
             }
-            Opcode32::Raise => {
+            Opcode::Raise => {
                 let Some(_) = function.consts.strings.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -984,7 +989,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 ssa_index += 1;
                 next_pc = catch_pc;
             }
-            Opcode32::Return => {
+            Opcode::Return => {
                 if instr.b() == 0 {
                     return Ok(Some(native_scalar_main_ir(options, &body, None)));
                 }
@@ -996,7 +1001,7 @@ pub(super) fn compile_native_scalar_main_artifact(
                 };
                 return Ok(Some(native_straightline_main_ir(options, &body, Some(&value))));
             }
-            Opcode32::Nop => {}
+            Opcode::Nop => {}
             _ => return Ok(None),
         }
         pc = next_pc;
@@ -1030,35 +1035,35 @@ pub(super) fn native_straightline_call_target(
     }
 }
 
-pub(super) fn native_scalar_function_needs_blocks(code: &[Instr32]) -> bool {
+pub(super) fn native_scalar_function_needs_blocks(code: &[Instr]) -> bool {
     code.iter().any(|instr| {
         matches!(
             instr.opcode(),
-            Opcode32::LoadFloat
-                | Opcode32::AddFloat
-                | Opcode32::SubFloat
-                | Opcode32::MulFloat
-                | Opcode32::DivFloat
-                | Opcode32::ModFloat
-                | Opcode32::CmpInt
-                | Opcode32::CmpNeInt
-                | Opcode32::CmpLtInt
-                | Opcode32::CmpLeInt
-                | Opcode32::CmpGtInt
-                | Opcode32::CmpGeInt
-                | Opcode32::Not
-                | Opcode32::IsNil
-                | Opcode32::SetIndex
-                | Opcode32::ListPush
-                | Opcode32::Test
-                | Opcode32::Jmp
+            Opcode::LoadFloat
+                | Opcode::AddFloat
+                | Opcode::SubFloat
+                | Opcode::MulFloat
+                | Opcode::DivFloat
+                | Opcode::ModFloat
+                | Opcode::CmpInt
+                | Opcode::CmpNeInt
+                | Opcode::CmpLtInt
+                | Opcode::CmpLeInt
+                | Opcode::CmpGtInt
+                | Opcode::CmpGeInt
+                | Opcode::Not
+                | Opcode::IsNil
+                | Opcode::SetIndex
+                | Opcode::ListPush
+                | Opcode::Test
+                | Opcode::Jmp
         )
     })
 }
 
-pub(super) fn native_direct_call_targets_need_blocks(artifact: &Module32Artifact, code: &[Instr32]) -> bool {
+pub(super) fn native_direct_call_targets_need_blocks(artifact: &ModuleArtifact, code: &[Instr]) -> bool {
     code.iter().copied().any(|instr| {
-        instr.opcode() == Opcode32::CallDirect
+        instr.opcode() == Opcode::CallDirect
             && artifact
                 .module
                 .functions
@@ -1068,7 +1073,7 @@ pub(super) fn native_direct_call_targets_need_blocks(artifact: &Module32Artifact
                         .code
                         .iter()
                         .copied()
-                        .map(Instr32::try_from_raw)
+                        .map(Instr::try_from_raw)
                         .collect::<Result<Vec<_>, _>>()
                         .ok()?;
                     Some(native_scalar_function_needs_blocks(&code) || native_straightline_function_has_call(&code))
@@ -1077,15 +1082,11 @@ pub(super) fn native_direct_call_targets_need_blocks(artifact: &Module32Artifact
     })
 }
 
-pub(super) fn native_straightline_function_has_call(code: &[Instr32]) -> bool {
+pub(super) fn native_straightline_function_has_call(code: &[Instr]) -> bool {
     code.iter().any(|instr| {
         matches!(
             instr.opcode(),
-            Opcode32::LoadFunction
-                | Opcode32::MakeClosure
-                | Opcode32::Call
-                | Opcode32::CallDirect
-                | Opcode32::CallNamed
+            Opcode::LoadFunction | Opcode::MakeClosure | Opcode::Call | Opcode::CallDirect | Opcode::CallNamed
         )
     })
 }
@@ -1122,20 +1123,20 @@ fn native_replace_static_aliases(
     }
 }
 
-fn collect_self_recursive_indices(functions: &[crate::vm::Function32Data]) -> Vec<u16> {
+fn collect_self_recursive_indices(functions: &[crate::vm::FunctionData]) -> Vec<u16> {
     let mut indices = Vec::new();
     for (idx, function) in functions.iter().enumerate() {
         let Ok(code) = function
             .code
             .iter()
             .copied()
-            .map(Instr32::try_from_raw)
+            .map(Instr::try_from_raw)
             .collect::<Result<Vec<_>, _>>()
         else {
             continue;
         };
         for instr in code.iter().copied() {
-            if instr.opcode() == Opcode32::CallDirect && instr.b() as usize == idx {
+            if instr.opcode() == Opcode::CallDirect && instr.b() as usize == idx {
                 indices.push(idx as u16);
                 break;
             }

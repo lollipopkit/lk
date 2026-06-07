@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap},
     vm::{
-        NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, RuntimeExport32,
-        call_runtime_callable32_runtime, call_runtime_value32_runtime,
+        NativeArgs, NativeEntry, NativeFunction, NativeRuntime, RuntimeExport, call_runtime_callable_runtime,
+        call_runtime_value_runtime,
     },
 };
 
@@ -25,7 +25,7 @@ impl IterModule {
     }
 }
 
-impl Module for IterModule {
+impl ModuleProvider for IterModule {
     fn name(&self) -> &str {
         "iter"
     }
@@ -38,30 +38,30 @@ impl Module for IterModule {
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::full_state("map", map32, 2),
-                RuntimeNativeExport32::full_state("filter", filter32, 2),
-                RuntimeNativeExport32::full_state("reduce", reduce32, 3),
-                RuntimeNativeExport32::plain("enumerate", enumerate32, 1),
-                RuntimeNativeExport32::plain("range", range32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("zip", zip32, 2),
-                RuntimeNativeExport32::plain("take", take32, 2),
-                RuntimeNativeExport32::plain("skip", skip32, 2),
-                RuntimeNativeExport32::plain("chain", chain32, 2),
-                RuntimeNativeExport32::plain("flatten", flatten32, 1),
-                RuntimeNativeExport32::plain("unique", unique32, 1),
-                RuntimeNativeExport32::plain("chunk", chunk32, 2),
-                RuntimeNativeExport32::plain("next", next32, 1),
-                RuntimeNativeExport32::plain("collect", collect32, 1),
+                RuntimeNativeExport::full_state("map", map, 2),
+                RuntimeNativeExport::full_state("filter", filter, 2),
+                RuntimeNativeExport::full_state("reduce", reduce, 3),
+                RuntimeNativeExport::plain("enumerate", enumerate, 1),
+                RuntimeNativeExport::plain("range", range, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("zip", zip, 2),
+                RuntimeNativeExport::plain("take", take, 2),
+                RuntimeNativeExport::plain("skip", skip, 2),
+                RuntimeNativeExport::plain("chain", chain, 2),
+                RuntimeNativeExport::plain("flatten", flatten, 1),
+                RuntimeNativeExport::plain("unique", unique, 1),
+                RuntimeNativeExport::plain("chunk", chunk, 2),
+                RuntimeNativeExport::plain("next", next, 1),
+                RuntimeNativeExport::plain("collect", collect, 1),
             ],
             &[],
         ))
     }
 }
 
-fn map32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn map(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.map")?;
     let values = args.as_slice();
     let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.map first argument")?;
@@ -79,7 +79,7 @@ fn map32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<Ru
     runtime_list(out, runtime.heap_mut())
 }
 
-fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn filter(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.filter")?;
     let values = args.as_slice();
     let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.filter first argument")?;
@@ -100,7 +100,7 @@ fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
     runtime_list(out, runtime.heap_mut())
 }
 
-fn reduce32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn reduce(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 3, "iter.reduce")?;
     let values = args.as_slice();
     let input = list_snapshot_arg(&values[0], runtime.heap(), "iter.reduce first argument")?;
@@ -114,7 +114,7 @@ fn reduce32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
     Ok(acc)
 }
 
-fn enumerate32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn enumerate(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "iter.enumerate")?;
     let input = list_snapshot_arg(&args.as_slice()[0], runtime.heap(), "iter.enumerate")?;
     let mut out = Vec::with_capacity(input.len());
@@ -131,7 +131,7 @@ fn enumerate32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Res
     runtime_list(out, runtime.heap_mut())
 }
 
-fn range32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn range(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let values = args.as_slice();
     let (start, end, step) = match values {
         [end] => (0, int_arg(end, "iter.range end")?, 1),
@@ -165,7 +165,7 @@ fn range32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     ))
 }
 
-fn zip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn zip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.zip")?;
     let values = args.as_slice();
     let pairs = {
@@ -189,21 +189,21 @@ fn zip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<Ru
     runtime_list(out, runtime.heap_mut())
 }
 
-fn take32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.take")?;
     let values = args.as_slice();
     let n = count_arg(&values[1], "iter.take count")?;
     list_slice(&values[0], runtime.heap_mut(), 0, Some(n), "iter.take first argument")
 }
 
-fn skip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.skip")?;
     let values = args.as_slice();
     let n = count_arg(&values[1], "iter.skip count")?;
     list_slice(&values[0], runtime.heap_mut(), n, None, "iter.skip first argument")
 }
 
-fn chain32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.chain")?;
     let values = args.as_slice();
     let plan = typed_list_concat_preserving_backing(
@@ -214,7 +214,7 @@ fn chain32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
 }
 
-fn flatten32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn flatten(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "iter.flatten")?;
     let plan = flatten_typed_list(
         typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.flatten")?,
@@ -224,14 +224,14 @@ fn flatten32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Resul
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
 }
 
-fn unique32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn unique(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "iter.unique")?;
     let input = typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.unique")?;
     let list = unique_typed_list(input, runtime.heap());
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
 }
 
-fn chunk32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chunk(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "iter.chunk")?;
     let values = args.as_slice();
     let size = count_arg(&values[1], "iter.chunk size")?;
@@ -253,19 +253,19 @@ fn chunk32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     runtime_list(out, runtime.heap_mut())
 }
 
-fn next32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn next(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "iter.next")?;
     first_list_item(&args.as_slice()[0], runtime.heap_mut(), "iter.next")
 }
 
-fn collect32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn collect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "iter.collect")?;
     let input = typed_list_arg_ref(&args.as_slice()[0], runtime.heap(), "iter.collect")?;
     let input = copy_typed_list(input);
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(input))))
 }
 
-fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         Ok(())
     } else {
@@ -737,7 +737,7 @@ fn truthy(value: &RuntimeVal) -> bool {
 fn call_callable(
     callable_value: &RuntimeVal,
     args: &[RuntimeVal],
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
     context: &str,
 ) -> Result<RuntimeVal> {
     let RuntimeVal::Obj(handle) = callable_value else {
@@ -745,9 +745,9 @@ fn call_callable(
     };
 
     enum IterCallableTarget {
-        Runtime32(Arc<lk_core::vm::RuntimeCallable32>),
+        Runtime(Arc<lk_core::vm::RuntimeCallable>),
         Closure,
-        RuntimeNative32 { arity: u16, function: NativeFunction32 },
+        RuntimeNative { arity: u16, function: NativeFunction },
     }
 
     let target = match runtime
@@ -755,10 +755,10 @@ fn call_callable(
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
     {
-        HeapValue::Callable(CallableValue::Runtime32(function)) => IterCallableTarget::Runtime32(Arc::clone(function)),
+        HeapValue::Callable(CallableValue::Runtime(function)) => IterCallableTarget::Runtime(Arc::clone(function)),
         HeapValue::Callable(CallableValue::Closure { .. }) => IterCallableTarget::Closure,
-        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function, .. }) => {
-            IterCallableTarget::RuntimeNative32 {
+        HeapValue::Callable(CallableValue::RuntimeNative { arity, function, .. }) => {
+            IterCallableTarget::RuntimeNative {
                 arity: *arity,
                 function: function.clone(),
             }
@@ -767,18 +767,18 @@ fn call_callable(
     };
 
     match target {
-        IterCallableTarget::Runtime32(function) => {
+        IterCallableTarget::Runtime(function) => {
             let (heap, ctx) = runtime.heap_ctx_mut();
-            call_runtime_callable32_runtime(function.as_ref(), args, heap, ctx)
+            call_runtime_callable_runtime(function.as_ref(), args, heap, ctx)
         }
         IterCallableTarget::Closure => {
             if let Some((state, ctx, module)) = runtime.state_ctx_module_mut() {
-                return call_runtime_value32_runtime(RuntimeVal::Obj(*handle), args, state, module, ctx);
+                return call_runtime_value_runtime(RuntimeVal::Obj(*handle), args, state, module, ctx);
             }
-            bail!("{context} closure requires active RuntimeModuleState32")
+            bail!("{context} closure requires active RuntimeModuleState")
         }
-        IterCallableTarget::RuntimeNative32 { arity, function } => {
-            let entry = NativeEntry32 {
+        IterCallableTarget::RuntimeNative { arity, function } => {
+            let entry = NativeEntry {
                 name: context.to_string(),
                 arity,
                 function,
@@ -792,14 +792,14 @@ fn call_callable(
 }
 
 fn call_runtime_native_entry(
-    entry: &NativeEntry32,
+    entry: &NativeEntry,
     args: &[RuntimeVal],
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
 ) -> Result<RuntimeVal> {
     match &entry.function {
-        NativeFunction32::Plain(function)
-        | NativeFunction32::Context(function)
-        | NativeFunction32::FullState(function) => function(NativeArgs32::new(args), runtime),
+        NativeFunction::Plain(function) | NativeFunction::Context(function) | NativeFunction::FullState(function) => {
+            function(NativeArgs::new(args), runtime)
+        }
     }
 }
 
@@ -947,9 +947,9 @@ mod tests {
     use lk_core::{
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        vm::{NativeFunction32, Program32Result, RuntimeModuleState32, VmContext},
+        vm::{NativeFunction, ProgramResult, RuntimeModuleState, VmContext},
     };
-    fn run32(source: &str) -> Result<Program32Result> {
+    fn run(source: &str) -> Result<ProgramResult> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -958,11 +958,11 @@ mod tests {
         register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
-        program.execute32_with_ctx(&mut env)
+        program.execute_with_ctx(&mut env)
     }
 
-    fn run32_value(source: &str) -> Result<RuntimeVal> {
-        Ok(run32(source)?.first_return().clone())
+    fn run_value(source: &str) -> Result<RuntimeVal> {
+        Ok(run(source)?.first_return().clone())
     }
 
     fn expect_list(value: &RuntimeVal, heap: &HeapStore) -> Vec<RuntimeVal> {
@@ -984,19 +984,19 @@ mod tests {
         }
     }
 
-    fn expect_return_list(result: &Program32Result) -> Vec<RuntimeVal> {
+    fn expect_return_list(result: &ProgramResult) -> Vec<RuntimeVal> {
         expect_list(result.first_return(), result.state.heap())
     }
 
-    fn iter_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn iter_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&IterModule::new(), name)
     }
 
     #[test]
-    fn iter_exports_use_runtime_native32_abi() -> Result<()> {
+    fn iter_exports_use_runtime_native_abi() -> Result<()> {
         for name in ["map", "filter", "reduce"] {
             let (_, function) = iter_native(name)?;
-            assert!(matches!(function, NativeFunction32::FullState(_)));
+            assert!(matches!(function, NativeFunction::FullState(_)));
         }
         for name in [
             "enumerate",
@@ -1012,18 +1012,18 @@ mod tests {
             "collect",
         ] {
             let (_, function) = iter_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
+            assert!(matches!(function, NativeFunction::Plain(_)));
         }
         Ok(())
     }
 
     #[test]
-    fn iter_sequence_ops_run_on_exec32() -> Result<()> {
+    fn iter_sequence_ops_run_on_exec() -> Result<()> {
         assert_eq!(
-            expect_return_list(&run32("import iter; return iter.range(0, 6, 2);")?),
+            expect_return_list(&run("import iter; return iter.range(0, 6, 2);")?),
             vec![RuntimeVal::Int(0), RuntimeVal::Int(2), RuntimeVal::Int(4)]
         );
-        let result = run32("import iter; return iter.zip([1,2], [\"a\",\"b\",\"c\"]);")?;
+        let result = run("import iter; return iter.zip([1,2], [\"a\",\"b\",\"c\"]);")?;
         let zipped = expect_return_list(&result);
         assert_eq!(zipped.len(), 2);
         assert_eq!(
@@ -1041,7 +1041,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            expect_return_list(&run32(
+            expect_return_list(&run(
                 "import iter; return iter.chain(iter.take([1,2,3], 2), iter.skip([4,5,6], 1));"
             )?),
             vec![
@@ -1055,9 +1055,9 @@ mod tests {
     }
 
     #[test]
-    fn iter_list_shape_ops_run_on_exec32() -> Result<()> {
+    fn iter_list_shape_ops_run_on_exec() -> Result<()> {
         assert_eq!(
-            expect_return_list(&run32(
+            expect_return_list(&run(
                 "import iter; let a = [1,2]; let b = [3]; let c = [4]; return iter.flatten([a,b,c]);"
             )?),
             vec![
@@ -1068,10 +1068,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            expect_return_list(&run32("import iter; return iter.unique([1,1,2,2,3]);")?),
+            expect_return_list(&run("import iter; return iter.unique([1,1,2,2,3]);")?),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
         );
-        let result = run32("import iter; return iter.chunk([1,2,3,4,5], 2);")?;
+        let result = run("import iter; return iter.chunk([1,2,3,4,5], 2);")?;
         let chunks = expect_return_list(&result);
         assert_eq!(chunks.len(), 3);
         assert_eq!(
@@ -1089,17 +1089,17 @@ mod tests {
     #[test]
     fn iter_higher_order_ops_call_runtime_closures() -> Result<()> {
         assert_eq!(
-            expect_return_list(&run32("import iter; return iter.map([1,2,3], fn(x) => x * 2);")?),
+            expect_return_list(&run("import iter; return iter.map([1,2,3], fn(x) => x * 2);")?),
             vec![RuntimeVal::Int(2), RuntimeVal::Int(4), RuntimeVal::Int(6)]
         );
         assert_eq!(
-            expect_return_list(&run32(
+            expect_return_list(&run(
                 "import iter; return iter.filter([1,2,3,4], fn(x) => x % 2 == 0);"
             )?),
             vec![RuntimeVal::Int(2), RuntimeVal::Int(4)]
         );
         assert_eq!(
-            run32_value("import iter; return iter.reduce([1,2,3], 0, fn(acc, x) => acc + x);")?,
+            run_value("import iter; return iter.reduce([1,2,3], 0, fn(acc, x) => acc + x);")?,
             RuntimeVal::Int(6)
         );
         Ok(())
@@ -1107,30 +1107,30 @@ mod tests {
 
     #[test]
     fn iter_map_materializes_long_string_items_lazily_for_callback() -> Result<()> {
-        fn fail_on_first(_args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+        fn fail_on_first(_args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
             bail!("stop after first item");
         }
 
         let (_, function) = iter_native("map")?;
-        let NativeFunction32::FullState(function) = function else {
-            panic!("map must use FullState RuntimeNative32");
+        let NativeFunction::FullState(function) = function else {
+            panic!("map must use FullState RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-map-first"),
             Arc::<str>::from("long-map-second"),
         ])));
         let callback = state
             .heap_mut()
-            .alloc(HeapValue::Callable(CallableValue::RuntimeNative32 {
+            .alloc(HeapValue::Callable(CallableValue::RuntimeNative {
                 name: Arc::<str>::from("fail_on_first"),
                 arity: 1,
-                function: NativeFunction32::Plain(fail_on_first),
+                function: NativeFunction::Plain(fail_on_first),
             }));
         let args = [RuntimeVal::Obj(input), RuntimeVal::Obj(callback)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let err = function(NativeArgs32::new(&args), &mut runtime).expect_err("callback should fail");
+        let err = function(NativeArgs::new(&args), &mut runtime).expect_err("callback should fail");
 
         assert!(err.to_string().contains("stop after first item"));
         assert_eq!(runtime.heap().len(), 3);
@@ -1140,13 +1140,13 @@ mod tests {
     #[test]
     fn iter_direct_runtime_call_preserves_typed_lists() -> Result<()> {
         let (_, function) = iter_native("range")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("range must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("range must use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let args = [RuntimeVal::Int(1), RuntimeVal::Int(4)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
         assert_eq!(
             expect_list(&result, runtime.heap()),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2), RuntimeVal::Int(3)]
@@ -1162,19 +1162,19 @@ mod tests {
             ("skip", [RuntimeVal::Nil, RuntimeVal::Int(1)]),
         ] {
             let (_, function) = iter_native(name)?;
-            let NativeFunction32::Plain(function) = function else {
-                panic!("{name} must use plain RuntimeNative32");
+            let NativeFunction::Plain(function) = function else {
+                panic!("{name} must use plain RuntimeNative");
             };
-            let mut state = RuntimeModuleState32::default();
+            let mut state = RuntimeModuleState::default();
             let list = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
                 Arc::clone(&long),
                 Arc::<str>::from("tail"),
             ])));
             let mut args = args;
             args[0] = RuntimeVal::Obj(list);
-            let mut runtime = NativeRuntime32::new(&mut state, None, None);
+            let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-            let result = function(NativeArgs32::new(&args), &mut runtime)?;
+            let result = function(NativeArgs::new(&args), &mut runtime)?;
 
             let RuntimeVal::Obj(handle) = result else {
                 panic!("expected list result");
@@ -1191,10 +1191,10 @@ mod tests {
     #[test]
     fn iter_chain_preserves_typed_string_backing_without_materializing_items() -> Result<()> {
         let (_, function) = iter_native("chain")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("chain must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("chain must use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let left = state
             .heap_mut()
             .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from(
@@ -1206,9 +1206,9 @@ mod tests {
                 "long-right-value",
             )])));
         let args = [RuntimeVal::Obj(left), RuntimeVal::Obj(right)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected list result");
@@ -1224,19 +1224,19 @@ mod tests {
     #[test]
     fn iter_chunk_preserves_typed_string_backing_without_materializing_items() -> Result<()> {
         let (_, function) = iter_native("chunk")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("chunk must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("chunk must use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-one-value"),
             Arc::<str>::from("long-two-value"),
             Arc::<str>::from("long-three-value"),
         ])));
         let args = [RuntimeVal::Obj(input), RuntimeVal::Int(2)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(outer) = result else {
             panic!("expected outer list");
@@ -1261,10 +1261,10 @@ mod tests {
     #[test]
     fn iter_zip_materializes_only_used_long_string_items() -> Result<()> {
         let (_, function) = iter_native("zip")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("zip must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("zip must use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let left = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-left-used"),
             Arc::<str>::from("long-left-unused"),
@@ -1275,9 +1275,9 @@ mod tests {
                 "long-right-used",
             )])));
         let args = [RuntimeVal::Obj(left), RuntimeVal::Obj(right)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(outer) = result else {
             panic!("expected outer list");
@@ -1300,18 +1300,18 @@ mod tests {
     #[test]
     fn iter_collect_preserves_typed_string_backing_without_materializing_items() -> Result<()> {
         let (_, function) = iter_native("collect")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("collect must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("collect must use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-collect-one"),
             Arc::<str>::from("long-collect-two"),
         ])));
         let args = [RuntimeVal::Obj(input)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected list result");
@@ -1327,10 +1327,10 @@ mod tests {
     #[test]
     fn iter_flatten_preserves_nested_typed_string_backing_without_materializing_items() -> Result<()> {
         let (_, function) = iter_native("flatten")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("flatten must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("flatten must use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let first = state
             .heap_mut()
             .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from(
@@ -1346,9 +1346,9 @@ mod tests {
             RuntimeVal::Obj(second),
         ])));
         let args = [RuntimeVal::Obj(outer)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected list result");
@@ -1364,19 +1364,19 @@ mod tests {
     #[test]
     fn iter_unique_preserves_typed_string_backing_without_materializing_items() -> Result<()> {
         let (_, function) = iter_native("unique")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("unique must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("unique must use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let input = state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("long-unique-one"),
             Arc::<str>::from("long-unique-one"),
             Arc::<str>::from("long-unique-two"),
         ])));
         let args = [RuntimeVal::Obj(input)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected list result");
@@ -1391,13 +1391,10 @@ mod tests {
 
     #[test]
     fn iter_collect_and_next_accept_lists_only() -> Result<()> {
+        assert_eq!(run_value("import iter; return iter.next([7,8]);")?, RuntimeVal::Int(7));
+        assert_eq!(run_value("import iter; return iter.next([]);")?, RuntimeVal::Nil);
         assert_eq!(
-            run32_value("import iter; return iter.next([7,8]);")?,
-            RuntimeVal::Int(7)
-        );
-        assert_eq!(run32_value("import iter; return iter.next([]);")?, RuntimeVal::Nil);
-        assert_eq!(
-            expect_return_list(&run32("import iter; return iter.collect([1,2]);")?),
+            expect_return_list(&run("import iter; return iter.collect([1,2]);")?),
             vec![RuntimeVal::Int(1), RuntimeVal::Int(2)]
         );
         Ok(())

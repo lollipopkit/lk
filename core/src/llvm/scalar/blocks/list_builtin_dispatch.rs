@@ -3,7 +3,7 @@ use crate::llvm::{
     scalar::facts::NativeScalarFacts,
     straightline_value::{NativeBuiltin, NativeStraightlineValue},
 };
-use crate::vm::{ConstHeapValue32Data, Instr32};
+use crate::vm::{ConstHeapValueData, Instr};
 
 use super::{
     i64_list_methods::{emit_dynamic_i64_list_builtin_call, emit_dynamic_i64_list_builtin_call_from_regs},
@@ -17,12 +17,12 @@ pub(super) fn emit_dynamic_list_builtin_call_from_regs_block(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     builtin: NativeBuiltin,
     facts: &NativeScalarFacts,
     pc: usize,
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     code_len: usize,
     tmp_index: &mut usize,
 ) -> bool {
@@ -61,10 +61,10 @@ pub(super) fn emit_dynamic_list_builtin_call_block(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     code_len: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],

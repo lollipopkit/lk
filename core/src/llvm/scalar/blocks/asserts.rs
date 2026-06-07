@@ -3,12 +3,12 @@ use crate::{
         ir_text::{emit_branch_to_next, next_tmp, reg_in_bounds},
         scalar::facts::{NativeScalarFacts, NativeScalarKind},
     },
-    vm::Instr32,
+    vm::Instr,
 };
 
 pub(super) fn emit_native_assert_direct_call(
     ir: &mut String,
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     code_len: usize,
     register_count: usize,

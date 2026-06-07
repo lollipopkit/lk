@@ -2,7 +2,7 @@
 //!
 //! This crate is intentionally not the LK VM. It may provide low-level typed
 //! helpers that LLVM-generated code links against, but it must not depend on the
-//! parser, compiler, `Module32Artifact`, `VmContext`, or the Instr32 executor.
+//! parser, compiler, `ModuleArtifact`, `VmContext`, or the bytecode executor.
 
 /// Called by the CLI to make the Cargo dependency explicit.
 pub fn link_anchor() -> u8 {

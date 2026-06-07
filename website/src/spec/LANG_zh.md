@@ -372,8 +372,8 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 ## CLI 使用说明
 - 运行 REPL：`lk`
 - 执行文件（语句）：`lk FILE`
-- 编译为可执行 Instr32 模块产物：`lk compile [FILE]` -> `FILE.lkm`
-- 执行 Instr32 模块产物：`lk FILE.lkm`
+- 编译为可执行模块产物：`lk compile [FILE]` -> `FILE.lkm`
+- 执行模块产物：`lk FILE.lkm`
 - 编译为 LLVM 可 native lowering 形状的 native 可执行文件：`lk compile exe [FILE]`
 - 只允许相对且经过清洗的路径。
 - CLI 只在结果非 `nil` 时打印。

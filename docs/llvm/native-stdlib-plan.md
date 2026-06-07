@@ -11,8 +11,8 @@ Acceptance:
 
 - `cargo build -p lk-cli --features llvm`
 - `lk compile exe` still emits a native executable.
-- `strings` on the executable does not show `Module32Artifact`,
-  `Instr32 VM`, `VmContext`, `compile_program32`, or `execute_module`.
+- `strings` on the executable does not show `ModuleArtifact`,
+  `bytecode VM`, `VmContext`, `compile_program`, or `execute_module`.
 
 ## Phase 2: Intrinsic Registry
 
@@ -42,7 +42,7 @@ Acceptance:
 
 ## Phase 4: Coverage Closure
 
-- Build a language-shape coverage matrix for spec methods, Instr32/runtime
+- Build a language-shape coverage matrix for spec methods, VM IR/runtime
   shapes, LLVM lowering, and `lkrt` calls.
 - Run the full examples VM/native diff sweep.
 - Update `docs/llvm/backend.md` and `plan-progress.md` with verified facts.

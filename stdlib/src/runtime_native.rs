@@ -1,15 +1,15 @@
 use anyhow::{Result, anyhow};
 use lk_core::{
     val::{CallableValue, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap, de},
-    vm::{NativeArgs32, NativeRuntime32},
+    vm::{NativeArgs, NativeRuntime},
 };
 use std::{fmt::Write as _, sync::Arc};
 
 #[cfg(test)]
 pub(crate) fn runtime_native_export(
-    module: &dyn lk_core::module::Module,
+    module: &dyn lk_core::module::ModuleProvider,
     name: &str,
-) -> Result<(u16, lk_core::vm::NativeFunction32)> {
+) -> Result<(u16, lk_core::vm::NativeFunction)> {
     let export = module.runtime_exports()?;
     let state = export.state_lock()?;
     let RuntimeVal::Obj(handle) = export.value() else {
@@ -22,17 +22,17 @@ pub(crate) fn runtime_native_export(
     let RuntimeVal::Obj(handle) = value else {
         return Err(anyhow!("{name} must be a heap callable"));
     };
-    let Some(HeapValue::Callable(lk_core::val::CallableValue::RuntimeNative32 { arity, function, .. })) =
+    let Some(HeapValue::Callable(lk_core::val::CallableValue::RuntimeNative { arity, function, .. })) =
         state.heap().get(handle)
     else {
-        return Err(anyhow!("{name} must be RuntimeNative32"));
+        return Err(anyhow!("{name} must be RuntimeNative"));
     };
     Ok((*arity, function.clone()))
 }
 
-pub(crate) fn parse_format32(
-    args: NativeArgs32<'_>,
-    runtime: &mut NativeRuntime32<'_>,
+pub(crate) fn parse_format(
+    args: NativeArgs<'_>,
+    runtime: &mut NativeRuntime<'_>,
     name: &str,
     format: de::Format,
 ) -> Result<RuntimeVal> {
@@ -112,14 +112,14 @@ fn runtime_display_callable(value: &CallableValue) -> String {
             function_index,
             captures,
         } => format!("<fn #{}({} captures)>", function_index, captures.len()),
-        CallableValue::RuntimeNative32 { name, arity, .. } => {
-            if *arity == lk_core::vm::NativeEntry32::VARIADIC {
+        CallableValue::RuntimeNative { name, arity, .. } => {
+            if *arity == lk_core::vm::NativeEntry::VARIADIC {
                 format!("<native fn {}(...)>", name)
             } else {
                 format!("<native fn {}({} args)>", name, arity)
             }
         }
-        CallableValue::Runtime32(function) => {
+        CallableValue::Runtime(function) => {
             format!(
                 "<fn {} ({} captures)>",
                 function.display_signature(),
@@ -244,7 +244,8 @@ fn quote_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Arc};
+    use lk_core::util::fast_map::fast_hash_map_from_iter;
+    use std::sync::Arc;
 
     use super::*;
     use lk_core::val::TypedMap;
@@ -253,10 +254,12 @@ mod tests {
     fn runtime_display_formats_typed_containers_without_val_containers() {
         let mut heap = HeapStore::new();
         let nested = RuntimeVal::Obj(heap.alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
-        let map = RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(BTreeMap::from([
-            (Arc::<str>::from("items"), nested),
-            (Arc::<str>::from("ok"), RuntimeVal::Bool(true)),
-        ])))));
+        let map = RuntimeVal::Obj(
+            heap.alloc(HeapValue::Map(TypedMap::StringMixed(fast_hash_map_from_iter([
+                (Arc::<str>::from("items"), nested),
+                (Arc::<str>::from("ok"), RuntimeVal::Bool(true)),
+            ])))),
+        );
 
         let output = runtime_display_value(&map, &heap).expect("display");
 

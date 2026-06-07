@@ -1,10 +1,11 @@
 use anyhow::{Result, anyhow, bail};
+use lk_core::util::fast_map::FastHashMap;
 use lk_core::{
-    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap},
-    vm::{NativeArgs32, NativeRuntime32, RuntimeExport32, call_runtime_value32_runtime},
+    vm::{NativeArgs, NativeRuntime, RuntimeExport, call_runtime_value_runtime},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct MapModule;
@@ -20,24 +21,24 @@ impl MapModule {
         Self
     }
 
-    fn len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let map = one_map(args, runtime, "len()")?;
         Ok(RuntimeVal::Int(map.len() as i64))
     }
 
-    fn keys32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn keys(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let map = one_map(args, runtime, "keys()")?.clone();
         let keys = map_keys_list(&map, runtime.heap_mut());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(keys))))
     }
 
-    fn values32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn values(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let map = one_map(args, runtime, "values()")?;
         let list = map_values_list(map, runtime.heap());
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(list))))
     }
 
-    fn has32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn has(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "has()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "has() first argument")?;
@@ -45,7 +46,7 @@ impl MapModule {
         Ok(RuntimeVal::Bool(map.get(&key).is_some()))
     }
 
-    fn get32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "get()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "get() first argument")?;
@@ -53,7 +54,7 @@ impl MapModule {
         Ok(map.get(&key).unwrap_or(RuntimeVal::Nil))
     }
 
-    fn set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn set(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "set()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "set() first argument")?;
@@ -62,7 +63,7 @@ impl MapModule {
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::Map(map))))
     }
 
-    fn delete32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn delete(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "delete()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "delete() first argument")?;
@@ -76,7 +77,7 @@ impl MapModule {
         ))
     }
 
-    fn mutate32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn mutate(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "mutate()")?;
         let values = args.as_slice();
         let map = map_arg(&values[0], runtime.heap(), "mutate() first argument")?.clone();
@@ -90,7 +91,7 @@ impl MapModule {
         let guard = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(map)));
         let gc_threshold = state.heap().gc_threshold();
         state.heap_mut().set_gc_threshold(u32::MAX);
-        let result = call_runtime_value32_runtime(callback, &[guard.clone()], state, module, ctx);
+        let result = call_runtime_value_runtime(callback, &[guard.clone()], state, module, ctx);
         state.heap_mut().set_gc_threshold(gc_threshold);
         result?;
         Ok(RuntimeVal::Obj(
@@ -100,132 +101,12 @@ impl MapModule {
 }
 
 fn set_map_entry(map: &TypedMap, key: RuntimeMapKey, value: RuntimeVal) -> TypedMap {
-    if matches!(map, TypedMap::Mixed(entries) if entries.is_empty()) {
-        let mut out = map.clone();
-        out.set(key, value);
-        return out;
-    }
-    match map {
-        TypedMap::Mixed(entries) => {
-            let mut entries = entries.clone();
-            entries.insert(key, value);
-            TypedMap::Mixed(entries)
-        }
-        TypedMap::StringMixed(entries) => {
-            let Some(key) = key.as_arc_str() else {
-                let mut mixed = string_mixed_to_runtime_map(entries);
-                mixed.insert(key, value);
-                return TypedMap::Mixed(mixed);
-            };
-            let mut out = BTreeMap::new();
-            for (entry_key, entry_value) in entries.iter() {
-                if entry_key.as_ref() != key.as_ref() {
-                    out.insert(Arc::clone(entry_key), entry_value.clone());
-                }
-            }
-            out.insert(key, value);
-            TypedMap::StringMixed(out)
-        }
-        TypedMap::StringInt(entries) => match value {
-            RuntimeVal::Int(value) => {
-                let Some(key) = key.as_arc_str() else {
-                    let mut mixed = string_int_to_runtime_map(entries);
-                    mixed.insert(key, RuntimeVal::Int(value));
-                    return TypedMap::Mixed(mixed);
-                };
-                let mut out = BTreeMap::new();
-                for (entry_key, entry_value) in entries.iter() {
-                    if entry_key.as_ref() != key.as_ref() {
-                        out.insert(Arc::clone(entry_key), *entry_value);
-                    }
-                }
-                out.insert(key, value);
-                TypedMap::StringInt(out)
-            }
-            value => {
-                let Some(key) = key.as_arc_str() else {
-                    let mut mixed = string_int_to_runtime_map(entries);
-                    mixed.insert(key, value);
-                    return TypedMap::Mixed(mixed);
-                };
-                let mut out = BTreeMap::new();
-                for (entry_key, entry_value) in entries.iter() {
-                    if entry_key.as_ref() != key.as_ref() {
-                        out.insert(Arc::clone(entry_key), RuntimeVal::Int(*entry_value));
-                    }
-                }
-                out.insert(key, value);
-                TypedMap::StringMixed(out)
-            }
-        },
-        TypedMap::StringFloat(entries) => match value {
-            RuntimeVal::Float(value) => {
-                let Some(key) = key.as_arc_str() else {
-                    let mut mixed = string_float_to_runtime_map(entries);
-                    mixed.insert(key, RuntimeVal::Float(value));
-                    return TypedMap::Mixed(mixed);
-                };
-                let mut out = BTreeMap::new();
-                for (entry_key, entry_value) in entries.iter() {
-                    if entry_key.as_ref() != key.as_ref() {
-                        out.insert(Arc::clone(entry_key), *entry_value);
-                    }
-                }
-                out.insert(key, value);
-                TypedMap::StringFloat(out)
-            }
-            value => {
-                let Some(key) = key.as_arc_str() else {
-                    let mut mixed = string_float_to_runtime_map(entries);
-                    mixed.insert(key, value);
-                    return TypedMap::Mixed(mixed);
-                };
-                let mut out = BTreeMap::new();
-                for (entry_key, entry_value) in entries.iter() {
-                    if entry_key.as_ref() != key.as_ref() {
-                        out.insert(Arc::clone(entry_key), RuntimeVal::Float(*entry_value));
-                    }
-                }
-                out.insert(key, value);
-                TypedMap::StringMixed(out)
-            }
-        },
-        TypedMap::StringBool(entries) => match value {
-            RuntimeVal::Bool(value) => {
-                let Some(key) = key.as_arc_str() else {
-                    let mut mixed = string_bool_to_runtime_map(entries);
-                    mixed.insert(key, RuntimeVal::Bool(value));
-                    return TypedMap::Mixed(mixed);
-                };
-                let mut out = BTreeMap::new();
-                for (entry_key, entry_value) in entries.iter() {
-                    if entry_key.as_ref() != key.as_ref() {
-                        out.insert(Arc::clone(entry_key), *entry_value);
-                    }
-                }
-                out.insert(key, value);
-                TypedMap::StringBool(out)
-            }
-            value => {
-                let Some(key) = key.as_arc_str() else {
-                    let mut mixed = string_bool_to_runtime_map(entries);
-                    mixed.insert(key, value);
-                    return TypedMap::Mixed(mixed);
-                };
-                let mut out = BTreeMap::new();
-                for (entry_key, entry_value) in entries.iter() {
-                    if entry_key.as_ref() != key.as_ref() {
-                        out.insert(Arc::clone(entry_key), RuntimeVal::Bool(*entry_value));
-                    }
-                }
-                out.insert(key, value);
-                TypedMap::StringMixed(out)
-            }
-        },
-    }
+    let mut out = map.clone();
+    out.set(key, value);
+    out
 }
 
-impl Module for MapModule {
+impl ModuleProvider for MapModule {
     fn name(&self) -> &str {
         "map"
     }
@@ -238,24 +119,24 @@ impl Module for MapModule {
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::plain("len", Self::len32, 1),
-                RuntimeNativeExport32::plain("keys", Self::keys32, 1),
-                RuntimeNativeExport32::plain("values", Self::values32, 1),
-                RuntimeNativeExport32::plain("has", Self::has32, 2),
-                RuntimeNativeExport32::plain("get", Self::get32, 2),
-                RuntimeNativeExport32::plain("set", Self::set32, 3),
-                RuntimeNativeExport32::plain("delete", Self::delete32, 2),
-                RuntimeNativeExport32::full_state("mutate", Self::mutate32, 2),
+                RuntimeNativeExport::plain("len", Self::len, 1),
+                RuntimeNativeExport::plain("keys", Self::keys, 1),
+                RuntimeNativeExport::plain("values", Self::values, 1),
+                RuntimeNativeExport::plain("has", Self::has, 2),
+                RuntimeNativeExport::plain("get", Self::get, 2),
+                RuntimeNativeExport::plain("set", Self::set, 3),
+                RuntimeNativeExport::plain("delete", Self::delete, 2),
+                RuntimeNativeExport::full_state("mutate", Self::mutate, 2),
             ],
             &[],
         ))
     }
 }
 
-fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         Ok(())
     } else {
@@ -266,7 +147,7 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
     }
 }
 
-fn one_map<'a>(args: NativeArgs32<'a>, runtime: &'a NativeRuntime32<'a>, name: &str) -> Result<&'a TypedMap> {
+fn one_map<'a>(args: NativeArgs<'a>, runtime: &'a NativeRuntime<'a>, name: &str) -> Result<&'a TypedMap> {
     expect_arity(args, 1, name)?;
     map_arg(&args.as_slice()[0], runtime.heap(), name)
 }
@@ -360,7 +241,7 @@ fn map_values_list(map: &TypedMap, heap: &HeapStore) -> TypedList {
     }
 }
 
-fn copy_string_map_keys<T>(entries: &BTreeMap<Arc<str>, T>) -> Vec<Arc<str>> {
+fn copy_string_map_keys<T>(entries: &FastHashMap<Arc<str>, T>) -> Vec<Arc<str>> {
     let mut keys = Vec::with_capacity(entries.len());
     for key in entries.keys() {
         keys.push(Arc::clone(key));
@@ -383,34 +264,6 @@ fn runtime_string_map_key(value: Arc<str>) -> RuntimeMapKey {
     } else {
         RuntimeMapKey::String(value)
     }
-}
-
-fn string_mixed_to_runtime_map(entries: &BTreeMap<Arc<str>, RuntimeVal>) -> BTreeMap<RuntimeMapKey, RuntimeVal> {
-    entries
-        .iter()
-        .map(|(key, value)| (runtime_string_map_key(Arc::clone(key)), value.clone()))
-        .collect()
-}
-
-fn string_int_to_runtime_map(entries: &BTreeMap<Arc<str>, i64>) -> BTreeMap<RuntimeMapKey, RuntimeVal> {
-    entries
-        .iter()
-        .map(|(key, value)| (runtime_string_map_key(Arc::clone(key)), RuntimeVal::Int(*value)))
-        .collect()
-}
-
-fn string_float_to_runtime_map(entries: &BTreeMap<Arc<str>, f64>) -> BTreeMap<RuntimeMapKey, RuntimeVal> {
-    entries
-        .iter()
-        .map(|(key, value)| (runtime_string_map_key(Arc::clone(key)), RuntimeVal::Float(*value)))
-        .collect()
-}
-
-fn string_bool_to_runtime_map(entries: &BTreeMap<Arc<str>, bool>) -> BTreeMap<RuntimeMapKey, RuntimeVal> {
-    entries
-        .iter()
-        .map(|(key, value)| (runtime_string_map_key(Arc::clone(key)), RuntimeVal::Bool(*value)))
-        .collect()
 }
 
 enum MapStringValue {
@@ -560,73 +413,9 @@ fn runtime_string_from_map_value(value: &RuntimeVal, heap: &HeapStore) -> Option
 }
 
 fn delete_map_entry(map: &TypedMap, key: &RuntimeMapKey) -> (TypedMap, RuntimeVal) {
-    match map {
-        TypedMap::Mixed(entries) => {
-            let mut out = entries.clone();
-            let removed = out.remove(key).unwrap_or(RuntimeVal::Nil);
-            (TypedMap::Mixed(out), removed)
-        }
-        TypedMap::StringMixed(entries) => {
-            let Some(key) = key.as_str() else {
-                return (TypedMap::StringMixed(entries.clone()), RuntimeVal::Nil);
-            };
-            let mut removed = RuntimeVal::Nil;
-            let mut out = BTreeMap::new();
-            for (entry_key, value) in entries {
-                if entry_key.as_ref() == key {
-                    removed = value.clone();
-                } else {
-                    out.insert(Arc::clone(entry_key), value.clone());
-                }
-            }
-            (TypedMap::StringMixed(out), removed)
-        }
-        TypedMap::StringInt(entries) => {
-            let Some(key) = key.as_str() else {
-                return (TypedMap::StringInt(entries.clone()), RuntimeVal::Nil);
-            };
-            let mut removed = RuntimeVal::Nil;
-            let mut out = BTreeMap::new();
-            for (entry_key, value) in entries {
-                if entry_key.as_ref() == key {
-                    removed = RuntimeVal::Int(*value);
-                } else {
-                    out.insert(Arc::clone(entry_key), *value);
-                }
-            }
-            (TypedMap::StringInt(out), removed)
-        }
-        TypedMap::StringFloat(entries) => {
-            let Some(key) = key.as_str() else {
-                return (TypedMap::StringFloat(entries.clone()), RuntimeVal::Nil);
-            };
-            let mut removed = RuntimeVal::Nil;
-            let mut out = BTreeMap::new();
-            for (entry_key, value) in entries {
-                if entry_key.as_ref() == key {
-                    removed = RuntimeVal::Float(*value);
-                } else {
-                    out.insert(Arc::clone(entry_key), *value);
-                }
-            }
-            (TypedMap::StringFloat(out), removed)
-        }
-        TypedMap::StringBool(entries) => {
-            let Some(key) = key.as_str() else {
-                return (TypedMap::StringBool(entries.clone()), RuntimeVal::Nil);
-            };
-            let mut removed = RuntimeVal::Nil;
-            let mut out = BTreeMap::new();
-            for (entry_key, value) in entries {
-                if entry_key.as_ref() == key {
-                    removed = RuntimeVal::Bool(*value);
-                } else {
-                    out.insert(Arc::clone(entry_key), *value);
-                }
-            }
-            (TypedMap::StringBool(out), removed)
-        }
-    }
+    let mut out = map.clone();
+    let removed = out.remove(key).unwrap_or(RuntimeVal::Nil);
+    (out, removed)
 }
 
 #[cfg(test)]
@@ -638,14 +427,14 @@ mod tests {
         module::ModuleRegistry,
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
-        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32, VmContext},
+        util::fast_map::fast_hash_map_new,
+        vm::{NativeArgs, NativeFunction, NativeRuntime, ProgramResult, RuntimeModuleState, VmContext},
     };
-    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use crate::runtime_native::runtime_string_value;
 
-    fn run32(source: &str) -> Result<Program32Result> {
+    fn run(source: &str) -> Result<ProgramResult> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -654,18 +443,18 @@ mod tests {
         register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
-        program.execute32_with_ctx(&mut env)
+        program.execute_with_ctx(&mut env)
     }
 
-    fn run32_return(source: &str) -> Result<RuntimeVal> {
-        Ok(run32(source)?.first_return().clone())
+    fn run_return(source: &str) -> Result<RuntimeVal> {
+        Ok(run(source)?.first_return().clone())
     }
 
     fn runtime_short_string(value: &str) -> RuntimeVal {
         RuntimeVal::ShortStr(ShortStr::new(value).expect("short test string"))
     }
 
-    fn expect_list(result: &Program32Result) -> Vec<RuntimeVal> {
+    fn expect_list(result: &ProgramResult) -> Vec<RuntimeVal> {
         match result.first_return_list().expect("expected list") {
             TypedList::Mixed(values) => values.clone(),
             TypedList::Int(values) => values.iter().copied().map(RuntimeVal::Int).collect(),
@@ -678,51 +467,50 @@ mod tests {
         }
     }
 
-    fn map_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn map_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&MapModule::new(), name)
     }
 
     #[test]
     fn test_map_len_keys_values_has_get() -> Result<()> {
         assert_eq!(
-            run32_return("import map; return map.len({\"a\":1, \"b\":2});")?,
+            run_return("import map; return map.len({\"a\":1, \"b\":2});")?,
             RuntimeVal::Int(2)
         );
 
-        let keys = run32_return(
-            "import map; import string; let m={\"a\":1, \"b\":2}; return string.join(map.keys(m), \",\");",
-        )?;
+        let keys =
+            run_return("import map; import string; let m={\"a\":1, \"b\":2}; return string.join(map.keys(m), \",\");")?;
         match keys {
             RuntimeVal::ShortStr(v) if v.as_str() == "a,b" || v.as_str() == "b,a" => {}
             _ => panic!("unexpected keys output: {:?}", keys),
         }
 
         assert_eq!(
-            run32_return("import map; return map.has({\"a\":1}, \"a\");")?,
+            run_return("import map; return map.has({\"a\":1}, \"a\");")?,
             RuntimeVal::Bool(true)
         );
         assert_eq!(
-            run32_return("import map; return map.has({\"a\":1}, \"b\");")?,
+            run_return("import map; return map.has({\"a\":1}, \"b\");")?,
             RuntimeVal::Bool(false)
         );
         assert_eq!(
-            run32_return("import map; return map.get({\"a\":1}, \"a\");")?,
+            run_return("import map; return map.get({\"a\":1}, \"a\");")?,
             RuntimeVal::Int(1)
         );
         assert_eq!(
-            run32_return("import map; return map.get({\"a\":1}, \"b\");")?,
+            run_return("import map; return map.get({\"a\":1}, \"b\");")?,
             RuntimeVal::Nil
         );
         assert_eq!(
-            run32_return("import map; let m=map.set({}, \"a\", \"x\"); return map.has(m, \"a\");")?,
+            run_return("import map; let m=map.set({}, \"a\", \"x\"); return map.has(m, \"a\");")?,
             RuntimeVal::Bool(true)
         );
         assert_eq!(
-            run32_return("import map; let m=map.set({}, \"a\", \"x\"); return map.get(m, \"a\");")?,
+            run_return("import map; let m=map.set({}, \"a\", \"x\"); return map.get(m, \"a\");")?,
             runtime_short_string("x")
         );
 
-        let values = run32("import map; return map.values({\"a\":1, \"b\":2});")?;
+        let values = run("import map; return map.values({\"a\":1, \"b\":2});")?;
         let values = expect_list(&values);
         assert_eq!(values.len(), 2);
         assert!(values.contains(&RuntimeVal::Int(1)));
@@ -732,8 +520,7 @@ mod tests {
 
     #[test]
     fn test_map_int_keys_use_mixed_map_backing() -> Result<()> {
-        let result = run32(
-            r#"
+        let result = run(r#"
             import map;
             let counts = {};
             counts = map.set(counts, 1, 10);
@@ -741,8 +528,7 @@ mod tests {
             let removed_pair = map.delete(counts, 1);
             let without = removed_pair[0];
             return [map.get(counts, 1), map.get(counts, 2), map.values(counts), map.has(without, 1), removed_pair[1]];
-        "#,
-        )?;
+        "#)?;
         let values = expect_list(&result);
         assert_eq!(values.len(), 5);
         assert_eq!(values[0], RuntimeVal::Int(10));
@@ -755,13 +541,15 @@ mod tests {
         let Some(HeapValue::List(TypedList::Int(map_values))) = result.state.heap().get(values_handle) else {
             panic!("map.values should keep int list shape");
         };
-        assert_eq!(map_values.as_slice(), &[10, 20]);
+        let mut sorted = map_values.as_slice().to_vec();
+        sorted.sort();
+        assert_eq!(sorted, vec![10, 20]);
         Ok(())
     }
 
     #[test]
     fn test_map_set_counts_dynamic_string_keys() -> Result<()> {
-        let result = run32_return(
+        let result = run_return(
             r#"
             import map;
             let words = "the fox the".split(" ");
@@ -784,16 +572,14 @@ mod tests {
 
     #[test]
     fn test_map_set_and_delete() -> Result<()> {
-        let result = run32(
-            r#"
+        let result = run(r#"
             import map;
             let updated = map.set({"a": 1}, "a", 7);
             let removed_pair = map.delete(updated, "a");
             let without = removed_pair[0];
             let removed = removed_pair[1];
             return [removed, map.has(without, "a")];
-        "#,
-        )?;
+        "#)?;
         let values = expect_list(&result);
         assert_eq!(values.len(), 2);
         assert_eq!(values[0], RuntimeVal::Int(7));
@@ -802,11 +588,11 @@ mod tests {
     }
 
     #[test]
-    fn test_map_public_functions_use_runtime_native32_abi() -> Result<()> {
+    fn test_map_public_functions_use_runtime_native_abi() -> Result<()> {
         for name in ["len", "keys", "values", "has", "get", "set", "delete"] {
             let (arity, function) = map_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
-            assert_ne!(arity, lk_core::vm::NativeEntry32::VARIADIC);
+            assert!(matches!(function, NativeFunction::Plain(_)));
+            assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC);
         }
         Ok(())
     }
@@ -814,12 +600,12 @@ mod tests {
     #[test]
     fn test_map_direct_runtime_call_preserves_typed_map() -> Result<()> {
         let (_, function) = map_native("set")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("set should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("set should use plain RuntimeNative");
         };
-        let mut entries = BTreeMap::new();
+        let mut entries = fast_hash_map_new();
         entries.insert(RuntimeMapKey::String(Arc::<str>::from("a")), RuntimeVal::Int(1));
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let map = RuntimeVal::Obj(
             state.heap_mut().alloc(HeapValue::Map(TypedMap::StringInt(
                 entries
@@ -838,8 +624,8 @@ mod tests {
         );
         let key = runtime_string_value("a", state.heap_mut());
         let args = [map, key, RuntimeVal::Int(7)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
         let RuntimeVal::Obj(handle) = result else {
             panic!("set should return map object");
         };
@@ -854,18 +640,18 @@ mod tests {
     #[test]
     fn test_map_values_reads_typed_map_backing_directly() -> Result<()> {
         let (_, function) = map_native("values")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("values should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("values should use plain RuntimeNative");
         };
-        let mut entries = BTreeMap::new();
+        let mut entries = fast_hash_map_new();
         entries.insert(Arc::<str>::from("a"), 1);
         entries.insert(Arc::<str>::from("b"), 2);
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringInt(entries))));
         let args = [map];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("values should return list object");
@@ -881,19 +667,19 @@ mod tests {
     #[test]
     fn test_map_values_classifies_string_mixed_backing_without_runtime_value_helper() -> Result<()> {
         let (_, function) = map_native("values")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("values should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("values should use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let heap_string = runtime_string_value("long-map-value", state.heap_mut());
-        let mut entries = BTreeMap::new();
+        let mut entries = fast_hash_map_new();
         entries.insert(Arc::<str>::from("a"), runtime_string_value("short", state.heap_mut()));
         entries.insert(Arc::<str>::from("b"), heap_string);
         let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
         let args = [map];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("values should return list object");
@@ -911,18 +697,18 @@ mod tests {
     #[test]
     fn test_map_values_pollutes_numeric_shape_to_mixed_without_reclassifying() -> Result<()> {
         let (_, function) = map_native("values")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("values should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("values should use plain RuntimeNative");
         };
-        let mut entries = BTreeMap::new();
+        let mut entries = fast_hash_map_new();
         entries.insert(Arc::<str>::from("a"), RuntimeVal::Int(1));
         entries.insert(Arc::<str>::from("b"), runtime_short_string("two"));
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringMixed(entries))));
         let args = [map];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("values should return list object");
@@ -938,18 +724,18 @@ mod tests {
     #[test]
     fn test_map_keys_reads_string_key_backing_directly() -> Result<()> {
         let (_, function) = map_native("keys")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("keys should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("keys should use plain RuntimeNative");
         };
-        let mut entries = BTreeMap::new();
+        let mut entries = fast_hash_map_new();
         entries.insert(Arc::<str>::from("long-key-one"), true);
         entries.insert(Arc::<str>::from("long-key-two"), false);
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringBool(entries))));
         let args = [map];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("keys should return list object");
@@ -965,19 +751,19 @@ mod tests {
     #[test]
     fn test_map_delete_preserves_typed_map_backing_directly() -> Result<()> {
         let (_, function) = map_native("delete")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("delete should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("delete should use plain RuntimeNative");
         };
-        let mut entries = BTreeMap::new();
+        let mut entries = fast_hash_map_new();
         entries.insert(Arc::<str>::from("a"), 1);
         entries.insert(Arc::<str>::from("b"), 2);
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let map = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Map(TypedMap::StringInt(entries))));
         let key = runtime_string_value("b", state.heap_mut());
         let args = [map, key];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(pair_handle) = result else {
             panic!("delete should return pair list");

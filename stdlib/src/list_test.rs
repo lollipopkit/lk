@@ -9,10 +9,10 @@ mod tests {
         stmt::{self, stmt_parser::StmtParser},
         token::Tokenizer,
         val::{HeapStore, HeapValue, RuntimeVal, TypedList},
-        vm::{self, NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32},
+        vm::{self, NativeArgs, NativeFunction, NativeRuntime, ProgramResult, RuntimeModuleState},
     };
 
-    fn run32(source: &str) -> Result<Program32Result> {
+    fn run(source: &str) -> Result<ProgramResult> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -21,10 +21,10 @@ mod tests {
         register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(stmt::ModuleResolver::with_registry(registry));
         let mut env = vm::VmContext::new().with_resolver(resolver);
-        program.execute32_with_ctx(&mut env)
+        program.execute_with_ctx(&mut env)
     }
 
-    fn list_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn list_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&ListModule::new(), name)
     }
 
@@ -60,11 +60,11 @@ mod tests {
     #[test]
     fn test_list_len_push_join() -> Result<()> {
         assert_eq!(
-            run32("import list; return list.len([1,2,3]);")?.first_return(),
+            run("import list; return list.len([1,2,3]);")?.first_return(),
             &RuntimeVal::Int(3)
         );
         assert_eq!(
-            run32("import list; return list.join(list.push([\"a\", \"b\"], \"c\"), \",\");")?.first_return(),
+            run("import list; return list.join(list.push([\"a\", \"b\"], \"c\"), \",\");")?.first_return(),
             &RuntimeVal::ShortStr(lk_core::val::ShortStr::new("a,b,c").expect("short string"))
         );
         Ok(())
@@ -73,26 +73,26 @@ mod tests {
     #[test]
     fn test_list_get_first_last() -> Result<()> {
         assert_eq!(
-            run32("import list; return list.get([10,20,30], 1);")?.first_return(),
+            run("import list; return list.get([10,20,30], 1);")?.first_return(),
             &RuntimeVal::Int(20)
         );
         assert_eq!(
-            run32("import list; return list.get([10,20,30], 5);")?.first_return(),
+            run("import list; return list.get([10,20,30], 5);")?.first_return(),
             &RuntimeVal::Nil
         );
         assert_eq!(
-            run32("import list; return list.get([10,20,30], -1);")?.first_return(),
+            run("import list; return list.get([10,20,30], -1);")?.first_return(),
             &RuntimeVal::Nil
         );
         assert_eq!(
-            run32("import list; return list.first([10,20,30]);")?.first_return(),
+            run("import list; return list.first([10,20,30]);")?.first_return(),
             &RuntimeVal::Int(10)
         );
         assert_eq!(
-            run32("import list; return list.last([10,20,30]);")?.first_return(),
+            run("import list; return list.last([10,20,30]);")?.first_return(),
             &RuntimeVal::Int(30)
         );
-        let result = run32("import list; return [list.first([]), list.last([])];")?;
+        let result = run("import list; return [list.first([]), list.last([])];")?;
         assert_eq!(
             expect_runtime_list(result.first_return().clone(), result.state.heap()),
             vec![RuntimeVal::Nil, RuntimeVal::Nil]
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_list_concat_and_set_returns_pair() -> Result<()> {
-        let concat = run32("import list; return list.concat([1,2], [3,4]);")?;
+        let concat = run("import list; return list.concat([1,2], [3,4]);")?;
         assert_eq!(
             expect_runtime_list(concat.first_return().clone(), concat.state.heap()),
             vec![
@@ -112,12 +112,10 @@ mod tests {
                 RuntimeVal::Int(4)
             ]
         );
-        let result = run32(
-            "import list; let pair = list.set([1, 2, 3], 1, 42); \
+        let result = run("import list; let pair = list.set([1, 2, 3], 1, 42); \
              let updated = pair[0]; \
              let old = pair[1]; \
-             return [updated[1], old];",
-        )?;
+             return [updated[1], old];")?;
         assert_eq!(
             expect_runtime_list(result.first_return().clone(), result.state.heap()),
             vec![RuntimeVal::Int(42), RuntimeVal::Int(2)]
@@ -127,23 +125,22 @@ mod tests {
 
     #[test]
     fn test_list_get_rejects_non_integer_index() {
-        let err = run32("import list; return list.get([1], \"x\");").expect_err("non-integer index should error");
+        let err = run("import list; return list.get([1], \"x\");").expect_err("non-integer index should error");
         assert!(err.to_string().contains("index must be an integer"));
     }
 
     #[test]
     fn test_list_join_rejects_non_string_items() {
-        let err =
-            run32("import list; return list.join([\"ok\", 1], \",\");").expect_err("non-string items should error");
+        let err = run("import list; return list.join([\"ok\", 1], \",\");").expect_err("non-string items should error");
         assert!(err.to_string().contains("list must contain only strings"));
     }
 
     #[test]
-    fn test_list_public_functions_use_runtime_native32_abi() -> Result<()> {
+    fn test_list_public_functions_use_runtime_native_abi() -> Result<()> {
         for name in ["len", "push", "concat", "join", "get", "first", "last", "set"] {
             let (arity, function) = list_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
-            assert_ne!(arity, lk_core::vm::NativeEntry32::VARIADIC);
+            assert!(matches!(function, NativeFunction::Plain(_)));
+            assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC);
         }
         Ok(())
     }
@@ -151,14 +148,14 @@ mod tests {
     #[test]
     fn test_list_direct_runtime_call_preserves_typed_backing() -> Result<()> {
         let (_, function) = list_native("push")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("push should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("push should use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let list = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
         let args = [list, RuntimeVal::Int(3)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
         assert!(matches!(
             expect_runtime_list_backing(result.clone(), runtime.heap()),
             TypedList::Int(values) if values == vec![1, 2, 3]
@@ -173,14 +170,14 @@ mod tests {
     #[test]
     fn test_list_direct_runtime_set_preserves_typed_backing() -> Result<()> {
         let (_, function) = list_native("set")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("set should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("set should use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let list = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::Int(vec![1, 2]))));
         let args = [list, RuntimeVal::Int(1), RuntimeVal::Int(7)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
         let pair = expect_runtime_list(result, runtime.heap());
         assert_eq!(pair[1], RuntimeVal::Int(2));
         assert!(matches!(
@@ -188,15 +185,15 @@ mod tests {
             TypedList::Int(values) if values == vec![1, 7]
         ));
 
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let list = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("red"),
             Arc::<str>::from("green"),
         ]))));
         let replacement = runtime_string_value("blue", state.heap_mut());
         let args = [list, RuntimeVal::Int(0), replacement];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
         let pair = expect_runtime_list(result, runtime.heap());
         assert_eq!(
             pair[1],
@@ -213,10 +210,10 @@ mod tests {
     #[test]
     fn test_list_direct_runtime_concat_preserves_typed_backing() -> Result<()> {
         let (_, function) = list_native("concat")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("concat should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("concat should use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let left = RuntimeVal::Obj(
             state
                 .heap_mut()
@@ -228,8 +225,8 @@ mod tests {
                 .alloc(HeapValue::List(TypedList::String(vec![Arc::<str>::from("b")]))),
         );
         let args = [left, right];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
         assert!(matches!(
             expect_runtime_list_backing(result, runtime.heap()),
             TypedList::String(values) if values.iter().map(|value| value.as_ref()).collect::<Vec<_>>() == vec!["a", "b"]
@@ -240,18 +237,18 @@ mod tests {
     #[test]
     fn test_list_direct_runtime_join_with_heap_strings() -> Result<()> {
         let (_, function) = list_native("join")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("join should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("join should use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let list = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::String(vec![
             Arc::<str>::from("a"),
             Arc::<str>::from("b"),
         ]))));
         let delimiter = runtime_string_value(",", state.heap_mut());
         let args = [list, delimiter];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let result = function(NativeArgs32::new(&args), &mut runtime)?;
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&args), &mut runtime)?;
         assert!(matches!(result, RuntimeVal::ShortStr(value) if value.as_str() == "a,b"));
         Ok(())
     }

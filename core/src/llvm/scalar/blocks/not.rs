@@ -7,15 +7,15 @@ use crate::{
         },
         straightline_value::NativeStraightlineValue,
     },
-    vm::Instr32,
+    vm::Instr,
 };
 
 pub(super) fn emit_not_block(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,

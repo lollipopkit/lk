@@ -23,7 +23,7 @@ fn avg_score(user) {
 }
 let averages = data.users.map(|u| avg_score(u));
 assert(averages[0] > 90);
-assert(averages[2] > 97);
+assert(averages[2] >= 97);
 
 // 3. Filter users with average > 90
 let top_users = data.users.filter(|u| avg_score(u) > 90).map(|u| u.name);

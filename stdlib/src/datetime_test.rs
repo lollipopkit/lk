@@ -10,10 +10,10 @@ mod tests {
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
         val::{HeapStore, HeapValue, RuntimeVal},
-        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32, VmContext},
+        vm::{NativeArgs, NativeFunction, NativeRuntime, ProgramResult, RuntimeModuleState, VmContext},
     };
 
-    fn run32(source: &str) -> Result<Program32Result> {
+    fn run(source: &str) -> Result<ProgramResult> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -22,34 +22,34 @@ mod tests {
         register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
-        program.execute32_with_ctx(&mut env)
+        program.execute_with_ctx(&mut env)
     }
 
-    fn datetime_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn datetime_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&DateTimeModule::new(), name)
     }
 
     fn call_datetime(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {
         let (_, function) = datetime_native(name)?;
-        let NativeFunction32::Plain(function) = function else {
-            return Err(anyhow!("{name} must use plain RuntimeNative32"));
+        let NativeFunction::Plain(function) = function else {
+            return Err(anyhow!("{name} must use plain RuntimeNative"));
         };
-        let mut state = RuntimeModuleState32::default();
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        function(NativeArgs32::new(args), &mut runtime)
+        let mut state = RuntimeModuleState::default();
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        function(NativeArgs::new(args), &mut runtime)
     }
 
     fn call_datetime_strings(name: &str, left: &str, right: &str) -> Result<RuntimeVal> {
         let (_, function) = datetime_native(name)?;
-        let NativeFunction32::Plain(function) = function else {
-            return Err(anyhow!("{name} must use plain RuntimeNative32"));
+        let NativeFunction::Plain(function) = function else {
+            return Err(anyhow!("{name} must use plain RuntimeNative"));
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let left = runtime_string_value(left, state.heap_mut());
         let right = runtime_string_value(right, state.heap_mut());
         let args = [left, right];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        function(NativeArgs32::new(&args), &mut runtime)
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        function(NativeArgs::new(&args), &mut runtime)
     }
 
     fn runtime_str<'a>(value: &'a RuntimeVal, heap: &'a HeapStore) -> Option<&'a str> {
@@ -67,7 +67,7 @@ mod tests {
     fn test_format_and_parse_roundtrip() -> Result<()> {
         let ts = Utc.with_ymd_and_hms(2024, 1, 6, 12, 30, 0).unwrap().timestamp();
 
-        let formatted = run32("import datetime; return datetime.format(1704544200, \"%Y-%m-%d %H:%M\");")?;
+        let formatted = run("import datetime; return datetime.format(1704544200, \"%Y-%m-%d %H:%M\");")?;
         assert_eq!(
             runtime_str(formatted.first_return(), formatted.state.heap()),
             Some("2024-01-06 12:30")
@@ -107,11 +107,11 @@ mod tests {
     fn test_add_sub_and_day_of_year() -> Result<()> {
         let base = 1_700_000_000i64;
         assert_eq!(
-            run32("import datetime; return datetime.add(1700000000, 30);")?.first_return(),
+            run("import datetime; return datetime.add(1700000000, 30);")?.first_return(),
             &RuntimeVal::Int(base + 30)
         );
         assert_eq!(
-            run32("import datetime; return datetime.sub(1700000000, 45);")?.first_return(),
+            run("import datetime; return datetime.sub(1700000000, 45);")?.first_return(),
             &RuntimeVal::Int(base - 45)
         );
         assert_eq!(
@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn test_datetime_functions_use_runtime_native32_abi() -> Result<()> {
+    fn test_datetime_functions_use_runtime_native_abi() -> Result<()> {
         for name in [
             "now",
             "format",
@@ -151,15 +151,15 @@ mod tests {
             "is_weekend",
         ] {
             let (arity, function) = datetime_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
-            assert_ne!(arity, lk_core::vm::NativeEntry32::VARIADIC);
+            assert!(matches!(function, NativeFunction::Plain(_)));
+            assert_ne!(arity, lk_core::vm::NativeEntry::VARIADIC);
         }
         Ok(())
     }
 
     #[test]
     fn test_datetime_now() -> Result<()> {
-        let result = run32("import datetime; return datetime.now();")?;
+        let result = run("import datetime; return datetime.now();")?;
         let RuntimeVal::Int(timestamp) = result.first_return() else {
             panic!("Expected integer timestamp");
         };
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn test_datetime_format() -> Result<()> {
-        let formatted = run32("import datetime; return datetime.format(1672531200, \"%Y-%m-%d\");")?;
+        let formatted = run("import datetime; return datetime.format(1672531200, \"%Y-%m-%d\");")?;
         assert_eq!(
             runtime_str(formatted.first_return(), formatted.state.heap()),
             Some("2023-01-01")

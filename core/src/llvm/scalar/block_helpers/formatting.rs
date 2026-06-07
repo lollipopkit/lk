@@ -4,7 +4,7 @@ use crate::llvm::{
     output::emit_native_print_text_parts,
     straightline_value::{NativeBuiltin, NativeStraightlineValue},
 };
-use crate::vm::ConstRuntimeValue32Data;
+use crate::vm::ConstRuntimeValueData;
 
 pub(in crate::llvm) fn emit_static_formatted_print(
     ir: &mut String,
@@ -165,7 +165,7 @@ fn emit_static_print_value_raw(
     Some(())
 }
 
-fn native_object_display_text(type_name: &str, fields: &[(String, ConstRuntimeValue32Data)]) -> Option<String> {
+fn native_object_display_text(type_name: &str, fields: &[(String, ConstRuntimeValueData)]) -> Option<String> {
     match type_name {
         "Rect" => {
             let w = native_object_i64_field(fields, "w")?;
@@ -180,10 +180,10 @@ fn native_object_display_text(type_name: &str, fields: &[(String, ConstRuntimeVa
     }
 }
 
-fn native_object_i64_field(fields: &[(String, ConstRuntimeValue32Data)], key: &str) -> Option<i64> {
+fn native_object_i64_field(fields: &[(String, ConstRuntimeValueData)], key: &str) -> Option<i64> {
     let (_, value) = fields.iter().find(|(field, _)| field == key)?;
     match value {
-        ConstRuntimeValue32Data::Int(value) => Some(*value),
+        ConstRuntimeValueData::Int(value) => Some(*value),
         _ => None,
     }
 }

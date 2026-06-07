@@ -1,10 +1,10 @@
 use crate::{
     llvm::straightline_value::{NativeListElementKind, NativeStraightlineValue},
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Function32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, Opcode},
 };
 
 pub(in crate::llvm) fn dynamic_list_return_value(
-    function: &Function32Data,
+    function: &FunctionData,
     args: &[Option<NativeStraightlineValue>],
     id: usize,
 ) -> Option<NativeStraightlineValue> {
@@ -19,13 +19,13 @@ pub(in crate::llvm) fn dynamic_list_return_value(
     Some(NativeStraightlineValue::DynamicList { id, element })
 }
 
-fn callee_has_list_return_shape(function: &Function32Data) -> bool {
+fn callee_has_list_return_shape(function: &FunctionData) -> bool {
     function
         .code
         .iter()
         .copied()
-        .filter_map(|raw| Instr32::try_from_raw(raw).ok())
-        .any(|instr| instr.opcode() == Opcode32::ListPush)
+        .filter_map(|raw| Instr::try_from_raw(raw).ok())
+        .any(|instr| instr.opcode() == Opcode::ListPush)
 }
 
 fn value_element_kind(value: &NativeStraightlineValue) -> Option<NativeListElementKind> {
@@ -44,28 +44,28 @@ fn value_element_kind(value: &NativeStraightlineValue) -> Option<NativeListEleme
     }
 }
 
-fn const_list_element_kind(elements: &[ConstRuntimeValue32Data]) -> Option<NativeListElementKind> {
+fn const_list_element_kind(elements: &[ConstRuntimeValueData]) -> Option<NativeListElementKind> {
     if elements
         .iter()
-        .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_)))
+        .all(|value| matches!(value, ConstRuntimeValueData::Int(_)))
     {
         return Some(NativeListElementKind::I64);
     }
     if elements
         .iter()
-        .all(|value| matches!(value, ConstRuntimeValue32Data::Float(_)))
+        .all(|value| matches!(value, ConstRuntimeValueData::Float(_)))
     {
         return Some(NativeListElementKind::F64);
     }
     if elements
         .iter()
-        .all(|value| matches!(value, ConstRuntimeValue32Data::Bool(_)))
+        .all(|value| matches!(value, ConstRuntimeValueData::Bool(_)))
     {
         return Some(NativeListElementKind::Bool);
     }
     if elements.iter().all(|value| match value {
-        ConstRuntimeValue32Data::ShortStr(_) => true,
-        ConstRuntimeValue32Data::Heap(value) => matches!(value.as_ref(), ConstHeapValue32Data::LongString(_)),
+        ConstRuntimeValueData::ShortStr(_) => true,
+        ConstRuntimeValueData::Heap(value) => matches!(value.as_ref(), ConstHeapValueData::LongString(_)),
         _ => false,
     }) {
         return Some(NativeListElementKind::StrPtr);

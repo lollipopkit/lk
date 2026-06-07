@@ -1,8 +1,8 @@
 use anyhow::Result;
 use lk_core::{
-    module::{self, Module, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{self, ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     val::{RuntimeVal, de},
-    vm::{NativeArgs32, NativeRuntime32, RuntimeExport32},
+    vm::{NativeArgs, NativeRuntime, RuntimeExport},
 };
 
 #[derive(Debug)]
@@ -20,7 +20,7 @@ impl YamlModule {
     }
 }
 
-impl Module for YamlModule {
+impl ModuleProvider for YamlModule {
     fn name(&self) -> &str {
         "yaml"
     }
@@ -29,23 +29,23 @@ impl Module for YamlModule {
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
-            &[RuntimeNativeExport32::plain("parse", parse32, 1)],
+            &[RuntimeNativeExport::plain("parse", parse, 1)],
             &[],
         ))
     }
 }
 
-fn parse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
-    crate::runtime_native::parse_format32(args, runtime, "yaml.parse", de::Format::Yaml)
+fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
+    crate::runtime_native::parse_format(args, runtime, "yaml.parse", de::Format::Yaml)
 }
 
 #[cfg(test)]
 mod tests {
     use lk_core::{
         val::{HeapValue, RuntimeVal},
-        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
+        vm::{NativeArgs, NativeFunction, NativeRuntime, RuntimeModuleState},
     };
 
     use crate::runtime_native::runtime_string_value;
@@ -53,24 +53,24 @@ mod tests {
     use super::YamlModule;
 
     #[test]
-    fn yaml_parse_exports_runtime_native32() {
+    fn yaml_parse_exports_runtime_native() {
         let (arity, _) =
             crate::runtime_native::runtime_native_export(&YamlModule::new(), "parse").expect("parse export");
         assert_eq!(arity, 1);
     }
 
     #[test]
-    fn yaml_parse32_decodes_into_runtime_values() {
+    fn yaml_parse_decodes_into_runtime_values() {
         let (_, function) =
             crate::runtime_native::runtime_native_export(&YamlModule::new(), "parse").expect("parse export");
-        let NativeFunction32::Plain(function) = function else {
-            panic!("parse must be plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("parse must be plain RuntimeNative");
         };
 
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let input = runtime_string_value("answer: 42", state.heap_mut());
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let result = function(NativeArgs32::new(&[input]), &mut runtime).expect("parse");
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&[input]), &mut runtime).expect("parse");
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("yaml.parse should return runtime object");

@@ -12,6 +12,8 @@ LUA_BIN="lua"
 RUN_AOT="${RUN_AOT:-1}"
 AOT_ENABLED=0
 PROFILE_WORKLOADS="${PROFILE_WORKLOADS:-0}"
+BENCH_TIMEOUT="${BENCH_TIMEOUT:-30}"
+BENCH_PROGRESS="${BENCH_PROGRESS:-1}"
 
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
@@ -71,19 +73,52 @@ profile_value() {
   sed -n 's/^VM profile: //p' "$file" | tr ' ' '\n' | awk -F= -v key="$key" '$1 == key { print $2; found = 1 } END { if (!found) print "0" }'
 }
 
+progress() {
+  if [ "$BENCH_PROGRESS" != "0" ]; then
+    echo "$@" >&2
+  fi
+}
+
+run_with_timeout() {
+  local out_file="$1"
+  local err_file="$2"
+  shift 2
+  if [ "$BENCH_TIMEOUT" = "0" ]; then
+    "$@" >"$out_file" 2>"$err_file"
+  else
+    perl -e 'my $timeout = shift @ARGV; my $pid = fork(); die "fork failed: $!" unless defined $pid; if ($pid == 0) { exec @ARGV; die "exec failed: $!"; } $SIG{ALRM} = sub { kill "TERM", $pid; sleep 1; kill "KILL", $pid; exit 124; }; alarm $timeout if $timeout > 0; waitpid($pid, 0); my $status = $?; exit($status & 127 ? 128 + ($status & 127) : $status >> 8);' \
+      "$BENCH_TIMEOUT" "$@" >"$out_file" 2>"$err_file"
+  fi
+}
+
 collect_profile_once() {
   local exec_widths=(28 12 10 10 8 10 10 10 10)
   local copy_widths=(28 10 10 10 10 10 10 10 10 10 10)
+  local opcode_widths=(28 70)
+  local write_source_widths=(28 70)
+  local index_key_widths=(28 70)
   local exec_rows=()
   local copy_rows=()
+  local opcode_rows=()
+  local write_source_rows=()
+  local index_key_rows=()
   echo ""
   echo "VM Profile by Workload"
 
   for name in "${WORKLOADS[@]}"; do
-    local err_file opcodes calls branches typed containers list_ops map_ops string_ops clones heap_clones copy_heap reg_heap local_heap load_heap store_heap const_heap arg_heap cont_heap
+    local err_file opcodes top_opcodes write_sources index_keys calls branches typed containers list_ops map_ops string_ops clones heap_clones copy_heap reg_heap local_heap load_heap store_heap const_heap arg_heap cont_heap
     err_file="$TMPDIR/profile_${name}.err"
-    LK_VM_PROFILE=1 LK_WORKLOAD_FILTER="$name" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk" >/dev/null 2>"$err_file"
+    local out_file
+    out_file="$TMPDIR/profile_${name}.out"
+    if ! LK_VM_PROFILE=1 LK_WORKLOAD_FILTER="$name" run_with_timeout "$out_file" "$err_file" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk"; then
+      echo "VM profile run failed for workload '$name'" >&2
+      sed 's/^/  /' "$err_file" >&2
+      return 1
+    fi
     opcodes=$(profile_value "$err_file" opcode_steps)
+    top_opcodes=$(profile_value "$err_file" top_opcodes)
+    write_sources=$(profile_value "$err_file" write_sources)
+    index_keys=$(profile_value "$err_file" index_keys)
     calls=$(profile_value "$err_file" calls)
     branches=$(profile_value "$err_file" branches)
     typed=$(profile_value "$err_file" typed_branches)
@@ -103,6 +138,9 @@ collect_profile_once() {
     cont_heap=$(profile_value "$err_file" container_copy_heap_clones)
     exec_rows+=("$name|$opcodes|$calls|$branches|$typed|$containers|$list_ops|$map_ops|$string_ops")
     copy_rows+=("$name|$clones|$heap_clones|$copy_heap|$reg_heap|$local_heap|$load_heap|$store_heap|$const_heap|$arg_heap|$cont_heap")
+    opcode_rows+=("$name|$top_opcodes")
+    write_source_rows+=("$name|$write_sources")
+    index_key_rows+=("$name|$index_keys")
   done
 
   printf "%-28s %12s %10s %10s %8s %10s %10s %10s %10s\n" \
@@ -123,6 +161,33 @@ collect_profile_once() {
     IFS='|' read -r name clones heap_clones copy_heap reg_heap local_heap load_heap store_heap const_heap arg_heap cont_heap <<< "$row"
     printf "%-28s %10s %10s %10s %10s %10s %10s %10s %10s %10s %10s\n" \
       "$name" "$clones" "$heap_clones" "$copy_heap" "$reg_heap" "$local_heap" "$load_heap" "$store_heap" "$const_heap" "$arg_heap" "$cont_heap"
+  done
+
+  echo ""
+  echo "VM Dynamic Opcode Top-6 by Workload"
+  printf "%-28s %-70s\n" "Workload" "Top opcodes"
+  print_separator "${opcode_widths[@]}"
+  for row in "${opcode_rows[@]}"; do
+    IFS='|' read -r name top_opcodes <<< "$row"
+    printf "%-28s %-70s\n" "$name" "$top_opcodes"
+  done
+
+  echo ""
+  echo "VM Register Write Source Top-6 by Workload"
+  printf "%-28s %-70s\n" "Workload" "Top write sources"
+  print_separator "${write_source_widths[@]}"
+  for row in "${write_source_rows[@]}"; do
+    IFS='|' read -r name write_sources <<< "$row"
+    printf "%-28s %-70s\n" "$name" "$write_sources"
+  done
+
+  echo ""
+  echo "VM Index Key Top-6 by Workload"
+  printf "%-28s %-70s\n" "Workload" "Top index key metrics"
+  print_separator "${index_key_widths[@]}"
+  for row in "${index_key_rows[@]}"; do
+    IFS='|' read -r name index_keys <<< "$row"
+    printf "%-28s %-70s\n" "$name" "$index_keys"
   done
 }
 
@@ -293,6 +358,7 @@ else
   echo "AOT: disabled"
 fi
 echo "Runs: $BASE_RUNS base + $EXTRA_RUNS adaptive extra when regression/noise is suspected"
+echo "Per-workload timeout: ${BENCH_TIMEOUT}s (set BENCH_TIMEOUT=0 to disable)"
 echo "Regression margin: $(awk -v x="$REGRESSION_MARGIN" 'BEGIN { printf "%.1f%%", x * 100 }') vs documented baseline"
 echo "Noise margin: $(awk -v x="$NOISE_MARGIN" 'BEGIN { printf "%.1f%%", x * 100 }') max spread"
 if [ "$PROFILE_WORKLOADS" != "0" ]; then
@@ -306,16 +372,72 @@ for name in "${WORKLOADS[@]}"; do
   > "$TMPDIR/aot_${name}.dat"
 done
 
-run_once() {
-  "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk" 2>/dev/null | record_output lk
-  if [ "$AOT_ENABLED" = "1" ]; then
-    "$AOT_BIN" | record_output aot
+run_engine_workload() {
+  local engine="$1"
+  local name="$2"
+  local sample="$3"
+  local out_file err_file command_label
+  out_file="$TMPDIR/${engine}_${name}_${sample}.out"
+  err_file="$TMPDIR/${engine}_${name}_${sample}.err"
+
+  case "$engine" in
+    lk)
+      command_label="LK"
+      progress "[$sample] $command_label $name"
+      if ! LK_WORKLOAD_FILTER="$name" run_with_timeout "$out_file" "$err_file" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk"; then
+        echo "$command_label workload '$name' failed or timed out after ${BENCH_TIMEOUT}s" >&2
+        sed 's/^/  /' "$err_file" >&2
+        return 1
+      fi
+      ;;
+    aot)
+      command_label="AOT"
+      progress "[$sample] $command_label $name"
+      if ! LK_WORKLOAD_FILTER="$name" run_with_timeout "$out_file" "$err_file" "$AOT_BIN"; then
+        echo "$command_label workload '$name' failed or timed out after ${BENCH_TIMEOUT}s" >&2
+        sed 's/^/  /' "$err_file" >&2
+        return 1
+      fi
+      ;;
+    lua)
+      command_label="Lua"
+      progress "[$sample] $command_label $name"
+      if ! LK_WORKLOAD_FILTER="$name" run_with_timeout "$out_file" "$err_file" "$LUA_BIN" "$BENCH_DIR/workloads_business_algorithms.lua"; then
+        echo "$command_label workload '$name' failed or timed out after ${BENCH_TIMEOUT}s" >&2
+        sed 's/^/  /' "$err_file" >&2
+        return 1
+      fi
+      ;;
+    *)
+      echo "Unknown benchmark engine '$engine'" >&2
+      return 1
+      ;;
+  esac
+
+  if ! grep -q "^workload|${name}|" "$out_file"; then
+    echo "$command_label workload '$name' produced no matching workload output" >&2
+    sed 's/^/  /' "$out_file" >&2
+    sed 's/^/  /' "$err_file" >&2
+    return 1
   fi
-  "$LUA_BIN" "$BENCH_DIR/workloads_business_algorithms.lua" | record_output lua
+
+  record_output "$engine" < "$out_file"
 }
 
-for _ in $(seq 1 "$BASE_RUNS"); do
-  run_once
+run_once() {
+  local sample="$1"
+  local name
+  for name in "${WORKLOADS[@]}"; do
+    run_engine_workload lk "$name" "$sample" || return 1
+    if [ "$AOT_ENABLED" = "1" ]; then
+      run_engine_workload aot "$name" "$sample" || return 1
+    fi
+    run_engine_workload lua "$name" "$sample" || return 1
+  done
+}
+
+for run_index in $(seq 1 "$BASE_RUNS"); do
+  run_once "base-$run_index" || exit 1
 done
 
 REASONS="$TMPDIR/adaptive_reasons.txt"
@@ -326,7 +448,7 @@ if should_extend_runs "$REASONS"; then
   echo "Running $EXTRA_RUNS additional samples for the full workload suite..."
   if [ "$EXTRA_RUNS" -gt 0 ]; then
     for _ in $(seq 1 "$EXTRA_RUNS"); do
-      run_once
+      run_once "extra-$_" || exit 1
     done
   fi
   echo ""

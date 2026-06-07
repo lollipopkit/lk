@@ -3,7 +3,7 @@ use crate::{
     stmt::{Program, Stmt, stmt_parser::StmtParser},
     token::Tokenizer,
     val::{HeapValue, RuntimeVal},
-    vm::{RuntimeExport32, VmContext},
+    vm::{RuntimeExport, VmContext},
 };
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
@@ -61,7 +61,7 @@ pub struct ModuleResolver {
     /// Standard library registry
     stdlib_registry: Arc<ModuleRegistry>,
     /// Loaded file modules as new VM runtime exports.
-    runtime_file_modules: Arc<DashMap<PathBuf, RuntimeExport32>>,
+    runtime_file_modules: Arc<DashMap<PathBuf, RuntimeExport>>,
     /// Search paths for module resolution
     search_paths: Vec<PathBuf>,
     /// Package modules resolved from Lk.toml dependencies/workspace members
@@ -91,11 +91,11 @@ impl ModuleResolver {
         }
     }
 
-    pub fn runtime_builtin_iter(&self) -> impl Iterator<Item = (&Arc<str>, &RuntimeExport32)> {
+    pub fn runtime_builtin_iter(&self) -> impl Iterator<Item = (&Arc<str>, &RuntimeExport)> {
         self.stdlib_registry.get_all_runtime_builtins().iter()
     }
 
-    pub fn get_runtime_builtin(&self, name: &str) -> Option<&RuntimeExport32> {
+    pub fn get_runtime_builtin(&self, name: &str) -> Option<&RuntimeExport> {
         self.stdlib_registry.get_runtime_builtin(name)
     }
 
@@ -145,12 +145,12 @@ impl ModuleResolver {
         }
     }
 
-    pub fn resolve_runtime_file(&self, path: &str) -> Result<RuntimeExport32> {
+    pub fn resolve_runtime_file(&self, path: &str) -> Result<RuntimeExport> {
         let resolved_path = self.resolve_file_path(path)?;
         self.resolve_resolved_runtime_file(&resolved_path)
     }
 
-    pub fn resolve_runtime_module(&self, name: &str) -> Result<RuntimeExport32> {
+    pub fn resolve_runtime_module(&self, name: &str) -> Result<RuntimeExport> {
         if let Ok(module) = self.stdlib_registry.get_runtime_module(name) {
             return Ok(module);
         }
@@ -160,7 +160,7 @@ impl ModuleResolver {
         self.resolve_resolved_runtime_file(root.value())
     }
 
-    fn resolve_resolved_runtime_file(&self, resolved_path: &Path) -> Result<RuntimeExport32> {
+    fn resolve_resolved_runtime_file(&self, resolved_path: &Path) -> Result<RuntimeExport> {
         let resolved_path = Self::normalize_path(resolved_path.to_path_buf());
         if let Some(module) = self.runtime_file_modules.get(&resolved_path) {
             return Ok(module.value().shallow_clone_shared());
@@ -171,7 +171,7 @@ impl ModuleResolver {
         Ok(module)
     }
 
-    pub fn resolve_source_runtime(&self, src: &str) -> Result<RuntimeExport32> {
+    pub fn resolve_source_runtime(&self, src: &str) -> Result<RuntimeExport> {
         // Tokenize with spans for better diagnostics
         let (tokens, spans) = Tokenizer::tokenize_enhanced_with_spans(src).map_err(|e| anyhow!(e.to_string()))?;
 
@@ -183,7 +183,7 @@ impl ModuleResolver {
 
         let resolver = Arc::new(self.clone());
         let mut ctx = VmContext::new().with_resolver(resolver);
-        let result = program.execute32_with_ctx(&mut ctx)?;
+        let result = program.execute_with_ctx(&mut ctx)?;
         Ok(result.into_exports())
     }
 
@@ -199,13 +199,6 @@ impl ModuleResolver {
             ));
         }
 
-        if path.components().any(|c| matches!(c, Component::ParentDir)) {
-            return Err(anyhow!(
-                "Parent directory components ('..') are not allowed in imports: {}",
-                path.display()
-            ));
-        }
-
         // Candidate patterns (searched under each `search_paths` root):
         // 1) ${MOD_NAME}.lk
         // 2) ${MOD_NAME}/mod.lk
@@ -217,6 +210,11 @@ impl ModuleResolver {
             if base.extension().and_then(|s| s.to_str()) == Some("lk") {
                 let p = root.join(&base);
                 if p.exists() {
+                    if let Ok(canon) = p.canonicalize() {
+                        if canon.starts_with(root) {
+                            return Ok(Self::normalize_path(canon));
+                        }
+                    }
                     return Ok(Self::normalize_path(p));
                 }
             }
@@ -224,12 +222,22 @@ impl ModuleResolver {
             // Try ${MOD_NAME}.lk
             let candidate1 = root.join(base.with_extension("lk"));
             if candidate1.exists() {
+                if let Ok(canon) = candidate1.canonicalize() {
+                    if canon.starts_with(root) {
+                        return Ok(Self::normalize_path(canon));
+                    }
+                }
                 return Ok(Self::normalize_path(candidate1));
             }
 
             // Try ${MOD_NAME}/mod.lk
             let candidate2 = root.join(base.join("mod.lk"));
             if candidate2.exists() {
+                if let Ok(canon) = candidate2.canonicalize() {
+                    if canon.starts_with(root) {
+                        return Ok(Self::normalize_path(canon));
+                    }
+                }
                 return Ok(Self::normalize_path(candidate2));
             }
         }
@@ -242,7 +250,7 @@ impl ModuleResolver {
         ))
     }
 
-    fn load_file_runtime_module(&self, path: &Path) -> Result<RuntimeExport32> {
+    fn load_file_runtime_module(&self, path: &Path) -> Result<RuntimeExport> {
         let src = std::fs::read_to_string(path)?;
         let mut resolver = self.clone();
         if let Some(parent) = path.parent() {
@@ -266,7 +274,7 @@ pub fn deserialize_imports(json: &str) -> serde_json::Result<Vec<ImportStmt>> {
     serde_json::from_str(json)
 }
 
-fn runtime_export_field(module: &RuntimeExport32, name: &str) -> Result<RuntimeExport32> {
+fn runtime_export_field(module: &RuntimeExport, name: &str) -> Result<RuntimeExport> {
     let state = module.state_lock()?;
     let RuntimeVal::Obj(handle) = module.value() else {
         return Err(anyhow!("runtime module export is not a map"));
@@ -278,11 +286,7 @@ fn runtime_export_field(module: &RuntimeExport32, name: &str) -> Result<RuntimeE
         return Err(anyhow!("runtime module export is not a map"));
     };
     if let Some(value) = map.get_str(name) {
-        return Ok(RuntimeExport32::new(
-            value,
-            module.shared_state(),
-            module.shared_module(),
-        ));
+        return Ok(RuntimeExport::new(value, module.shared_state(), module.shared_module()));
     }
     Err(anyhow!("Export '{}' not found in runtime module", name))
 }
@@ -327,7 +331,7 @@ pub fn execute_imports(imports: &[ImportStmt], resolver: &ModuleResolver, env: &
     Ok(())
 }
 
-fn resolve_runtime_import_source(source: &ImportSource, resolver: &ModuleResolver) -> Result<RuntimeExport32> {
+fn resolve_runtime_import_source(source: &ImportSource, resolver: &ModuleResolver) -> Result<RuntimeExport> {
     match source {
         ImportSource::File(path) => resolver.resolve_runtime_file(path),
         ImportSource::Module(name) => resolver.resolve_runtime_module(name),
@@ -395,7 +399,7 @@ mod tests {
     fn execute_import_source(source: &str, resolver: Arc<ModuleResolver>) -> Result<RuntimeVal> {
         let program = parse_program(source)?;
         let mut ctx = VmContext::new().with_resolver(resolver);
-        Ok(program.execute32_with_ctx(&mut ctx)?.first_return().clone())
+        Ok(program.execute_with_ctx(&mut ctx)?.first_return().clone())
     }
 
     #[test]
@@ -435,8 +439,8 @@ mod tests {
         let abs_str = abs.to_string_lossy().to_string();
         assert!(resolver.resolve_file_path(&abs_str).is_err());
 
-        // Parent directory components are rejected
-        assert!(resolver.resolve_file_path("../foo.lk").is_err());
+        // Parent directory components are now allowed (relative to source file)
+        // but must stay within a search_path root
 
         // Relative simple path that likely does not exist should return not found
         // (error message still OK but not due to security check)

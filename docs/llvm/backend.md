@@ -1,6 +1,6 @@
 # LLVM Backend
 
-The current LLVM target uses `Module32Artifact` as its input boundary. A small
+The current LLVM target uses `ModuleArtifact` as its input boundary. A small
 native-lowerable subset of entry functions can return an `i64`, `f64`, `bool`,
 `nil`, short string, long string literal, simple const list, or simple const map
 from scalar loads, integer/float arithmetic, integer and float comparisons,
@@ -57,7 +57,7 @@ static string lists can be indexed with a dynamic `i64` index and lower to
 direct string pointer selection. Covered dynamic lists, dynamic pair lists
 including `StrPtr,F64` and `I64,F64` field layouts, and dynamic maps can be
 displayed as direct returns and as nested `ArgList` return elements without
-falling back to the Instr32 runtime.
+falling back to the VM runtime.
 String-valued dynamic map writes copy runtime text through `strdup` before
 storing into ptr slots, so loop-local template buffers do not alias later
 iterations.
@@ -70,7 +70,7 @@ string pointer values, including receiver-method calls such as
 value. Dynamic `Map<str,str>` also has ptr-value set, direct index, values,
 display, and missing `get` lowering, with runtime text copied through `strdup`
 before it is stored. Optional scalar map-get results can be recovered into
-`ArgList` returns without falling back to the Instr32 runtime.
+`ArgList` returns without falling back to the VM runtime.
 `DynamicList<i64>` and `DynamicList<bool>` also support monomorphized
 `list.contains`, `list.index_of`, `list.reverse`, `list.pop`, `list.push`,
 `list.slice`, `list.insert`, `list.remove_at`, and `list.set` lowering through
@@ -90,8 +90,8 @@ helper folding.
 Non-nil scalar returns are printed through `printf` using the same user-facing
 spellings as the VM path for the covered values. A nil return is silent, matching
 the CLI VM path. Unsupported shapes are rejected with a compile error; LLVM
-output must not embed a serialized `.lkm` payload or call back into the Instr32
-VM.
+output must not embed a serialized `.lkm` payload or call back into the
+bytecode VM.
 
 Native integer and float division/modulo preserve the VM divisor-zero boundary:
 static folding refuses zero divisors, and scalar block lowering emits a
@@ -105,7 +105,7 @@ control-flow boundary, the backend may recover narrowly proven immutable shapes
 such as heap-const integer lists for native list indexing and membership checks,
 but it must not preserve arbitrary mutable register facts across branches.
 
-Executable output uses the same `Module32Artifact` compile-time boundary:
+Executable output uses the same `ModuleArtifact` compile-time boundary:
 
 ```sh
 lk compile exe FILE.lk
@@ -116,8 +116,8 @@ executable with `clang` and links the typed `lkrt` native runtime static
 library. Unsupported shapes fail before executable emission; the CLI no longer
 generates a host executable launcher.
 
-Future native AOT work must continue expanding this `Module32Artifact` lowering
+Future native AOT work must continue expanding this `ModuleArtifact` lowering
 surface without adding a VM runtime bridge. The final executable may link Rust
 `std`, libc/libm, and `lkrt`, but it must not embed a serialized `.lkm` payload,
-`Module32Artifact`, the Instr32 executor, `VmContext`, parser, type checker, or
+`ModuleArtifact`, the bytecode executor, `VmContext`, parser, type checker, or
 compiler. See `docs/llvm/native-stdlib.md` for the native stdlib boundary.

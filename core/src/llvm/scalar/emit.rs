@@ -1,25 +1,25 @@
 use crate::llvm::ir_text::next_tmp;
-use crate::vm::{Instr32, Opcode32};
+use crate::vm::{Instr, Opcode};
 
 use super::facts::NativeScalarKind;
 
-pub(in crate::llvm) fn emit_i64_binary_block(ir: &mut String, instr: Instr32, tmp_index: &mut usize) {
+pub(in crate::llvm) fn emit_i64_binary_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
     let lhs = next_tmp(tmp_index);
     let rhs = next_tmp(tmp_index);
     let out = next_tmp(tmp_index);
     let zero = next_tmp(tmp_index);
     let ok_label = format!("divisor_ok_{}", *tmp_index);
     let op = match instr.opcode() {
-        Opcode32::AddInt => "add",
-        Opcode32::SubInt => "sub",
-        Opcode32::MulInt => "mul",
-        Opcode32::DivInt => "sdiv",
-        Opcode32::ModInt => "srem",
+        Opcode::AddInt => "add",
+        Opcode::SubInt => "sub",
+        Opcode::MulInt => "mul",
+        Opcode::DivInt => "sdiv",
+        Opcode::ModInt => "srem",
         _ => unreachable!("opcode matched by caller"),
     };
     ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
     ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
-    if matches!(instr.opcode(), Opcode32::DivInt | Opcode32::ModInt) {
+    if matches!(instr.opcode(), Opcode::DivInt | Opcode::ModInt) {
         ir.push_str(&format!("  {zero} = icmp eq i64 {rhs}, 0\n"));
         ir.push_str(&format!("  br i1 {zero}, label %lk_divisor_zero, label %{ok_label}\n"));
         ir.push_str(&format!("{ok_label}:\n"));
@@ -31,7 +31,7 @@ pub(in crate::llvm) fn emit_i64_binary_block(ir: &mut String, instr: Instr32, tm
 
 pub(in crate::llvm) fn emit_f64_binary_block(
     ir: &mut String,
-    instr: Instr32,
+    instr: Instr,
     lhs_kind: NativeScalarKind,
     rhs_kind: NativeScalarKind,
     slot_prefix: &str,
@@ -43,14 +43,14 @@ pub(in crate::llvm) fn emit_f64_binary_block(
     let zero = next_tmp(tmp_index);
     let ok_label = format!("divisor_ok_{}", *tmp_index);
     let op = match instr.opcode() {
-        Opcode32::AddFloat => "fadd",
-        Opcode32::SubFloat => "fsub",
-        Opcode32::MulFloat => "fmul",
-        Opcode32::DivFloat => "fdiv",
-        Opcode32::ModFloat => "frem",
+        Opcode::AddFloat => "fadd",
+        Opcode::SubFloat => "fsub",
+        Opcode::MulFloat => "fmul",
+        Opcode::DivFloat => "fdiv",
+        Opcode::ModFloat => "frem",
         _ => unreachable!("opcode matched by caller"),
     };
-    if matches!(instr.opcode(), Opcode32::DivFloat | Opcode32::ModFloat) {
+    if matches!(instr.opcode(), Opcode::DivFloat | Opcode::ModFloat) {
         ir.push_str(&format!("  {zero} = fcmp oeq double {rhs}, 0.0\n"));
         ir.push_str(&format!("  br i1 {zero}, label %lk_divisor_zero, label %{ok_label}\n"));
         ir.push_str(&format!("{ok_label}:\n"));
@@ -93,7 +93,7 @@ fn emit_numeric_load_as_f64(
 
 pub(in crate::llvm) fn emit_numeric_compare_block(
     ir: &mut String,
-    instr: Instr32,
+    instr: Instr,
     lhs_kind: NativeScalarKind,
     rhs_kind: NativeScalarKind,
     tmp_index: &mut usize,
@@ -106,12 +106,12 @@ pub(in crate::llvm) fn emit_numeric_compare_block(
         ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
         ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
         let pred = match instr.opcode() {
-            Opcode32::CmpInt => "eq",
-            Opcode32::CmpNeInt => "ne",
-            Opcode32::CmpLtInt => "slt",
-            Opcode32::CmpLeInt => "sle",
-            Opcode32::CmpGtInt => "sgt",
-            Opcode32::CmpGeInt => "sge",
+            Opcode::CmpInt => "eq",
+            Opcode::CmpNeInt => "ne",
+            Opcode::CmpLtInt => "slt",
+            Opcode::CmpLeInt => "sle",
+            Opcode::CmpGtInt => "sgt",
+            Opcode::CmpGeInt => "sge",
             _ => unreachable!("opcode matched by caller"),
         };
         ir.push_str(&format!("  {cmp} = icmp {pred} i64 {lhs}, {rhs}\n"));
@@ -119,12 +119,12 @@ pub(in crate::llvm) fn emit_numeric_compare_block(
         let lhs = emit_numeric_load_as_f64(ir, "", instr.b(), lhs_kind, tmp_index);
         let rhs = emit_numeric_load_as_f64(ir, "", instr.c(), rhs_kind, tmp_index);
         let pred = match instr.opcode() {
-            Opcode32::CmpInt => "oeq",
-            Opcode32::CmpNeInt => "une",
-            Opcode32::CmpLtInt => "olt",
-            Opcode32::CmpLeInt => "ole",
-            Opcode32::CmpGtInt => "ogt",
-            Opcode32::CmpGeInt => "oge",
+            Opcode::CmpInt => "oeq",
+            Opcode::CmpNeInt => "une",
+            Opcode::CmpLtInt => "olt",
+            Opcode::CmpLeInt => "ole",
+            Opcode::CmpGtInt => "ogt",
+            Opcode::CmpGeInt => "oge",
             _ => unreachable!("opcode matched by caller"),
         };
         ir.push_str(&format!("  {cmp} = fcmp {pred} double {lhs}, {rhs}\n"));
@@ -135,7 +135,7 @@ pub(in crate::llvm) fn emit_numeric_compare_block(
 
 pub(in crate::llvm) fn emit_scalar_equality_block(
     ir: &mut String,
-    instr: Instr32,
+    instr: Instr,
     lhs_kind: NativeScalarKind,
     rhs_kind: NativeScalarKind,
     tmp_index: &mut usize,
@@ -155,7 +155,7 @@ pub(in crate::llvm) fn emit_scalar_equality_block(
             _ => Some(false),
         };
     if let Some(equal) = eq_result {
-        let value = i64::from(if instr.opcode() == Opcode32::CmpNeInt {
+        let value = i64::from(if instr.opcode() == Opcode::CmpNeInt {
             !equal
         } else {
             equal
@@ -169,8 +169,8 @@ pub(in crate::llvm) fn emit_scalar_equality_block(
     let cmp = next_tmp(tmp_index);
     let out = next_tmp(tmp_index);
     let pred = match instr.opcode() {
-        Opcode32::CmpInt => "eq",
-        Opcode32::CmpNeInt => "ne",
+        Opcode::CmpInt => "eq",
+        Opcode::CmpNeInt => "ne",
         _ => unreachable!("opcode matched by caller"),
     };
     if lhs_kind == NativeScalarKind::MaybeI64
@@ -190,7 +190,7 @@ pub(in crate::llvm) fn emit_scalar_equality_block(
         let present = next_tmp(tmp_index);
         ir.push_str(&format!("  {present} = load i64, ptr %r{maybe_reg}.present.slot\n"));
         if lhs_kind == NativeScalarKind::Nil || rhs_kind == NativeScalarKind::Nil {
-            let nil_equal = if instr.opcode() == Opcode32::CmpInt { "eq" } else { "ne" };
+            let nil_equal = if instr.opcode() == Opcode::CmpInt { "eq" } else { "ne" };
             ir.push_str(&format!("  {cmp} = icmp {nil_equal} i64 {present}, 0\n"));
         } else {
             let maybe_value = next_tmp(tmp_index);
@@ -207,7 +207,7 @@ pub(in crate::llvm) fn emit_scalar_equality_block(
             ir.push_str(&format!("  {value_eq} = icmp eq i64 {maybe_value}, {other_value}\n"));
             ir.push_str(&format!("  {present_ok} = icmp ne i64 {present}, 0\n"));
             ir.push_str(&format!("  {cmp} = and i1 {present_ok}, {value_eq}\n"));
-            if instr.opcode() == Opcode32::CmpNeInt {
+            if instr.opcode() == Opcode::CmpNeInt {
                 let ne = next_tmp(tmp_index);
                 ir.push_str(&format!("  {ne} = xor i1 {cmp}, true\n"));
                 ir.push_str(&format!("  {out} = zext i1 {ne} to i64\n"));

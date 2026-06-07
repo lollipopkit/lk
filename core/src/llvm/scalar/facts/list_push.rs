@@ -1,6 +1,6 @@
 use crate::{
     llvm::straightline_value::{NativeListElementKind, NativeStraightlineValue, native_static_list_push},
-    vm::{ConstRuntimeValue32Data, Instr32},
+    vm::{ConstRuntimeValueData, Instr},
 };
 
 use super::{
@@ -11,7 +11,7 @@ use super::{
 pub(super) fn propagate_list_push(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
 ) -> Option<()> {
     let target = static_values.get(instr.a() as usize).and_then(Clone::clone)?;
     match target {
@@ -63,18 +63,6 @@ pub(super) fn propagate_list_push(
                     NativeStraightlineValue::DynamicList {
                         id,
                         element: NativeListElementKind::Bool,
-                    },
-                )
-                .then_some(())
-            } else if native_kind(kinds, instr.b()) == Some(NativeScalarKind::StrPtr) {
-                set_static_value(
-                    kinds,
-                    static_values,
-                    instr.a(),
-                    Some(NativeScalarKind::I64),
-                    NativeStraightlineValue::DynamicList {
-                        id,
-                        element: NativeListElementKind::StrPtr,
                     },
                 )
                 .then_some(())
@@ -250,11 +238,11 @@ fn dynamic_pair_field_kind(value: &NativeStraightlineValue) -> Option<NativeList
     }
 }
 
-fn dynamic_pair_const_field_kind(value: &ConstRuntimeValue32Data) -> Option<NativeListElementKind> {
+fn dynamic_pair_const_field_kind(value: &ConstRuntimeValueData) -> Option<NativeListElementKind> {
     match value {
-        ConstRuntimeValue32Data::Int(_) => Some(NativeListElementKind::I64),
-        ConstRuntimeValue32Data::Bool(_) => Some(NativeListElementKind::Bool),
-        ConstRuntimeValue32Data::Float(_) => Some(NativeListElementKind::F64),
+        ConstRuntimeValueData::Int(_) => Some(NativeListElementKind::I64),
+        ConstRuntimeValueData::Bool(_) => Some(NativeListElementKind::Bool),
+        ConstRuntimeValueData::Float(_) => Some(NativeListElementKind::F64),
         _ => None,
     }
 }

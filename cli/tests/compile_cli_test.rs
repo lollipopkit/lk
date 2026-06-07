@@ -39,7 +39,7 @@ fn ensure_clean_dir(dir: &Path) {
 }
 
 #[test]
-fn test_compile_writes_instr32_module_output() {
+fn test_compile_writes_module_artifact_output() {
     let dir = unique_tmp_dir("module_output");
     ensure_clean_dir(&dir);
 
@@ -58,8 +58,8 @@ fn test_compile_writes_instr32_module_output() {
     );
     let module = fs::read_to_string(dir.join("a.lkm")).expect("read module output");
     assert!(
-        module.contains("\"format\": \"lk.module32\"") && module.contains("\"code\""),
-        "expected Instr32 module artifact, got: {module}"
+        module.contains("\"format\": \"lk.module\"") && module.contains("\"code\""),
+        "expected module artifact, got: {module}"
     );
     let run = run_cli(&dir, ["a.lkm"]).output().expect("spawn module run");
     assert!(
@@ -73,7 +73,7 @@ fn test_compile_writes_instr32_module_output() {
 }
 
 #[test]
-fn test_compile_with_import_writes_instr32_module_output() {
+fn test_compile_with_import_writes_module_artifact_output() {
     let dir = unique_tmp_dir("module_import");
     ensure_clean_dir(&dir);
 
@@ -108,7 +108,7 @@ fn test_compile_with_import_writes_instr32_module_output() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_simple_i64_return_without_instr32_shell() {
+fn test_llvm_compile_lowers_simple_i64_return_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_i64");
     ensure_clean_dir(&dir);
     write_file(&dir, "a.lk", "return 123;\n");
@@ -125,11 +125,11 @@ fn test_llvm_compile_lowers_simple_i64_return_without_instr32_shell() {
     assert!(stdout.contains("a.ll"), "expected output path, got: {stdout}");
     let ir = fs::read_to_string(dir.join("a.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "simple i64 return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "simple i64 return should not call artifact runtime: {ir}"
     );
     assert!(
@@ -177,7 +177,7 @@ fn test_llvm_compile_lowers_unused_stdlib_import_metadata() {
     );
     let ir = fs::read_to_string(dir.join("a.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "unused import metadata should not force artifact shell: {ir}"
     );
     assert!(ir.contains("@lk_i64_fmt"), "expected native i64 print lowering: {ir}");
@@ -187,12 +187,12 @@ fn test_llvm_compile_lowers_unused_stdlib_import_metadata() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_exe_rejects_unsupported_runtime_values_without_host_launcher() {
-    let dir = unique_tmp_dir("llvm_exe_unsupported_runtime_value");
+fn test_llvm_compile_exe_rejects_unsupported_shape_without_host_launcher() {
+    let dir = unique_tmp_dir("llvm_exe_unsupported_shape");
     ensure_clean_dir(&dir);
-    write_file(&dir, "callable.lk", "fn f() { return 1; }\nreturn f;\n");
+    write_file(&dir, "unsupported.lk", "return !([1, 2, 3]);\n");
 
-    let exe = run_cli(&dir, ["compile", "exe", "callable.lk"])
+    let exe = run_cli(&dir, ["compile", "exe", "unsupported.lk"])
         .env("LK_CLANG", dir.join("missing-clang"))
         .output()
         .expect("spawn exe compile");
@@ -205,12 +205,9 @@ fn test_llvm_compile_exe_rejects_unsupported_runtime_values_without_host_launche
         stderr.contains("LLVM native lowering does not support"),
         "unexpected stderr: {stderr}"
     );
+    assert!(!stderr.contains("spawn clang"), "unexpected stderr: {stderr}");
     assert!(
-        stderr.contains("runtime callable returns are not native-lowerable yet"),
-        "unexpected stderr: {stderr}"
-    );
-    assert!(
-        !dir.join("callable").exists(),
+        !dir.join("unsupported").exists(),
         "host launcher output should not be emitted"
     );
 
@@ -219,7 +216,7 @@ fn test_llvm_compile_exe_rejects_unsupported_runtime_values_without_host_launche
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_i64_loop_without_instr32_shell() {
+fn test_llvm_compile_lowers_i64_loop_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_i64_loop");
     ensure_clean_dir(&dir);
     write_file(
@@ -238,11 +235,11 @@ fn test_llvm_compile_lowers_i64_loop_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("loop.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "i64 loop should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "i64 loop should not call artifact runtime: {ir}"
     );
     assert!(
@@ -256,7 +253,7 @@ fn test_llvm_compile_lowers_i64_loop_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_bool_return_without_instr32_shell() {
+fn test_llvm_compile_lowers_bool_return_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_bool");
     ensure_clean_dir(&dir);
     write_file(&dir, "bool.lk", "return true;\n");
@@ -271,11 +268,11 @@ fn test_llvm_compile_lowers_bool_return_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("bool.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "bool return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "bool return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_bool_true"), "expected bool text lowering: {ir}");
@@ -286,7 +283,7 @@ fn test_llvm_compile_lowers_bool_return_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_nil_return_without_instr32_shell() {
+fn test_llvm_compile_lowers_nil_return_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_nil");
     ensure_clean_dir(&dir);
     write_file(&dir, "nil.lk", "return nil;\n");
@@ -301,11 +298,11 @@ fn test_llvm_compile_lowers_nil_return_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("nil.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "nil return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "nil return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_nil_text"), "expected nil text lowering: {ir}");
@@ -316,7 +313,7 @@ fn test_llvm_compile_lowers_nil_return_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_short_string_return_without_instr32_shell() {
+fn test_llvm_compile_lowers_short_string_return_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_short_string");
     ensure_clean_dir(&dir);
     write_file(&dir, "string.lk", "return \"ok\";\n");
@@ -331,11 +328,11 @@ fn test_llvm_compile_lowers_short_string_return_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("string.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "short string return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "short string return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
@@ -347,7 +344,7 @@ fn test_llvm_compile_lowers_short_string_return_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_long_string_return_without_instr32_shell() {
+fn test_llvm_compile_lowers_long_string_return_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_long_string");
     ensure_clean_dir(&dir);
     write_file(&dir, "long_string.lk", "return \"longer-than-short\";\n");
@@ -362,11 +359,11 @@ fn test_llvm_compile_lowers_long_string_return_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("long_string.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "long string return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "long string return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
@@ -406,7 +403,7 @@ fn test_llvm_compile_lowers_long_string_return_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_const_list_return_without_instr32_shell() {
+fn test_llvm_compile_lowers_const_list_return_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_const_list");
     ensure_clean_dir(&dir);
     write_file(&dir, "list.lk", "return [1, true, \"longer-than-short\"];\n");
@@ -421,11 +418,11 @@ fn test_llvm_compile_lowers_const_list_return_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("list.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "const list return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "const list return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
@@ -465,7 +462,7 @@ fn test_llvm_compile_lowers_const_list_return_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_const_map_return_without_instr32_shell() {
+fn test_llvm_compile_lowers_const_map_return_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_const_map");
     ensure_clean_dir(&dir);
     write_file(&dir, "map.lk", "return {\"a\": 1, \"b\": true};\n");
@@ -480,11 +477,11 @@ fn test_llvm_compile_lowers_const_map_return_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("map.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "const map return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "const map return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_str_fmt"), "expected string print lowering: {ir}");
@@ -521,7 +518,7 @@ fn test_llvm_compile_lowers_const_map_return_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_zero_arg_direct_function_call_without_instr32_shell() {
+fn test_llvm_compile_lowers_zero_arg_direct_function_call_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_direct_call");
     ensure_clean_dir(&dir);
     write_file(&dir, "call.lk", "fn f() { let x = 40; return x + 2; }\nreturn f();\n");
@@ -536,17 +533,17 @@ fn test_llvm_compile_lowers_zero_arg_direct_function_call_without_instr32_shell(
     );
     let ir = fs::read_to_string(dir.join("call.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "direct call return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "direct call return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_i64_fmt"), "expected i64 print lowering: {ir}");
     assert!(
-        ir.contains("@printf(ptr @lk_i64_fmt, i64 42)"),
-        "expected direct call constant result lowering: {ir}"
+        ir.contains("add i64"),
+        "expected direct call native i64 arithmetic lowering: {ir}"
     );
 
     let exe = run_cli(&dir, ["compile", "exe", "call.lk"])
@@ -573,7 +570,7 @@ fn test_llvm_compile_lowers_zero_arg_direct_function_call_without_instr32_shell(
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_zero_arg_direct_f64_call_without_instr32_shell() {
+fn test_llvm_compile_lowers_zero_arg_direct_f64_call_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_direct_f64_call");
     ensure_clean_dir(&dir);
     write_file(
@@ -592,11 +589,11 @@ fn test_llvm_compile_lowers_zero_arg_direct_f64_call_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("call_float.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "direct f64 call return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "direct f64 call return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
@@ -629,7 +626,7 @@ fn test_llvm_compile_lowers_zero_arg_direct_f64_call_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_zero_arg_direct_compare_call_without_instr32_shell() {
+fn test_llvm_compile_lowers_zero_arg_direct_compare_call_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_direct_compare_call");
     ensure_clean_dir(&dir);
     write_file(
@@ -648,11 +645,11 @@ fn test_llvm_compile_lowers_zero_arg_direct_compare_call_without_instr32_shell()
     );
     let ir = fs::read_to_string(dir.join("call_compare.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "direct compare call return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "direct compare call return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_bool_true"), "expected bool print lowering: {ir}");
@@ -681,7 +678,7 @@ fn test_llvm_compile_lowers_zero_arg_direct_compare_call_without_instr32_shell()
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_positional_direct_call_without_instr32_shell() {
+fn test_llvm_compile_lowers_positional_direct_call_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_direct_arg_call");
     ensure_clean_dir(&dir);
     write_file(&dir, "call_arg.lk", "fn f(x) { return x + 1; }\nreturn f(41);\n");
@@ -696,17 +693,15 @@ fn test_llvm_compile_lowers_positional_direct_call_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("call_arg.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "positional direct call should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "positional direct call should not call artifact runtime: {ir}"
     );
-    assert!(
-        ir.contains("@printf(ptr @lk_i64_fmt, i64 42)"),
-        "expected direct arg call constant result: {ir}"
-    );
+    assert!(ir.contains("@lk_i64_fmt"), "expected i64 print lowering: {ir}");
+    assert!(ir.contains("i64 42"), "expected direct arg call constant result: {ir}");
 
     let exe = run_cli(&dir, ["compile", "exe", "call_arg.lk"])
         .env("RUSTC", dir.join("missing-rustc"))
@@ -732,7 +727,7 @@ fn test_llvm_compile_lowers_positional_direct_call_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_f64_positional_direct_call_without_instr32_shell() {
+fn test_llvm_compile_lowers_f64_positional_direct_call_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_direct_f64_arg_call");
     ensure_clean_dir(&dir);
     write_file(
@@ -751,11 +746,11 @@ fn test_llvm_compile_lowers_f64_positional_direct_call_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("call_f64_arg.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "f64 positional direct call should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "f64 positional direct call should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
@@ -788,7 +783,7 @@ fn test_llvm_compile_lowers_f64_positional_direct_call_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_f64_return_without_instr32_shell() {
+fn test_llvm_compile_lowers_f64_return_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_f64");
     ensure_clean_dir(&dir);
     write_file(&dir, "float.lk", "let x = 1.5;\nlet y = 2.25;\nreturn x + y;\n");
@@ -803,11 +798,11 @@ fn test_llvm_compile_lowers_f64_return_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("float.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "f64 return should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "f64 return should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("@lk_f64_fmt"), "expected f64 print lowering: {ir}");
@@ -821,7 +816,7 @@ fn test_llvm_compile_lowers_f64_return_without_instr32_shell() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn test_llvm_compile_lowers_f64_branch_without_instr32_shell() {
+fn test_llvm_compile_lowers_f64_branch_without_vm_shell() {
     let dir = unique_tmp_dir("llvm_native_f64_branch");
     ensure_clean_dir(&dir);
     write_file(
@@ -840,11 +835,11 @@ fn test_llvm_compile_lowers_f64_branch_without_instr32_shell() {
     );
     let ir = fs::read_to_string(dir.join("float_branch.ll")).expect("read LLVM IR");
     assert!(
-        !ir.contains("@lk_module32_json"),
+        !ir.contains("@lk_module_json"),
         "f64 branch should not embed artifact shell: {ir}"
     );
     assert!(
-        !ir.contains("lk_rt_run_module32_json"),
+        !ir.contains("lk_rt_run_module_json"),
         "f64 branch should not call artifact runtime: {ir}"
     );
     assert!(ir.contains("fcmp olt double"), "expected native f64 comparison: {ir}");
@@ -897,10 +892,7 @@ name = "util"
         "compile failed: {}",
         String::from_utf8_lossy(&compile.stderr)
     );
-    assert!(
-        dir.join("src/main.lkm").exists(),
-        "compile should emit Instr32 module output"
-    );
+    assert!(dir.join("src/main.lkm").exists(), "compile should emit module artifact");
     let run_module = run_cli(&dir, ["src/main.lkm"]).output().expect("spawn module run");
     assert!(
         run_module.status.success(),
@@ -913,7 +905,7 @@ name = "util"
 }
 
 #[test]
-fn test_compile_struct_constructs_to_instr32_module() {
+fn test_compile_struct_constructs_to_module_artifact() {
     let dir = unique_tmp_dir("compile_vm_guard");
     ensure_clean_dir(&dir);
 
@@ -931,7 +923,7 @@ fn test_compile_struct_constructs_to_instr32_module() {
     );
     let module = fs::read_to_string(dir.join("mod.lkm")).expect("read module output");
     assert!(
-        module.contains("\"format\": \"lk.module32\""),
+        module.contains("\"format\": \"lk.module\""),
         "expected module artifact, got: {module}"
     );
 }

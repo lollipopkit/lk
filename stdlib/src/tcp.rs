@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     val::RuntimeVal,
-    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
+    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -51,7 +51,7 @@ impl TcpModule {
     }
 }
 
-impl Module for TcpModule {
+impl ModuleProvider for TcpModule {
     fn name(&self) -> &str {
         "tcp"
     }
@@ -60,22 +60,22 @@ impl Module for TcpModule {
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::plain("connect", connect32, 2),
-                RuntimeNativeExport32::plain("bind", bind32, 2),
-                RuntimeNativeExport32::plain("close", close32, 1),
-                RuntimeNativeExport32::plain("read", read32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("write", write32, 2),
-                RuntimeNativeExport32::plain("accept", accept32, 1),
+                RuntimeNativeExport::plain("connect", connect, 2),
+                RuntimeNativeExport::plain("bind", bind, 2),
+                RuntimeNativeExport::plain("close", close, 1),
+                RuntimeNativeExport::plain("read", read, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("write", write, 2),
+                RuntimeNativeExport::plain("accept", accept, 1),
             ],
             &[],
         ))
     }
 }
 
-fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         return Ok(());
     }
@@ -102,7 +102,7 @@ fn port_arg(value: &RuntimeVal, name: &str) -> Result<u16> {
     }
 }
 
-fn connect32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn connect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "connect")?;
     let values = args.as_slice();
     let host = runtime_string_arg(&values[0], runtime.heap(), "connect host")?;
@@ -117,7 +117,7 @@ fn connect32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Resul
     Ok(RuntimeVal::Int(id as i64))
 }
 
-fn bind32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn bind(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "bind")?;
     let values = args.as_slice();
     let host = runtime_string_arg(&values[0], runtime.heap(), "bind host")?;
@@ -132,7 +132,7 @@ fn bind32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     Ok(RuntimeVal::Int(id as i64))
 }
 
-fn accept32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn accept(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "accept")?;
     let listener_id = positive_id(args.get(0).expect("checked arity"), "Listener ID")?;
     let registry = TcpRegistry::global();
@@ -150,7 +150,7 @@ fn accept32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Resul
     Ok(RuntimeVal::Int(id as i64))
 }
 
-fn read32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     if args.is_empty() || args.len() > 2 {
         bail!("read requires 1-2 arguments: connection_id, [max_bytes]");
     }
@@ -176,7 +176,7 @@ fn read32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     Ok(runtime_string_value(&data, runtime.heap_mut()))
 }
 
-fn write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn write(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "write")?;
     let values = args.as_slice();
     let conn_id = positive_id(&values[0], "Connection ID")?;
@@ -193,7 +193,7 @@ fn write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     Ok(RuntimeVal::Int(bytes_written as i64))
 }
 
-fn close32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn close(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "close")?;
     let id = positive_id(args.get(0).expect("checked arity"), "ID")?;
     let registry = TcpRegistry::global();
@@ -205,34 +205,34 @@ fn close32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::vm::{NativeFunction32, RuntimeModuleState32};
+    use lk_core::vm::{NativeFunction, RuntimeModuleState};
 
-    fn tcp_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn tcp_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&TcpModule::new(), name)
     }
 
-    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState32) -> Result<RuntimeVal> {
+    fn call(name: &str, args: &[RuntimeVal], state: &mut RuntimeModuleState) -> Result<RuntimeVal> {
         let (_, function) = tcp_native(name)?;
-        let NativeFunction32::Plain(function) = function else {
-            bail!("{name} must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative");
         };
-        let mut runtime = NativeRuntime32::new(state, None, None);
-        function(NativeArgs32::new(args), &mut runtime)
+        let mut runtime = NativeRuntime::new(state, None, None);
+        function(NativeArgs::new(args), &mut runtime)
     }
 
     #[test]
-    fn tcp_exports_use_runtime_native32() -> Result<()> {
+    fn tcp_exports_use_runtime_native() -> Result<()> {
         for name in ["connect", "bind", "close", "read", "write", "accept"] {
             let (_, function) = tcp_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
+            assert!(matches!(function, NativeFunction::Plain(_)));
         }
-        assert_eq!(tcp_native("read")?.0, lk_core::vm::NativeEntry32::VARIADIC);
+        assert_eq!(tcp_native("read")?.0, lk_core::vm::NativeEntry::VARIADIC);
         Ok(())
     }
 
     #[test]
     fn tcp_argument_validation_uses_runtime_values() {
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let err = call("connect", &[], &mut state).expect_err("connect arity should fail");
         assert!(err.to_string().contains("requires 2 arguments"));
         let err = call("bind", &[], &mut state).expect_err("bind arity should fail");
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn tcp_close_unknown_id_returns_false() -> Result<()> {
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         assert_eq!(
             call("close", &[RuntimeVal::Int(i64::MAX)], &mut state)?,
             RuntimeVal::Bool(false)

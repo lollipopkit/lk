@@ -9,13 +9,10 @@ mod tests {
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
         val::{HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList},
-        vm::{
-            NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32,
-            VmContext,
-        },
+        vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, ProgramResult, RuntimeModuleState, VmContext},
     };
 
-    fn execute_math32(source: &str) -> Result<Program32Result> {
+    fn execute_math(source: &str) -> Result<ProgramResult> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -24,10 +21,10 @@ mod tests {
         register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
-        program.execute32_with_ctx(&mut env)
+        program.execute_with_ctx(&mut env)
     }
 
-    fn math_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn math_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&MathModule::new(), name)
     }
 
@@ -42,15 +39,15 @@ mod tests {
         named_count: u16,
     ) -> Result<RuntimeVal> {
         let (_, function) = math_native(name)?;
-        let NativeFunction32::Plain(function) = function else {
-            return Err(anyhow!("{name} must use plain RuntimeNative32"));
+        let NativeFunction::Plain(function) = function else {
+            return Err(anyhow!("{name} must use plain RuntimeNative"));
         };
-        let mut state = RuntimeModuleState32::default();
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut state = RuntimeModuleState::default();
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
         let args = if named_count == 0 {
-            NativeArgs32::new(args)
+            NativeArgs::new(args)
         } else {
-            NativeArgs32::new_with_named_stack(args, named_stack, 0, named_count)
+            NativeArgs::new_with_named_stack(args, named_stack, 0, named_count)
         };
         function(args, &mut runtime)
     }
@@ -68,7 +65,7 @@ mod tests {
     #[test]
     fn test_math_abs_positive() -> Result<()> {
         assert_eq!(
-            execute_math32("import math; return math.abs(42);")?.first_return(),
+            execute_math("import math; return math.abs(42);")?.first_return(),
             &RuntimeVal::Int(42)
         );
         Ok(())
@@ -77,7 +74,7 @@ mod tests {
     #[test]
     fn test_math_abs_negative() -> Result<()> {
         assert_eq!(
-            execute_math32("import math; return math.abs(-42);")?.first_return(),
+            execute_math("import math; return math.abs(-42);")?.first_return(),
             &RuntimeVal::Int(42)
         );
         Ok(())
@@ -86,7 +83,7 @@ mod tests {
     #[test]
     fn test_math_sqrt() -> Result<()> {
         assert_eq!(
-            execute_math32("import math; return math.sqrt(16);")?.first_return(),
+            execute_math("import math; return math.sqrt(16);")?.first_return(),
             &RuntimeVal::Float(4.0)
         );
         Ok(())
@@ -94,7 +91,7 @@ mod tests {
 
     #[test]
     fn test_math_constants() -> Result<()> {
-        let result = execute_math32("import math; return math.pi;")?;
+        let result = execute_math("import math; return math.pi;")?;
         let RuntimeVal::Float(value) = result.first_return() else {
             panic!("Expected float result");
         };
@@ -112,7 +109,7 @@ mod tests {
             let d = math.clamp(5, 0, 3);
             return [a, b, c, d];
         "#;
-        let result = execute_math32(source)?;
+        let result = execute_math(source)?;
         let TypedList::Int(values) = runtime_list(result.first_return(), result.state.heap()) else {
             panic!("expected typed int list");
         };
@@ -156,26 +153,26 @@ mod tests {
     }
 
     #[test]
-    fn test_math_selected_functions_use_runtime_native32_abi() -> Result<()> {
+    fn test_math_selected_functions_use_runtime_native_abi() -> Result<()> {
         for name in [
             "abs", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "log", "log10", "log2", "exp", "pow",
             "floor", "ceil", "round", "min", "max", "random",
         ] {
             let (arity, function) = math_native(name)?;
             assert!(
-                matches!(function, NativeFunction32::Plain(_)),
-                "{name} should use plain RuntimeNative32"
+                matches!(function, NativeFunction::Plain(_)),
+                "{name} should use plain RuntimeNative"
             );
             assert_ne!(
                 arity,
-                NativeEntry32::VARIADIC,
+                NativeEntry::VARIADIC,
                 "{name} should have fixed positional arity"
             );
         }
 
         let (arity, function) = math_native("clamp")?;
-        assert!(matches!(function, NativeFunction32::Plain(_)));
-        assert_eq!(arity, NativeEntry32::VARIADIC);
+        assert!(matches!(function, NativeFunction::Plain(_)));
+        assert_eq!(arity, NativeEntry::VARIADIC);
         Ok(())
     }
 

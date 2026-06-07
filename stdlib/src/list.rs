@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     val::{HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList},
-    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
+    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
@@ -23,12 +23,12 @@ impl ListModule {
         Self
     }
 
-    fn len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let list = one_list(args, runtime, "len()")?;
         Ok(RuntimeVal::Int(list.len() as i64))
     }
 
-    fn push32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn push(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "push()")?;
         let values = args.as_slice();
         let plan = list_push_preserving_backing(
@@ -40,7 +40,7 @@ impl ListModule {
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(typed))))
     }
 
-    fn concat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn concat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "concat()")?;
         let values = args.as_slice();
         let plan = list_concat_preserving_backing(
@@ -51,7 +51,7 @@ impl ListModule {
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(typed))))
     }
 
-    fn join32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn join(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "join()")?;
         let values = args.as_slice();
         let strings = string_list_arg(&values[0], runtime.heap(), "join() first argument")?;
@@ -62,7 +62,7 @@ impl ListModule {
         ))
     }
 
-    fn get32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn get(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "get()")?;
         let values = args.as_slice();
         let list = list_arg(&values[0], runtime.heap(), "get() first argument")?;
@@ -75,14 +75,14 @@ impl ListModule {
             .unwrap_or(RuntimeVal::Nil))
     }
 
-    fn first32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn first(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let list = one_list(args, runtime, "first()")?;
         Ok(list_get_item(list, 0)
             .map(|item| item.into_runtime(runtime.heap_mut()))
             .unwrap_or(RuntimeVal::Nil))
     }
 
-    fn last32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn last(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let list = one_list(args, runtime, "last()")?;
         let Some(index) = list.len().checked_sub(1) else {
             return Ok(RuntimeVal::Nil);
@@ -92,7 +92,7 @@ impl ListModule {
             .unwrap_or(RuntimeVal::Nil))
     }
 
-    fn set32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn set(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "set()")?;
         let values = args.as_slice();
         let index = int_arg(&values[1], "set() index")?;
@@ -114,13 +114,13 @@ impl ListModule {
         ))
     }
 
-    fn reverse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn reverse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let list = one_list(args, runtime, "reverse()")?;
         let reversed = reverse_typed_list(list);
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(reversed))))
     }
 
-    fn pop32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn pop(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let list = one_list(args, runtime, "pop()")?;
         let Some(index) = list.len().checked_sub(1) else {
             return Ok(RuntimeVal::Nil);
@@ -130,7 +130,7 @@ impl ListModule {
             .unwrap_or(RuntimeVal::Nil))
     }
 
-    fn insert32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn insert(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "insert()")?;
         let values = args.as_slice();
         let list = list_arg(&values[0], runtime.heap(), "insert() first argument")?;
@@ -149,7 +149,7 @@ impl ListModule {
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(inserted))))
     }
 
-    fn remove_at32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn remove_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "remove_at()")?;
         let values = args.as_slice();
         let list = list_arg(&values[0], runtime.heap(), "remove_at() first argument")?;
@@ -172,7 +172,7 @@ impl ListModule {
         ))
     }
 
-    fn contains32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn contains(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "contains()")?;
         let values = args.as_slice();
         let list = list_arg(&values[0], runtime.heap(), "contains() first argument")?;
@@ -180,7 +180,7 @@ impl ListModule {
         Ok(RuntimeVal::Bool(list_contains(list, target, runtime.heap())))
     }
 
-    fn index_of32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn index_of(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "index_of()")?;
         let values = args.as_slice();
         let list = list_arg(&values[0], runtime.heap(), "index_of() first argument")?;
@@ -191,7 +191,7 @@ impl ListModule {
         })
     }
 
-    fn slice32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn slice(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() < 2 || args.len() > 3 {
             bail!("slice() takes 2 or 3 arguments: list, start[, end]");
         }
@@ -215,19 +215,19 @@ impl ListModule {
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(result))))
     }
 
-    fn is_empty32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let list = one_list(args, runtime, "is_empty()")?;
         Ok(RuntimeVal::Bool(list.is_empty()))
     }
 
-    fn sort32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn sort(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let list = one_list(args, runtime, "sort()")?;
         let sorted = sort_typed_list(list);
         Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(sorted))))
     }
 }
 
-impl Module for ListModule {
+impl ModuleProvider for ListModule {
     fn name(&self) -> &str {
         "list"
     }
@@ -240,33 +240,33 @@ impl Module for ListModule {
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::plain("len", Self::len32, 1),
-                RuntimeNativeExport32::plain("push", Self::push32, 2),
-                RuntimeNativeExport32::plain("concat", Self::concat32, 2),
-                RuntimeNativeExport32::plain("join", Self::join32, 2),
-                RuntimeNativeExport32::plain("get", Self::get32, 2),
-                RuntimeNativeExport32::plain("first", Self::first32, 1),
-                RuntimeNativeExport32::plain("last", Self::last32, 1),
-                RuntimeNativeExport32::plain("set", Self::set32, 3),
-                RuntimeNativeExport32::plain("reverse", Self::reverse32, 1),
-                RuntimeNativeExport32::plain("pop", Self::pop32, 1),
-                RuntimeNativeExport32::plain("insert", Self::insert32, 3),
-                RuntimeNativeExport32::plain("remove_at", Self::remove_at32, 2),
-                RuntimeNativeExport32::plain("contains", Self::contains32, 2),
-                RuntimeNativeExport32::plain("index_of", Self::index_of32, 2),
-                RuntimeNativeExport32::plain("slice", Self::slice32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("is_empty", Self::is_empty32, 1),
-                RuntimeNativeExport32::plain("sort", Self::sort32, 1),
+                RuntimeNativeExport::plain("len", Self::len, 1),
+                RuntimeNativeExport::plain("push", Self::push, 2),
+                RuntimeNativeExport::plain("concat", Self::concat, 2),
+                RuntimeNativeExport::plain("join", Self::join, 2),
+                RuntimeNativeExport::plain("get", Self::get, 2),
+                RuntimeNativeExport::plain("first", Self::first, 1),
+                RuntimeNativeExport::plain("last", Self::last, 1),
+                RuntimeNativeExport::plain("set", Self::set, 3),
+                RuntimeNativeExport::plain("reverse", Self::reverse, 1),
+                RuntimeNativeExport::plain("pop", Self::pop, 1),
+                RuntimeNativeExport::plain("insert", Self::insert, 3),
+                RuntimeNativeExport::plain("remove_at", Self::remove_at, 2),
+                RuntimeNativeExport::plain("contains", Self::contains, 2),
+                RuntimeNativeExport::plain("index_of", Self::index_of, 2),
+                RuntimeNativeExport::plain("slice", Self::slice, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("is_empty", Self::is_empty, 1),
+                RuntimeNativeExport::plain("sort", Self::sort, 1),
             ],
             &[],
         ))
     }
 }
 
-fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         Ok(())
     } else {
@@ -277,7 +277,7 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
     }
 }
 
-fn one_list<'a>(args: NativeArgs32<'a>, runtime: &'a NativeRuntime32<'a>, name: &str) -> Result<&'a TypedList> {
+fn one_list<'a>(args: NativeArgs<'a>, runtime: &'a NativeRuntime<'a>, name: &str) -> Result<&'a TypedList> {
     expect_arity(args, 1, name)?;
     list_arg(&args.as_slice()[0], runtime.heap(), name)
 }
@@ -295,12 +295,12 @@ fn list_arg<'a>(value: &RuntimeVal, heap: &'a HeapStore, context: &str) -> Resul
     }
 }
 
-enum ListItem32 {
+enum ListItem {
     Value(RuntimeVal),
     String(Arc<str>),
 }
 
-impl ListItem32 {
+impl ListItem {
     fn into_runtime(self, heap: &mut HeapStore) -> RuntimeVal {
         match self {
             Self::Value(value) => value,
@@ -309,13 +309,13 @@ impl ListItem32 {
     }
 }
 
-fn list_get_item(list: &TypedList, index: usize) -> Option<ListItem32> {
+fn list_get_item(list: &TypedList, index: usize) -> Option<ListItem> {
     match list {
-        TypedList::Mixed(values) => values.get(index).cloned().map(ListItem32::Value),
-        TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int).map(ListItem32::Value),
-        TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float).map(ListItem32::Value),
-        TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool).map(ListItem32::Value),
-        TypedList::String(values) => values.get(index).cloned().map(ListItem32::String),
+        TypedList::Mixed(values) => values.get(index).cloned().map(ListItem::Value),
+        TypedList::Int(values) => values.get(index).copied().map(RuntimeVal::Int).map(ListItem::Value),
+        TypedList::Float(values) => values.get(index).copied().map(RuntimeVal::Float).map(ListItem::Value),
+        TypedList::Bool(values) => values.get(index).copied().map(RuntimeVal::Bool).map(ListItem::Value),
+        TypedList::String(values) => values.get(index).cloned().map(ListItem::String),
     }
 }
 

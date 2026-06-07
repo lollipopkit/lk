@@ -1,27 +1,27 @@
-use std::{collections::BTreeMap, sync::Arc};
+use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
 use crate::module::runtime_export_from_runtime_native;
 use crate::stmt::ModuleResolver;
 use crate::typ::TypeChecker;
-use crate::util::fast_map::{FastHashMap, fast_hash_map_new};
 use crate::val::{HeapStore, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, Type, TypedList, TypedMap};
-use crate::vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeExport32, collect_runtime_export32};
+use crate::vm::{NativeArgs, NativeFunction, NativeRuntime, RuntimeExport, collect_runtime_export};
 
 use crate::typ::{TraitDef, TraitImpl};
 use std::collections::HashMap;
 
 mod core_methods;
-use core_methods::{core_call_method_builtin32, core_call_method_named_builtin32};
+use core_methods::{core_call_method_builtin, core_call_method_named_builtin};
 
 /// VM runtime context.
 ///
 /// VM-visible globals live in `runtime_globals`; top-level locals and call
-/// frames live in `RuntimeModuleState32.stack`.
+/// frames live in `RuntimeModuleState.stack`.
 #[derive(Debug)]
 pub struct VmContext {
-    runtime_globals: FastHashMap<Arc<str>, RuntimeExport32>,
+    runtime_globals: FastHashMap<Arc<str>, RuntimeExport>,
     // Cache generation for invalidation
     generation: u64,
     resolver: Arc<ModuleResolver>,
@@ -125,29 +125,29 @@ impl VmContext {
     }
 
     #[inline]
-    pub fn runtime_globals_iter(&self) -> impl Iterator<Item = (&Arc<str>, &RuntimeExport32)> {
+    pub fn runtime_globals_iter(&self) -> impl Iterator<Item = (&Arc<str>, &RuntimeExport)> {
         self.runtime_globals.iter()
     }
 
     pub fn collect_runtime_globals_garbage(&self) -> Result<()> {
         for export in self.runtime_globals.values() {
-            collect_runtime_export32(export)?;
+            collect_runtime_export(export)?;
         }
         Ok(())
     }
 
-    pub fn get_runtime_global(&self, name: &str) -> Option<&RuntimeExport32> {
+    pub fn get_runtime_global(&self, name: &str) -> Option<&RuntimeExport> {
         self.runtime_globals.get(name)
     }
 
-    pub fn define_runtime_global(&mut self, name: impl Into<Arc<str>>, value: RuntimeExport32) {
+    pub fn define_runtime_global(&mut self, name: impl Into<Arc<str>>, value: RuntimeExport) {
         let name = name.into();
         self.runtime_globals.insert(name, value);
         self.bump_generation();
     }
 
     pub fn define_runtime_value(&mut self, name: impl Into<Arc<str>>, value: RuntimeVal, heap: HeapStore) {
-        self.define_runtime_global(name, RuntimeExport32::from_value(value, heap));
+        self.define_runtime_global(name, RuntimeExport::from_value(value, heap));
     }
 
     /// 手动递增版本号，用于强制失效缓存。
@@ -249,42 +249,34 @@ impl VmContext {
     fn install_core_vm_builtins(&mut self) {
         self.install_runtime_builtin(
             "__lk_register_trait",
-            NativeFunction32::Plain(core_register_trait_builtin32),
+            NativeFunction::Plain(core_register_trait_builtin),
             2,
         );
         self.install_runtime_builtin(
             "__lk_register_trait_impl",
-            NativeFunction32::Plain(core_register_trait_impl_builtin32),
+            NativeFunction::Plain(core_register_trait_impl_builtin),
             3,
         );
         self.install_runtime_builtin(
             "__lk_call_method",
-            NativeFunction32::FullState(core_call_method_builtin32),
+            NativeFunction::FullState(core_call_method_builtin),
             3,
         );
         self.install_runtime_builtin(
             "__lk_call_method_named",
-            NativeFunction32::FullState(core_call_method_named_builtin32),
+            NativeFunction::FullState(core_call_method_named_builtin),
             4,
         );
-        self.install_runtime_builtin(
-            "__lk_make_struct",
-            NativeFunction32::Plain(core_make_struct_builtin32),
-            2,
-        );
-        self.install_runtime_builtin("typeof", NativeFunction32::Plain(core_typeof_builtin32), 1);
-        self.install_runtime_builtin("__lk_set_field", NativeFunction32::Plain(core_set_field_builtin32), 3);
-        self.install_runtime_builtin(
-            "__lk_merge_fields",
-            NativeFunction32::Plain(core_merge_fields_builtin32),
-            2,
-        );
-        self.install_runtime_builtin("__lk_bit_and", NativeFunction32::Plain(core_bit_and_builtin32), 2);
-        self.install_runtime_builtin("__lk_bit_or", NativeFunction32::Plain(core_bit_or_builtin32), 2);
-        self.install_runtime_builtin("__lk_bit_not", NativeFunction32::Plain(core_bit_not_builtin32), 1);
+        self.install_runtime_builtin("__lk_make_struct", NativeFunction::Plain(core_make_struct_builtin), 2);
+        self.install_runtime_builtin("typeof", NativeFunction::Plain(core_typeof_builtin), 1);
+        self.install_runtime_builtin("__lk_set_field", NativeFunction::Plain(core_set_field_builtin), 3);
+        self.install_runtime_builtin("__lk_merge_fields", NativeFunction::Plain(core_merge_fields_builtin), 2);
+        self.install_runtime_builtin("__lk_bit_and", NativeFunction::Plain(core_bit_and_builtin), 2);
+        self.install_runtime_builtin("__lk_bit_or", NativeFunction::Plain(core_bit_or_builtin), 2);
+        self.install_runtime_builtin("__lk_bit_not", NativeFunction::Plain(core_bit_not_builtin), 1);
     }
 
-    fn install_runtime_builtin(&mut self, name: &str, function: NativeFunction32, arity: u16) {
+    fn install_runtime_builtin(&mut self, name: &str, function: NativeFunction, arity: u16) {
         if self.runtime_globals.contains_key(name) {
             return;
         }
@@ -293,10 +285,7 @@ impl VmContext {
     }
 }
 
-fn core_register_trait_builtin32(
-    args: NativeArgs32<'_>,
-    runtime: &mut NativeRuntime32<'_>,
-) -> anyhow::Result<RuntimeVal> {
+fn core_register_trait_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
     if args.len() != 2 {
         return Err(anyhow!(
             "__lk_register_trait expects 2 arguments: name and methods list"
@@ -338,9 +327,9 @@ fn core_register_trait_builtin32(
     Ok(RuntimeVal::Nil)
 }
 
-fn core_register_trait_impl_builtin32(
-    args: NativeArgs32<'_>,
-    runtime: &mut NativeRuntime32<'_>,
+fn core_register_trait_impl_builtin(
+    args: NativeArgs<'_>,
+    runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     if args.len() != 3 {
         return Err(anyhow!(
@@ -433,7 +422,7 @@ fn runtime_list_len(value: &RuntimeVal, heap: &HeapStore, helper: &str) -> anyho
 fn runtime_list_item(
     value: &RuntimeVal,
     index: usize,
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
     helper: &str,
 ) -> anyhow::Result<RuntimeVal> {
     let RuntimeVal::Obj(handle) = value else {
@@ -461,7 +450,7 @@ fn runtime_list_item(
 
 fn runtime_list_pair(
     value: &RuntimeVal,
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
     helper: &str,
 ) -> anyhow::Result<(RuntimeVal, RuntimeVal)> {
     let len = runtime_list_len(value, runtime.heap(), helper)?;
@@ -474,7 +463,7 @@ fn runtime_list_pair(
     ))
 }
 
-fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, helper: &str) -> anyhow::Result<()> {
+fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime<'_>, helper: &str) -> anyhow::Result<()> {
     let RuntimeVal::Obj(handle) = value else {
         return Err(anyhow!("{helper} must be callable, got {:?}", value.kind()));
     };
@@ -488,7 +477,7 @@ fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, he
     }
 }
 
-fn core_make_struct_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> anyhow::Result<RuntimeVal> {
+fn core_make_struct_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
     if args.len() != 2 {
         return Err(anyhow!(
             "__lk_make_struct expects 2 arguments: struct name and fields map"
@@ -498,7 +487,7 @@ fn core_make_struct_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntim
     let type_name = runtime_string_arg(args.get(0).expect("arity checked"), runtime.heap(), "__lk_make_struct")?;
 
     let fields = match args.get(1).expect("arity checked") {
-        RuntimeVal::Nil => BTreeMap::new(),
+        RuntimeVal::Nil => fast_hash_map_new(),
         RuntimeVal::Obj(handle) => {
             let value = runtime
                 .heap()
@@ -527,7 +516,7 @@ fn core_make_struct_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntim
     ))
 }
 
-fn core_typeof_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> anyhow::Result<RuntimeVal> {
+fn core_typeof_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
     let value = args
         .get(0)
         .ok_or_else(|| anyhow!("typeof(value) expects exactly one argument"))?;
@@ -546,7 +535,7 @@ fn core_typeof_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'
     Ok(runtime_string_value(name, runtime.heap_mut()))
 }
 
-fn core_set_field_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> anyhow::Result<RuntimeVal> {
+fn core_set_field_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
     if args.len() != 3 {
         return Err(anyhow!("__lk_set_field(base, key, value) expects exactly 3 arguments"));
     }
@@ -576,10 +565,7 @@ fn core_set_field_builtin32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime3
     }
 }
 
-fn core_merge_fields_builtin32(
-    args: NativeArgs32<'_>,
-    runtime: &mut NativeRuntime32<'_>,
-) -> anyhow::Result<RuntimeVal> {
+fn core_merge_fields_builtin(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> anyhow::Result<RuntimeVal> {
     if args.len() != 2 {
         return Err(anyhow!("__lk_merge_fields(base, overlay) expects exactly 2 arguments"));
     }
@@ -633,7 +619,7 @@ fn core_merge_fields_builtin32(
 }
 
 fn set_string_field_on_object(object: &RuntimeObject, key: Arc<str>, value: RuntimeVal) -> RuntimeObject {
-    let mut fields = BTreeMap::new();
+    let mut fields = fast_hash_map_new();
     for (field_key, field_value) in &object.fields {
         if field_key.as_ref() != key.as_ref() {
             fields.insert(Arc::clone(field_key), field_value.clone());
@@ -657,7 +643,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
     match (map, value) {
         (TypedMap::Mixed(entries), value) => {
             let runtime_key = RuntimeMapKey::String(key);
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if *entry_key != runtime_key {
                     out.insert(entry_key.clone(), entry_value.clone());
@@ -667,7 +653,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::Mixed(out)
         }
         (TypedMap::StringMixed(entries), value) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), entry_value.clone());
@@ -677,7 +663,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringInt(entries), RuntimeVal::Int(value)) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -687,7 +673,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringInt(out)
         }
         (TypedMap::StringFloat(entries), RuntimeVal::Float(value)) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -697,7 +683,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringFloat(out)
         }
         (TypedMap::StringBool(entries), RuntimeVal::Bool(value)) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), *entry_value);
@@ -707,7 +693,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringBool(out)
         }
         (TypedMap::StringInt(entries), value) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), RuntimeVal::Int(*entry_value));
@@ -717,7 +703,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringFloat(entries), value) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), RuntimeVal::Float(*entry_value));
@@ -727,7 +713,7 @@ fn set_string_field_on_map(map: &TypedMap, key: Arc<str>, value: RuntimeVal) -> 
             TypedMap::StringMixed(out)
         }
         (TypedMap::StringBool(entries), value) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (entry_key, entry_value) in entries {
                 if entry_key.as_ref() != key.as_ref() {
                     out.insert(Arc::clone(entry_key), RuntimeVal::Bool(*entry_value));
@@ -747,7 +733,7 @@ enum FieldMergeBase<'a> {
 fn merge_field_maps(base: FieldMergeBase<'_>, overlay: &TypedMap) -> TypedMap {
     match base {
         FieldMergeBase::Object(object) => {
-            let mut entries = BTreeMap::new();
+            let mut entries = fast_hash_map_new();
             for (key, value) in &object.fields {
                 if !typed_map_contains_str(overlay, key.as_ref()) {
                     entries.insert(Arc::clone(key), value.clone());
@@ -768,14 +754,14 @@ fn merge_field_maps(base: FieldMergeBase<'_>, overlay: &TypedMap) -> TypedMap {
 fn copy_typed_map(map: &TypedMap) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 out.insert(key.clone(), value.clone());
             }
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 out.insert(Arc::clone(key), value.clone());
             }
@@ -790,7 +776,7 @@ fn copy_typed_map(map: &TypedMap) -> TypedMap {
 fn copy_typed_map_without_overlay_keys(map: &TypedMap, overlay: &TypedMap) -> TypedMap {
     match map {
         TypedMap::Mixed(entries) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !typed_map_contains(overlay, key) {
                     out.insert(key.clone(), value.clone());
@@ -799,7 +785,7 @@ fn copy_typed_map_without_overlay_keys(map: &TypedMap, overlay: &TypedMap) -> Ty
             TypedMap::Mixed(out)
         }
         TypedMap::StringMixed(entries) => {
-            let mut out = BTreeMap::new();
+            let mut out = fast_hash_map_new();
             for (key, value) in entries {
                 if !typed_map_contains_str(overlay, key.as_ref()) {
                     out.insert(Arc::clone(key), value.clone());
@@ -819,8 +805,8 @@ fn copy_typed_map_without_overlay_keys(map: &TypedMap, overlay: &TypedMap) -> Ty
     }
 }
 
-fn copy_string_map_entries<T: Copy>(entries: &BTreeMap<Arc<str>, T>) -> BTreeMap<Arc<str>, T> {
-    let mut out = BTreeMap::new();
+fn copy_string_map_entries<T: Copy>(entries: &FastHashMap<Arc<str>, T>) -> FastHashMap<Arc<str>, T> {
+    let mut out = fast_hash_map_new();
     for (key, value) in entries {
         out.insert(Arc::clone(key), *value);
     }
@@ -828,10 +814,10 @@ fn copy_string_map_entries<T: Copy>(entries: &BTreeMap<Arc<str>, T>) -> BTreeMap
 }
 
 fn copy_string_map_entries_without_overlay_keys<T: Copy>(
-    entries: &BTreeMap<Arc<str>, T>,
+    entries: &FastHashMap<Arc<str>, T>,
     overlay: &TypedMap,
-) -> BTreeMap<Arc<str>, T> {
-    let mut out = BTreeMap::new();
+) -> FastHashMap<Arc<str>, T> {
+    let mut out = fast_hash_map_new();
     for (key, value) in entries {
         if !typed_map_contains_str(overlay, key.as_ref()) {
             out.insert(Arc::clone(key), *value);
@@ -885,8 +871,8 @@ fn runtime_string_value(value: &str, heap: &mut HeapStore) -> RuntimeVal {
     }
 }
 
-fn runtime_object_fields_from_map(map: &TypedMap) -> anyhow::Result<BTreeMap<Arc<str>, RuntimeVal>> {
-    let mut fields = BTreeMap::new();
+fn runtime_object_fields_from_map(map: &TypedMap) -> anyhow::Result<FastHashMap<Arc<str>, RuntimeVal>> {
+    let mut fields = fast_hash_map_new();
     match map {
         TypedMap::Mixed(entries) => {
             for (key, value) in entries {
@@ -954,47 +940,47 @@ fn extend_typed_map(out: &mut TypedMap, map: &TypedMap) {
     }
 }
 
-fn bit_arg32(value: &crate::val::RuntimeVal, func: &str) -> anyhow::Result<i64> {
+fn bit_arg(value: &crate::val::RuntimeVal, func: &str) -> anyhow::Result<i64> {
     match value {
         crate::val::RuntimeVal::Int(i) => Ok(*i),
         other => Err(anyhow!("{func} expects Int arguments, got {:?}", other.kind())),
     }
 }
 
-fn core_bit_and_builtin32(
-    args: NativeArgs32<'_>,
-    _runtime: &mut NativeRuntime32<'_>,
+fn core_bit_and_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<crate::val::RuntimeVal> {
     if args.len() != 2 {
         return Err(anyhow!("__lk_bit_and(left, right) expects exactly 2 arguments"));
     }
     Ok(crate::val::RuntimeVal::Int(
-        bit_arg32(args.get(0).expect("arity checked"), "__lk_bit_and")?
-            & bit_arg32(args.get(1).expect("arity checked"), "__lk_bit_and")?,
+        bit_arg(args.get(0).expect("arity checked"), "__lk_bit_and")?
+            & bit_arg(args.get(1).expect("arity checked"), "__lk_bit_and")?,
     ))
 }
 
-fn core_bit_or_builtin32(
-    args: NativeArgs32<'_>,
-    _runtime: &mut NativeRuntime32<'_>,
+fn core_bit_or_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<crate::val::RuntimeVal> {
     if args.len() != 2 {
         return Err(anyhow!("__lk_bit_or(left, right) expects exactly 2 arguments"));
     }
     Ok(crate::val::RuntimeVal::Int(
-        bit_arg32(args.get(0).expect("arity checked"), "__lk_bit_or")?
-            | bit_arg32(args.get(1).expect("arity checked"), "__lk_bit_or")?,
+        bit_arg(args.get(0).expect("arity checked"), "__lk_bit_or")?
+            | bit_arg(args.get(1).expect("arity checked"), "__lk_bit_or")?,
     ))
 }
 
-fn core_bit_not_builtin32(
-    args: NativeArgs32<'_>,
-    _runtime: &mut NativeRuntime32<'_>,
+fn core_bit_not_builtin(
+    args: NativeArgs<'_>,
+    _runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<crate::val::RuntimeVal> {
     if args.len() != 1 {
         return Err(anyhow!("__lk_bit_not(value) expects exactly 1 argument"));
     }
-    Ok(crate::val::RuntimeVal::Int(!bit_arg32(
+    Ok(crate::val::RuntimeVal::Int(!bit_arg(
         args.get(0).expect("arity checked"),
         "__lk_bit_not",
     )?))
@@ -1003,7 +989,8 @@ fn core_bit_not_builtin32(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::{Module32, RuntimeModuleState32};
+    use crate::util::fast_map::fast_hash_map_from_iter;
+    use crate::vm::{Module, RuntimeModuleState};
 
     #[test]
     fn collect_runtime_globals_garbage_keeps_export_values_and_globals() {
@@ -1014,13 +1001,13 @@ mod tests {
         let dead = heap.alloc(HeapValue::String(Arc::<str>::from("dead")));
         ctx.define_runtime_global(
             "module",
-            RuntimeExport32::new(
+            RuntimeExport::new(
                 RuntimeVal::Obj(exported),
-                Arc::new(std::sync::Mutex::new(RuntimeModuleState32::new(
+                Arc::new(std::sync::Mutex::new(RuntimeModuleState::new(
                     heap,
                     vec![RuntimeVal::Obj(global)],
                 ))),
-                Arc::new(Module32::default()),
+                Arc::new(Module::default()),
             ),
         );
 
@@ -1034,7 +1021,7 @@ mod tests {
     }
 
     #[test]
-    fn core_vm_builtins_use_runtime_native32() {
+    fn core_vm_builtins_use_runtime_native() {
         let ctx = VmContext::new();
         for name in [
             "__lk_register_trait",
@@ -1059,23 +1046,27 @@ mod tests {
             };
             assert!(matches!(
                 state.heap.get(*handle),
-                Some(HeapValue::Callable(crate::val::CallableValue::RuntimeNative32 { .. }))
+                Some(HeapValue::Callable(crate::val::CallableValue::RuntimeNative { .. }))
             ));
         }
     }
 
     #[test]
     fn core_make_struct_reads_typed_map_backing_directly() {
-        let mut state = RuntimeModuleState32::default();
-        let fields = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::from([(
-            Arc::<str>::from("answer"),
-            42,
-        )])))));
+        let mut state = RuntimeModuleState::default();
+        let fields = RuntimeVal::Obj(
+            state
+                .heap
+                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
+                    Arc::<str>::from("answer"),
+                    42,
+                )])))),
+        );
         let name = RuntimeVal::ShortStr(crate::val::ShortStr::new("Point").expect("short"));
         let args = [name, fields];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = core_make_struct_builtin32(NativeArgs32::new(&args), &mut runtime).expect("make struct");
+        let result = core_make_struct_builtin(NativeArgs::new(&args), &mut runtime).expect("make struct");
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected object");
@@ -1089,19 +1080,27 @@ mod tests {
 
     #[test]
     fn core_merge_fields_reads_typed_map_backing_directly() {
-        let mut state = RuntimeModuleState32::default();
-        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::from([(
-            Arc::<str>::from("a"),
-            1,
-        )])))));
-        let overlay = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::from([(
-            Arc::<str>::from("b"),
-            2,
-        )])))));
+        let mut state = RuntimeModuleState::default();
+        let base = RuntimeVal::Obj(
+            state
+                .heap
+                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
+                    Arc::<str>::from("a"),
+                    1,
+                )])))),
+        );
+        let overlay = RuntimeVal::Obj(
+            state
+                .heap
+                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
+                    Arc::<str>::from("b"),
+                    2,
+                )])))),
+        );
         let args = [base, overlay];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = core_merge_fields_builtin32(NativeArgs32::new(&args), &mut runtime).expect("merge fields");
+        let result = core_merge_fields_builtin(NativeArgs::new(&args), &mut runtime).expect("merge fields");
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected map");
@@ -1117,16 +1116,20 @@ mod tests {
 
     #[test]
     fn core_set_field_preserves_typed_string_int_map_without_copying_overwritten_entry() {
-        let mut state = RuntimeModuleState32::default();
-        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::from([
-            (Arc::<str>::from("answer"), 1),
-            (Arc::<str>::from("keep"), 2),
-        ])))));
+        let mut state = RuntimeModuleState::default();
+        let base = RuntimeVal::Obj(
+            state
+                .heap
+                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([
+                    (Arc::<str>::from("answer"), 1),
+                    (Arc::<str>::from("keep"), 2),
+                ])))),
+        );
         let key = RuntimeVal::ShortStr(crate::val::ShortStr::new("answer").expect("short"));
         let args = [base, key, RuntimeVal::Int(42)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = core_set_field_builtin32(NativeArgs32::new(&args), &mut runtime).expect("set field");
+        let result = core_set_field_builtin(NativeArgs::new(&args), &mut runtime).expect("set field");
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected map");
@@ -1144,16 +1147,20 @@ mod tests {
 
     #[test]
     fn core_set_field_pollutes_typed_map_without_copying_overwritten_entry() {
-        let mut state = RuntimeModuleState32::default();
-        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::from([
-            (Arc::<str>::from("answer"), 1),
-            (Arc::<str>::from("keep"), 2),
-        ])))));
+        let mut state = RuntimeModuleState::default();
+        let base = RuntimeVal::Obj(
+            state
+                .heap
+                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([
+                    (Arc::<str>::from("answer"), 1),
+                    (Arc::<str>::from("keep"), 2),
+                ])))),
+        );
         let key = RuntimeVal::ShortStr(crate::val::ShortStr::new("answer").expect("short"));
         let args = [base, key, RuntimeVal::Bool(true)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = core_set_field_builtin32(NativeArgs32::new(&args), &mut runtime).expect("set field");
+        let result = core_set_field_builtin(NativeArgs::new(&args), &mut runtime).expect("set field");
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected map");
@@ -1171,19 +1178,27 @@ mod tests {
 
     #[test]
     fn core_merge_fields_filters_base_keys_overwritten_by_overlay() {
-        let mut state = RuntimeModuleState32::default();
-        let base = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::from([
-            (Arc::<str>::from("answer"), 1),
-            (Arc::<str>::from("keep"), 2),
-        ])))));
-        let overlay = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::from([(
-            Arc::<str>::from("answer"),
-            42,
-        )])))));
+        let mut state = RuntimeModuleState::default();
+        let base = RuntimeVal::Obj(
+            state
+                .heap
+                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([
+                    (Arc::<str>::from("answer"), 1),
+                    (Arc::<str>::from("keep"), 2),
+                ])))),
+        );
+        let overlay = RuntimeVal::Obj(
+            state
+                .heap
+                .alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_from_iter([(
+                    Arc::<str>::from("answer"),
+                    42,
+                )])))),
+        );
         let args = [base, overlay];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = core_merge_fields_builtin32(NativeArgs32::new(&args), &mut runtime).expect("merge fields");
+        let result = core_merge_fields_builtin(NativeArgs::new(&args), &mut runtime).expect("merge fields");
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected map");
@@ -1201,15 +1216,19 @@ mod tests {
 
     #[test]
     fn core_merge_fields_nil_base_preserves_overlay_typed_backing() {
-        let mut state = RuntimeModuleState32::default();
-        let overlay = RuntimeVal::Obj(state.heap.alloc(HeapValue::Map(TypedMap::StringBool(BTreeMap::from([(
-            Arc::<str>::from("ok"),
-            true,
-        )])))));
+        let mut state = RuntimeModuleState::default();
+        let overlay = RuntimeVal::Obj(
+            state
+                .heap
+                .alloc(HeapValue::Map(TypedMap::StringBool(fast_hash_map_from_iter([(
+                    Arc::<str>::from("ok"),
+                    true,
+                )])))),
+        );
         let args = [RuntimeVal::Nil, overlay];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = core_merge_fields_builtin32(NativeArgs32::new(&args), &mut runtime).expect("merge fields");
+        let result = core_merge_fields_builtin(NativeArgs::new(&args), &mut runtime).expect("merge fields");
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("expected map");

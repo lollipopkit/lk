@@ -1,4 +1,4 @@
-use lk_core::vm::{Compiler32, Module32, disassemble_module32};
+use lk_core::vm::{Compiler, Module, disassemble_module};
 use std::path::PathBuf;
 
 const FIB_SCRIPT: &str = r#"
@@ -37,8 +37,8 @@ while (i < 200) {
 return total;
 "#;
 
-fn compile_script(source: &str) -> Module32 {
-    Compiler32::compile_source_module(source).unwrap()
+fn compile_script(source: &str) -> Module {
+    Compiler::compile_source_module(source).unwrap()
 }
 
 fn main() {
@@ -60,7 +60,7 @@ fn main() {
     }
 }
 
-fn dump_function(name: &str, module: &Module32) {
+fn dump_function(name: &str, module: &Module) {
     println!("=== {} ===", name);
-    println!("{}", disassemble_module32(module));
+    println!("{}", disassemble_module(module));
 }

@@ -10,7 +10,7 @@ pub mod typ;
 pub mod util;
 pub mod val;
 
-// Canonical Instr32 VM.
+// Canonical Instr VM.
 pub mod vm;
 
 // Name resolution to slot indices

@@ -1,9 +1,9 @@
 use anyhow::{Result, anyhow};
 use chrono::Datelike;
 use lk_core::{
-    module::{Module, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     val::RuntimeVal,
-    vm::{NativeArgs32, NativeRuntime32, RuntimeExport32},
+    vm::{NativeArgs, NativeRuntime, RuntimeExport},
 };
 
 use crate::runtime_native::{runtime_string_arg, runtime_string_value};
@@ -23,7 +23,7 @@ impl DateTimeModule {
     }
 }
 
-impl Module for DateTimeModule {
+impl ModuleProvider for DateTimeModule {
     fn name(&self) -> &str {
         "datetime"
     }
@@ -36,24 +36,24 @@ impl Module for DateTimeModule {
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::plain("now", now32, 0),
-                RuntimeNativeExport32::plain("format", format32, 2),
-                RuntimeNativeExport32::plain("parse", parse32, 2),
-                RuntimeNativeExport32::plain("add", add_seconds32, 2),
-                RuntimeNativeExport32::plain("sub", sub_seconds32, 2),
-                RuntimeNativeExport32::plain("day_of_week", day_of_week32, 1),
-                RuntimeNativeExport32::plain("day_of_year", day_of_year32, 1),
-                RuntimeNativeExport32::plain("is_weekend", is_weekend32, 1),
+                RuntimeNativeExport::plain("now", now, 0),
+                RuntimeNativeExport::plain("format", format, 2),
+                RuntimeNativeExport::plain("parse", parse, 2),
+                RuntimeNativeExport::plain("add", add_seconds, 2),
+                RuntimeNativeExport::plain("sub", sub_seconds, 2),
+                RuntimeNativeExport::plain("day_of_week", day_of_week, 1),
+                RuntimeNativeExport::plain("day_of_year", day_of_year, 1),
+                RuntimeNativeExport::plain("is_weekend", is_weekend, 1),
             ],
             &[],
         ))
     }
 }
 
-fn expect_arity(args: NativeArgs32<'_>, name: &str, arity: usize) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, name: &str, arity: usize) -> Result<()> {
     if args.len() == arity {
         return Ok(());
     }
@@ -81,14 +81,14 @@ fn utc_datetime(timestamp: i64) -> Result<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0).ok_or_else(|| anyhow!("invalid timestamp"))
 }
 
-fn now32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn now(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     if args.len() != 0 {
         return Err(anyhow!("now() takes no arguments"));
     }
     Ok(RuntimeVal::Int(chrono::Utc::now().timestamp_micros()))
 }
 
-fn format32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn format(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, "format", 2)?;
     let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "format")?;
     let format = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "format")?;
@@ -96,7 +96,7 @@ fn format32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
     Ok(runtime_string_value(&formatted, runtime.heap_mut()))
 }
 
-fn parse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn parse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, "parse", 2)?;
     let datetime = runtime_string_arg(args.get(0).expect("checked arity"), runtime.heap(), "parse")?;
     let format = runtime_string_arg(args.get(1).expect("checked arity"), runtime.heap(), "parse")?;
@@ -106,21 +106,21 @@ fn parse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     Ok(RuntimeVal::Int(dt.timestamp()))
 }
 
-fn add_seconds32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn add_seconds(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, "add", 2)?;
     let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "add")?;
     let seconds = int_arg(args.get(1).expect("checked arity"), "add")?;
     Ok(RuntimeVal::Int(timestamp + seconds))
 }
 
-fn sub_seconds32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn sub_seconds(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, "sub", 2)?;
     let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "sub")?;
     let seconds = int_arg(args.get(1).expect("checked arity"), "sub")?;
     Ok(RuntimeVal::Int(timestamp - seconds))
 }
 
-fn day_of_week32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn day_of_week(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, "day_of_week", 1)?;
     let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "day_of_week")?;
     let day = match utc_datetime(timestamp)?.weekday() {
@@ -135,13 +135,13 @@ fn day_of_week32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> 
     Ok(RuntimeVal::Int(day))
 }
 
-fn day_of_year32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn day_of_year(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, "day_of_year", 1)?;
     let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "day_of_year")?;
     Ok(RuntimeVal::Int(i64::from(utc_datetime(timestamp)?.ordinal())))
 }
 
-fn is_weekend32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn is_weekend(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, "is_weekend", 1)?;
     let timestamp = timestamp_arg(args.get(0).expect("checked arity"), "is_weekend")?;
     let is_weekend = matches!(

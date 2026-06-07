@@ -5,7 +5,7 @@ mod tests {
         stmt::{Program, Stmt, run_program_default, stmt_parser::StmtParser},
         token::Tokenizer,
         val::{LiteralVal, RuntimeVal, ShortStr},
-        vm::Program32Result,
+        vm::ProgramResult,
     };
 
     fn list_expr(values: Vec<Expr>) -> Expr {
@@ -18,11 +18,11 @@ mod tests {
         parser.parse_program().expect("Failed to parse program")
     }
 
-    fn expect_return_int(result: &Program32Result, expected: i64) {
+    fn expect_return_int(result: &ProgramResult, expected: i64) {
         assert_eq!(result.first_return(), &RuntimeVal::Int(expected));
     }
 
-    fn expect_return_str(result: &Program32Result, expected: &str) {
+    fn expect_return_str(result: &ProgramResult, expected: &str) {
         assert_eq!(
             result.first_return(),
             &RuntimeVal::ShortStr(ShortStr::new(expected).expect("short test string"))

@@ -18,7 +18,7 @@ use super::{
         native_static_merge_fields,
     },
 };
-use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, RuntimeMapKeyData};
+use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, RuntimeMapKeyData};
 use arg_list_methods::emit_native_arg_list_method;
 use io::emit_native_stderr_value;
 use iter_methods::{emit_native_iter_builtin, emit_native_iter_module_method};
@@ -195,9 +195,10 @@ pub(super) fn emit_native_builtin_call(
             let [NativeStraightlineValue::Channel { elements }] = args else {
                 return None;
             };
-            return native_value_from_const(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(
-                vec![ConstRuntimeValue32Data::Bool(true), elements.first()?.clone()],
-            ))));
+            return native_value_from_const(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(vec![
+                ConstRuntimeValueData::Bool(true),
+                elements.first()?.clone(),
+            ]))));
         }
         NativeBuiltin::StreamFromList | NativeBuiltin::StreamCollect => {
             if args.len() == 1 {
@@ -529,16 +530,16 @@ fn native_datetime_from_args(args: &[NativeStraightlineValue]) -> Option<chrono:
     chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp.parse().ok()?, 0)
 }
 
-fn native_json_value(value: serde_json::Value) -> Option<ConstRuntimeValue32Data> {
+fn native_json_value(value: serde_json::Value) -> Option<ConstRuntimeValueData> {
     match value {
-        serde_json::Value::Null => Some(ConstRuntimeValue32Data::Nil),
-        serde_json::Value::Bool(value) => Some(ConstRuntimeValue32Data::Bool(value)),
+        serde_json::Value::Null => Some(ConstRuntimeValueData::Nil),
+        serde_json::Value::Bool(value) => Some(ConstRuntimeValueData::Bool(value)),
         serde_json::Value::Number(value) => value
             .as_i64()
-            .map(ConstRuntimeValue32Data::Int)
-            .or_else(|| value.as_f64().map(ConstRuntimeValue32Data::Float)),
+            .map(ConstRuntimeValueData::Int)
+            .or_else(|| value.as_f64().map(ConstRuntimeValueData::Float)),
         serde_json::Value::String(value) => Some(native_string_const(value)),
-        serde_json::Value::Array(values) => Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(
+        serde_json::Value::Array(values) => Some(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(
             values.into_iter().map(native_json_value).collect::<Option<Vec<_>>>()?,
         )))),
         serde_json::Value::Object(values) => {
@@ -546,33 +547,29 @@ fn native_json_value(value: serde_json::Value) -> Option<ConstRuntimeValue32Data
                 .into_iter()
                 .map(|(key, value)| Some((RuntimeMapKeyData::String(key), native_json_value(value)?)))
                 .collect::<Option<Vec<_>>>()?;
-            Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::Map(
-                entries,
-            ))))
+            Some(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::Map(entries))))
         }
     }
 }
 
-fn native_yaml_value(value: serde_yaml::Value) -> Option<ConstRuntimeValue32Data> {
+fn native_yaml_value(value: serde_yaml::Value) -> Option<ConstRuntimeValueData> {
     match value {
-        serde_yaml::Value::Null => Some(ConstRuntimeValue32Data::Nil),
-        serde_yaml::Value::Bool(value) => Some(ConstRuntimeValue32Data::Bool(value)),
+        serde_yaml::Value::Null => Some(ConstRuntimeValueData::Nil),
+        serde_yaml::Value::Bool(value) => Some(ConstRuntimeValueData::Bool(value)),
         serde_yaml::Value::Number(value) => value
             .as_i64()
-            .map(ConstRuntimeValue32Data::Int)
-            .or_else(|| value.as_f64().map(ConstRuntimeValue32Data::Float)),
+            .map(ConstRuntimeValueData::Int)
+            .or_else(|| value.as_f64().map(ConstRuntimeValueData::Float)),
         serde_yaml::Value::String(value) => Some(native_string_const(value)),
-        serde_yaml::Value::Sequence(values) => Some(ConstRuntimeValue32Data::Heap(Box::new(
-            ConstHeapValue32Data::List(values.into_iter().map(native_yaml_value).collect::<Option<Vec<_>>>()?),
-        ))),
+        serde_yaml::Value::Sequence(values) => Some(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(
+            values.into_iter().map(native_yaml_value).collect::<Option<Vec<_>>>()?,
+        )))),
         serde_yaml::Value::Mapping(values) => {
             let entries = values
                 .into_iter()
                 .map(|(key, value)| Some((native_yaml_key(key)?, native_yaml_value(value)?)))
                 .collect::<Option<Vec<_>>>()?;
-            Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::Map(
-                entries,
-            ))))
+            Some(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::Map(entries))))
         }
         _ => None,
     }
@@ -580,26 +577,26 @@ fn native_yaml_value(value: serde_yaml::Value) -> Option<ConstRuntimeValue32Data
 
 fn native_yaml_key(value: serde_yaml::Value) -> Option<RuntimeMapKeyData> {
     match native_yaml_value(value)? {
-        ConstRuntimeValue32Data::Nil => Some(RuntimeMapKeyData::Nil),
-        ConstRuntimeValue32Data::Bool(value) => Some(RuntimeMapKeyData::Bool(value)),
-        ConstRuntimeValue32Data::Int(value) => Some(RuntimeMapKeyData::Int(value)),
-        ConstRuntimeValue32Data::ShortStr(value) => Some(RuntimeMapKeyData::ShortStr(value)),
-        ConstRuntimeValue32Data::Heap(value) => match *value {
-            ConstHeapValue32Data::LongString(value) => Some(RuntimeMapKeyData::String(value)),
+        ConstRuntimeValueData::Nil => Some(RuntimeMapKeyData::Nil),
+        ConstRuntimeValueData::Bool(value) => Some(RuntimeMapKeyData::Bool(value)),
+        ConstRuntimeValueData::Int(value) => Some(RuntimeMapKeyData::Int(value)),
+        ConstRuntimeValueData::ShortStr(value) => Some(RuntimeMapKeyData::ShortStr(value)),
+        ConstRuntimeValueData::Heap(value) => match *value {
+            ConstHeapValueData::LongString(value) => Some(RuntimeMapKeyData::String(value)),
             _ => None,
         },
-        ConstRuntimeValue32Data::Float(_) => None,
+        ConstRuntimeValueData::Float(_) => None,
     }
 }
 
-fn native_toml_value(value: toml::Value) -> Option<ConstRuntimeValue32Data> {
+fn native_toml_value(value: toml::Value) -> Option<ConstRuntimeValueData> {
     match value {
         toml::Value::String(value) => Some(native_string_const(value)),
-        toml::Value::Integer(value) => Some(ConstRuntimeValue32Data::Int(value)),
-        toml::Value::Float(value) => Some(ConstRuntimeValue32Data::Float(value)),
-        toml::Value::Boolean(value) => Some(ConstRuntimeValue32Data::Bool(value)),
+        toml::Value::Integer(value) => Some(ConstRuntimeValueData::Int(value)),
+        toml::Value::Float(value) => Some(ConstRuntimeValueData::Float(value)),
+        toml::Value::Boolean(value) => Some(ConstRuntimeValueData::Bool(value)),
         toml::Value::Datetime(value) => Some(native_string_const(value.to_string())),
-        toml::Value::Array(values) => Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(
+        toml::Value::Array(values) => Some(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(
             values.into_iter().map(native_toml_value).collect::<Option<Vec<_>>>()?,
         )))),
         toml::Value::Table(values) => {
@@ -607,67 +604,65 @@ fn native_toml_value(value: toml::Value) -> Option<ConstRuntimeValue32Data> {
                 .into_iter()
                 .map(|(key, value)| Some((RuntimeMapKeyData::String(key), native_toml_value(value)?)))
                 .collect::<Option<Vec<_>>>()?;
-            Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::Map(
-                entries,
-            ))))
+            Some(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::Map(entries))))
         }
     }
 }
 
-fn native_string_const(value: String) -> ConstRuntimeValue32Data {
+fn native_string_const(value: String) -> ConstRuntimeValueData {
     if value.len() <= 7 {
-        ConstRuntimeValue32Data::ShortStr(value)
+        ConstRuntimeValueData::ShortStr(value)
     } else {
-        ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::LongString(value)))
+        ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::LongString(value)))
     }
 }
 
-fn native_value_from_const(value: ConstRuntimeValue32Data) -> Option<NativeStraightlineValue> {
+fn native_value_from_const(value: ConstRuntimeValueData) -> Option<NativeStraightlineValue> {
     match value {
-        ConstRuntimeValue32Data::Nil => Some(NativeStraightlineValue::Nil),
-        ConstRuntimeValue32Data::Bool(value) => Some(NativeStraightlineValue::Bool(i64::from(value).to_string())),
-        ConstRuntimeValue32Data::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
-        ConstRuntimeValue32Data::Float(value) => Some(NativeStraightlineValue::F64(llvm_float_literal(value))),
-        ConstRuntimeValue32Data::ShortStr(value) => Some(native_static_string_value(&value)),
-        ConstRuntimeValue32Data::Heap(value) => match *value {
-            ConstHeapValue32Data::LongString(value) => Some(native_static_string_value(&value)),
-            ConstHeapValue32Data::List(elements) => Some(NativeStraightlineValue::List {
+        ConstRuntimeValueData::Nil => Some(NativeStraightlineValue::Nil),
+        ConstRuntimeValueData::Bool(value) => Some(NativeStraightlineValue::Bool(i64::from(value).to_string())),
+        ConstRuntimeValueData::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
+        ConstRuntimeValueData::Float(value) => Some(NativeStraightlineValue::F64(llvm_float_literal(value))),
+        ConstRuntimeValueData::ShortStr(value) => Some(native_static_string_value(&value)),
+        ConstRuntimeValueData::Heap(value) => match *value {
+            ConstHeapValueData::LongString(value) => Some(native_static_string_value(&value)),
+            ConstHeapValueData::List(elements) => Some(NativeStraightlineValue::List {
                 value: native_const_list_display(&elements)?,
                 symbol: String::new(),
                 elements,
             }),
-            ConstHeapValue32Data::Map(entries) => Some(NativeStraightlineValue::Map {
+            ConstHeapValueData::Map(entries) => Some(NativeStraightlineValue::Map {
                 value: native_const_map_display(&entries)?,
                 symbol: String::new(),
                 entries,
             }),
-            ConstHeapValue32Data::UpvalCell(_) => None,
+            ConstHeapValueData::UpvalCell(_) => None,
         },
     }
 }
 
-fn native_const_method_arg_from_value(value: &NativeStraightlineValue) -> Option<ConstRuntimeValue32Data> {
+fn native_const_method_arg_from_value(value: &NativeStraightlineValue) -> Option<ConstRuntimeValueData> {
     match value {
-        NativeStraightlineValue::Nil => Some(ConstRuntimeValue32Data::Nil),
+        NativeStraightlineValue::Nil => Some(ConstRuntimeValueData::Nil),
         NativeStraightlineValue::Bool(value) if !value.starts_with('%') => {
-            Some(ConstRuntimeValue32Data::Bool(value != "0"))
+            Some(ConstRuntimeValueData::Bool(value != "0"))
         }
         NativeStraightlineValue::I64(value) if !value.starts_with('%') => {
-            Some(ConstRuntimeValue32Data::Int(value.parse().ok()?))
+            Some(ConstRuntimeValueData::Int(value.parse().ok()?))
         }
         NativeStraightlineValue::F64(value) if !value.starts_with('%') && !value.starts_with("0x") => {
-            Some(ConstRuntimeValue32Data::Float(value.parse().ok()?))
+            Some(ConstRuntimeValueData::Float(value.parse().ok()?))
         }
         NativeStraightlineValue::String { value, key_kind, .. }
             if *key_kind == super::straightline_value::NativeStringKeyKind::Short =>
         {
-            Some(ConstRuntimeValue32Data::ShortStr(value.clone()))
+            Some(ConstRuntimeValueData::ShortStr(value.clone()))
         }
-        NativeStraightlineValue::String { value, .. } => Some(ConstRuntimeValue32Data::Heap(Box::new(
-            ConstHeapValue32Data::LongString(value.clone()),
+        NativeStraightlineValue::String { value, .. } => Some(ConstRuntimeValueData::Heap(Box::new(
+            ConstHeapValueData::LongString(value.clone()),
         ))),
-        NativeStraightlineValue::List { elements, .. } => Some(ConstRuntimeValue32Data::Heap(Box::new(
-            ConstHeapValue32Data::List(elements.clone()),
+        NativeStraightlineValue::List { elements, .. } => Some(ConstRuntimeValueData::Heap(Box::new(
+            ConstHeapValueData::List(elements.clone()),
         ))),
         _ => None,
     }
@@ -707,7 +702,7 @@ fn emit_native_time_sleep(
     let [NativeStraightlineValue::I64(ms)] = args else {
         return None;
     };
-    let micros = if ms.starts_with('%') {
+    let micros_i64 = if ms.starts_with('%') {
         let value = format!("%time_sleep_us_{}", *ssa_index);
         *ssa_index += 1;
         body.push_str(&format!("  {value} = mul i64 {ms}, 1000\n"));
@@ -715,10 +710,10 @@ fn emit_native_time_sleep(
     } else {
         ms.parse::<i64>().ok()?.saturating_mul(1000).to_string()
     };
-    let micros32 = format!("%time_sleep_us32_{}", *ssa_index);
+    let micros_i32 = format!("%time_sleep_us_{}", *ssa_index);
     *ssa_index += 1;
-    body.push_str(&format!("  {micros32} = trunc i64 {micros} to i32\n"));
-    body.push_str(&format!("  call i32 @usleep(i32 {micros32})\n"));
+    body.push_str(&format!("  {micros_i32} = trunc i64 {micros_i64} to i32\n"));
+    body.push_str(&format!("  call i32 @usleep(i32 {micros_i32})\n"));
     Some(NativeStraightlineValue::Nil)
 }
 
@@ -888,7 +883,7 @@ pub(super) fn emit_native_static_core_call_method(
         }
         return native_static_index(receiver.clone(), key, symbol);
     }
-    let (first, second, elements): (&String, &String, &[ConstRuntimeValue32Data]) = match args {
+    let (first, second, elements): (&String, &String, &[ConstRuntimeValueData]) = match args {
         [
             NativeStraightlineValue::String { value: first, .. },
             NativeStraightlineValue::String { value: second, .. },
@@ -902,7 +897,7 @@ pub(super) fn emit_native_static_core_call_method(
 fn emit_native_static_string_method(
     first: &str,
     second: &str,
-    elements: &[ConstRuntimeValue32Data],
+    elements: &[ConstRuntimeValueData],
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
     let (method, receiver) = if native_static_string_method_known(first) {
@@ -932,7 +927,7 @@ fn emit_native_static_string_method(
                 .unwrap_or(-1)
                 .to_string(),
         )),
-        ("substring", [ConstRuntimeValue32Data::Int(start), ConstRuntimeValue32Data::Int(end)]) => {
+        ("substring", [ConstRuntimeValueData::Int(start), ConstRuntimeValueData::Int(end)]) => {
             let len = receiver.len() as i64;
             let start = (*start).clamp(0, len) as usize;
             let end = (*end).clamp(0, len) as usize;
@@ -942,13 +937,13 @@ fn emit_native_static_string_method(
         ("replace", [_, _]) => Some(native_static_string_value(
             &receiver.replace(&string_arg(0)?, &string_arg(1)?),
         )),
-        ("repeat", [ConstRuntimeValue32Data::Int(count)]) if *count >= 0 => {
+        ("repeat", [ConstRuntimeValueData::Int(count)]) if *count >= 0 => {
             Some(native_static_string_value(&receiver.repeat(*count as usize)))
         }
         ("chars", []) => {
             let elements = receiver
                 .chars()
-                .map(|ch| ConstRuntimeValue32Data::ShortStr(ch.to_string()))
+                .map(|ch| ConstRuntimeValueData::ShortStr(ch.to_string()))
                 .collect::<Vec<_>>();
             let symbol = format!("@lk_static_string_method_{}", *ssa_index);
             *ssa_index += 1;
@@ -984,7 +979,7 @@ fn emit_native_dynamic_int_list_method(
     body: &mut String,
     id: usize,
     method: &str,
-    args: &[ConstRuntimeValue32Data],
+    args: &[ConstRuntimeValueData],
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
     if !args.is_empty() {
@@ -1232,38 +1227,38 @@ pub(super) fn emit_native_dynamic_int_list_get_method(
     Some(())
 }
 
-fn native_const_string_arg(value: &ConstRuntimeValue32Data) -> Option<String> {
+fn native_const_string_arg(value: &ConstRuntimeValueData) -> Option<String> {
     match value {
-        ConstRuntimeValue32Data::ShortStr(value) => Some(value.clone()),
-        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
-            ConstHeapValue32Data::LongString(value) => Some(value.clone()),
+        ConstRuntimeValueData::ShortStr(value) => Some(value.clone()),
+        ConstRuntimeValueData::Heap(value) => match value.as_ref() {
+            ConstHeapValueData::LongString(value) => Some(value.clone()),
             _ => None,
         },
         _ => None,
     }
 }
 
-fn native_const_method_arg(value: &ConstRuntimeValue32Data) -> Option<NativeStraightlineValue> {
+fn native_const_method_arg(value: &ConstRuntimeValueData) -> Option<NativeStraightlineValue> {
     match value {
-        ConstRuntimeValue32Data::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
-        ConstRuntimeValue32Data::Bool(value) => Some(NativeStraightlineValue::Bool(i64::from(*value).to_string())),
-        ConstRuntimeValue32Data::Nil => Some(NativeStraightlineValue::Nil),
-        ConstRuntimeValue32Data::ShortStr(value) => Some(native_static_string_value(value)),
-        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
-            ConstHeapValue32Data::LongString(value) => Some(native_static_string_value(value)),
+        ConstRuntimeValueData::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
+        ConstRuntimeValueData::Bool(value) => Some(NativeStraightlineValue::Bool(i64::from(*value).to_string())),
+        ConstRuntimeValueData::Nil => Some(NativeStraightlineValue::Nil),
+        ConstRuntimeValueData::ShortStr(value) => Some(native_static_string_value(value)),
+        ConstRuntimeValueData::Heap(value) => match value.as_ref() {
+            ConstHeapValueData::LongString(value) => Some(native_static_string_value(value)),
             _ => None,
         },
         _ => None,
     }
 }
 
-fn native_map_key_arg(key: &RuntimeMapKeyData) -> Option<ConstRuntimeValue32Data> {
+fn native_map_key_arg(key: &RuntimeMapKeyData) -> Option<ConstRuntimeValueData> {
     match key {
-        RuntimeMapKeyData::Nil => Some(ConstRuntimeValue32Data::Nil),
-        RuntimeMapKeyData::Bool(value) => Some(ConstRuntimeValue32Data::Bool(*value)),
-        RuntimeMapKeyData::Int(value) => Some(ConstRuntimeValue32Data::Int(*value)),
+        RuntimeMapKeyData::Nil => Some(ConstRuntimeValueData::Nil),
+        RuntimeMapKeyData::Bool(value) => Some(ConstRuntimeValueData::Bool(*value)),
+        RuntimeMapKeyData::Int(value) => Some(ConstRuntimeValueData::Int(*value)),
         RuntimeMapKeyData::ShortStr(value) | RuntimeMapKeyData::String(value) => {
-            Some(ConstRuntimeValue32Data::ShortStr(value.clone()))
+            Some(ConstRuntimeValueData::ShortStr(value.clone()))
         }
         RuntimeMapKeyData::Obj(_) => None,
     }

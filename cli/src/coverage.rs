@@ -6,7 +6,11 @@ use lk_core::{
     rt,
     stmt::{Program, stmt_parser::StmtParser},
     token::Tokenizer,
-    vm::{VmRuntimeMetrics, compile_program32_module_with_ctx, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot},
+    vm::{
+        Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmRuntimeMetrics,
+        compile_program_module_with_ctx, vm_runtime_metrics_enabled, vm_runtime_metrics_reset,
+        vm_runtime_metrics_snapshot,
+    },
 };
 
 use crate::build_vm_context;
@@ -18,15 +22,19 @@ pub(crate) fn run_coverage_report(path: &Path, runtime: bool) -> anyhow::Result<
         let mut ctx = build_vm_context(path)?;
         vm_runtime_metrics_reset();
         let result = program
-            .execute32_with_ctx(&mut ctx)
+            .execute_with_ctx(&mut ctx)
             .with_context(|| format!("execute {} for runtime coverage", path.display()))?;
         rt::shutdown_runtime();
         print_static_coverage(path, &result.module);
-        print_runtime_metrics(vm_runtime_metrics_snapshot());
+        if vm_runtime_metrics_enabled() {
+            print_runtime_metrics(vm_runtime_metrics_snapshot());
+        } else {
+            print_runtime_metrics_disabled();
+        }
     } else {
         let mut ctx = build_vm_context(path)?;
-        let module = compile_program32_module_with_ctx(&program, &mut ctx)
-            .with_context(|| format!("compile Instr32 module for {}", path.display()))?;
+        let module = compile_program_module_with_ctx(&program, &mut ctx)
+            .with_context(|| format!("compile Instr module for {}", path.display()))?;
         print_static_coverage(path, &module);
     }
 
@@ -39,7 +47,7 @@ fn parse_program(source: &str) -> anyhow::Result<Program> {
     Ok(parser.parse_program_with_enhanced_errors(source)?)
 }
 
-fn print_static_coverage(path: &Path, module: &lk_core::vm::Module32) {
+fn print_static_coverage(path: &Path, module: &lk_core::vm::Module) {
     let mut opcode_counts = BTreeMap::<String, usize>::new();
     let mut instructions = 0usize;
     let mut registers = 0usize;
@@ -60,7 +68,7 @@ fn print_static_coverage(path: &Path, module: &lk_core::vm::Module32) {
         }
     }
 
-    println!("Instr32 coverage: {}", path.display());
+    println!("Instr coverage: {}", path.display());
     println!("  functions: {}", module.functions.len());
     println!("  natives: {}", module.natives.len());
     println!("  globals: {}", module.globals.len());
@@ -98,4 +106,44 @@ fn print_runtime_metrics(metrics: VmRuntimeMetrics) {
     println!("  list_ops: {}", metrics.list_ops);
     println!("  map_ops: {}", metrics.map_ops);
     println!("  string_ops: {}", metrics.string_ops);
+    print_register_write_sources(&metrics);
+    print_index_key_metrics(&metrics);
+    print_dynamic_opcode_histogram(&metrics);
+}
+
+fn print_runtime_metrics_disabled() {
+    println!("Runtime metrics: disabled; rebuild with `--features vm-profile` to collect counters");
+}
+
+fn print_dynamic_opcode_histogram(metrics: &VmRuntimeMetrics) {
+    println!("  dynamic_opcodes:");
+    for bits in 0..Opcode::COUNT {
+        let count = metrics.opcode_histogram[bits as usize];
+        if count == 0 {
+            continue;
+        }
+        let opcode = Opcode::from_bits(bits).expect("valid opcode histogram slot");
+        println!("    {opcode:?}: {count}");
+    }
+}
+
+fn print_register_write_sources(metrics: &VmRuntimeMetrics) {
+    println!("  register_write_sources:");
+    for (name, count) in VM_REGISTER_WRITE_SOURCE_NAMES
+        .iter()
+        .zip(metrics.register_write_sources.iter())
+    {
+        if *count != 0 {
+            println!("    {name}: {count}");
+        }
+    }
+}
+
+fn print_index_key_metrics(metrics: &VmRuntimeMetrics) {
+    println!("  index_key_metrics:");
+    for (name, count) in VM_INDEX_KEY_METRIC_NAMES.iter().zip(metrics.index_key_metrics.iter()) {
+        if *count != 0 {
+            println!("    {name}: {count}");
+        }
+    }
 }

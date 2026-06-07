@@ -2,7 +2,7 @@
 mod tests {
     use crate::{
         val::{LiteralVal, RuntimeVal},
-        vm::execute_source32,
+        vm::execute_source,
     };
     use std::mem::size_of;
 
@@ -16,16 +16,16 @@ mod tests {
     }
 
     fn expect_expr(expr: &str, expected: &str) {
-        let result = execute_source32(&format!("return {expr};")).expect("execute source");
+        let result = execute_source(&format!("return {expr};")).expect("execute source");
         assert_eq!(result.display_first_return(), expected);
     }
 
     fn panic_expr(expr: &str) {
-        assert!(execute_source32(&format!("return {expr};")).is_err());
+        assert!(execute_source(&format!("return {expr};")).is_err());
     }
 
     #[test]
-    fn arithmetic_runs_through_exec32() {
+    fn arithmetic_runs_through_exec() {
         expect_expr("1 + 2", "3");
         expect_expr("1 - 2", "-1");
         expect_expr("2 * 3", "6");
@@ -49,7 +49,7 @@ mod tests {
     }
 
     #[test]
-    fn modulo_runs_through_exec32() {
+    fn modulo_runs_through_exec() {
         expect_expr("7 % 3", "1");
         expect_expr("7.5 % 2.0", "1.5");
         expect_expr("7 % 2.5", "2");
@@ -57,7 +57,7 @@ mod tests {
     }
 
     #[test]
-    fn string_numeric_concat_runs_through_exec32() {
+    fn string_numeric_concat_runs_through_exec() {
         expect_expr(r#""hello" + 123"#, "hello123");
         expect_expr(r#""hello" + 12.34"#, "hello12.34");
         expect_expr(r#"123 + "hello""#, "123hello");
@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn comparisons_run_through_exec32() {
+    fn comparisons_run_through_exec() {
         expect_expr("10 < 20", "true");
         expect_expr("10.5 < 20.5", "true");
         expect_expr("10 < 10.5", "true");

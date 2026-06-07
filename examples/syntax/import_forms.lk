@@ -30,12 +30,12 @@ import * as string_mod from string;
 assert(string_mod.len("hello") == 5);
 
 // 6. Import another example file (relative to this file)
-import "general/fib";
+import "../general/fib";
 let f30 = fib.iterative(30);
 assert(f30 == 832040);
 
 // 7. Import from file with selective syntax
-import { iterative } from "general/fib";
+import { iterative } from "../general/fib";
 assert(iterative(10) == 55);
 
 println("import_forms: all assertions passed");

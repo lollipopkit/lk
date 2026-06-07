@@ -1,10 +1,10 @@
 use crate::llvm::subfunction::{
     compile_native_i64_list_subfunction, compile_native_ptr_list_subfunction, compile_native_scalar_subfunction,
 };
-use crate::vm::Module32Artifact;
+use crate::vm::ModuleArtifact;
 
 pub(in crate::llvm) fn prepend_subfunctions(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     ir: String,
     recursive_indices: &[u16],
     additional_subfn_indices: &[u16],

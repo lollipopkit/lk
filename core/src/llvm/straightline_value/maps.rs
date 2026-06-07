@@ -1,6 +1,6 @@
 use crate::{
     llvm::const_display::{native_const_list_display, native_const_map_display},
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data},
+    vm::{ConstHeapValueData, ConstRuntimeValueData},
 };
 
 use super::{
@@ -73,7 +73,7 @@ pub(in crate::llvm) fn native_static_map_delete(
         NativeStraightlineValue::Map { mut entries, .. } => {
             let key = native_map_key(key)?;
             let compare_string_keys = super::native_map_entries_are_string_keyed(&entries);
-            let mut removed = ConstRuntimeValue32Data::Nil;
+            let mut removed = ConstRuntimeValueData::Nil;
             entries.retain(|(entry_key, value)| {
                 if native_map_entry_keys_match(entry_key, &key, compare_string_keys) {
                     removed = value.clone();
@@ -82,7 +82,7 @@ pub(in crate::llvm) fn native_static_map_delete(
                     true
                 }
             });
-            let updated = ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::Map(entries)));
+            let updated = ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::Map(entries)));
             let elements = vec![updated, removed];
             Some(NativeStraightlineValue::List {
                 value: native_const_list_display(&elements)?,

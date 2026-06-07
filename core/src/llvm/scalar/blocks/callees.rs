@@ -1,6 +1,6 @@
-use crate::vm::{Function32Data, Instr32, Opcode32};
+use crate::vm::{FunctionData, Instr, Opcode};
 
-pub(super) fn callee_is_native_assert(callee: &Function32Data) -> bool {
+pub(super) fn callee_is_native_assert(callee: &FunctionData) -> bool {
     if callee.param_count != 1 || callee.capture_count != 0 {
         return false;
     }
@@ -8,26 +8,24 @@ pub(super) fn callee_is_native_assert(callee: &Function32Data) -> bool {
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
     else {
         return false;
     };
-    if !matches!(code.first().copied().map(Instr32::opcode), Some(Opcode32::Not))
-        || !matches!(code.get(1).copied().map(Instr32::opcode), Some(Opcode32::Test))
+    if !matches!(code.first().copied().map(Instr::opcode), Some(Opcode::Not))
+        || !matches!(code.get(1).copied().map(Instr::opcode), Some(Opcode::Test))
     {
         return false;
     }
-    code.iter()
-        .copied()
-        .any(|instr| matches!(instr.opcode(), Opcode32::Call))
+    code.iter().copied().any(|instr| matches!(instr.opcode(), Opcode::Call))
 }
 
-pub(super) fn callee_contains_call(callee: &Function32Data) -> bool {
+pub(super) fn callee_contains_call(callee: &FunctionData) -> bool {
     callee
         .code
         .iter()
         .copied()
-        .filter_map(|raw| Instr32::try_from_raw(raw).ok())
-        .any(|instr| matches!(instr.opcode(), Opcode32::Call | Opcode32::CallNamed))
+        .filter_map(|raw| Instr::try_from_raw(raw).ok())
+        .any(|instr| matches!(instr.opcode(), Opcode::Call | Opcode::CallNamed))
 }

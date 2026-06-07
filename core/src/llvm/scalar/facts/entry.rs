@@ -7,7 +7,7 @@ use crate::{
         },
         scalar::kind::{NativeScalarFacts, NativeScalarKind},
     },
-    vm::{ConstHeapValue32Data, Function32Data, Instr32},
+    vm::{ConstHeapValueData, FunctionData, Instr},
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -17,9 +17,9 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_statics_and_functions(
     global_names: &[String],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
-    code: &[Instr32],
-    functions: Option<&[Function32Data]>,
+    heap_values: &[ConstHeapValueData],
+    code: &[Instr],
+    functions: Option<&[FunctionData]>,
 ) -> Option<NativeScalarFacts> {
     if let Some(facts) = native_scalar_block_facts_with_initial(
         register_count,

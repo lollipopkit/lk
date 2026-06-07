@@ -3,7 +3,7 @@ use crate::llvm::{
     const_display::native_const_list_display,
     straightline_value::{NativeStraightlineValue, native_runtime_const_value},
 };
-use crate::vm::{ConstRuntimeValue32Data, Module32Artifact};
+use crate::vm::{ConstRuntimeValueData, ModuleArtifact};
 
 pub(super) fn static_circle_pi_area_method(
     global_names: &[String],
@@ -24,7 +24,7 @@ pub(super) fn static_circle_pi_area_method(
         return None;
     }
     let (_, value) = fields.iter().find(|(field, _)| field == "r")?;
-    let ConstRuntimeValue32Data::Int(r) = value else {
+    let ConstRuntimeValueData::Int(r) = value else {
         return None;
     };
     let area = std::f64::consts::PI * ((*r * *r) as f64);
@@ -32,7 +32,7 @@ pub(super) fn static_circle_pi_area_method(
 }
 
 pub(super) fn static_object_list_map_method(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     target: NativeStraightlineValue,
     method: &str,
     callable: NativeStraightlineValue,

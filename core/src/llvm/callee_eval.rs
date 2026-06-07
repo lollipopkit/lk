@@ -1,10 +1,11 @@
 use anyhow::Result;
 
-use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Function32Data, Instr32, Module32Artifact, Opcode32};
+use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, ModuleArtifact, Opcode};
 
 use super::{
     const_display::native_string_const_value,
     ir_text::{llvm_float_literal, native_relative_target},
+    known_key::native_known_string_key,
     output::emit_native_builtin_call,
     straightline_value::{
         NativeStraightlineValue, NativeStringKeyKind, native_runtime_string_key_kind, native_static_alias_symbol,
@@ -21,7 +22,7 @@ use super::{
 };
 
 pub(super) fn native_straightline_function_return(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     function_index: usize,
     args: &[NativeStraightlineValue],
     captures: &[NativeStraightlineValue],
@@ -43,7 +44,7 @@ pub(super) fn native_straightline_function_return(
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()?;
     let mut regs: Vec<Option<NativeStraightlineValue>> = vec![None; function.register_count as usize];
     if args.len() > regs.len() {
@@ -63,19 +64,19 @@ pub(super) fn native_straightline_function_return(
         let instr = code[pc];
         let mut next_pc = pc + 1;
         match instr.opcode() {
-            Opcode32::LoadNil => {
+            Opcode::LoadNil => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Nil);
             }
-            Opcode32::LoadBool => {
+            Opcode::LoadBool => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(i64::from(instr.b() != 0).to_string()));
             }
-            Opcode32::LoadInt => {
+            Opcode::LoadInt => {
                 let Some(value) = function.consts.ints.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -84,7 +85,7 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(value.to_string()));
             }
-            Opcode32::LoadFloat => {
+            Opcode::LoadFloat => {
                 let Some(value) = function.consts.floats.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -93,7 +94,7 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::F64(llvm_float_literal(*value)));
             }
-            Opcode32::LoadString => {
+            Opcode::LoadString => {
                 let Some(value) = function.consts.strings.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -110,7 +111,7 @@ pub(super) fn native_straightline_function_return(
                     value,
                 });
             }
-            Opcode32::LoadHeapConst => {
+            Opcode::LoadHeapConst => {
                 let Some(value) = function.consts.heap_values.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -122,13 +123,13 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::LoadFunction => {
+            Opcode::LoadFunction => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Function(instr.bx()));
             }
-            Opcode32::LoadCapture => {
+            Opcode::LoadCapture => {
                 let Some(value) = captures.get(instr.bx() as usize).cloned() else {
                     return Ok(None);
                 };
@@ -137,7 +138,7 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::LoadCellVal => {
+            Opcode::LoadCellVal => {
                 let Some(cell) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -149,7 +150,7 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::StoreCellVal => {
+            Opcode::StoreCellVal => {
                 let Some(cell) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -162,7 +163,7 @@ pub(super) fn native_straightline_function_return(
                 native_replace_static_aliases(&mut regs, globals, instr.a() as usize, &value);
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::MakeClosure => {
+            Opcode::MakeClosure => {
                 let Some(function) = artifact.module.functions.get(instr.b() as usize) else {
                     return Ok(None);
                 };
@@ -184,7 +185,7 @@ pub(super) fn native_straightline_function_return(
                     captures,
                 });
             }
-            Opcode32::Move => {
+            Opcode::Move => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -193,7 +194,7 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::GetGlobal => {
+            Opcode::GetGlobal => {
                 let value = globals.get(instr.bx() as usize).and_then(Clone::clone).or_else(|| {
                     artifact
                         .module
@@ -209,7 +210,7 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::SetGlobal => {
+            Opcode::SetGlobal => {
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -218,8 +219,8 @@ pub(super) fn native_straightline_function_return(
                 };
                 *global = Some(value);
             }
-            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
-                if instr.opcode() == Opcode32::AddInt
+            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
+                if instr.opcode() == Opcode::AddInt
                     && let (
                         Some(NativeStraightlineValue::String { value: lhs, .. }),
                         Some(NativeStraightlineValue::String { value: rhs, .. }),
@@ -251,17 +252,17 @@ pub(super) fn native_straightline_function_return(
                 let name = if let Some(value) = native_static_i64_binary(&lhs, &rhs, instr.opcode()) {
                     value
                 } else {
-                    if matches!(instr.opcode(), Opcode32::DivInt | Opcode32::ModInt)
+                    if matches!(instr.opcode(), Opcode::DivInt | Opcode::ModInt)
                         && !native_static_i64_divisor_nonzero(&rhs).unwrap_or(false)
                     {
                         return Ok(None);
                     }
                     let op = match instr.opcode() {
-                        Opcode32::AddInt => "add",
-                        Opcode32::SubInt => "sub",
-                        Opcode32::MulInt => "mul",
-                        Opcode32::DivInt => "sdiv",
-                        Opcode32::ModInt => "srem",
+                        Opcode::AddInt => "add",
+                        Opcode::SubInt => "sub",
+                        Opcode::MulInt => "mul",
+                        Opcode::DivInt => "sdiv",
+                        Opcode::ModInt => "srem",
                         _ => unreachable!("opcode matched above"),
                     };
                     let name = format!("%f{function_index}_r{}_{}", instr.a(), *ssa_index);
@@ -274,7 +275,7 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(name));
             }
-            Opcode32::AddFloat | Opcode32::SubFloat | Opcode32::MulFloat | Opcode32::DivFloat | Opcode32::ModFloat => {
+            Opcode::AddFloat | Opcode::SubFloat | Opcode::MulFloat | Opcode::DivFloat | Opcode::ModFloat => {
                 let Some(NativeStraightlineValue::F64(lhs)) = regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
                     return Ok(None);
@@ -286,17 +287,17 @@ pub(super) fn native_straightline_function_return(
                 let name = if let Some(value) = native_static_f64_binary(&lhs, &rhs, instr.opcode()) {
                     value
                 } else {
-                    if matches!(instr.opcode(), Opcode32::DivFloat | Opcode32::ModFloat)
+                    if matches!(instr.opcode(), Opcode::DivFloat | Opcode::ModFloat)
                         && !native_static_f64_divisor_nonzero(&rhs).unwrap_or(false)
                     {
                         return Ok(None);
                     }
                     let op = match instr.opcode() {
-                        Opcode32::AddFloat => "fadd",
-                        Opcode32::SubFloat => "fsub",
-                        Opcode32::MulFloat => "fmul",
-                        Opcode32::DivFloat => "fdiv",
-                        Opcode32::ModFloat => "frem",
+                        Opcode::AddFloat => "fadd",
+                        Opcode::SubFloat => "fsub",
+                        Opcode::MulFloat => "fmul",
+                        Opcode::DivFloat => "fdiv",
+                        Opcode::ModFloat => "frem",
                         _ => unreachable!("opcode matched above"),
                     };
                     let name = format!("%f{function_index}_r{}_{}", instr.a(), *ssa_index);
@@ -309,12 +310,12 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::F64(name));
             }
-            Opcode32::CmpInt
-            | Opcode32::CmpNeInt
-            | Opcode32::CmpLtInt
-            | Opcode32::CmpLeInt
-            | Opcode32::CmpGtInt
-            | Opcode32::CmpGeInt => {
+            Opcode::CmpInt
+            | Opcode::CmpNeInt
+            | Opcode::CmpLtInt
+            | Opcode::CmpLeInt
+            | Opcode::CmpGtInt
+            | Opcode::CmpGeInt => {
                 let Some(lhs) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -332,34 +333,34 @@ pub(super) fn native_straightline_function_return(
                 let (op, ty, lhs, rhs) = match (lhs, rhs) {
                     (NativeStraightlineValue::I64(lhs), NativeStraightlineValue::I64(rhs)) => {
                         let op = match instr.opcode() {
-                            Opcode32::CmpInt => "icmp eq",
-                            Opcode32::CmpNeInt => "icmp ne",
-                            Opcode32::CmpLtInt => "icmp slt",
-                            Opcode32::CmpLeInt => "icmp sle",
-                            Opcode32::CmpGtInt => "icmp sgt",
-                            Opcode32::CmpGeInt => "icmp sge",
+                            Opcode::CmpInt => "icmp eq",
+                            Opcode::CmpNeInt => "icmp ne",
+                            Opcode::CmpLtInt => "icmp slt",
+                            Opcode::CmpLeInt => "icmp sle",
+                            Opcode::CmpGtInt => "icmp sgt",
+                            Opcode::CmpGeInt => "icmp sge",
                             _ => unreachable!("opcode matched above"),
                         };
                         (op, "i64", lhs, rhs)
                     }
                     (NativeStraightlineValue::F64(lhs), NativeStraightlineValue::F64(rhs)) => {
                         let op = match instr.opcode() {
-                            Opcode32::CmpInt => "fcmp oeq",
-                            Opcode32::CmpNeInt => "fcmp une",
-                            Opcode32::CmpLtInt => "fcmp olt",
-                            Opcode32::CmpLeInt => "fcmp ole",
-                            Opcode32::CmpGtInt => "fcmp ogt",
-                            Opcode32::CmpGeInt => "fcmp oge",
+                            Opcode::CmpInt => "fcmp oeq",
+                            Opcode::CmpNeInt => "fcmp une",
+                            Opcode::CmpLtInt => "fcmp olt",
+                            Opcode::CmpLeInt => "fcmp ole",
+                            Opcode::CmpGtInt => "fcmp ogt",
+                            Opcode::CmpGeInt => "fcmp oge",
                             _ => unreachable!("opcode matched above"),
                         };
                         (op, "double", lhs, rhs)
                     }
                     (NativeStraightlineValue::Bool(lhs), NativeStraightlineValue::Bool(rhs))
-                        if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) =>
+                        if matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt) =>
                     {
                         let op = match instr.opcode() {
-                            Opcode32::CmpInt => "icmp eq",
-                            Opcode32::CmpNeInt => "icmp ne",
+                            Opcode::CmpInt => "icmp eq",
+                            Opcode::CmpNeInt => "icmp ne",
                             _ => unreachable!("opcode matched by guard"),
                         };
                         (op, "i64", lhs, rhs)
@@ -367,7 +368,7 @@ pub(super) fn native_straightline_function_return(
                     (
                         NativeStraightlineValue::String { value: lhs, .. },
                         NativeStraightlineValue::String { value: rhs, .. },
-                    ) if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) => {
+                    ) if matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt) => {
                         if instr.a() as usize >= regs.len() {
                             return Ok(None);
                         }
@@ -376,9 +377,9 @@ pub(super) fn native_straightline_function_return(
                         continue;
                     }
                     (NativeStraightlineValue::Nil, NativeStraightlineValue::Nil)
-                        if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) =>
+                        if matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt) =>
                     {
-                        let value = i64::from(instr.opcode() == Opcode32::CmpInt).to_string();
+                        let value = i64::from(instr.opcode() == Opcode::CmpInt).to_string();
                         if instr.a() as usize >= regs.len() {
                             return Ok(None);
                         }
@@ -409,7 +410,7 @@ pub(super) fn native_straightline_function_return(
                 }
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(out));
             }
-            Opcode32::Not => {
+            Opcode::Not => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -434,14 +435,14 @@ pub(super) fn native_straightline_function_return(
                     }
                 };
             }
-            Opcode32::IsNil => {
+            Opcode::IsNil => {
                 if regs.get(instr.b() as usize).and_then(Clone::clone).is_none() || instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
                 let is_nil = matches!(regs.get(instr.b() as usize), Some(Some(NativeStraightlineValue::Nil)));
                 regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(i64::from(is_nil).to_string()));
             }
-            Opcode32::IsList | Opcode32::IsMap => {
+            Opcode::IsList | Opcode::IsMap => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -453,7 +454,7 @@ pub(super) fn native_straightline_function_return(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::Len => {
+            Opcode::Len => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -465,7 +466,7 @@ pub(super) fn native_straightline_function_return(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::ToIter => {
+            Opcode::ToIter => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -479,11 +480,14 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::GetIndex => {
+            Opcode::GetIndex => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
-                let Some(key) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                let Some(key) =
+                    native_known_string_key(function, pc, format!("@lk_func{function_index}_known_key_{pc}"))
+                        .or_else(|| regs.get(instr.c() as usize).and_then(Clone::clone))
+                else {
                     return Ok(None);
                 };
                 if instr.a() as usize >= regs.len() {
@@ -496,11 +500,14 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::SetIndex => {
+            Opcode::SetIndex => {
                 let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
-                let Some(key) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
+                let Some(key) =
+                    native_known_string_key(function, pc, format!("@lk_func{function_index}_known_set_key_{pc}"))
+                        .or_else(|| regs.get(instr.b() as usize).and_then(Clone::clone))
+                else {
                     return Ok(None);
                 };
                 let Some(value) = regs.get(instr.c() as usize).and_then(Clone::clone) else {
@@ -512,7 +519,7 @@ pub(super) fn native_straightline_function_return(
                 native_replace_static_aliases(&mut regs, globals, instr.a() as usize, &value);
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::ListPush => {
+            Opcode::ListPush => {
                 let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -525,7 +532,7 @@ pub(super) fn native_straightline_function_return(
                 native_replace_static_aliases(&mut regs, globals, instr.a() as usize, &value);
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::Contains => {
+            Opcode::Contains => {
                 let Some(needle) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -540,7 +547,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::SliceFrom => {
+            Opcode::SliceFrom => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -557,7 +564,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::MapRest => {
+            Opcode::MapRest => {
                 let start = instr.b() as usize;
                 let Some(width) = 1usize.checked_add(instr.c() as usize) else {
                     return Ok(None);
@@ -584,7 +591,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::NewList => {
+            Opcode::NewList => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
@@ -606,7 +613,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::NewMap => {
+            Opcode::NewMap => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
@@ -637,7 +644,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::NewRange => {
+            Opcode::NewRange => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
@@ -664,7 +671,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::NewObject => {
+            Opcode::NewObject => {
                 if instr.a() as usize >= regs.len() {
                     return Ok(None);
                 }
@@ -691,7 +698,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::ToString => {
+            Opcode::ToString => {
                 let Some(value) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -705,7 +712,7 @@ pub(super) fn native_straightline_function_return(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::ConcatString => {
+            Opcode::ConcatString => {
                 let Some(NativeStraightlineValue::String { value: lhs, .. }) =
                     regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
@@ -729,7 +736,7 @@ pub(super) fn native_straightline_function_return(
                     value,
                 });
             }
-            Opcode32::StringStartsWith => {
+            Opcode::StringStartsWith => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -744,7 +751,7 @@ pub(super) fn native_straightline_function_return(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::StringSplit => {
+            Opcode::StringSplit => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -761,7 +768,7 @@ pub(super) fn native_straightline_function_return(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::ListJoin => {
+            Opcode::ListJoin => {
                 let Some(target) = regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -778,7 +785,7 @@ pub(super) fn native_straightline_function_return(
                 };
                 regs[instr.a() as usize] = Some(value);
             }
-            Opcode32::Test => {
+            Opcode::Test => {
                 let Some(value) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -793,24 +800,24 @@ pub(super) fn native_straightline_function_return(
                 let falsy_target = if instr.b() != 0 { relative } else { fallthrough };
                 next_pc = if truthy { truthy_target } else { falsy_target };
             }
-            Opcode32::Jmp => {
+            Opcode::Jmp => {
                 let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len()) else {
                     return Ok(None);
                 };
                 next_pc = target;
             }
-            Opcode32::TryBegin => {
+            Opcode::TryBegin => {
                 let Some(catch_pc) = native_relative_target(pc, instr.sbx() as i32, code.len()) else {
                     return Ok(None);
                 };
                 handlers.push((instr.a(), catch_pc));
             }
-            Opcode32::TryEnd => {
+            Opcode::TryEnd => {
                 if handlers.pop().is_none() {
                     return Ok(None);
                 }
             }
-            Opcode32::Raise => {
+            Opcode::Raise => {
                 let Some(_) = function.consts.strings.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -826,7 +833,7 @@ pub(super) fn native_straightline_function_return(
                 *ssa_index += 1;
                 next_pc = catch_pc;
             }
-            Opcode32::Call => {
+            Opcode::Call => {
                 if instr.a() != instr.b() {
                     return Ok(None);
                 }
@@ -872,7 +879,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::CallDirect => {
+            Opcode::CallDirect => {
                 let Some(args) = native_straightline_call_args(&regs, instr.a(), instr.c()) else {
                     return Ok(None);
                 };
@@ -890,7 +897,7 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::CallNamed => {
+            Opcode::CallNamed => {
                 let Some(target) = regs.get(instr.a() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
@@ -921,9 +928,9 @@ pub(super) fn native_straightline_function_return(
                     return Ok(None);
                 }
             }
-            Opcode32::Return => {
+            Opcode::Return => {
                 if instr.b() == 0 {
-                    return Ok(None);
+                    return Ok(Some(NativeStraightlineValue::Nil));
                 }
                 if instr.b() != 1 {
                     return Ok(None);
@@ -936,7 +943,7 @@ pub(super) fn native_straightline_function_return(
                     value => Some(value),
                 });
             }
-            Opcode32::Nop => {}
+            Opcode::Nop => {}
             _ => return Ok(None),
         }
         pc = next_pc;
@@ -945,10 +952,10 @@ pub(super) fn native_straightline_function_return(
 }
 
 pub(super) fn native_direct_call_static_return_value(
-    functions: &[Function32Data],
-    instr: Instr32,
+    functions: &[FunctionData],
+    instr: Instr,
     caller_static_values: &[Option<NativeStraightlineValue>],
-    caller_code: &[Instr32],
+    caller_code: &[Instr],
     caller_int_consts: &[i64],
     call_pc: usize,
     captures: &[NativeStraightlineValue],
@@ -966,13 +973,13 @@ pub(super) fn native_direct_call_static_return_value(
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
     if code.iter().any(|instr| {
         matches!(
             instr.opcode(),
-            Opcode32::Test | Opcode32::Jmp | Opcode32::CallDirect | Opcode32::CallNamed
+            Opcode::Test | Opcode::Jmp | Opcode::CallDirect | Opcode::CallNamed
         )
     }) {
         return None;
@@ -989,27 +996,27 @@ pub(super) fn native_direct_call_static_return_value(
     for pc in 0..code.len() {
         let instr = code[pc];
         match instr.opcode() {
-            Opcode32::LoadInt => {
+            Opcode::LoadInt => {
                 let value = function.consts.ints.get(instr.bx() as usize)?;
                 *regs.get_mut(instr.a() as usize)? = Some(NativeStraightlineValue::I64(value.to_string()));
             }
-            Opcode32::LoadHeapConst => {
+            Opcode::LoadHeapConst => {
                 let value = function.consts.heap_values.get(instr.bx() as usize)?;
                 *regs.get_mut(instr.a() as usize)? =
                     native_straightline_heap_const_value(function_index, instr.bx(), value);
                 regs.get(instr.a() as usize)?.as_ref()?;
             }
-            Opcode32::LoadFunction => {
+            Opcode::LoadFunction => {
                 *regs.get_mut(instr.a() as usize)? = Some(NativeStraightlineValue::Function(instr.bx()));
             }
-            Opcode32::LoadCapture => {
+            Opcode::LoadCapture => {
                 *regs.get_mut(instr.a() as usize)? = Some(captures.get(instr.bx() as usize)?.clone());
             }
-            Opcode32::LoadCellVal => {
+            Opcode::LoadCellVal => {
                 let cell = regs.get(instr.b() as usize)?.clone()?;
                 *regs.get_mut(instr.a() as usize)? = Some(native_static_load_cell(cell)?);
             }
-            Opcode32::StoreCellVal => {
+            Opcode::StoreCellVal => {
                 let cell = regs.get(instr.a() as usize)?.clone()?;
                 let value = regs.get(instr.b() as usize)?.clone()?;
                 let value = native_static_store_cell(cell, value)?;
@@ -1017,7 +1024,7 @@ pub(super) fn native_direct_call_static_return_value(
                 native_replace_static_aliases(&mut regs, &mut globals, instr.a() as usize, &value);
                 *regs.get_mut(instr.a() as usize)? = Some(value);
             }
-            Opcode32::MakeClosure => {
+            Opcode::MakeClosure => {
                 let callee = functions.get(instr.b() as usize)?;
                 let start = instr.c() as usize;
                 let end = start.checked_add(callee.capture_count as usize)?;
@@ -1027,12 +1034,13 @@ pub(super) fn native_direct_call_static_return_value(
                     captures,
                 });
             }
-            Opcode32::Move => {
+            Opcode::Move => {
                 *regs.get_mut(instr.a() as usize)? = regs.get(instr.b() as usize)?.clone();
             }
-            Opcode32::Return if instr.b() == 1 => return regs.get(instr.a() as usize)?.clone(),
-            Opcode32::Return => return None,
-            Opcode32::Nop => {}
+            Opcode::Return if instr.b() == 0 => return Some(NativeStraightlineValue::Nil),
+            Opcode::Return if instr.b() == 1 => return regs.get(instr.a() as usize)?.clone(),
+            Opcode::Return => return None,
+            Opcode::Nop => {}
             _ => return None,
         }
     }
@@ -1040,7 +1048,7 @@ pub(super) fn native_direct_call_static_return_value(
 }
 
 fn native_local_static_i64_before(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     pc: usize,
     reg: u8,
@@ -1050,10 +1058,10 @@ fn native_local_static_i64_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::LoadInt => int_consts
+            Opcode::LoadInt => int_consts
                 .get(prev.bx() as usize)
                 .map(|value| NativeStraightlineValue::I64(value.to_string())),
-            Opcode32::Move => native_local_static_i64_before(code, int_consts, pc, prev.b()),
+            Opcode::Move => native_local_static_i64_before(code, int_consts, pc, prev.b()),
             _ => None,
         };
     }
@@ -1085,7 +1093,7 @@ fn native_straightline_call_target(value: NativeStraightlineValue) -> Option<(u1
 }
 
 fn native_straightline_core_call_method(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     args: &[NativeStraightlineValue],
     globals: &mut [Option<NativeStraightlineValue>],
     depth: usize,
@@ -1203,42 +1211,42 @@ fn native_straightline_core_call_method(
     }
 }
 
-fn native_straightline_const_value(value: &ConstRuntimeValue32Data) -> Option<NativeStraightlineValue> {
+fn native_straightline_const_value(value: &ConstRuntimeValueData) -> Option<NativeStraightlineValue> {
     match value {
-        ConstRuntimeValue32Data::Nil => Some(NativeStraightlineValue::Nil),
-        ConstRuntimeValue32Data::Bool(value) => Some(NativeStraightlineValue::Bool(i64::from(*value).to_string())),
-        ConstRuntimeValue32Data::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
-        ConstRuntimeValue32Data::Float(value) => Some(NativeStraightlineValue::F64(llvm_float_literal(*value))),
-        ConstRuntimeValue32Data::ShortStr(value) => Some(NativeStraightlineValue::String {
+        ConstRuntimeValueData::Nil => Some(NativeStraightlineValue::Nil),
+        ConstRuntimeValueData::Bool(value) => Some(NativeStraightlineValue::Bool(i64::from(*value).to_string())),
+        ConstRuntimeValueData::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
+        ConstRuntimeValueData::Float(value) => Some(NativeStraightlineValue::F64(llvm_float_literal(*value))),
+        ConstRuntimeValueData::ShortStr(value) => Some(NativeStraightlineValue::String {
             symbol: String::new(),
             len: value.chars().count(),
             key_kind: NativeStringKeyKind::Short,
             value: native_string_const_value(value)?,
         }),
-        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
-            ConstHeapValue32Data::LongString(value) => Some(NativeStraightlineValue::String {
+        ConstRuntimeValueData::Heap(value) => match value.as_ref() {
+            ConstHeapValueData::LongString(value) => Some(NativeStraightlineValue::String {
                 symbol: String::new(),
                 len: value.chars().count(),
                 key_kind: NativeStringKeyKind::Heap,
                 value: native_string_const_value(value)?,
             }),
-            ConstHeapValue32Data::List(elements) => Some(NativeStraightlineValue::List {
+            ConstHeapValueData::List(elements) => Some(NativeStraightlineValue::List {
                 symbol: String::new(),
                 value: String::new(),
                 elements: elements.clone(),
             }),
-            ConstHeapValue32Data::Map(entries) => Some(NativeStraightlineValue::Map {
+            ConstHeapValueData::Map(entries) => Some(NativeStraightlineValue::Map {
                 symbol: String::new(),
                 value: String::new(),
                 entries: entries.clone(),
             }),
-            ConstHeapValue32Data::UpvalCell(_) => None,
+            ConstHeapValueData::UpvalCell(_) => None,
         },
     }
 }
 
 pub(super) fn native_straightline_named_call_args(
-    function: &Function32Data,
+    function: &FunctionData,
     regs: &[Option<NativeStraightlineValue>],
     callee: u8,
     positional_count: u16,

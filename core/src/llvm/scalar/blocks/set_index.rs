@@ -1,29 +1,32 @@
 use crate::llvm::{
+    const_display::llvm_string_constant,
     dynamic_containers::{emit_dynamic_int_list_set, emit_dynamic_string_int_map_set},
     ir_text::{emit_branch_to_next, next_tmp},
+    known_key::native_known_string_key,
     scalar::{
-        block_helpers::{local_static_i64_before, three_regs_in_bounds},
+        block_helpers::{local_register_kind_before, local_static_i64_before, three_regs_in_bounds},
         contains::local_static_string_before,
         facts::{NativeScalarFacts, NativeScalarKind},
     },
     straightline_value::{
-        NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue, native_static_i64_binary,
-        native_static_index, native_static_set_index,
+        NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue, NativeTextPart,
+        native_static_i64_binary, native_static_index, native_static_set_index,
     },
 };
-use crate::vm::{Instr32, Opcode32};
+use crate::vm::{FunctionData, Instr, Opcode};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_set_index_block(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
+    function: &FunctionData,
     register_count: usize,
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     code_len: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -55,15 +58,7 @@ pub(super) fn emit_set_index_block(
         value: NativeMapValueKind::I64,
     } = target
     {
-        let key = if let Some(key) = static_regs.get(instr.b() as usize).and_then(Clone::clone) {
-            key
-        } else if facts.register_kind_before(pc, instr.b()) == Some(NativeScalarKind::StrPtr) {
-            let key = next_tmp(tmp_index);
-            ir.push_str(&format!("  {key} = load ptr, ptr %r{}.slot\n", instr.b()));
-            NativeStraightlineValue::StringPtr(key)
-        } else {
-            return false;
-        };
+        let key = dynamic_string_map_set_key(ir, extra_globals, function, pc, instr.b(), tmp_index);
         let Some(value_kind) = facts.register_kind_before(pc, instr.c()) else {
             return false;
         };
@@ -105,13 +100,18 @@ pub(super) fn emit_set_index_block(
         *slot = value;
         static_regs[instr.a() as usize] = Some(NativeStraightlineValue::ArgList { elements });
     } else {
-        let key = if let Some(key) = static_regs.get(instr.b() as usize).and_then(Clone::clone) {
-            key
-        } else if facts.register_kind_before(pc, instr.b()) == Some(NativeScalarKind::StrPtr) {
-            let key = next_tmp(tmp_index);
-            ir.push_str(&format!("  {key} = load ptr, ptr %r{}.slot\n", instr.b()));
-            NativeStraightlineValue::StringPtr(key)
-        } else {
+        let Some(key) = dynamic_string_set_key(
+            ir,
+            extra_globals,
+            static_regs,
+            code,
+            strings,
+            function,
+            pc,
+            instr.b(),
+            facts,
+            tmp_index,
+        ) else {
             return false;
         };
         let Some(value) = static_set_value(&target, static_regs, code, int_consts, strings, pc, instr.c()) else {
@@ -127,9 +127,181 @@ pub(super) fn emit_set_index_block(
     true
 }
 
+fn dynamic_string_map_set_key(
+    ir: &mut String,
+    extra_globals: &mut String,
+    function: &FunctionData,
+    pc: usize,
+    reg: u8,
+    tmp_index: &mut usize,
+) -> NativeStraightlineValue {
+    if let Some(key) = known_set_key(extra_globals, function, pc) {
+        return key;
+    }
+    let ptr = next_tmp(tmp_index);
+    ir.push_str(&format!("  {ptr} = load ptr, ptr %r{reg}.slot\n"));
+    NativeStraightlineValue::StringPtr(ptr)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dynamic_string_set_key(
+    ir: &mut String,
+    extra_globals: &mut String,
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr],
+    strings: &[String],
+    function: &FunctionData,
+    pc: usize,
+    reg: u8,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> Option<NativeStraightlineValue> {
+    if let Some(key) = known_set_key(extra_globals, function, pc) {
+        return Some(key);
+    }
+    if let Some(key) = static_regs.get(reg as usize).and_then(Clone::clone) {
+        if matches!(key, NativeStraightlineValue::Text(_)) {
+            let ptr = next_tmp(tmp_index);
+            ir.push_str(&format!("  {ptr} = load ptr, ptr %r{reg}.slot\n"));
+            return Some(NativeStraightlineValue::StringPtr(ptr));
+        }
+        return Some(key);
+    }
+    dynamic_text_key_before(ir, static_regs, code, strings, pc, reg, facts, tmp_index).or_else(|| {
+        let kind = facts
+            .register_kind_before(pc, reg)
+            .or_else(|| local_register_kind_before(code, pc, reg));
+        matches!(kind, Some(NativeScalarKind::StrPtr)).then(|| {
+            let key = next_tmp(tmp_index);
+            ir.push_str(&format!("  {key} = load ptr, ptr %r{reg}.slot\n"));
+            NativeStraightlineValue::StringPtr(key)
+        })
+    })
+}
+
+fn dynamic_text_key_before(
+    ir: &mut String,
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr],
+    strings: &[String],
+    pc: usize,
+    reg: u8,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> Option<NativeStraightlineValue> {
+    let (write_pc, prev) = last_write_before(code, pc, reg)?;
+    match prev.opcode() {
+        Opcode::Move if prev.b() != reg => {
+            dynamic_text_key_before(ir, static_regs, code, strings, write_pc, prev.b(), facts, tmp_index)
+        }
+        Opcode::ConcatString => {
+            let mut parts =
+                dynamic_text_parts_before(ir, static_regs, code, strings, write_pc, prev.b(), facts, tmp_index)?;
+            parts.extend(dynamic_text_parts_before(
+                ir,
+                static_regs,
+                code,
+                strings,
+                write_pc,
+                prev.c(),
+                facts,
+                tmp_index,
+            )?);
+            Some(NativeStraightlineValue::Text(parts))
+        }
+        Opcode::ToString => {
+            dynamic_text_parts_before(ir, static_regs, code, strings, write_pc, prev.b(), facts, tmp_index)
+                .map(NativeStraightlineValue::Text)
+        }
+        _ => None,
+    }
+}
+
+fn dynamic_text_parts_before(
+    ir: &mut String,
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr],
+    strings: &[String],
+    pc: usize,
+    reg: u8,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> Option<Vec<NativeTextPart>> {
+    if let Some(value) = static_regs.get(reg as usize).and_then(Clone::clone) {
+        return text_parts_from_value(value);
+    }
+    if let Some(NativeStraightlineValue::String { symbol, value, .. }) =
+        local_static_string_before(code, strings, pc, reg)
+    {
+        return Some(vec![NativeTextPart::String { symbol, value }]);
+    }
+    let kind = facts
+        .register_kind_before(pc, reg)
+        .or_else(|| local_register_kind_before(code, pc, reg))?;
+    match kind {
+        NativeScalarKind::I64 | NativeScalarKind::MaybeI64 => {
+            let value = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
+            Some(vec![NativeTextPart::I64(value)])
+        }
+        NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr => {
+            let value = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load ptr, ptr %r{reg}.slot\n"));
+            Some(vec![NativeTextPart::StrPtr(value)])
+        }
+        NativeScalarKind::Bool => {
+            let value = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load i64, ptr %r{reg}.slot\n"));
+            Some(vec![NativeTextPart::Bool(value)])
+        }
+        NativeScalarKind::Nil => Some(vec![NativeTextPart::Nil]),
+        NativeScalarKind::F64 => {
+            let value = next_tmp(tmp_index);
+            ir.push_str(&format!("  {value} = load double, ptr %r{reg}.slot\n"));
+            Some(vec![NativeTextPart::F64(value)])
+        }
+    }
+}
+
+fn text_parts_from_value(value: NativeStraightlineValue) -> Option<Vec<NativeTextPart>> {
+    match value {
+        NativeStraightlineValue::Text(parts) => Some(parts),
+        NativeStraightlineValue::String { symbol, value, .. } => Some(vec![NativeTextPart::String { symbol, value }]),
+        NativeStraightlineValue::StringPtr(value) => Some(vec![NativeTextPart::StrPtr(value)]),
+        NativeStraightlineValue::I64(value) | NativeStraightlineValue::MaybeI64 { value, .. } => {
+            Some(vec![NativeTextPart::I64(value)])
+        }
+        NativeStraightlineValue::F64(value) | NativeStraightlineValue::MaybeF64 { value, .. } => {
+            Some(vec![NativeTextPart::F64(value)])
+        }
+        NativeStraightlineValue::Bool(value) | NativeStraightlineValue::MaybeBool { value, .. } => {
+            Some(vec![NativeTextPart::Bool(value)])
+        }
+        NativeStraightlineValue::Nil => Some(vec![NativeTextPart::Nil]),
+        _ => None,
+    }
+}
+
+fn last_write_before(code: &[Instr], pc: usize, reg: u8) -> Option<(usize, Instr)> {
+    code.iter()
+        .copied()
+        .take(pc)
+        .enumerate()
+        .rev()
+        .find(|(_, instr)| instr.a() == reg && !matches!(instr.opcode(), Opcode::Nop | Opcode::Jmp | Opcode::Test))
+}
+
+fn known_set_key(extra_globals: &mut String, function: &FunctionData, pc: usize) -> Option<NativeStraightlineValue> {
+    let key = native_known_string_key(function, pc, format!("@lk_known_set_key_{pc}"))?;
+    if let NativeStraightlineValue::String { symbol, value, .. } = &key {
+        extra_globals.push_str(&llvm_string_constant(symbol, value));
+    }
+    Some(key)
+}
+
 fn update_recent_move_alias(
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
     reg: u8,
     value: NativeStraightlineValue,
@@ -141,7 +313,7 @@ fn update_recent_move_alias(
         if prev.a() != reg {
             continue;
         }
-        if prev.opcode() == Opcode32::Move && prev.b() != reg {
+        if prev.opcode() == Opcode::Move && prev.b() != reg {
             if let Some(slot) = static_regs.get_mut(prev.b() as usize) {
                 *slot = Some(value);
             }
@@ -153,7 +325,7 @@ fn update_recent_move_alias(
 fn static_set_value(
     target: &NativeStraightlineValue,
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
     pc: usize,
@@ -168,7 +340,7 @@ fn static_set_value(
 fn local_static_i64_expr_before(
     target: &NativeStraightlineValue,
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
     pc: usize,
@@ -180,12 +352,12 @@ fn local_static_i64_expr_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::LoadInt => local_static_i64_before(code, int_consts, pc, reg),
-            Opcode32::Move if prev.b() != reg => {
+            Opcode::LoadInt => local_static_i64_before(code, int_consts, pc, reg),
+            Opcode::Move if prev.b() != reg => {
                 local_static_i64_expr_before(target, static_regs, code, int_consts, strings, prev_pc, prev.b())
             }
-            Opcode32::GetIndex => local_static_object_index(target, code, strings, prev_pc, prev.c()),
-            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
+            Opcode::GetIndex => local_static_object_index(target, code, strings, prev_pc, prev.c()),
+            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
                 let NativeStraightlineValue::I64(lhs) =
                     static_i64_operand(target, static_regs, code, int_consts, strings, prev_pc, prev.b())?
                 else {
@@ -207,7 +379,7 @@ fn local_static_i64_expr_before(
 fn static_i64_operand(
     target: &NativeStraightlineValue,
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
     pc: usize,
@@ -222,7 +394,7 @@ fn static_i64_operand(
 
 fn local_static_object_index(
     target: &NativeStraightlineValue,
-    code: &[Instr32],
+    code: &[Instr],
     strings: &[String],
     pc: usize,
     key_reg: u8,

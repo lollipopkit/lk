@@ -1,4 +1,4 @@
-use lk_core::vm::{Compiler32, disassemble_module32};
+use lk_core::vm::{Compiler, disassemble_module};
 
 fn main() {
     let script = r#"
@@ -14,6 +14,6 @@ fn iterative(n) {
     return b;
 }
 "#;
-    let module = Compiler32::compile_source_module(script).unwrap();
-    println!("{}", disassemble_module32(&module));
+    let module = Compiler::compile_source_module(script).unwrap();
+    println!("{}", disassemble_module(&module));
 }

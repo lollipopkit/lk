@@ -6,7 +6,7 @@ use crate::{
             native_static_set_index,
         },
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, Opcode},
 };
 
 use super::{
@@ -17,7 +17,7 @@ use super::{
 pub(super) fn propagate_dynamic_map_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     target: &NativeStraightlineValue,
     start: usize,
@@ -33,7 +33,7 @@ pub(super) fn propagate_dynamic_map_call(
 pub(super) fn propagate_dynamic_map_set_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     target: &NativeStraightlineValue,
     start: usize,
 ) -> Option<bool> {
@@ -109,7 +109,7 @@ pub(super) fn propagate_dynamic_map_set_call(
 pub(super) fn propagate_dynamic_map_values_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     target: &NativeStraightlineValue,
     start: usize,
@@ -143,7 +143,7 @@ pub(super) fn propagate_dynamic_map_values_call(
 pub(super) fn propagate_dynamic_map_keys_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     target: &NativeStraightlineValue,
     start: usize,
@@ -175,7 +175,7 @@ pub(super) fn propagate_dynamic_map_keys_call(
 pub(super) fn propagate_dynamic_map_has_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     target: &NativeStraightlineValue,
     start: usize,
 ) -> Option<bool> {
@@ -206,7 +206,7 @@ pub(super) fn propagate_dynamic_map_has_call(
 pub(super) fn propagate_dynamic_map_get_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     target: &NativeStraightlineValue,
     start: usize,
 ) -> Option<bool> {
@@ -246,7 +246,7 @@ pub(super) fn propagate_dynamic_map_get_call(
 pub(super) fn propagate_dynamic_map_delete_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     target: &NativeStraightlineValue,
     start: usize,
@@ -310,7 +310,7 @@ pub(super) fn propagate_dynamic_map_delete_call(
 pub(super) fn propagate_dynamic_map_iter_get_index(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     target: NativeStraightlineValue,
     index_kind: Option<NativeScalarKind>,
     field: Option<NativeStraightlineValue>,
@@ -357,7 +357,7 @@ pub(super) fn propagate_dynamic_map_iter_get_index(
 pub(super) fn propagate_dynamic_i64_map_get_index(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     target: &NativeStraightlineValue,
     index_kind: Option<NativeScalarKind>,
 ) -> Option<bool> {
@@ -384,7 +384,7 @@ pub(super) fn propagate_dynamic_i64_map_get_index(
 pub(super) fn propagate_dynamic_string_map_get_index(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     target: &NativeStraightlineValue,
     key: Option<NativeStraightlineValue>,
 ) -> Option<bool> {
@@ -402,10 +402,7 @@ pub(super) fn propagate_dynamic_string_map_get_index(
     ) {
         return None;
     }
-    let Some(key) = key else {
-        return Some(false);
-    };
-    if !native_string_int_map_key_supported(&key) {
+    if instr.b() != instr.c() && !key.as_ref().is_some_and(native_string_int_map_key_supported) {
         return Some(false);
     }
     let kind = match value {
@@ -420,7 +417,7 @@ pub(super) fn propagate_dynamic_string_map_get_index(
 pub(super) fn propagate_dynamic_string_list_get_index(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     target: &NativeStraightlineValue,
     index_kind: Option<NativeScalarKind>,
 ) -> Option<bool> {
@@ -447,7 +444,7 @@ pub(super) fn propagate_dynamic_string_list_get_index(
 pub(super) fn propagate_dynamic_string_list_method_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     args: &[NativeStraightlineValue],
 ) -> Option<bool> {
     let [
@@ -506,7 +503,7 @@ pub(super) fn propagate_dynamic_string_list_method_call(
 pub(super) fn propagate_dynamic_i64_list_method_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     args: &[NativeStraightlineValue],
 ) -> Option<bool> {
     let [
@@ -540,13 +537,13 @@ pub(super) fn propagate_dynamic_i64_list_method_call(
                     && matches!(
                         method_args,
                         NativeStraightlineValue::List { elements, .. }
-                            if elements.iter().all(|value| matches!(value, ConstRuntimeValue32Data::Int(_)))
+                            if elements.iter().all(|value| matches!(value, ConstRuntimeValueData::Int(_)))
                     ))
                     || (*element == NativeListElementKind::Bool
                         && matches!(
                             method_args,
                             NativeStraightlineValue::List { elements, .. }
-                                if elements.iter().all(|value| matches!(value, ConstRuntimeValue32Data::Bool(_)))
+                                if elements.iter().all(|value| matches!(value, ConstRuntimeValueData::Bool(_)))
                         ))
                     || matches!(
                         method_args,
@@ -574,7 +571,7 @@ pub(super) fn propagate_dynamic_i64_list_method_call(
 pub(super) fn propagate_dynamic_f64_list_method_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     args: &[NativeStraightlineValue],
 ) -> Option<bool> {
     let [
@@ -609,7 +606,7 @@ pub(super) fn propagate_dynamic_f64_list_method_call(
                     NativeStraightlineValue::List { elements, .. }
                         if elements.iter().all(|value| matches!(
                             value,
-                            ConstRuntimeValue32Data::Float(_) | ConstRuntimeValue32Data::Int(_)
+                            ConstRuntimeValueData::Float(_) | ConstRuntimeValueData::Int(_)
                         ))
                 ) || matches!(
                     method_args,
@@ -637,7 +634,7 @@ pub(super) fn propagate_dynamic_f64_list_method_call(
 pub(super) fn propagate_dynamic_f64_list_builtin_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     target: &NativeStraightlineValue,
     start: usize,
@@ -763,9 +760,9 @@ pub(super) fn propagate_dynamic_f64_list_builtin_call(
 pub(super) fn propagate_dynamic_i64_list_builtin_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
-    instr: Instr32,
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
+    instr: Instr,
     pc: usize,
     target: &NativeStraightlineValue,
     start: usize,
@@ -874,8 +871,8 @@ pub(super) fn propagate_dynamic_i64_list_builtin_call(
 }
 
 fn dynamic_i64_storage_list_builtin_supported(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     id: usize,
     element: NativeListElementKind,
 ) -> bool {
@@ -886,10 +883,10 @@ fn dynamic_i64_storage_list_builtin_supported(
         return false;
     };
     match instr.opcode() {
-        Opcode32::NewList | Opcode32::ListPush => true,
-        Opcode32::LoadHeapConst => matches!(
+        Opcode::NewList | Opcode::ListPush => true,
+        Opcode::LoadHeapConst => matches!(
             heap_values.get(instr.bx() as usize),
-            Some(ConstHeapValue32Data::List(values)) if values.is_empty()
+            Some(ConstHeapValueData::List(values)) if values.is_empty()
         ),
         _ => false,
     }
@@ -927,7 +924,7 @@ fn bool_list_bool_arg(
 pub(super) fn propagate_dynamic_ptr_list_builtin_call(
     kinds: &mut [Option<NativeScalarKind>],
     static_values: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     target: &NativeStraightlineValue,
     start: usize,
@@ -1108,10 +1105,10 @@ fn arglist_first_i64_storage_list_like(elements: &[NativeStraightlineValue], ele
         Some(NativeStraightlineValue::List { elements, .. }) => match element {
             NativeListElementKind::I64 => elements
                 .iter()
-                .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_))),
+                .all(|value| matches!(value, ConstRuntimeValueData::Int(_))),
             NativeListElementKind::Bool => elements
                 .iter()
-                .all(|value| matches!(value, ConstRuntimeValue32Data::Bool(_))),
+                .all(|value| matches!(value, ConstRuntimeValueData::Bool(_))),
             _ => false,
         },
         _ => false,
@@ -1124,12 +1121,9 @@ fn arglist_first_f64_list_like(elements: &[NativeStraightlineValue]) -> bool {
             element: NativeListElementKind::F64,
             ..
         }) => true,
-        Some(NativeStraightlineValue::List { elements, .. }) => elements.iter().all(|value| {
-            matches!(
-                value,
-                ConstRuntimeValue32Data::Float(_) | ConstRuntimeValue32Data::Int(_)
-            )
-        }),
+        Some(NativeStraightlineValue::List { elements, .. }) => elements
+            .iter()
+            .all(|value| matches!(value, ConstRuntimeValueData::Float(_) | ConstRuntimeValueData::Int(_))),
         _ => false,
     }
 }
@@ -1142,16 +1136,16 @@ fn static_kind(values: &[Option<NativeStraightlineValue>], reg: u8) -> Option<Na
     values.get(reg as usize).cloned().flatten()
 }
 
-pub(super) fn dynamic_heap_container_value(value: &ConstHeapValue32Data, id: usize) -> Option<NativeStraightlineValue> {
-    if let ConstHeapValue32Data::List(values) = value
-        && (values.is_empty() || values.iter().all(|v| matches!(v, ConstRuntimeValue32Data::Int(_))))
+pub(super) fn dynamic_heap_container_value(value: &ConstHeapValueData, id: usize) -> Option<NativeStraightlineValue> {
+    if let ConstHeapValueData::List(values) = value
+        && (values.is_empty() || values.iter().all(|v| matches!(v, ConstRuntimeValueData::Int(_))))
     {
         return Some(NativeStraightlineValue::DynamicList {
             id,
             element: NativeListElementKind::I64,
         });
     }
-    if matches!(value, ConstHeapValue32Data::Map(values) if values.is_empty()) {
+    if matches!(value, ConstHeapValueData::Map(values) if values.is_empty()) {
         return Some(NativeStraightlineValue::DynamicMap {
             id,
             key: NativeMapKeyKind::Str,

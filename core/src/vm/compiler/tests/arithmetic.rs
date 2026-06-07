@@ -1,0 +1,149 @@
+use super::*;
+
+#[test]
+fn compiler_accumulates_int_add_chain_into_compound_target() {
+    let function = compile_source(
+        r#"
+        let total = 10;
+        let a = 2;
+        let b = 3;
+        let c = 4;
+        let d = 5;
+        let e = 6;
+        let f = 7;
+        total += (a * b) + (c * d) + (e * f);
+        return total;
+        "#,
+    )
+    .expect("compile source");
+
+    let add_count = function
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode::AddInt)
+        .count();
+    assert_eq!(
+        add_count, 3,
+        "compound add chain should avoid materializing intermediate add nodes: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(78)]);
+}
+
+#[test]
+fn compiler_keeps_compound_add_semantics_when_rhs_reads_target() {
+    let function = compile_source(
+        r#"
+        let total = 10;
+        total += total + total;
+        return total;
+        "#,
+    )
+    .expect("compile source");
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(30)]);
+}
+
+#[test]
+fn compiler_reuses_preloaded_loop_const_for_folded_compound_add_term() {
+    let function = compile_source(
+        r#"
+        let total = 0;
+        for i in 1..=3 {
+            let a = 2;
+            let b = 7;
+            total += (a * b) + (i * 3);
+        }
+        return total;
+        "#,
+    )
+    .expect("compile source");
+
+    let mul_count = function
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode::MulInt)
+        .count();
+    assert_eq!(
+        mul_count, 1,
+        "cached literal product should fold to a preloaded loop const: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(60)]);
+}
+
+#[test]
+fn compiler_accumulates_global_int_add_chain_before_set_global() {
+    let module = compile_source_module(
+        r#"
+        checksum := 10;
+        fn bump() {
+            let a = 2;
+            let b = 3;
+            let c = 4;
+            let d = 5;
+            let e = 6;
+            let f = 7;
+            checksum += (a * b) + (c * d) + (e * f);
+            return checksum;
+        }
+        return bump();
+        "#,
+    )
+    .expect("compile module");
+    let function = module
+        .functions
+        .iter()
+        .find(|function| function.code.iter().any(|instr| instr.opcode() == Opcode::GetGlobal))
+        .expect("function with global compound assignment");
+
+    let add_count = function
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode::AddInt)
+        .count();
+    assert_eq!(
+        add_count, 3,
+        "global compound add chain should avoid materializing intermediate add nodes: {:?}",
+        function.code
+    );
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::GetGlobal)),
+        "global compound add chain should read the current global value: {:?}",
+        function.code
+    );
+    assert!(
+        function
+            .code
+            .iter()
+            .any(|instr| matches!(instr.opcode(), Opcode::SetGlobal)),
+        "global compound add chain should write the final global value: {:?}",
+        function.code
+    );
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(78)]);
+}
+
+#[test]
+fn compiler_keeps_global_compound_add_semantics_when_rhs_reads_target() {
+    let module = compile_source_module(
+        r#"
+        checksum := 10;
+        checksum += checksum + checksum;
+        return checksum;
+        "#,
+    )
+    .expect("compile module");
+
+    let result = execute_module(&module).expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(30)]);
+}

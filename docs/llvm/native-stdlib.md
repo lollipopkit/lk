@@ -17,8 +17,8 @@ Allowed in a native binary:
 Forbidden in a native binary:
 
 - LK parser, type checker, compiler, resolver, or package loader.
-- `Module32Artifact` JSON payloads.
-- Instr32 executor, bytecode dispatcher, VM shell launcher, or `VmContext`.
+- `ModuleArtifact` JSON payloads.
+- bytecode executor, bytecode dispatcher, VM shell launcher, or `VmContext`.
 - Any path that compiles to bytecode and then executes that bytecode at runtime.
 
 ## Stdlib Source Of Truth
@@ -26,7 +26,7 @@ Forbidden in a native binary:
 Stdlib support has two sources:
 
 - Pure stdlib logic lives as LK source and is compiled through the normal
-  compiler, Instr32, and LLVM lowering pipeline.
+  compiler, VM IR, and LLVM lowering pipeline.
 - Host-only primitives live in `lkrt` and are exposed through a typed intrinsic
   registry.
 
@@ -38,7 +38,7 @@ intrinsics.
 
 - Prefer typed ABI: `i64`, `double`, `(ptr, len)` text, typed list/map handles,
   and monomorphized container layouts.
-- Do not use `RuntimeVal`, `HeapStore`, `RuntimeExport32`, or `NativeRuntime32`
+- Do not use `RuntimeVal`, `HeapStore`, `RuntimeExport`, or `NativeRuntime`
   as the default native ABI.
 - Generic runtime-value ABI is not allowed as a silent fallback. If a shape is
   not native-lowerable, the compiler must report a concrete unsupported reason.
@@ -51,7 +51,7 @@ The native stdlib path is:
 
 ```text
 LK user code
-  -> Compiler32 / Module32Artifact compile-time boundary
+  -> Compiler / ModuleArtifact compile-time boundary
   -> LLVM shape analysis and monomorphization
   -> direct LLVM IR + typed calls to lkrt
   -> clang links IR with liblkrt.a

@@ -4,13 +4,13 @@ use crate::{
         scalar::facts::{NativeScalarFacts, NativeScalarKind},
         straightline_value::NativeBuiltin,
     },
-    vm::Instr32,
+    vm::Instr,
 };
 
 pub(in crate::llvm) fn emit_runtime_builtin_call(
     ir: &mut String,
     builtin: NativeBuiltin,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     pc: usize,

@@ -1,5 +1,5 @@
 use crate::llvm::straightline_value::NativeStraightlineValue;
-use crate::vm::ConstRuntimeValue32Data;
+use crate::vm::ConstRuntimeValueData;
 
 use super::native_static_string_value;
 
@@ -33,10 +33,10 @@ pub(super) fn emit_native_object_method(
     }
 }
 
-fn native_object_i64_field(fields: &[(String, ConstRuntimeValue32Data)], key: &str) -> Option<i64> {
+fn native_object_i64_field(fields: &[(String, ConstRuntimeValueData)], key: &str) -> Option<i64> {
     let (_, value) = fields.iter().find(|(field, _)| field == key)?;
     match value {
-        ConstRuntimeValue32Data::Int(value) => Some(*value),
+        ConstRuntimeValueData::Int(value) => Some(*value),
         _ => None,
     }
 }

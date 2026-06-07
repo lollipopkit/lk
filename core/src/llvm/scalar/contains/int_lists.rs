@@ -8,22 +8,22 @@ use crate::llvm::{
         native_static_list_from_values, native_straightline_heap_const_value,
     },
 };
-use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Module32Artifact, Opcode32};
+use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, ModuleArtifact, Opcode};
 
 use super::{local_static_index_value_before, local_static_map_rest_before};
 
 pub(in crate::llvm) fn static_int_list_values(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     value: &NativeStraightlineValue,
 ) -> Option<Vec<i64>> {
     match value {
         NativeStraightlineValue::List { elements, .. } => elements
             .iter()
             .map(|value| match value {
-                ConstRuntimeValue32Data::Int(value) => Some(*value),
+                ConstRuntimeValueData::Int(value) => Some(*value),
                 _ => None,
             })
             .collect(),
@@ -33,8 +33,8 @@ pub(in crate::llvm) fn static_int_list_values(
         } => {
             let instr = *code.get(*id)?;
             match instr.opcode() {
-                Opcode32::LoadHeapConst => {
-                    let Some(ConstHeapValue32Data::List(values)) = heap_values.get(instr.bx() as usize) else {
+                Opcode::LoadHeapConst => {
+                    let Some(ConstHeapValueData::List(values)) = heap_values.get(instr.bx() as usize) else {
                         return None;
                     };
                     if values.is_empty() {
@@ -43,12 +43,12 @@ pub(in crate::llvm) fn static_int_list_values(
                     values
                         .iter()
                         .map(|value| match value {
-                            ConstRuntimeValue32Data::Int(value) => Some(*value),
+                            ConstRuntimeValueData::Int(value) => Some(*value),
                             _ => None,
                         })
                         .collect()
                 }
-                Opcode32::SliceFrom => {
+                Opcode::SliceFrom => {
                     let target = local_static_container_before(code, heap_values, *id, instr.b())
                         .or_else(|| local_static_map_rest_before(code, strings, heap_values, *id, instr.b()))
                         .or_else(|| {
@@ -75,10 +75,10 @@ pub(in crate::llvm) fn static_int_list_values(
 }
 
 pub(in crate::llvm) fn static_int_list_index_value(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     target: &NativeStraightlineValue,
     key: &NativeStraightlineValue,
 ) -> Option<NativeStraightlineValue> {
@@ -100,11 +100,11 @@ pub(in crate::llvm) fn static_int_list_index_value(
 }
 
 pub(in crate::llvm) fn static_int_list_filter_map_method(
-    artifact: &Module32Artifact,
-    code: &[Instr32],
+    artifact: &ModuleArtifact,
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     target: NativeStraightlineValue,
     method: &str,
     callable: NativeStraightlineValue,
@@ -154,9 +154,9 @@ pub(in crate::llvm) fn static_int_list_filter_map_method(
         )
         .ok()??;
         match method {
-            "filter" if native_filter_truthy(&result)? => out.push(ConstRuntimeValue32Data::Int(value)),
+            "filter" if native_filter_truthy(&result)? => out.push(ConstRuntimeValueData::Int(value)),
             "filter" => {}
-            "map" => out.push(ConstRuntimeValue32Data::Int(native_static_i64(&result)?)),
+            "map" => out.push(ConstRuntimeValueData::Int(native_static_i64(&result)?)),
             _ => return None,
         }
     }
@@ -168,8 +168,8 @@ pub(in crate::llvm) fn static_int_list_filter_map_method(
 }
 
 fn static_const_list_filter_map_method(
-    artifact: &Module32Artifact,
-    elements: &[ConstRuntimeValue32Data],
+    artifact: &ModuleArtifact,
+    elements: &[ConstRuntimeValueData],
     method: &str,
     callable: NativeStraightlineValue,
     static_globals: &mut [Option<NativeStraightlineValue>],
@@ -206,15 +206,15 @@ fn static_const_list_filter_map_method(
 }
 
 fn static_dynamic_const_list_elements<'a>(
-    code: &[Instr32],
-    heap_values: &'a [ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &'a [ConstHeapValueData],
     id: usize,
-) -> Option<&'a [ConstRuntimeValue32Data]> {
+) -> Option<&'a [ConstRuntimeValueData]> {
     let instr = *code.get(id)?;
-    if instr.opcode() != Opcode32::LoadHeapConst {
+    if instr.opcode() != Opcode::LoadHeapConst {
         return None;
     }
-    let ConstHeapValue32Data::List(elements) = heap_values.get(instr.bx() as usize)? else {
+    let ConstHeapValueData::List(elements) = heap_values.get(instr.bx() as usize)? else {
         return None;
     };
     Some(elements)
@@ -232,11 +232,11 @@ fn static_callable_parts(callable: NativeStraightlineValue) -> Option<(u16, Vec<
 }
 
 pub(in crate::llvm) fn static_int_list_reduce_method(
-    artifact: &Module32Artifact,
-    code: &[Instr32],
+    artifact: &ModuleArtifact,
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     target: NativeStraightlineValue,
     args: &[NativeStraightlineValue],
     static_globals: &mut [Option<NativeStraightlineValue>],
@@ -296,10 +296,10 @@ pub(in crate::llvm) fn static_int_list_reduce_method(
 }
 
 pub(in crate::llvm) fn static_int_list_chunk_method(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     target: NativeStraightlineValue,
     size_value: NativeStraightlineValue,
 ) -> Option<NativeStraightlineValue> {
@@ -313,8 +313,8 @@ pub(in crate::llvm) fn static_int_list_chunk_method(
     }
     let mut elements = Vec::new();
     for chunk in values.chunks(size as usize) {
-        elements.push(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(
-            chunk.iter().map(|value| ConstRuntimeValue32Data::Int(*value)).collect(),
+        elements.push(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(
+            chunk.iter().map(|value| ConstRuntimeValueData::Int(*value)).collect(),
         ))));
     }
     Some(NativeStraightlineValue::List {
@@ -325,17 +325,17 @@ pub(in crate::llvm) fn static_int_list_chunk_method(
 }
 
 pub(in crate::llvm) fn static_int_list_zip_method(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     target: NativeStraightlineValue,
-    args: &[ConstRuntimeValue32Data],
+    args: &[ConstRuntimeValueData],
 ) -> Option<NativeStraightlineValue> {
     let lhs = static_int_list_values(code, int_consts, strings, heap_values, &target)?;
     let rhs_values;
-    let rhs = if let Some(ConstRuntimeValue32Data::Heap(rhs)) = args.first() {
-        let ConstHeapValue32Data::List(rhs) = rhs.as_ref() else {
+    let rhs = if let Some(ConstRuntimeValueData::Heap(rhs)) = args.first() {
+        let ConstHeapValueData::List(rhs) = rhs.as_ref() else {
             return None;
         };
         rhs
@@ -347,8 +347,8 @@ pub(in crate::llvm) fn static_int_list_zip_method(
         .into_iter()
         .zip(rhs.iter().cloned())
         .map(|(lhs, rhs)| {
-            ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(vec![
-                ConstRuntimeValue32Data::Int(lhs),
+            ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(vec![
+                ConstRuntimeValueData::Int(lhs),
                 rhs,
             ])))
         })
@@ -361,18 +361,18 @@ pub(in crate::llvm) fn static_int_list_zip_method(
 }
 
 pub(in crate::llvm) fn static_int_list_single_arg_method(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     target: NativeStraightlineValue,
     method: &str,
-    args: &[ConstRuntimeValue32Data],
+    args: &[ConstRuntimeValueData],
 ) -> Option<NativeStraightlineValue> {
     let lhs = static_int_list_values(code, int_consts, strings, heap_values, &target)?;
     match method {
         "take" | "skip" => {
-            let ConstRuntimeValue32Data::Int(count) = args.first()? else {
+            let ConstRuntimeValueData::Int(count) = args.first()? else {
                 return None;
             };
             let count = usize::try_from((*count).max(0)).ok()?;
@@ -381,7 +381,7 @@ pub(in crate::llvm) fn static_int_list_single_arg_method(
             } else {
                 Box::new(lhs.into_iter().skip(count))
             };
-            let elements = iter.map(ConstRuntimeValue32Data::Int).collect::<Vec<_>>();
+            let elements = iter.map(ConstRuntimeValueData::Int).collect::<Vec<_>>();
             Some(NativeStraightlineValue::List {
                 value: native_const_list_display(&elements)?,
                 symbol: String::new(),
@@ -389,13 +389,13 @@ pub(in crate::llvm) fn static_int_list_single_arg_method(
             })
         }
         "concat" | "chain" => {
-            let ConstRuntimeValue32Data::Heap(rhs) = args.first()? else {
+            let ConstRuntimeValueData::Heap(rhs) = args.first()? else {
                 return None;
             };
-            let ConstHeapValue32Data::List(rhs) = rhs.as_ref() else {
+            let ConstHeapValueData::List(rhs) = rhs.as_ref() else {
                 return None;
             };
-            let mut elements = lhs.into_iter().map(ConstRuntimeValue32Data::Int).collect::<Vec<_>>();
+            let mut elements = lhs.into_iter().map(ConstRuntimeValueData::Int).collect::<Vec<_>>();
             elements.extend(rhs.iter().cloned());
             Some(NativeStraightlineValue::List {
                 value: native_const_list_display(&elements)?,
@@ -408,10 +408,10 @@ pub(in crate::llvm) fn static_int_list_single_arg_method(
 }
 
 pub(in crate::llvm) fn static_list_empty_arg_method(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     target: NativeStraightlineValue,
     method: &str,
 ) -> Option<NativeStraightlineValue> {
@@ -439,7 +439,7 @@ pub(in crate::llvm) fn static_list_empty_arg_method(
                     seen.push(value);
                 }
             }
-            let elements = seen.into_iter().map(ConstRuntimeValue32Data::Int).collect::<Vec<_>>();
+            let elements = seen.into_iter().map(ConstRuntimeValueData::Int).collect::<Vec<_>>();
             Some(NativeStraightlineValue::List {
                 value: native_const_list_display(&elements)?,
                 symbol: String::new(),
@@ -452,10 +452,10 @@ pub(in crate::llvm) fn static_list_empty_arg_method(
             };
             let mut out = Vec::new();
             for element in elements {
-                let ConstRuntimeValue32Data::Heap(value) = element else {
+                let ConstRuntimeValueData::Heap(value) = element else {
                     return None;
                 };
-                let ConstHeapValue32Data::List(values) = value.as_ref() else {
+                let ConstHeapValueData::List(values) = value.as_ref() else {
                     return None;
                 };
                 out.extend(values.iter().cloned());
@@ -474,8 +474,8 @@ pub(in crate::llvm) fn static_list_empty_arg_method(
                 .into_iter()
                 .enumerate()
                 .map(|(index, value)| {
-                    ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(vec![
-                        ConstRuntimeValue32Data::Int(index as i64),
+                    ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(vec![
+                        ConstRuntimeValueData::Int(index as i64),
                         value,
                     ])))
                 })
@@ -490,15 +490,15 @@ pub(in crate::llvm) fn static_list_empty_arg_method(
     }
 }
 
-fn const_runtime_unique_key(value: &ConstRuntimeValue32Data) -> Option<String> {
+fn const_runtime_unique_key(value: &ConstRuntimeValueData) -> Option<String> {
     match value {
-        ConstRuntimeValue32Data::Nil => Some("nil:".to_string()),
-        ConstRuntimeValue32Data::Bool(value) => Some(format!("bool:{value}")),
-        ConstRuntimeValue32Data::Int(value) => Some(format!("int:{value}")),
-        ConstRuntimeValue32Data::Float(value) => Some(format!("float:{value:?}")),
-        ConstRuntimeValue32Data::ShortStr(value) => Some(format!("str:{value}")),
-        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
-            ConstHeapValue32Data::LongString(value) => Some(format!("str:{value}")),
+        ConstRuntimeValueData::Nil => Some("nil:".to_string()),
+        ConstRuntimeValueData::Bool(value) => Some(format!("bool:{value}")),
+        ConstRuntimeValueData::Int(value) => Some(format!("int:{value}")),
+        ConstRuntimeValueData::Float(value) => Some(format!("float:{value:?}")),
+        ConstRuntimeValueData::ShortStr(value) => Some(format!("str:{value}")),
+        ConstRuntimeValueData::Heap(value) => match value.as_ref() {
+            ConstHeapValueData::LongString(value) => Some(format!("str:{value}")),
             _ => None,
         },
     }
@@ -506,11 +506,11 @@ fn const_runtime_unique_key(value: &ConstRuntimeValue32Data) -> Option<String> {
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::llvm) fn static_iter_builtin_call(
-    artifact: &Module32Artifact,
-    code: &[Instr32],
+    artifact: &ModuleArtifact,
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
     static_globals: &mut [Option<NativeStraightlineValue>],
@@ -575,7 +575,7 @@ pub(in crate::llvm) fn static_iter_builtin_call(
             } else {
                 Box::new(lhs.into_iter().skip(count))
             };
-            let elements = iter.map(ConstRuntimeValue32Data::Int).collect::<Vec<_>>();
+            let elements = iter.map(ConstRuntimeValueData::Int).collect::<Vec<_>>();
             Some(NativeStraightlineValue::List {
                 value: native_const_list_display(&elements)?,
                 symbol: String::new(),
@@ -588,10 +588,10 @@ pub(in crate::llvm) fn static_iter_builtin_call(
             };
             let mut elements = static_int_list_values(code, int_consts, strings, heap_values, target)?
                 .into_iter()
-                .map(ConstRuntimeValue32Data::Int)
+                .map(ConstRuntimeValueData::Int)
                 .collect::<Vec<_>>();
             if let Some(rhs) = static_int_list_values(code, int_consts, strings, heap_values, rhs) {
-                elements.extend(rhs.into_iter().map(ConstRuntimeValue32Data::Int));
+                elements.extend(rhs.into_iter().map(ConstRuntimeValueData::Int));
             } else if let NativeStraightlineValue::List { elements: rhs, .. } = rhs {
                 elements.extend(rhs.iter().cloned());
             } else {
@@ -616,8 +616,8 @@ pub(in crate::llvm) fn static_iter_builtin_call(
                         .map(|value| {
                             native_runtime_const_value(value).or_else(|| {
                                 let values = static_int_list_values(code, int_consts, strings, heap_values, value)?;
-                                Some(ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(
-                                    values.into_iter().map(ConstRuntimeValue32Data::Int).collect(),
+                                Some(ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(
+                                    values.into_iter().map(ConstRuntimeValueData::Int).collect(),
                                 ))))
                             })
                         })
@@ -628,8 +628,8 @@ pub(in crate::llvm) fn static_iter_builtin_call(
             };
             let mut out = Vec::new();
             for element in elements {
-                if let ConstRuntimeValue32Data::Heap(value) = element
-                    && let ConstHeapValue32Data::List(values) = value.as_ref()
+                if let ConstRuntimeValueData::Heap(value) = element
+                    && let ConstHeapValueData::List(values) = value.as_ref()
                 {
                     out.extend(values.iter().cloned());
                 } else {
@@ -657,9 +657,9 @@ pub(in crate::llvm) fn static_iter_builtin_call(
                     .into_iter()
                     .enumerate()
                     .map(|(index, value)| {
-                        ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(vec![
-                            ConstRuntimeValue32Data::Int(index as i64),
-                            ConstRuntimeValue32Data::Int(value),
+                        ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(vec![
+                            ConstRuntimeValueData::Int(index as i64),
+                            ConstRuntimeValueData::Int(value),
                         ])))
                     })
                     .collect::<Vec<_>>();
@@ -684,10 +684,10 @@ pub(in crate::llvm) fn static_iter_builtin_call(
 
 pub(in crate::llvm) fn local_static_iter_zip_before(
     global_names: &[String],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     reg: u8,
     static_regs: &[Option<NativeStraightlineValue>],
@@ -698,7 +698,7 @@ pub(in crate::llvm) fn local_static_iter_zip_before(
             continue;
         }
         return match instr.opcode() {
-            Opcode32::Move => local_static_iter_zip_before(
+            Opcode::Move => local_static_iter_zip_before(
                 global_names,
                 code,
                 int_consts,
@@ -708,7 +708,7 @@ pub(in crate::llvm) fn local_static_iter_zip_before(
                 instr.b(),
                 static_regs,
             ),
-            Opcode32::Call if instr.a() == instr.b() && instr.c() == 2 => {
+            Opcode::Call if instr.a() == instr.b() && instr.c() == 2 => {
                 let NativeStraightlineValue::Builtin(NativeBuiltin::IterZip) = local_static_value_before(
                     global_names,
                     code,
@@ -752,9 +752,9 @@ pub(in crate::llvm) fn local_static_iter_zip_before(
 
 fn local_static_value_before(
     global_names: &[String],
-    code: &[Instr32],
+    code: &[Instr],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     reg: u8,
     static_regs: &[Option<NativeStraightlineValue>],
@@ -768,7 +768,7 @@ fn local_static_value_before(
             continue;
         }
         return match instr.opcode() {
-            Opcode32::Move => local_static_value_before(
+            Opcode::Move => local_static_value_before(
                 global_names,
                 code,
                 strings,
@@ -777,8 +777,8 @@ fn local_static_value_before(
                 instr.b(),
                 static_regs,
             ),
-            Opcode32::GetGlobal => native_static_global(global_names.get(instr.bx() as usize)?),
-            Opcode32::LoadString => {
+            Opcode::GetGlobal => native_static_global(global_names.get(instr.bx() as usize)?),
+            Opcode::LoadString => {
                 let value = strings.get(instr.bx() as usize)?.clone();
                 Some(NativeStraightlineValue::String {
                     symbol: String::new(),
@@ -787,10 +787,10 @@ fn local_static_value_before(
                     value,
                 })
             }
-            Opcode32::LoadHeapConst => {
+            Opcode::LoadHeapConst => {
                 native_straightline_heap_const_value(0, instr.bx(), heap_values.get(instr.bx() as usize)?)
             }
-            Opcode32::GetIndex => {
+            Opcode::GetIndex => {
                 let target = local_static_value_before(
                     global_names,
                     code,
@@ -842,15 +842,15 @@ fn static_int_list_index(index: i64, len: usize) -> Option<usize> {
     }
 }
 
-fn static_int_list_range_bounds(elements: &[ConstRuntimeValue32Data], len: usize) -> Option<(usize, usize)> {
+fn static_int_list_range_bounds(elements: &[ConstRuntimeValueData], len: usize) -> Option<(usize, usize)> {
     if elements.is_empty() || elements.len() > 3 {
         return None;
     }
-    let ConstRuntimeValue32Data::Int(start) = elements.first()? else {
+    let ConstRuntimeValueData::Int(start) = elements.first()? else {
         return None;
     };
     let last = elements.last().and_then(|value| match value {
-        ConstRuntimeValue32Data::Int(value) => value.checked_add(1),
+        ConstRuntimeValueData::Int(value) => value.checked_add(1),
         _ => None,
     });
     let start = static_int_list_index((*start).max(-(len as i64)), len)?;
@@ -859,8 +859,8 @@ fn static_int_list_range_bounds(elements: &[ConstRuntimeValue32Data], len: usize
 }
 
 pub(in crate::llvm) fn static_dynamic_int_list_slice(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     target: NativeStraightlineValue,
     start: NativeStraightlineValue,
     symbol: String,
@@ -876,17 +876,17 @@ pub(in crate::llvm) fn static_dynamic_int_list_slice(
         return None;
     };
     let instr = *code.get(id)?;
-    let Opcode32::LoadHeapConst = instr.opcode() else {
+    let Opcode::LoadHeapConst = instr.opcode() else {
         return None;
     };
-    let Some(ConstHeapValue32Data::List(values)) = heap_values.get(instr.bx() as usize) else {
+    let Some(ConstHeapValueData::List(values)) = heap_values.get(instr.bx() as usize) else {
         return None;
     };
     let values = values
         .iter()
         .skip(start.parse::<usize>().ok()?)
         .map(|value| match value {
-            ConstRuntimeValue32Data::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
+            ConstRuntimeValueData::Int(value) => Some(NativeStraightlineValue::I64(value.to_string())),
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;
@@ -894,8 +894,8 @@ pub(in crate::llvm) fn static_dynamic_int_list_slice(
 }
 
 pub(in crate::llvm) fn static_dynamic_int_list_contains(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     needle: NativeStraightlineValue,
     haystack: NativeStraightlineValue,
 ) -> Option<NativeStraightlineValue> {
@@ -911,16 +911,16 @@ pub(in crate::llvm) fn static_dynamic_int_list_contains(
         _ => None,
     };
     let instr = *code.get(id)?;
-    let Opcode32::LoadHeapConst = instr.opcode() else {
+    let Opcode::LoadHeapConst = instr.opcode() else {
         return None;
     };
-    let Some(ConstHeapValue32Data::List(values)) = heap_values.get(instr.bx() as usize) else {
+    let Some(ConstHeapValueData::List(values)) = heap_values.get(instr.bx() as usize) else {
         return None;
     };
     let contains = needle.is_some_and(|needle| {
         values
             .iter()
-            .any(|value| matches!(value, ConstRuntimeValue32Data::Int(value) if *value == needle))
+            .any(|value| matches!(value, ConstRuntimeValueData::Int(value) if *value == needle))
     });
     Some(NativeStraightlineValue::Bool(i64::from(contains).to_string()))
 }

@@ -1,6 +1,6 @@
 use crate::{
     llvm::{
-        dynamic_containers::{emit_dynamic_joined_text_len, emit_dynamic_text_len},
+        dynamic_containers::{emit_dynamic_joined_ptr_text_len, emit_dynamic_joined_text_len, emit_dynamic_text_len},
         ir_text::{emit_branch_to_next, next_tmp, reg_in_bounds},
         scalar::{
             block_helpers::local_static_container_before,
@@ -10,19 +10,19 @@ use crate::{
         },
         straightline_value::{NativeListElementKind, NativeStraightlineValue},
     },
-    vm::{ConstHeapValue32Data, Instr32},
+    vm::{ConstHeapValueData, Instr},
 };
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn emit_len_block(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     _facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -41,6 +41,11 @@ pub(super) fn emit_len_block(
             let len = value.len();
             ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
             static_regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(len.to_string()));
+        }
+        NativeStraightlineValue::StringPtr(value) => {
+            let len = next_tmp(tmp_index);
+            ir.push_str(&format!("  {len} = call i64 @strlen(ptr {value})\n"));
+            ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
         }
         NativeStraightlineValue::Text(parts) => emit_dynamic_text_len(ir, instr.a(), &parts, tmp_index)?,
         NativeStraightlineValue::DynamicTextChar => {
@@ -66,9 +71,17 @@ pub(super) fn emit_len_block(
             ir.push_str(&format!("  {len} = load i64, ptr %map{id}.len.slot\n"));
             ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
         }
-        NativeStraightlineValue::DynamicJoinedText { id, delimiter_len } => {
-            emit_dynamic_joined_text_len(ir, instr.a(), id, delimiter_len, tmp_index)?;
-        }
+        NativeStraightlineValue::DynamicJoinedText {
+            id,
+            delimiter_len,
+            element,
+        } => match element {
+            NativeListElementKind::Text => emit_dynamic_joined_text_len(ir, instr.a(), id, delimiter_len, tmp_index)?,
+            NativeListElementKind::StrPtr => {
+                emit_dynamic_joined_ptr_text_len(ir, instr.a(), id, delimiter_len, tmp_index)?
+            }
+            _ => return None,
+        },
         NativeStraightlineValue::DynamicList {
             id,
             element:

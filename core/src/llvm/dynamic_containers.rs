@@ -28,10 +28,10 @@ pub(super) use i64_maps::{
     native_dynamic_i64_map_helpers,
 };
 pub(super) use ptr_lists::{
-    emit_dynamic_ptr_list_contains, emit_dynamic_ptr_list_index_of, emit_dynamic_ptr_list_insert,
-    emit_dynamic_ptr_list_pop, emit_dynamic_ptr_list_push_new, emit_dynamic_ptr_list_remove_at,
-    emit_dynamic_ptr_list_reverse, emit_dynamic_ptr_list_set_new, emit_dynamic_ptr_list_slice_range,
-    emit_dynamic_ptr_list_sort, native_dynamic_ptr_list_helpers,
+    emit_dynamic_joined_ptr_text_len, emit_dynamic_ptr_list_contains, emit_dynamic_ptr_list_index_of,
+    emit_dynamic_ptr_list_insert, emit_dynamic_ptr_list_pop, emit_dynamic_ptr_list_push_new,
+    emit_dynamic_ptr_list_remove_at, emit_dynamic_ptr_list_reverse, emit_dynamic_ptr_list_set_new,
+    emit_dynamic_ptr_list_slice_range, emit_dynamic_ptr_list_sort, native_dynamic_ptr_list_helpers,
 };
 pub(super) use string_maps::{
     emit_dynamic_string_f64_map_delete, emit_dynamic_string_int_map_delete, emit_dynamic_string_map_has,
@@ -46,24 +46,77 @@ use super::{
 };
 
 pub(super) fn emit_dynamic_string_int_map_allocas(ir: &mut String, name: &str) {
-    ir.push_str(&format!("  %{name}.len.slot = alloca i64\n"));
-    ir.push_str(&format!("  %{name}.prefix.slots = alloca [4096 x ptr]\n"));
-    ir.push_str(&format!("  %{name}.number.slots = alloca [4096 x i64]\n"));
-    ir.push_str(&format!("  %{name}.value.slots = alloca [4096 x i64]\n"));
-    ir.push_str(&format!("  %{name}.f64.slots = alloca [4096 x double]\n"));
-    ir.push_str(&format!("  %{name}.ptr.slots = alloca [4096 x ptr]\n"));
+    emit_heap_slot(ir, &format!("{name}.len.slot"), 8);
+    emit_heap_slot(ir, &format!("{name}.prefix.slots"), 4096 * 8);
+    emit_heap_slot(ir, &format!("{name}.number.slots"), 4096 * 8);
+    emit_heap_slot(ir, &format!("{name}.value.slots"), 4096 * 8);
+    emit_heap_slot(ir, &format!("{name}.f64.slots"), 4096 * 8);
+    emit_heap_slot(ir, &format!("{name}.ptr.slots"), 4096 * 8);
 }
 
 pub(super) fn emit_dynamic_int_list_allocas(ir: &mut String, name: &str) {
-    ir.push_str(&format!("  %{name}.len.slot = alloca i64\n"));
-    ir.push_str(&format!("  %{name}.value.slots = alloca [4096 x i64]\n"));
-    ir.push_str(&format!("  %{name}.f64.slots = alloca [4096 x double]\n"));
-    ir.push_str(&format!("  %{name}.ptr.slots = alloca [4096 x ptr]\n"));
-    ir.push_str(&format!("  %{name}.text.len.slot = alloca i64\n"));
+    emit_heap_slot(ir, &format!("{name}.len.slot"), 8);
+    emit_heap_slot(ir, &format!("{name}.value.slots"), 4096 * 8);
+    emit_heap_slot(ir, &format!("{name}.f64.slots"), 4096 * 8);
+    emit_heap_slot(ir, &format!("{name}.ptr.slots"), 4096 * 8);
+    emit_heap_slot(ir, &format!("{name}.text.len.slot"), 8);
+}
+
+fn emit_heap_slot(ir: &mut String, name: &str, bytes: usize) {
+    ir.push_str(&format!("  %{name} = call ptr @malloc(i64 {bytes})\n"));
 }
 
 pub(super) fn native_dynamic_container_helpers() -> &'static str {
     r#"
+define private i64 @lk_split_string_int_key(ptr %key, ptr %prefix_out) {
+entry:
+  %len = call i64 @strlen(ptr %key)
+  %last = sub i64 %len, 1
+  %empty = icmp eq i64 %len, 0
+  br i1 %empty, label %raw, label %scan
+scan:
+  %i = phi i64 [ %last, %entry ], [ %prev, %digit ]
+  %slot = getelementptr i8, ptr %key, i64 %i
+  %ch = load i8, ptr %slot
+  %ge_zero = icmp uge i8 %ch, 48
+  %le_nine = icmp ule i8 %ch, 57
+  %is_digit = and i1 %ge_zero, %le_nine
+  br i1 %is_digit, label %digit, label %split
+digit:
+  %at_start = icmp eq i64 %i, 0
+  %prev = sub i64 %i, 1
+  br i1 %at_start, label %raw, label %scan
+split:
+  %start = add i64 %i, 1
+  %no_suffix = icmp eq i64 %start, %len
+  br i1 %no_suffix, label %raw, label %parse_entry
+parse_entry:
+  %copy = call ptr @strdup(ptr %key)
+  %term = getelementptr i8, ptr %copy, i64 %start
+  store i8 0, ptr %term
+  store ptr %copy, ptr %prefix_out
+  br label %parse
+parse:
+  %j = phi i64 [ %start, %parse_entry ], [ %next_j, %parse_body ]
+  %acc = phi i64 [ 0, %parse_entry ], [ %next_acc, %parse_body ]
+  %done = icmp uge i64 %j, %len
+  br i1 %done, label %done_parse, label %parse_body
+parse_body:
+  %digit_slot = getelementptr i8, ptr %key, i64 %j
+  %digit_ch = load i8, ptr %digit_slot
+  %digit_z = zext i8 %digit_ch to i64
+  %digit_value = sub i64 %digit_z, 48
+  %acc10 = mul i64 %acc, 10
+  %next_acc = add i64 %acc10, %digit_value
+  %next_j = add i64 %j, 1
+  br label %parse
+done_parse:
+  ret i64 %acc
+raw:
+  store ptr %key, ptr %prefix_out
+  ret i64 0
+}
+
 define private i64 @lk_lookup_string_int_map(ptr %prefixes, ptr %numbers, ptr %values, i64 %len, ptr %prefix, i64 %number, ptr %out) {
 entry:
   br label %loop
@@ -420,7 +473,7 @@ pub(super) fn emit_dynamic_string_int_map_set(
     key: NativeStraightlineValue,
     tmp_index: &mut usize,
 ) -> Option<()> {
-    let (prefix, number) = dynamic_string_int_key_parts(extra_globals, key, id, tmp_index)?;
+    let (prefix, number) = dynamic_string_int_key_parts(ir, extra_globals, key, id, tmp_index)?;
     let value = next_tmp(tmp_index);
     let len = next_tmp(tmp_index);
     let prefix_base = next_tmp(tmp_index);
@@ -451,7 +504,7 @@ pub(super) fn emit_dynamic_string_int_map_get(
     key: NativeStraightlineValue,
     tmp_index: &mut usize,
 ) -> Option<()> {
-    let (prefix, number) = dynamic_string_int_key_parts(extra_globals, key, id, tmp_index)?;
+    let (prefix, number) = dynamic_string_int_key_parts(ir, extra_globals, key, id, tmp_index)?;
     let len = next_tmp(tmp_index);
     let found = next_tmp(tmp_index);
     ir.push_str(&format!("  {len} = load i64, ptr %map{id}.len.slot\n"));
@@ -482,7 +535,7 @@ pub(super) fn emit_dynamic_string_f64_map_set(
     key: NativeStraightlineValue,
     tmp_index: &mut usize,
 ) -> Option<()> {
-    let (prefix, number) = dynamic_string_int_key_parts(extra_globals, key, id, tmp_index)?;
+    let (prefix, number) = dynamic_string_int_key_parts(ir, extra_globals, key, id, tmp_index)?;
     let value = next_tmp(tmp_index);
     let len = next_tmp(tmp_index);
     let prefix_base = next_tmp(tmp_index);
@@ -513,7 +566,7 @@ pub(super) fn emit_dynamic_string_f64_map_get(
     key: NativeStraightlineValue,
     tmp_index: &mut usize,
 ) -> Option<()> {
-    let (prefix, number) = dynamic_string_int_key_parts(extra_globals, key, id, tmp_index)?;
+    let (prefix, number) = dynamic_string_int_key_parts(ir, extra_globals, key, id, tmp_index)?;
     let len = next_tmp(tmp_index);
     let found = next_tmp(tmp_index);
     ir.push_str(&format!("  {len} = load i64, ptr %map{id}.len.slot\n"));
@@ -681,7 +734,7 @@ pub(super) fn emit_dynamic_string_map_keys(
     extra_globals.push_str(&llvm_string_constant(&fmt, "%s%ld"));
     ir.push_str(&format!("  {len} = load i64, ptr %map{map_id}.len.slot\n"));
     ir.push_str(&format!("  store i64 {len}, ptr %list{list_id}.len.slot\n"));
-    ir.push_str(&format!("  {temp} = alloca [4096 x i8]\n"));
+    ir.push_str(&format!("  {temp} = call ptr @malloc(i64 4096)\n"));
     ir.push_str(&format!("  br label %{label}.loop\n"));
     ir.push_str(&format!("{label}.loop:\n"));
     ir.push_str(&format!(
@@ -1307,18 +1360,29 @@ pub(super) fn emit_dynamic_joined_text_len(
 fn emit_dynamic_text_len_value(ir: &mut String, parts: &[NativeTextPart], tmp_index: &mut usize) -> Option<String> {
     let mut total = static_text_len_prefix(parts)?;
     for part in parts {
-        if let NativeTextPart::I64(value) = part {
-            let len = next_tmp(tmp_index);
-            let next_total = next_tmp(tmp_index);
-            ir.push_str(&format!("  {len} = call i64 @lk_i64_decimal_len(i64 {value})\n"));
-            ir.push_str(&format!("  {next_total} = add i64 {total}, {len}\n"));
-            total = next_total;
+        match part {
+            NativeTextPart::I64(value) => {
+                let len = next_tmp(tmp_index);
+                let next_total = next_tmp(tmp_index);
+                ir.push_str(&format!("  {len} = call i64 @lk_i64_decimal_len(i64 {value})\n"));
+                ir.push_str(&format!("  {next_total} = add i64 {total}, {len}\n"));
+                total = next_total;
+            }
+            NativeTextPart::StrPtr(value) => {
+                let len = next_tmp(tmp_index);
+                let next_total = next_tmp(tmp_index);
+                ir.push_str(&format!("  {len} = call i64 @strlen(ptr {value})\n"));
+                ir.push_str(&format!("  {next_total} = add i64 {total}, {len}\n"));
+                total = next_total;
+            }
+            _ => {}
         }
     }
     Some(total)
 }
 
 fn dynamic_string_int_key_parts(
+    ir: &mut String,
     extra_globals: &mut String,
     key: NativeStraightlineValue,
     map_id: usize,
@@ -1343,7 +1407,15 @@ fn dynamic_string_int_key_parts(
         return Some((symbol, "0".to_string()));
     }
     if let NativeStraightlineValue::StringPtr(value) = key {
-        return Some((value, "0".to_string()));
+        let prefix_slot = next_tmp(tmp_index);
+        let prefix = next_tmp(tmp_index);
+        let number = next_tmp(tmp_index);
+        ir.push_str(&format!("  {prefix_slot} = call ptr @malloc(i64 8)\n"));
+        ir.push_str(&format!(
+            "  {number} = call i64 @lk_split_string_int_key(ptr {value}, ptr {prefix_slot})\n"
+        ));
+        ir.push_str(&format!("  {prefix} = load ptr, ptr {prefix_slot}\n"));
+        return Some((prefix, number));
     }
     let NativeStraightlineValue::Text(parts) = key else {
         return None;
@@ -1364,6 +1436,7 @@ fn dynamic_string_int_key_parts(
     for part in prefix_parts {
         if let NativeTextPart::String { symbol, value } = part
             && *value == prefix
+            && !symbol.is_empty()
         {
             return Some((symbol.clone(), number.clone()));
         }
@@ -1400,7 +1473,7 @@ fn static_text_len_prefix(parts: &[NativeTextPart]) -> Option<String> {
                 len += value.len();
             }
             NativeTextPart::I64(_) => {}
-            NativeTextPart::StrPtr(_) => len += 1,
+            NativeTextPart::StrPtr(_) => {}
             _ => return None,
         }
     }

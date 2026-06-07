@@ -15,25 +15,29 @@ use crate::{
         },
         straightline_value::NativeStraightlineValue,
     },
-    vm::{ConstHeapValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, Instr, Opcode},
 };
 
 pub(super) fn emit_compare_block(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
 ) -> bool {
     if !three_regs_in_bounds(register_count, instr) {
         return false;
+    }
+    if emit_get_index_nil_compare(ir, static_regs, code, pc, instr, tmp_index).is_some() {
+        emit_branch_to_next(ir, pc, code.len());
+        return true;
     }
     if emit_static_collection_compare_block(
         ir,
@@ -94,6 +98,12 @@ pub(super) fn emit_compare_block(
     };
     let mut kind = local_compare_kind(lhs_kind, lhs_heap_kind, lhs_local_kind);
     let mut rhs_kind = local_compare_kind(rhs_kind, rhs_heap_kind, rhs_local_kind).unwrap_or(NativeScalarKind::I64);
+    if kind == Some(NativeScalarKind::MaybeI64) && raw_rhs_kind == Some(NativeScalarKind::Nil) {
+        rhs_kind = NativeScalarKind::Nil;
+    }
+    if kind == Some(NativeScalarKind::Nil) && raw_rhs_kind == Some(NativeScalarKind::MaybeI64) {
+        rhs_kind = NativeScalarKind::MaybeI64;
+    }
     if kind.is_none()
         && raw_lhs_kind == Some(NativeScalarKind::Nil)
         && !lhs_trusted
@@ -117,7 +127,7 @@ pub(super) fn emit_compare_block(
         && kind == NativeScalarKind::StrPtr
         && matches!(
             instr.opcode(),
-            Opcode32::CmpLtInt | Opcode32::CmpLeInt | Opcode32::CmpGtInt | Opcode32::CmpGeInt
+            Opcode::CmpLtInt | Opcode::CmpLeInt | Opcode::CmpGtInt | Opcode::CmpGeInt
         )
     {
         emit_string_ptr_ordering_block(ir, instr, tmp_index);
@@ -130,10 +140,10 @@ pub(super) fn emit_compare_block(
     } else if matches!(
         (kind, rhs_kind),
         (NativeScalarKind::MaybeI64, NativeScalarKind::StrPtr) | (NativeScalarKind::StrPtr, NativeScalarKind::MaybeI64)
-    ) && matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt)
+    ) && matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt)
     {
         emit_optional_string_ptr_equality_block(ir, instr, kind, rhs_kind, tmp_index);
-    } else if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt) {
+    } else if matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt) {
         emit_scalar_equality_block(ir, instr, kind, rhs_kind, tmp_index);
     } else {
         return false;
@@ -143,17 +153,60 @@ pub(super) fn emit_compare_block(
     true
 }
 
-fn emit_string_ptr_ordering_block(ir: &mut String, instr: Instr32, tmp_index: &mut usize) {
+fn emit_get_index_nil_compare(
+    ir: &mut String,
+    static_regs: &mut [Option<NativeStraightlineValue>],
+    code: &[Instr],
+    pc: usize,
+    instr: Instr,
+    tmp_index: &mut usize,
+) -> Option<()> {
+    if !matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt) {
+        return None;
+    }
+    let maybe_reg = if last_write_opcode_before(code, pc, instr.b()) == Some(Opcode::GetIndex)
+        && local_direct_load_nil_before(code, pc, instr.c())
+    {
+        instr.b()
+    } else if last_write_opcode_before(code, pc, instr.c()) == Some(Opcode::GetIndex)
+        && local_direct_load_nil_before(code, pc, instr.b())
+    {
+        instr.c()
+    } else {
+        return None;
+    };
+    let present = crate::llvm::ir_text::next_tmp(tmp_index);
+    let cmp = crate::llvm::ir_text::next_tmp(tmp_index);
+    let out = crate::llvm::ir_text::next_tmp(tmp_index);
+    let pred = if instr.opcode() == Opcode::CmpInt { "eq" } else { "ne" };
+    ir.push_str(&format!("  {present} = load i64, ptr %r{maybe_reg}.present.slot\n"));
+    ir.push_str(&format!("  {cmp} = icmp {pred} i64 {present}, 0\n"));
+    ir.push_str(&format!("  {out} = zext i1 {cmp} to i64\n"));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(out));
+    Some(())
+}
+
+fn last_write_opcode_before(code: &[Instr], pc: usize, reg: u8) -> Option<Opcode> {
+    code.iter()
+        .copied()
+        .take(pc)
+        .rev()
+        .find(|instr| instr.a() == reg && !matches!(instr.opcode(), Opcode::Nop | Opcode::Jmp | Opcode::Test))
+        .map(|instr| instr.opcode())
+}
+
+fn emit_string_ptr_ordering_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
     let lhs = crate::llvm::ir_text::next_tmp(tmp_index);
     let rhs = crate::llvm::ir_text::next_tmp(tmp_index);
     let cmp = crate::llvm::ir_text::next_tmp(tmp_index);
     let ok = crate::llvm::ir_text::next_tmp(tmp_index);
     let value = crate::llvm::ir_text::next_tmp(tmp_index);
     let pred = match instr.opcode() {
-        Opcode32::CmpLtInt => "slt",
-        Opcode32::CmpLeInt => "sle",
-        Opcode32::CmpGtInt => "sgt",
-        Opcode32::CmpGeInt => "sge",
+        Opcode::CmpLtInt => "slt",
+        Opcode::CmpLeInt => "sle",
+        Opcode::CmpGtInt => "sgt",
+        Opcode::CmpGeInt => "sge",
         _ => "eq",
     };
     ir.push_str(&format!("  {lhs} = load ptr, ptr %r{}.slot\n", instr.b()));
@@ -169,7 +222,7 @@ fn emit_text_string_compare(
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
     _pc: usize,
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) -> bool {
     let (Some(NativeStraightlineValue::Text(parts)), Some(NativeStraightlineValue::String { value, .. })) = (
@@ -178,14 +231,14 @@ fn emit_text_string_compare(
     ) else {
         return false;
     };
-    if !matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt)
+    if !matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt)
         || emit_text_string_equality_block(
             ir,
             extra_globals,
             &parts,
             &value,
             instr.a(),
-            instr.opcode() == Opcode32::CmpNeInt,
+            instr.opcode() == Opcode::CmpNeInt,
             tmp_index,
         )
         .is_none()
@@ -198,7 +251,7 @@ fn emit_text_string_compare(
 
 fn emit_optional_string_ptr_equality_block(
     ir: &mut String,
-    instr: Instr32,
+    instr: Instr,
     lhs_kind: NativeScalarKind,
     rhs_kind: NativeScalarKind,
     tmp_index: &mut usize,
@@ -234,7 +287,7 @@ fn emit_optional_string_ptr_equality_block(
     ));
     ir.push_str(&format!("  {value_equal} = icmp eq i32 {cmp_value}, 0\n"));
     ir.push_str(&format!("  {equal} = and i1 {present_ok}, {value_equal}\n"));
-    if instr.opcode() == Opcode32::CmpNeInt {
+    if instr.opcode() == Opcode::CmpNeInt {
         let ne = crate::llvm::ir_text::next_tmp(tmp_index);
         ir.push_str(&format!("  {ne} = xor i1 {equal}, true\n"));
         ir.push_str(&format!("  {out} = zext i1 {ne} to i64\n"));
@@ -244,10 +297,10 @@ fn emit_optional_string_ptr_equality_block(
     ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
 }
 
-fn immediate_load_nil_before(code: &[Instr32], pc: usize, reg: u8) -> bool {
+fn immediate_load_nil_before(code: &[Instr], pc: usize, reg: u8) -> bool {
     pc.checked_sub(1)
         .and_then(|prev_pc| code.get(prev_pc).copied())
-        .is_some_and(|prev| prev.a() == reg && prev.opcode() == Opcode32::LoadNil)
+        .is_some_and(|prev| prev.a() == reg && prev.opcode() == Opcode::LoadNil)
 }
 
 fn static_compare_register_kind(
@@ -260,6 +313,9 @@ fn static_compare_register_kind(
     }
     match static_regs.get(reg as usize).and_then(|value| value.as_ref())? {
         NativeStraightlineValue::I64(_) => Some(NativeScalarKind::I64),
+        NativeStraightlineValue::MaybeI64 { .. } | NativeStraightlineValue::MaybeBool { .. } => {
+            Some(NativeScalarKind::MaybeI64)
+        }
         NativeStraightlineValue::F64(_) => Some(NativeScalarKind::F64),
         NativeStraightlineValue::Bool(_) => Some(NativeScalarKind::Bool),
         NativeStraightlineValue::Nil => Some(NativeScalarKind::Nil),

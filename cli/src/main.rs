@@ -15,8 +15,9 @@ use lk_core::{
     token::Tokenizer,
     typ::TypeChecker,
     vm::{
-        Module32Artifact, VmContext, VmRuntimeMetrics, compile_program32_module_with_ctx,
-        execute_module32_artifact_with_ctx, vm_runtime_metrics_reset, vm_runtime_metrics_snapshot,
+        ModuleArtifact, Opcode, VM_INDEX_KEY_METRIC_NAMES, VM_REGISTER_WRITE_SOURCE_NAMES, VmContext, VmRuntimeMetrics,
+        compile_program_module_with_ctx, execute_module_artifact_with_ctx, vm_runtime_metrics_reset,
+        vm_runtime_metrics_snapshot,
     },
 };
 
@@ -43,7 +44,7 @@ use pkg::{init_package, run_pkg_command};
     version,
     about = "CLI for LK",
     long_about = None,
-    after_help = "Compiler and runtime migration target the Instr32 VM path."
+    after_help = "Compiler and runtime migration target the Instr VM path."
 )]
 struct CliArgs {
     /// Subcommands like `compile FILE`
@@ -230,8 +231,11 @@ fn maybe_print_vm_profile(enabled: bool) {
 
 fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
     format!(
-        "VM profile: opcode_steps={} calls={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} val_clones={} heap_clones={} copy_policy_heap_clones={} register_copy_heap_clones={} local_copy_heap_clones={} local_load_heap_clones={} local_store_heap_clones={} const_load_heap_clones={} call_arg_heap_clones={} container_copy_heap_clones={}",
+        "VM profile: opcode_steps={} top_opcodes={} write_sources={} index_keys={} calls={} branches={} typed_branches={} containers={} list_ops={} map_ops={} string_ops={} val_clones={} heap_clones={} copy_policy_heap_clones={} register_copy_heap_clones={} local_copy_heap_clones={} local_load_heap_clones={} local_store_heap_clones={} const_load_heap_clones={} call_arg_heap_clones={} container_copy_heap_clones={}",
         metrics.opcode_steps,
+        top_opcode_profile(&metrics),
+        top_register_write_source_profile(&metrics),
+        top_index_key_profile(&metrics),
         metrics.call_ops,
         metrics.branch_ops,
         metrics.typed_branch_ops,
@@ -250,6 +254,81 @@ fn vm_profile_line(metrics: VmRuntimeMetrics) -> String {
         metrics.call_arg_heap_clones,
         metrics.container_copy_heap_clones
     )
+}
+
+fn top_index_key_profile(metrics: &VmRuntimeMetrics) -> String {
+    let mut pairs = Vec::new();
+    for (name, count) in VM_INDEX_KEY_METRIC_NAMES.iter().zip(metrics.index_key_metrics.iter()) {
+        if *count != 0 {
+            pairs.push((*count, *name));
+        }
+    }
+    pairs.sort_by(|(left_count, left_name), (right_count, right_name)| {
+        right_count.cmp(left_count).then_with(|| left_name.cmp(right_name))
+    });
+
+    if pairs.is_empty() {
+        return "none".to_string();
+    }
+
+    pairs
+        .into_iter()
+        .take(6)
+        .map(|(count, name)| format!("{name}:{count}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn top_register_write_source_profile(metrics: &VmRuntimeMetrics) -> String {
+    let mut pairs = Vec::new();
+    for (name, count) in VM_REGISTER_WRITE_SOURCE_NAMES
+        .iter()
+        .zip(metrics.register_write_sources.iter())
+    {
+        if *count != 0 {
+            pairs.push((*count, *name));
+        }
+    }
+    pairs.sort_by(|(left_count, left_name), (right_count, right_name)| {
+        right_count.cmp(left_count).then_with(|| left_name.cmp(right_name))
+    });
+
+    if pairs.is_empty() {
+        return "none".to_string();
+    }
+
+    pairs
+        .into_iter()
+        .take(6)
+        .map(|(count, name)| format!("{name}:{count}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn top_opcode_profile(metrics: &VmRuntimeMetrics) -> String {
+    let mut pairs = Vec::new();
+    for bits in 0..Opcode::COUNT {
+        let count = metrics.opcode_histogram[bits as usize];
+        if count == 0 {
+            continue;
+        }
+        let opcode = Opcode::from_bits(bits).expect("valid opcode histogram slot");
+        pairs.push((count, format!("{opcode:?}")));
+    }
+    pairs.sort_by(|(left_count, left_name), (right_count, right_name)| {
+        right_count.cmp(left_count).then_with(|| left_name.cmp(right_name))
+    });
+
+    if pairs.is_empty() {
+        return "none".to_string();
+    }
+
+    pairs
+        .into_iter()
+        .take(6)
+        .map(|(count, name)| format!("{name}:{count}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -296,7 +375,7 @@ fn main() -> anyhow::Result<()> {
 
                 match compile_mode {
                     None => {
-                        compile_instr32_module(&safe)?;
+                        compile_instr_module(&safe)?;
                         return Ok(());
                     }
                     #[cfg(feature = "llvm")]
@@ -356,13 +435,13 @@ fn main() -> anyhow::Result<()> {
         if let Err(e) = rt::init_runtime() {
             diagnostic::warning(format_args!("Failed to initialize runtime: {}", e));
         }
-        let artifact = Module32Artifact::from_json_str(&input)
-            .with_context(|| format!("decode Instr32 module {}", safe.display()))?;
+        let artifact =
+            ModuleArtifact::from_json_str(&input).with_context(|| format!("decode Instr module {}", safe.display()))?;
         let mut base_env = build_vm_context(&safe)?;
         let profile_enabled = vm_profile_enabled();
         maybe_start_vm_profile(profile_enabled);
         let exec_result =
-            execute_module32_artifact_with_ctx(artifact, &mut base_env).with_context(|| "VM32 module execution failed");
+            execute_module_artifact_with_ctx(artifact, &mut base_env).with_context(|| "VM module execution failed");
         rt::shutdown_runtime();
         let result = exec_result?;
         maybe_print_vm_profile(profile_enabled);
@@ -402,8 +481,8 @@ fn main() -> anyhow::Result<()> {
     let profile_enabled = vm_profile_enabled();
     maybe_start_vm_profile(profile_enabled);
     let exec_result = program
-        .execute32_with_ctx(&mut base_env)
-        .with_context(|| "VM32 execution failed");
+        .execute_with_ctx(&mut base_env)
+        .with_context(|| "VM execution failed");
 
     // Shutdown runtime after execution
     rt::shutdown_runtime();
@@ -428,27 +507,27 @@ fn run_type_check(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn compile_instr32_module(path: &Path) -> anyhow::Result<()> {
-    let artifact = compile_instr32_artifact(path)?;
+fn compile_instr_module(path: &Path) -> anyhow::Result<()> {
+    let artifact = compile_instr_artifact(path)?;
     let output = path.with_extension("lkm");
     std::fs::write(&output, artifact.to_json_string()?)
-        .with_context(|| format!("write Instr32 module {}", output.display()))?;
+        .with_context(|| format!("write Instr module {}", output.display()))?;
     println!("{}", output.display());
     Ok(())
 }
 
-fn compile_instr32_artifact(path: &Path) -> anyhow::Result<Module32Artifact> {
+fn compile_instr_artifact(path: &Path) -> anyhow::Result<ModuleArtifact> {
     let program = parse_program_file(path)?;
     let mut ctx = build_vm_context(path)?;
-    let module = compile_program32_module_with_ctx(&program, &mut ctx)
-        .with_context(|| format!("compile Instr32 module for {}", path.display()))?;
-    Module32Artifact::new(collect_program_imports(&program), &module)
+    let module = compile_program_module_with_ctx(&program, &mut ctx)
+        .with_context(|| format!("compile Instr module for {}", path.display()))?;
+    ModuleArtifact::new(collect_program_imports(&program), &module)
 }
 
 #[cfg(feature = "llvm")]
 fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<()> {
-    let artifact = compile_instr32_artifact(path)?;
-    let llvm = lk_core::llvm::compile_module32_artifact_to_llvm(&artifact, options)
+    let artifact = compile_instr_artifact(path)?;
+    let llvm = lk_core::llvm::compile_module_artifact_to_llvm(&artifact, options)
         .with_context(|| format!("compile LLVM IR for {}", path.display()))?;
     let output = path.with_extension("ll");
     std::fs::write(&output, llvm.module.ir).with_context(|| format!("write LLVM IR {}", output.display()))?;
@@ -458,9 +537,9 @@ fn compile_llvm_ir(path: &Path, options: LlvmBackendOptions) -> anyhow::Result<(
 
 #[cfg(feature = "llvm")]
 fn compile_executable(path: &Path, output: Option<&Path>, options: LlvmBackendOptions) -> anyhow::Result<()> {
-    let artifact = compile_instr32_artifact(path)?;
+    let artifact = compile_instr_artifact(path)?;
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| path.with_extension(""));
-    let llvm = lk_core::llvm::compile_module32_artifact_to_llvm(&artifact, options)
+    let llvm = lk_core::llvm::compile_module_artifact_to_llvm(&artifact, options)
         .with_context(|| format!("compile native executable LLVM IR for {}", path.display()))?;
     compile_native_executable_from_llvm(path, &output, &llvm.module.ir)?;
     println!("{}", output.display());

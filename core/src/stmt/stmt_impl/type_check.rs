@@ -162,12 +162,13 @@ impl Stmt {
                             Err(anyhow!(error_msg))
                         };
                     }
-                    // 检查操作类型兼容性 (var_type op expr_type -> var_type)
-                    // 简化：假设所有算术操作都是类型兼容的
-                    // Unresolved type variables are deferred to runtime — skip static check.
-                    if expr_type.contains_variables() {
-                        // Type variable not yet resolved; skip check. The variable will be
-                        // narrowed by call-site argument constraints and the function body.
+                    // 检查操作类型兼容性 (var_type op expr_type -> var_type).
+                    // If either side is still inferred, keep the relationship as a constraint
+                    // so function-body compound assignments can refine unannotated params.
+                    if var_type.contains_variables() {
+                        type_checker.add_constraint(var_type.clone(), expr_type.clone());
+                    } else if expr_type.contains_variables() {
+                        type_checker.add_constraint(expr_type.clone(), var_type.clone());
                     } else if !type_checker.is_assignable(&expr_type, var_type)
                         && !type_checker.is_assignable(var_type, &expr_type)
                     {

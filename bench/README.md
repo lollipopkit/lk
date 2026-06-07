@@ -28,6 +28,11 @@ engine. If LLVM is disabled or the current workload artifact is not native
 lowerable yet, AOT is reported as skipped and the VM/Lua benchmark still runs.
 Use `RUN_AOT=0` to skip the compile attempt entirely.
 
+The runner executes one workload at a time and prints progress to stderr, so a
+slow or stuck workload can be identified directly. Each workload has a timeout
+controlled by `BENCH_TIMEOUT` (default `30` seconds, `0` disables it). Set
+`BENCH_PROGRESS=0` to keep progress output quiet.
+
 For a higher-confidence baseline refresh:
 
 ```bash
@@ -35,8 +40,9 @@ RUNS=10 EXTRA_RUNS=20 bench/run_workload_bench.sh
 ```
 
 For VM-side diagnostics, enable one extra filtered LK run per workload. This
-prints Instr32 opcode, call, branch, container, copy-policy, and heap-value
-movement counters after the timing table:
+prints VM opcode, call, branch, container, copy-policy, heap-value movement,
+dynamic top-opcode, register-write source, and index-key counters after the
+timing table:
 
 ```bash
 PROFILE_WORKLOADS=1 bench/run_workload_bench.sh
@@ -46,6 +52,12 @@ To run only one LK workload directly, set `LK_WORKLOAD_FILTER`:
 
 ```bash
 LK_WORKLOAD_FILTER=two_sum_map target/release/lk bench/workloads_business_algorithms.lk
+```
+
+The Lua comparison script supports the same filter:
+
+```bash
+LK_WORKLOAD_FILTER=two_sum_map lua bench/workloads_business_algorithms.lua
 ```
 
 ## Workloads
@@ -172,3 +184,178 @@ Primary bottlenecks:
 | `workloads_business_algorithms.lk` | LK real workload suite |
 | `workloads_business_algorithms.lua` | Lua equivalent workload suite |
 | `run_workload_bench.sh` | Adaptive median runner for the workload suite |
+
+## Latest Validation (2026-06-04)
+
+Command:
+
+```bash
+RUN_AOT=0 RUNS=6 EXTRA_RUNS=6 bash bench/run_workload_bench.sh
+```
+
+Date: 2026-06-04
+
+| Workload | LK VM (ms) | Lua (ms) | VM/Lua | Noise | Conf. | Status |
+|----------|------------|----------|--------|-------|-------|--------|
+| gcd_batch | 14.397 | 5.439 | 2.647x | 0.153 | low | behind |
+| prime_trial_division | 0.799 | 0.395 | 2.023x | 0.161 | low | behind |
+| binary_search | 38.311 | 32.751 | 1.170x | 0.142 | low | behind |
+| two_sum_map | 91.223 | 28.028 | 3.255x | 0.019 | high | behind |
+| sliding_window_sum | 29.211 | 14.561 | 2.006x | 0.065 | medium | behind |
+| matrix_3x3_multiply | 2.509 | 0.992 | 2.529x | 0.153 | low | behind |
+| stock_max_profit | 13.566 | 6.548 | 2.072x | 0.095 | low | behind |
+| histogram_group_count | 117.940 | 29.347 | 4.019x | 0.029 | high | behind |
+| string_key_hash | 8.220 | 4.881 | 1.684x | 0.067 | medium | behind |
+| order_score_pipeline | 3.871 | 2.246 | 1.724x | 0.195 | low | behind |
+| log_parse_filter | 223.026 | 149.307 | 1.494x | 0.017 | high | behind |
+| cart_pricing_rules | 2.415 | 1.504 | 1.606x | 0.088 | low | behind |
+| route_permission_check | 8.813 | 2.214 | 3.981x | 0.085 | low | behind |
+| inventory_reorder | 69.728 | 19.703 | 3.539x | 0.057 | medium | behind |
+| fraud_rule_scoring | 15.994 | 7.777 | 2.057x | 0.051 | medium | behind |
+
+Samples: 12 per engine.
+**Geometric mean LK/Lua: 2.235x**.
+
+This is a substantial improvement from the 17.648x baseline on 2026-05-23, driven by
+the bytecode VM rewrite, shared-stack call ABI, typed containers, and inline caching.
+The remaining gap (target ≤1.10x) is primarily due to:
+- Per-opcode GC check overhead
+- Typed container fast path not yet reducing branch count
+- String interning not yet implemented
+- Dispatch loop overhead (measurement-enabled checks)
+
+## Latest Low-Sample Direction Check (2026-06-06)
+
+Command:
+
+```bash
+RUN_AOT=0 RUNS=1 EXTRA_RUNS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
+```
+
+This single-sample run is only for direction finding after runner instrumentation;
+it is not a replacement for the 2026-06-04 baseline.
+
+- Samples: 1 per engine
+- Geometric mean LK/Lua: **1.330x**
+- Ahead/close workloads: `binary_search`, `two_sum_map`, `histogram_group_count`, `inventory_reorder`
+- Largest remaining ratios: `route_permission_check`, `stock_max_profit`, `fraud_rule_scoring`, `prime_trial_division`, `sliding_window_sum`
+
+Profile-enabled direction check:
+
+```bash
+cargo build --release -p lk-cli --features vm-profile
+RUN_AOT=0 RUNS=1 EXTRA_RUNS=0 PROFILE_WORKLOADS=1 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
+```
+
+The latest profile run reports meaningful list/map/string buckets for
+`GetIndex` / `SetIndex`: `sliding_window_sum` has about `1.39M` list ops,
+`histogram_group_count` about `742K` map ops, `route_permission_check` about
+`90K` map ops, and `string_key_hash` about `144K` string ops.
+
+## Latest Low-Sample Direction Check (2026-06-07)
+
+Command:
+
+```bash
+RUN_AOT=0 RUNS=3 EXTRA_RUNS=0 BENCH_PROGRESS=0 BENCH_TIMEOUT=30 bash bench/run_workload_bench.sh
+```
+
+This low-sample run is only for direction finding. It used a normal release
+build, not a `vm-profile` feature build.
+
+- Samples: 3 per engine
+- Geometric mean LK/Lua: **0.971x**
+- Checksums: all matched
+- Ahead workloads: `binary_search`, `two_sum_map`, `histogram_group_count`,
+  `inventory_reorder`, `order_score_pipeline`, `cart_pricing_rules`
+- Close workloads: `stock_max_profit`, `string_key_hash`,
+  `route_permission_check`
+- Largest remaining ratios: `matrix_3x3_multiply`, `prime_trial_division`,
+  `sliding_window_sum`, `log_parse_filter`, `fraud_rule_scoring`,
+  `gcd_batch`
+
+Profile-enabled direction check:
+
+```bash
+cargo build --release -p lk-cli --features vm-profile
+RUN_AOT=0 RUNS=1 EXTRA_RUNS=0 PROFILE_WORKLOADS=1 BENCH_PROGRESS=0 BENCH_TIMEOUT=10 bash bench/run_workload_bench.sh
+```
+
+The profile table now includes `VM Dynamic Opcode Top-6 by Workload`,
+`VM Register Write Source Top-6 by Workload`, and `VM Index Key Top-6 by
+Workload`. The latest coverage profile shows aggregate dynamic `LoadInt`
+at about `1.30M`; the remaining top dispatch pressure is now `AddInt`
+(`~8.10M`), `Move` (`~6.06M`), `ModInt` (`~4.99M`), `MulInt` (`~4.48M`),
+`ForLoopI` (`~3.25M`), `Jmp` (`~3.19M`), and typed compare opcodes.
+Map/list/string-heavy workloads still show the expected `GetIndex`, `SetIndex`,
+`ConcatString`, and `LoadString` pressure, but readonly string-int const map
+lookups can now fold before `GetIndex`.
+
+The latest write-source counters show aggregate `arithmetic` writes at about
+`21.85M`, `move` at about `6.06M`, `const_load` at about `3.37M`, `string` at
+about `2.55M`, and `index` at about `2.21M`. `binary_search` and `gcd_batch`
+now have only trivial `const_load` pressure, while `fraud_rule_scoring` still
+has about `97K` `const_load` writes plus significant arithmetic/string/index
+pressure. This moves the next optimization target toward arithmetic immediates,
+compare branch lowering, `Move` elimination, and string/index-result
+consumption rather than workload-specific opcodes.
+
+The VM currently has one temporary opcode exception: `Opcode::ForLoopI` reuses
+the old `Extra = 62` slot to compress static positive/negative-step range loops.
+It is not the long-term opcode encoding migration described in `OPCODE.md`.
+Continuous `Move` dispatch batching is also enabled; it preserves per-instruction
+profile accounting, so `Move` remains visible in dynamic opcode counters even
+when adjacent moves are consumed inside one dispatch arm.
+
+An attempted follow-up that stored static range `step_value` in
+`PerfForLoopFact` regressed low-sample geomean and was reverted; `ForLoopI`
+continues to read the step register.
+
+The normal release VM now uses a zero-sized no-op runtime profile frame when
+`vm-profile` is not enabled; opcode histogram, register write source, and
+index-key arrays are only allocated in tests or profile builds. Fused branch
+helpers also use the current frame's local metrics flag on the hot compare path.
+An attempted absolute jump-target representation for fused branch facts kept
+checksums correct but regressed release wall-clock timing, so the compact jump
+offset representation is retained.
+
+Heap string `GetIndex` now has a static-fact fast path for integer keys, so
+string indexing no longer falls through the generic heap-index slow path when
+the compiler already knows the target is a string. A subsequent attempt to force
+inline `Test` / `Jmp`, and another attempt to collapse fused-branch fact lookup
+to one direct slot read, both kept checksums correct but did not improve release
+geomean, so those control-flow micro-optimizations were reverted.
+
+The current compiler lowering skips scalar constant loads at the front of both
+normal `while` conditions and direct-inline `while` conditions on loop-back, and
+now also keeps loop body scalar literals in a loop-local cache for normal
+`while`, direct-inline `while`, and range `for`. Cached literal registers are
+kept live and treated as non-consumable sources so container writes cannot turn
+them into `nil`.
+
+The compiler also tracks readonly local const maps outside loop bodies and folds
+`map.get(local, "literal")` to a scalar load when the key is a string literal and
+the value is an int. Mutation paths (`.set`, rewritten set-index, assignment)
+clear the fact, and loop-local maps are not recorded. This removes the hot
+`role_levels` lookup from `route_permission_check`; the latest low-sample ratio
+for that workload is about `1.18x`, down from the previous `~1.58x` direction
+check.
+
+Straight-line simple local assignment now rebinds `a = b` without emitting a
+`Move`, with copy-on-write when either alias is written later. This is currently
+disabled inside control-flow and loop bodies because those paths need explicit
+phi/loop-carried slot lowering; current workload `Move` pressure therefore
+remains dominated by loop/control-flow copies rather than straight-line copies.
+An attempted tail-condition lowering for block-body `while` loops reduced
+dynamic `Jmp` counts but regressed release wall-clock timing, so that path was
+rolled back; future loop work should use phi/native hot-loop lowering instead
+of rearranging interpreter branch shape alone.
+
+The latest index-key counters show that string-map direct lookup now covers most
+hot map accesses: aggregate `generic_map_lookup` remains about `19.5K`, while
+`typed_map_direct` is about `1.99M` after const map folding removes some
+lookups before runtime. Per workload,
+`two_sum_map` is down to about `2.5K` generic lookups, `histogram_group_count`
+about `7K`, `log_parse_filter` about `4.4K`, and `inventory_reorder` about
+`5.6K`. The next optimization target should move to general loop
+materialization, arithmetic temporaries, `Move` elimination, and branch lowering.

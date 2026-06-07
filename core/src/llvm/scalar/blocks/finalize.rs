@@ -1,4 +1,4 @@
-use crate::vm::Module32Artifact;
+use crate::vm::ModuleArtifact;
 
 use crate::llvm::{
     dynamic_containers::{
@@ -9,7 +9,7 @@ use crate::llvm::{
 };
 
 pub(super) fn finish_scalar_ir(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     mut ir: String,
     extra_globals: &str,
     recursive_indices: &[u16],

@@ -46,6 +46,25 @@ missing:
   ret i64 -1
 }
 
+define private i64 @lk_ptr_list_text_len(ptr %values, i64 %len) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next, %cont ]
+  %total = phi i64 [ 0, %entry ], [ %total_next, %cont ]
+  %done = icmp uge i64 %i, %len
+  br i1 %done, label %finish, label %cont
+cont:
+  %slot = getelementptr ptr, ptr %values, i64 %i
+  %value = load ptr, ptr %slot
+  %part_len = call i64 @strlen(ptr %value)
+  %total_next = add i64 %total, %part_len
+  %next = add i64 %i, 1
+  br label %loop
+finish:
+  ret i64 %total
+}
+
 define private void @lk_reverse_ptr_list(ptr %src_values, i64 %src_len, ptr %dst_values, ptr %dst_len) {
 entry:
   br label %loop
@@ -282,6 +301,41 @@ finish:
   ret ptr %old
 }
 "#
+}
+
+pub(in crate::llvm) fn emit_dynamic_joined_ptr_text_len(
+    ir: &mut String,
+    dst: u8,
+    id: usize,
+    delimiter_len: usize,
+    tmp_index: &mut usize,
+) -> Option<()> {
+    let list_len = next_tmp(tmp_index);
+    let base = next_tmp(tmp_index);
+    let text_len = next_tmp(tmp_index);
+    let has_delimiters = next_tmp(tmp_index);
+    let delimiter_base = next_tmp(tmp_index);
+    let delimiter_count = next_tmp(tmp_index);
+    let delimiter_total = next_tmp(tmp_index);
+    let total = next_tmp(tmp_index);
+    ir.push_str(&format!("  {list_len} = load i64, ptr %list{id}.len.slot\n"));
+    ir.push_str(&format!(
+        "  {base} = getelementptr [4096 x ptr], ptr %list{id}.ptr.slots, i64 0, i64 0\n"
+    ));
+    ir.push_str(&format!(
+        "  {text_len} = call i64 @lk_ptr_list_text_len(ptr {base}, i64 {list_len})\n"
+    ));
+    ir.push_str(&format!("  {has_delimiters} = icmp sgt i64 {list_len}, 1\n"));
+    ir.push_str(&format!(
+        "  {delimiter_base} = select i1 {has_delimiters}, i64 {list_len}, i64 1\n"
+    ));
+    ir.push_str(&format!("  {delimiter_count} = sub i64 {delimiter_base}, 1\n"));
+    ir.push_str(&format!(
+        "  {delimiter_total} = mul i64 {delimiter_count}, {delimiter_len}\n"
+    ));
+    ir.push_str(&format!("  {total} = add i64 {text_len}, {delimiter_total}\n"));
+    ir.push_str(&format!("  store i64 {total}, ptr %r{dst}.slot\n"));
+    Some(())
 }
 
 pub(in crate::llvm) fn emit_dynamic_ptr_list_contains(

@@ -70,13 +70,12 @@ fn emit_native_fd_value(body: &mut String, fd: i32, value: &NativeStraightlineVa
 fn emit_formatted_fd_write(body: &mut String, fd: i32, fmt: &str, ty: &str, value: &str) {
     let id = body.len();
     let buf = format!("%lk_fd_fmt_buf_{id}");
-    let len32 = format!("%lk_fd_fmt_len32_{id}");
     let len = format!("%lk_fd_fmt_len_{id}");
     body.push_str(&format!("  {buf} = alloca [128 x i8]\n"));
     body.push_str(&format!(
-        "  {len32} = call i32 (ptr, i64, ptr, ...) @snprintf(ptr {buf}, i64 128, ptr {fmt}, {ty} {value})\n"
+        "  {len} = call i32 (ptr, i64, ptr, ...) @snprintf(ptr {buf}, i64 128, ptr {fmt}, {ty} {value})\n"
     ));
-    body.push_str(&format!("  {len} = sext i32 {len32} to i64\n"));
+    body.push_str(&format!("  {len} = sext i32 {len} to i64\n"));
     body.push_str(&format!("  call i64 @write(i32 {fd}, ptr {buf}, i64 {len})\n"));
 }
 

@@ -1,84 +1,147 @@
-# Handoff — LK LLVM examples native-bin progress
+# Handoff — LK VM 性能优化 (2026-06-06)
 
-## Objective
+## 目标
+`plan.md` 要求：geomean ≤ 1.10x (vs Lua 5.5.0)；用户更强目标 <0.9x
 
-`examples/` 下所有 `.lk` 文件最终都要能通过 `lk compile exe` 生成 native binary，并且 binary 输出与 VM 执行输出一致。输出路径必须是纯 LLVM IR -> clang -> bin；不能回退到内置 VM/runtime launcher。
+## 当前状态 (2026-06-06)
 
-## 本轮完成
+### 性能基准 (20 samples, RUN_AOT=0, release build)
 
-- 修正 native main 返回语义：非 nil 返回才打印，nil return 静默，和 CLI VM 的 `first_return_is_nil()` 行为一致。
-- 扩展 standalone subfunction lowering：
-  - 支持 StrPtr 参数候选推断，避免 named arguments 的字符串参数被当作 i64。
-  - `LoadString` 保留静态字符串符号。
-  - `ToString` / `ConcatString` 复用 `NativeTextPart`，不再把模板字符串粗暴折叠成 RHS。
-  - control-flow merge 处清理静态寄存器事实，避免默认分支字符串污染运行时参数路径。
-- 更新测试断言：captured closure 被常量折叠为 bool 时仍验证无 runtime shell；nil return 不再要求打印 `nil`。
-- 清理 scalar facts 的未加开关 debug stderr 输出。
-- 修复 `examples/syntax/match.lk` native 输出不一致：
-  - `assert(cond)` 识别为 direct native assert path，失败时跳到统一 `lk_assert_fail`，不嵌 VM/runtime。
-  - block compare lowering 优先使用当前 block 本地类型/heap string 类型，避免 stale scalar facts 把 merge 后寄存器误判。
-- 修复静态 Test 的 untaken-path skip：如果 untaken 起点是多 predecessor merge，不再把后续可达路径跳过。
-- control-flow `GetIndex` 可在 boundary 后回溯只读 heap const int list，恢复 static-list i64 loop lowering。
-- 修复 `examples/syntax/null_coalescing.lk` native lowering：
-  - `Text` 与静态字符串比较走真实 LLVM equality，不跨控制流边界恢复错误静态字符串值。
-  - heap const list/map/cell/string 通过受限静态容器回溯支持 `?? []` 后的 `.len()`。
-- 修复 `examples/syntax/template_strings.lk` native lowering：
-  - block lowering 保留静态 I64 二元运算结果，覆盖多参数格式化 `println("{} + {} = {}", ...)`。
-  - 动态/静态 template interpolation assert 输出与 VM 一致。
-- 修复 `examples/general/test_list_sum.lk` native lowering：
-  - 静态 direct-call 折叠只在需要恢复同 basic block 内 heap-const list 参数时触发，避免吞掉普通 direct-call inline 覆盖。
-  - `__lk_call_method` 静态求值支持 list `skip(n)`，用于有界递归 list sum。
-- 修复 `examples/general/recursive.lk` native lowering：
-  - 自递归 hint 探测按参数组合尝试 I64/F64/Bool/list-like profile。
-  - `contains(List<Int>, Int) -> Bool` 不再被最终 I64 hint 覆盖，`length(List<Int>) -> Int` 保持正常递归分类。
-- 修复 `examples/syntax/numeric_auto_promotion.lk` native lowering：
-  - Float opcode facts 接受 I64/F64 混合 operand。
-  - LLVM emit 对 I64 operand 生成 `sitofp` 后执行 double 运算。
-- 修复 `examples/stdlib/os_demo.lk` native lowering：
-  - 增加 `os.hostname/arch/os/dir_current/dir_temp/dir_list` native static builtin 映射。
-  - 支持 `os.env.get(name)` 单参数形式并保持 VM/native 输出一致。
-- 修复 `examples/syntax/operators.lk` native lowering：
-  - control-flow `Contains` 支持静态 string/list membership。
-  - 对 block lowering 中的 heap-const int list `DynamicIntList` 回查原始常量，覆盖非 int needle 返回 false。
-- 修复 `examples/syntax/match.lk` 回归：
-  - CFG 多 predecessor merge block 统一作为静态事实边界。
-  - 比较类型选择在本地回溯证明为 `StrPtr` 时避免 stale Bool facts 覆盖，恢复 string equality lowering。
-- 拆出 `core/src/vm/exec32/container/index.rs`，把 `container.rs` 从 1500 行以上压回限制内。
-- 更新 `docs/llvm/backend.md`：nil return 在 native CLI 输出中静默。
+| Workload | Ratio | | Workload | Ratio |
+|----------|-------|-|----------|-------|
+| binary_search | **0.808x** ✅ | | stock_max | 1.487x |
+| order_score | 1.054x ✅ | | fraud_rule | 1.811x |
+| cart_pricing | 1.391x | | gcd_batch | 1.847x |
+| log_parse | 1.453x | | route_perm | 2.714x |
+| string_key | 1.580x | | two_sum | 2.672x |
+| prime_trial | 1.522x | | inventory | 2.877x |
+| matrix_3x3 | 1.545x | | histogram | 2.997x |
+| sliding_window | 1.756x | | | |
+| **geomean** | **1.723x** | | |
 
-## 当前验证
+### 优化历史
 
-- `cargo test -p lk-core llvm --features llvm` -> 144 passed, 0 failed。
-- `cargo build -p lk-cli --features llvm` -> pass。
-- examples 批量探测中已确认 17 个唯一文件输出一致：
-  - `examples/fib.lk`
-  - `examples/general/fib.lk`
-  - `examples/general/recursive.lk`
-  - `examples/general/test_list_sum.lk`
-  - `examples/general/test_min_recursive.lk`
-  - `examples/general/test_pure_assert.lk`
-  - `examples/lk-example-workspace/crates/greetings/src/mod.lk`
-  - `examples/lk-example-workspace/crates/mathlib/src/mod.lk`
-  - `examples/stdlib/os_demo.lk`
-  - `examples/syntax/internal.lk`
-  - `examples/syntax/match.lk`
-  - `examples/syntax/named_args.lk`
-  - `examples/syntax/named_params.lk`
-  - `examples/syntax/null_coalescing.lk`
-  - `examples/syntax/numeric_auto_promotion.lk`
-  - `examples/syntax/operators.lk`
-  - `examples/syntax/template_strings.lk`
+| 改动 | geomean | 差异 |
+|------|---------|------|
+| 基线 (2026-06-04) | 2.235x | — |
+| vm-profile feature gate 消除 metrics | ~1.82x | -18.5% |
+| Opcode 连续重编号 (0-63) | ~1.82x | 中性 |
+| #[cold] 标记动态回退/慢路径 | ~1.73x | -5.3% |
+| callable/named_call #[cold] | ~1.73x | 中性 |
+| **总计** | **1.723x** | **-22.9%** |
 
-## 剩余主要失败类别
+### 本轮完成的优化
 
-- runtime globals：`json/yaml/toml/math/map/time/datetime/io/iter/stream/tcp/chan` 等仍被正确拒绝为 unsupported native globals。
-- container/string control flow：静态 `Contains` 已覆盖；`ToIter`、`SliceFrom`、`NewRange`、`MapRest` 等在若干 examples 中仍缺 native lowering。
-- scalar facts 分类失败：`higher_order`、`list_ops`、`closure`、`error_handling`、`struct_trait`、`trait_impl` 等。
-- direct call/method lowering：剩余样例仍需继续扩大 dynamic method、subfunction text path 和 multi-arg `println` 覆盖。
-- object/pattern opcodes：`NewObject`、`IsList` 相关 examples 仍未 native-lowerable。
+#### 1. vm-profile feature gate (commit: 3e55281)
 
-## 下一个建议入口
+**问题**：`collect_metrics = vm_runtime_metrics_enabled()` 是 AtomicBool::load(Relaxed)，默认 false 但编译器无法证明。导致每个 opcode 的 `if collect_metrics { record_xxx(); }` 和 `record_xxx_known_enabled()` 调用无法被消除。
 
-1. 处理 `scalar block facts could not classify` 中更小样例，如 `closure.lk`、`higher_order.lk` 或 `list_ops.lk`。
-2. 继续扩大 list/string method native lowering，优先 examples 中高频的 `ToIter`、`SliceFrom`、`NewRange`。
-3. 最后集中推进 runtime globals 和 container iterator lowering，这部分会触及更大 API 面。
+**方案**：三路 cfg：
+- `#[cfg(test)]`: 线程本地计数器
+- `#[cfg(all(not(test), feature = "vm-profile"))]`: AtomicBool 门控 + atomic 计数器
+- `#[cfg(all(not(test), not(feature = "vm-profile")))]`: compile-time no-op
+
+**效果**：
+- 默认 release build 中 `vm_runtime_metrics_enabled()` 返回 `false` 常量
+- 所有 `if collect_metrics { ... }` 和 `record_*` 调用被 LLVM 死代码消除
+- Geomean: 2.235x → ~1.82x
+
+**文件**：
+- `core/Cargo.toml` — 新增 `vm-profile = []` feature
+- `cli/Cargo.toml` — 透传 `vm-profile` feature
+- `core/src/vm/analysis.rs` — 977 行 → 重写 metrics 部分为三路 cfg
+
+#### 2. Opcode 连续重编号 (commit: 3e55281)
+
+**问题**：Opcode discriminant 不连续（0-63 带 gap），`from_bits()` 是 57-arm match。
+**方案**：重编号为 0-63 连续，热路径 opcode 排前面。
+**效果**：中性（LLVM 已经使用跳表 dispatch，连续编号主要简化验证路径）
+
+#### 3. #[cold] 标记慢路径 (commit: 2047119, a617c4e)
+
+**问题**：run_function_inner 是巨型函数，热路径和冷路径（错误处理、dynamic fallback）混在一起，LLVM 无法有效分离指令缓存布局。
+
+**方案**：给以下方法加 `#[cold]`：
+- `dynamic_add/sub/div/mod`, `number_compare`, `values_equal`
+- `runtime_value_is_list/map/display_string/from_string`
+- `relative_pc/relative_pc_from`
+- `get_heap_index_slow_path` 和 string/list index 慢路径
+- `object_key_from_register`, `lookup_map_handle` 等容器慢路径
+- `load_function_value`, `make_closure_value`, `load_native_value`, `call_function_named`
+
+**注意**：不能给热路径加 `#[cold]`。已撤回对 `call_function`、`call_direct_function`、`collect_pending_garbage` 的标记。
+
+**效果**：Geomean 1.82x → 1.73x（-5.3%），尤其是 arithmetic-heavy workload 改善明显。
+
+### vm-profile 使用方法
+
+```bash
+# 构建 profile 版本
+cargo build --release -p lk-cli --features vm-profile
+
+# 运行 benchmark 带 profile
+RUN_AOT=0 PROFILE_WORKLOADS=1 RUNS=1 EXTRA_RUNS=0 bash bench/run_workload_bench.sh
+```
+
+注意：普通 release build 的 `PROFILE_WORKLOADS=1` 会打印全零 counters，因为 metrics 是 compile-time no-op。
+
+### 根本瓶颈（更新）
+
+1. **dispatch overhead = ~1.7x**：每条指令 ~6 个内存访问（取指→解码→match→栈读取→写入→pc递增）
+2. **Map/list 操作额外 0.7-1.3x**：TypedMap.get_str Mixed 分支双查找、Arc<str> 分配
+3. **collect_metrics 已消除** ✅
+4. **Opcode dispatch 已使用跳表** ✅
+5. **慢路径已从热循环分离** ✅
+
+### vm-profile counters 要点
+
+- Copy profile counters 全是 1，说明 clone 开销已被前序改动压低
+- Container ops 集中在 map-heavy workload（histogram 742K, two_sum 400K）
+- Typed branches 占所有 branch 的 ~100%（fused branch 优化有效）
+
+## 关键文件
+
+- `core/Cargo.toml` — `vm-profile` feature
+- `core/src/vm/analysis.rs` — 三路 cfg metrics 系统
+- `core/src/vm/ir.rs` — Opcode 连续重编号 (0-63)
+- `core/src/vm/exec.rs` — dispatch loop (1318 行)
+- `core/src/vm/exec/arithmetic.rs` — #[cold] 动态回退
+- `core/src/vm/exec/container/index.rs` — #[cold] 慢路径
+- `core/src/vm/exec/value_ops.rs` — #[cold] 类型检查慢路径
+
+## 下一步方向
+
+### P1: 继续拆分 dispatch loop 热路径
+
+按 STATUS.md P1 方针：
+1. 将 AddInt/SubInt/CmpLtInt/Test/Jmp 等热路径提取为 tiny `#[inline(always)]` helper
+2. 对 dynamic fallback / 错误路径已有 `#[cold]`
+3. 主循环保留 opcode dispatch 和最短路径
+4. 每拆一组跑 benchmark 验证
+
+### P2: Map/List 优化
+
+- TypedMap.get_str Mixed 分支优化：避免双查找（先 ShortStr 后 Arc<str>）
+- known_string_key 直接走 TypedMap 类型分支
+- 消除热循环内 Arc<str> 分配
+- Register write 消除：对立即消费的临时值（compare 结果、index 结果）做 SSA level 消除
+
+### P3: Typed branch lowering
+
+- typed compare + branch 直接 lowering
+- 避免比较结果 register 写入
+- 通用控制流优化（避免 benchmark-shaped fused opcode）
+
+### P4: Template JIT
+
+如果坚持 geomean < 0.9x 目标，需要编译热循环到原生代码：
+- 复用 LLVM lowering 的 scalar block 能力
+- 保留 VM 解释器作为 fallback 和 correctness oracle
+
+## 约束
+
+- 不能 force push
+- git commit msg 应该类似 `feat:`/`fix:`/`docs:` 等开头
+- 除了 llvm 部分不能使用 unsafe
+- 单文件不能超过 1500 行
+- 不需要保持向前兼容性

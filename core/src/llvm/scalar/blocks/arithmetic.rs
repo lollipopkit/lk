@@ -4,7 +4,8 @@ use crate::{
         ir_text::{emit_branch_to_next, next_tmp},
         scalar::{
             block_helpers::{
-                concat_text_values, emit_mixed_numeric_int_opcode_block, i64_slot_kind, three_regs_in_bounds,
+                concat_text_values, emit_mixed_numeric_int_opcode_block, i64_slot_kind, local_register_kind_before,
+                three_regs_in_bounds,
             },
             contains::{local_static_heap_const_before, text_value_from_trusted_reg},
             emit::emit_i64_binary_block,
@@ -12,17 +13,17 @@ use crate::{
         },
         straightline_value::{NativeStraightlineValue, native_static_i64_binary},
     },
-    vm::{ConstHeapValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, Instr, Opcode},
 };
 
 pub(super) fn emit_int_arithmetic_block(
     ir: &mut String,
-    code: &[Instr32],
+    code: &[Instr],
     _int_consts: &[i64],
     _strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     static_regs: &mut [Option<NativeStraightlineValue>],
@@ -36,10 +37,18 @@ pub(super) fn emit_int_arithmetic_block(
         emit_branch_to_next(ir, pc, code.len());
         return true;
     }
-    let Some(lhs) = facts.register_kind_before(pc, instr.b()) else {
+    let Some(lhs) = local_register_kind_before(code, pc, instr.b())
+        .or_else(|| static_reg_kind(static_regs, instr.b()))
+        .or_else(|| facts.register_kind_before(pc, instr.b()))
+        .or_else(|| local_arithmetic_index_kind_before(code, pc, instr.b()))
+    else {
         return false;
     };
-    let Some(rhs) = facts.register_kind_before(pc, instr.c()) else {
+    let Some(rhs) = local_register_kind_before(code, pc, instr.c())
+        .or_else(|| static_reg_kind(static_regs, instr.c()))
+        .or_else(|| facts.register_kind_before(pc, instr.c()))
+        .or_else(|| local_arithmetic_index_kind_before(code, pc, instr.c()))
+    else {
         return false;
     };
     if emit_string_add_block(ir, code, pc, instr, lhs, rhs, facts, static_regs, tmp_index) {
@@ -67,14 +76,35 @@ pub(super) fn emit_int_arithmetic_block(
     true
 }
 
+fn static_reg_kind(static_regs: &[Option<NativeStraightlineValue>], reg: u8) -> Option<NativeScalarKind> {
+    match static_regs.get(reg as usize).and_then(Clone::clone)? {
+        NativeStraightlineValue::I64(_) => Some(NativeScalarKind::I64),
+        NativeStraightlineValue::MaybeI64 { .. } => Some(NativeScalarKind::MaybeI64),
+        NativeStraightlineValue::F64(_) => Some(NativeScalarKind::F64),
+        NativeStraightlineValue::Bool(_) => Some(NativeScalarKind::Bool),
+        _ => None,
+    }
+}
+
+fn local_arithmetic_index_kind_before(code: &[Instr], pc: usize, reg: u8) -> Option<NativeScalarKind> {
+    let start = pc.saturating_sub(8);
+    for prev in code.get(start..pc)?.iter().copied().rev() {
+        if prev.a() != reg {
+            continue;
+        }
+        return (prev.opcode() == Opcode::GetIndex).then_some(NativeScalarKind::MaybeI64);
+    }
+    None
+}
+
 fn emit_static_list_concat_block(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     static_regs: &mut [Option<NativeStraightlineValue>],
 ) -> bool {
-    if instr.opcode() != Opcode32::AddInt {
+    if instr.opcode() != Opcode::AddInt {
         return false;
     }
     let (
@@ -101,8 +131,8 @@ fn emit_static_list_concat_block(
 }
 
 fn static_or_heap_list(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     reg: u8,
     static_regs: &[Option<NativeStraightlineValue>],
@@ -118,16 +148,16 @@ fn static_or_heap_list(
 
 fn emit_string_add_block(
     ir: &mut String,
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     lhs: NativeScalarKind,
     rhs: NativeScalarKind,
     facts: &NativeScalarFacts,
     static_regs: &mut [Option<NativeStraightlineValue>],
     tmp_index: &mut usize,
 ) -> bool {
-    if instr.opcode() != Opcode32::AddInt
+    if instr.opcode() != Opcode::AddInt
         || (!matches!(lhs, NativeScalarKind::StrPtr) && !matches!(rhs, NativeScalarKind::StrPtr))
     {
         return false;
@@ -215,7 +245,7 @@ fn emit_copy_loop(
     let loop_label = format!("lk_concat_{pc}_{name}_loop_{}", *tmp_index);
     let body_label = format!("lk_concat_{pc}_{name}_body_{}", *tmp_index);
     let done_label = format!("lk_concat_{pc}_{name}_done_{}", *tmp_index);
-    ir.push_str(&format!("  {idx_slot} = alloca i64\n"));
+    ir.push_str(&format!("  {idx_slot} = call ptr @malloc(i64 8)\n"));
     ir.push_str(&format!("  store i64 0, ptr {idx_slot}\n"));
     ir.push_str(&format!("  br label %{loop_label}\n"));
     ir.push_str(&format!("{loop_label}:\n"));

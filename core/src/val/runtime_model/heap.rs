@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{CallableValue, HeapValue, RuntimeMapKey, RuntimeVal, TypedList, TypedMap};
-use crate::vm::RuntimeCallable32;
+use crate::vm::RuntimeCallable;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HeapRef(u32);
@@ -85,10 +85,9 @@ impl HeapStore {
 
     #[inline]
     pub fn bump_shape_generation(&mut self, reference: HeapRef) {
-        if self.get(reference).is_some()
-            && let Some(generation) = self.generations.get_mut(reference.index() as usize)
-        {
-            *generation = generation.wrapping_add(1);
+        let idx = reference.index() as usize;
+        if idx < self.slots.len() && self.slots[idx].is_some() {
+            self.generations[idx] = self.generations[idx].wrapping_add(1);
         }
     }
 
@@ -156,7 +155,7 @@ impl HeapStore {
 fn collect_heap_value_edges(
     value: &HeapValue,
     refs: &mut Vec<HeapRef>,
-    runtime_callables: &mut Vec<Arc<RuntimeCallable32>>,
+    runtime_callables: &mut Vec<Arc<RuntimeCallable>>,
 ) {
     match value {
         HeapValue::String(_) | HeapValue::Task(_) | HeapValue::Channel(_) => {}
@@ -182,10 +181,10 @@ fn collect_heap_value_edges(
                 collect_runtime_value_edge(value, refs);
             }
         }
-        HeapValue::Callable(CallableValue::Runtime32(function)) => {
+        HeapValue::Callable(CallableValue::Runtime(function)) => {
             runtime_callables.push(Arc::clone(function));
         }
-        HeapValue::Callable(CallableValue::RuntimeNative32 { .. }) => {}
+        HeapValue::Callable(CallableValue::RuntimeNative { .. }) => {}
         HeapValue::UpvalCell(value) => collect_runtime_value_edge(value, refs),
         HeapValue::ErrorVal(error) => {
             for value in &error.trace {
@@ -261,13 +260,13 @@ impl Default for HeapStore {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use crate::util::fast_map::{fast_hash_map_from_iter, fast_hash_map_new};
     use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::{
         val::{ErrorVal, StreamCursorValue, StreamValue, Type},
-        vm::RuntimeModuleState32,
+        vm::RuntimeModuleState,
     };
 
     #[test]
@@ -310,7 +309,7 @@ mod tests {
         heap.collect([]);
         assert_eq!(heap.shape_generation(handle), None);
 
-        let reused = heap.alloc(HeapValue::Map(TypedMap::StringInt(BTreeMap::new())));
+        let reused = heap.alloc(HeapValue::Map(TypedMap::StringInt(fast_hash_map_new())));
         assert_eq!(reused.index(), handle.index());
         assert_eq!(heap.shape_generation(reused), Some(initial.wrapping_add(2)));
     }
@@ -339,13 +338,13 @@ mod tests {
         let mut heap = HeapStore::new();
         let leaf = heap.alloc(HeapValue::String(Arc::<str>::from("leaf")));
         let list = heap.alloc(HeapValue::List(TypedList::Mixed(vec![RuntimeVal::Obj(leaf)])));
-        let map = heap.alloc(HeapValue::Map(TypedMap::StringMixed(BTreeMap::from([(
+        let map = heap.alloc(HeapValue::Map(TypedMap::StringMixed(fast_hash_map_from_iter([(
             Arc::<str>::from("list"),
             RuntimeVal::Obj(list),
         )]))));
         let object = heap.alloc(HeapValue::Object(crate::val::RuntimeObject::new(
             Arc::<str>::from("Box"),
-            BTreeMap::from([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
+            fast_hash_map_from_iter([(Arc::<str>::from("map"), RuntimeVal::Obj(map))]),
         )));
         let closure = heap.alloc(HeapValue::Callable(CallableValue::Closure {
             function_index: 7,
@@ -374,7 +373,7 @@ mod tests {
     fn heap_store_gc_marks_mixed_map_object_keys() {
         let mut heap = HeapStore::new();
         let key_object = heap.alloc(HeapValue::String(Arc::<str>::from("key-object")));
-        let map = heap.alloc(HeapValue::Map(TypedMap::Mixed(BTreeMap::from([(
+        let map = heap.alloc(HeapValue::Map(TypedMap::Mixed(fast_hash_map_from_iter([(
             RuntimeMapKey::Obj(key_object),
             RuntimeVal::Int(1),
         )]))));
@@ -412,21 +411,21 @@ mod tests {
     }
 
     #[test]
-    fn heap_store_gc_collects_runtime32_callable_shared_state_without_marking_dest_heap_captures() {
+    fn heap_store_gc_collects_runtime_callable_shared_state_without_marking_dest_heap_captures() {
         let mut source_heap = HeapStore::new();
         let source_capture = source_heap.alloc(HeapValue::String(Arc::<str>::from("source-capture")));
         let source_garbage = source_heap.alloc(HeapValue::String(Arc::<str>::from("source-garbage")));
-        let callable = crate::vm::RuntimeCallable32::with_state(
-            Arc::new(crate::vm::Module32::default()),
+        let callable = crate::vm::RuntimeCallable::with_state(
+            Arc::new(crate::vm::Module::default()),
             0,
             Arc::new(vec![RuntimeVal::Obj(source_capture)]),
-            Arc::new(Mutex::new(RuntimeModuleState32::new(source_heap, Vec::new()))),
+            Arc::new(Mutex::new(RuntimeModuleState::new(source_heap, Vec::new()))),
         );
 
         let mut dest_heap = HeapStore::new();
         let same_index_garbage = dest_heap.alloc(HeapValue::String(Arc::<str>::from("dest-garbage")));
         assert_eq!(same_index_garbage.index(), source_capture.index());
-        let callable_handle = dest_heap.alloc(HeapValue::Callable(CallableValue::Runtime32(Arc::new(
+        let callable_handle = dest_heap.alloc(HeapValue::Callable(CallableValue::Runtime(Arc::new(
             callable.shallow_clone_shared(),
         ))));
 

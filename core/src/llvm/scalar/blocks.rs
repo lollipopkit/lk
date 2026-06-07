@@ -8,6 +8,7 @@ mod channel;
 mod compare;
 mod const_lists;
 mod control;
+mod direct_print;
 mod finalize;
 mod get_index;
 mod globals;
@@ -25,6 +26,7 @@ mod returns;
 mod runtime_builtins;
 mod set_index;
 mod string_methods;
+mod string_split;
 mod values;
 use self::{
     allocas::emit_scalar_entry_allocas,
@@ -39,6 +41,7 @@ use self::{
     channel::emit_static_channel_call,
     compare::emit_compare_block,
     control::emit_test_block,
+    direct_print::emit_direct_emit_helper_call,
     finalize::finish_scalar_ir,
     get_index::emit_get_index_block,
     globals::{emit_get_global_block, emit_set_global_block},
@@ -60,6 +63,7 @@ use self::{
     runtime_builtins::emit_runtime_builtin_call,
     set_index::emit_set_index_block,
     string_methods::emit_string_starts_with_block,
+    string_split::emit_string_split_block,
     values::emit_value_block,
 };
 use super::{
@@ -88,13 +92,13 @@ use crate::llvm::{
     output::{emit_native_builtin_call, emit_native_dynamic_int_list_get_method},
     straightline_value::{
         NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
-        native_static_list_join, native_static_string_split, native_straightline_heap_const_value,
+        NativeTextPart, native_static_list_join, native_straightline_heap_const_value,
     },
     subfunction::compile_native_scalar_subfunction,
 };
-use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Module32Artifact, Opcode32};
+use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, ModuleArtifact, Opcode};
 pub(in crate::llvm) fn compile_native_scalar_main_blocks(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     options: &LlvmBackendOptions,
     register_count: usize,
     global_count: usize,
@@ -102,13 +106,16 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
     int_consts: &[i64],
     float_consts: &[f64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
-    code: &[Instr32],
+    heap_values: &[ConstHeapValueData],
+    code: &[Instr],
     facts: &NativeScalarFacts,
     recursive_indices: &[u16],
 ) -> anyhow::Result<Option<String>> {
     let Some(mut ir) = emit_scalar_entry_allocas(artifact, options, register_count, global_count, heap_values, code)
     else {
+        return Ok(None);
+    };
+    let Some(function) = artifact.module.functions.get(artifact.module.entry as usize) else {
         return Ok(None);
     };
     let mut additional_subfn_indices: Vec<u16> = Vec::new();
@@ -119,7 +126,11 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
     let mut static_globals: Vec<Option<NativeStraightlineValue>> = vec![None; global_count];
     let static_boundaries = control_flow_static_boundaries(code);
     let mut skip_static_pcs = vec![false; code.len()];
+    let trace = std::env::var_os("LK_NATIVE_BLOCK_TRACE").is_some();
     for (pc, instr) in code.iter().copied().enumerate() {
+        if trace {
+            eprintln!("native scalar block pc={pc:04} {}", instr.disassemble());
+        }
         if skip_static_pcs.get(pc).copied().unwrap_or(false) {
             ir.push_str(&format!("bb{pc}:\n"));
             emit_branch_to_next(&mut ir, pc, code.len());
@@ -131,7 +142,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
         }
         ir.push_str(&format!("bb{pc}:\n"));
         match instr.opcode() {
-            Opcode32::LoadString => {
+            Opcode::LoadString => {
                 let Some(value) = strings.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -144,35 +155,35 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 ir.push_str(&format!("  store ptr {symbol}, ptr %r{}.slot\n", instr.a()));
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::LoadHeapConst => {
+            Opcode::LoadHeapConst => {
                 let Some(value) = heap_values.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
                 if !reg_in_bounds(register_count, instr.a()) {
                     return Ok(None);
                 }
-                if let ConstHeapValue32Data::LongString(value) = value {
+                if let ConstHeapValueData::LongString(value) = value {
                     let symbol = format!("@lk_block_heap_str_{pc}");
                     extra_globals.push_str(&llvm_string_constant(&symbol, value));
                     static_regs[instr.a() as usize] = Some(native_static_string(value, symbol.clone()));
                     ir.push_str(&format!("  store ptr {symbol}, ptr %r{}.slot\n", instr.a()));
                 } else {
-                    if matches!(value, ConstHeapValue32Data::List(values) if values.is_empty()) {
+                    if matches!(value, ConstHeapValueData::List(values) if values.is_empty()) {
                         ir.push_str(&format!("  store i64 0, ptr %list{pc}.len.slot\n"));
                         ir.push_str(&format!("  store i64 0, ptr %list{pc}.text.len.slot\n"));
                         static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicList {
                             id: pc,
                             element: NativeListElementKind::I64,
                         });
-                    } else if let ConstHeapValue32Data::List(values) = value
+                    } else if let ConstHeapValueData::List(values) = value
                         && !values.is_empty()
-                        && values.iter().all(|v| matches!(v, ConstRuntimeValue32Data::Int(_)))
+                        && values.iter().all(|v| matches!(v, ConstRuntimeValueData::Int(_)))
                     {
                         let n = values.len();
                         ir.push_str(&format!("  store i64 {n}, ptr %list{pc}.len.slot\n"));
                         ir.push_str(&format!("  store i64 0, ptr %list{pc}.text.len.slot\n"));
                         for (i, v) in values.iter().enumerate() {
-                            let ConstRuntimeValue32Data::Int(int_val) = v else {
+                            let ConstRuntimeValueData::Int(int_val) = v else {
                                 unreachable!()
                             };
                             let slot = next_tmp(&mut tmp_index);
@@ -185,7 +196,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                             id: pc,
                             element: NativeListElementKind::I64,
                         });
-                    } else if matches!(value, ConstHeapValue32Data::Map(values) if values.is_empty()) {
+                    } else if matches!(value, ConstHeapValueData::Map(values) if values.is_empty()) {
                         ir.push_str(&format!("  store i64 0, ptr %map{pc}.len.slot\n"));
                         static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicMap {
                             id: pc,
@@ -201,7 +212,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::LoadFunction | Opcode32::MakeClosure => {
+            Opcode::LoadFunction | Opcode::MakeClosure => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return Ok(None);
                 }
@@ -211,19 +222,19 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 static_regs[instr.a() as usize] = Some(value);
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::NewList
-            | Opcode32::LoadNil
-            | Opcode32::LoadInt
-            | Opcode32::LoadFloat
-            | Opcode32::LoadBool
-            | Opcode32::Move
-            | Opcode32::ToString
-            | Opcode32::ConcatString
-            | Opcode32::AddFloat
-            | Opcode32::SubFloat
-            | Opcode32::MulFloat
-            | Opcode32::DivFloat
-            | Opcode32::ModFloat => {
+            Opcode::NewList
+            | Opcode::LoadNil
+            | Opcode::LoadInt
+            | Opcode::LoadFloat
+            | Opcode::LoadBool
+            | Opcode::Move
+            | Opcode::ToString
+            | Opcode::ConcatString
+            | Opcode::AddFloat
+            | Opcode::SubFloat
+            | Opcode::MulFloat
+            | Opcode::DivFloat
+            | Opcode::ModFloat => {
                 if !emit_value_block(
                     &mut ir,
                     &mut extra_globals,
@@ -243,7 +254,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
+            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
                 if !emit_int_arithmetic_block(
                     &mut ir,
                     code,
@@ -260,12 +271,12 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::CmpInt
-            | Opcode32::CmpNeInt
-            | Opcode32::CmpLtInt
-            | Opcode32::CmpLeInt
-            | Opcode32::CmpGtInt
-            | Opcode32::CmpGeInt => {
+            Opcode::CmpInt
+            | Opcode::CmpNeInt
+            | Opcode::CmpLtInt
+            | Opcode::CmpLeInt
+            | Opcode::CmpGtInt
+            | Opcode::CmpGeInt => {
                 if !emit_compare_block(
                     &mut ir,
                     &mut extra_globals,
@@ -283,7 +294,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::Test => {
+            Opcode::Test => {
                 if !emit_test_block(
                     &mut ir,
                     &mut skip_static_pcs,
@@ -299,7 +310,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::Not => {
+            Opcode::Not => {
                 if emit_not_block(
                     &mut ir,
                     &mut static_regs,
@@ -315,7 +326,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::IsNil | Opcode32::IsList | Opcode32::IsMap => {
+            Opcode::IsNil | Opcode::IsList | Opcode::IsMap => {
                 if emit_static_type_test_block(
                     &mut ir,
                     &mut static_regs,
@@ -334,13 +345,48 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::Jmp => {
+            Opcode::Jmp => {
                 let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len()) else {
                     return Ok(None);
                 };
                 ir.push_str(&format!("  br label {}\n", native_label(target, code.len())));
             }
-            Opcode32::GetGlobal => {
+            Opcode::ForLoopI => {
+                if !three_regs_in_bounds(register_count, instr) {
+                    return Ok(None);
+                }
+                let Some(fact) = function.performance.for_loop(pc) else {
+                    return Ok(None);
+                };
+                let Some(target) = native_relative_target(pc, fact.jump_offset, code.len()) else {
+                    return Ok(None);
+                };
+                let index = next_tmp(&mut tmp_index);
+                let end = next_tmp(&mut tmp_index);
+                let step = next_tmp(&mut tmp_index);
+                let next = next_tmp(&mut tmp_index);
+                let cond = next_tmp(&mut tmp_index);
+                ir.push_str(&format!("  {index} = load i64, ptr %r{}.slot\n", instr.a()));
+                ir.push_str(&format!("  {end} = load i64, ptr %r{}.slot\n", instr.b()));
+                ir.push_str(&format!("  {step} = load i64, ptr %r{}.slot\n", instr.c()));
+                ir.push_str(&format!("  {next} = add i64 {index}, {step}\n"));
+                ir.push_str(&format!("  store i64 {next}, ptr %r{}.slot\n", instr.a()));
+                ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
+                let pred = match (fact.positive_step, fact.inclusive) {
+                    (true, true) => "sle",
+                    (true, false) => "slt",
+                    (false, true) => "sge",
+                    (false, false) => "sgt",
+                };
+                ir.push_str(&format!("  {cond} = icmp {pred} i64 {next}, {end}\n"));
+                ir.push_str(&format!(
+                    "  br i1 {cond}, label {}, label {}\n",
+                    native_label(target, code.len()),
+                    native_label(pc + 1, code.len())
+                ));
+                static_regs[instr.a() as usize] = None;
+            }
+            Opcode::GetGlobal => {
                 if emit_get_global_block(
                     &mut ir,
                     &mut extra_globals,
@@ -360,7 +406,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::SetGlobal => {
+            Opcode::SetGlobal => {
                 if emit_set_global_block(
                     &mut ir,
                     &mut static_regs,
@@ -378,7 +424,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::Len => {
+            Opcode::Len => {
                 if emit_len_block(
                     &mut ir,
                     &mut static_regs,
@@ -397,7 +443,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::ToIter => {
+            Opcode::ToIter => {
                 if emit_to_iter_block(
                     &mut static_regs,
                     code,
@@ -414,46 +460,38 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::StringSplit => {
-                if !three_regs_in_bounds(register_count, instr) {
+            Opcode::StringSplit => {
+                if !emit_string_split_block(
+                    &mut ir,
+                    &mut static_regs,
+                    code,
+                    strings,
+                    heap_values,
+                    pc,
+                    instr,
+                    register_count,
+                    facts,
+                    &mut tmp_index,
+                ) {
                     return Ok(None);
                 }
-                let Some(target) = static_regs.get(instr.b() as usize).and_then(Clone::clone) else {
-                    return Ok(None);
-                };
-                let Some(delimiter) = static_regs.get(instr.c() as usize).and_then(Clone::clone) else {
-                    return Ok(None);
-                };
-                if let Some(value) = native_static_string_split(target.clone(), delimiter.clone(), String::new()) {
-                    static_regs[instr.a() as usize] = Some(value);
-                    emit_branch_to_next(&mut ir, pc, code.len());
-                    continue;
-                }
-                let (NativeStraightlineValue::Text(text), NativeStraightlineValue::String { value: delimiter, .. }) =
-                    (target, delimiter)
-                else {
-                    return Ok(None);
-                };
-                if !delimiter.is_ascii() {
-                    return Ok(None);
-                }
-                static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicSplitText { text, delimiter });
-                emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::ListJoin => {
+            Opcode::ListJoin => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return Ok(None);
                 }
                 let Some(target) = static_regs.get(instr.b() as usize).and_then(Clone::clone) else {
                     return Ok(None);
                 };
-                let Some(delimiter) = static_regs.get(instr.c() as usize).and_then(Clone::clone) else {
+                let Some(delimiter) = static_regs.get(instr.c() as usize).and_then(Clone::clone).or_else(|| {
+                    crate::llvm::scalar::contains::local_static_string_before(code, strings, pc, instr.c())
+                }) else {
                     return Ok(None);
                 };
                 if let (
                     NativeStraightlineValue::DynamicList {
                         id,
-                        element: NativeListElementKind::Text,
+                        element: element @ (NativeListElementKind::Text | NativeListElementKind::StrPtr),
                     },
                     NativeStraightlineValue::String { value: delimiter, .. },
                 ) = (&target, &delimiter)
@@ -464,6 +502,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicJoinedText {
                         id: *id,
                         delimiter_len: delimiter.len(),
+                        element: *element,
                     });
                     emit_branch_to_next(&mut ir, pc, code.len());
                     continue;
@@ -493,15 +532,20 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 if split_delimiter != join_delimiter {
                     return Ok(None);
                 }
-                static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Text(text));
+                static_regs[instr.a() as usize] = Some(if let [NativeTextPart::StrPtr(ptr)] = text.as_slice() {
+                    NativeStraightlineValue::StringPtr(ptr.clone())
+                } else {
+                    NativeStraightlineValue::Text(text)
+                });
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::StringStartsWith => {
+            Opcode::StringStartsWith => {
                 if emit_string_starts_with_block(
                     &mut ir,
                     &mut extra_globals,
                     &mut static_regs,
                     code,
+                    strings,
                     pc,
                     instr,
                     register_count,
@@ -513,7 +557,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::GetIndex => {
+            Opcode::GetIndex => {
                 if !emit_get_index_block(
                     &mut ir,
                     &mut extra_globals,
@@ -522,6 +566,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     int_consts,
                     strings,
                     heap_values,
+                    function,
                     pc,
                     instr,
                     register_count,
@@ -531,7 +576,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::ListPush => {
+            Opcode::ListPush => {
                 if !emit_list_push_block(
                     &mut ir,
                     &mut extra_globals,
@@ -548,7 +593,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::NewObject => {
+            Opcode::NewObject => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return Ok(None);
                 }
@@ -560,7 +605,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 static_regs[instr.a() as usize] = Some(value);
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::NewRange => {
+            Opcode::NewRange => {
                 let Some(value) =
                     static_int_range_from_registers(&static_regs, code, int_consts, pc, instr, String::new())
                 else {
@@ -569,7 +614,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 static_regs[instr.a() as usize] = Some(value);
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::Contains | Opcode32::SliceFrom | Opcode32::MapRest => {
+            Opcode::Contains | Opcode::SliceFrom | Opcode::MapRest => {
                 if emit_static_contains_or_slice_block(
                     &mut ir,
                     &mut extra_globals,
@@ -588,7 +633,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::SetIndex => {
+            Opcode::SetIndex => {
                 if !emit_set_index_block(
                     &mut ir,
                     &mut extra_globals,
@@ -596,6 +641,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     code,
                     int_consts,
                     strings,
+                    function,
                     register_count,
                     pc,
                     instr,
@@ -606,7 +652,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::Call => {
+            Opcode::Call => {
                 if instr.a() != instr.b() || !reg_in_bounds(register_count, instr.a()) {}
                 if let Some(target @ (NativeStraightlineValue::Function(_) | NativeStraightlineValue::Closure { .. })) =
                     static_regs.get(instr.b() as usize).and_then(Clone::clone)
@@ -620,7 +666,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     let Some(callee) = artifact.module.functions.get(function_index as usize) else {
                         return Ok(None);
                     };
-                    let direct_instr = Instr32::abc(Opcode32::CallDirect, instr.a(), function_index, instr.c());
+                    let direct_instr = Instr::abc(Opcode::CallDirect, instr.a(), function_index, instr.c());
                     let call_arg_start = instr.b() as usize + 1;
                     let call_arg_end = call_arg_start.checked_add(instr.c() as usize).unwrap_or(usize::MAX);
                     if let Some(args) = (call_arg_start..call_arg_end)
@@ -964,7 +1010,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     ] = args.as_slice()
                         && method == "get"
                         && elements.len() == 1
-                        && let ConstRuntimeValue32Data::Int(index) = elements[0]
+                        && let ConstRuntimeValueData::Int(index) = elements[0]
                     {
                         emit_native_dynamic_int_list_get_method(
                             &mut ir,
@@ -1182,7 +1228,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     }
                 }
             }
-            Opcode32::CallNamed => {
+            Opcode::CallNamed => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return Ok(None);
                 }
@@ -1203,11 +1249,28 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                 }
                 emit_branch_to_next(&mut ir, pc, code.len());
             }
-            Opcode32::CallDirect => {
+            Opcode::CallDirect => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return Ok(None);
                 }
                 let callee_index = instr.b();
+                if let Some(callee) = artifact.module.functions.get(callee_index as usize)
+                    && emit_direct_emit_helper_call(
+                        &mut ir,
+                        &mut extra_globals,
+                        callee,
+                        facts,
+                        &static_regs,
+                        instr,
+                        pc,
+                        &mut tmp_index,
+                    )
+                    .is_some()
+                {
+                    static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Nil);
+                    emit_branch_to_next(&mut ir, pc, code.len());
+                    continue;
+                }
                 if emit_static_direct_call_result(
                     &mut ir,
                     &mut extra_globals,
@@ -1370,7 +1433,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     emit_branch_to_next(&mut ir, pc, code.len());
                 }
             }
-            Opcode32::Return => {
+            Opcode::Return => {
                 if emit_return_block(
                     &mut ir,
                     &mut extra_globals,
@@ -1387,7 +1450,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::StoreCellVal => {
+            Opcode::StoreCellVal => {
                 if emit_store_cell_block(
                     &mut ir,
                     &mut static_regs,
@@ -1404,7 +1467,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::LoadCellVal => {
+            Opcode::LoadCellVal => {
                 if emit_load_cell_block(
                     &mut ir,
                     &mut static_regs,
@@ -1420,7 +1483,7 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
                     return Ok(None);
                 }
             }
-            Opcode32::Nop | Opcode32::Raise => emit_branch_to_next(&mut ir, pc, code.len()),
+            Opcode::Nop | Opcode::Raise => emit_branch_to_next(&mut ir, pc, code.len()),
             _ => return Ok(None),
         }
         ir.push('\n');

@@ -9,7 +9,7 @@ use crate::llvm::{
         native_straightline_heap_const_value,
     },
 };
-use crate::vm::{ConstHeapValue32Data, Function32Data, Instr32, Module32Artifact, Opcode32};
+use crate::vm::{ConstHeapValueData, FunctionData, Instr, ModuleArtifact, Opcode};
 
 use super::{
     block_helpers::{
@@ -29,14 +29,14 @@ use super::{
 pub(in crate::llvm) fn emit_inline_direct_scalar_call(
     ir: &mut String,
     extra_globals: &mut String,
-    artifact: &Module32Artifact,
-    callee: &Function32Data,
+    artifact: &ModuleArtifact,
+    callee: &FunctionData,
     call_pc: usize,
-    instr: Instr32,
+    instr: Instr,
     caller_register_count: usize,
     global_count: usize,
     global_names: &[String],
-    caller_code: &[Instr32],
+    caller_code: &[Instr],
     caller_static_regs: &[Option<NativeStraightlineValue>],
     caller_static_globals: &[Option<NativeStraightlineValue>],
     caller_facts: &NativeScalarFacts,
@@ -67,14 +67,14 @@ pub(in crate::llvm) fn emit_inline_direct_scalar_call(
 pub(in crate::llvm) fn emit_inline_static_scalar_call(
     ir: &mut String,
     extra_globals: &mut String,
-    artifact: &Module32Artifact,
-    callee: &Function32Data,
+    artifact: &ModuleArtifact,
+    callee: &FunctionData,
     call_pc: usize,
-    instr: Instr32,
+    instr: Instr,
     caller_register_count: usize,
     global_count: usize,
     global_names: &[String],
-    caller_code: &[Instr32],
+    caller_code: &[Instr],
     caller_static_regs: &[Option<NativeStraightlineValue>],
     caller_static_globals: &[Option<NativeStraightlineValue>],
     caller_facts: &NativeScalarFacts,
@@ -94,7 +94,7 @@ pub(in crate::llvm) fn emit_inline_static_scalar_call(
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
     let mut callee_kinds = vec![None; callee.register_count as usize];
@@ -160,9 +160,9 @@ pub(in crate::llvm) fn emit_inline_static_scalar_call(
 fn emit_inline_direct_scalar_blocks(
     ir: &mut String,
     extra_globals: &mut String,
-    artifact: &Module32Artifact,
-    callee: &Function32Data,
-    code: &[Instr32],
+    artifact: &ModuleArtifact,
+    callee: &FunctionData,
+    code: &[Instr],
     facts: &NativeScalarFacts,
     call_pc: usize,
     dst: u8,
@@ -187,7 +187,7 @@ fn emit_inline_direct_scalar_blocks(
         }
         ir.push_str(&format!("call{call_pc}.bb{pc}:\n"));
         match instr.opcode() {
-            Opcode32::LoadString => {
+            Opcode::LoadString => {
                 let value = callee.consts.strings.get(instr.bx() as usize)?;
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
@@ -201,12 +201,12 @@ fn emit_inline_direct_scalar_blocks(
                 ));
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::LoadHeapConst => {
+            Opcode::LoadHeapConst => {
                 let value = callee.consts.heap_values.get(instr.bx() as usize)?;
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
                 }
-                if let ConstHeapValue32Data::LongString(value) = value {
+                if let ConstHeapValueData::LongString(value) = value {
                     let symbol = format!("@lk_call{call_pc}_heap_str_{pc}");
                     extra_globals.push_str(&llvm_string_constant(&symbol, value));
                     static_regs[instr.a() as usize] = Some(native_static_string(value, symbol.clone()));
@@ -220,7 +220,7 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::LoadCapture => {
+            Opcode::LoadCapture => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
                 }
@@ -240,7 +240,7 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::StoreCellVal => {
+            Opcode::StoreCellVal => {
                 if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
                     return None;
                 }
@@ -254,7 +254,7 @@ fn emit_inline_direct_scalar_blocks(
                 };
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::LoadCellVal => {
+            Opcode::LoadCellVal => {
                 if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
                     return None;
                 }
@@ -277,7 +277,7 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::LoadNil => {
+            Opcode::LoadNil => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
                 }
@@ -285,7 +285,7 @@ fn emit_inline_direct_scalar_blocks(
                 ir.push_str(&format!("  store i64 0, ptr %call{call_pc}.r{}.slot\n", instr.a()));
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::LoadInt => {
+            Opcode::LoadInt => {
                 let value = callee.consts.ints.get(instr.bx() as usize)?;
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
@@ -297,7 +297,7 @@ fn emit_inline_direct_scalar_blocks(
                 ));
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::LoadFloat => {
+            Opcode::LoadFloat => {
                 let value = callee.consts.floats.get(instr.bx() as usize)?;
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
@@ -310,7 +310,7 @@ fn emit_inline_direct_scalar_blocks(
                 ));
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::LoadBool => {
+            Opcode::LoadBool => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
                 }
@@ -322,7 +322,7 @@ fn emit_inline_direct_scalar_blocks(
                 ));
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::AddFloat | Opcode32::SubFloat | Opcode32::MulFloat | Opcode32::DivFloat | Opcode32::ModFloat => {
+            Opcode::AddFloat | Opcode::SubFloat | Opcode::MulFloat | Opcode::DivFloat | Opcode::ModFloat => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
@@ -350,7 +350,7 @@ fn emit_inline_direct_scalar_blocks(
                 emit_f64_binary_block(ir, instr, lhs, rhs, &format!("call{call_pc}."), tmp_index);
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
+            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
@@ -366,7 +366,7 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::ToString => {
+            Opcode::ToString => {
                 if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
                     return None;
                 }
@@ -381,7 +381,7 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = Some(value);
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::ConcatString => {
+            Opcode::ConcatString => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
@@ -404,7 +404,7 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = Some(concat_text_values(lhs, rhs)?);
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::StringStartsWith => {
+            Opcode::StringStartsWith => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
@@ -439,7 +439,7 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::GetIndex => {
+            Opcode::GetIndex => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
@@ -494,7 +494,7 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::Move => {
+            Opcode::Move => {
                 if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
                     return None;
                 }
@@ -527,7 +527,7 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = static_regs.get(instr.b() as usize).and_then(Clone::clone);
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::CmpInt | Opcode32::CmpNeInt => {
+            Opcode::CmpInt | Opcode::CmpNeInt => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
@@ -541,7 +541,7 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = None;
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::CmpLtInt | Opcode32::CmpLeInt | Opcode32::CmpGtInt | Opcode32::CmpGeInt => {
+            Opcode::CmpLtInt | Opcode::CmpLeInt | Opcode::CmpGtInt | Opcode::CmpGeInt => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
@@ -554,7 +554,7 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = None;
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::Not => {
+            Opcode::Not => {
                 if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
                     return None;
                 }
@@ -621,7 +621,7 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = None;
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::Test => {
+            Opcode::Test => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
                 }
@@ -663,14 +663,14 @@ fn emit_inline_direct_scalar_blocks(
                     }
                 }
             }
-            Opcode32::Jmp => {
+            Opcode::Jmp => {
                 let target = native_relative_target(pc, instr.sj_arg(), code.len())?;
                 ir.push_str(&format!(
                     "  br label {}\n",
                     inline_native_label(call_pc, target, code.len())
                 ));
             }
-            Opcode32::GetGlobal => {
+            Opcode::GetGlobal => {
                 if !reg_in_bounds(register_count, instr.a()) || instr.bx() as usize >= global_count {
                     return None;
                 }
@@ -706,7 +706,7 @@ fn emit_inline_direct_scalar_blocks(
                 ));
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::SetGlobal => {
+            Opcode::SetGlobal => {
                 if !reg_in_bounds(register_count, instr.a()) || instr.bx() as usize >= global_count {
                     return None;
                 }
@@ -739,7 +739,7 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = None;
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::Call => {
+            Opcode::Call => {
                 if instr.a() != instr.b() || !reg_in_bounds(register_count, instr.a()) {
                     return None;
                 }
@@ -749,7 +749,7 @@ fn emit_inline_direct_scalar_blocks(
                     let (function_index, captures) = static_call_target(target)?;
                     let function_index = u8::try_from(function_index).ok()?;
                     let callee = artifact.module.functions.get(function_index as usize)?;
-                    let direct_instr = Instr32::abc(Opcode32::CallDirect, instr.a(), function_index, instr.c());
+                    let direct_instr = Instr::abc(Opcode::CallDirect, instr.a(), function_index, instr.c());
                     emit_inline_static_scalar_call(
                         ir,
                         extra_globals,
@@ -804,7 +804,7 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::CallNamed => {
+            Opcode::CallNamed => {
                 if !reg_in_bounds(register_count, instr.a()) {
                     return None;
                 }
@@ -850,7 +850,7 @@ fn emit_inline_direct_scalar_blocks(
                 }
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::SetIndex => {
+            Opcode::SetIndex => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
@@ -860,7 +860,7 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = Some(native_static_set_index(target, key, value)?);
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::Len => {
+            Opcode::Len => {
                 if !reg_in_bounds(register_count, instr.a()) || !reg_in_bounds(register_count, instr.b()) {
                     return None;
                 }
@@ -879,8 +879,8 @@ fn emit_inline_direct_scalar_blocks(
                 static_regs[instr.a() as usize] = None;
                 emit_inline_branch_to_next(ir, call_pc, pc, code.len());
             }
-            Opcode32::CallDirect => return None,
-            Opcode32::Return => {
+            Opcode::CallDirect => return None,
+            Opcode::Return => {
                 if instr.b() == 0 {
                     // void/nil return: store nil into caller dst and jump to next
                     ir.push_str(&format!("  store i64 0, ptr %r{dst}.slot\n"));
@@ -906,7 +906,7 @@ fn emit_inline_direct_scalar_blocks(
                     ir.push_str(&format!("  br label {}\n", native_label(call_pc + 1, caller_code_len)));
                 } // end else (b == 1)
             }
-            Opcode32::Nop => emit_inline_branch_to_next(ir, call_pc, pc, code.len()),
+            Opcode::Nop => emit_inline_branch_to_next(ir, call_pc, pc, code.len()),
             _ => return None,
         }
         ir.push('\n');

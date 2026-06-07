@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     val::{HeapStore, RuntimeVal},
-    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
+    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
 use std::io::{BufRead, Read, Write};
 
@@ -23,7 +23,7 @@ impl IoModule {
     }
 }
 
-impl Module for IoModule {
+impl ModuleProvider for IoModule {
     fn name(&self) -> &str {
         "io"
     }
@@ -32,27 +32,27 @@ impl Module for IoModule {
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::plain("read", mod_read32, 0),
-                RuntimeNativeExport32::plain("stdin_read", stdin_read32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("stdin_read_line", stdin_read_line32, 0),
-                RuntimeNativeExport32::plain("stdin_read_all", stdin_read_all32, 0),
-                RuntimeNativeExport32::plain("stdin_flush", stdin_flush32, 0),
-                RuntimeNativeExport32::plain("stdout_write", stdout_write32, 1),
-                RuntimeNativeExport32::plain("stdout_writeln", stdout_writeln32, 1),
-                RuntimeNativeExport32::plain("stdout_flush", stdout_flush32, 0),
-                RuntimeNativeExport32::plain("stderr_write", stderr_write32, 1),
-                RuntimeNativeExport32::plain("stderr_writeln", stderr_writeln32, 1),
-                RuntimeNativeExport32::plain("stderr_flush", stderr_flush32, 0),
+                RuntimeNativeExport::plain("read", mod_read, 0),
+                RuntimeNativeExport::plain("stdin_read", stdin_read, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("stdin_read_line", stdin_read_line, 0),
+                RuntimeNativeExport::plain("stdin_read_all", stdin_read_all, 0),
+                RuntimeNativeExport::plain("stdin_flush", stdin_flush, 0),
+                RuntimeNativeExport::plain("stdout_write", stdout_write, 1),
+                RuntimeNativeExport::plain("stdout_writeln", stdout_writeln, 1),
+                RuntimeNativeExport::plain("stdout_flush", stdout_flush, 0),
+                RuntimeNativeExport::plain("stderr_write", stderr_write, 1),
+                RuntimeNativeExport::plain("stderr_writeln", stderr_writeln, 1),
+                RuntimeNativeExport::plain("stderr_flush", stderr_flush, 0),
             ],
             &[],
         ))
     }
 }
 
-fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         return Ok(());
     }
@@ -69,7 +69,7 @@ fn runtime_display_arg(value: &RuntimeVal, heap: &HeapStore, name: &str) -> Resu
     }
 }
 
-fn stdin_read32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stdin_read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     if args.len() > 1 {
         bail!("stdin_read() takes at most 1 argument: [bytes]");
     }
@@ -97,7 +97,7 @@ fn stdin_read32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Re
     }
 }
 
-fn read_stdin_line_into(runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn read_stdin_line_into(runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let mut handle = std::io::stdin().lock();
     let mut line = String::new();
     match handle.read_line(&mut line) {
@@ -115,12 +115,12 @@ fn read_stdin_line_into(runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal>
     }
 }
 
-fn stdin_read_line32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stdin_read_line(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 0, "stdin_read_line()")?;
     read_stdin_line_into(runtime)
 }
 
-fn stdin_read_all32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stdin_read_all(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 0, "stdin_read_all()")?;
     let mut value = String::new();
     std::io::stdin()
@@ -130,12 +130,12 @@ fn stdin_read_all32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -
     Ok(runtime_string_value(&value, runtime.heap_mut()))
 }
 
-fn stdin_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stdin_flush(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 0, "stdin_flush()")?;
     Ok(RuntimeVal::Bool(true))
 }
 
-fn stdout_write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stdout_write(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stdout_write()")?;
     let data = runtime_display_arg(args.get(0).expect("checked arity"), runtime.heap(), "stdout_write data")?;
     std::io::stdout()
@@ -144,7 +144,7 @@ fn stdout_write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
     Ok(RuntimeVal::Bool(true))
 }
 
-fn stdout_writeln32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stdout_writeln(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stdout_writeln()")?;
     let data = runtime_display_arg(
         args.get(0).expect("checked arity"),
@@ -155,7 +155,7 @@ fn stdout_writeln32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -
     Ok(RuntimeVal::Bool(true))
 }
 
-fn stdout_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stdout_flush(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 0, "stdout_flush()")?;
     std::io::stdout()
         .flush()
@@ -163,7 +163,7 @@ fn stdout_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) ->
     Ok(RuntimeVal::Bool(true))
 }
 
-fn stderr_write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stderr_write(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stderr_write()")?;
     let data = runtime_display_arg(args.get(0).expect("checked arity"), runtime.heap(), "stderr_write data")?;
     std::io::stderr()
@@ -172,7 +172,7 @@ fn stderr_write32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
     Ok(RuntimeVal::Bool(true))
 }
 
-fn stderr_writeln32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stderr_writeln(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stderr_writeln()")?;
     let data = runtime_display_arg(
         args.get(0).expect("checked arity"),
@@ -183,7 +183,7 @@ fn stderr_writeln32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -
     Ok(RuntimeVal::Bool(true))
 }
 
-fn stderr_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn stderr_flush(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 0, "stderr_flush()")?;
     std::io::stderr()
         .flush()
@@ -191,32 +191,32 @@ fn stderr_flush32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) ->
     Ok(RuntimeVal::Bool(true))
 }
 
-fn mod_read32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn mod_read(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 0, "io.read()")?;
-    stdin_read_all32(args, runtime)
+    stdin_read_all(args, runtime)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lk_core::vm::{NativeFunction32, RuntimeModuleState32};
+    use lk_core::vm::{NativeFunction, RuntimeModuleState};
 
-    fn io_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn io_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&IoModule::new(), name)
     }
 
     fn call(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {
         let (_, function) = io_native(name)?;
-        let NativeFunction32::Plain(function) = function else {
-            bail!("{name} must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        function(NativeArgs32::new(args), &mut runtime)
+        let mut state = RuntimeModuleState::default();
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        function(NativeArgs::new(args), &mut runtime)
     }
 
     #[test]
-    fn io_exports_use_runtime_native32() -> Result<()> {
+    fn io_exports_use_runtime_native() -> Result<()> {
         for name in [
             "read",
             "stdin_read",
@@ -231,9 +231,9 @@ mod tests {
             "stderr_flush",
         ] {
             let (_, function) = io_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
+            assert!(matches!(function, NativeFunction::Plain(_)));
         }
-        assert_eq!(io_native("stdin_read")?.0, lk_core::vm::NativeEntry32::VARIADIC);
+        assert_eq!(io_native("stdin_read")?.0, lk_core::vm::NativeEntry::VARIADIC);
         Ok(())
     }
 

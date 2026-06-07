@@ -1,11 +1,12 @@
 use crate::llvm::{
     const_display::native_const_list_display,
+    known_key::native_known_string_key,
     straightline_value::{NativeStraightlineValue, native_runtime_const_value, native_static_set_index},
 };
-use crate::vm::{Function32Data, Instr32, Opcode32};
+use crate::vm::{FunctionData, Instr, Opcode};
 
 pub(super) fn native_static_map_mutate(
-    functions: &[Function32Data],
+    functions: &[FunctionData],
     target: NativeStraightlineValue,
     callable: NativeStraightlineValue,
     symbol: String,
@@ -26,14 +27,16 @@ pub(super) fn native_static_map_mutate(
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
-    let set = code
+    let (set_pc, set) = code
         .iter()
         .copied()
-        .find(|instr| instr.opcode() == Opcode32::SetIndex && instr.a() == 0)?;
-    let key = local_value_before(function, &code, set.b())?;
+        .enumerate()
+        .find(|(_, instr)| instr.opcode() == Opcode::SetIndex && instr.a() == 0)?;
+    let key = native_known_string_key(function, set_pc, format!("@lk_mutate_known_key_{set_pc}"))
+        .or_else(|| local_value_before(function, &code, set.b()))?;
     let value = local_value_before(function, &code, set.c())?;
     let updated = native_static_set_index(target, key, value)?;
     let elements = vec![native_runtime_const_value(&updated)?];
@@ -44,20 +47,20 @@ pub(super) fn native_static_map_mutate(
     })
 }
 
-fn local_value_before(function: &Function32Data, code: &[Instr32], reg: u8) -> Option<NativeStraightlineValue> {
+fn local_value_before(function: &FunctionData, code: &[Instr], reg: u8) -> Option<NativeStraightlineValue> {
     for instr in code.iter().copied() {
         if instr.a() != reg {
             continue;
         }
         return match instr.opcode() {
-            Opcode32::LoadNil => Some(NativeStraightlineValue::Nil),
-            Opcode32::LoadBool => Some(NativeStraightlineValue::Bool(i64::from(instr.b() != 0).to_string())),
-            Opcode32::LoadInt => function
+            Opcode::LoadNil => Some(NativeStraightlineValue::Nil),
+            Opcode::LoadBool => Some(NativeStraightlineValue::Bool(i64::from(instr.b() != 0).to_string())),
+            Opcode::LoadInt => function
                 .consts
                 .ints
                 .get(instr.bx() as usize)
                 .map(|value| NativeStraightlineValue::I64(value.to_string())),
-            Opcode32::LoadString => {
+            Opcode::LoadString => {
                 function
                     .consts
                     .strings

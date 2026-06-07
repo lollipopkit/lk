@@ -40,8 +40,8 @@ use lk_core::{
     val,
     val::{CallableValue, ChannelValue, HeapRef, HeapStore, HeapValue, RuntimeVal, TaskValue, Type, TypedList},
     vm::{
-        NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, call_runtime_callable32_runtime,
-        call_runtime_value32_runtime_with_receiver,
+        NativeArgs, NativeEntry, NativeFunction, NativeRuntime, call_runtime_callable_runtime,
+        call_runtime_value_runtime_with_receiver,
     },
 };
 use std::sync::Arc;
@@ -160,50 +160,50 @@ pub fn register_stdlib_module_time(registry: &mut ModuleRegistry) -> Result<()> 
 /// - println(fmt, ...args): print formatted text with newline; returns nil
 /// - panic([msg]): raise a runtime error with optional message and backtrace
 pub fn register_stdlib_core_globals(registry: &mut ModuleRegistry) {
-    register_runtime_builtin_full_state(registry, "print", print32, NativeEntry32::VARIADIC);
-    register_runtime_builtin_full_state(registry, "println", println32, NativeEntry32::VARIADIC);
-    register_runtime_builtin_full_state(registry, "panic", panic32, NativeEntry32::VARIADIC);
+    register_runtime_builtin_full_state(registry, "print", print, NativeEntry::VARIADIC);
+    register_runtime_builtin_full_state(registry, "println", println, NativeEntry::VARIADIC);
+    register_runtime_builtin_full_state(registry, "panic", panic, NativeEntry::VARIADIC);
 }
 
 pub fn register_stdlib_concurrency_globals(registry: &mut ModuleRegistry) {
-    register_runtime_builtin(registry, "spawn", spawn32, 1);
-    register_runtime_builtin(registry, "chan", chan32, NativeEntry32::VARIADIC);
-    register_runtime_builtin(registry, "send", send32, 2);
-    register_runtime_builtin(registry, "recv", recv32, 1);
-    register_runtime_builtin(registry, "chan::try_send", chan_try_send32, 2);
-    register_runtime_builtin(registry, "chan::try_recv", chan_try_recv32, 1);
-    register_runtime_builtin(registry, "select$block", select_block32, 5);
+    register_runtime_builtin(registry, "spawn", spawn, 1);
+    register_runtime_builtin(registry, "chan", chan, NativeEntry::VARIADIC);
+    register_runtime_builtin(registry, "send", send, 2);
+    register_runtime_builtin(registry, "recv", recv, 1);
+    register_runtime_builtin(registry, "chan::try_send", chan_try_send, 2);
+    register_runtime_builtin(registry, "chan::try_recv", chan_try_recv, 1);
+    register_runtime_builtin(registry, "select$block", select_block, 5);
 }
 
 fn register_runtime_builtin(
     registry: &mut ModuleRegistry,
     name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    function: fn(NativeArgs<'_>, &mut NativeRuntime<'_>) -> Result<RuntimeVal>,
     arity: u16,
 ) {
-    registry.register_runtime_builtin(name, NativeFunction32::Plain(function), arity);
+    registry.register_runtime_builtin(name, NativeFunction::Plain(function), arity);
 }
 
 fn register_runtime_builtin_full_state(
     registry: &mut ModuleRegistry,
     name: &str,
-    function: fn(NativeArgs32<'_>, &mut NativeRuntime32<'_>) -> Result<RuntimeVal>,
+    function: fn(NativeArgs<'_>, &mut NativeRuntime<'_>) -> Result<RuntimeVal>,
     arity: u16,
 ) {
-    registry.register_runtime_builtin(name, NativeFunction32::FullState(function), arity);
+    registry.register_runtime_builtin(name, NativeFunction::FullState(function), arity);
 }
 
-fn print32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn print(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     print!("{}", format_variadic_runtime(args.as_slice(), runtime)?);
     Ok(RuntimeVal::Nil)
 }
 
-fn println32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn println(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     println!("{}", format_variadic_runtime(args.as_slice(), runtime)?);
     Ok(RuntimeVal::Nil)
 }
 
-fn panic32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn panic(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let mut msg = if args.is_empty() {
         "panic".to_string()
     } else {
@@ -215,7 +215,7 @@ fn panic32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     panic!("{}", msg);
 }
 
-fn spawn32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn spawn(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "spawn")?;
     let function = runtime_callable_arg(args.get(0).expect("arity checked"), runtime, "spawn argument")?;
     let mut ctx = runtime
@@ -226,7 +226,7 @@ fn spawn32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     let fut: core::pin::Pin<Box<dyn core::future::Future<Output = Result<RuntimePayload>> + Send>> =
         Box::pin(async move {
             let mut heap = HeapStore::new();
-            let result = call_runtime_callable32_runtime(function.as_ref(), &[], &mut heap, Some(&mut ctx))?;
+            let result = call_runtime_callable_runtime(function.as_ref(), &[], &mut heap, Some(&mut ctx))?;
             Ok(RuntimePayload::new(result, heap))
         });
 
@@ -240,7 +240,7 @@ fn spawn32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     )))))
 }
 
-fn chan32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chan(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     if args.is_empty() || args.len() > 2 {
         return Err(anyhow!("chan() expects 1 or 2 arguments: capacity[, type_str]"));
     }
@@ -278,7 +278,7 @@ fn chan32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     )))))
 }
 
-fn send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "send")?;
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], runtime.heap(), "send first argument")?;
@@ -288,7 +288,7 @@ fn send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     Ok(RuntimeVal::Bool(sent))
 }
 
-fn recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "recv")?;
     let channel_id = channel_id_arg(
         args.get(0).expect("arity checked"),
@@ -301,7 +301,7 @@ fn recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     runtime_list(vec![RuntimeVal::Bool(ok), value], runtime.heap_mut())
 }
 
-fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chan_try_send(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 2, "chan::try_send")?;
     let values = args.as_slice();
     let channel_id = channel_id_arg(&values[0], runtime.heap(), "chan::try_send first argument")?;
@@ -311,7 +311,7 @@ fn chan_try_send32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
     Ok(RuntimeVal::Bool(sent))
 }
 
-fn chan_try_recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chan_try_recv(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_runtime_arity(args, 1, "chan::try_recv")?;
     let channel_id = channel_id_arg(
         args.get(0).expect("arity checked"),
@@ -325,7 +325,7 @@ fn chan_try_recv32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) ->
     runtime_list(payload, runtime.heap_mut())
 }
 
-fn select_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn select_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     use rt::SelectOperation;
 
     expect_runtime_arity(args, 5, "select$block")?;
@@ -391,7 +391,7 @@ fn select_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
     )
 }
 
-fn format_variadic_runtime(args: &[RuntimeVal], runtime: &mut NativeRuntime32<'_>) -> Result<String> {
+fn format_variadic_runtime(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
     if args.is_empty() {
         return Ok(String::new());
     }
@@ -424,7 +424,7 @@ fn format_variadic_runtime(args: &[RuntimeVal], runtime: &mut NativeRuntime32<'_
     Ok(out)
 }
 
-fn join_runtime_display(args: &[RuntimeVal], runtime: &mut NativeRuntime32<'_>) -> Result<String> {
+fn join_runtime_display(args: &[RuntimeVal], runtime: &mut NativeRuntime<'_>) -> Result<String> {
     let mut out = String::new();
     for (index, value) in args.iter().enumerate() {
         if index > 0 {
@@ -435,14 +435,14 @@ fn join_runtime_display(args: &[RuntimeVal], runtime: &mut NativeRuntime32<'_>) 
     Ok(out)
 }
 
-fn runtime_display(value: &RuntimeVal, runtime: &mut NativeRuntime32<'_>) -> Result<String> {
+fn runtime_display(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<String> {
     if let Some(value) = runtime_display_show(value, runtime)? {
         return Ok(value);
     }
     runtime_display_value(value, runtime.heap())
 }
 
-fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime32<'_>) -> Result<Option<String>> {
+fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime<'_>) -> Result<Option<String>> {
     let Some(receiver_type) = runtime_display_receiver_type(value, runtime.heap()) else {
         return Ok(None);
     };
@@ -459,7 +459,7 @@ fn runtime_display_show(value: &RuntimeVal, runtime: &mut NativeRuntime32<'_>) -
     else {
         return Ok(None);
     };
-    let result = call_runtime_value32_runtime_with_receiver(method, value, &[], state, module, Some(ctx))?;
+    let result = call_runtime_value_runtime_with_receiver(method, value, &[], state, module, Some(ctx))?;
     runtime_string_maybe(&result, state.heap()).map(|value| value.map(|value| value.to_string()))
 }
 
@@ -493,9 +493,9 @@ fn runtime_string_maybe(value: &RuntimeVal, heap: &HeapStore) -> Result<Option<A
 
 fn runtime_callable_arg(
     value: &RuntimeVal,
-    runtime: &NativeRuntime32<'_>,
+    runtime: &NativeRuntime<'_>,
     context: &str,
-) -> Result<Arc<lk_core::vm::RuntimeCallable32>> {
+) -> Result<Arc<lk_core::vm::RuntimeCallable>> {
     let RuntimeVal::Obj(handle) = value else {
         return Err(anyhow!("{context} must be a runtime callable"));
     };
@@ -504,9 +504,9 @@ fn runtime_callable_arg(
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?;
     match callable {
-        HeapValue::Callable(CallableValue::Runtime32(function)) => Ok(Arc::clone(function)),
+        HeapValue::Callable(CallableValue::Runtime(function)) => Ok(Arc::clone(function)),
         HeapValue::Callable(CallableValue::Closure { .. }) => {
-            Err(anyhow!("{context} closure requires active RuntimeModuleState32"))
+            Err(anyhow!("{context} closure requires active RuntimeModuleState"))
         }
         _ => Err(anyhow!("{context} must be a runtime callable")),
     }
@@ -655,7 +655,7 @@ pub(crate) fn typed_list_from_values(values: Vec<RuntimeVal>, heap: &HeapStore) 
     }
 }
 
-fn expect_runtime_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_runtime_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         Ok(())
     } else {
@@ -722,7 +722,7 @@ fn lk_dir_path() -> std::path::PathBuf {
 #[cfg(test)]
 mod runtime_registration_tests {
     use super::*;
-    use lk_core::{val::Type, vm::RuntimeModuleState32};
+    use lk_core::{val::Type, vm::RuntimeModuleState};
 
     #[test]
     fn named_registration_includes_only_requested_modules() {
@@ -745,7 +745,7 @@ mod runtime_registration_tests {
 
     #[test]
     fn select_block_reads_typed_control_lists_without_materializing_inactive_values() -> Result<()> {
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let channel_id = rt::with_runtime(|runtime| runtime.create_channel(Some(1)))?;
         let channel = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::Channel(Arc::new(ChannelValue {
             id: channel_id,
@@ -764,9 +764,9 @@ mod runtime_registration_tests {
             );
         let guards = RuntimeVal::Obj(state.heap_mut().alloc(HeapValue::List(TypedList::Bool(vec![false]))));
         let args = [types, channels, values, guards, RuntimeVal::Bool(true)];
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
 
-        let result = select_block32(NativeArgs32::new(&args), &mut runtime)?;
+        let result = select_block(NativeArgs::new(&args), &mut runtime)?;
 
         let RuntimeVal::Obj(handle) = result else {
             panic!("select$block should return list object");

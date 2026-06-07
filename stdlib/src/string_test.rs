@@ -9,13 +9,10 @@ mod tests {
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
         val::{HeapStore, HeapValue, RuntimeVal, ShortStr, TypedList},
-        vm::{
-            NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32,
-            VmContext,
-        },
+        vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, ProgramResult, RuntimeModuleState, VmContext},
     };
 
-    fn execute_string32(source: &str) -> Result<Program32Result> {
+    fn execute_string(source: &str) -> Result<ProgramResult> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -24,10 +21,10 @@ mod tests {
         register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
-        program.execute32_with_ctx(&mut env)
+        program.execute_with_ctx(&mut env)
     }
 
-    fn string_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn string_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&StringModule::new(), name)
     }
 
@@ -54,7 +51,7 @@ mod tests {
 
     #[test]
     fn test_string_len() -> Result<()> {
-        let result = execute_string32("import string; return string.len(\"hello\");")?;
+        let result = execute_string("import string; return string.len(\"hello\");")?;
         assert_eq!(result.first_return(), &RuntimeVal::Int(5));
 
         Ok(())
@@ -62,7 +59,7 @@ mod tests {
 
     #[test]
     fn test_string_lower() -> Result<()> {
-        let result = execute_string32("import string; return string.lower(\"HELLO\");")?;
+        let result = execute_string("import string; return string.lower(\"HELLO\");")?;
         assert_eq!(runtime_str(result.first_return(), result.state.heap()), Some("hello"));
 
         Ok(())
@@ -70,13 +67,13 @@ mod tests {
 
     #[test]
     fn test_string_method_sugar() -> Result<()> {
-        let result = execute_string32("return \"hello\".len();")?;
+        let result = execute_string("return \"hello\".len();")?;
         assert_eq!(result.first_return(), &RuntimeVal::Int(5));
         Ok(())
     }
 
     #[test]
-    fn test_string_functions_use_runtime_native32_abi() -> Result<()> {
+    fn test_string_functions_use_runtime_native_abi() -> Result<()> {
         for name in [
             "len",
             "lower",
@@ -97,19 +94,19 @@ mod tests {
         ] {
             let (arity, function) = string_native(name)?;
             assert!(
-                matches!(function, NativeFunction32::Plain(_)),
-                "{name} should use plain RuntimeNative32"
+                matches!(function, NativeFunction::Plain(_)),
+                "{name} should use plain RuntimeNative"
             );
             assert_ne!(
                 arity,
-                NativeEntry32::VARIADIC,
+                NativeEntry::VARIADIC,
                 "{name} should have fixed positional arity"
             );
         }
         for name in ["replace", "find", "format"] {
             let (arity, function) = string_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
-            assert_eq!(arity, NativeEntry32::VARIADIC);
+            assert!(matches!(function, NativeFunction::Plain(_)));
+            assert_eq!(arity, NativeEntry::VARIADIC);
         }
         Ok(())
     }
@@ -123,7 +120,7 @@ mod tests {
             let positional = string.replace("lollipop", "l", "x");
             return [named, named_all, positional];
         "#;
-        let result = execute_string32(source)?;
+        let result = execute_string(source)?;
         let TypedList::String(values) = runtime_list(result.first_return(), result.state.heap()) else {
             panic!("expected typed string list");
         };
@@ -151,13 +148,13 @@ mod tests {
             runtime_string_value("a", &mut heap),
         ];
         let (_, function) = string_native("replace").expect("replace native");
-        let NativeFunction32::Plain(function) = function else {
-            panic!("replace should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("replace should use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::new(heap, Vec::new());
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
+        let mut state = RuntimeModuleState::new(heap, Vec::new());
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
         let err = function(
-            NativeArgs32::new_with_named_stack(&[source], &named_args, 0, 3),
+            NativeArgs::new_with_named_stack(&[source], &named_args, 0, 3),
             &mut runtime,
         )
         .expect_err("duplicate named arguments should error");
@@ -167,14 +164,14 @@ mod tests {
     #[test]
     fn test_string_substring_out_of_bounds_error() {
         let source = "import string; return string.substring(\"abc\", 10, 1);";
-        let err = execute_string32(source).expect_err("out-of-bounds substring should error");
+        let err = execute_string(source).expect_err("out-of-bounds substring should error");
         assert!(err.to_string().contains("start index out of bounds"));
     }
 
     #[test]
     fn test_string_join_rejects_non_string_items() {
         let source = "import string; return string.join([\"ok\", 123], \",\");";
-        let err = execute_string32(source).expect_err("non-string list elements should error");
+        let err = execute_string(source).expect_err("non-string list elements should error");
         assert!(err.to_string().contains("list must contain only strings"));
     }
 
@@ -184,12 +181,12 @@ mod tests {
         let input = runtime_string_value("hello", &mut heap);
         let suffix = runtime_string_value("lo", &mut heap);
         let (_, function) = string_native("ends_with")?;
-        let NativeFunction32::Plain(function) = function else {
-            panic!("ends_with should use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            panic!("ends_with should use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::new(heap, Vec::new());
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        let result = function(NativeArgs32::new(&[input, suffix]), &mut runtime)?;
+        let mut state = RuntimeModuleState::new(heap, Vec::new());
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        let result = function(NativeArgs::new(&[input, suffix]), &mut runtime)?;
         assert_eq!(result, RuntimeVal::Bool(true));
         Ok(())
     }

@@ -6,7 +6,7 @@ use crate::{
             native_static_map_delete, native_static_set_index,
         },
     },
-    vm::{ConstRuntimeValue32Data, RuntimeMapKeyData},
+    vm::{ConstRuntimeValueData, RuntimeMapKeyData},
 };
 
 pub(super) fn emit_native_map_builtin(
@@ -113,7 +113,7 @@ pub(in crate::llvm) fn emit_native_map_set(args: &[NativeStraightlineValue]) -> 
 }
 
 fn native_static_map_list_value(
-    elements: Vec<ConstRuntimeValue32Data>,
+    elements: Vec<ConstRuntimeValueData>,
     method: &str,
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
@@ -126,13 +126,13 @@ fn native_static_map_list_value(
     })
 }
 
-fn native_map_key_arg(key: &RuntimeMapKeyData) -> Option<ConstRuntimeValue32Data> {
+fn native_map_key_arg(key: &RuntimeMapKeyData) -> Option<ConstRuntimeValueData> {
     match key {
-        RuntimeMapKeyData::Nil => Some(ConstRuntimeValue32Data::Nil),
-        RuntimeMapKeyData::Bool(value) => Some(ConstRuntimeValue32Data::Bool(*value)),
-        RuntimeMapKeyData::Int(value) => Some(ConstRuntimeValue32Data::Int(*value)),
+        RuntimeMapKeyData::Nil => Some(ConstRuntimeValueData::Nil),
+        RuntimeMapKeyData::Bool(value) => Some(ConstRuntimeValueData::Bool(*value)),
+        RuntimeMapKeyData::Int(value) => Some(ConstRuntimeValueData::Int(*value)),
         RuntimeMapKeyData::ShortStr(value) | RuntimeMapKeyData::String(value) => {
-            Some(ConstRuntimeValue32Data::ShortStr(value.clone()))
+            Some(ConstRuntimeValueData::ShortStr(value.clone()))
         }
         RuntimeMapKeyData::Obj(_) => None,
     }

@@ -1,6 +1,6 @@
 use crate::{
     llvm::straightline_value::{NativeStraightlineValue, native_static_value_eq},
-    vm::ConstRuntimeValue32Data,
+    vm::ConstRuntimeValueData,
 };
 
 pub(super) fn emit_native_arg_list_method(
@@ -150,14 +150,14 @@ fn native_arg_list_optional_usize(value: Option<&NativeStraightlineValue>) -> Op
     }
 }
 
-fn native_const_list_usize_value(value: &ConstRuntimeValue32Data) -> Option<usize> {
+fn native_const_list_usize_value(value: &ConstRuntimeValueData) -> Option<usize> {
     match value {
-        ConstRuntimeValue32Data::Int(index) => usize::try_from(*index).ok(),
+        ConstRuntimeValueData::Int(index) => usize::try_from(*index).ok(),
         _ => None,
     }
 }
 
-fn native_const_list_optional_usize(value: Option<&ConstRuntimeValue32Data>) -> Option<Option<usize>> {
+fn native_const_list_optional_usize(value: Option<&ConstRuntimeValueData>) -> Option<Option<usize>> {
     match value {
         Some(value) => native_const_list_usize_value(value).map(Some),
         None => Some(None),
@@ -180,7 +180,7 @@ fn native_arg_list_i64_arg(value: &NativeStraightlineValue) -> Option<usize> {
             _ => None,
         },
         NativeStraightlineValue::List { elements, .. } => match elements.as_slice() {
-            [ConstRuntimeValue32Data::Int(index)] => usize::try_from(*index).ok(),
+            [ConstRuntimeValueData::Int(index)] => usize::try_from(*index).ok(),
             _ => None,
         },
         _ => None,

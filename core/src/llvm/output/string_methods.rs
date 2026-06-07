@@ -4,7 +4,7 @@ use crate::{
         ir_text::llvm_float_literal,
         straightline_value::{NativeStraightlineValue, native_runtime_const_value},
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data},
+    vm::{ConstHeapValueData, ConstRuntimeValueData},
 };
 
 use super::native_static_string_value;
@@ -136,7 +136,7 @@ fn emit_native_string_chars(
     };
     let elements = string_arg(value)?
         .chars()
-        .map(|ch| ConstRuntimeValue32Data::ShortStr(ch.to_string()))
+        .map(|ch| ConstRuntimeValueData::ShortStr(ch.to_string()))
         .collect::<Vec<_>>();
     let symbol = format!("@lk_string_chars_{}", *ssa_index);
     *ssa_index += 1;
@@ -191,7 +191,7 @@ fn emit_native_string_split(
     };
     let elements = parts
         .into_iter()
-        .map(ConstRuntimeValue32Data::ShortStr)
+        .map(ConstRuntimeValueData::ShortStr)
         .collect::<Vec<_>>();
     let symbol = format!("@lk_string_split_{}", *ssa_index);
     *ssa_index += 1;
@@ -363,11 +363,11 @@ fn string_arg(value: &NativeStraightlineValue) -> Option<String> {
     }
 }
 
-fn const_string_arg(value: &ConstRuntimeValue32Data) -> Option<String> {
+fn const_string_arg(value: &ConstRuntimeValueData) -> Option<String> {
     match value {
-        ConstRuntimeValue32Data::ShortStr(value) => Some(value.clone()),
-        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
-            ConstHeapValue32Data::LongString(value) => Some(value.clone()),
+        ConstRuntimeValueData::ShortStr(value) => Some(value.clone()),
+        ConstRuntimeValueData::Heap(value) => match value.as_ref() {
+            ConstHeapValueData::LongString(value) => Some(value.clone()),
             _ => None,
         },
         _ => None,

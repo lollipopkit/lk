@@ -1,7 +1,7 @@
 // File import demo
 // Run from project root: lk examples/syntax/import.lk
 
-import "general/fib";
+import "../general/fib";
 
 const iters = 50000;
 const n = 30;

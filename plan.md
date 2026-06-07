@@ -15,9 +15,9 @@ benchmark 只在新 VM 闭环后恢复。
 - 最新性能基线记录在 `bench/README.md`。
 - 当前已知主要成本来自 runtime call/stack、heap-value movement、container backing、
   string/global/context 映射和通用 dispatch 成本。
-- 继续减少几条 Instr32 指令或新增 benchmark-shaped fused op 不是主线。
-- `Executor32` closure call 已迁到共享 stack window；后续 call 工作继续收窄跨 runtime/module
-  边界的必要复制，而不是恢复独立 `Frame32` 热路径。
+- 继续减少几条 Instr 指令或新增 benchmark-shaped fused op 不是主线。
+- `Executor` closure call 已迁到共享 stack window；后续 call 工作继续收窄跨 runtime/module
+  边界的必要复制，而不是恢复独立 `Frame` 热路径。
 
 ## 硬规则
 
@@ -55,12 +55,12 @@ benchmark 只在新 VM 闭环后恢复。
 - 默认 `gc_threshold` 从 1024 次 heap allocation 起步，后续可改为按 live heap 自适应增长；
   回收后重置 `alloc_since_gc`，空槽进入 `free_list`。
 - 根集合由 executor 在 GC 触发点组装：
-  `RuntimeModuleState32.globals`、共享 register stack 的 `0..stack_top` 活跃区、
-  当前 executor captures、handler stack 中的错误值、`RuntimeExport32`/`RuntimeCallable32`
+  `RuntimeModuleState.globals`、共享 register stack 的 `0..stack_top` 活跃区、
+  当前 executor captures、handler stack 中的错误值、`RuntimeExport`/`RuntimeCallable`
   持有的 shared state。
 - 标记阶段必须递归展开所有 `HeapRef`：
   `TypedList::Mixed`、`TypedMap::Mixed/StringMixed`、`RuntimeObject.fields`、
-  `Callable::Closure.captures`、`Callable::Runtime32` 关联 state、`UpvalCell`、`ErrorVal.trace`
+  `Callable::Closure.captures`、`Callable::Runtime` 关联 state、`UpvalCell`、`ErrorVal.trace`
   中未来可能持有的对象值。
 - `TypedList::Int/Float/Bool/String` 和 `TypedMap::StringInt/StringFloat/StringBool` 不含
   `HeapRef`，只需标记容器对象本身。
@@ -69,12 +69,12 @@ benchmark 只在新 VM 闭环后恢复。
 
 ### 3. Canonical Bytecode IR
 
-- 新 runtime IR 是唯一的 `Vec<Instr32>`。
+- 新 runtime IR 是唯一的 `Vec<Instr>`。
 - 指令固定 32-bit，支持 `ABC`、`ABx`、`AsBx`、`Ax`、`sJ`，超限用 `EXTRA/WIDE`。
 - 常量池拆成 typed const pool：int、float、string、heap value。
 - AST operator 只保留语法层 `BinOp` / `UnaryOp`；runtime 不恢复旧 `Op` instruction enum。
 - 删除 workload-shaped opcode，例如 `ListFoldAdd`、`MapValuesFoldAdd`、`AddRangeCountImm`。
-- 新增 VM 语义指令只进入 `Instr32`：
+- 新增 VM 语义指令只进入 `Instr`：
   `LoadCellVal(dst, cell)`、`StoreCellVal(cell, src)`、`TryBegin(catch_reg, catch_offset)`、
   `TryEnd`。
 - `LoadCellVal`/`StoreCellVal` 只操作 `HeapValue::UpvalCell`。传入非 cell 对象是 VM 错误。
@@ -82,9 +82,9 @@ benchmark 只在新 VM 闭环后恢复。
 
 ### 4. Compiler Pipeline
 
-- 新链路：AST/HIR -> SSA/MIR facts -> register allocation -> `Instr32`。
+- 新链路：AST/HIR -> SSA/MIR facts -> register allocation -> `Instr`。
 - `PerformanceFacts` 是纯静态编译期产物，只由 SSA/MIR、type facts、escape/liveness 分析和
-  lowering 生成；executor 只可读取随 `Function32` 固化的 lowering facts，不允许读取 runtime
+  lowering 生成；executor 只可读取随 `Function` 固化的 lowering facts，不允许读取 runtime
   profiler 或 feedback。
 - `PerformanceFacts` 是布局决策源：register kind、container kind、escape、call shape、
   branch/test shape、move/clone 偏好、dead write。
@@ -97,11 +97,11 @@ benchmark 只在新 VM 闭环后恢复。
 
 ### 5. Execution Model
 
-- 新 executor 只执行 `Instr32`。
-- `RuntimeModuleState32` 持有共享寄存器栈：
+- 新 executor 只执行 `Instr`。
+- `RuntimeModuleState` 持有共享寄存器栈：
   `stack: Vec<RuntimeVal>`、`stack_top: usize`。初始容量为 256，自然增长，不主动 shrink。
-- `Executor32` 持有 `frame_base: usize`、`captures`、`pc`、`handler_stack` 和当前
-  `RuntimeModuleState32`；执行路径不再持有独立 `Frame32`。
+- `Executor` 持有 `frame_base: usize`、`captures`、`pc`、`handler_stack` 和当前
+  `RuntimeModuleState`；执行路径不再持有独立 `Frame`。
 - register 读写映射为 `state.stack[frame_base + reg]`。
 - call 前保存 caller `frame_base` 和 `stack_top`，在共享 stack 上分配 callee window：
   `new_base = stack_top`，按需 resize 到 `new_base + callee.register_count`，参数复制到 callee
@@ -112,7 +112,7 @@ benchmark 只在新 VM 闭环后恢复。
   caller stack slice；只有跨 runtime heap/module 边界才复制必要对象。
 - typed arithmetic/comparison/branch 直接读写紧凑 `RuntimeVal` 或 typed backing，不走 quickening。
 - inline cache 只保留动态边界：call、global slot、map/list shape、access。
-- `Frame32` 可短期保留为测试辅助或旧路径对照，但不能再作为新 executor 热路径的数据结构。
+- `Frame` 可短期保留为测试辅助或旧路径对照，但不能再作为新 executor 热路径的数据结构。
 
 ### 6. Closure And Upvalue
 
@@ -146,7 +146,7 @@ benchmark 只在新 VM 闭环后恢复。
 - 顶层局部默认是 frame/local slot，不再持续同步到 `VmContext`。
 - `VmContext` 只负责 export、module-visible、native-visible 状态。
 - global access 改为 slot/handle lookup，并支持 inline cache。
-- `RuntimeExport32` 和跨模块 `RuntimeCallable32` 必须显式持有 shared runtime state；跨 heap 导入时
+- `RuntimeExport` 和跨模块 `RuntimeCallable` 必须显式持有 shared runtime state；跨 heap 导入时
   复制普通 value，但 closure 导入转换为携带 source state 的 runtime callable。
 
 ## 执行顺序
@@ -154,25 +154,25 @@ benchmark 只在新 VM 闭环后恢复。
 1. 建立新 `RuntimeVal`/`HeapValue`/`Callable`/typed container 模型及单测，包含 `UpvalCell` 和
    `ErrorVal`。
 2. 建立 slot-based `HeapStore`、GC 标记遍历 helper、root collection helper 及单测。
-3. 建立 `Instr32`、typed const pool、encoder/decoder/disassembler 单测，加入 cell/handler 指令。
+3. 建立 `Instr`、typed const pool、encoder/decoder/disassembler 单测，加入 cell/handler 指令。
 4. 合并推进 compiler 和 executor：先建立最小 executor skeleton，再让 compiler 输出可运行
-   `Instr32`。每迁移一个 feature，都同步扩展 compiler、executor 和端到端单测。
+   `Instr`。每迁移一个 feature，都同步扩展 compiler、executor 和端到端单测。
 5. 最小可运行路径必须覆盖 literal/load、move、int/float arithmetic、branch、closure call、
    return。之后依次恢复 container、index、string、global、named call、native call。
-6. 重构 shared stack call ABI，移除 closure call 中 per-call `Frame32`/`Vec` 分配，并继续收窄跨
+6. 重构 shared stack call ABI，移除 closure call 中 per-call `Frame`/`Vec` 分配，并继续收窄跨
    runtime/module 边界复制。
 7. 实现 closure upvalue cell，恢复可变捕获语义。
 8. 实现 per-task STW GC 触发点和 root collection。
 9. 实现 VM handler stack、`TryBegin`/`TryEnd`、`Raise` handler 路径。
 10. 重构 global/context slot、typed container fast path。
 11. 新 VM 的 call ABI、global slot、typed container、GC root、upvalue 全部验证后，继续确认旧
-    `Op` runtime、BC32、packed executor、quickening、旧 fused op 无源码残留，且不得作为
+    `Op` runtime、bytecode、packed executor、quickening、旧 fused op 无源码残留，且不得作为
     compatibility layer 恢复。
 12. 新 VM 闭环后继续恢复 CLI、coverage、bench 和 LLVM true native AOT 覆盖；LLVM/AOT 不恢复
-    Instr32 artifact shell、host executable launcher、LKB 或旧 AOT callable bridge。最终 native binary
-    可链接 Rust `std`、libc/libm 和小型 typed `lkrt` native runtime，但不得嵌入 `Module32Artifact`、
-    Instr32 executor、`VmContext`、parser、type checker 或 compiler。暂未 native-lowerable 的 shape
-    必须明确报错，直到基于 `Module32Artifact` 编译期边界、typed native ABI 和 monomorphized
+    bytecode artifact shell、host executable launcher、LKB 或旧 AOT callable bridge。最终 native binary
+    可链接 Rust `std`、libc/libm 和小型 typed `lkrt` native runtime，但不得嵌入 `ModuleArtifact`、
+    bytecode executor、`VmContext`、parser、type checker 或 compiler。暂未 native-lowerable 的 shape
+    必须明确报错，直到基于 `ModuleArtifact` 编译期边界、typed native ABI 和 monomorphized
     stdlib lowering 完成真正 native 设计。
 
 ## 测试策略

@@ -7,7 +7,7 @@ use crate::{
         },
         straightline_value::{NativeStraightlineValue, native_static_truthy},
     },
-    vm::Instr32,
+    vm::Instr,
 };
 
 pub(super) fn emit_test_block(
@@ -15,9 +15,9 @@ pub(super) fn emit_test_block(
     skip_static_pcs: &mut [bool],
     static_boundaries: &[bool],
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -74,7 +74,7 @@ pub(super) fn emit_test_block(
     true
 }
 
-fn test_targets(pc: usize, instr: Instr32, code_len: usize) -> Option<(usize, usize)> {
+fn test_targets(pc: usize, instr: Instr, code_len: usize) -> Option<(usize, usize)> {
     let fallthrough = pc + 1;
     let relative = native_relative_target(pc, instr.c() as i8 as i32, code_len)?;
     let truthy_target = if instr.b() != 0 { fallthrough } else { relative };

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::vm::{ConstHeapValue32Data, Function32Data, Instr32, Module32Artifact, Opcode32};
+use crate::vm::{ConstHeapValueData, FunctionData, Instr, ModuleArtifact, Opcode};
 
 use crate::llvm::{
     dynamic_containers::{
@@ -24,7 +24,7 @@ enum I64ListParamKind {
 }
 
 pub(in crate::llvm) fn compile_native_i64_list_subfunction(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     function_index: usize,
 ) -> Result<Option<String>> {
     let Some(function) = artifact.module.functions.get(function_index) else {
@@ -37,7 +37,7 @@ pub(in crate::llvm) fn compile_native_i64_list_subfunction(
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
     else {
         return Ok(None);
@@ -59,10 +59,10 @@ pub(in crate::llvm) fn compile_native_i64_list_subfunction(
 }
 
 fn compile_native_i64_list_subfunction_profile(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     function_index: usize,
-    function: &Function32Data,
-    code: &[Instr32],
+    function: &FunctionData,
+    code: &[Instr],
     param_profile: &[I64ListParamKind],
 ) -> Result<Option<String>> {
     let register_count = function.register_count as usize;
@@ -103,7 +103,7 @@ fn compile_native_i64_list_subfunction_profile(
         }
     }
     for (pc, instr) in code.iter().copied().enumerate() {
-        if i64_list_alloca_needed(function, instr) || matches!(instr.opcode(), Opcode32::Call) {
+        if i64_list_alloca_needed(function, instr) || matches!(instr.opcode(), Opcode::Call) {
             emit_dynamic_int_list_allocas(&mut ir, &format!("list{pc}"));
         }
     }
@@ -150,15 +150,15 @@ fn compile_native_i64_list_subfunction_profile(
         }
         emitted_terminator = false;
         match instr.opcode() {
-            Opcode32::Nop => {}
-            Opcode32::Jmp => {
+            Opcode::Nop => {}
+            Opcode::Jmp => {
                 let Some(target) = native_relative_target(pc, instr.sj_arg(), code_len) else {
                     return Ok(None);
                 };
                 ir.push_str(&format!("  br label {}\n", native_label(target, code_len)));
                 emitted_terminator = true;
             }
-            Opcode32::Test => {
+            Opcode::Test => {
                 let value = next_tmp(&mut tmp_index);
                 let cond = next_tmp(&mut tmp_index);
                 ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
@@ -176,14 +176,14 @@ fn compile_native_i64_list_subfunction_profile(
                 ));
                 emitted_terminator = true;
             }
-            Opcode32::LoadInt => {
+            Opcode::LoadInt => {
                 let Some(value) = function.consts.ints.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
                 ir.push_str(&format!("  store i64 {value}, ptr %r{}.slot\n", instr.a()));
                 static_regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(value.to_string()));
             }
-            Opcode32::LoadString => {
+            Opcode::LoadString => {
                 let Some(value) = function.consts.strings.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -194,7 +194,7 @@ fn compile_native_i64_list_subfunction_profile(
                     key_kind: crate::llvm::straightline_value::NativeStringKeyKind::Short,
                 });
             }
-            Opcode32::GetGlobal => {
+            Opcode::GetGlobal => {
                 let Some(name) = artifact.module.globals.get(instr.bx() as usize) else {
                     return Ok(None);
                 };
@@ -203,8 +203,8 @@ fn compile_native_i64_list_subfunction_profile(
                     return Ok(None);
                 }
             }
-            Opcode32::LoadHeapConst => {
-                let Some(ConstHeapValue32Data::List(values)) = function.consts.heap_values.get(instr.bx() as usize)
+            Opcode::LoadHeapConst => {
+                let Some(ConstHeapValueData::List(values)) = function.consts.heap_values.get(instr.bx() as usize)
                 else {
                     return Ok(None);
                 };
@@ -219,12 +219,12 @@ fn compile_native_i64_list_subfunction_profile(
                     element: NativeListElementKind::I64,
                 });
             }
-            Opcode32::Move => {
+            Opcode::Move => {
                 if emit_move(&mut ir, &mut static_regs, function_index, instr, &mut tmp_index)?.is_none() {
                     return Ok(None);
                 }
             }
-            Opcode32::Len => {
+            Opcode::Len => {
                 let Some(NativeStraightlineValue::DynamicList { id, .. }) =
                     static_regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
@@ -235,16 +235,16 @@ fn compile_native_i64_list_subfunction_profile(
                 ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
                 static_regs[instr.a() as usize] = None;
             }
-            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
+            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
                 emit_i64_binary_block(&mut ir, instr, &mut tmp_index);
                 static_regs[instr.a() as usize] = None;
             }
-            Opcode32::CmpInt
-            | Opcode32::CmpNeInt
-            | Opcode32::CmpLtInt
-            | Opcode32::CmpLeInt
-            | Opcode32::CmpGtInt
-            | Opcode32::CmpGeInt => {
+            Opcode::CmpInt
+            | Opcode::CmpNeInt
+            | Opcode::CmpLtInt
+            | Opcode::CmpLeInt
+            | Opcode::CmpGtInt
+            | Opcode::CmpGeInt => {
                 emit_numeric_compare_block(
                     &mut ir,
                     instr,
@@ -254,7 +254,7 @@ fn compile_native_i64_list_subfunction_profile(
                 );
                 static_regs[instr.a() as usize] = None;
             }
-            Opcode32::GetIndex => {
+            Opcode::GetIndex => {
                 let Some(NativeStraightlineValue::DynamicList { id, .. }) =
                     static_regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
@@ -263,7 +263,7 @@ fn compile_native_i64_list_subfunction_profile(
                 emit_dynamic_int_list_get(&mut ir, id, instr.a(), instr.c(), &mut tmp_index);
                 static_regs[instr.a() as usize] = None;
             }
-            Opcode32::ListPush => {
+            Opcode::ListPush => {
                 let Some(NativeStraightlineValue::DynamicList { id, .. }) =
                     static_regs.get(instr.a() as usize).and_then(Clone::clone)
                 else {
@@ -271,12 +271,12 @@ fn compile_native_i64_list_subfunction_profile(
                 };
                 emit_dynamic_int_list_push(&mut ir, id, instr.b(), &mut tmp_index);
             }
-            Opcode32::NewList => {
+            Opcode::NewList => {
                 if !emit_new_list(&mut ir, &mut static_regs, function_index, instr, pc, &mut tmp_index)? {
                     return Ok(None);
                 }
             }
-            Opcode32::Call => {
+            Opcode::Call => {
                 let Some(NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod)) =
                     static_regs.get(instr.b() as usize).and_then(Clone::clone)
                 else {
@@ -286,7 +286,7 @@ fn compile_native_i64_list_subfunction_profile(
                     return Ok(None);
                 }
             }
-            Opcode32::Return => {
+            Opcode::Return => {
                 let Some(NativeStraightlineValue::DynamicList { id, .. }) =
                     static_regs.get(instr.a() as usize).and_then(Clone::clone)
                 else {
@@ -317,7 +317,7 @@ fn emit_move(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
     function_index: usize,
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) -> Result<Option<()>> {
     if let Some(NativeStraightlineValue::DynamicList { id: src_id, element }) =
@@ -341,7 +341,7 @@ fn emit_new_list(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
     function_index: usize,
-    instr: Instr32,
+    instr: Instr,
     _pc: usize,
     tmp_index: &mut usize,
 ) -> Result<bool> {
@@ -389,8 +389,8 @@ fn emit_new_list(
 fn emit_i64_list_core_method(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
-    instr: Instr32,
+    code: &[Instr],
+    instr: Instr,
     pc: usize,
     tmp_index: &mut usize,
 ) -> Option<()> {
@@ -443,17 +443,17 @@ fn i64_list_reg_id(function_index: usize, reg: usize) -> usize {
     I64_LIST_REG_BASE + function_index.saturating_mul(256) + reg
 }
 
-fn i64_list_alloca_needed(function: &Function32Data, instr: Instr32) -> bool {
-    matches!(instr.opcode(), Opcode32::NewList)
-        || matches!(instr.opcode(), Opcode32::LoadHeapConst)
+fn i64_list_alloca_needed(function: &FunctionData, instr: Instr) -> bool {
+    matches!(instr.opcode(), Opcode::NewList)
+        || matches!(instr.opcode(), Opcode::LoadHeapConst)
             && matches!(
                 function.consts.heap_values.get(instr.bx() as usize),
-                Some(ConstHeapValue32Data::List(values)) if values.is_empty()
+                Some(ConstHeapValueData::List(values)) if values.is_empty()
             )
 }
 
-fn i64_list_return_like(function: &Function32Data, code: &[Instr32]) -> bool {
-    code.iter().any(|instr| instr.opcode() == Opcode32::ListPush)
+fn i64_list_return_like(function: &FunctionData, code: &[Instr]) -> bool {
+    code.iter().any(|instr| instr.opcode() == Opcode::ListPush)
         || function
             .consts
             .strings
@@ -477,7 +477,7 @@ fn i64_list_function_name(function_index: usize, profile: &[I64ListParamKind]) -
 }
 
 fn i64_list_param_profiles(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     function_index: usize,
     param_count: usize,
 ) -> Vec<Vec<I64ListParamKind>> {
@@ -487,13 +487,13 @@ fn i64_list_param_profiles(
             .code
             .iter()
             .copied()
-            .map(Instr32::try_from_raw)
+            .map(Instr::try_from_raw)
             .collect::<Result<Vec<_>, _>>()
         else {
             continue;
         };
         for (pc, instr) in code.iter().copied().enumerate() {
-            if instr.opcode() != Opcode32::CallDirect
+            if instr.opcode() != Opcode::CallDirect
                 || instr.b() as usize != function_index
                 || instr.c() as usize != param_count
             {
@@ -515,8 +515,8 @@ fn i64_list_param_profiles(
 }
 
 fn callsite_i64_list_param_kind(
-    function: &Function32Data,
-    code: &[Instr32],
+    function: &FunctionData,
+    code: &[Instr],
     pc: usize,
     reg: u8,
 ) -> Option<I64ListParamKind> {
@@ -530,12 +530,12 @@ fn callsite_i64_list_param_kind(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::Move if prev.b() != reg => callsite_i64_list_param_kind(function, code, prev_pc, prev.b()),
-            Opcode32::LoadHeapConst
+            Opcode::Move if prev.b() != reg => callsite_i64_list_param_kind(function, code, prev_pc, prev.b()),
+            Opcode::LoadHeapConst
                 if matches!(
                     function.consts.heap_values.get(prev.bx() as usize),
-                    Some(ConstHeapValue32Data::List(values))
-                        if values.iter().all(|value| matches!(value, crate::vm::ConstRuntimeValue32Data::Int(_)))
+                    Some(ConstHeapValueData::List(values))
+                        if values.iter().all(|value| matches!(value, crate::vm::ConstRuntimeValueData::Int(_)))
                 ) =>
             {
                 Some(I64ListParamKind::List)
@@ -546,7 +546,7 @@ fn callsite_i64_list_param_kind(
     None
 }
 
-fn single_arg_list_source_reg_before(code: &[Instr32], pc: usize, reg: u8) -> Option<u8> {
+fn single_arg_list_source_reg_before(code: &[Instr], pc: usize, reg: u8) -> Option<u8> {
     let start = pc.saturating_sub(16);
     for prev_pc in (start..pc).rev() {
         let prev = code.get(prev_pc).copied()?;
@@ -554,24 +554,24 @@ fn single_arg_list_source_reg_before(code: &[Instr32], pc: usize, reg: u8) -> Op
             continue;
         }
         return match prev.opcode() {
-            Opcode32::Move if prev.b() != reg => single_arg_list_source_reg_before(code, prev_pc, prev.b()),
-            Opcode32::NewList if prev.c() == 1 => Some(prev.b()),
+            Opcode::Move if prev.b() != reg => single_arg_list_source_reg_before(code, prev_pc, prev.b()),
+            Opcode::NewList if prev.c() == 1 => Some(prev.b()),
             _ => None,
         };
     }
     None
 }
 
-fn find_block_targets(code: &[Instr32], code_len: usize) -> Vec<usize> {
+fn find_block_targets(code: &[Instr], code_len: usize) -> Vec<usize> {
     let mut targets = vec![0];
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
-            Opcode32::Jmp => {
+            Opcode::Jmp => {
                 if let Some(target) = native_relative_target(pc, instr.sj_arg(), code_len) {
                     targets.push(target);
                 }
             }
-            Opcode32::Test => {
+            Opcode::Test => {
                 if let Some(relative) = native_relative_target(pc, instr.c() as i8 as i32, code_len) {
                     targets.push(relative);
                     targets.push(pc + 1);

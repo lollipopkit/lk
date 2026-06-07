@@ -216,7 +216,7 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
 
             let mut parser = StmtParser::new_with_spans(&tokens, &spans);
             match parser.parse_program_with_enhanced_errors(&src) {
-                Ok(program) => program.execute32_with_ctx(&mut env),
+                Ok(program) => program.execute_with_ctx(&mut env),
                 Err(parse_err) => {
                     // Attempt to treat input as expression: println((<src>));
                     // Normalize to avoid tokenizer merging '+'/'-' with following digits in binary contexts.
@@ -226,7 +226,7 @@ pub fn run(_is_statement_mode: bool) -> anyhow::Result<()> {
                         Ok((wtoks, wspans)) => {
                             let mut wparser = StmtParser::new_with_spans(&wtoks, &wspans);
                             match wparser.parse_program_with_enhanced_errors(&wrapped) {
-                                Ok(wprog) => wprog.execute32_with_ctx(&mut env),
+                                Ok(wprog) => wprog.execute_with_ctx(&mut env),
                                 Err(_expr_err) => {
                                     diagnostic::parse_error(&parse_err, &src);
                                     continue;

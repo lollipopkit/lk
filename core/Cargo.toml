@@ -13,6 +13,7 @@ crate-type = ["rlib", "staticlib"]
 [features]
 default = ["llvm"]
 llvm = ["dep:llvm-tools"]
+vm-profile = []
 
 [dependencies]
 anyhow = { workspace = true }

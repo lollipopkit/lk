@@ -1,26 +1,26 @@
 use crate::{
-    llvm::{LlvmBackendOptions, compile_module32_artifact_to_llvm, compile_program_to_llvm},
+    llvm::{LlvmBackendOptions, compile_module_artifact_to_llvm, compile_program_to_llvm},
     stmt::import::collect_program_imports,
     stmt::stmt_parser::StmtParser,
     token::Tokenizer,
     vm::{
-        Compiler32, ConstHeapValue32Data, ConstPool32Data, ConstRuntimeValue32Data, Function32Data, Instr32,
-        MODULE32_ARTIFACT_VERSION, Module32Artifact, Module32Data, Opcode32, RuntimeMapKeyData,
+        Compiler, ConstHeapValueData, ConstPoolData, ConstRuntimeValueData, FunctionData, Instr,
+        MODULE_ARTIFACT_VERSION, ModuleArtifact, ModuleData, Opcode, RuntimeMapKeyData,
     },
 };
 
 #[test]
-fn llvm_backend_lowers_static_string_not_to_match_exec32() {
+fn llvm_backend_lowers_static_string_not_to_match_exec() {
     let tokens = Tokenizer::tokenize(r#"return !("ok");"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["println"]).expect("compile module");
-    let module = Module32Artifact::new(collect_program_imports(&program), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["println"]).expect("compile module");
+    let module = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_str_fmt"));
 }
 
@@ -38,19 +38,19 @@ fn llvm_backend_lowers_optional_template_string_print_without_artifact_shell() {
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["println"]).expect("compile module");
-    let module = Module32Artifact::new(collect_program_imports(&program), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["println"]).expect("compile module");
+    let module = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("present.slot"));
     assert!(artifact.module.ir.contains("select i1"));
     assert!(artifact.module.ir.contains("@lk_nil_text"));
 }
 
 #[test]
-fn llvm_backend_rejects_static_list_not_to_match_exec32() {
+fn llvm_backend_rejects_static_list_not_to_match_exec() {
     let tokens = Tokenizer::tokenize("return !([1, 2, 3]);").expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
@@ -69,8 +69,8 @@ fn llvm_backend_lowers_non_string_contains_string_to_false_without_artifact_shel
 
     let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_bool_false"));
     assert!(artifact.module.ir.contains("i64 0"));
 }
@@ -82,8 +82,8 @@ fn llvm_backend_lowers_static_string_starts_with_without_artifact_shell() {
 
     let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_bool_true"));
 }
 
@@ -94,8 +94,8 @@ fn llvm_backend_lowers_static_split_join_without_artifact_shell() {
 
     let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_str_fmt"));
     assert!(artifact.module.ir.contains("c\"a|b|c\\00\""));
 }
@@ -105,13 +105,26 @@ fn llvm_backend_lowers_static_string_list_get_without_artifact_shell() {
     let tokens = Tokenizer::tokenize(r#"let xs = ["a", "b"]; return xs.get(1);"#).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module = Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method"])
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method"])
         .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("c\"b\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_source_static_string_get_index_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize(r#"return "abcd".1;"#).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
     assert!(artifact.module.ir.contains("c\"b\\00\""));
 }
 
@@ -126,14 +139,13 @@ fn llvm_backend_lowers_static_string_list_take_skip_concat_without_artifact_shel
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
-            .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
+        .expect("compile module");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("c\"[a, b, c]\\00\""));
 }
 
@@ -149,13 +161,13 @@ fn llvm_backend_lowers_static_list_unique_zip_flatten_chunk_without_artifact_she
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module = Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method"])
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method"])
         .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(
         artifact
             .module
@@ -171,36 +183,65 @@ fn llvm_backend_lowers_string_key_map_contains_int_key_without_artifact_shell() 
 
     let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_bool_true"));
 }
 
 #[test]
+fn llvm_backend_lowers_simple_const_map_return_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize(r#"return {"a": 1, "b": true};"#).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("@lk_const_heap_map_0"));
+    assert!(artifact.module.ir.contains("c\"{a: 1, b: true}\\00\""));
+}
+
+#[test]
+fn llvm_backend_lowers_static_new_map_without_artifact_shell() {
+    let tokens = Tokenizer::tokenize(r#"let value = 42; return {"answer": value};"#).expect("tokens");
+    let program = StmtParser::new(&tokens).parse_program().expect("program");
+
+    let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
+
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
+    assert!(artifact.module.ir.contains("@lk_str_fmt"));
+    assert!(artifact.module.ir.contains("@lk_new_map_"));
+    assert!(artifact.module.ir.contains("c\"{answer: 42}\\00\""));
+}
+
+#[test]
 fn llvm_backend_lowers_string_key_map_index_across_short_and_heap_keys_without_artifact_shell() {
-    let artifact = Module32Artifact {
-        format: "lk.module32".to_string(),
-        version: MODULE32_ARTIFACT_VERSION,
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
-        module: Module32Data {
+        module: ModuleData {
             entry: 0,
             globals: Vec::new(),
-            functions: vec![Function32Data {
-                consts: ConstPool32Data {
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
                     ints: Vec::new(),
                     floats: Vec::new(),
                     strings: vec!["a".to_string()],
-                    heap_values: vec![ConstHeapValue32Data::Map(vec![(
+                    heap_values: vec![ConstHeapValueData::Map(vec![(
                         RuntimeMapKeyData::String("a".to_string()),
-                        ConstRuntimeValue32Data::Int(42),
+                        ConstRuntimeValueData::Int(42),
                     )])],
                 },
                 code: vec![
-                    Instr32::abx(Opcode32::LoadHeapConst, 0, 0).raw(),
-                    Instr32::abx(Opcode32::LoadString, 1, 0).raw(),
-                    Instr32::abc(Opcode32::GetIndex, 2, 0, 1).raw(),
-                    Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 1, 0).raw(),
+                    Instr::abc(Opcode::GetIndex, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
                 ],
+                performance: Default::default(),
                 register_count: 3,
                 param_count: 0,
                 positional_param_count: 0,
@@ -210,45 +251,46 @@ fn llvm_backend_lowers_string_key_map_index_across_short_and_heap_keys_without_a
         },
     };
 
-    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_i64_fmt"));
     assert!(artifact.module.ir.contains("i64 42"));
 }
 
 #[test]
 fn llvm_backend_lowers_string_key_map_equality_across_short_and_heap_keys_without_artifact_shell() {
-    let artifact = Module32Artifact {
-        format: "lk.module32".to_string(),
-        version: MODULE32_ARTIFACT_VERSION,
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
-        module: Module32Data {
+        module: ModuleData {
             entry: 0,
             globals: Vec::new(),
-            functions: vec![Function32Data {
-                consts: ConstPool32Data {
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
                     ints: Vec::new(),
                     floats: Vec::new(),
                     strings: Vec::new(),
                     heap_values: vec![
-                        ConstHeapValue32Data::Map(vec![(
+                        ConstHeapValueData::Map(vec![(
                             RuntimeMapKeyData::ShortStr("a".to_string()),
-                            ConstRuntimeValue32Data::Int(42),
+                            ConstRuntimeValueData::Int(42),
                         )]),
-                        ConstHeapValue32Data::Map(vec![(
+                        ConstHeapValueData::Map(vec![(
                             RuntimeMapKeyData::String("a".to_string()),
-                            ConstRuntimeValue32Data::Int(42),
+                            ConstRuntimeValueData::Int(42),
                         )]),
                     ],
                 },
                 code: vec![
-                    Instr32::abx(Opcode32::LoadHeapConst, 0, 0).raw(),
-                    Instr32::abx(Opcode32::LoadHeapConst, 1, 1).raw(),
-                    Instr32::abc(Opcode32::CmpInt, 2, 0, 1).raw(),
-                    Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadHeapConst, 1, 1).raw(),
+                    Instr::abc(Opcode::CmpInt, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
                 ],
+                performance: Default::default(),
                 register_count: 3,
                 param_count: 0,
                 positional_param_count: 0,
@@ -258,47 +300,48 @@ fn llvm_backend_lowers_string_key_map_equality_across_short_and_heap_keys_withou
         },
     };
 
-    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_bool_true"));
 }
 
 #[test]
 fn llvm_backend_lowers_mixed_map_set_index_with_exact_string_key_semantics_without_artifact_shell() {
-    let artifact = Module32Artifact {
-        format: "lk.module32".to_string(),
-        version: MODULE32_ARTIFACT_VERSION,
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
-        module: Module32Data {
+        module: ModuleData {
             entry: 0,
             globals: Vec::new(),
-            functions: vec![Function32Data {
-                consts: ConstPool32Data {
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
                     ints: vec![9],
                     floats: Vec::new(),
                     strings: vec!["a".to_string()],
                     heap_values: vec![
-                        ConstHeapValue32Data::Map(vec![
+                        ConstHeapValueData::Map(vec![
                             (
                                 RuntimeMapKeyData::String("a".to_string()),
-                                ConstRuntimeValue32Data::Int(1),
+                                ConstRuntimeValueData::Int(1),
                             ),
-                            (RuntimeMapKeyData::Int(7), ConstRuntimeValue32Data::Int(0)),
+                            (RuntimeMapKeyData::Int(7), ConstRuntimeValueData::Int(0)),
                         ]),
-                        ConstHeapValue32Data::LongString("a".to_string()),
+                        ConstHeapValueData::LongString("a".to_string()),
                     ],
                 },
                 code: vec![
-                    Instr32::abx(Opcode32::LoadHeapConst, 0, 0).raw(),
-                    Instr32::abx(Opcode32::LoadString, 1, 0).raw(),
-                    Instr32::abx(Opcode32::LoadInt, 2, 0).raw(),
-                    Instr32::abc(Opcode32::SetIndex, 0, 1, 2).raw(),
-                    Instr32::abx(Opcode32::LoadHeapConst, 3, 1).raw(),
-                    Instr32::abc(Opcode32::GetIndex, 4, 0, 3).raw(),
-                    Instr32::abc(Opcode32::Return, 4, 1, 0).raw(),
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 1, 0).raw(),
+                    Instr::abx(Opcode::LoadInt, 2, 0).raw(),
+                    Instr::abc(Opcode::SetIndex, 0, 1, 2).raw(),
+                    Instr::abx(Opcode::LoadHeapConst, 3, 1).raw(),
+                    Instr::abc(Opcode::GetIndex, 4, 0, 3).raw(),
+                    Instr::abc(Opcode::Return, 4, 1, 0).raw(),
                 ],
+                performance: Default::default(),
                 register_count: 5,
                 param_count: 0,
                 positional_param_count: 0,
@@ -308,36 +351,37 @@ fn llvm_backend_lowers_mixed_map_set_index_with_exact_string_key_semantics_witho
         },
     };
 
-    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_i64_fmt"));
     assert!(artifact.module.ir.contains("i64 1"));
 }
 
 #[test]
 fn llvm_backend_lowers_const_string_concat_without_artifact_shell() {
-    let artifact = Module32Artifact {
-        format: "lk.module32".to_string(),
-        version: MODULE32_ARTIFACT_VERSION,
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
-        module: Module32Data {
+        module: ModuleData {
             entry: 0,
             globals: Vec::new(),
-            functions: vec![Function32Data {
-                consts: ConstPool32Data {
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
                     ints: Vec::new(),
                     floats: Vec::new(),
                     strings: vec!["hello, ".into(), "native".into()],
                     heap_values: Vec::new(),
                 },
                 code: vec![
-                    Instr32::abx(Opcode32::LoadString, 0, 0).raw(),
-                    Instr32::abx(Opcode32::LoadString, 1, 1).raw(),
-                    Instr32::abc(Opcode32::ConcatString, 2, 0, 1).raw(),
-                    Instr32::abc(Opcode32::Return, 2, 1, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 1, 1).raw(),
+                    Instr::abc(Opcode::ConcatString, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::Return, 2, 1, 0).raw(),
                 ],
+                performance: Default::default(),
                 register_count: 3,
                 param_count: 0,
                 positional_param_count: 0,
@@ -347,37 +391,38 @@ fn llvm_backend_lowers_const_string_concat_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_concat_str_0"));
     assert!(artifact.module.ir.contains("c\"hello, native\\00\""));
 }
 
 #[test]
 fn llvm_backend_lowers_static_tostring_concat_without_artifact_shell() {
-    let artifact = Module32Artifact {
-        format: "lk.module32".to_string(),
-        version: MODULE32_ARTIFACT_VERSION,
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
-        module: Module32Data {
+        module: ModuleData {
             entry: 0,
             globals: Vec::new(),
-            functions: vec![Function32Data {
-                consts: ConstPool32Data {
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
                     ints: vec![42],
                     floats: Vec::new(),
                     strings: vec!["answer ".into()],
                     heap_values: Vec::new(),
                 },
                 code: vec![
-                    Instr32::abx(Opcode32::LoadString, 0, 0).raw(),
-                    Instr32::abx(Opcode32::LoadInt, 1, 0).raw(),
-                    Instr32::abc(Opcode32::ToString, 2, 1, 0).raw(),
-                    Instr32::abc(Opcode32::ConcatString, 3, 0, 2).raw(),
-                    Instr32::abc(Opcode32::Return, 3, 1, 0).raw(),
+                    Instr::abx(Opcode::LoadString, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadInt, 1, 0).raw(),
+                    Instr::abc(Opcode::ToString, 2, 1, 0).raw(),
+                    Instr::abc(Opcode::ConcatString, 3, 0, 2).raw(),
+                    Instr::abc(Opcode::Return, 3, 1, 0).raw(),
                 ],
+                performance: Default::default(),
                 register_count: 4,
                 param_count: 0,
                 positional_param_count: 0,
@@ -387,37 +432,38 @@ fn llvm_backend_lowers_static_tostring_concat_without_artifact_shell() {
         },
     };
 
-    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_concat_str_1"));
     assert!(artifact.module.ir.contains("c\"answer 42\\00\""));
 }
 
 #[test]
 fn llvm_backend_lowers_static_float_divisor_zero_tostring_guard_without_artifact_shell() {
-    let artifact = Module32Artifact {
-        format: "lk.module32".to_string(),
-        version: MODULE32_ARTIFACT_VERSION,
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
-        module: Module32Data {
+        module: ModuleData {
             entry: 0,
             globals: Vec::new(),
-            functions: vec![Function32Data {
-                consts: ConstPool32Data {
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
                     ints: Vec::new(),
                     floats: vec![1.0, 0.0],
                     strings: Vec::new(),
                     heap_values: Vec::new(),
                 },
                 code: vec![
-                    Instr32::abx(Opcode32::LoadFloat, 0, 0).raw(),
-                    Instr32::abx(Opcode32::LoadFloat, 1, 1).raw(),
-                    Instr32::abc(Opcode32::DivFloat, 2, 0, 1).raw(),
-                    Instr32::abc(Opcode32::ToString, 3, 2, 0).raw(),
-                    Instr32::abc(Opcode32::Return, 3, 1, 0).raw(),
+                    Instr::abx(Opcode::LoadFloat, 0, 0).raw(),
+                    Instr::abx(Opcode::LoadFloat, 1, 1).raw(),
+                    Instr::abc(Opcode::DivFloat, 2, 0, 1).raw(),
+                    Instr::abc(Opcode::ToString, 3, 2, 0).raw(),
+                    Instr::abc(Opcode::Return, 3, 1, 0).raw(),
                 ],
+                performance: Default::default(),
                 register_count: 4,
                 param_count: 0,
                 positional_param_count: 0,
@@ -427,35 +473,36 @@ fn llvm_backend_lowers_static_float_divisor_zero_tostring_guard_without_artifact
         },
     };
 
-    let artifact = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
+    let artifact = compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect("llvm");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("fcmp oeq double"));
     assert!(artifact.module.ir.contains("lk_divisor_zero:"));
 }
 
 #[test]
-fn llvm_backend_rejects_static_list_tostring_to_match_exec32() {
-    let artifact = Module32Artifact {
-        format: "lk.module32".to_string(),
-        version: MODULE32_ARTIFACT_VERSION,
+fn llvm_backend_rejects_static_list_tostring_to_match_exec() {
+    let artifact = ModuleArtifact {
+        format: "lk.module".to_string(),
+        version: MODULE_ARTIFACT_VERSION,
         imports: Vec::new(),
-        module: Module32Data {
+        module: ModuleData {
             entry: 0,
             globals: Vec::new(),
-            functions: vec![Function32Data {
-                consts: ConstPool32Data {
+            functions: vec![FunctionData {
+                consts: ConstPoolData {
                     ints: Vec::new(),
                     floats: Vec::new(),
                     strings: Vec::new(),
-                    heap_values: vec![ConstHeapValue32Data::List(vec![ConstRuntimeValue32Data::Int(1)])],
+                    heap_values: vec![ConstHeapValueData::List(vec![ConstRuntimeValueData::Int(1)])],
                 },
                 code: vec![
-                    Instr32::abx(Opcode32::LoadHeapConst, 0, 0).raw(),
-                    Instr32::abc(Opcode32::ToString, 1, 0, 0).raw(),
-                    Instr32::abc(Opcode32::Return, 1, 1, 0).raw(),
+                    Instr::abx(Opcode::LoadHeapConst, 0, 0).raw(),
+                    Instr::abc(Opcode::ToString, 1, 0, 0).raw(),
+                    Instr::abc(Opcode::Return, 1, 1, 0).raw(),
                 ],
+                performance: Default::default(),
                 register_count: 2,
                 param_count: 0,
                 positional_param_count: 0,
@@ -465,8 +512,8 @@ fn llvm_backend_rejects_static_list_tostring_to_match_exec32() {
         },
     };
 
-    let err = compile_module32_artifact_to_llvm(&artifact, LlvmBackendOptions::default())
-        .expect_err("unsupported llvm shape");
+    let err =
+        compile_module_artifact_to_llvm(&artifact, LlvmBackendOptions::default()).expect_err("unsupported llvm shape");
 
     assert!(
         err.to_string().contains("LLVM native lowering does not support"),
@@ -481,8 +528,8 @@ fn llvm_backend_lowers_source_template_string_with_static_values_without_shell()
 
     let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("c\"answer=42, ratio=1.5, ok=true\\00\""));
 }
 
@@ -493,8 +540,8 @@ fn llvm_backend_lowers_source_template_string_with_static_numeric_arithmetic_wit
 
     let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("c\"sum=3, ratio=3.75\\00\""));
 }
 
@@ -505,8 +552,8 @@ fn llvm_backend_lowers_source_template_string_with_static_comparisons_without_sh
 
     let artifact = compile_program_to_llvm(&program, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("c\"lt=true, eq=true, ne=true\\00\""));
 }
 
@@ -525,13 +572,13 @@ fn llvm_backend_lowers_branch_template_string_optional_compare_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module = Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "println"])
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "println"])
         .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("call i32 @strcmp"));
     assert!(
         !artifact
@@ -556,14 +603,13 @@ fn llvm_backend_lowers_direct_missing_map_get_nil_compare_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
-            .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
+        .expect("compile module");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains(".present.slot"));
 }
 
@@ -580,12 +626,12 @@ fn llvm_backend_lowers_template_expression_compare_without_shell() {
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic"]).expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic"]).expect("compile module");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("call i32 @strcmp"));
 }
 
@@ -612,13 +658,13 @@ fn llvm_backend_lowers_dynamic_string_int_map_set_call_without_shell() {
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method", "map"])
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method", "map"])
             .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_set_string_int_map"));
 }
 
@@ -636,13 +682,13 @@ fn llvm_backend_lowers_static_map_set_call_without_shell() {
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method", "map"])
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method", "map"])
             .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_bool_true"));
 }
 
@@ -657,13 +703,13 @@ fn llvm_backend_lowers_string_value_map_set_get_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module = Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "map"])
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["__lk_call_method", "map"])
         .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("[true, x, [x], [{}, x]]"));
 }
 
@@ -695,14 +741,13 @@ fn llvm_backend_lowers_string_list_sort_ptr_list_call_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
-            .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
+        .expect("compile module");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_fn_2_list") || artifact.module.ir.contains("@lk_fn_1_list"));
     assert!(artifact.module.ir.contains("@lk_take_ptr_list"));
     assert!(artifact.module.ir.contains("@lk_concat_ptr_list"));
@@ -741,14 +786,13 @@ fn llvm_backend_lowers_i64_list_direct_call_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
-            .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
+        .expect("compile module");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_fn_2_i64_list") || artifact.module.ir.contains("@lk_fn_1_i64_list"));
     assert!(artifact.module.ir.contains("@lk_slice_i64_list"));
 }
@@ -770,14 +814,13 @@ fn llvm_backend_lowers_i64_list_take_concat_inline_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
-            .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
+        .expect("compile module");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_take_i64_list"));
     assert!(artifact.module.ir.contains("@lk_concat_i64_list"));
 }
@@ -794,14 +837,13 @@ fn llvm_backend_lowers_i64_range_chain_arglist_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
-            .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
+        .expect("compile module");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("@lk_concat_i64_list"));
 }
 
@@ -820,14 +862,13 @@ fn llvm_backend_lowers_i64_list_map_filter_zip_arglists_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
-            .expect("compile module");
-    let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module = Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
+        .expect("compile module");
+    let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
 }
 
 #[test]
@@ -842,14 +883,14 @@ fn llvm_backend_lowers_static_list_display_return_methods_without_shell() {
         let program = StmtParser::new(&tokens).parse_program().expect("program");
 
         let module =
-            Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
+            Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method"])
                 .expect("compile module");
-        let module = Module32Artifact::new(Vec::new(), &module).expect("artifact");
-        let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default())
+        let module = ModuleArtifact::new(Vec::new(), &module).expect("artifact");
+        let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default())
             .unwrap_or_else(|err| panic!("llvm artifact for {source}: {err}"));
 
-        assert!(!artifact.module.ir.contains("@lk_module32_json"));
-        assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+        assert!(!artifact.module.ir.contains("@lk_module_json"));
+        assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
         assert!(artifact.module.ir.contains(expected), "{source}");
     }
 }
@@ -867,17 +908,14 @@ fn llvm_backend_lowers_iter_flatten_mixed_arglist_without_shell() {
     let tokens = Tokenizer::tokenize(source).expect("tokens");
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
-    let module = Compiler32::compile_module_with_natives_and_globals(
-        &program,
-        Vec::new(),
-        ["panic", "__lk_call_method", "iter"],
-    )
-    .expect("compile module");
-    let module = Module32Artifact::new(collect_program_imports(&program), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+    let module =
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic", "__lk_call_method", "iter"])
+            .expect("compile module");
+    let module = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
 }
 
 #[test]
@@ -892,12 +930,12 @@ fn llvm_backend_lowers_io_stderr_to_fd_two_without_shell() {
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["io"]).expect("compile module");
-    let module = Module32Artifact::new(collect_program_imports(&program), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["io"]).expect("compile module");
+    let module = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("call i64 @write(i32 2"));
 }
 
@@ -916,12 +954,12 @@ fn llvm_backend_lowers_for_destructured_string_list_compare_without_shell() {
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic"]).expect("compile module");
-    let module = Module32Artifact::new(collect_program_imports(&program), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic"]).expect("compile module");
+    let module = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("ptr_list_cmp"));
     assert!(artifact.module.ir.contains("call i32 @strcmp"));
 }
@@ -940,12 +978,12 @@ fn llvm_backend_lowers_string_iteration_char_list_compare_without_shell() {
     let program = StmtParser::new(&tokens).parse_program().expect("program");
 
     let module =
-        Compiler32::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic"]).expect("compile module");
-    let module = Module32Artifact::new(collect_program_imports(&program), &module).expect("artifact");
-    let artifact = compile_module32_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["panic"]).expect("compile module");
+    let module = ModuleArtifact::new(collect_program_imports(&program), &module).expect("artifact");
+    let artifact = compile_module_artifact_to_llvm(&module, LlvmBackendOptions::default()).expect("llvm artifact");
 
-    assert!(!artifact.module.ir.contains("@lk_module32_json"));
-    assert!(!artifact.module.ir.contains("lk_rt_run_module32_json"));
+    assert!(!artifact.module.ir.contains("@lk_module_json"));
+    assert!(!artifact.module.ir.contains("lk_rt_run_module_json"));
     assert!(artifact.module.ir.contains("ptr_list_cmp"));
     assert!(artifact.module.ir.contains("call i32 @strcmp"));
 }

@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 use lk_core::{
-    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     val::{HeapStore, HeapValue, RuntimeVal, TypedList},
-    vm::{NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32},
+    vm::{NativeArgs, NativeEntry, NativeRuntime, RuntimeExport},
 };
 
 use crate::runtime_native::{runtime_display_value, runtime_string_arg, runtime_string_value};
@@ -24,42 +24,42 @@ impl StringModule {
         Self
     }
 
-    fn len32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn len(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "len()")?;
         Ok(RuntimeVal::Int(value.len() as i64))
     }
 
-    fn lower32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn lower(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "lower()")?;
         Ok(runtime_string_value(&value.to_lowercase(), runtime.heap_mut()))
     }
 
-    fn upper32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn upper(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "upper()")?;
         Ok(runtime_string_value(&value.to_uppercase(), runtime.heap_mut()))
     }
 
-    fn trim32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn trim(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "trim()")?;
         Ok(runtime_string_value(value.trim(), runtime.heap_mut()))
     }
 
-    fn starts_with32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn starts_with(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, prefix) = two_strings(args, runtime, "starts_with()")?;
         Ok(RuntimeVal::Bool(value.starts_with(prefix.as_ref())))
     }
 
-    fn ends_with32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn ends_with(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, suffix) = two_strings(args, runtime, "ends_with()")?;
         Ok(RuntimeVal::Bool(value.ends_with(suffix.as_ref())))
     }
 
-    fn contains32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn contains(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, needle) = two_strings(args, runtime, "contains()")?;
         Ok(RuntimeVal::Bool(value.contains(needle.as_ref())))
     }
 
-    fn replace32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn replace(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let pos = args.as_slice();
         if pos.is_empty() {
             bail!("replace() requires at least the source string as the first argument");
@@ -127,7 +127,7 @@ impl StringModule {
         Ok(runtime_string_value(&result, runtime.heap_mut()))
     }
 
-    fn substring32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn substring(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 3, "substring()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "substring() first argument")?;
@@ -140,7 +140,7 @@ impl StringModule {
         Ok(runtime_string_value(&value[start..end], runtime.heap_mut()))
     }
 
-    fn split32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn split(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, delimiter) = two_strings(args, runtime, "split()")?;
         let mut parts = Vec::new();
         if delimiter.is_empty() {
@@ -157,7 +157,7 @@ impl StringModule {
         ))
     }
 
-    fn join32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn join(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "join()")?;
         let values = args.as_slice();
         let strings = string_list_arg(&values[0], runtime.heap(), "join() first argument")?;
@@ -168,7 +168,7 @@ impl StringModule {
         ))
     }
 
-    fn reverse32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn reverse(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "reverse()")?;
         let mut reversed = String::new();
         for value in value.chars().rev() {
@@ -177,7 +177,7 @@ impl StringModule {
         Ok(runtime_string_value(&reversed, runtime.heap_mut()))
     }
 
-    fn repeat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "repeat()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "repeat() first argument")?;
@@ -188,7 +188,7 @@ impl StringModule {
         Ok(runtime_string_value(&value.repeat(count as usize), runtime.heap_mut()))
     }
 
-    fn char_at32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn char_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "char()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "char() first argument")?;
@@ -198,7 +198,7 @@ impl StringModule {
         }))
     }
 
-    fn byte_at32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn byte_at(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 2, "byte()")?;
         let values = args.as_slice();
         let value = runtime_string_arg(&values[0], runtime.heap(), "byte() first argument")?;
@@ -209,7 +209,7 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |value| RuntimeVal::Int(*value as i64)))
     }
 
-    fn chars32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn chars(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "chars()")?;
         let mut chars = Vec::new();
         for value in value.chars() {
@@ -220,7 +220,7 @@ impl StringModule {
         ))
     }
 
-    fn find32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn find(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() != 2 && args.len() != 3 {
             bail!("find() takes 2 or 3 arguments: string, pattern[, start]");
         }
@@ -240,12 +240,12 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |index| RuntimeVal::Int((start + index) as i64)))
     }
 
-    fn is_empty32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn is_empty(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "is_empty()")?;
         Ok(RuntimeVal::Bool(value.is_empty()))
     }
 
-    fn format32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn format(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.is_empty() {
             bail!("format() requires at least 1 argument (format string)");
         }
@@ -282,7 +282,7 @@ impl StringModule {
         Ok(runtime_string_value(&out, runtime.heap_mut()))
     }
 
-    fn strip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn strip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, pattern) = two_strings(args, runtime, "strip()")?;
         Ok(value
             .strip_prefix(pattern.as_ref())
@@ -290,21 +290,21 @@ impl StringModule {
             .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
     }
 
-    fn strip_prefix32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn strip_prefix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, prefix) = two_strings(args, runtime, "strip_prefix()")?;
         Ok(value
             .strip_prefix(prefix.as_ref())
             .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
     }
 
-    fn strip_suffix32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn strip_suffix(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, suffix) = two_strings(args, runtime, "strip_suffix()")?;
         Ok(value
             .strip_suffix(suffix.as_ref())
             .map_or(RuntimeVal::Nil, |s| runtime_string_value(s, runtime.heap_mut())))
     }
 
-    fn count32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn count(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let (value, pattern) = two_strings(args, runtime, "count()")?;
         if pattern.is_empty() {
             // Count empty pattern matches between each char + at start and end
@@ -313,7 +313,7 @@ impl StringModule {
         Ok(RuntimeVal::Int(value.matches(pattern.as_ref()).count() as i64))
     }
 
-    fn pad_left32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn pad_left(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() < 2 || args.len() > 3 {
             bail!("pad_left() takes 2 or 3 arguments: string, width[, fill]");
         }
@@ -338,7 +338,7 @@ impl StringModule {
         Ok(runtime_string_value(&padded, runtime.heap_mut()))
     }
 
-    fn pad_right32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn pad_right(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         if args.len() < 2 || args.len() > 3 {
             bail!("pad_right() takes 2 or 3 arguments: string, width[, fill]");
         }
@@ -363,7 +363,7 @@ impl StringModule {
         Ok(runtime_string_value(&padded, runtime.heap_mut()))
     }
 
-    fn to_int32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn to_int(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 1, "to_int()")?;
         match &args.as_slice()[0] {
             RuntimeVal::Int(v) => Ok(RuntimeVal::Int(*v)),
@@ -373,7 +373,7 @@ impl StringModule {
         }
     }
 
-    fn to_float32(args: NativeArgs32<'_>, _runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn to_float(args: NativeArgs<'_>, _runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         expect_arity(args, 1, "to_float()")?;
         match &args.as_slice()[0] {
             RuntimeVal::Float(v) => Ok(RuntimeVal::Float(*v)),
@@ -383,7 +383,7 @@ impl StringModule {
         }
     }
 
-    fn title32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn title(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "title()")?;
         let mut result = String::with_capacity(value.len());
         let mut capitalize_next = true;
@@ -405,7 +405,7 @@ impl StringModule {
         Ok(runtime_string_value(&result, runtime.heap_mut()))
     }
 
-    fn capitalize32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+    fn capitalize(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
         let value = one_string(args, runtime, "capitalize()")?;
         let mut chars = value.chars();
         let mut result = String::with_capacity(value.len());
@@ -423,7 +423,7 @@ impl StringModule {
     }
 }
 
-impl Module for StringModule {
+impl ModuleProvider for StringModule {
     fn name(&self) -> &str {
         "string"
     }
@@ -436,45 +436,45 @@ impl Module for StringModule {
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::plain("len", Self::len32, 1),
-                RuntimeNativeExport32::plain("lower", Self::lower32, 1),
-                RuntimeNativeExport32::plain("upper", Self::upper32, 1),
-                RuntimeNativeExport32::plain("trim", Self::trim32, 1),
-                RuntimeNativeExport32::plain("starts_with", Self::starts_with32, 2),
-                RuntimeNativeExport32::plain("ends_with", Self::ends_with32, 2),
-                RuntimeNativeExport32::plain("contains", Self::contains32, 2),
-                RuntimeNativeExport32::plain("replace", Self::replace32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("substring", Self::substring32, 3),
-                RuntimeNativeExport32::plain("split", Self::split32, 2),
-                RuntimeNativeExport32::plain("join", Self::join32, 2),
-                RuntimeNativeExport32::plain("reverse", Self::reverse32, 1),
-                RuntimeNativeExport32::plain("repeat", Self::repeat32, 2),
-                RuntimeNativeExport32::plain("char", Self::char_at32, 2),
-                RuntimeNativeExport32::plain("byte", Self::byte_at32, 2),
-                RuntimeNativeExport32::plain("chars", Self::chars32, 1),
-                RuntimeNativeExport32::plain("find", Self::find32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("is_empty", Self::is_empty32, 1),
-                RuntimeNativeExport32::plain("format", Self::format32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("strip", Self::strip32, 2),
-                RuntimeNativeExport32::plain("strip_prefix", Self::strip_prefix32, 2),
-                RuntimeNativeExport32::plain("strip_suffix", Self::strip_suffix32, 2),
-                RuntimeNativeExport32::plain("count", Self::count32, 2),
-                RuntimeNativeExport32::plain("pad_left", Self::pad_left32, 3),
-                RuntimeNativeExport32::plain("pad_right", Self::pad_right32, 3),
-                RuntimeNativeExport32::plain("to_int", Self::to_int32, 1),
-                RuntimeNativeExport32::plain("to_float", Self::to_float32, 1),
-                RuntimeNativeExport32::plain("title", Self::title32, 1),
-                RuntimeNativeExport32::plain("capitalize", Self::capitalize32, 1),
+                RuntimeNativeExport::plain("len", Self::len, 1),
+                RuntimeNativeExport::plain("lower", Self::lower, 1),
+                RuntimeNativeExport::plain("upper", Self::upper, 1),
+                RuntimeNativeExport::plain("trim", Self::trim, 1),
+                RuntimeNativeExport::plain("starts_with", Self::starts_with, 2),
+                RuntimeNativeExport::plain("ends_with", Self::ends_with, 2),
+                RuntimeNativeExport::plain("contains", Self::contains, 2),
+                RuntimeNativeExport::plain("replace", Self::replace, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("substring", Self::substring, 3),
+                RuntimeNativeExport::plain("split", Self::split, 2),
+                RuntimeNativeExport::plain("join", Self::join, 2),
+                RuntimeNativeExport::plain("reverse", Self::reverse, 1),
+                RuntimeNativeExport::plain("repeat", Self::repeat, 2),
+                RuntimeNativeExport::plain("char", Self::char_at, 2),
+                RuntimeNativeExport::plain("byte", Self::byte_at, 2),
+                RuntimeNativeExport::plain("chars", Self::chars, 1),
+                RuntimeNativeExport::plain("find", Self::find, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("is_empty", Self::is_empty, 1),
+                RuntimeNativeExport::plain("format", Self::format, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("strip", Self::strip, 2),
+                RuntimeNativeExport::plain("strip_prefix", Self::strip_prefix, 2),
+                RuntimeNativeExport::plain("strip_suffix", Self::strip_suffix, 2),
+                RuntimeNativeExport::plain("count", Self::count, 2),
+                RuntimeNativeExport::plain("pad_left", Self::pad_left, 3),
+                RuntimeNativeExport::plain("pad_right", Self::pad_right, 3),
+                RuntimeNativeExport::plain("to_int", Self::to_int, 1),
+                RuntimeNativeExport::plain("to_float", Self::to_float, 1),
+                RuntimeNativeExport::plain("title", Self::title, 1),
+                RuntimeNativeExport::plain("capitalize", Self::capitalize, 1),
             ],
             &[],
         ))
     }
 }
 
-fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         Ok(())
     } else {
@@ -485,12 +485,12 @@ fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<(
     }
 }
 
-fn one_string(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<Arc<str>> {
+fn one_string(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<Arc<str>> {
     expect_arity(args, 1, name)?;
     runtime_string_arg(&args.as_slice()[0], runtime.heap(), name)
 }
 
-fn two_strings(args: NativeArgs32<'_>, runtime: &NativeRuntime32<'_>, name: &str) -> Result<(Arc<str>, Arc<str>)> {
+fn two_strings(args: NativeArgs<'_>, runtime: &NativeRuntime<'_>, name: &str) -> Result<(Arc<str>, Arc<str>)> {
     expect_arity(args, 2, name)?;
     let values = args.as_slice();
     Ok((

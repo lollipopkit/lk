@@ -200,7 +200,7 @@ impl TypeRegistry {
             // Only function values are valid implementations
             let mut actual_ty = match val {
                 RuntimeVal::Obj(_) => {
-                    // Runtime callable type info is validated elsewhere during the Instr32 migration.
+                    // Runtime callable type info is validated elsewhere during the Instr migration.
                     Type::Function {
                         params: Vec::new(),
                         named_params: Vec::new(),

@@ -1,12 +1,12 @@
 //! Diagnostic reasons for unsupported native-lowering shapes.
 //!
 //! Every function returns a human-readable reason string explaining why a
-//! particular `Module32Artifact` cannot be lowered to true native AOT.  The
+//! particular `ModuleArtifact` cannot be lowered to true native AOT.  The
 //! LLVM backend uses these to reject unsupported shapes instead of falling
-//! back to an Instr32 artifact shell or host launcher.
+//! back to an Instr artifact shell or host launcher.
 
 use crate::stmt::import::ImportStmt;
-use crate::vm::{Instr32, Module32Artifact, Opcode32};
+use crate::vm::{Instr, ModuleArtifact, Opcode};
 
 use super::scalar::facts::native_scalar_block_facts_with_statics_and_functions;
 use super::straightline_main::{
@@ -14,7 +14,7 @@ use super::straightline_main::{
 };
 use super::straightline_value::native_static_global;
 
-pub(crate) fn unsupported_module32_artifact_reason(artifact: &Module32Artifact) -> String {
+pub(crate) fn unsupported_module_artifact_reason(artifact: &ModuleArtifact) -> String {
     let Some(function) = artifact.module.functions.get(artifact.module.entry as usize) else {
         return format!("entry function {} is out of bounds", artifact.module.entry);
     };
@@ -29,7 +29,7 @@ pub(crate) fn unsupported_module32_artifact_reason(artifact: &Module32Artifact) 
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(code) => code,
@@ -70,53 +70,53 @@ pub(crate) fn unsupported_module32_artifact_reason(artifact: &Module32Artifact) 
     if let Some(reason) = unsupported_runtime_return_reason(function, artifact.module.globals.len(), &code) {
         return reason;
     }
-    "entry function contains an unsupported Instr32/native value shape".to_string()
+    "entry function contains an unsupported Instr/native value shape".to_string()
 }
 
 /// Check if a Call instruction's target register holds a statically known
 /// Function/Closure or Builtin target that the block compiler can handle.
 fn call_has_static_target(
     global_names: &[String],
-    function: &crate::vm::Function32Data,
+    function: &crate::vm::FunctionData,
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
 ) -> bool {
     // For Call/CallNamed: a is dest and also callee register (for Call, a == b for self-call;
     // for CallNamed, a holds the callable)
     let target_reg = instr.a();
     // Walk backwards through the bytecode to find the definition of target_reg
     for check_pc in (0..pc).rev() {
-        let Ok(check) = Instr32::try_from_raw(function.code[check_pc]) else {
+        let Ok(check) = Instr::try_from_raw(function.code[check_pc]) else {
             continue;
         };
         let defines_target = match check.opcode() {
-            Opcode32::Move => check.a() == target_reg,
-            Opcode32::GetGlobal => check.a() == target_reg,
-            Opcode32::GetIndex => check.a() == target_reg,
-            Opcode32::LoadFunction => check.a() == target_reg,
-            Opcode32::MakeClosure => check.a() == target_reg,
+            Opcode::Move => check.a() == target_reg,
+            Opcode::GetGlobal => check.a() == target_reg,
+            Opcode::GetIndex => check.a() == target_reg,
+            Opcode::LoadFunction => check.a() == target_reg,
+            Opcode::MakeClosure => check.a() == target_reg,
             _ => false,
         };
         if !defines_target {
             continue;
         }
         match check.opcode() {
-            Opcode32::GetGlobal => {
+            Opcode::GetGlobal => {
                 let name = global_names.get(check.bx() as usize).map(|s| s.as_str()).unwrap_or("");
                 return crate::llvm::straightline_value::native_static_global(name).is_some();
             }
-            Opcode32::Move => {
+            Opcode::Move => {
                 // Recursively trace through Move chains (r5 -> r1 -> r2 -> LoadFunction/MakeClosure).
                 // Create a synthetic instr with the source register as target_reg.
                 return call_has_static_target(
                     global_names,
                     function,
                     check_pc,
-                    Instr32::abc(Opcode32::Call, check.b(), check.b(), 0),
+                    Instr::abc(Opcode::Call, check.b(), check.b(), 0),
                 );
             }
-            Opcode32::GetIndex => return true,
-            Opcode32::LoadFunction | Opcode32::MakeClosure => return true,
+            Opcode::GetIndex => return true,
+            Opcode::LoadFunction | Opcode::MakeClosure => return true,
             _ => return false,
         }
     }
@@ -124,16 +124,16 @@ fn call_has_static_target(
 }
 
 fn unsupported_control_flow_call_reason(
-    artifact: &Module32Artifact,
-    function: &crate::vm::Function32Data,
-    code: &[Instr32],
+    artifact: &ModuleArtifact,
+    function: &crate::vm::FunctionData,
+    code: &[Instr],
 ) -> Option<String> {
     if let Some(reason) = unsupported_control_flow_direct_call_reason(artifact, function, code) {
         return Some(reason);
     }
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
-            Opcode32::Call => {
+            Opcode::Call => {
                 // Check if the target register holds a statically known Builtin (println, panic)
                 // or Function/Closure target. In that case the block compiler handles it.
                 if !call_has_static_target(artifact.module.globals.as_slice(), function, pc, instr) {
@@ -144,7 +144,7 @@ fn unsupported_control_flow_call_reason(
                     ));
                 }
             }
-            Opcode32::CallNamed => {
+            Opcode::CallNamed => {
                 // Check if the target register holds a statically known Function/Closure.
                 // The block compiler can handle this via emit_static_named_call.
                 if !call_has_static_target(artifact.module.globals.as_slice(), function, pc, instr) {
@@ -155,7 +155,7 @@ fn unsupported_control_flow_call_reason(
                     ));
                 }
             }
-            Opcode32::MakeClosure => {}
+            Opcode::MakeClosure => {}
             _ => {}
         }
     }
@@ -163,33 +163,33 @@ fn unsupported_control_flow_call_reason(
 }
 
 fn unsupported_runtime_return_reason(
-    function: &crate::vm::Function32Data,
+    function: &crate::vm::FunctionData,
     global_count: usize,
-    code: &[Instr32],
+    code: &[Instr],
 ) -> Option<String> {
     let mut callable_regs = vec![None; function.register_count as usize];
     let mut callable_globals = vec![None; global_count];
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
-            Opcode32::LoadFunction => {
+            Opcode::LoadFunction => {
                 *callable_regs.get_mut(instr.a() as usize)? = Some("function");
             }
-            Opcode32::MakeClosure => {
+            Opcode::MakeClosure => {
                 *callable_regs.get_mut(instr.a() as usize)? = Some("closure");
             }
-            Opcode32::Move => {
+            Opcode::Move => {
                 let value = *callable_regs.get(instr.b() as usize)?;
                 *callable_regs.get_mut(instr.a() as usize)? = value;
             }
-            Opcode32::SetGlobal => {
+            Opcode::SetGlobal => {
                 let value = *callable_regs.get(instr.a() as usize)?;
                 *callable_globals.get_mut(instr.bx() as usize)? = value;
             }
-            Opcode32::GetGlobal => {
+            Opcode::GetGlobal => {
                 let value = *callable_globals.get(instr.bx() as usize)?;
                 *callable_regs.get_mut(instr.a() as usize)? = value;
             }
-            Opcode32::Return if instr.b() == 1 => {
+            Opcode::Return if instr.b() == 1 => {
                 if let Some(kind) = callable_regs.get(instr.a() as usize).copied().flatten() {
                     return Some(format!(
                         "runtime callable returns are not native-lowerable yet: Return at pc {pc} returns a {kind} value from r{}",
@@ -197,7 +197,7 @@ fn unsupported_runtime_return_reason(
                     ));
                 }
             }
-            Opcode32::Return => {}
+            Opcode::Return => {}
             _ => {
                 if reg_writes_a(instr.opcode()) {
                     *callable_regs.get_mut(instr.a() as usize)? = None;
@@ -208,26 +208,26 @@ fn unsupported_runtime_return_reason(
     None
 }
 
-fn reg_writes_a(opcode: Opcode32) -> bool {
+fn reg_writes_a(opcode: Opcode) -> bool {
     !matches!(
         opcode,
-        Opcode32::SetGlobal
-            | Opcode32::SetIndex
-            | Opcode32::StoreCellVal
-            | Opcode32::TryBegin
-            | Opcode32::TryEnd
-            | Opcode32::Raise
-            | Opcode32::Test
-            | Opcode32::Jmp
-            | Opcode32::Return
-            | Opcode32::Nop
+        Opcode::SetGlobal
+            | Opcode::SetIndex
+            | Opcode::StoreCellVal
+            | Opcode::TryBegin
+            | Opcode::TryEnd
+            | Opcode::Raise
+            | Opcode::Test
+            | Opcode::Jmp
+            | Opcode::Return
+            | Opcode::Nop
     )
 }
 
-fn unsupported_scalar_block_opcode_reason(artifact: &Module32Artifact, code: &[Instr32]) -> Option<String> {
+fn unsupported_scalar_block_opcode_reason(artifact: &ModuleArtifact, code: &[Instr]) -> Option<String> {
     unsupported_scalar_block_opcode_reason_in_code(code).or_else(|| {
         for instr in code.iter().copied() {
-            if instr.opcode() != Opcode32::CallDirect {
+            if instr.opcode() != Opcode::CallDirect {
                 continue;
             }
             let function = artifact.module.functions.get(instr.b() as usize)?;
@@ -235,7 +235,7 @@ fn unsupported_scalar_block_opcode_reason(artifact: &Module32Artifact, code: &[I
                 .code
                 .iter()
                 .copied()
-                .map(Instr32::try_from_raw)
+                .map(Instr::try_from_raw)
                 .collect::<Result<Vec<_>, _>>()
                 .ok()?;
             if let Some(reason) = unsupported_scalar_block_opcode_reason_in_code(&callee_code) {
@@ -249,15 +249,15 @@ fn unsupported_scalar_block_opcode_reason(artifact: &Module32Artifact, code: &[I
     })
 }
 
-fn unsupported_scalar_block_opcode_reason_in_code(code: &[Instr32]) -> Option<String> {
+fn unsupported_scalar_block_opcode_reason_in_code(code: &[Instr]) -> Option<String> {
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
-            Opcode32::NewMap => {
+            Opcode::NewMap => {
                 return Some(format!(
                     "control-flow NewMap at pc {pc} needs native typed container construction lowering"
                 ));
             }
-            Opcode32::NewRange => {
+            Opcode::NewRange => {
                 return Some(format!(
                     "control-flow {:?} at pc {pc} needs native container/string lowering",
                     instr.opcode()
@@ -270,12 +270,12 @@ fn unsupported_scalar_block_opcode_reason_in_code(code: &[Instr32]) -> Option<St
 }
 
 fn unsupported_control_flow_direct_call_reason(
-    artifact: &Module32Artifact,
-    function: &crate::vm::Function32Data,
-    code: &[Instr32],
+    artifact: &ModuleArtifact,
+    function: &crate::vm::FunctionData,
+    code: &[Instr],
 ) -> Option<String> {
     for (pc, instr) in code.iter().copied().enumerate() {
-        if instr.opcode() != Opcode32::CallDirect {
+        if instr.opcode() != Opcode::CallDirect {
             continue;
         }
         let callee = instr.b() as usize;
@@ -304,18 +304,18 @@ fn unsupported_control_flow_direct_call_reason(
     None
 }
 
-fn unsupported_runtime_global_names(artifact: &Module32Artifact, code: &[Instr32]) -> Option<Vec<String>> {
+fn unsupported_runtime_global_names(artifact: &ModuleArtifact, code: &[Instr]) -> Option<Vec<String>> {
     let mut seeded_globals = vec![false; artifact.module.globals.len()];
     let imported_names = imported_global_names(&artifact.imports);
     let mut names = Vec::new();
     for instr in code {
         match instr.opcode() {
-            Opcode32::SetGlobal => {
+            Opcode::SetGlobal => {
                 if let Some(seeded) = seeded_globals.get_mut(instr.bx() as usize) {
                     *seeded = true;
                 }
             }
-            Opcode32::GetGlobal => {
+            Opcode::GetGlobal => {
                 let index = instr.bx() as usize;
                 if seeded_globals.get(index).copied().unwrap_or(false) {
                     continue;

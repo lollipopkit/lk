@@ -165,14 +165,14 @@ impl Program {
         Ok(Program { statements })
     }
 
-    pub fn execute32(&self) -> Result<crate::vm::Program32Result> {
+    pub fn execute(&self) -> Result<crate::vm::ProgramResult> {
         let mut ctx = VmContext::new();
-        self.execute32_with_ctx(&mut ctx)
+        self.execute_with_ctx(&mut ctx)
     }
 
-    pub fn execute32_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::Program32Result> {
+    pub fn execute_with_ctx(&self, ctx: &mut VmContext) -> Result<crate::vm::ProgramResult> {
         let mut type_checker = TypeChecker::new();
         self.type_check(&mut type_checker)?;
-        crate::vm::execute_program32_with_ctx(self, ctx)
+        crate::vm::execute_program_with_ctx(self, ctx)
     }
 }

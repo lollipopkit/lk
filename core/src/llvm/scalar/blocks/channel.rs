@@ -5,17 +5,17 @@ use crate::{
             NativeBuiltin, NativeStraightlineValue, native_const_runtime_value, native_runtime_const_value,
         },
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, Opcode},
 };
 
 pub(super) fn emit_static_channel_call(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     builtin: NativeBuiltin,
     tmp_index: &mut usize,
 ) -> Option<()> {
@@ -53,8 +53,8 @@ pub(super) fn emit_static_channel_call(
             let first = elements.first()?.clone();
             elements.remove(0);
             set_static_channel(static_regs, arg_reg, channel_reg, elements);
-            let result = ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(vec![
-                ConstRuntimeValue32Data::Bool(true),
+            let result = ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(vec![
+                ConstRuntimeValueData::Bool(true),
                 first,
             ])));
             store_native_scalar_call_result(
@@ -71,13 +71,13 @@ pub(super) fn emit_static_channel_call(
     Some(())
 }
 
-fn call_arg_source_reg(code: &[Instr32], pc: usize, arg_reg: u8) -> Option<u8> {
+fn call_arg_source_reg(code: &[Instr], pc: usize, arg_reg: u8) -> Option<u8> {
     for prev_pc in (pc.saturating_sub(8)..pc).rev() {
         let prev = code.get(prev_pc).copied()?;
         if prev.a() != arg_reg {
             continue;
         }
-        return (prev.opcode() == Opcode32::Move).then_some(prev.b());
+        return (prev.opcode() == Opcode::Move).then_some(prev.b());
     }
     None
 }
@@ -86,7 +86,7 @@ fn set_static_channel(
     static_regs: &mut [Option<NativeStraightlineValue>],
     arg_reg: u8,
     channel_reg: u8,
-    elements: Vec<ConstRuntimeValue32Data>,
+    elements: Vec<ConstRuntimeValueData>,
 ) {
     let value = Some(NativeStraightlineValue::Channel { elements });
     if let Some(slot) = static_regs.get_mut(channel_reg as usize) {

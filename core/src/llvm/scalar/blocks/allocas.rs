@@ -4,22 +4,22 @@ use crate::{
         ir_text::native_scalar_main_header,
         options::LlvmBackendOptions,
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Module32Artifact, Opcode32},
+    vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, ModuleArtifact, Opcode},
 };
 
 pub(super) fn emit_scalar_entry_allocas(
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     options: &LlvmBackendOptions,
     register_count: usize,
     global_count: usize,
-    heap_values: &[ConstHeapValue32Data],
-    code: &[Instr32],
+    heap_values: &[ConstHeapValueData],
+    code: &[Instr],
 ) -> Option<String> {
     let mut ir = native_scalar_main_header(options);
     for reg in 0..register_count {
         ir.push_str(&format!("  %r{reg}.slot = alloca i64\n"));
         ir.push_str(&format!("  %r{reg}.present.slot = alloca i64\n"));
-        ir.push_str(&format!("  %r{reg}.text.buf = alloca [4096 x i8]\n"));
+        ir.push_str(&format!("  %r{reg}.text.buf = call ptr @malloc(i64 4096)\n"));
     }
     for global in 0..global_count {
         ir.push_str(&format!("  %g{global}.slot = alloca i64\n"));
@@ -37,12 +37,12 @@ pub(super) fn emit_scalar_entry_allocas(
         .max(register_count);
     for pc in 0..code.len() {
         for reg in 0..call_register_count {
-            ir.push_str(&format!("  %call{pc}.r{reg}.slot = alloca i64\n"));
-            ir.push_str(&format!("  %call{pc}.r{reg}.present.slot = alloca i64\n"));
+            ir.push_str(&format!("  %call{pc}.r{reg}.slot = call ptr @malloc(i64 8)\n"));
+            ir.push_str(&format!("  %call{pc}.r{reg}.present.slot = call ptr @malloc(i64 8)\n"));
         }
     }
     for (pc, instr) in code.iter().copied().enumerate() {
-        if instr.opcode() == Opcode32::CallDirect {
+        if instr.opcode() == Opcode::CallDirect {
             let callee = artifact.module.functions.get(instr.b() as usize)?;
             if function_has_list_return_shape(callee) {
                 emit_dynamic_int_list_allocas(&mut ir, &format!("list{pc}"));
@@ -60,23 +60,23 @@ pub(super) fn emit_scalar_entry_allocas(
     Some(ir)
 }
 
-fn function_has_list_return_shape(function: &crate::vm::Function32Data) -> bool {
+fn function_has_list_return_shape(function: &crate::vm::FunctionData) -> bool {
     function
         .code
         .iter()
         .copied()
-        .filter_map(|raw| Instr32::try_from_raw(raw).ok())
-        .any(|instr| instr.opcode() == Opcode32::ListPush)
+        .filter_map(|raw| Instr::try_from_raw(raw).ok())
+        .any(|instr| instr.opcode() == Opcode::ListPush)
 }
 
-fn dynamic_map_alloca_needed(heap_values: &[ConstHeapValue32Data], instr: Instr32) -> bool {
-    matches!(instr.opcode(), Opcode32::Call)
-        || matches!(instr.opcode(), Opcode32::LoadHeapConst)
-            && matches!(heap_values.get(instr.bx() as usize), Some(ConstHeapValue32Data::Map(values)) if values.is_empty())
+fn dynamic_map_alloca_needed(heap_values: &[ConstHeapValueData], instr: Instr) -> bool {
+    matches!(instr.opcode(), Opcode::Call)
+        || matches!(instr.opcode(), Opcode::LoadHeapConst)
+            && matches!(heap_values.get(instr.bx() as usize), Some(ConstHeapValueData::Map(values)) if values.is_empty())
 }
 
-fn dynamic_list_alloca_needed(heap_values: &[ConstHeapValue32Data], instr: Instr32) -> bool {
-    matches!(instr.opcode(), Opcode32::Call | Opcode32::NewList | Opcode32::SliceFrom)
-        || matches!(instr.opcode(), Opcode32::LoadHeapConst)
-            && matches!(heap_values.get(instr.bx() as usize), Some(ConstHeapValue32Data::List(values)) if values.is_empty() || values.iter().all(|v| matches!(v, ConstRuntimeValue32Data::Int(_))))
+fn dynamic_list_alloca_needed(heap_values: &[ConstHeapValueData], instr: Instr) -> bool {
+    matches!(instr.opcode(), Opcode::Call | Opcode::NewList | Opcode::SliceFrom)
+        || matches!(instr.opcode(), Opcode::LoadHeapConst)
+            && matches!(heap_values.get(instr.bx() as usize), Some(ConstHeapValueData::List(values)) if values.is_empty() || values.iter().all(|v| matches!(v, ConstRuntimeValueData::Int(_))))
 }

@@ -17,13 +17,13 @@ use crate::llvm::{
     output::{emit_native_map_set, emit_native_static_core_call_method, emit_native_static_parse_builtin},
     straightline_value::{
         NativeBuiltin, NativeListElementKind, NativeMapKeyKind, NativeMapValueKind, NativeStraightlineValue,
-        native_runtime_string_key_kind, native_static_compare_bool, native_static_global, native_static_i64_binary,
-        native_static_index, native_static_list_from_values, native_static_list_join, native_static_load_cell,
-        native_static_map_from_pairs, native_static_map_rest, native_static_set_index, native_static_store_cell,
-        native_static_string_split, native_static_to_iter,
+        NativeTextPart, native_runtime_string_key_kind, native_static_compare_bool, native_static_global,
+        native_static_i64_binary, native_static_index, native_static_list_from_values, native_static_list_join,
+        native_static_load_cell, native_static_map_from_pairs, native_static_map_rest, native_static_set_index,
+        native_static_store_cell, native_static_to_iter,
     },
 };
-use crate::vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Function32Data, Instr32, Opcode32};
+use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, Opcode};
 mod analysis;
 mod arg_lists;
 mod entry;
@@ -32,6 +32,7 @@ mod list_returns;
 mod map_methods;
 mod returns;
 mod slots;
+mod string_ops;
 
 pub(in crate::llvm) use super::kind::{NativeScalarFacts, NativeScalarKind};
 use analysis::*;
@@ -48,13 +49,13 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
     global_names: &[String],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
-    code: &[Instr32],
+    heap_values: &[ConstHeapValueData],
+    code: &[Instr],
     mut kinds: Vec<Option<NativeScalarKind>>,
     mut static_values: Vec<Option<NativeStraightlineValue>>,
     mut global_kinds: Vec<Option<NativeScalarKind>>,
     mut static_globals: Vec<Option<NativeStraightlineValue>>,
-    functions: Option<&[Function32Data]>,
+    functions: Option<&[FunctionData]>,
     static_captures: &[NativeStraightlineValue],
     depth: usize,
     recursive_hints: &[(u16, Option<NativeScalarKind>)],
@@ -77,8 +78,8 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
             continue;
         }
         match instr.opcode() {
-            Opcode32::Nop | Opcode32::Jmp => {}
-            Opcode32::LoadNil => {
+            Opcode::Nop | Opcode::Jmp => {}
+            Opcode::LoadNil => {
                 if !set_static_value(
                     &mut kinds,
                     &mut static_values,
@@ -89,17 +90,17 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::LoadInt => {
+            Opcode::LoadInt => {
                 if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
                     return None;
                 }
             }
-            Opcode32::LoadFloat => {
+            Opcode::LoadFloat => {
                 if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::F64) {
                     return None;
                 }
             }
-            Opcode32::LoadBool => {
+            Opcode::LoadBool => {
                 let value = i64::from(instr.b() != 0);
                 if !set_static_value(
                     &mut kinds,
@@ -111,7 +112,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::LoadString => {
+            Opcode::LoadString => {
                 let Some(value) = strings.get(instr.bx() as usize) else {
                     return None;
                 };
@@ -130,7 +131,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::LoadHeapConst => {
+            Opcode::LoadHeapConst => {
                 let Some(value) = heap_values.get(instr.bx() as usize) else {
                     return None;
                 };
@@ -147,7 +148,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::LoadFunction => {
+            Opcode::LoadFunction => {
                 if !set_static_value(
                     &mut kinds,
                     &mut static_values,
@@ -158,14 +159,14 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::LoadCapture => {
+            Opcode::LoadCapture => {
                 let value = static_captures.get(instr.bx() as usize)?.clone();
                 let kind = static_value_kind(&value);
                 if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
                     return None;
                 }
             }
-            Opcode32::MakeClosure => {
+            Opcode::MakeClosure => {
                 if let Some(value) = static_callable_value(functions?, instr, &static_values) {
                     if !set_static_value(
                         &mut kinds,
@@ -181,7 +182,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     static_values[instr.a() as usize] = None;
                 }
             }
-            Opcode32::Move => {
+            Opcode::Move => {
                 if let Some(value) = static_kind(&static_values, instr.b()) {
                     let kind = native_kind(&kinds, instr.b());
                     if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
@@ -194,7 +195,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::AddFloat | Opcode32::SubFloat | Opcode32::MulFloat | Opcode32::DivFloat | Opcode32::ModFloat => {
+            Opcode::AddFloat | Opcode::SubFloat | Opcode::MulFloat | Opcode::DivFloat | Opcode::ModFloat => {
                 let Some(lhs) = native_kind(&kinds, instr.b()) else {
                     return None;
                 };
@@ -210,7 +211,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::AddInt | Opcode32::SubInt | Opcode32::MulInt | Opcode32::DivInt | Opcode32::ModInt => {
+            Opcode::AddInt | Opcode::SubInt | Opcode::MulInt | Opcode::DivInt | Opcode::ModInt => {
                 if let (Some(NativeStraightlineValue::I64(lhs)), Some(NativeStraightlineValue::I64(rhs))) = (
                     static_kind(&static_values, instr.b())
                         .or_else(|| local_static_i64_before(code, int_consts, pc, instr.b())),
@@ -229,7 +230,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                     continue;
                 }
-                if instr.opcode() == Opcode32::AddInt {
+                if instr.opcode() == Opcode::AddInt {
                     let lhs_static = static_kind(&static_values, instr.b());
                     let rhs_static = static_kind(&static_values, instr.c());
                     let lhs_kind =
@@ -277,12 +278,12 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::CmpInt
-            | Opcode32::CmpNeInt
-            | Opcode32::CmpLtInt
-            | Opcode32::CmpLeInt
-            | Opcode32::CmpGtInt
-            | Opcode32::CmpGeInt => {
+            Opcode::CmpInt
+            | Opcode::CmpNeInt
+            | Opcode::CmpLtInt
+            | Opcode::CmpLeInt
+            | Opcode::CmpGtInt
+            | Opcode::CmpGeInt => {
                 if static_register_value_trusted_before(code, pc, instr.b())
                     && static_register_value_trusted_before(code, pc, instr.c())
                     && let (Some(lhs), Some(rhs)) = (
@@ -312,16 +313,16 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     .unwrap_or(NativeScalarKind::I64);
                 let ordered_string_compare = matches!(
                     instr.opcode(),
-                    Opcode32::CmpLtInt | Opcode32::CmpLeInt | Opcode32::CmpGtInt | Opcode32::CmpGeInt
+                    Opcode::CmpLtInt | Opcode::CmpLeInt | Opcode::CmpGtInt | Opcode::CmpGeInt
                 ) && lhs == NativeScalarKind::StrPtr
                     && rhs == NativeScalarKind::StrPtr;
                 if !lhs.is_numeric()
                     && !ordered_string_compare
-                    && !matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt)
+                    && !matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt)
                 {
                     return None;
                 }
-                if matches!(instr.opcode(), Opcode32::CmpInt | Opcode32::CmpNeInt)
+                if matches!(instr.opcode(), Opcode::CmpInt | Opcode::CmpNeInt)
                     && lhs != rhs
                     && (!lhs.is_numeric() || !rhs.is_numeric())
                     && !matches!(
@@ -344,7 +345,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::Test => {
+            Opcode::Test => {
                 if native_kind(&kinds, instr.a()).is_none() {
                     return None;
                 }
@@ -358,7 +359,18 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     mark_static_untaken_return_path(&mut skip_static_pcs, &static_boundaries, code, untaken);
                 }
             }
-            Opcode32::Not => {
+            Opcode::ForLoopI => {
+                if !matches!(native_kind(&kinds, instr.a()), Some(NativeScalarKind::I64))
+                    || !matches!(native_kind(&kinds, instr.b()), Some(NativeScalarKind::I64))
+                    || !matches!(native_kind(&kinds, instr.c()), Some(NativeScalarKind::I64))
+                {
+                    return None;
+                }
+                if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
+                    return None;
+                }
+            }
+            Opcode::Not => {
                 let Some(kind) = native_kind(&kinds, instr.b()) else {
                     return None;
                 };
@@ -377,12 +389,12 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::IsNil | Opcode32::IsList | Opcode32::IsMap => {
+            Opcode::IsNil | Opcode::IsList | Opcode::IsMap => {
                 if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::Bool) {
                     return None;
                 }
             }
-            Opcode32::ToString => {
+            Opcode::ToString => {
                 let value = static_kind(&static_values, instr.b())
                     .or_else(|| native_kind(&kinds, instr.b()).and_then(|kind| dynamic_text_part(kind, instr.b())))
                     .unwrap_or_else(|| dynamic_text_part(NativeScalarKind::I64, instr.b()).unwrap());
@@ -394,7 +406,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::ConcatString => {
+            Opcode::ConcatString => {
                 let lhs = static_kind(&static_values, instr.b())
                     .or_else(|| native_kind(&kinds, instr.b()).and_then(|kind| dynamic_text_part(kind, instr.b())))
                     .unwrap_or_else(|| dynamic_text_part(NativeScalarKind::I64, instr.b()).unwrap());
@@ -409,7 +421,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::Len => {
+            Opcode::Len => {
                 if let Some(target) = static_kind(&static_values, instr.b()) {
                     if matches!(target, NativeStraightlineValue::DynamicMapIter { .. })
                         || native_dynamic_text_len_supported(&target)
@@ -426,40 +438,14 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode32::StringSplit => {
-                let Some(target) = static_kind(&static_values, instr.b())
-                    .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()))
-                else {
-                    return None;
-                };
-                let Some(delimiter) = static_kind(&static_values, instr.c()) else {
-                    return None;
-                };
-                if let Some(value) = native_static_string_split(target.clone(), delimiter.clone(), String::new()) {
-                    let kind = static_value_kind(&value);
-                    if !set_static_value(&mut kinds, &mut static_values, instr.a(), kind, value) {
-                        return None;
-                    }
-                    continue;
-                }
-                let (NativeStraightlineValue::Text(text), NativeStraightlineValue::String { value: delimiter, .. }) =
-                    (target, delimiter)
-                else {
-                    return None;
-                };
-                if !delimiter.is_ascii()
-                    || !set_static_value(
-                        &mut kinds,
-                        &mut static_values,
-                        instr.a(),
-                        None,
-                        NativeStraightlineValue::DynamicSplitText { text, delimiter },
-                    )
+            Opcode::StringSplit => {
+                if string_ops::propagate_string_split(&mut kinds, &mut static_values, code, heap_values, pc, instr)
+                    .is_none()
                 {
                     return None;
                 }
             }
-            Opcode32::ListJoin => {
+            Opcode::ListJoin => {
                 let Some(target) = static_kind(&static_values, instr.b()) else {
                     return None;
                 };
@@ -469,7 +455,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 if let (
                     NativeStraightlineValue::DynamicList {
                         id,
-                        element: NativeListElementKind::Text,
+                        element: element @ (NativeListElementKind::Text | NativeListElementKind::StrPtr),
                     },
                     NativeStraightlineValue::String { value: delimiter, .. },
                 ) = (&target, &delimiter)
@@ -483,6 +469,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                             NativeStraightlineValue::DynamicJoinedText {
                                 id: *id,
                                 delimiter_len: delimiter.len(),
+                                element: *element,
                             },
                         )
                     {
@@ -514,14 +501,18 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                         &mut kinds,
                         &mut static_values,
                         instr.a(),
-                        None,
-                        NativeStraightlineValue::Text(text),
+                        Some(NativeScalarKind::StrPtr),
+                        if let [NativeTextPart::StrPtr(ptr)] = text.as_slice() {
+                            NativeStraightlineValue::StringPtr(ptr.clone())
+                        } else {
+                            NativeStraightlineValue::Text(text)
+                        },
                     )
                 {
                     return None;
                 }
             }
-            Opcode32::StringStartsWith => {
+            Opcode::StringStartsWith => {
                 let Some(prefix) = static_kind(&static_values, instr.c()) else {
                     return None;
                 };
@@ -549,7 +540,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::GetGlobal => {
+            Opcode::GetGlobal => {
                 if let Some(value) = global_names
                     .get(instr.bx() as usize)
                     .and_then(|name| native_static_global(name))
@@ -584,7 +575,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::SetGlobal => {
+            Opcode::SetGlobal => {
                 if let Some(value) = static_kind(&static_values, instr.a()) {
                     if !set_static_global(&mut static_globals, &mut global_kinds, instr.bx(), value) {
                         return None;
@@ -598,7 +589,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode32::GetIndex => {
+            Opcode::GetIndex => {
                 let Some(target) = static_kind(&static_values, instr.b()) else {
                     let target_kind = native_kind(&kinds, instr.b())?;
                     if target_kind == NativeScalarKind::I64 || target_kind == NativeScalarKind::MaybeI64 {
@@ -745,7 +736,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                         let kind = if elements.iter().all(|value| {
                             matches!(
                                 value,
-                                ConstRuntimeValue32Data::ShortStr(_) | ConstRuntimeValue32Data::Heap(_)
+                                ConstRuntimeValueData::ShortStr(_) | ConstRuntimeValueData::Heap(_)
                             )
                         }) {
                             NativeScalarKind::StrPtr
@@ -797,7 +788,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode32::SetIndex => {
+            Opcode::SetIndex => {
                 let Some(target) = static_kind(&static_values, instr.a()) else {
                     return None;
                 };
@@ -809,12 +800,11 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                         ..
                     }
                 ) {
-                    let Some(key) = static_kind(&static_values, instr.b()) else {
-                        return None;
-                    };
-                    if !native_string_int_map_key_supported(&key)
-                        || native_kind(&kinds, instr.c()) != Some(NativeScalarKind::I64)
-                    {
+                    let key_supported = instr.a() == instr.b()
+                        || static_kind(&static_values, instr.b())
+                            .as_ref()
+                            .is_some_and(native_string_int_map_key_supported);
+                    if !key_supported || native_kind(&kinds, instr.c()) != Some(NativeScalarKind::I64) {
                         return None;
                     }
                     if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, target) {
@@ -862,12 +852,12 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode32::ListPush => {
+            Opcode::ListPush => {
                 if propagate_list_push(&mut kinds, &mut static_values, instr).is_none() {
                     return None;
                 }
             }
-            Opcode32::NewList => {
+            Opcode::NewList => {
                 let start = instr.b() as usize;
                 let end = start.checked_add(instr.c() as usize)?;
                 if end > kinds.len() {
@@ -976,7 +966,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode32::Call => {
+            Opcode::Call => {
                 if instr.a() != instr.b() {
                     return None;
                 }
@@ -987,7 +977,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 };
                 if let Some((function_index, captures)) = static_call_target(&target) {
                     let function_index = u8::try_from(function_index).ok()?;
-                    let direct_instr = Instr32::abc(Opcode32::CallDirect, instr.a(), function_index, instr.c());
+                    let direct_instr = Instr::abc(Opcode::CallDirect, instr.a(), function_index, instr.c());
                     let kind = native_direct_call_return_kind(
                         functions?,
                         direct_instr,
@@ -1150,7 +1140,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                 }
                 if matches!(target, NativeStraightlineValue::Builtin(NativeBuiltin::CoreCallMethod))
                     && let [
-                        list @ NativeStraightlineValue::List { .. },
+                        list,
                         NativeStraightlineValue::String { value: method, .. },
                         NativeStraightlineValue::ArgList { elements },
                     ] = args_vec.as_slice()
@@ -1173,7 +1163,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::CallDirect => {
+            Opcode::CallDirect => {
                 let callee_index = instr.b();
                 if let Some((_, hint)) = recursive_hints.iter().find(|(idx, _)| *idx as u8 == callee_index) {
                     if let Some(kind) = hint {
@@ -1233,7 +1223,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode32::CallNamed => {
+            Opcode::CallNamed => {
                 let Some(target) = static_kind(&static_values, instr.a()) else {
                     kinds[instr.a() as usize] = None;
                     static_values[instr.a() as usize] = None;
@@ -1283,7 +1273,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            Opcode32::Return => {
+            Opcode::Return => {
                 if instr.b() > 1 {
                     return None;
                 }
@@ -1295,7 +1285,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::NewMap => {
+            Opcode::NewMap => {
                 let start = instr.b() as usize;
                 let Some(width) = (instr.c() as usize).checked_mul(2) else {
                     return None;
@@ -1334,18 +1324,18 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::NewObject => {
+            Opcode::NewObject => {
                 let value = static_object_from_registers(&static_values, code, int_consts, pc, instr, String::new())?;
                 if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
                     return None;
                 }
             }
-            Opcode32::Contains => {
+            Opcode::Contains => {
                 if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::Bool) {
                     return None;
                 }
             }
-            Opcode32::SliceFrom => {
+            Opcode::SliceFrom => {
                 let target = static_kind(&static_values, instr.b())
                     .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()));
                 let Some(start) = static_kind(&static_values, instr.c())
@@ -1375,7 +1365,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::MapRest => {
+            Opcode::MapRest => {
                 let start = instr.b() as usize;
                 let end = start.checked_add(1usize.checked_add(instr.c() as usize)?)?;
                 let values = static_values.get(start..end)?;
@@ -1386,7 +1376,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::ToIter => {
+            Opcode::ToIter => {
                 if let Some(target) = static_kind(&static_values, instr.b())
                     .or_else(|| local_static_container_before(code, heap_values, pc, instr.b()))
                 {
@@ -1415,7 +1405,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     || (0..pc).rev().any(|prev_pc| {
                         code.get(prev_pc)
                             .copied()
-                            .is_some_and(|prev| prev.a() == instr.b() && prev.opcode() == Opcode32::Call)
+                            .is_some_and(|prev| prev.a() == instr.b() && prev.opcode() == Opcode::Call)
                     })
                 {
                     if !set_native_kind(&mut kinds, &mut static_values, instr.a(), NativeScalarKind::I64) {
@@ -1425,15 +1415,15 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode32::NewRange => {
+            Opcode::NewRange => {
                 let value =
                     static_int_range_from_registers(&static_values, code, int_consts, pc, instr, String::new())?;
                 if !set_static_value(&mut kinds, &mut static_values, instr.a(), None, value) {
                     return None;
                 }
             }
-            Opcode32::Raise => {}
-            Opcode32::StoreCellVal => {
+            Opcode::Raise => {}
+            Opcode::StoreCellVal => {
                 if let (Some(cell), Some(value)) = (
                     static_kind(&static_values, instr.a()),
                     static_kind(&static_values, instr.b())
@@ -1458,7 +1448,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     static_values[instr.a() as usize] = None;
                 }
             }
-            Opcode32::LoadCellVal => {
+            Opcode::LoadCellVal => {
                 if let Some(cell) = static_kind(&static_values, instr.b()).and_then(native_static_load_cell) {
                     if !set_static_value(
                         &mut kinds,
@@ -1476,7 +1466,9 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     }
                 }
             }
-            _ => return None,
+            _other => {
+                return None;
+            }
         }
     }
     Some(NativeScalarFacts {

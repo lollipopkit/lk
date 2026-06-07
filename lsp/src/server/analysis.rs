@@ -870,7 +870,7 @@ fn stdlib_native_export_impl_name(content: &str, export_name: &str) -> Option<St
     let export_literal = format!("\"{export_name}\"");
     for line in content.lines() {
         let trimmed = line.trim();
-        if !trimmed.contains("RuntimeNativeExport32::") || !trimmed.contains(&export_literal) {
+        if !trimmed.contains("RuntimeNativeExport::") || !trimmed.contains(&export_literal) {
             continue;
         }
         let after_self = trimmed.split("Self::").nth(1)?;

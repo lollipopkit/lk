@@ -21,7 +21,7 @@ use crate::{
             native_static_f64_binary, native_static_list_from_values, native_static_text_string,
         },
     },
-    vm::{ConstHeapValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, Instr, Opcode},
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -33,16 +33,16 @@ pub(super) fn emit_value_block(
     int_consts: &[i64],
     float_consts: &[f64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
-    code: &[Instr32],
+    heap_values: &[ConstHeapValueData],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
 ) -> bool {
     match instr.opcode() {
-        Opcode32::NewList => emit_new_list(
+        Opcode::NewList => emit_new_list(
             ir,
             static_regs,
             int_consts,
@@ -55,11 +55,11 @@ pub(super) fn emit_value_block(
             facts,
             tmp_index,
         ),
-        Opcode32::LoadNil => emit_load_nil(ir, static_regs, code, pc, instr, register_count),
-        Opcode32::LoadInt => emit_load_int(ir, static_regs, int_consts, code, pc, instr, register_count),
-        Opcode32::LoadFloat => emit_load_float(ir, static_regs, float_consts, code, pc, instr, register_count),
-        Opcode32::LoadBool => emit_load_bool(ir, static_regs, code, pc, instr, register_count),
-        Opcode32::Move => emit_move(
+        Opcode::LoadNil => emit_load_nil(ir, static_regs, code, pc, instr, register_count),
+        Opcode::LoadInt => emit_load_int(ir, static_regs, int_consts, code, pc, instr, register_count),
+        Opcode::LoadFloat => emit_load_float(ir, static_regs, float_consts, code, pc, instr, register_count),
+        Opcode::LoadBool => emit_load_bool(ir, static_regs, code, pc, instr, register_count),
+        Opcode::Move => emit_move(
             ir,
             static_regs,
             global_names,
@@ -73,8 +73,8 @@ pub(super) fn emit_value_block(
             facts,
             tmp_index,
         ),
-        Opcode32::ToString => emit_to_string(ir, static_regs, code, pc, instr, register_count, facts, tmp_index),
-        Opcode32::ConcatString => emit_concat_string(
+        Opcode::ToString => emit_to_string(ir, static_regs, code, pc, instr, register_count, facts, tmp_index),
+        Opcode::ConcatString => emit_concat_string(
             ir,
             extra_globals,
             static_regs,
@@ -85,7 +85,7 @@ pub(super) fn emit_value_block(
             facts,
             tmp_index,
         ),
-        Opcode32::AddFloat | Opcode32::SubFloat | Opcode32::MulFloat | Opcode32::DivFloat | Opcode32::ModFloat => {
+        Opcode::AddFloat | Opcode::SubFloat | Opcode::MulFloat | Opcode::DivFloat | Opcode::ModFloat => {
             emit_float_arithmetic(ir, static_regs, code, pc, instr, register_count, facts, tmp_index)
         }
         _ => false,
@@ -98,10 +98,10 @@ fn emit_new_list(
     static_regs: &mut [Option<NativeStraightlineValue>],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
-    code: &[Instr32],
+    heap_values: &[ConstHeapValueData],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -299,7 +299,7 @@ fn emit_new_list(
 
 fn recent_dynamic_i64_map_get_before(
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
     reg: u8,
 ) -> bool {
@@ -308,7 +308,7 @@ fn recent_dynamic_i64_map_get_before(
 
 fn recent_dynamic_i64_map_get_before_inner(
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
     reg: u8,
     depth: usize,
@@ -324,10 +324,10 @@ fn recent_dynamic_i64_map_get_before_inner(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::Move if prev.b() != reg => {
+            Opcode::Move if prev.b() != reg => {
                 recent_dynamic_i64_map_get_before_inner(static_regs, code, prev_pc, prev.b(), depth + 1)
             }
-            Opcode32::GetIndex => matches!(
+            Opcode::GetIndex => matches!(
                 static_regs.get(prev.b() as usize).and_then(|value| value.as_ref()),
                 Some(NativeStraightlineValue::DynamicMap {
                     key: NativeMapKeyKind::I64,
@@ -343,7 +343,7 @@ fn recent_dynamic_i64_map_get_before_inner(
 
 fn recent_dynamic_i64_ptr_map_get_before(
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
     reg: u8,
 ) -> bool {
@@ -352,7 +352,7 @@ fn recent_dynamic_i64_ptr_map_get_before(
 
 fn recent_dynamic_i64_ptr_map_get_before_inner(
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
     reg: u8,
     depth: usize,
@@ -368,10 +368,10 @@ fn recent_dynamic_i64_ptr_map_get_before_inner(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::Move if prev.b() != reg => {
+            Opcode::Move if prev.b() != reg => {
                 recent_dynamic_i64_ptr_map_get_before_inner(static_regs, code, prev_pc, prev.b(), depth + 1)
             }
-            Opcode32::GetIndex => matches!(
+            Opcode::GetIndex => matches!(
                 static_regs.get(prev.b() as usize).and_then(|value| value.as_ref()),
                 Some(NativeStraightlineValue::DynamicMap {
                     key: NativeMapKeyKind::I64,
@@ -391,7 +391,7 @@ fn emit_dynamic_i64_list(
     start: usize,
     end: usize,
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) {
     let n = end - start;
@@ -422,12 +422,12 @@ fn emit_static_list(
     static_regs: &mut [Option<NativeStraightlineValue>],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
-    code: &[Instr32],
+    heap_values: &[ConstHeapValueData],
+    code: &[Instr],
     start: usize,
     end: usize,
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
 ) -> bool {
@@ -507,9 +507,9 @@ fn emit_static_list(
 fn emit_load_nil(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
 ) -> bool {
     if !reg_in_bounds(register_count, instr.a()) {
@@ -526,9 +526,9 @@ fn emit_load_int(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
     int_consts: &[i64],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
 ) -> bool {
     let Some(value) = int_consts.get(instr.bx() as usize) else {
@@ -548,9 +548,9 @@ fn emit_load_float(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
     float_consts: &[f64],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
 ) -> bool {
     let Some(value) = float_consts.get(instr.bx() as usize) else {
@@ -572,9 +572,9 @@ fn emit_load_float(
 fn emit_load_bool(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
 ) -> bool {
     if !reg_in_bounds(register_count, instr.a()) {
@@ -594,10 +594,10 @@ fn emit_move(
     global_names: &[String],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
-    code: &[Instr32],
+    heap_values: &[ConstHeapValueData],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -609,6 +609,20 @@ fn emit_move(
         return false;
     };
     if moved {
+        emit_branch_to_next(ir, pc, code.len());
+        return true;
+    }
+    if let Some(
+        value @ (NativeStraightlineValue::String { .. }
+        | NativeStraightlineValue::StringPtr(_)
+        | NativeStraightlineValue::Text(_)),
+    ) = static_regs.get(instr.b() as usize).and_then(Clone::clone)
+    {
+        let ptr = next_tmp(tmp_index);
+        ir.push_str(&format!("  {ptr} = load ptr, ptr %r{}.slot\n", instr.b()));
+        ir.push_str(&format!("  store ptr {ptr}, ptr %r{}.slot\n", instr.a()));
+        ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(value);
         emit_branch_to_next(ir, pc, code.len());
         return true;
     }
@@ -723,25 +737,20 @@ fn emit_move(
     true
 }
 
-fn register_last_written_by_call_before(code: &[Instr32], pc: usize, reg: u8) -> bool {
+fn register_last_written_by_call_before(code: &[Instr], pc: usize, reg: u8) -> bool {
     code.iter()
         .take(pc)
         .rev()
         .find(|instr| instr.a() == reg)
-        .is_some_and(|instr| {
-            matches!(
-                instr.opcode(),
-                Opcode32::Call | Opcode32::CallDirect | Opcode32::CallNamed
-            )
-        })
+        .is_some_and(|instr| matches!(instr.opcode(), Opcode::Call | Opcode::CallDirect | Opcode::CallNamed))
 }
 
 fn emit_to_string(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -767,9 +776,9 @@ fn emit_concat_string(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -841,7 +850,7 @@ fn emit_dynamic_text_to_reg(
     ir.push_str(&format!(
         "  {out} = getelementptr [4096 x i8], ptr %r{dst}.text.buf, i64 0, i64 0\n"
     ));
-    ir.push_str(&format!("  {offset_slot} = alloca i64\n"));
+    ir.push_str(&format!("  {offset_slot} = call ptr @malloc(i64 8)\n"));
     ir.push_str(&format!("  store i64 0, ptr {offset_slot}\n"));
     for (index, part) in parts.iter().enumerate() {
         emit_text_part_to_buffer(ir, extra_globals, dst, pc, index, part, &out, &offset_slot, tmp_index)?;
@@ -912,7 +921,7 @@ fn emit_append_formatted_to_buffer(
     let offset = next_tmp(tmp_index);
     let dst_ptr = next_tmp(tmp_index);
     let remaining = next_tmp(tmp_index);
-    let written_i32 = next_tmp(tmp_index);
+    let written_i = next_tmp(tmp_index);
     let written = next_tmp(tmp_index);
     let next = next_tmp(tmp_index);
     ir.push_str(&format!("  {offset} = load i64, ptr {offset_slot}\n"));
@@ -920,9 +929,9 @@ fn emit_append_formatted_to_buffer(
     ir.push_str(&format!("  {remaining} = sub i64 4096, {offset}\n"));
     let llvm_ty = if fmt == "@lk_f64_raw_fmt" { "double" } else { "i64" };
     ir.push_str(&format!(
-        "  {written_i32} = call i32 (ptr, i64, ptr, ...) @snprintf(ptr {dst_ptr}, i64 {remaining}, ptr {fmt}, {llvm_ty} {value})\n"
+        "  {written_i} = call i32 (ptr, i64, ptr, ...) @snprintf(ptr {dst_ptr}, i64 {remaining}, ptr {fmt}, {llvm_ty} {value})\n"
     ));
-    ir.push_str(&format!("  {written} = sext i32 {written_i32} to i64\n"));
+    ir.push_str(&format!("  {written} = sext i32 {written_i} to i64\n"));
     ir.push_str(&format!("  {next} = add i64 {offset}, {written}\n"));
     ir.push_str(&format!("  store i64 {next}, ptr {offset_slot}\n"));
     ir.push_str(&format!("  store ptr {out}, ptr %r{dst}.slot\n"));
@@ -961,7 +970,7 @@ fn emit_copy_loop(
     let loop_label = format!("lk_text_{pc}_{index}_loop_{}", *tmp_index);
     let body_label = format!("lk_text_{pc}_{index}_body_{}", *tmp_index);
     let done_label = format!("lk_text_{pc}_{index}_done_{}", *tmp_index);
-    ir.push_str(&format!("  {idx_slot} = alloca i64\n"));
+    ir.push_str(&format!("  {idx_slot} = call ptr @malloc(i64 8)\n"));
     ir.push_str(&format!("  store i64 0, ptr {idx_slot}\n"));
     ir.push_str(&format!("  br label %{loop_label}\n"));
     ir.push_str(&format!("{loop_label}:\n"));
@@ -992,9 +1001,9 @@ fn emit_copy_loop(
 fn emit_float_arithmetic(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,

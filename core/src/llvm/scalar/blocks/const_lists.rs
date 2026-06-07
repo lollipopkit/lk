@@ -4,17 +4,15 @@ use crate::{
         ir_text::next_tmp,
         straightline_value::{NativeStraightlineValue, native_const_runtime_string},
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data},
+    vm::{ConstHeapValueData, ConstRuntimeValueData},
 };
 
-pub(super) fn static_const_list_elements(
-    elements: &[ConstRuntimeValue32Data],
-) -> Option<Vec<&[ConstRuntimeValue32Data]>> {
+pub(super) fn static_const_list_elements(elements: &[ConstRuntimeValueData]) -> Option<Vec<&[ConstRuntimeValueData]>> {
     elements
         .iter()
         .map(|value| match value {
-            ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
-                ConstHeapValue32Data::List(elements) => Some(elements.as_slice()),
+            ConstRuntimeValueData::Heap(value) => match value.as_ref() {
+                ConstHeapValueData::List(elements) => Some(elements.as_slice()),
                 _ => None,
             },
             _ => None,
@@ -25,7 +23,7 @@ pub(super) fn static_const_list_elements(
 pub(super) fn emit_const_list_element_index(
     ir: &mut String,
     extra_globals: &mut String,
-    elements: &[ConstRuntimeValue32Data],
+    elements: &[ConstRuntimeValueData],
     outer_index: &str,
     inner_index: usize,
     dst: u8,
@@ -40,7 +38,7 @@ pub(super) fn emit_const_list_element_index(
     if let Some(ints) = values
         .iter()
         .map(|value| match value {
-            ConstRuntimeValue32Data::Int(value) => Some(*value),
+            ConstRuntimeValueData::Int(value) => Some(*value),
             _ => None,
         })
         .collect::<Option<Vec<_>>>()
@@ -64,7 +62,7 @@ pub(super) fn emit_const_list_element_index(
 pub(super) fn emit_const_list_element_dynamic_index(
     ir: &mut String,
     extra_globals: &mut String,
-    elements: &[ConstRuntimeValue32Data],
+    elements: &[ConstRuntimeValueData],
     outer_index: &str,
     inner_index: &str,
     dst: u8,
@@ -74,13 +72,13 @@ pub(super) fn emit_const_list_element_dynamic_index(
     let nested = static_const_list_elements(elements)?;
     if nested
         .iter()
-        .all(|row| row.iter().all(|value| matches!(value, ConstRuntimeValue32Data::Int(_))))
+        .all(|row| row.iter().all(|value| matches!(value, ConstRuntimeValueData::Int(_))))
     {
         let mut selected = "0".to_string();
         for (outer_idx, row) in nested.iter().enumerate() {
             let mut row_selected = "0".to_string();
             for (inner_idx, value) in row.iter().enumerate() {
-                let ConstRuntimeValue32Data::Int(value) = value else {
+                let ConstRuntimeValueData::Int(value) = value else {
                     return None;
                 };
                 let cmp = next_tmp(tmp_index);
@@ -142,7 +140,7 @@ pub(super) fn emit_const_list_element_dynamic_index(
 
 pub(super) fn emit_const_list_element_len(
     ir: &mut String,
-    elements: &[ConstRuntimeValue32Data],
+    elements: &[ConstRuntimeValueData],
     outer_index: &str,
     dst: u8,
     tmp_index: &mut usize,

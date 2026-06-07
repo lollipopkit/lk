@@ -1,7 +1,7 @@
 use super::*;
 use lk_core::expr;
+use lk_core::util::fast_map::FastHashMap;
 use lk_core::val::{HeapStore, HeapValue, LiteralVal, RuntimeVal, ShortStr, TypedMap};
-use std::collections::BTreeMap;
 use tower_lsp::lsp_types::{
     DiagnosticSeverity, InlayHintKind, NumberOrString, Position, Range, SemanticToken, SymbolKind,
 };
@@ -17,7 +17,7 @@ fn string_map(heap: &mut HeapStore, entries: impl IntoIterator<Item = (&'static 
     let entries = entries
         .into_iter()
         .map(|(key, value)| (std::sync::Arc::<str>::from(key), value))
-        .collect::<BTreeMap<_, _>>();
+        .collect::<FastHashMap<_, _>>();
     RuntimeVal::Obj(heap.alloc(HeapValue::Map(TypedMap::StringMixed(entries))))
 }
 

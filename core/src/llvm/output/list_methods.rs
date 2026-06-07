@@ -7,7 +7,7 @@ use crate::{
             native_static_list_join, native_static_slice_from,
         },
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data},
+    vm::{ConstHeapValueData, ConstRuntimeValueData},
 };
 
 pub(super) fn emit_native_list_builtin(
@@ -40,7 +40,7 @@ pub(super) fn emit_native_list_builtin(
 pub(in crate::llvm::output) fn emit_native_static_list_method(
     receiver: NativeStraightlineValue,
     method: &str,
-    args: &[ConstRuntimeValue32Data],
+    args: &[ConstRuntimeValueData],
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
     if (method == "first" || method == "last") && args.is_empty() {
@@ -60,7 +60,7 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
         let NativeStraightlineValue::List { elements, .. } = receiver else {
             return None;
         };
-        let ConstRuntimeValue32Data::Int(index) = args.first()? else {
+        let ConstRuntimeValueData::Int(index) = args.first()? else {
             return None;
         };
         let index = usize::try_from(*index).ok()?;
@@ -73,7 +73,7 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
         let NativeStraightlineValue::List { mut elements, .. } = receiver else {
             return None;
         };
-        let ConstRuntimeValue32Data::Int(count) = args.first()? else {
+        let ConstRuntimeValueData::Int(count) = args.first()? else {
             return None;
         };
         elements.truncate(usize::try_from((*count).max(0)).ok()?);
@@ -83,10 +83,10 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
         let NativeStraightlineValue::List { mut elements, .. } = receiver else {
             return None;
         };
-        let ConstRuntimeValue32Data::Heap(value) = args.first()? else {
+        let ConstRuntimeValueData::Heap(value) = args.first()? else {
             return None;
         };
-        let ConstHeapValue32Data::List(rhs) = value.as_ref() else {
+        let ConstHeapValueData::List(rhs) = value.as_ref() else {
             return None;
         };
         elements.extend(rhs.iter().cloned());
@@ -100,8 +100,8 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
             .into_iter()
             .enumerate()
             .map(|(index, value)| {
-                ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(vec![
-                    ConstRuntimeValue32Data::Int(index as i64),
+                ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(vec![
+                    ConstRuntimeValueData::Int(index as i64),
                     value,
                 ])))
             })
@@ -124,16 +124,16 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
         let NativeStraightlineValue::List { elements, .. } = receiver else {
             return None;
         };
-        let ConstRuntimeValue32Data::Heap(value) = args.first()? else {
+        let ConstRuntimeValueData::Heap(value) = args.first()? else {
             return None;
         };
-        let ConstHeapValue32Data::List(rhs) = value.as_ref() else {
+        let ConstHeapValueData::List(rhs) = value.as_ref() else {
             return None;
         };
         let elements = elements
             .into_iter()
             .zip(rhs.iter().cloned())
-            .map(|(lhs, rhs)| ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(vec![lhs, rhs]))))
+            .map(|(lhs, rhs)| ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(vec![lhs, rhs]))))
             .collect::<Vec<_>>();
         return static_list_method_value(elements, ssa_index);
     }
@@ -144,9 +144,9 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
         let mut flat = Vec::new();
         for element in elements {
             match element {
-                ConstRuntimeValue32Data::Heap(value) => match *value {
-                    ConstHeapValue32Data::List(values) => flat.extend(values),
-                    value => flat.push(ConstRuntimeValue32Data::Heap(Box::new(value))),
+                ConstRuntimeValueData::Heap(value) => match *value {
+                    ConstHeapValueData::List(values) => flat.extend(values),
+                    value => flat.push(ConstRuntimeValueData::Heap(Box::new(value))),
                 },
                 value => flat.push(value),
             }
@@ -157,13 +157,13 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
         let NativeStraightlineValue::List { elements, .. } = receiver else {
             return None;
         };
-        let ConstRuntimeValue32Data::Int(size) = args.first()? else {
+        let ConstRuntimeValueData::Int(size) = args.first()? else {
             return None;
         };
         let size = usize::try_from(*size).ok().filter(|size| *size > 0)?;
         let elements = elements
             .chunks(size)
-            .map(|chunk| ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(chunk.to_vec()))))
+            .map(|chunk| ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(chunk.to_vec()))))
             .collect::<Vec<_>>();
         return static_list_method_value(elements, ssa_index);
     }
@@ -171,7 +171,7 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
         return None;
     }
     let count = match args.first()? {
-        ConstRuntimeValue32Data::Int(value) if *value >= 0 => *value,
+        ConstRuntimeValueData::Int(value) if *value >= 0 => *value,
         _ => return None,
     };
     let symbol = next_static_list_symbol(ssa_index);
@@ -179,7 +179,7 @@ pub(in crate::llvm::output) fn emit_native_static_list_method(
 }
 
 fn static_list_method_value(
-    elements: Vec<ConstRuntimeValue32Data>,
+    elements: Vec<ConstRuntimeValueData>,
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
     let symbol = next_static_list_symbol(ssa_index);
@@ -476,11 +476,11 @@ fn emit_native_list_sort(args: &[NativeStraightlineValue], ssa_index: &mut usize
 }
 
 fn static_list_mutation_pair(
-    updated: Vec<ConstRuntimeValue32Data>,
-    old: ConstRuntimeValue32Data,
+    updated: Vec<ConstRuntimeValueData>,
+    old: ConstRuntimeValueData,
     ssa_index: &mut usize,
 ) -> Option<NativeStraightlineValue> {
-    let updated = ConstRuntimeValue32Data::Heap(Box::new(ConstHeapValue32Data::List(updated)));
+    let updated = ConstRuntimeValueData::Heap(Box::new(ConstHeapValueData::List(updated)));
     static_list_method_value(vec![updated, old], ssa_index)
 }
 
@@ -522,26 +522,26 @@ fn native_static_usize(value: &NativeStraightlineValue) -> Option<usize> {
     value.parse::<usize>().ok()
 }
 
-fn native_const_list_method_arg(value: &ConstRuntimeValue32Data) -> Option<NativeStraightlineValue> {
+fn native_const_list_method_arg(value: &ConstRuntimeValueData) -> Option<NativeStraightlineValue> {
     native_const_runtime_value(value, String::new())
 }
 
-fn compare_const_runtime_values(lhs: &ConstRuntimeValue32Data, rhs: &ConstRuntimeValue32Data) -> std::cmp::Ordering {
+fn compare_const_runtime_values(lhs: &ConstRuntimeValueData, rhs: &ConstRuntimeValueData) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
     match (lhs, rhs) {
-        (ConstRuntimeValue32Data::Nil, ConstRuntimeValue32Data::Nil) => Ordering::Equal,
-        (ConstRuntimeValue32Data::Nil, _) => Ordering::Less,
-        (_, ConstRuntimeValue32Data::Nil) => Ordering::Greater,
-        (ConstRuntimeValue32Data::Bool(lhs), ConstRuntimeValue32Data::Bool(rhs)) => lhs.cmp(rhs),
-        (ConstRuntimeValue32Data::Int(lhs), ConstRuntimeValue32Data::Int(rhs)) => lhs.cmp(rhs),
-        (ConstRuntimeValue32Data::Float(lhs), ConstRuntimeValue32Data::Float(rhs)) => {
+        (ConstRuntimeValueData::Nil, ConstRuntimeValueData::Nil) => Ordering::Equal,
+        (ConstRuntimeValueData::Nil, _) => Ordering::Less,
+        (_, ConstRuntimeValueData::Nil) => Ordering::Greater,
+        (ConstRuntimeValueData::Bool(lhs), ConstRuntimeValueData::Bool(rhs)) => lhs.cmp(rhs),
+        (ConstRuntimeValueData::Int(lhs), ConstRuntimeValueData::Int(rhs)) => lhs.cmp(rhs),
+        (ConstRuntimeValueData::Float(lhs), ConstRuntimeValueData::Float(rhs)) => {
             lhs.partial_cmp(rhs).unwrap_or(Ordering::Equal)
         }
-        (ConstRuntimeValue32Data::Int(lhs), ConstRuntimeValue32Data::Float(rhs)) => {
+        (ConstRuntimeValueData::Int(lhs), ConstRuntimeValueData::Float(rhs)) => {
             (*lhs as f64).partial_cmp(rhs).unwrap_or(Ordering::Equal)
         }
-        (ConstRuntimeValue32Data::Float(lhs), ConstRuntimeValue32Data::Int(rhs)) => {
+        (ConstRuntimeValueData::Float(lhs), ConstRuntimeValueData::Int(rhs)) => {
             lhs.partial_cmp(&(*rhs as f64)).unwrap_or(Ordering::Equal)
         }
         _ => {
@@ -555,63 +555,63 @@ fn compare_const_runtime_values(lhs: &ConstRuntimeValue32Data, rhs: &ConstRuntim
     }
 }
 
-fn const_runtime_string(value: &ConstRuntimeValue32Data) -> Option<String> {
+fn const_runtime_string(value: &ConstRuntimeValueData) -> Option<String> {
     match value {
-        ConstRuntimeValue32Data::ShortStr(value) => Some(value.as_str().to_string()),
-        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
-            ConstHeapValue32Data::LongString(value) => Some(value.clone()),
+        ConstRuntimeValueData::ShortStr(value) => Some(value.as_str().to_string()),
+        ConstRuntimeValueData::Heap(value) => match value.as_ref() {
+            ConstHeapValueData::LongString(value) => Some(value.clone()),
             _ => None,
         },
         _ => None,
     }
 }
 
-fn const_runtime_kind_order(value: &ConstRuntimeValue32Data) -> u8 {
+fn const_runtime_kind_order(value: &ConstRuntimeValueData) -> u8 {
     match value {
-        ConstRuntimeValue32Data::Nil => 0,
-        ConstRuntimeValue32Data::Bool(_) => 1,
-        ConstRuntimeValue32Data::Int(_) => 2,
-        ConstRuntimeValue32Data::Float(_) => 3,
-        ConstRuntimeValue32Data::ShortStr(_) => 4,
-        ConstRuntimeValue32Data::Heap(_) => 5,
+        ConstRuntimeValueData::Nil => 0,
+        ConstRuntimeValueData::Bool(_) => 1,
+        ConstRuntimeValueData::Int(_) => 2,
+        ConstRuntimeValueData::Float(_) => 3,
+        ConstRuntimeValueData::ShortStr(_) => 4,
+        ConstRuntimeValueData::Heap(_) => 5,
     }
 }
 
-fn const_runtime_values_equal(lhs: &ConstRuntimeValue32Data, rhs: &ConstRuntimeValue32Data) -> bool {
+fn const_runtime_values_equal(lhs: &ConstRuntimeValueData, rhs: &ConstRuntimeValueData) -> bool {
     match (lhs, rhs) {
-        (ConstRuntimeValue32Data::Nil, ConstRuntimeValue32Data::Nil) => true,
-        (ConstRuntimeValue32Data::Bool(lhs), ConstRuntimeValue32Data::Bool(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::Int(lhs), ConstRuntimeValue32Data::Int(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::Float(lhs), ConstRuntimeValue32Data::Float(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::ShortStr(lhs), ConstRuntimeValue32Data::ShortStr(rhs)) => lhs == rhs,
-        (ConstRuntimeValue32Data::ShortStr(lhs), ConstRuntimeValue32Data::Heap(rhs))
-        | (ConstRuntimeValue32Data::Heap(rhs), ConstRuntimeValue32Data::ShortStr(lhs)) => {
-            matches!(rhs.as_ref(), ConstHeapValue32Data::LongString(rhs) if lhs == rhs)
+        (ConstRuntimeValueData::Nil, ConstRuntimeValueData::Nil) => true,
+        (ConstRuntimeValueData::Bool(lhs), ConstRuntimeValueData::Bool(rhs)) => lhs == rhs,
+        (ConstRuntimeValueData::Int(lhs), ConstRuntimeValueData::Int(rhs)) => lhs == rhs,
+        (ConstRuntimeValueData::Float(lhs), ConstRuntimeValueData::Float(rhs)) => lhs == rhs,
+        (ConstRuntimeValueData::ShortStr(lhs), ConstRuntimeValueData::ShortStr(rhs)) => lhs == rhs,
+        (ConstRuntimeValueData::ShortStr(lhs), ConstRuntimeValueData::Heap(rhs))
+        | (ConstRuntimeValueData::Heap(rhs), ConstRuntimeValueData::ShortStr(lhs)) => {
+            matches!(rhs.as_ref(), ConstHeapValueData::LongString(rhs) if lhs == rhs)
         }
-        (ConstRuntimeValue32Data::Heap(lhs), ConstRuntimeValue32Data::Heap(rhs)) => {
+        (ConstRuntimeValueData::Heap(lhs), ConstRuntimeValueData::Heap(rhs)) => {
             const_heap_values_equal(lhs.as_ref(), rhs.as_ref())
         }
         _ => false,
     }
 }
 
-fn const_heap_values_equal(lhs: &ConstHeapValue32Data, rhs: &ConstHeapValue32Data) -> bool {
+fn const_heap_values_equal(lhs: &ConstHeapValueData, rhs: &ConstHeapValueData) -> bool {
     match (lhs, rhs) {
-        (ConstHeapValue32Data::LongString(lhs), ConstHeapValue32Data::LongString(rhs)) => lhs == rhs,
-        (ConstHeapValue32Data::List(lhs), ConstHeapValue32Data::List(rhs)) => {
+        (ConstHeapValueData::LongString(lhs), ConstHeapValueData::LongString(rhs)) => lhs == rhs,
+        (ConstHeapValueData::List(lhs), ConstHeapValueData::List(rhs)) => {
             lhs.len() == rhs.len()
                 && lhs
                     .iter()
                     .zip(rhs)
                     .all(|(lhs, rhs)| const_runtime_values_equal(lhs, rhs))
         }
-        (ConstHeapValue32Data::Map(lhs), ConstHeapValue32Data::Map(rhs)) => {
+        (ConstHeapValueData::Map(lhs), ConstHeapValueData::Map(rhs)) => {
             lhs.len() == rhs.len()
                 && lhs.iter().zip(rhs).all(|((lhs_key, lhs_value), (rhs_key, rhs_value))| {
                     lhs_key == rhs_key && const_runtime_values_equal(lhs_value, rhs_value)
                 })
         }
-        (ConstHeapValue32Data::UpvalCell(lhs), ConstHeapValue32Data::UpvalCell(rhs)) => {
+        (ConstHeapValueData::UpvalCell(lhs), ConstHeapValueData::UpvalCell(rhs)) => {
             const_runtime_values_equal(lhs, rhs)
         }
         _ => false,

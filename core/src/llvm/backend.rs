@@ -2,11 +2,11 @@ use anyhow::{Result, bail};
 
 use crate::{
     stmt::Program,
-    vm::{Compiler32, Module32Artifact},
+    vm::{Compiler, ModuleArtifact},
 };
 
 use super::{
-    diagnostics::unsupported_module32_artifact_reason,
+    diagnostics::unsupported_module_artifact_reason,
     options::{LlvmBackendOptions, OptLevel},
     straightline_main::compile_native_scalar_main_artifact,
 };
@@ -49,9 +49,9 @@ impl LlvmBackend {
     }
 
     pub fn compile_program(&self, program: &Program) -> Result<LlvmModuleArtifact> {
-        let module = Compiler32::compile_module(program)?;
-        let artifact = Module32Artifact::new(crate::stmt::import::collect_program_imports(program), &module)?;
-        compile_module32_artifact_to_llvm(&artifact, self.options.clone())
+        let module = Compiler::compile_module(program)?;
+        let artifact = ModuleArtifact::new(crate::stmt::import::collect_program_imports(program), &module)?;
+        compile_module_artifact_to_llvm(&artifact, self.options.clone())
     }
 }
 
@@ -59,8 +59,8 @@ pub fn compile_program_to_llvm(program: &Program, options: LlvmBackendOptions) -
     LlvmBackend::new(options).compile_program(program)
 }
 
-pub fn compile_module32_artifact_to_llvm(
-    artifact: &Module32Artifact,
+pub fn compile_module_artifact_to_llvm(
+    artifact: &ModuleArtifact,
     options: LlvmBackendOptions,
 ) -> Result<LlvmModuleArtifact> {
     if let Some(ir) = compile_native_scalar_main_artifact(artifact, &options)? {
@@ -76,7 +76,7 @@ pub fn compile_module32_artifact_to_llvm(
     }
 
     bail!(
-        "LLVM native lowering does not support this Module32Artifact shape yet: {}",
-        unsupported_module32_artifact_reason(artifact)
+        "LLVM native lowering does not support this ModuleArtifact shape yet: {}",
+        unsupported_module_artifact_reason(artifact)
     )
 }

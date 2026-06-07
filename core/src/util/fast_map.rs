@@ -21,3 +21,10 @@ pub fn fast_hash_set_new<K>() -> FastHashSet<K> {
 pub fn fast_hash_set_with_capacity<K>(capacity: usize) -> FastHashSet<K> {
     hashbrown::HashSet::with_capacity_and_hasher(capacity, Default::default())
 }
+
+#[inline]
+pub fn fast_hash_map_from_iter<K: Eq + std::hash::Hash, V, I: IntoIterator<Item = (K, V)>>(
+    iter: I,
+) -> FastHashMap<K, V> {
+    iter.into_iter().collect()
+}

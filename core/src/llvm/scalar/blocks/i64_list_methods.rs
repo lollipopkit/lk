@@ -9,7 +9,7 @@ use crate::{
         scalar::{block_helpers::scalar_arg_value, facts::NativeScalarFacts},
         straightline_value::{NativeBuiltin, NativeListElementKind, NativeStraightlineValue},
     },
-    vm::{ConstHeapValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, Instr, Opcode},
 };
 
 use super::list_methods::{ptr_list_i64_arg, ptr_list_i64_arg_from_reg};
@@ -17,9 +17,9 @@ use super::list_methods::{ptr_list_i64_arg, ptr_list_i64_arg_from_reg};
 pub(super) fn emit_dynamic_i64_list_builtin_call(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
-    instr: Instr32,
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
@@ -131,9 +131,9 @@ pub(super) fn emit_dynamic_i64_list_builtin_call(
 pub(super) fn emit_dynamic_i64_list_builtin_call_from_regs(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
-    instr: Instr32,
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
+    instr: Instr,
     builtin: NativeBuiltin,
     facts: &NativeScalarFacts,
     pc: usize,
@@ -243,8 +243,8 @@ pub(super) fn emit_dynamic_i64_list_builtin_call_from_regs(
 }
 
 fn dynamic_i64_storage_list_builtin_supported(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     id: usize,
     element: NativeListElementKind,
 ) -> bool {
@@ -255,10 +255,10 @@ fn dynamic_i64_storage_list_builtin_supported(
         return false;
     };
     match instr.opcode() {
-        Opcode32::NewList | Opcode32::ListPush => true,
-        Opcode32::LoadHeapConst => matches!(
+        Opcode::NewList | Opcode::ListPush => true,
+        Opcode::LoadHeapConst => matches!(
             heap_values.get(instr.bx() as usize),
-            Some(ConstHeapValue32Data::List(values)) if values.is_empty()
+            Some(ConstHeapValueData::List(values)) if values.is_empty()
         ),
         _ => false,
     }

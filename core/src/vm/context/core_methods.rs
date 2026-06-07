@@ -6,12 +6,12 @@ use arcstr::ArcStr;
 use crate::{
     val::{HeapRef, HeapStore, HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, Type, TypedList},
     vm::{
-        NativeArgs32, NativeRuntime32, call_runtime_value32_runtime_list_args,
-        call_runtime_value32_runtime_named_map_list_args, call_runtime_value32_runtime_with_receiver_list_args,
+        NativeArgs, NativeRuntime, call_runtime_value_runtime_list_args,
+        call_runtime_value_runtime_named_map_list_args, call_runtime_value_runtime_with_receiver_list_args,
     },
 };
 
-const MAX_INLINE_METHOD_POSITIONAL_ARGS32: usize = u8::MAX as usize + 1;
+const MAX_INLINE_METHOD_POSITIONAL_ARGS: usize = u8::MAX as usize + 1;
 
 fn method_name_arc(helper: &str, method: &RuntimeVal, heap: &HeapStore) -> anyhow::Result<ArcStr> {
     match method {
@@ -31,9 +31,9 @@ fn method_name_arc(helper: &str, method: &RuntimeVal, heap: &HeapStore) -> anyho
     }
 }
 
-pub(super) fn core_call_method_builtin32(
-    args: NativeArgs32<'_>,
-    runtime: &mut NativeRuntime32<'_>,
+pub(super) fn core_call_method_builtin(
+    args: NativeArgs<'_>,
+    runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     if args.len() != 3 {
         bail!("__lk_call_method expects 3 arguments: receiver, method name, positional args list");
@@ -45,9 +45,9 @@ pub(super) fn core_call_method_builtin32(
     call_method_positional_runtime(receiver, method, positional, runtime)
 }
 
-pub(super) fn core_call_method_named_builtin32(
-    args: NativeArgs32<'_>,
-    runtime: &mut NativeRuntime32<'_>,
+pub(super) fn core_call_method_named_builtin(
+    args: NativeArgs<'_>,
+    runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     if args.len() != 4 {
         bail!(
@@ -77,7 +77,7 @@ fn call_method_positional_runtime(
     receiver: RuntimeVal,
     method: ArcStr,
     positional: MethodPositionalArgs,
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     // Try dispatch for methods that need runtime state BEFORE heap closure
     let method_str = method.as_str();
@@ -115,7 +115,7 @@ fn call_method_positional_runtime(
             let Some((state, ctx, module)) = runtime.parts_mut() else {
                 bail!("__lk_call_method requires full runtime state for callable receiver");
             };
-            return call_runtime_value32_runtime_list_args(prop, positional.handle(), state, module, ctx);
+            return call_runtime_value_runtime_list_args(prop, positional.handle(), state, module, ctx);
         }
         if positional.is_empty(runtime.heap())? {
             return Ok(prop);
@@ -144,14 +144,14 @@ fn call_method_named_runtime(
     method: ArcStr,
     positional: MethodPositionalArgs,
     named: Option<HeapRef>,
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     if let Some(prop) = runtime_access(&receiver, method.as_str(), runtime.heap_mut())? {
         if runtime_is_callable(&prop, runtime.heap())? {
             let Some((state, ctx, module)) = runtime.parts_mut() else {
                 bail!("__lk_call_method_named requires full runtime state for callable receiver");
             };
-            return call_runtime_value32_runtime_named_map_list_args(
+            return call_runtime_value_runtime_named_map_list_args(
                 prop,
                 positional.handle(),
                 named,
@@ -434,25 +434,25 @@ fn dispatch_string_builtin_method(
         "substring" => {
             if positional.len() != 2 {
                 bail!(
-                    "string.substring() expects 2 arguments (start, end), got {}",
+                    "string.substring() expects 2 arguments (start, length), got {}",
                     positional.len()
                 );
             }
             let RuntimeVal::Int(start) = &positional[0] else {
                 bail!("string.substring() start must be Int");
             };
-            let RuntimeVal::Int(end) = &positional[1] else {
-                bail!("string.substring() end must be Int");
+            let RuntimeVal::Int(length) = &positional[1] else {
+                bail!("string.substring() length must be Int");
             };
-            let start = *start as usize;
-            let end = *end as usize;
-            let s_len = s.len();
-            let start = start.min(s_len);
-            let end = end.min(s_len);
-            if end <= start {
+            let start_val = *start as usize;
+            let length_val = *length as usize;
+
+            let end = (start_val.saturating_add(length_val)).min(s.len());
+
+            if end <= start_val {
                 Ok(Some(make_string_val("", heap)))
             } else {
-                Ok(Some(make_string_val(&s[start..end], heap)))
+                Ok(Some(make_string_val(&s[start_val..end], heap)))
             }
         }
         "reverse" => {
@@ -943,8 +943,8 @@ fn list_join_parts(list: &TypedList, heap: &HeapStore) -> anyhow::Result<Vec<Str
 fn list_filter(
     items: &[RuntimeVal],
     args: &[RuntimeVal],
-    state: &mut crate::vm::RuntimeModuleState32,
-    module: Option<&crate::vm::Module32>,
+    state: &mut crate::vm::RuntimeModuleState,
+    module: Option<&crate::vm::Module>,
     ctx: &mut Option<&mut crate::vm::VmContext>,
 ) -> anyhow::Result<Option<RuntimeVal>> {
     if args.len() != 1 {
@@ -954,7 +954,7 @@ fn list_filter(
     let mut filtered = Vec::with_capacity(items.len());
     for item in items {
         let result =
-            crate::vm::call_runtime_value32_runtime(pred.clone(), &[item.clone()], state, module, ctx.as_deref_mut())?;
+            crate::vm::call_runtime_value_runtime(pred.clone(), &[item.clone()], state, module, ctx.as_deref_mut())?;
         let keep = match &result {
             RuntimeVal::Bool(b) => *b,
             RuntimeVal::Nil => false,
@@ -971,8 +971,8 @@ fn list_filter(
 fn list_map(
     items: &[RuntimeVal],
     args: &[RuntimeVal],
-    state: &mut crate::vm::RuntimeModuleState32,
-    module: Option<&crate::vm::Module32>,
+    state: &mut crate::vm::RuntimeModuleState,
+    module: Option<&crate::vm::Module>,
     ctx: &mut Option<&mut crate::vm::VmContext>,
 ) -> anyhow::Result<Option<RuntimeVal>> {
     if args.len() != 1 {
@@ -981,7 +981,7 @@ fn list_map(
     let transform = args[0].clone();
     let mut mapped = Vec::with_capacity(items.len());
     for item in items {
-        let result = crate::vm::call_runtime_value32_runtime(
+        let result = crate::vm::call_runtime_value_runtime(
             transform.clone(),
             &[item.clone()],
             state,
@@ -997,8 +997,8 @@ fn list_map(
 fn list_reduce(
     items: &[RuntimeVal],
     args: &[RuntimeVal],
-    state: &mut crate::vm::RuntimeModuleState32,
-    module: Option<&crate::vm::Module32>,
+    state: &mut crate::vm::RuntimeModuleState,
+    module: Option<&crate::vm::Module>,
     ctx: &mut Option<&mut crate::vm::VmContext>,
 ) -> anyhow::Result<Option<RuntimeVal>> {
     if args.len() != 2 {
@@ -1010,7 +1010,7 @@ fn list_reduce(
     let acc_fn = args[1].clone();
     let mut acc = args[0].clone();
     for item in items {
-        acc = crate::vm::call_runtime_value32_runtime(
+        acc = crate::vm::call_runtime_value_runtime(
             acc_fn.clone(),
             &[acc, item.clone()],
             state,
@@ -1036,7 +1036,7 @@ fn call_trait_method_runtime(
     receiver: RuntimeVal,
     method: ArcStr,
     positional: MethodPositionalArgs,
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
 ) -> anyhow::Result<RuntimeVal> {
     let receiver_type = runtime_dispatch_type(&receiver, runtime.heap());
     let receiver_type_name = runtime_type_name(&receiver, runtime.heap());
@@ -1053,7 +1053,7 @@ fn call_trait_method_runtime(
     else {
         bail!("{} has no method '{}'", receiver_type_name, method);
     };
-    call_runtime_value32_runtime_with_receiver_list_args(
+    call_runtime_value_runtime_with_receiver_list_args(
         method_val,
         &receiver,
         positional.handle(),
@@ -1067,7 +1067,7 @@ fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> a
     match receiver {
         RuntimeVal::ShortStr(value) => Ok(runtime_string_access(value.as_str(), field)),
         RuntimeVal::Obj(handle) => {
-            enum RuntimeAccess32 {
+            enum RuntimeAccess {
                 Ready(Option<RuntimeVal>),
                 CopyPayload(crate::rt::RuntimePayload),
                 String(String),
@@ -1076,27 +1076,27 @@ fn runtime_access(receiver: &RuntimeVal, field: &str, heap: &mut HeapStore) -> a
                 .get(*handle)
                 .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
             {
-                HeapValue::String(value) => RuntimeAccess32::Ready(runtime_string_access(value.as_ref(), field)),
-                HeapValue::List(values) => RuntimeAccess32::Ready(runtime_list_access(values, field)),
-                HeapValue::Map(values) => RuntimeAccess32::Ready(values.get_str(field)),
-                HeapValue::Object(object) => RuntimeAccess32::Ready(object.get_field(field)),
+                HeapValue::String(value) => RuntimeAccess::Ready(runtime_string_access(value.as_ref(), field)),
+                HeapValue::List(values) => RuntimeAccess::Ready(runtime_list_access(values, field)),
+                HeapValue::Map(values) => RuntimeAccess::Ready(values.get_str(field)),
+                HeapValue::Object(object) => RuntimeAccess::Ready(object.get_field(field)),
                 HeapValue::Task(task) if field == "value" => match &task.value {
-                    Some(value) => RuntimeAccess32::CopyPayload(value.clone()),
-                    None => RuntimeAccess32::Ready(Some(RuntimeVal::Nil)),
+                    Some(value) => RuntimeAccess::CopyPayload(value.clone()),
+                    None => RuntimeAccess::Ready(Some(RuntimeVal::Nil)),
                 },
                 HeapValue::Channel(channel) => match field {
-                    "capacity" => RuntimeAccess32::Ready(Some(RuntimeVal::Int(channel.capacity.unwrap_or(0) as i64))),
-                    "type" => RuntimeAccess32::String(format!("{:?}", channel.inner_type)),
-                    _ => RuntimeAccess32::Ready(None),
+                    "capacity" => RuntimeAccess::Ready(Some(RuntimeVal::Int(channel.capacity.unwrap_or(0) as i64))),
+                    "type" => RuntimeAccess::String(format!("{:?}", channel.inner_type)),
+                    _ => RuntimeAccess::Ready(None),
                 },
-                _ => RuntimeAccess32::Ready(None),
+                _ => RuntimeAccess::Ready(None),
             };
             match access {
-                RuntimeAccess32::Ready(value) => Ok(value),
-                RuntimeAccess32::CopyPayload(value) => {
+                RuntimeAccess::Ready(value) => Ok(value),
+                RuntimeAccess::CopyPayload(value) => {
                     Ok(Some(crate::vm::copy_runtime_value(&value.value, &value.heap, heap)?))
                 }
-                RuntimeAccess32::String(value) => Ok(Some(runtime_string_value(value, heap))),
+                RuntimeAccess::String(value) => Ok(Some(runtime_string_value(value, heap))),
             }
         }
         _ => Ok(None),
@@ -1157,14 +1157,14 @@ impl MethodPositionalArgs {
             Self::Empty => f(&[], heap),
             Self::List(handle) => {
                 let len = self.len(heap)?;
-                if len > MAX_INLINE_METHOD_POSITIONAL_ARGS32 {
+                if len > MAX_INLINE_METHOD_POSITIONAL_ARGS {
                     bail!(
                         "method positional argument count {} exceeds inline call buffer {}",
                         len,
-                        MAX_INLINE_METHOD_POSITIONAL_ARGS32
+                        MAX_INLINE_METHOD_POSITIONAL_ARGS
                     );
                 }
-                let mut values: [RuntimeVal; MAX_INLINE_METHOD_POSITIONAL_ARGS32] =
+                let mut values: [RuntimeVal; MAX_INLINE_METHOD_POSITIONAL_ARGS] =
                     std::array::from_fn(|_| RuntimeVal::Nil);
                 copy_method_positional_list(handle, heap, &mut values[..len])?;
                 f(&values[..len], heap)

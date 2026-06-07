@@ -3,23 +3,23 @@ mod tests {
     use crate::tcp::TcpModule;
     use anyhow::{Result, bail};
     use lk_core::{
-        module::Module,
+        module::ModuleProvider,
         val::RuntimeVal,
-        vm::{NativeArgs32, NativeFunction32, NativeRuntime32, RuntimeModuleState32},
+        vm::{NativeArgs, NativeFunction, NativeRuntime, RuntimeModuleState},
     };
 
-    fn tcp_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn tcp_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&TcpModule::new(), name)
     }
 
     fn call(name: &str, args: &[RuntimeVal]) -> Result<RuntimeVal> {
         let (_, function) = tcp_native(name)?;
-        let NativeFunction32::Plain(function) = function else {
-            bail!("{name} must use plain RuntimeNative32");
+        let NativeFunction::Plain(function) = function else {
+            bail!("{name} must use plain RuntimeNative");
         };
-        let mut state = RuntimeModuleState32::default();
-        let mut runtime = NativeRuntime32::new(&mut state, None, None);
-        function(NativeArgs32::new(args), &mut runtime)
+        let mut state = RuntimeModuleState::default();
+        let mut runtime = NativeRuntime::new(&mut state, None, None);
+        function(NativeArgs::new(args), &mut runtime)
     }
 
     #[test]
@@ -29,7 +29,7 @@ mod tests {
 
         for name in ["connect", "bind", "close", "read", "write", "accept"] {
             let (_, function) = tcp_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
+            assert!(matches!(function, NativeFunction::Plain(_)));
         }
         Ok(())
     }

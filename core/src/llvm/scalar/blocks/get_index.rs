@@ -11,6 +11,7 @@ use crate::{
             emit_dynamic_string_ptr_map_iter_value,
         },
         ir_text::{emit_branch_to_next, native_relative_target, next_tmp},
+        known_key::native_known_string_key,
         scalar::{
             block_helpers::{
                 emit_static_string_i64_map_get, local_register_kind_before, local_static_container_before,
@@ -32,19 +33,20 @@ use crate::{
             native_const_runtime_string, native_static_arg_list_display, native_static_index,
         },
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Opcode32},
+    vm::{ConstHeapValueData, ConstRuntimeValueData, FunctionData, Instr, Opcode},
 };
 
 pub(super) fn emit_get_index_block(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
+    function: &FunctionData,
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -94,6 +96,19 @@ pub(super) fn emit_get_index_block(
             emit_branch_to_next(ir, pc, code.len());
             return true;
         }
+        if facts
+            .register_kind_before(pc, instr.b())
+            .or_else(|| local_register_kind_before(code, pc, instr.b()))
+            == Some(NativeScalarKind::StrPtr)
+            && facts
+                .register_kind_before(pc, instr.c())
+                .or_else(|| local_register_kind_before(code, pc, instr.c()))
+                == Some(NativeScalarKind::I64)
+        {
+            static_regs[instr.a() as usize] = Some(NativeStraightlineValue::DynamicTextChar);
+            emit_branch_to_next(ir, pc, code.len());
+            return true;
+        }
         return false;
     };
     if matches!(target, NativeStraightlineValue::DynamicConstListElement { .. }) {
@@ -105,6 +120,7 @@ pub(super) fn emit_get_index_block(
             int_consts,
             strings,
             heap_values,
+            function,
             pc,
             instr,
             facts,
@@ -115,6 +131,13 @@ pub(super) fn emit_get_index_block(
             emit_branch_to_next(ir, pc, code.len());
         }
         return ok;
+    }
+    if let Some(value) = known_key_static_index(function, pc, instr, target.clone()) {
+        if store_index_value(ir, extra_globals, static_regs, instr.a(), value, tmp_index).is_none() {
+            return false;
+        }
+        emit_branch_to_next(ir, pc, code.len());
+        return true;
     }
     if let Some(value) = static_index_from_registers(
         static_regs,
@@ -147,6 +170,7 @@ pub(super) fn emit_get_index_block(
         int_consts,
         strings,
         heap_values,
+        function,
         pc,
         instr,
         facts,
@@ -162,10 +186,10 @@ pub(super) fn emit_get_index_block(
 fn emit_local_new_list_index(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
 ) -> bool {
@@ -217,7 +241,7 @@ fn emit_local_new_list_index(
     }
 }
 
-fn local_new_list_source_before(code: &[Instr32], pc: usize, reg: u8) -> Option<(usize, usize)> {
+fn local_new_list_source_before(code: &[Instr], pc: usize, reg: u8) -> Option<(usize, usize)> {
     let start = pc.saturating_sub(128);
     for prev_pc in (start..pc).rev() {
         let prev = code.get(prev_pc).copied()?;
@@ -225,8 +249,8 @@ fn local_new_list_source_before(code: &[Instr32], pc: usize, reg: u8) -> Option<
             continue;
         }
         return match prev.opcode() {
-            crate::vm::Opcode32::NewList => Some((prev.b() as usize, prev.c() as usize)),
-            crate::vm::Opcode32::Move if prev.b() != reg => local_new_list_source_before(code, prev_pc, prev.b()),
+            crate::vm::Opcode::NewList => Some((prev.b() as usize, prev.c() as usize)),
+            crate::vm::Opcode::Move if prev.b() != reg => local_new_list_source_before(code, prev_pc, prev.b()),
             _ => None,
         };
     }
@@ -235,10 +259,10 @@ fn local_new_list_source_before(code: &[Instr32], pc: usize, reg: u8) -> Option<
 
 fn static_string_key_index_before(
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     strings: &[String],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     target: NativeStraightlineValue,
 ) -> Option<NativeStraightlineValue> {
     let key = static_regs
@@ -248,8 +272,55 @@ fn static_string_key_index_before(
     native_static_index(target, key, String::new())
 }
 
+fn known_key_static_index(
+    function: &FunctionData,
+    pc: usize,
+    instr: Instr,
+    target: NativeStraightlineValue,
+) -> Option<NativeStraightlineValue> {
+    let key = native_known_string_key(function, pc, format!("@lk_known_index_key_{pc}"))?;
+    native_static_index(target, key, format!("@lk_known_index_value_{}", instr.a()))
+}
+
+fn dynamic_string_map_key(
+    ir: &mut String,
+    extra_globals: &mut String,
+    static_regs: &[Option<NativeStraightlineValue>],
+    code: &[Instr],
+    function: &FunctionData,
+    pc: usize,
+    instr: Instr,
+    facts: &NativeScalarFacts,
+    tmp_index: &mut usize,
+) -> Option<NativeStraightlineValue> {
+    known_dynamic_string_map_key(extra_globals, function, pc)
+        .or_else(|| static_regs.get(instr.c() as usize).and_then(Clone::clone))
+        .or_else(|| {
+            let kind = facts
+                .register_kind_before(pc, instr.c())
+                .or_else(|| local_register_kind_before(code, pc, instr.c()));
+            matches!(kind, Some(NativeScalarKind::StrPtr | NativeScalarKind::MaybeStrPtr)).then(|| {
+                let key = next_tmp(tmp_index);
+                ir.push_str(&format!("  {key} = load ptr, ptr %r{}.slot\n", instr.c()));
+                NativeStraightlineValue::StringPtr(key)
+            })
+        })
+}
+
+fn known_dynamic_string_map_key(
+    extra_globals: &mut String,
+    function: &FunctionData,
+    pc: usize,
+) -> Option<NativeStraightlineValue> {
+    let key = native_known_string_key(function, pc, format!("@lk_known_dynamic_map_key_{pc}"))?;
+    if let NativeStraightlineValue::String { symbol, value, .. } = &key {
+        extra_globals.push_str(&llvm_string_constant(symbol, value));
+    }
+    Some(key)
+}
+
 fn dominating_static_string_before(
-    code: &[Instr32],
+    code: &[Instr],
     strings: &[String],
     pc: usize,
     reg: u8,
@@ -259,27 +330,30 @@ fn dominating_static_string_before(
         return None;
     }
     match instr.opcode() {
-        Opcode32::LoadString => local_static_string_before(code, strings, pc, reg),
-        Opcode32::Move if instr.b() != reg => dominating_static_string_before(code, strings, write_pc, instr.b()),
+        Opcode::LoadString => local_static_string_before(code, strings, pc, reg),
+        Opcode::Move if instr.b() != reg => dominating_static_string_before(code, strings, write_pc, instr.b()),
         _ => None,
     }
 }
 
-fn last_write_before(code: &[Instr32], pc: usize, reg: u8) -> Option<(usize, Instr32)> {
-    code.iter().copied().take(pc).enumerate().rev().find(|(_, instr)| {
-        instr.a() == reg && !matches!(instr.opcode(), Opcode32::Nop | Opcode32::Jmp | Opcode32::Test)
-    })
+fn last_write_before(code: &[Instr], pc: usize, reg: u8) -> Option<(usize, Instr)> {
+    code.iter()
+        .copied()
+        .take(pc)
+        .enumerate()
+        .rev()
+        .find(|(_, instr)| instr.a() == reg && !matches!(instr.opcode(), Opcode::Nop | Opcode::Jmp | Opcode::Test))
 }
 
-fn branch_before_write_can_skip_to(code: &[Instr32], write_pc: usize, pc: usize) -> bool {
+fn branch_before_write_can_skip_to(code: &[Instr], write_pc: usize, pc: usize) -> bool {
     code.iter()
         .copied()
         .take(write_pc)
         .enumerate()
         .any(|(branch_pc, instr)| {
             let target = match instr.opcode() {
-                Opcode32::Jmp => native_relative_target(branch_pc, instr.sj_arg(), code.len()),
-                Opcode32::Test => native_relative_target(branch_pc, instr.c() as i8 as i32, code.len()),
+                Opcode::Jmp => native_relative_target(branch_pc, instr.sj_arg(), code.len()),
+                Opcode::Test => native_relative_target(branch_pc, instr.c() as i8 as i32, code.len()),
                 _ => None,
             };
             matches!(target, Some(target) if target > write_pc && target <= pc)
@@ -291,12 +365,13 @@ fn emit_get_index_target(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
+    function: &FunctionData,
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     facts: &NativeScalarFacts,
     target: NativeStraightlineValue,
     tmp_index: &mut usize,
@@ -330,7 +405,9 @@ fn emit_get_index_target(
         {
             return false;
         }
-        static_regs[instr.a() as usize] = None;
+        let value = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(value));
         return true;
     }
     if let NativeStraightlineValue::DynamicList {
@@ -346,7 +423,9 @@ fn emit_get_index_target(
         {
             return false;
         }
-        static_regs[instr.a() as usize] = None;
+        let value = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load double, ptr %r{}.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::F64(value));
         return true;
     }
     if let NativeStraightlineValue::DynamicList {
@@ -362,7 +441,9 @@ fn emit_get_index_target(
         {
             return false;
         }
-        static_regs[instr.a() as usize] = None;
+        let value = next_tmp(tmp_index);
+        ir.push_str(&format!("  {value} = load i64, ptr %r{}.slot\n", instr.a()));
+        static_regs[instr.a() as usize] = Some(NativeStraightlineValue::Bool(value));
         return true;
     }
     if let NativeStraightlineValue::DynamicList {
@@ -502,7 +583,17 @@ fn emit_get_index_target(
         value: NativeMapValueKind::I64,
     } = target
     {
-        let Some(key) = static_regs.get(instr.c() as usize).and_then(Clone::clone) else {
+        let Some(key) = dynamic_string_map_key(
+            ir,
+            extra_globals,
+            static_regs,
+            code,
+            function,
+            pc,
+            instr,
+            facts,
+            tmp_index,
+        ) else {
             return false;
         };
         if emit_dynamic_string_int_map_get(ir, extra_globals, id, instr.a(), key, tmp_index).is_none() {
@@ -609,7 +700,17 @@ fn emit_get_index_target(
         value: NativeMapValueKind::StrPtr,
     } = target
     {
-        let Some(key) = static_regs.get(instr.c() as usize).and_then(Clone::clone) else {
+        let Some(key) = dynamic_string_map_key(
+            ir,
+            extra_globals,
+            static_regs,
+            code,
+            function,
+            pc,
+            instr,
+            facts,
+            tmp_index,
+        ) else {
             return false;
         };
         if emit_dynamic_string_ptr_map_get(ir, extra_globals, id, pc, instr.a(), key, tmp_index).is_none() {
@@ -628,7 +729,17 @@ fn emit_get_index_target(
         value: NativeMapValueKind::F64,
     } = target
     {
-        let Some(key) = static_regs.get(instr.c() as usize).and_then(Clone::clone) else {
+        let Some(key) = dynamic_string_map_key(
+            ir,
+            extra_globals,
+            static_regs,
+            code,
+            function,
+            pc,
+            instr,
+            facts,
+            tmp_index,
+        ) else {
             return false;
         };
         if emit_dynamic_string_f64_map_get(ir, extra_globals, id, instr.a(), key, tmp_index).is_none() {
@@ -647,7 +758,17 @@ fn emit_get_index_target(
         value: NativeMapValueKind::Bool,
     } = target
     {
-        let Some(key) = static_regs.get(instr.c() as usize).and_then(Clone::clone) else {
+        let Some(key) = dynamic_string_map_key(
+            ir,
+            extra_globals,
+            static_regs,
+            code,
+            function,
+            pc,
+            instr,
+            facts,
+            tmp_index,
+        ) else {
             return false;
         };
         if emit_dynamic_string_int_map_get(ir, extra_globals, id, instr.a(), key, tmp_index).is_none() {
@@ -883,12 +1004,12 @@ fn emit_dynamic_arg_list_value_select(
     true
 }
 
-fn register_written_by_enclosing_loop(code: &[Instr32], pc_limit: usize, reg: u8) -> bool {
+fn register_written_by_enclosing_loop(code: &[Instr], pc_limit: usize, reg: u8) -> bool {
     code.iter()
         .copied()
         .enumerate()
         .skip(pc_limit.saturating_add(1))
-        .filter(|(_, instr)| instr.opcode() == crate::vm::Opcode32::Jmp)
+        .filter(|(_, instr)| instr.opcode() == crate::vm::Opcode::Jmp)
         .any(|(jump_pc, instr)| {
             let target = jump_pc as i64 + 1 + instr.sj_arg() as i64;
             target >= 0 && (target as usize) <= pc_limit && (target as usize..jump_pc).any(|pc| code[pc].a() == reg)
@@ -899,9 +1020,9 @@ fn emit_text_index(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     facts: &NativeScalarFacts,
     target: NativeStraightlineValue,
     tmp_index: &mut usize,
@@ -937,9 +1058,9 @@ fn emit_dynamic_const_list_index(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    elements: &[ConstRuntimeValue32Data],
+    elements: &[ConstRuntimeValueData],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) -> bool {
     let index = next_tmp(tmp_index);
@@ -947,7 +1068,7 @@ fn emit_dynamic_const_list_index(
     if let Some(values) = elements
         .iter()
         .map(|value| match value {
-            ConstRuntimeValue32Data::Int(value) => Some(*value),
+            ConstRuntimeValueData::Int(value) => Some(*value),
             _ => None,
         })
         .collect::<Option<Vec<_>>>()
@@ -987,11 +1108,11 @@ fn emit_local_dynamic_const_list_element_index(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
 ) -> bool {
@@ -1049,18 +1170,18 @@ fn emit_local_dynamic_const_list_element_index(
 }
 
 fn local_dynamic_const_list_element_source_before(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     reg: u8,
-) -> Option<(Vec<ConstRuntimeValue32Data>, u8)> {
+) -> Option<(Vec<ConstRuntimeValueData>, u8)> {
     for prev_pc in (pc.saturating_sub(64)..pc).rev() {
         let prev = code.get(prev_pc).copied()?;
         if prev.a() != reg {
             continue;
         }
         return match prev.opcode() {
-            Opcode32::GetIndex => {
+            Opcode::GetIndex => {
                 let Some(NativeStraightlineValue::List { elements, .. }) =
                     local_static_container_before(code, heap_values, prev_pc, prev.b())
                 else {
@@ -1068,7 +1189,7 @@ fn local_dynamic_const_list_element_source_before(
                 };
                 Some((elements, prev.c()))
             }
-            Opcode32::Move | Opcode32::ToIter if prev.b() != reg => {
+            Opcode::Move | Opcode::ToIter if prev.b() != reg => {
                 local_dynamic_const_list_element_source_before(code, heap_values, prev_pc, prev.b())
             }
             _ => None,
@@ -1084,7 +1205,7 @@ fn emit_string_list_select(
     values: Vec<String>,
     index: &str,
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) {
     let mut selected = "@lk_empty_text".to_string();
@@ -1105,10 +1226,10 @@ fn emit_string_i64_map_index(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    entries: &[(crate::vm::RuntimeMapKeyData, ConstRuntimeValue32Data)],
-    _code: &[Instr32],
+    entries: &[(crate::vm::RuntimeMapKeyData, ConstRuntimeValueData)],
+    _code: &[Instr],
     _pc: usize,
-    instr: Instr32,
+    instr: Instr,
     _facts: &NativeScalarFacts,
     target: NativeStraightlineValue,
     tmp_index: &mut usize,

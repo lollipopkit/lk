@@ -57,6 +57,7 @@ pub(super) fn native_scalar_main_header(options: &LlvmBackendOptions) -> String 
     ir.push_str("declare i32 @strcmp(ptr, ptr)\n\n");
     ir.push_str("declare i32 @strncmp(ptr, ptr, i64)\n\n");
     ir.push_str("declare i64 @strlen(ptr)\n\n");
+    ir.push_str("declare ptr @malloc(i64)\n\n");
     ir.push_str("declare ptr @strdup(ptr)\n\n");
     ir.push_str("declare i32 @snprintf(ptr, i64, ptr, ...)\n\n");
     ir.push_str("declare double @llvm.sqrt.f64(double)\n");

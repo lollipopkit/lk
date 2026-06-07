@@ -2,15 +2,15 @@ use crate::llvm::straightline_value::{
     NativeListElementKind, NativeStraightlineValue, native_runtime_string_key_kind,
     native_straightline_heap_const_value,
 };
-use crate::vm::{ConstHeapValue32Data, Instr32, Opcode32};
+use crate::vm::{ConstHeapValueData, Instr, Opcode};
 
 use super::{control_flow_static_boundaries, local_static_i64_before};
 
 pub(super) fn static_direct_call_args(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     static_regs: &[Option<NativeStraightlineValue>],
     callee: u8,
@@ -46,7 +46,7 @@ pub(super) fn static_direct_call_args(
 }
 
 fn local_static_string_before(
-    code: &[Instr32],
+    code: &[Instr],
     strings: &[String],
     pc: usize,
     reg: u8,
@@ -57,7 +57,7 @@ fn local_static_string_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::LoadString => {
+            Opcode::LoadString => {
                 let value = strings.get(prev.bx() as usize)?;
                 Some(NativeStraightlineValue::String {
                     symbol: String::new(),
@@ -66,7 +66,7 @@ fn local_static_string_before(
                     key_kind: native_runtime_string_key_kind(value),
                 })
             }
-            Opcode32::Move if prev.b() != reg => local_static_string_before(code, strings, prev_pc, prev.b()),
+            Opcode::Move if prev.b() != reg => local_static_string_before(code, strings, prev_pc, prev.b()),
             _ => None,
         };
     }
@@ -74,8 +74,8 @@ fn local_static_string_before(
 }
 
 fn local_static_heap_const_before(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     reg: u8,
 ) -> Option<NativeStraightlineValue> {
@@ -96,11 +96,11 @@ fn local_static_heap_const_before(
             return None;
         }
         return match prev.opcode() {
-            Opcode32::LoadHeapConst => {
+            Opcode::LoadHeapConst => {
                 let value = heap_values.get(prev.bx() as usize)?;
                 native_straightline_heap_const_value(0, prev.bx(), value)
             }
-            Opcode32::Move if prev.b() != reg => local_static_heap_const_before(code, heap_values, prev_pc, prev.b()),
+            Opcode::Move if prev.b() != reg => local_static_heap_const_before(code, heap_values, prev_pc, prev.b()),
             _ => None,
         };
     }

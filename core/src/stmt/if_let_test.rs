@@ -2,22 +2,22 @@
 mod tests {
     use crate::{
         val::{RuntimeVal, ShortStr},
-        vm::{Program32Result, execute_source32},
+        vm::{ProgramResult, execute_source},
     };
 
-    fn parse_and_execute_stmt(stmt_code: &str) -> anyhow::Result<Program32Result> {
-        execute_source32(stmt_code)
+    fn parse_and_execute_stmt(stmt_code: &str) -> anyhow::Result<ProgramResult> {
+        execute_source(stmt_code)
     }
 
-    fn expect_return_int(result: &Program32Result, expected: i64) {
+    fn expect_return_int(result: &ProgramResult, expected: i64) {
         assert_eq!(result.first_return(), &RuntimeVal::Int(expected));
     }
 
-    fn expect_return_nil(result: &Program32Result) {
+    fn expect_return_nil(result: &ProgramResult) {
         assert_eq!(result.first_return(), &RuntimeVal::Nil);
     }
 
-    fn expect_return_str(result: &Program32Result, expected: &str) {
+    fn expect_return_str(result: &ProgramResult, expected: &str) {
         assert_eq!(
             result.first_return(),
             &RuntimeVal::ShortStr(ShortStr::new(expected).expect("short test string"))

@@ -55,6 +55,133 @@ impl ShortStr {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Concatenate a ShortStr prefix with an i64 suffix, returning ShortStr
+    /// if the result fits in 7 bytes, otherwise a heap-allocated String.
+    /// Avoids intermediate String allocation for small numbers.
+    #[inline]
+    pub fn concat_int(self, n: i64) -> ShortStrOrStr {
+        let prefix = self.as_str().as_bytes();
+        let prefix_len = prefix.len();
+        // Fast path for common small non-negative integers: write digits directly.
+        if n >= 0 && n < 10000 {
+            let num_len = decimal_len_under_10000(n as u64);
+            let total_len = prefix_len + num_len;
+            if total_len <= 7 {
+                let mut data = [0u8; 7];
+                data[..prefix_len].copy_from_slice(prefix);
+                write_u64_to_buf(n as u64, &mut data[prefix_len..]);
+                return ShortStrOrStr::Short(ShortStr {
+                    len: total_len as u8,
+                    data,
+                });
+            }
+        }
+        // Fallback: format to String and try ShortStr
+        let combined = format!("{}{}", self.as_str(), n);
+        if let Some(short) = ShortStr::new(&combined) {
+            ShortStrOrStr::Short(short)
+        } else {
+            ShortStrOrStr::Str(combined)
+        }
+    }
+
+    /// Concatenate an i64 prefix with a ShortStr suffix, returning ShortStr
+    /// if the result fits in 7 bytes, otherwise a heap-allocated String.
+    #[inline]
+    pub fn concat_int_prefix(n: i64, suffix: ShortStr) -> ShortStrOrStr {
+        let suffix_bytes = suffix.as_str().as_bytes();
+        let suffix_len = suffix_bytes.len();
+        if n >= 0 && n < 10000 {
+            let mut data = [0u8; 7];
+            let num_len = write_u64_to_buf(n as u64, &mut data[..]);
+            let total_len = num_len + suffix_len;
+            if total_len <= 7 {
+                data[num_len..total_len].copy_from_slice(suffix_bytes);
+                return ShortStrOrStr::Short(ShortStr {
+                    len: total_len as u8,
+                    data,
+                });
+            }
+        }
+        let combined = format!("{}{}", n, suffix.as_str());
+        if let Some(short) = ShortStr::new(&combined) {
+            ShortStrOrStr::Short(short)
+        } else {
+            ShortStrOrStr::Str(combined)
+        }
+    }
+
+    /// Concatenate two ShortStr values, returning ShortStr if the result
+    /// fits in 7 bytes, otherwise a heap-allocated String.
+    #[inline]
+    pub fn concat(self, other: ShortStr) -> ShortStrOrStr {
+        let a = self.as_str().as_bytes();
+        let b = other.as_str().as_bytes();
+        let total_len = a.len() + b.len();
+        if total_len <= 7 {
+            let mut data = [0u8; 7];
+            data[..a.len()].copy_from_slice(a);
+            data[a.len()..total_len].copy_from_slice(b);
+            ShortStrOrStr::Short(ShortStr {
+                len: total_len as u8,
+                data,
+            })
+        } else {
+            ShortStrOrStr::Str(format!("{}{}", self.as_str(), other.as_str()))
+        }
+    }
+}
+
+/// Result of concatenating two ShortStr values or a ShortStr with an Int.
+/// Avoids String allocation when the result fits in ShortStr.
+pub enum ShortStrOrStr {
+    Short(ShortStr),
+    Str(String),
+}
+
+/// Write a u64 as decimal ASCII to buf, returning the number of bytes written.
+/// Assumes buf has at least 4 bytes of space (for numbers up to 9999).
+#[inline]
+fn write_u64_to_buf(n: u64, buf: &mut [u8]) -> usize {
+    if n < 10 {
+        buf[0] = b'0' + n as u8;
+        1
+    } else if n < 100 {
+        buf[0] = b'0' + (n / 10) as u8;
+        buf[1] = b'0' + (n % 10) as u8;
+        2
+    } else if n < 1000 {
+        buf[0] = b'0' + (n / 100) as u8;
+        buf[1] = b'0' + ((n / 10) % 10) as u8;
+        buf[2] = b'0' + (n % 10) as u8;
+        3
+    } else if n < 10000 {
+        buf[0] = b'0' + (n / 1000) as u8;
+        buf[1] = b'0' + ((n / 100) % 10) as u8;
+        buf[2] = b'0' + ((n / 10) % 10) as u8;
+        buf[3] = b'0' + (n % 10) as u8;
+        4
+    } else {
+        // Fallback for larger numbers
+        let s = n.to_string();
+        let len = s.len().min(buf.len());
+        buf[..len].copy_from_slice(&s.as_bytes()[..len]);
+        len
+    }
+}
+
+#[inline]
+fn decimal_len_under_10000(n: u64) -> usize {
+    if n < 10 {
+        1
+    } else if n < 100 {
+        2
+    } else if n < 1000 {
+        3
+    } else {
+        4
+    }
 }
 
 impl fmt::Debug for ShortStr {
@@ -559,4 +686,21 @@ fn is_type_name(value: &str) -> bool {
     let mut chars = value.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ShortStr, ShortStrOrStr};
+
+    #[test]
+    fn short_str_concat_int_falls_back_when_prefix_fills_inline_buffer() {
+        let prefix = ShortStr::new("answer=").expect("short");
+
+        let value = prefix.concat_int(42);
+
+        match value {
+            ShortStrOrStr::Str(value) => assert_eq!(value, "answer=42"),
+            ShortStrOrStr::Short(value) => panic!("expected heap string fallback, got {}", value.as_str()),
+        }
+    }
 }

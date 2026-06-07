@@ -5,16 +5,16 @@ use crate::{
         },
         straightline_value::{NativeStraightlineValue, native_static_index},
     },
-    vm::Instr32,
+    vm::Instr,
 };
 
 pub(super) fn arg_list_get_index_value(
     static_values: &[Option<NativeStraightlineValue>],
     kinds: &[Option<NativeScalarKind>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     target: NativeStraightlineValue,
 ) -> Option<NativeStraightlineValue> {
     let NativeStraightlineValue::ArgList { elements } = target.clone() else {
@@ -57,7 +57,7 @@ pub(super) fn single_callable_arg_list(value: Option<NativeStraightlineValue>) -
 
 pub(super) fn object_arg_list_from_registers(
     static_values: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     pc: usize,
     start: usize,
@@ -83,7 +83,7 @@ pub(super) fn arg_list_set_index_value(
     target: NativeStraightlineValue,
     static_values: &[Option<NativeStraightlineValue>],
     int_consts: &[i64],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
     key_reg: u8,
     value_reg: u8,
@@ -103,12 +103,12 @@ pub(super) fn arg_list_set_index_value(
     Some(NativeStraightlineValue::ArgList { elements })
 }
 
-fn register_written_by_enclosing_loop(code: &[Instr32], pc_limit: usize, reg: u8) -> bool {
+fn register_written_by_enclosing_loop(code: &[Instr], pc_limit: usize, reg: u8) -> bool {
     code.iter()
         .copied()
         .enumerate()
         .skip(pc_limit.saturating_add(1))
-        .filter(|(_, instr)| instr.opcode() == crate::vm::Opcode32::Jmp)
+        .filter(|(_, instr)| instr.opcode() == crate::vm::Opcode::Jmp)
         .any(|(jump_pc, instr)| {
             let target = jump_pc as i64 + 1 + instr.sj_arg() as i64;
             target >= 0 && (target as usize) <= pc_limit && (target as usize..jump_pc).any(|pc| code[pc].a() == reg)

@@ -4,16 +4,16 @@ use crate::{
         scalar::{block_helpers::local_static_i64_before, facts::NativeScalarFacts},
         straightline_value::{NativeStraightlineValue, native_static_load_cell, native_static_store_cell},
     },
-    vm::Instr32,
+    vm::Instr,
 };
 
 pub(super) fn emit_store_cell_block(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,
@@ -47,9 +47,9 @@ pub(super) fn emit_store_cell_block(
 pub(super) fn emit_load_cell_block(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,

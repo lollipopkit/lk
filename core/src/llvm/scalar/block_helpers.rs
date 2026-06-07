@@ -15,19 +15,17 @@ use crate::llvm::{
         NativeStraightlineValue, NativeTextPart, native_runtime_string_key_kind, native_straightline_heap_const_value,
     },
 };
-use crate::vm::{
-    ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32, Module32Artifact, Opcode32, RuntimeMapKeyData,
-};
+use crate::vm::{ConstHeapValueData, ConstRuntimeValueData, Instr, ModuleArtifact, Opcode, RuntimeMapKeyData};
 pub(in crate::llvm) use formatting::emit_static_formatted_print;
 use object_display::native_object_display_text;
 pub(in crate::llvm) use scalars::{emit_static_scalar_value_store_if_needed, scalar_arg_value};
 use static_direct::static_direct_call_args;
 pub(in crate::llvm) use symbolic::kind_symbolic_value;
-pub(in crate::llvm) fn control_flow_static_boundaries(code: &[Instr32]) -> Vec<bool> {
+pub(in crate::llvm) fn control_flow_static_boundaries(code: &[Instr]) -> Vec<bool> {
     let mut boundaries = vec![false; code.len()];
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
-            Opcode32::Test => {
+            Opcode::Test => {
                 if pc + 1 < code.len() {
                     boundaries[pc + 1] = true;
                 }
@@ -38,7 +36,7 @@ pub(in crate::llvm) fn control_flow_static_boundaries(code: &[Instr32]) -> Vec<b
                     boundaries[target] = true;
                 }
             }
-            Opcode32::Jmp => {
+            Opcode::Jmp => {
                 if let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len())
                     && target < code.len()
                     && target > pc
@@ -88,7 +86,7 @@ pub(in crate::llvm) fn clear_control_flow_static_values(values: &mut [Option<Nat
         }
     }
 }
-pub(in crate::llvm) fn local_register_kind_before(code: &[Instr32], pc: usize, reg: u8) -> Option<NativeScalarKind> {
+pub(in crate::llvm) fn local_register_kind_before(code: &[Instr], pc: usize, reg: u8) -> Option<NativeScalarKind> {
     let start = pc.saturating_sub(64);
     let mut nearest = None;
     for prev_pc in (start..pc).rev() {
@@ -97,21 +95,34 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr32], pc: usize, r
             continue;
         }
         let kind = match prev.opcode() {
-            Opcode32::LoadInt => Some(NativeScalarKind::I64),
-            Opcode32::LoadFloat => Some(NativeScalarKind::F64),
-            Opcode32::LoadString | Opcode32::ToString | Opcode32::ConcatString => Some(NativeScalarKind::StrPtr),
-            Opcode32::LoadBool
-            | Opcode32::Not
-            | Opcode32::IsNil
-            | Opcode32::CmpInt
-            | Opcode32::CmpNeInt
-            | Opcode32::CmpLtInt
-            | Opcode32::CmpLeInt
-            | Opcode32::CmpGtInt
-            | Opcode32::CmpGeInt => Some(NativeScalarKind::Bool),
-            Opcode32::LoadNil => Some(NativeScalarKind::Nil),
-            Opcode32::Move => local_register_kind_before(code, prev_pc, prev.b()),
-            _ => None,
+            Opcode::LoadInt
+            | Opcode::AddInt
+            | Opcode::SubInt
+            | Opcode::MulInt
+            | Opcode::DivInt
+            | Opcode::ModInt
+            | Opcode::Len
+            | Opcode::ForLoopI => Some(NativeScalarKind::I64),
+            Opcode::LoadFloat => Some(NativeScalarKind::F64),
+            Opcode::LoadString | Opcode::ToString | Opcode::ConcatString | Opcode::StringSplit | Opcode::ListJoin => {
+                Some(NativeScalarKind::StrPtr)
+            }
+            Opcode::LoadBool
+            | Opcode::Not
+            | Opcode::IsNil
+            | Opcode::StringStartsWith
+            | Opcode::CmpInt
+            | Opcode::CmpNeInt
+            | Opcode::CmpLtInt
+            | Opcode::CmpLeInt
+            | Opcode::CmpGtInt
+            | Opcode::CmpGeInt => Some(NativeScalarKind::Bool),
+            Opcode::LoadNil => Some(NativeScalarKind::Nil),
+            Opcode::Move => match local_register_kind_before(code, prev_pc, prev.b()) {
+                Some(kind) => Some(kind),
+                None => return nearest,
+            },
+            _ => return nearest,
         };
         if kind == Some(NativeScalarKind::StrPtr) && matches!(nearest, Some(NativeScalarKind::Nil)) {
             return Some(NativeScalarKind::MaybeStrPtr);
@@ -132,8 +143,8 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr32], pc: usize, r
 }
 
 pub(in crate::llvm) fn local_heap_kind_before(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     reg: u8,
 ) -> Option<NativeScalarKind> {
@@ -144,10 +155,10 @@ pub(in crate::llvm) fn local_heap_kind_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::LoadHeapConst
+            Opcode::LoadHeapConst
                 if matches!(
                     heap_values.get(prev.bx() as usize),
-                    Some(ConstHeapValue32Data::LongString(_))
+                    Some(ConstHeapValueData::LongString(_))
                 ) =>
             {
                 Some(NativeScalarKind::StrPtr)
@@ -174,8 +185,8 @@ pub(in crate::llvm) fn local_compare_kind(
 }
 
 pub(in crate::llvm) fn local_static_container_before(
-    code: &[Instr32],
-    heap_values: &[ConstHeapValue32Data],
+    code: &[Instr],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     reg: u8,
 ) -> Option<NativeStraightlineValue> {
@@ -186,18 +197,18 @@ pub(in crate::llvm) fn local_static_container_before(
             continue;
         }
         let value = match prev.opcode() {
-            Opcode32::LoadHeapConst => match heap_values.get(prev.bx() as usize) {
-                Some(ConstHeapValue32Data::List(values))
+            Opcode::LoadHeapConst => match heap_values.get(prev.bx() as usize) {
+                Some(ConstHeapValueData::List(values))
                     if values
                         .iter()
-                        .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_))) =>
+                        .all(|value| matches!(value, ConstRuntimeValueData::Int(_))) =>
                 {
                     Some(NativeStraightlineValue::DynamicList {
                         id: prev_pc,
                         element: NativeListElementKind::I64,
                     })
                 }
-                Some(ConstHeapValue32Data::Map(values)) if values.is_empty() => {
+                Some(ConstHeapValueData::Map(values)) if values.is_empty() => {
                     Some(NativeStraightlineValue::DynamicMap {
                         id: prev_pc,
                         key: NativeMapKeyKind::Str,
@@ -207,12 +218,12 @@ pub(in crate::llvm) fn local_static_container_before(
                 Some(value) => native_straightline_heap_const_value(0, prev.bx(), value),
                 None => None,
             },
-            Opcode32::SliceFrom => Some(NativeStraightlineValue::DynamicList {
+            Opcode::SliceFrom => Some(NativeStraightlineValue::DynamicList {
                 id: prev_pc,
                 element: NativeListElementKind::I64,
             }),
-            Opcode32::ListPush => local_static_container_before(code, heap_values, prev_pc, prev.a()),
-            Opcode32::Move if prev.b() != reg => local_static_container_before(code, heap_values, prev_pc, prev.b()),
+            Opcode::ListPush => local_static_container_before(code, heap_values, prev_pc, prev.a()),
+            Opcode::Move if prev.b() != reg => local_static_container_before(code, heap_values, prev_pc, prev.b()),
             _ => None,
         };
         return value;
@@ -221,7 +232,7 @@ pub(in crate::llvm) fn local_static_container_before(
 }
 
 pub(in crate::llvm) fn local_static_i64_before(
-    code: &[Instr32],
+    code: &[Instr],
     int_consts: &[i64],
     pc: usize,
     reg: u8,
@@ -233,10 +244,10 @@ pub(in crate::llvm) fn local_static_i64_before(
             continue;
         }
         return match prev.opcode() {
-            Opcode32::LoadInt => int_consts
+            Opcode::LoadInt => int_consts
                 .get(prev.bx() as usize)
                 .map(|value| NativeStraightlineValue::I64(value.to_string())),
-            Opcode32::Move if prev.b() != reg => local_static_i64_before(code, int_consts, prev_pc, prev.b()),
+            Opcode::Move if prev.b() != reg => local_static_i64_before(code, int_consts, prev_pc, prev.b()),
             _ => None,
         };
     }
@@ -337,7 +348,7 @@ fn static_text_part_literal(part: &NativeTextPart) -> Option<String> {
 pub(in crate::llvm) fn mark_static_untaken_return_path(
     skip_pcs: &mut [bool],
     boundaries: &[bool],
-    code: &[Instr32],
+    code: &[Instr],
     start: usize,
 ) {
     if predecessor_counts(code).get(start).copied().unwrap_or(0) > 1 {
@@ -356,7 +367,7 @@ pub(in crate::llvm) fn mark_static_untaken_return_path(
     }
 }
 
-fn mark_static_untaken_merge_path(skip_pcs: &mut [bool], code: &[Instr32], start: usize) -> bool {
+fn mark_static_untaken_merge_path(skip_pcs: &mut [bool], code: &[Instr], start: usize) -> bool {
     let predecessors = predecessor_counts(code);
     let mut pc = start;
     let mut marked_any = false;
@@ -375,14 +386,14 @@ fn mark_static_untaken_merge_path(skip_pcs: &mut [bool], code: &[Instr32], start
         }
         let instr = code[pc];
         match instr.opcode() {
-            Opcode32::Return => return true,
-            Opcode32::Jmp => {
+            Opcode::Return => return true,
+            Opcode::Jmp => {
                 let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len()) else {
                     return marked_any;
                 };
                 pc = target;
             }
-            Opcode32::Test => return marked_any,
+            Opcode::Test => return marked_any,
             _ => {
                 let Some(next) = pc.checked_add(1) else {
                     return marked_any;
@@ -394,18 +405,18 @@ fn mark_static_untaken_merge_path(skip_pcs: &mut [bool], code: &[Instr32], start
     marked_any
 }
 
-fn predecessor_counts(code: &[Instr32]) -> Vec<usize> {
+fn predecessor_counts(code: &[Instr]) -> Vec<usize> {
     let mut predecessors = vec![0usize; code.len() + 1];
     for (pc, instr) in code.iter().copied().enumerate() {
         match instr.opcode() {
-            Opcode32::Jmp => {
+            Opcode::Jmp => {
                 if let Some(target) = native_relative_target(pc, instr.sj_arg(), code.len())
                     && let Some(count) = predecessors.get_mut(target)
                 {
                     *count += 1;
                 }
             }
-            Opcode32::Test => {
+            Opcode::Test => {
                 if let Some(count) = predecessors.get_mut(pc + 1) {
                     *count += 1;
                 }
@@ -415,7 +426,7 @@ fn predecessor_counts(code: &[Instr32]) -> Vec<usize> {
                     *count += 1;
                 }
             }
-            Opcode32::Return => {}
+            Opcode::Return => {}
             _ => {
                 if let Some(count) = predecessors.get_mut(pc + 1) {
                     *count += 1;
@@ -426,9 +437,9 @@ fn predecessor_counts(code: &[Instr32]) -> Vec<usize> {
     predecessors
 }
 
-fn static_untaken_return_path(boundaries: &[bool], code: &[Instr32], start: usize) -> Option<Vec<usize>> {
+fn static_untaken_return_path(boundaries: &[bool], code: &[Instr], start: usize) -> Option<Vec<usize>> {
     let instr = *code.get(start)?;
-    if instr.opcode() == Opcode32::Jmp {
+    if instr.opcode() == Opcode::Jmp {
         let mut path = vec![start];
         let target = native_relative_target(start, instr.sj_arg(), code.len())?;
         path.extend(static_untaken_linear_return_path(boundaries, code, target)?);
@@ -437,7 +448,7 @@ fn static_untaken_return_path(boundaries: &[bool], code: &[Instr32], start: usiz
     static_untaken_linear_return_path(boundaries, code, start)
 }
 
-fn static_untaken_linear_return_path(boundaries: &[bool], code: &[Instr32], start: usize) -> Option<Vec<usize>> {
+fn static_untaken_linear_return_path(boundaries: &[bool], code: &[Instr], start: usize) -> Option<Vec<usize>> {
     let mut path = Vec::new();
     let mut pc = start;
     let mut first = true;
@@ -448,8 +459,8 @@ fn static_untaken_linear_return_path(boundaries: &[bool], code: &[Instr32], star
         }
         path.push(pc);
         match instr.opcode() {
-            Opcode32::Return => return Some(path),
-            Opcode32::Jmp | Opcode32::Test => return None,
+            Opcode::Return => return Some(path),
+            Opcode::Jmp | Opcode::Test | Opcode::ForLoopI => return None,
             _ => {
                 pc = pc.checked_add(1)?;
                 first = false;
@@ -458,14 +469,14 @@ fn static_untaken_linear_return_path(boundaries: &[bool], code: &[Instr32], star
     }
 }
 
-pub(in crate::llvm) fn static_register_value_trusted_before(code: &[Instr32], pc_limit: usize, reg: u8) -> bool {
+pub(in crate::llvm) fn static_register_value_trusted_before(code: &[Instr], pc_limit: usize, reg: u8) -> bool {
     static_register_value_trusted_before_inner(code, pc_limit, reg, 0)
 }
-pub(in crate::llvm) fn static_string_value_trusted_at_call(code: &[Instr32], call_pc: usize, reg: u8) -> bool {
+pub(in crate::llvm) fn static_string_value_trusted_at_call(code: &[Instr], call_pc: usize, reg: u8) -> bool {
     static_register_value_trusted_before(code, call_pc, reg)
 }
 
-pub(in crate::llvm) fn three_regs_in_bounds(register_count: usize, instr: Instr32) -> bool {
+pub(in crate::llvm) fn three_regs_in_bounds(register_count: usize, instr: Instr) -> bool {
     reg_in_bounds(register_count, instr.a())
         && reg_in_bounds(register_count, instr.b())
         && reg_in_bounds(register_count, instr.c())
@@ -507,7 +518,7 @@ pub(in crate::llvm) fn static_call_target(
 }
 
 pub(in crate::llvm) fn native_static_closure(
-    functions: &[crate::vm::Function32Data],
+    functions: &[crate::vm::FunctionData],
     function_index: u8,
     capture_start: u8,
     static_regs: &[Option<NativeStraightlineValue>],
@@ -527,13 +538,13 @@ pub(in crate::llvm) fn native_static_closure(
 }
 
 pub(in crate::llvm) fn static_callable_value(
-    functions: &[crate::vm::Function32Data],
-    instr: Instr32,
+    functions: &[crate::vm::FunctionData],
+    instr: Instr,
     static_regs: &[Option<NativeStraightlineValue>],
 ) -> Option<NativeStraightlineValue> {
     match instr.opcode() {
-        Opcode32::LoadFunction => Some(NativeStraightlineValue::Function(instr.bx())),
-        Opcode32::MakeClosure => native_static_closure(functions, instr.b(), instr.c(), static_regs),
+        Opcode::LoadFunction => Some(NativeStraightlineValue::Function(instr.bx())),
+        Opcode::MakeClosure => native_static_closure(functions, instr.b(), instr.c(), static_regs),
         _ => None,
     }
 }
@@ -542,7 +553,7 @@ pub(in crate::llvm) fn emit_inline_scalar_arg_stores(
     ir: &mut String,
     caller_facts: &NativeScalarFacts,
     call_pc: usize,
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) -> Option<()> {
     for arg in 0..instr.c() as usize {
@@ -562,12 +573,12 @@ pub(in crate::llvm) fn emit_inline_scalar_arg_stores(
 pub(in crate::llvm) fn emit_static_named_call(
     ir: &mut String,
     extra_globals: &mut String,
-    artifact: &Module32Artifact,
+    artifact: &ModuleArtifact,
     facts: &NativeScalarFacts,
     pc: usize,
     static_regs: &mut [Option<NativeStraightlineValue>],
     static_globals: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) -> Option<()> {
     let target = static_regs.get(instr.a() as usize).and_then(Clone::clone)?;
@@ -604,15 +615,15 @@ pub(in crate::llvm) fn emit_static_named_call(
 pub(in crate::llvm) fn emit_static_direct_call_result(
     ir: &mut String,
     extra_globals: &mut String,
-    artifact: &Module32Artifact,
-    code: &[Instr32],
+    artifact: &ModuleArtifact,
+    code: &[Instr],
     int_consts: &[i64],
     strings: &[String],
-    heap_values: &[ConstHeapValue32Data],
+    heap_values: &[ConstHeapValueData],
     pc: usize,
     static_regs: &mut [Option<NativeStraightlineValue>],
     static_globals: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) -> Option<()> {
     if artifact
@@ -648,17 +659,17 @@ pub(in crate::llvm) fn emit_static_direct_call_result(
     store_native_scalar_call_result(ir, extra_globals, static_regs, instr.a(), value, tmp_index)
 }
 
-fn callee_has_list_return_shape(function: &crate::vm::Function32Data) -> bool {
+fn callee_has_list_return_shape(function: &crate::vm::FunctionData) -> bool {
     function
         .code
         .iter()
         .copied()
-        .filter_map(|raw| Instr32::try_from_raw(raw).ok())
-        .any(|instr| instr.opcode() == Opcode32::ListPush)
+        .filter_map(|raw| Instr::try_from_raw(raw).ok())
+        .any(|instr| instr.opcode() == Opcode::ListPush)
 }
 #[allow(clippy::too_many_arguments)]
 pub(in crate::llvm) fn scalar_named_call_args(
-    function: &crate::vm::Function32Data,
+    function: &crate::vm::FunctionData,
     ir: &mut String,
     slot_prefix: &str,
     facts: &NativeScalarFacts,
@@ -730,7 +741,7 @@ pub(in crate::llvm) fn scalar_named_call_args(
     args.into_iter().collect()
 }
 
-fn static_register_value_trusted_before_inner(code: &[Instr32], pc_limit: usize, reg: u8, depth: usize) -> bool {
+fn static_register_value_trusted_before_inner(code: &[Instr], pc_limit: usize, reg: u8, depth: usize) -> bool {
     if depth > 8 {
         return false;
     }
@@ -758,7 +769,7 @@ fn static_register_value_trusted_before_inner(code: &[Instr32], pc_limit: usize,
         return false;
     }
     let instr = code[last_write];
-    if instr.opcode() == Opcode32::Move {
+    if instr.opcode() == Opcode::Move {
         return static_register_value_trusted_before_inner(code, last_write, instr.b(), depth + 1);
     }
     if code
@@ -766,30 +777,35 @@ fn static_register_value_trusted_before_inner(code: &[Instr32], pc_limit: usize,
         .copied()
         .skip(last_write + 1)
         .take(pc_limit.saturating_sub(last_write + 1))
-        .any(|instr| matches!(instr.opcode(), Opcode32::Jmp | Opcode32::Test | Opcode32::Return))
+        .any(|instr| {
+            matches!(
+                instr.opcode(),
+                Opcode::Jmp | Opcode::Test | Opcode::ForLoopI | Opcode::Return
+            )
+        })
     {
         return false;
     }
     true
 }
 
-fn branch_enters_after_write(code: &[Instr32], last_write: usize, pc_limit: usize) -> bool {
+fn branch_enters_after_write(code: &[Instr], last_write: usize, pc_limit: usize) -> bool {
     code.iter().copied().take(last_write).enumerate().any(|(pc, instr)| {
         let target = match instr.opcode() {
-            Opcode32::Jmp => native_relative_target(pc, instr.sj_arg(), code.len()),
-            Opcode32::Test => native_relative_target(pc, instr.c() as i8 as i32, code.len()),
+            Opcode::Jmp => native_relative_target(pc, instr.sj_arg(), code.len()),
+            Opcode::Test => native_relative_target(pc, instr.c() as i8 as i32, code.len()),
             _ => None,
         };
         matches!(target, Some(target) if target > last_write && target <= pc_limit)
     })
 }
 
-fn register_written_by_enclosing_backedge_loop(code: &[Instr32], pc_limit: usize, reg: u8) -> bool {
+fn register_written_by_enclosing_backedge_loop(code: &[Instr], pc_limit: usize, reg: u8) -> bool {
     code.iter()
         .copied()
         .enumerate()
         .skip(pc_limit.saturating_add(1))
-        .filter(|(_, instr)| instr.opcode() == Opcode32::Jmp)
+        .filter(|(_, instr)| instr.opcode() == Opcode::Jmp)
         .any(|(jump_pc, instr)| {
             let Some(target) = native_relative_target(jump_pc, instr.sj_arg(), code.len()) else {
                 return false;
@@ -798,20 +814,19 @@ fn register_written_by_enclosing_backedge_loop(code: &[Instr32], pc_limit: usize
         })
 }
 
-fn instr_writes_register(instr: Instr32, reg: u8) -> bool {
+fn instr_writes_register(instr: Instr, reg: u8) -> bool {
     instr.a() == reg
         && !matches!(
             instr.opcode(),
-            Opcode32::Nop
-                | Opcode32::Jmp
-                | Opcode32::Test
-                | Opcode32::Return
-                | Opcode32::SetGlobal
-                | Opcode32::Raise
-                | Opcode32::TryBegin
-                | Opcode32::TryEnd
-                | Opcode32::Extra
-                | Opcode32::Wide
+            Opcode::Nop
+                | Opcode::Jmp
+                | Opcode::Test
+                | Opcode::Return
+                | Opcode::SetGlobal
+                | Opcode::Raise
+                | Opcode::TryBegin
+                | Opcode::TryEnd
+                | Opcode::Wide
         )
 }
 
@@ -1004,7 +1019,7 @@ pub(in crate::llvm) fn store_native_inline_scalar_value(
 pub(in crate::llvm) fn emit_inline_i64_binary_block(
     ir: &mut String,
     call_pc: usize,
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) {
     let lhs = next_tmp(tmp_index);
@@ -1013,10 +1028,10 @@ pub(in crate::llvm) fn emit_inline_i64_binary_block(
     ir.push_str(&format!("  {lhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.b()));
     ir.push_str(&format!("  {rhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.c()));
     match instr.opcode() {
-        Opcode32::AddInt => ir.push_str(&format!("  {out} = add i64 {lhs}, {rhs}\n")),
-        Opcode32::SubInt => ir.push_str(&format!("  {out} = sub i64 {lhs}, {rhs}\n")),
-        Opcode32::MulInt => ir.push_str(&format!("  {out} = mul i64 {lhs}, {rhs}\n")),
-        Opcode32::DivInt => {
+        Opcode::AddInt => ir.push_str(&format!("  {out} = add i64 {lhs}, {rhs}\n")),
+        Opcode::SubInt => ir.push_str(&format!("  {out} = sub i64 {lhs}, {rhs}\n")),
+        Opcode::MulInt => ir.push_str(&format!("  {out} = mul i64 {lhs}, {rhs}\n")),
+        Opcode::DivInt => {
             let zero = next_tmp(tmp_index);
             let label = format!("call{call_pc}.div_ok_{}", out.trim_start_matches('%'));
             ir.push_str(&format!("  {zero} = icmp eq i64 {rhs}, 0\n"));
@@ -1024,7 +1039,7 @@ pub(in crate::llvm) fn emit_inline_i64_binary_block(
             ir.push_str(&format!("{label}:\n"));
             ir.push_str(&format!("  {out} = sdiv i64 {lhs}, {rhs}\n"));
         }
-        Opcode32::ModInt => {
+        Opcode::ModInt => {
             let zero = next_tmp(tmp_index);
             let label = format!("call{call_pc}.mod_ok_{}", out.trim_start_matches('%'));
             ir.push_str(&format!("  {zero} = icmp eq i64 {rhs}, 0\n"));
@@ -1040,7 +1055,7 @@ pub(in crate::llvm) fn emit_inline_i64_binary_block(
 pub(in crate::llvm) fn emit_mixed_numeric_int_opcode_block(
     ir: &mut String,
     slot_prefix: &str,
-    instr: Instr32,
+    instr: Instr,
     lhs_kind: NativeScalarKind,
     rhs_kind: NativeScalarKind,
     tmp_index: &mut usize,
@@ -1049,11 +1064,11 @@ pub(in crate::llvm) fn emit_mixed_numeric_int_opcode_block(
     let rhs = emit_numeric_load_as_f64(ir, slot_prefix, instr.c(), rhs_kind, tmp_index);
     let out = next_tmp(tmp_index);
     match instr.opcode() {
-        Opcode32::AddInt => ir.push_str(&format!("  {out} = fadd double {lhs}, {rhs}\n")),
-        Opcode32::SubInt => ir.push_str(&format!("  {out} = fsub double {lhs}, {rhs}\n")),
-        Opcode32::MulInt => ir.push_str(&format!("  {out} = fmul double {lhs}, {rhs}\n")),
-        Opcode32::DivInt => ir.push_str(&format!("  {out} = fdiv double {lhs}, {rhs}\n")),
-        Opcode32::ModInt => ir.push_str(&format!("  {out} = frem double {lhs}, {rhs}\n")),
+        Opcode::AddInt => ir.push_str(&format!("  {out} = fadd double {lhs}, {rhs}\n")),
+        Opcode::SubInt => ir.push_str(&format!("  {out} = fsub double {lhs}, {rhs}\n")),
+        Opcode::MulInt => ir.push_str(&format!("  {out} = fmul double {lhs}, {rhs}\n")),
+        Opcode::DivInt => ir.push_str(&format!("  {out} = fdiv double {lhs}, {rhs}\n")),
+        Opcode::ModInt => ir.push_str(&format!("  {out} = frem double {lhs}, {rhs}\n")),
         _ => unreachable!("checked by caller"),
     }
     ir.push_str(&format!(
@@ -1094,7 +1109,7 @@ pub(in crate::llvm) fn emit_dynamic_string_starts_with(
 pub(in crate::llvm) fn emit_static_string_i64_map_get(
     ir: &mut String,
     extra_globals: &mut String,
-    entries: &[(RuntimeMapKeyData, ConstRuntimeValue32Data)],
+    entries: &[(RuntimeMapKeyData, ConstRuntimeValueData)],
     slot_prefix: &str,
     dst: u8,
     key: u8,
@@ -1136,9 +1151,7 @@ pub(in crate::llvm) fn emit_static_string_i64_map_get(
     Some(())
 }
 
-pub(in crate::llvm) fn static_string_i64_map_supported(
-    entries: &[(RuntimeMapKeyData, ConstRuntimeValue32Data)],
-) -> bool {
+pub(in crate::llvm) fn static_string_i64_map_supported(entries: &[(RuntimeMapKeyData, ConstRuntimeValueData)]) -> bool {
     entries
         .iter()
         .all(|(key, value)| runtime_map_key_text(key).is_some() && const_runtime_i64_value(value).is_some())
@@ -1151,10 +1164,10 @@ fn runtime_map_key_text(key: &RuntimeMapKeyData) -> Option<&str> {
     }
 }
 
-fn const_runtime_i64_value(value: &ConstRuntimeValue32Data) -> Option<i64> {
+fn const_runtime_i64_value(value: &ConstRuntimeValueData) -> Option<i64> {
     match value {
-        ConstRuntimeValue32Data::Int(value) => Some(*value),
-        ConstRuntimeValue32Data::Bool(value) => Some(i64::from(*value)),
+        ConstRuntimeValueData::Int(value) => Some(*value),
+        ConstRuntimeValueData::Bool(value) => Some(i64::from(*value)),
         _ => None,
     }
 }
@@ -1329,11 +1342,11 @@ pub(in crate::llvm) fn emit_native_block_core_call_method(
     Some(NativeStraightlineValue::StringPtr(out))
 }
 
-fn native_const_string_arg(value: &ConstRuntimeValue32Data) -> Option<String> {
+fn native_const_string_arg(value: &ConstRuntimeValueData) -> Option<String> {
     match value {
-        ConstRuntimeValue32Data::ShortStr(value) => Some(value.clone()),
-        ConstRuntimeValue32Data::Heap(value) => match value.as_ref() {
-            ConstHeapValue32Data::LongString(value) => Some(value.clone()),
+        ConstRuntimeValueData::ShortStr(value) => Some(value.clone()),
+        ConstRuntimeValueData::Heap(value) => match value.as_ref() {
+            ConstHeapValueData::LongString(value) => Some(value.clone()),
             _ => None,
         },
         _ => None,
@@ -1367,7 +1380,7 @@ pub(in crate::llvm) fn inline_native_label(call_pc: usize, target: usize, code_l
 pub(in crate::llvm) fn emit_inline_scalar_equality_block(
     ir: &mut String,
     call_pc: usize,
-    instr: Instr32,
+    instr: Instr,
     lhs_kind: NativeScalarKind,
     rhs_kind: NativeScalarKind,
     tmp_index: &mut usize,
@@ -1384,7 +1397,7 @@ pub(in crate::llvm) fn emit_inline_scalar_equality_block(
     let rhs = next_tmp(tmp_index);
     let cmp = next_tmp(tmp_index);
     let out = next_tmp(tmp_index);
-    let pred = if instr.opcode() == Opcode32::CmpInt { "eq" } else { "ne" };
+    let pred = if instr.opcode() == Opcode::CmpInt { "eq" } else { "ne" };
     match (lhs_kind, rhs_kind) {
         (NativeScalarKind::MaybeI64, NativeScalarKind::Nil) | (NativeScalarKind::Nil, NativeScalarKind::MaybeI64) => {
             let maybe_reg = if lhs_kind == NativeScalarKind::MaybeI64 {
@@ -1393,7 +1406,7 @@ pub(in crate::llvm) fn emit_inline_scalar_equality_block(
                 instr.c()
             };
             let present = next_tmp(tmp_index);
-            let nil_equal = if instr.opcode() == Opcode32::CmpInt { "eq" } else { "ne" };
+            let nil_equal = if instr.opcode() == Opcode::CmpInt { "eq" } else { "ne" };
             ir.push_str(&format!(
                 "  {present} = load i64, ptr %call{call_pc}.r{}.present.slot\n",
                 maybe_reg
@@ -1425,7 +1438,7 @@ pub(in crate::llvm) fn emit_inline_scalar_equality_block(
     Some(())
 }
 
-pub(in crate::llvm) fn emit_string_ptr_equality_block(ir: &mut String, instr: Instr32, tmp_index: &mut usize) {
+pub(in crate::llvm) fn emit_string_ptr_equality_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
     let lhs = next_tmp(tmp_index);
     let rhs = next_tmp(tmp_index);
     let cmp_value = next_tmp(tmp_index);
@@ -1434,7 +1447,7 @@ pub(in crate::llvm) fn emit_string_ptr_equality_block(ir: &mut String, instr: In
     ir.push_str(&format!("  {lhs} = load ptr, ptr %r{}.slot\n", instr.b()));
     ir.push_str(&format!("  {rhs} = load ptr, ptr %r{}.slot\n", instr.c()));
     ir.push_str(&format!("  {cmp_value} = call i32 @strcmp(ptr {lhs}, ptr {rhs})\n"));
-    let pred = if instr.opcode() == Opcode32::CmpInt { "eq" } else { "ne" };
+    let pred = if instr.opcode() == Opcode::CmpInt { "eq" } else { "ne" };
     ir.push_str(&format!("  {is_equal} = icmp {pred} i32 {cmp_value}, 0\n"));
     ir.push_str(&format!("  {out} = zext i1 {is_equal} to i64\n"));
     ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
@@ -1443,7 +1456,7 @@ pub(in crate::llvm) fn emit_string_ptr_equality_block(ir: &mut String, instr: In
 pub(in crate::llvm) fn emit_inline_string_ptr_equality_block(
     ir: &mut String,
     call_pc: usize,
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) {
     let lhs = next_tmp(tmp_index);
@@ -1454,7 +1467,7 @@ pub(in crate::llvm) fn emit_inline_string_ptr_equality_block(
     ir.push_str(&format!("  {lhs} = load ptr, ptr %call{call_pc}.r{}.slot\n", instr.b()));
     ir.push_str(&format!("  {rhs} = load ptr, ptr %call{call_pc}.r{}.slot\n", instr.c()));
     ir.push_str(&format!("  {cmp_value} = call i32 @strcmp(ptr {lhs}, ptr {rhs})\n"));
-    let pred = if instr.opcode() == Opcode32::CmpInt { "eq" } else { "ne" };
+    let pred = if instr.opcode() == Opcode::CmpInt { "eq" } else { "ne" };
     ir.push_str(&format!("  {is_equal} = icmp {pred} i32 {cmp_value}, 0\n"));
     ir.push_str(&format!("  {out} = zext i1 {is_equal} to i64\n"));
     ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
@@ -1463,7 +1476,7 @@ pub(in crate::llvm) fn emit_inline_string_ptr_equality_block(
 pub(in crate::llvm) fn emit_inline_scalar_ordered_comparison_block(
     ir: &mut String,
     call_pc: usize,
-    instr: Instr32,
+    instr: Instr,
     tmp_index: &mut usize,
 ) {
     let lhs = next_tmp(tmp_index);
@@ -1471,10 +1484,10 @@ pub(in crate::llvm) fn emit_inline_scalar_ordered_comparison_block(
     let cmp = next_tmp(tmp_index);
     let out = next_tmp(tmp_index);
     let pred = match instr.opcode() {
-        Opcode32::CmpLtInt => "slt",
-        Opcode32::CmpLeInt => "sle",
-        Opcode32::CmpGtInt => "sgt",
-        Opcode32::CmpGeInt => "sge",
+        Opcode::CmpLtInt => "slt",
+        Opcode::CmpLeInt => "sle",
+        Opcode::CmpGtInt => "sgt",
+        Opcode::CmpGeInt => "sge",
         _ => "slt",
     };
     ir.push_str(&format!("  {lhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.b()));

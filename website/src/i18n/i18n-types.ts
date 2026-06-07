@@ -24,7 +24,7 @@ type RootTranslation = {
 		 */
 		title: string
 		/**
-		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​a​n​ ​I​n​s​t​r​3​2​ ​V​M​,​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​a​c​k​a​g​e​ ​i​m​p​o​r​t​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
+		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​a​ ​b​y​t​e​c​o​d​e​ ​V​M​,​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​a​c​k​a​g​e​ ​i​m​p​o​r​t​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
 		 */
 		description: string
 	}
@@ -52,7 +52,7 @@ type RootTranslation = {
 		 */
 		title: string
 		/**
-		 * L​K​ ​g​i​v​e​s​ ​y​o​u​ ​c​l​e​a​r​ ​s​y​n​t​a​x​,​ ​d​e​t​e​r​m​i​n​i​s​t​i​c​ ​I​n​s​t​r​3​2​ ​e​x​e​c​u​t​i​o​n​,​ ​s​t​r​u​c​t​u​r​e​d​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​a​n​d​ ​a​ ​p​r​a​c​t​i​c​a​l​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​ ​f​o​r​ ​e​m​b​e​d​d​i​n​g​ ​l​o​g​i​c​ ​i​n​ ​a​p​p​l​i​c​a​t​i​o​n​s​,​ ​w​r​i​t​i​n​g​ ​a​u​t​o​m​a​t​i​o​n​ ​s​c​r​i​p​t​s​,​ ​a​n​d​ ​m​o​v​i​n​g​ ​c​o​m​p​l​e​x​ ​d​e​c​i​s​i​o​n​s​ ​o​u​t​ ​o​f​ ​h​o​s​t​ ​c​o​d​e​.
+		 * L​K​ ​g​i​v​e​s​ ​y​o​u​ ​c​l​e​a​r​ ​s​y​n​t​a​x​,​ ​d​e​t​e​r​m​i​n​i​s​t​i​c​ ​V​M​ ​e​x​e​c​u​t​i​o​n​,​ ​s​t​r​u​c​t​u​r​e​d​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​a​n​d​ ​a​ ​p​r​a​c​t​i​c​a​l​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​ ​f​o​r​ ​e​m​b​e​d​d​i​n​g​ ​l​o​g​i​c​ ​i​n​ ​a​p​p​l​i​c​a​t​i​o​n​s​,​ ​w​r​i​t​i​n​g​ ​a​u​t​o​m​a​t​i​o​n​ ​s​c​r​i​p​t​s​,​ ​a​n​d​ ​m​o​v​i​n​g​ ​c​o​m​p​l​e​x​ ​d​e​c​i​s​i​o​n​s​ ​o​u​t​ ​o​f​ ​h​o​s​t​ ​c​o​d​e​.
 		 */
 		subtitle: string
 		/**
@@ -130,7 +130,7 @@ type RootTranslation = {
 		 */
 		kicker: string
 		/**
-		 * F​r​o​m​ ​s​c​r​i​p​t​ ​t​o​ ​I​n​s​t​r​3​2​ ​e​x​e​c​u​t​i​o​n​,​ ​d​i​a​g​n​o​s​t​i​c​s​,​ ​a​n​d​ ​t​r​u​e​-​n​a​t​i​v​e​ ​L​L​V​M​.
+		 * F​r​o​m​ ​s​c​r​i​p​t​ ​t​o​ ​V​M​ ​e​x​e​c​u​t​i​o​n​,​ ​d​i​a​g​n​o​s​t​i​c​s​,​ ​a​n​d​ ​t​r​u​e​-​n​a​t​i​v​e​ ​L​L​V​M​.
 		 */
 		title: string
 		/**
@@ -243,7 +243,7 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK is a Rust-like scripting language with an Instr32 VM, rich pattern matching, package imports, and a batteries-included standard library.
+		 * LK is a Rust-like scripting language with a bytecode VM, rich pattern matching, package imports, and a batteries-included standard library.
 		 */
 		description: () => LocalizedString
 	}
@@ -271,7 +271,7 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK gives you clear syntax, deterministic Instr32 execution, structured pattern matching, and a practical standard library for embedding logic in applications, writing automation scripts, and moving complex decisions out of host code.
+		 * LK gives you clear syntax, deterministic VM execution, structured pattern matching, and a practical standard library for embedding logic in applications, writing automation scripts, and moving complex decisions out of host code.
 		 */
 		subtitle: () => LocalizedString
 		/**
@@ -349,7 +349,7 @@ export type TranslationFunctions = {
 		 */
 		kicker: () => LocalizedString
 		/**
-		 * From script to Instr32 execution, diagnostics, and true-native LLVM.
+		 * From script to VM execution, diagnostics, and true-native LLVM.
 		 */
 		title: () => LocalizedString
 		/**

@@ -9,13 +9,10 @@ mod tests {
         stmt::{ModuleResolver, stmt_parser::StmtParser},
         token::Tokenizer,
         val::{HeapStore, HeapValue, RuntimeVal, TypedList},
-        vm::{
-            NativeArgs32, NativeEntry32, NativeFunction32, NativeRuntime32, Program32Result, RuntimeModuleState32,
-            VmContext,
-        },
+        vm::{NativeArgs, NativeEntry, NativeFunction, NativeRuntime, ProgramResult, RuntimeModuleState, VmContext},
     };
 
-    fn run32(source: &str) -> Result<Program32Result> {
+    fn run(source: &str) -> Result<ProgramResult> {
         let tokens = Tokenizer::tokenize(source)?;
         let mut parser = StmtParser::new(&tokens);
         let program = parser.parse_program()?;
@@ -24,10 +21,10 @@ mod tests {
         register_stdlib_modules(&mut registry)?;
         let resolver = Arc::new(ModuleResolver::with_registry(registry));
         let mut env = VmContext::new().with_resolver(resolver);
-        program.execute32_with_ctx(&mut env)
+        program.execute_with_ctx(&mut env)
     }
 
-    fn os_native(name: &str) -> Result<(u16, NativeFunction32)> {
+    fn os_native(name: &str) -> Result<(u16, NativeFunction)> {
         crate::runtime_native::runtime_native_export(&OsModule::new(), name)
     }
 
@@ -36,31 +33,31 @@ mod tests {
         call_plain(function, args)
     }
 
-    fn call_plain(function: NativeFunction32, args: &[RuntimeVal]) -> Result<(RuntimeVal, HeapStore)> {
-        let NativeFunction32::Plain(function) = function else {
-            return Err(anyhow!("os function must use plain RuntimeNative32"));
+    fn call_plain(function: NativeFunction, args: &[RuntimeVal]) -> Result<(RuntimeVal, HeapStore)> {
+        let NativeFunction::Plain(function) = function else {
+            return Err(anyhow!("os function must use plain RuntimeNative"));
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let result = {
-            let mut runtime = NativeRuntime32::new(&mut state, None, None);
-            function(NativeArgs32::new(args), &mut runtime)?
+            let mut runtime = NativeRuntime::new(&mut state, None, None);
+            function(NativeArgs::new(args), &mut runtime)?
         };
         Ok((result, state.into_heap()))
     }
 
     fn call_with_strings(name: &str, strings: &[&str]) -> Result<(RuntimeVal, HeapStore)> {
         let (_, function) = os_native(name)?;
-        let NativeFunction32::Plain(function) = function else {
-            return Err(anyhow!("{name} must use plain RuntimeNative32"));
+        let NativeFunction::Plain(function) = function else {
+            return Err(anyhow!("{name} must use plain RuntimeNative"));
         };
-        let mut state = RuntimeModuleState32::default();
+        let mut state = RuntimeModuleState::default();
         let args = strings
             .iter()
             .map(|value| runtime_string_value(value, state.heap_mut()))
             .collect::<Vec<_>>();
         let result = {
-            let mut runtime = NativeRuntime32::new(&mut state, None, None);
-            function(NativeArgs32::new(&args), &mut runtime)?
+            let mut runtime = NativeRuntime::new(&mut state, None, None);
+            function(NativeArgs::new(&args), &mut runtime)?
         };
         Ok((result, state.into_heap()))
     }
@@ -87,13 +84,13 @@ mod tests {
     }
 
     #[test]
-    fn test_os_arch_and_os_execute32() -> Result<()> {
-        let arch = run32("import os; return os.arch();")?;
+    fn test_os_arch_and_os_execute() -> Result<()> {
+        let arch = run("import os; return os.arch();")?;
         assert_eq!(
             runtime_str(arch.first_return(), arch.state.heap()),
             Some(std::env::consts::ARCH)
         );
-        let os = run32("import os; return os.os();")?;
+        let os = run("import os; return os.os();")?;
         assert_eq!(
             runtime_str(os.first_return(), os.state.heap()),
             Some(std::env::consts::OS)
@@ -102,17 +99,17 @@ mod tests {
     }
 
     #[test]
-    fn test_os_exports_use_runtime_native32_abi() -> Result<()> {
+    fn test_os_exports_use_runtime_native_abi() -> Result<()> {
         for name in ["hostname", "arch", "os", "exit", "exec", "clock", "time", "epoch"] {
             let (_, function) = os_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
+            assert!(matches!(function, NativeFunction::Plain(_)));
         }
         for name in ["env_get", "env_set", "env_unset", "dir_list", "dir_temp", "dir_current"] {
             let (_, function) = os_native(name)?;
-            assert!(matches!(function, NativeFunction32::Plain(_)));
+            assert!(matches!(function, NativeFunction::Plain(_)));
         }
-        assert_eq!(os_native("exec")?.0, NativeEntry32::VARIADIC);
-        assert_eq!(os_native("env_get")?.0, NativeEntry32::VARIADIC);
+        assert_eq!(os_native("exec")?.0, NativeEntry::VARIADIC);
+        assert_eq!(os_native("env_get")?.0, NativeEntry::VARIADIC);
         Ok(())
     }
 
@@ -120,14 +117,14 @@ mod tests {
     fn test_os_env_get_default_and_mutation_errors() -> Result<()> {
         let var = "LK_TEST_ENV_SHOULD_NOT_EXIST_42";
         let src_default = format!("import os; return os.env_get(\"{}\", \"dflt\");", var);
-        let default = run32(&src_default)?;
+        let default = run(&src_default)?;
         assert_eq!(runtime_str(default.first_return(), default.state.heap()), Some("dflt"));
 
         let src_set = format!("import os; return os.env_set(\"{}\", \"X\");", var);
-        let err = run32(&src_set).expect_err("env.set should be disabled");
+        let err = run(&src_set).expect_err("env.set should be disabled");
         assert!(err.to_string().contains("disabled"));
         let src_unset = format!("import os; return os.env_unset(\"{}\");", var);
-        let err = run32(&src_unset).expect_err("env.unset should be disabled");
+        let err = run(&src_unset).expect_err("env.unset should be disabled");
         assert!(err.to_string().contains("disabled"));
         Ok(())
     }
@@ -150,7 +147,7 @@ mod tests {
         writeln!(File::create(&f1)?, "hello")?;
         writeln!(File::create(&f2)?, "world")?;
 
-        let out = run32("import os; return os.dir_temp();")?;
+        let out = run("import os; return os.dir_temp();")?;
         if !matches!(out.first_return(), RuntimeVal::Nil) {
             assert!(
                 runtime_str(out.first_return(), out.state.heap()).is_some(),
@@ -158,7 +155,7 @@ mod tests {
                 out.first_return()
             );
         }
-        let out = run32("import os; return os.dir_current();")?;
+        let out = run("import os; return os.dir_current();")?;
         if !matches!(out.first_return(), RuntimeVal::Nil) {
             assert!(
                 runtime_str(out.first_return(), out.state.heap()).is_some(),
@@ -168,7 +165,7 @@ mod tests {
         }
 
         let src = format!("import os; return os.dir_list(\"{}\");", td.to_string_lossy());
-        let out = run32(&src)?;
+        let out = run(&src)?;
         let TypedList::String(names) = runtime_list(out.first_return(), out.state.heap()) else {
             panic!("expected typed string list");
         };
@@ -184,7 +181,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_os_exec_capture_unix() -> Result<()> {
-        let out = run32("import os; return os.exec(\"/bin/echo\", [\"hello\"]);")?;
+        let out = run("import os; return os.exec(\"/bin/echo\", [\"hello\"]);")?;
         assert_eq!(
             runtime_str(out.first_return(), out.state.heap()).map(str::trim_end),
             Some("hello")
@@ -195,7 +192,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_os_exec_stream_mode_returns_line_list_unix() -> Result<()> {
-        let out = run32("import os; return os.exec(\"/bin/echo\", [\"a\", \"b\"], true);")?;
+        let out = run("import os; return os.exec(\"/bin/echo\", [\"a\", \"b\"], true);")?;
         let TypedList::String(list) = runtime_list(out.first_return(), out.state.heap()) else {
             panic!("stream mode should return typed string list");
         };

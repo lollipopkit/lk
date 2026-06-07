@@ -8,16 +8,16 @@ use crate::{
             native_static_arg_list_display, native_static_callable_display, native_static_module_display,
         },
     },
-    vm::Instr32,
+    vm::Instr,
 };
 
 pub(super) fn emit_return_block(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &[Option<NativeStraightlineValue>],
-    code: &[Instr32],
+    code: &[Instr],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     facts: &NativeScalarFacts,
     tmp_index: &mut usize,

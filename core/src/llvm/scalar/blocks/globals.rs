@@ -4,7 +4,7 @@ use crate::{
         scalar::{block_helpers::store_native_scalar_call_result, facts::NativeScalarFacts},
         straightline_value::{NativeStraightlineValue, native_static_global},
     },
-    vm::Instr32,
+    vm::Instr,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -15,7 +15,7 @@ pub(super) fn emit_get_global_block(
     static_globals: &[Option<NativeStraightlineValue>],
     global_names: &[String],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     global_count: usize,
     facts: &NativeScalarFacts,
@@ -61,7 +61,7 @@ pub(super) fn emit_set_global_block(
     static_regs: &mut [Option<NativeStraightlineValue>],
     static_globals: &mut [Option<NativeStraightlineValue>],
     pc: usize,
-    instr: Instr32,
+    instr: Instr,
     register_count: usize,
     global_count: usize,
     facts: &NativeScalarFacts,

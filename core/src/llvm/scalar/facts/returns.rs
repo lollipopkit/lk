@@ -1,6 +1,6 @@
 use crate::llvm::scalar::kind::NativeScalarKind;
 use crate::llvm::straightline_value::{NativeListElementKind, NativeStraightlineValue};
-use crate::vm::{Function32Data, Instr32, Opcode32};
+use crate::vm::{FunctionData, Instr, Opcode};
 
 use super::{
     analysis::{native_return_kind_from_facts, static_value_kind},
@@ -51,7 +51,7 @@ fn native_arg_value(
 }
 
 pub(in crate::llvm) fn native_named_call_args(
-    function: &Function32Data,
+    function: &FunctionData,
     kinds: &[Option<NativeScalarKind>],
     values: &[Option<NativeStraightlineValue>],
     callee: u8,
@@ -103,7 +103,7 @@ pub(in crate::llvm) fn native_named_call_args(
 }
 
 pub(in crate::llvm) fn native_static_function_return_kind(
-    functions: &[Function32Data],
+    functions: &[FunctionData],
     function_index: usize,
     args: &[NativeStraightlineValue],
     captures: &[NativeStraightlineValue],
@@ -128,7 +128,7 @@ pub(in crate::llvm) fn native_static_function_return_kind(
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
     let mut callee_kinds = vec![None; callee.register_count as usize];
@@ -159,8 +159,8 @@ pub(in crate::llvm) fn native_static_function_return_kind(
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::llvm) fn native_direct_call_return_kind(
-    functions: &[Function32Data],
-    instr: Instr32,
+    functions: &[FunctionData],
+    instr: Instr,
     caller_kinds: &[Option<NativeScalarKind>],
     caller_static_values: &[Option<NativeStraightlineValue>],
     global_kinds: &[Option<NativeScalarKind>],
@@ -185,7 +185,7 @@ pub(in crate::llvm) fn native_direct_call_return_kind(
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
     let mut callee_kinds = vec![None; callee.register_count as usize];
@@ -194,8 +194,8 @@ pub(in crate::llvm) fn native_direct_call_return_kind(
     let callee_index = instr.b() as u16;
     if !callee_recursive_hints.iter().any(|(idx, _)| *idx == callee_index) {
         for callee_instr in callee.code.iter().copied() {
-            if let Ok(ci) = Instr32::try_from_raw(callee_instr)
-                && ci.opcode() == Opcode32::CallDirect
+            if let Ok(ci) = Instr::try_from_raw(callee_instr)
+                && ci.opcode() == Opcode::CallDirect
                 && ci.b() as u16 == callee_index
             {
                 callee_recursive_hints.push((callee_index, Some(NativeScalarKind::I64)));
@@ -234,7 +234,7 @@ pub(in crate::llvm) fn native_direct_call_return_kind(
 }
 
 pub(in crate::llvm) fn peek_recursive_function_base_return_kind(
-    functions: &[Function32Data],
+    functions: &[FunctionData],
     function_index: u16,
     global_count: usize,
     global_names: &[String],
@@ -243,11 +243,11 @@ pub(in crate::llvm) fn peek_recursive_function_base_return_kind(
     let Some(callee) = functions.get(function_index as usize) else {
         return None;
     };
-    let code: Vec<Instr32> = callee
+    let code: Vec<Instr> = callee
         .code
         .iter()
         .copied()
-        .map(Instr32::try_from_raw)
+        .map(Instr::try_from_raw)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
     let static_globals: Vec<Option<NativeStraightlineValue>> = vec![None; global_count];
@@ -319,9 +319,9 @@ fn build_recursive_param_profiles(
 }
 
 fn try_analyze_with_params(
-    functions: &[Function32Data],
-    callee: &Function32Data,
-    code: &[Instr32],
+    functions: &[FunctionData],
+    callee: &FunctionData,
+    code: &[Instr],
     global_count: usize,
     global_names: &[String],
     global_kinds: &[Option<NativeScalarKind>],

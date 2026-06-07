@@ -18,14 +18,14 @@ use crate::{
             native_const_runtime_value, native_static_set_index,
         },
     },
-    vm::{ConstRuntimeValue32Data, Instr32},
+    vm::{ConstRuntimeValueData, Instr},
 };
 
 pub(super) fn emit_dynamic_map_set_call(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
@@ -156,7 +156,7 @@ pub(super) fn emit_dynamic_map_get_method_call(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     args: &[NativeStraightlineValue],
     tmp_index: &mut usize,
@@ -234,7 +234,7 @@ pub(super) fn emit_dynamic_map_get_call(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
@@ -305,7 +305,7 @@ pub(super) fn emit_dynamic_map_has_call(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
@@ -336,7 +336,7 @@ pub(super) fn emit_dynamic_map_delete_call(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
@@ -451,7 +451,7 @@ fn dynamic_i64_map_get_key(method_args: &NativeStraightlineValue) -> Option<Stri
             dynamic_i64_map_key(key)
         }
         NativeStraightlineValue::List { elements, .. } => {
-            let [ConstRuntimeValue32Data::Int(key)] = elements.as_slice() else {
+            let [ConstRuntimeValueData::Int(key)] = elements.as_slice() else {
                 return None;
             };
             Some(key.to_string())
@@ -488,7 +488,7 @@ fn dynamic_string_map_get_key(method_args: &NativeStraightlineValue) -> Option<N
 pub(super) fn emit_dynamic_map_values_call(
     ir: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],
@@ -538,7 +538,7 @@ pub(super) fn emit_dynamic_map_keys_call(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     builtin: NativeBuiltin,
     args: &[NativeStraightlineValue],

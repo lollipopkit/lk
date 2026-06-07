@@ -5,14 +5,14 @@ use crate::{
         scalar::facts::{NativeScalarFacts, NativeScalarKind},
         straightline_value::{NativeListElementKind, NativeStraightlineValue},
     },
-    vm::{ConstHeapValue32Data, ConstRuntimeValue32Data, Instr32},
+    vm::{ConstHeapValueData, ConstRuntimeValueData, Instr},
 };
 
 pub(super) fn emit_list_direct_call(
     ir: &mut String,
     extra_globals: &mut String,
     static_regs: &mut [Option<NativeStraightlineValue>],
-    instr: Instr32,
+    instr: Instr,
     pc: usize,
     callee_index: usize,
     facts: &NativeScalarFacts,
@@ -88,12 +88,12 @@ fn native_list_arg_element_kind(value: &NativeStraightlineValue) -> Option<Nativ
         NativeStraightlineValue::List { elements, .. } => {
             if elements
                 .iter()
-                .all(|value| matches!(value, ConstRuntimeValue32Data::Int(_)))
+                .all(|value| matches!(value, ConstRuntimeValueData::Int(_)))
             {
                 Some(NativeListElementKind::I64)
             } else if elements.iter().all(|value| match value {
-                ConstRuntimeValue32Data::ShortStr(_) => true,
-                ConstRuntimeValue32Data::Heap(value) => matches!(value.as_ref(), ConstHeapValue32Data::LongString(_)),
+                ConstRuntimeValueData::ShortStr(_) => true,
+                ConstRuntimeValueData::Heap(value) => matches!(value.as_ref(), ConstHeapValueData::LongString(_)),
                 _ => false,
             }) {
                 Some(NativeListElementKind::StrPtr)
@@ -131,11 +131,11 @@ fn emit_native_list_call_arg(
         Some(NativeStraightlineValue::List { elements, .. }) if element == NativeListElementKind::I64 => {
             let values_name = format!("%call{pc}.arg{arg_index}.value.slots");
             let len_name = format!("%call{pc}.arg{arg_index}.len.slot");
-            ir.push_str(&format!("  {len_name} = alloca i64\n"));
-            ir.push_str(&format!("  {values_name} = alloca [4096 x i64]\n"));
+            ir.push_str(&format!("  {len_name} = call ptr @malloc(i64 8)\n"));
+            ir.push_str(&format!("  {values_name} = call ptr @malloc(i64 32768)\n"));
             ir.push_str(&format!("  store i64 {}, ptr {len_name}\n", elements.len()));
             for (index, element) in elements.iter().enumerate() {
-                let ConstRuntimeValue32Data::Int(value) = element else {
+                let ConstRuntimeValueData::Int(value) = element else {
                     return None;
                 };
                 let slot = next_tmp(tmp_index);
@@ -156,8 +156,8 @@ fn emit_native_list_call_arg(
         Some(NativeStraightlineValue::List { elements, .. }) if element != NativeListElementKind::I64 => {
             let values_name = format!("%call{pc}.arg{arg_index}.ptr.slots");
             let len_name = format!("%call{pc}.arg{arg_index}.len.slot");
-            ir.push_str(&format!("  {len_name} = alloca i64\n"));
-            ir.push_str(&format!("  {values_name} = alloca [4096 x ptr]\n"));
+            ir.push_str(&format!("  {len_name} = call ptr @malloc(i64 8)\n"));
+            ir.push_str(&format!("  {values_name} = call ptr @malloc(i64 32768)\n"));
             ir.push_str(&format!("  store i64 {}, ptr {len_name}\n", elements.len()));
             for (index, element) in elements.iter().enumerate() {
                 let symbol = static_string_element_symbol(extra_globals, pc, index, element)?;
@@ -192,16 +192,16 @@ fn static_string_element_symbol(
     extra_globals: &mut String,
     pc: usize,
     index: usize,
-    element: &ConstRuntimeValue32Data,
+    element: &ConstRuntimeValueData,
 ) -> Option<String> {
     match element {
-        ConstRuntimeValue32Data::ShortStr(value) => {
+        ConstRuntimeValueData::ShortStr(value) => {
             let symbol = format!("@lk_call{pc}_arg0_str_{index}");
             extra_globals.push_str(&llvm_string_constant(&symbol, value));
             Some(symbol)
         }
-        ConstRuntimeValue32Data::Heap(value) => {
-            let ConstHeapValue32Data::LongString(value) = value.as_ref() else {
+        ConstRuntimeValueData::Heap(value) => {
+            let ConstHeapValueData::LongString(value) = value.as_ref() else {
                 return None;
             };
             let symbol = format!("@lk_call{pc}_arg0_heap_str_{index}");

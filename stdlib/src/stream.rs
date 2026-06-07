@@ -6,12 +6,12 @@ use std::sync::{
 use anyhow::{Result, anyhow, bail};
 use dashmap::DashMap;
 use lk_core::{
-    module::{Module, ModuleRegistry, RuntimeNativeExport32, runtime_export_from_plain_native_entries},
+    module::{ModuleProvider, ModuleRegistry, RuntimeNativeExport, runtime_export_from_plain_native_entries},
     rt::{self, RuntimePayload},
     val::{CallableValue, HeapStore, HeapValue, RuntimeVal, ShortStr, StreamCursorValue, StreamValue, Type, TypedList},
     vm::{
-        NativeArgs32, NativeEntry32, NativeRuntime32, RuntimeExport32, call_runtime_callable32_runtime,
-        call_runtime_value32_runtime,
+        NativeArgs, NativeEntry, NativeRuntime, RuntimeExport, call_runtime_callable_runtime,
+        call_runtime_value_runtime,
     },
 };
 use once_cell::sync::Lazy;
@@ -78,11 +78,11 @@ enum StreamSpec {
 }
 
 trait StreamCursor {
-    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>>;
+    fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>>;
 
     fn roots(&self) -> Vec<RuntimeVal>;
 
-    fn collect_remaining(&mut self, limit: Option<i64>, runtime: &mut NativeRuntime32<'_>) -> Result<TypedList> {
+    fn collect_remaining(&mut self, limit: Option<i64>, runtime: &mut NativeRuntime<'_>) -> Result<TypedList> {
         let mut out = Vec::new();
         let mut taken = 0i64;
         loop {
@@ -174,7 +174,7 @@ struct FromListCursor {
 }
 
 impl StreamCursor for FromListCursor {
-    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         let Some(value) = typed_list_item(&self.data, self.index, runtime.heap_mut()) else {
             return Ok(None);
         };
@@ -182,7 +182,7 @@ impl StreamCursor for FromListCursor {
         Ok(Some(value))
     }
 
-    fn collect_remaining(&mut self, limit: Option<i64>, _runtime: &mut NativeRuntime32<'_>) -> Result<TypedList> {
+    fn collect_remaining(&mut self, limit: Option<i64>, _runtime: &mut NativeRuntime<'_>) -> Result<TypedList> {
         let start = self.index;
         let limit = match limit {
             Some(limit) if limit <= 0 => Some(0),
@@ -207,7 +207,7 @@ struct RangeCursor {
 }
 
 impl StreamCursor for RangeCursor {
-    fn next(&mut self, _runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, _runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         if self.step == 0 {
             bail!("range step cannot be zero");
         }
@@ -232,7 +232,7 @@ struct RepeatCursor {
 }
 
 impl StreamCursor for RepeatCursor {
-    fn next(&mut self, _runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, _runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         Ok(Some(self.value.clone()))
     }
 
@@ -249,7 +249,7 @@ struct IterateCursor {
 }
 
 impl StreamCursor for IterateCursor {
-    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         if self.first {
             self.first = false;
             return Ok(Some(self.current.clone()));
@@ -275,7 +275,7 @@ struct MapCursor {
 }
 
 impl StreamCursor for MapCursor {
-    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         let Some(value) = self.upstream.next(runtime)? else {
             return Ok(None);
         };
@@ -295,7 +295,7 @@ struct FilterCursor {
 }
 
 impl StreamCursor for FilterCursor {
-    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         loop {
             let Some(value) = self.upstream.next(runtime)? else {
                 return Ok(None);
@@ -320,7 +320,7 @@ struct TakeCursor {
 }
 
 impl StreamCursor for TakeCursor {
-    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         if self.remaining <= 0 {
             return Ok(None);
         }
@@ -342,7 +342,7 @@ struct SkipCursor {
 }
 
 impl StreamCursor for SkipCursor {
-    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         while self.to_skip > 0 {
             if self.upstream.next(runtime)?.is_none() {
                 return Ok(None);
@@ -364,7 +364,7 @@ struct ChainCursor {
 }
 
 impl StreamCursor for ChainCursor {
-    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         if !self.left_exhausted {
             if let Some(value) = self.left.next(runtime)? {
                 return Ok(Some(value));
@@ -387,7 +387,7 @@ struct ChannelCursor {
 }
 
 impl StreamCursor for ChannelCursor {
-    fn next(&mut self, runtime: &mut NativeRuntime32<'_>) -> Result<Option<RuntimeVal>> {
+    fn next(&mut self, runtime: &mut NativeRuntime<'_>) -> Result<Option<RuntimeVal>> {
         match rt::with_runtime(|runtime| runtime.try_recv(self.channel_id))? {
             Some((true, value)) => Ok(Some(value.into_value(runtime.heap_mut())?)),
             Some((false, _)) | None => Ok(None),
@@ -405,7 +405,7 @@ impl StreamModule {
     }
 }
 
-impl Module for StreamModule {
+impl ModuleProvider for StreamModule {
     fn name(&self) -> &str {
         "stream"
     }
@@ -418,38 +418,38 @@ impl Module for StreamModule {
         Ok(())
     }
 
-    fn runtime_exports(&self) -> Result<RuntimeExport32> {
+    fn runtime_exports(&self) -> Result<RuntimeExport> {
         Ok(runtime_export_from_plain_native_entries(
             &[
-                RuntimeNativeExport32::plain("from_list", from_list32, 1),
-                RuntimeNativeExport32::plain("range", range32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::plain("iterate", iterate32, 2),
-                RuntimeNativeExport32::plain("repeat", repeat32, 1),
-                RuntimeNativeExport32::plain("from_channel", from_channel32, 1),
-                RuntimeNativeExport32::plain("map", map32, 2),
-                RuntimeNativeExport32::plain("filter", filter32, 2),
-                RuntimeNativeExport32::plain("take", take32, 2),
-                RuntimeNativeExport32::plain("skip", skip32, 2),
-                RuntimeNativeExport32::plain("chain", chain32, 2),
-                RuntimeNativeExport32::plain("subscribe", subscribe32, 1),
-                RuntimeNativeExport32::full_state("next", next32, 1),
-                RuntimeNativeExport32::full_state("collect", collect32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::full_state("next_block", next_block32, NativeEntry32::VARIADIC),
-                RuntimeNativeExport32::full_state("collect_block", collect_block32, NativeEntry32::VARIADIC),
+                RuntimeNativeExport::plain("from_list", from_list, 1),
+                RuntimeNativeExport::plain("range", range, NativeEntry::VARIADIC),
+                RuntimeNativeExport::plain("iterate", iterate, 2),
+                RuntimeNativeExport::plain("repeat", repeat, 1),
+                RuntimeNativeExport::plain("from_channel", from_channel, 1),
+                RuntimeNativeExport::plain("map", map, 2),
+                RuntimeNativeExport::plain("filter", filter, 2),
+                RuntimeNativeExport::plain("take", take, 2),
+                RuntimeNativeExport::plain("skip", skip, 2),
+                RuntimeNativeExport::plain("chain", chain, 2),
+                RuntimeNativeExport::plain("subscribe", subscribe, 1),
+                RuntimeNativeExport::full_state("next", next, 1),
+                RuntimeNativeExport::full_state("collect", collect, NativeEntry::VARIADIC),
+                RuntimeNativeExport::full_state("next_block", next_block, NativeEntry::VARIADIC),
+                RuntimeNativeExport::full_state("collect_block", collect_block, NativeEntry::VARIADIC),
             ],
             &[],
         ))
     }
 }
 
-fn from_list32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn from_list(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.from_list")?;
     let values = list_arg_ref(&args.as_slice()[0], runtime.heap(), "stream.from_list argument")?;
     let values = copy_typed_list(values);
     create_stream(StreamSpec::FromList(Arc::new(values)), Type::Any, runtime.heap_mut())
 }
 
-fn range32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn range(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let values = args.as_slice();
     let (start, end, step) = match values {
         [end] => (0, Some(int_arg(end, "stream.range end")?), 1),
@@ -468,7 +468,7 @@ fn range32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     create_stream(StreamSpec::Range { start, end, step }, Type::Int, runtime.heap_mut())
 }
 
-fn iterate32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn iterate(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "stream.iterate")?;
     let values = args.as_slice();
     ensure_runtime_callable(&values[1], runtime, "stream.iterate function")?;
@@ -482,7 +482,7 @@ fn iterate32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Resul
     )
 }
 
-fn repeat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn repeat(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.repeat")?;
     create_stream(
         StreamSpec::Repeat(args.as_slice()[0].clone()),
@@ -491,7 +491,7 @@ fn repeat32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
     )
 }
 
-fn from_channel32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn from_channel(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.from_channel")?;
     let channel = channel_arg(&args.as_slice()[0], runtime.heap(), "stream.from_channel argument")?;
     create_stream(
@@ -501,7 +501,7 @@ fn from_channel32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> 
     )
 }
 
-fn map32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn map(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "stream.map")?;
     let values = args.as_slice();
     ensure_runtime_callable(&values[1], runtime, "stream.map function")?;
@@ -516,7 +516,7 @@ fn map32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<Ru
     )
 }
 
-fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn filter(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "stream.filter")?;
     let values = args.as_slice();
     ensure_runtime_callable(&values[1], runtime, "stream.filter function")?;
@@ -531,7 +531,7 @@ fn filter32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result
     )
 }
 
-fn take32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn take(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "stream.take")?;
     let values = args.as_slice();
     let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.take stream")?)?;
@@ -539,7 +539,7 @@ fn take32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     create_stream(StreamSpec::Take { upstream, n }, Type::Any, runtime.heap_mut())
 }
 
-fn skip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn skip(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "stream.skip")?;
     let values = args.as_slice();
     let upstream = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.skip stream")?)?;
@@ -547,7 +547,7 @@ fn skip32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<R
     create_stream(StreamSpec::Skip { upstream, n }, Type::Any, runtime.heap_mut())
 }
 
-fn chain32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn chain(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 2, "stream.chain")?;
     let values = args.as_slice();
     let left = get_stream_spec(stream_id_arg(&values[0], runtime.heap(), "stream.chain left")?)?;
@@ -555,7 +555,7 @@ fn chain32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<
     create_stream(StreamSpec::Chain { left, right }, Type::Any, runtime.heap_mut())
 }
 
-fn subscribe32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn subscribe(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.subscribe")?;
     create_cursor(
         stream_id_arg(&args.as_slice()[0], runtime.heap(), "stream.subscribe argument")?,
@@ -563,18 +563,18 @@ fn subscribe32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Res
     )
 }
 
-fn next32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn next(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     expect_arity(args, 1, "stream.next")?;
     let cursor_id = cursor_id_arg(&args.as_slice()[0], runtime.heap(), "stream.next argument")?;
     next_cursor(cursor_id, runtime)
 }
 
-fn collect32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn collect(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let (cursor_id, limit) = cursor_and_limit(args.as_slice(), runtime, "stream.collect")?;
     collect_cursor(cursor_id, limit, runtime)
 }
 
-fn next_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn next_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let values = args.as_slice();
     if values.is_empty() || values.len() > 2 {
         bail!("stream.next_block expects (cursor[, timeout_ms])");
@@ -587,7 +587,7 @@ fn next_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Re
     next_block_cursor(cursor_id, timeout_ms, runtime)
 }
 
-fn collect_block32(args: NativeArgs32<'_>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn collect_block(args: NativeArgs<'_>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let (cursor_id, limit, timeout_ms) = cursor_limit_timeout(args.as_slice(), runtime, "stream.collect_block")?;
     collect_block_cursor(cursor_id, limit, timeout_ms, runtime)
 }
@@ -626,7 +626,7 @@ fn get_stream_spec(id: u64) -> Result<Arc<StreamSpec>> {
         .ok_or_else(|| anyhow!("Stream not found: {}", id))
 }
 
-fn next_cursor(cursor_id: u64, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn next_cursor(cursor_id: u64, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let cursor = cursor_handle(cursor_id)?;
     let value = {
         let mut guard = cursor.lock().map_err(|_| anyhow!("cursor mutex poisoned"))?;
@@ -638,7 +638,7 @@ fn next_cursor(cursor_id: u64, runtime: &mut NativeRuntime32<'_>) -> Result<Runt
     }
 }
 
-fn collect_cursor(cursor_id: u64, limit: Option<i64>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn collect_cursor(cursor_id: u64, limit: Option<i64>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let cursor = cursor_handle(cursor_id)?;
     let out = {
         let mut guard = cursor.lock().map_err(|_| anyhow!("cursor mutex poisoned"))?;
@@ -647,7 +647,7 @@ fn collect_cursor(cursor_id: u64, limit: Option<i64>, runtime: &mut NativeRuntim
     Ok(RuntimeVal::Obj(runtime.heap_mut().alloc(HeapValue::List(out))))
 }
 
-fn next_block_cursor(cursor_id: u64, timeout_ms: Option<i64>, runtime: &mut NativeRuntime32<'_>) -> Result<RuntimeVal> {
+fn next_block_cursor(cursor_id: u64, timeout_ms: Option<i64>, runtime: &mut NativeRuntime<'_>) -> Result<RuntimeVal> {
     let info = CURSOR_INFO
         .get(&cursor_id)
         .map(|entry| entry.value().clone())
@@ -664,7 +664,7 @@ fn collect_block_cursor(
     cursor_id: u64,
     limit: Option<i64>,
     timeout_ms: Option<i64>,
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
 ) -> Result<RuntimeVal> {
     let info = CURSOR_INFO
         .get(&cursor_id)
@@ -722,7 +722,7 @@ fn cursor_handle(cursor_id: u64) -> Result<CursorHandle> {
 
 fn cursor_and_limit(
     values: &[RuntimeVal],
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
     context: &str,
 ) -> Result<(u64, Option<i64>)> {
     match values {
@@ -748,7 +748,7 @@ fn cursor_and_limit(
 
 fn cursor_limit_timeout(
     values: &[RuntimeVal],
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
     context: &str,
 ) -> Result<(u64, Option<i64>, Option<i64>)> {
     let (cursor_id, limit) = cursor_and_limit(values.get(..values.len().min(2)).unwrap_or(values), runtime, context)?;
@@ -888,7 +888,7 @@ fn int_arg(value: &RuntimeVal, context: &str) -> Result<i64> {
     }
 }
 
-fn expect_arity(args: NativeArgs32<'_>, expected: usize, name: &str) -> Result<()> {
+fn expect_arity(args: NativeArgs<'_>, expected: usize, name: &str) -> Result<()> {
     if args.len() == expected {
         Ok(())
     } else {
@@ -903,7 +903,7 @@ fn truthy(value: &RuntimeVal) -> bool {
     !matches!(value, RuntimeVal::Nil | RuntimeVal::Bool(false))
 }
 
-fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, context: &str) -> Result<()> {
+fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime<'_>, context: &str) -> Result<()> {
     let RuntimeVal::Obj(handle) = value else {
         bail!("{context} must be a runtime callable");
     };
@@ -920,18 +920,18 @@ fn ensure_runtime_callable(value: &RuntimeVal, runtime: &NativeRuntime32<'_>, co
 fn call_runtime_callable_value(
     callable: &RuntimeVal,
     args: &[RuntimeVal],
-    runtime: &mut NativeRuntime32<'_>,
+    runtime: &mut NativeRuntime<'_>,
     context: &str,
 ) -> Result<RuntimeVal> {
     let RuntimeVal::Obj(handle) = callable else {
         bail!("{context} must be a runtime callable");
     };
     enum StreamCallableTarget {
-        Runtime32(Arc<lk_core::vm::RuntimeCallable32>),
+        Runtime(Arc<lk_core::vm::RuntimeCallable>),
         Closure,
-        RuntimeNative32 {
+        RuntimeNative {
             arity: u16,
-            function: lk_core::vm::NativeFunction32,
+            function: lk_core::vm::NativeFunction,
         },
     }
 
@@ -940,12 +940,10 @@ fn call_runtime_callable_value(
         .get(*handle)
         .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
     {
-        HeapValue::Callable(CallableValue::Runtime32(function)) => {
-            StreamCallableTarget::Runtime32(Arc::clone(function))
-        }
+        HeapValue::Callable(CallableValue::Runtime(function)) => StreamCallableTarget::Runtime(Arc::clone(function)),
         HeapValue::Callable(CallableValue::Closure { .. }) => StreamCallableTarget::Closure,
-        HeapValue::Callable(CallableValue::RuntimeNative32 { arity, function, .. }) => {
-            StreamCallableTarget::RuntimeNative32 {
+        HeapValue::Callable(CallableValue::RuntimeNative { arity, function, .. }) => {
+            StreamCallableTarget::RuntimeNative {
                 arity: *arity,
                 function: function.clone(),
             }
@@ -954,18 +952,18 @@ fn call_runtime_callable_value(
     };
 
     match target {
-        StreamCallableTarget::Runtime32(function) => {
+        StreamCallableTarget::Runtime(function) => {
             let (heap, ctx) = runtime.heap_ctx_mut();
-            call_runtime_callable32_runtime(function.as_ref(), args, heap, ctx)
+            call_runtime_callable_runtime(function.as_ref(), args, heap, ctx)
         }
         StreamCallableTarget::Closure => {
             if let Some((state, ctx, module)) = runtime.state_ctx_module_mut() {
-                return call_runtime_value32_runtime(RuntimeVal::Obj(*handle), args, state, module, ctx);
+                return call_runtime_value_runtime(RuntimeVal::Obj(*handle), args, state, module, ctx);
             }
-            bail!("{context} closure requires active RuntimeModuleState32")
+            bail!("{context} closure requires active RuntimeModuleState")
         }
-        StreamCallableTarget::RuntimeNative32 { arity, function } => {
-            let entry = NativeEntry32 {
+        StreamCallableTarget::RuntimeNative { arity, function } => {
+            let entry = NativeEntry {
                 name: context.to_string(),
                 arity,
                 function,
@@ -974,9 +972,9 @@ fn call_runtime_callable_value(
                 bail!("{context} expects {arity} arguments, got {}", args.len());
             }
             match &entry.function {
-                lk_core::vm::NativeFunction32::Plain(function)
-                | lk_core::vm::NativeFunction32::Context(function)
-                | lk_core::vm::NativeFunction32::FullState(function) => function(NativeArgs32::new(args), runtime),
+                lk_core::vm::NativeFunction::Plain(function)
+                | lk_core::vm::NativeFunction::Context(function)
+                | lk_core::vm::NativeFunction::FullState(function) => function(NativeArgs::new(args), runtime),
             }
         }
     }

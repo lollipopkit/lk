@@ -44,7 +44,7 @@ Run any example: `lk examples/syntax/closure.lk`
 
 ### Highlights
 - Rust-inspired syntax with first-class named parameters
-- Deterministic Instr32 VM with optional concurrency runtime
+- Deterministic bytecode VM with optional concurrency runtime
 - Batteries-included standard library and LSP-backed tooling
 - Project website source lives in `website/` and powers [lang.lollipopkit.com](https://lang.lollipopkit.com).
 
@@ -57,7 +57,7 @@ Run any example: `lk examples/syntax/closure.lk`
 ```rust
 use lk_core::{stmt::stmt_parser::StmtParser, token::Tokenizer, vm::VmContext};
 
-// Parse and execute through the Instr32 VM.
+// Parse and execute through the bytecode VM.
 let source = r#"
 let data = {
     "req": { "user": { "name": "foo" } },
@@ -68,7 +68,7 @@ return data.req.user.name in "foobar" && data.files.0.published == true;
 let tokens = Tokenizer::tokenize(source)?;
 let program = StmtParser::new(&tokens).parse_program()?;
 let mut ctx = VmContext::new();
-let result = program.execute32_with_ctx(&mut ctx)?;
+let result = program.execute_with_ctx(&mut ctx)?;
 
 assert_eq!(result.display_first_return(), "true");
 ```
@@ -78,7 +78,7 @@ assert_eq!(result.display_first_return(), "true");
 - Run REPL: `lk`
 - Execute a source file: `lk FILE`
 - Type-check without executing: `lk check FILE` (reports compile-time diagnostics)
-- Compile to an executable Instr32 module artifact: `lk compile [FILE]` → `FILE.lkm` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry)
+- Compile to an executable module artifact: `lk compile [FILE]` → `FILE.lkm` (omitting `FILE` uses `./main.lk`, package `./src/main.lk`, or a single workspace app entry)
 - Compile to LLVM IR: `lk compile llvm [FILE]` (see [docs/llvm/backend.md](docs/llvm/backend.md) for backend details)
 - Compile to an executable: `lk compile exe [FILE]` (native for LLVM-lowerable shapes; unsupported shapes fail; see [docs/llvm/backend.md](docs/llvm/backend.md))
 - Create packages and manage dependencies: `lk init`, `lk pkg add`, `lk pkg fetch`, `lk pkg tree` (see [docs/packages.md](docs/packages.md))

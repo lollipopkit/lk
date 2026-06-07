@@ -2,53 +2,53 @@
 mod test {
     use std::collections::HashSet;
 
-    use crate::{expr::Expr, vm::execute_source32};
+    use crate::{expr::Expr, vm::execute_source};
 
     #[test]
     fn simple() {
-        expect32_env("pub", "true");
-        expect32_env("user.name + 'pt'", "lkpt");
-        expect32_env("user.age + list.0 == 19", "true");
-        expect32_env("user.name + user.age", "lk18");
-        expect32("[1, 2, 3] + [2]", "[1, 2, 3, 2]");
-        expect32("[1, 2, 3] - [2]", "[1, 3]");
-        expect32_env("list.2 / 2.0", "1.5");
-        panic32_env("user.name / list");
+        expect_env("pub", "true");
+        expect_env("user.name + 'pt'", "lkpt");
+        expect_env("user.age + list.0 == 19", "true");
+        expect_env("user.name + user.age", "lk18");
+        expect("[1, 2, 3] + [2]", "[1, 2, 3, 2]");
+        expect("[1, 2, 3] - [2]", "[1, 3]");
+        expect_env("list.2 / 2.0", "1.5");
+        panic_env("user.name / list");
     }
 
     #[test]
     fn complex_expressions() {
         // Nested arithmetic operations
-        expect32_env("(user.age + 2) * 3", "60");
+        expect_env("(user.age + 2) * 3", "60");
 
         // Parenthesized expressions
-        expect32_env("user.age * (2 + 1)", "54");
+        expect_env("user.age * (2 + 1)", "54");
 
         // Multiple operators with precedence
-        expect32_env("user.age + 2 * 3", "24");
+        expect_env("user.age + 2 * 3", "24");
 
         // Comparison operators
-        expect32_env("user.age > 17", "true");
-        expect32_env("user.age < 19", "true");
-        expect32_env("user.age >= 18", "true");
-        expect32_env("user.age <= 18", "true");
-        expect32_env("user.age == 18", "true");
-        expect32_env("user.age != 19", "true");
+        expect_env("user.age > 17", "true");
+        expect_env("user.age < 19", "true");
+        expect_env("user.age >= 18", "true");
+        expect_env("user.age <= 18", "true");
+        expect_env("user.age == 18", "true");
+        expect_env("user.age != 19", "true");
     }
 
     #[test]
     fn logical_operators() {
         // AND operator
-        expect32_env("pub && user.age > 17", "true");
-        expect32_env("pub && user.age > 20", "false");
+        expect_env("pub && user.age > 17", "true");
+        expect_env("pub && user.age > 20", "false");
 
         // OR operator
-        expect32_env("user.age > 20 || pub", "true");
-        expect32_env("user.age > 20 || user.name == 'john'", "false");
+        expect_env("user.age > 20 || pub", "true");
+        expect_env("user.age > 20 || user.name == 'john'", "false");
 
         // Complex logical expressions
-        expect32_env("pub && (user.age > 17 || user.name == 'john')", "true");
-        expect32_env("pub || (user.age < 17 && user.name == 'john')", "true");
+        expect_env("pub && (user.age > 17 || user.name == 'john')", "true");
+        expect_env("pub || (user.age < 17 && user.name == 'john')", "true");
 
         // Short-circuit evaluation (RHS not evaluated)
         expect("false && nonexistent.field", "false");
@@ -62,7 +62,7 @@ mod test {
         expect("false ? 1 : 2", "2");
 
         // With bound variables
-        expect32_env("pub ? user.name : 'guest'", "lk");
+        expect_env("pub ? user.name : 'guest'", "lk");
 
         // Short-circuit: only selected branch should evaluate
         expect("false ? (nonexistent.field) : 42", "42");
@@ -78,33 +78,33 @@ mod test {
         expect("false ? 1 : (nil ?? 5)", "5");
 
         // Ternary as map key requires parentheses to avoid ambiguity with ':'
-        expect32("{('a' == 'a' ? 'x' : 'y'): 1}.x", "1");
+        expect("{('a' == 'a' ? 'x' : 'y'): 1}.x", "1");
     }
 
     #[test]
     fn nullish_coalescing_operations() {
         // Basic nullish coalescing with nil values (missing property)
-        expect32_env("user.nonexistent ?? 'default'", "default");
-        expect32_env("user.name ?? 'default'", "lk");
+        expect_env("user.nonexistent ?? 'default'", "default");
+        expect_env("user.name ?? 'default'", "lk");
         expect("nil ?? 'fallback'", "fallback");
         expect("'actual' ?? 'fallback'", "actual");
 
         // Numeric nullish coalescing
-        expect32_env("user.nonexistent ?? 18", "18");
-        expect32_env("user.age ?? 100", "18");
+        expect_env("user.nonexistent ?? 18", "18");
+        expect_env("user.age ?? 100", "18");
 
         // Boolean nullish coalescing
-        expect32_env("user.nonexistent ?? true", "true");
-        expect32_env("pub ?? false", "true");
+        expect_env("user.nonexistent ?? true", "true");
+        expect_env("pub ?? false", "true");
 
         // Complex expressions with nullish coalescing
-        expect32_env("user.nonexistent ?? user.name ?? 'unknown'", "lk");
-        expect32_env("user.name ?? user.age ?? 'fallback'", "lk");
+        expect_env("user.nonexistent ?? user.name ?? 'unknown'", "lk");
+        expect_env("user.name ?? user.age ?? 'fallback'", "lk");
 
         // Nested nullish coalescing with other operators
-        expect32_env("(user.nonexistent ?? 5) + 10", "15");
-        expect32_env("(user.name ?? 'guest') == 'lk'", "true");
-        expect32_env("user.name ?? ('guest' == 'lk')", "lk");
+        expect_env("(user.nonexistent ?? 5) + 10", "15");
+        expect_env("(user.name ?? 'guest') == 'lk'", "true");
+        expect_env("user.name ?? ('guest' == 'lk')", "lk");
 
         // Constant folding
         expect("'hello' ?? 'world'", "hello");
@@ -114,51 +114,51 @@ mod test {
     #[test]
     fn unary_operations() {
         // Logical NOT
-        expect32_env("!pub", "false");
+        expect_env("!pub", "false");
         expect("!false", "true");
 
         // Double negation
-        expect32_env("!!pub", "true");
+        expect_env("!!pub", "true");
 
         // NOT with expressions
-        expect32_env("!(user.age > 20)", "true");
+        expect_env("!(user.age > 20)", "true");
     }
 
     #[test]
     fn map_and_list_access() {
         // Nested map access
-        expect32_env("nested.level1.level2", "value");
+        expect_env("nested.level1.level2", "value");
 
         // List access with variable index
-        expect32_env("list[(index)]", "2");
+        expect_env("list[(index)]", "2");
 
         // Access with expressions
         // `index-1` is an Id, but `index - 1` is a BinOp
-        expect32_env("list[(index - 1)]", "1");
+        expect_env("list[(index - 1)]", "1");
 
         // Access with complex expressions
-        expect32_env("[2][(2 - 2)] + user.name", "2lk");
+        expect_env("[2][(2 - 2)] + user.name", "2lk");
     }
 
     #[test]
     fn list_literals() {
         // Empty list
-        expect32("[]", "[]");
+        expect("[]", "[]");
 
         // Simple list
-        expect32("[1, 2, 3]", "[1, 2, 3]");
+        expect("[1, 2, 3]", "[1, 2, 3]");
 
         // Mixed types
-        expect32(r#"[1, "hello", true]"#, "[1, hello, true]");
+        expect(r#"[1, "hello", true]"#, "[1, hello, true]");
 
         // Nested lists
-        expect32("[[1, 2], [3, 4]]", "[[1, 2], [3, 4]]");
+        expect("[[1, 2], [3, 4]]", "[[1, 2], [3, 4]]");
 
         // List with expressions
-        expect32("[1 + 2, 3 * 4]", "[3, 12]");
+        expect("[1 + 2, 3 * 4]", "[3, 12]");
 
         // List with variable access
-        expect32_source(
+        expect_source(
             r#"
             let user = {"age": 18};
             let list = [1, 2, 3];
@@ -171,25 +171,25 @@ mod test {
     #[test]
     fn map_literals() {
         // Empty map
-        expect32("{}", "{}");
+        expect("{}", "{}");
 
         // Simple map
-        expect32(r#"{"name": "Alice", "age": 30}.name"#, "Alice");
-        expect32(r#"{"name": "Alice", "age": 30}.age"#, "30");
+        expect(r#"{"name": "Alice", "age": 30}.name"#, "Alice");
+        expect(r#"{"name": "Alice", "age": 30}.age"#, "30");
 
         // Map with expressions
-        expect32(r#"{"sum": 2 + 3, "product": 2 * 3}.sum"#, "5");
-        expect32(r#"{"sum": 2 + 3, "product": 2 * 3}.product"#, "6");
+        expect(r#"{"sum": 2 + 3, "product": 2 * 3}.sum"#, "5");
+        expect(r#"{"sum": 2 + 3, "product": 2 * 3}.product"#, "6");
 
         // Map with member access
-        expect32_source(
+        expect_source(
             r#"
             let user = {"name": "lk", "age": 18};
             return {"user_name": user.name, "user_age": user.age}.user_name;
             "#,
             "lk",
         );
-        expect32_source(
+        expect_source(
             r#"
             let user = {"name": "lk", "age": 18};
             return {"user_name": user.name, "user_age": user.age}.user_age;
@@ -198,64 +198,64 @@ mod test {
         );
 
         // Map with different key types
-        expect32(r#"{42: "number", true: "bool", "key": "string"}[42]"#, "number");
-        expect32(r#"{42: "number", true: "bool", "key": "string"}[true]"#, "bool");
-        expect32(r#"{42: "number", true: "bool", "key": "string"}.key"#, "string");
+        expect(r#"{42: "number", true: "bool", "key": "string"}[42]"#, "number");
+        expect(r#"{42: "number", true: "bool", "key": "string"}[true]"#, "bool");
+        expect(r#"{42: "number", true: "bool", "key": "string"}.key"#, "string");
     }
 
     #[test]
     fn nested_structures() {
         // List of maps
-        expect32(
+        expect(
             r#"[{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}].0.name"#,
             "Alice",
         );
-        expect32(
+        expect(
             r#"[{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}].1.age"#,
             "25",
         );
 
         // Map with lists
-        expect32(r#"{"numbers": [1, 2, 3], "active": true}.numbers.2"#, "3");
-        expect32(r#"{"numbers": [1, 2, 3], "active": true}.active"#, "true");
+        expect(r#"{"numbers": [1, 2, 3], "active": true}.numbers.2"#, "3");
+        expect(r#"{"numbers": [1, 2, 3], "active": true}.active"#, "true");
     }
 
     #[test]
     fn literal_access() {
         // Access elements from list literals
-        expect32("[1, 2, 3].1", "2");
-        expect32(r#"["hello", "world"].0"#, "hello");
+        expect("[1, 2, 3].1", "2");
+        expect(r#"["hello", "world"].0"#, "hello");
 
         // Access fields from map literals
-        expect32(r#"{"name": "Alice", "age": 30}.name"#, "Alice");
-        expect32(r#"{"name": "Alice", "age": 30}.age"#, "30");
+        expect(r#"{"name": "Alice", "age": 30}.name"#, "Alice");
+        expect(r#"{"name": "Alice", "age": 30}.age"#, "30");
 
         // Nested access
-        expect32(r#"[{"name": "Alice"}, {"name": "Bob"}].0.name"#, "Alice");
-        expect32(r#"{"users": [1, 2, 3]}.users.1"#, "2");
+        expect(r#"[{"name": "Alice"}, {"name": "Bob"}].0.name"#, "Alice");
+        expect(r#"{"users": [1, 2, 3]}.users.1"#, "2");
     }
 
     #[test]
     fn bracket_index_access() {
         // List indexing with brackets
-        expect32("[1, 2, 3][1]", "2");
-        expect32(r#"["hello", "world"][0]"#, "hello");
+        expect("[1, 2, 3][1]", "2");
+        expect(r#"["hello", "world"][0]"#, "hello");
 
         // Map indexing with string key
-        expect32(r#"{"name": "Alice", "age": 30}["name"]"#, "Alice");
+        expect(r#"{"name": "Alice", "age": 30}["name"]"#, "Alice");
 
         // Mixed bracket and dot access
-        expect32(r#"{ "a": [10, 20, 30] }["a"][2]"#, "30");
+        expect(r#"{ "a": [10, 20, 30] }["a"][2]"#, "30");
     }
 
     #[test]
     fn trailing_commas() {
         // List with trailing comma
-        expect32("[1, 2, 3,]", "[1, 2, 3]");
+        expect("[1, 2, 3,]", "[1, 2, 3]");
 
         // Map with trailing comma
-        expect32(r#"{"a": 1, "b": 2,}.a"#, "1");
-        expect32(r#"{"a": 1, "b": 2,}.b"#, "2");
+        expect(r#"{"a": 1, "b": 2,}.a"#, "1");
+        expect(r#"{"a": 1, "b": 2,}.b"#, "2");
     }
 
     #[test]
@@ -268,7 +268,7 @@ mod test {
     #[test]
     fn test_nil_handling() {
         expect("nil == nil", "true");
-        expect32_env("user.nonexistent == nil", "true");
+        expect_env("user.nonexistent == nil", "true");
         expect("nil", "nil");
     }
 
@@ -277,36 +277,32 @@ mod test {
     #[test]
     fn optional_chaining_access_and_index() {
         // Existing path succeeds with or without optional access
-        expect32_env("nested?.level1?.level2", "value");
+        expect_env("nested?.level1?.level2", "value");
 
         // Missing intermediate field yields nil rather than error
-        expect32_env("nested?.missing?.level2 == nil", "true");
+        expect_env("nested?.missing?.level2 == nil", "true");
 
         // Optional access at the end also yields nil on missing leaf
-        expect32_env("user?.missing == nil", "true");
+        expect_env("user?.missing == nil", "true");
 
         // Optional bracket index on list out-of-bounds returns nil
-        expect32_env("list?[10] == nil", "true");
+        expect_env("list?[10] == nil", "true");
 
         // Optional bracket index on existing element returns the value
-        expect32_env("list?[1]", "2");
+        expect_env("list?[1]", "2");
     }
 
     fn expect(rule: &str, expected_display: &str) {
-        expect32(rule, expected_display);
+        expect_source(&format!("return {rule};"), expected_display);
     }
 
-    fn expect32(rule: &str, expected_display: &str) {
-        expect32_source(&format!("return {rule};"), expected_display);
-    }
-
-    fn expect32_source(source: &str, expected_display: &str) {
-        let result = execute_source32(source).expect("execute source");
+    fn expect_source(source: &str, expected_display: &str) {
+        let result = execute_source(source).expect("execute source");
         assert_eq!(result.display_first_return(), expected_display);
     }
 
-    fn expect32_env(rule: &str, expected_display: &str) {
-        expect32_source(
+    fn expect_env(rule: &str, expected_display: &str) {
+        expect_source(
             &format!(
                 r#"
                 let pub = true;
@@ -321,7 +317,7 @@ mod test {
         );
     }
 
-    fn panic32_env(rule: &str) {
+    fn panic_env(rule: &str) {
         let source = format!(
             r#"
             let pub = true;
@@ -332,14 +328,14 @@ mod test {
             return {rule};
             "#
         );
-        assert!(execute_source32(&source).is_err());
+        assert!(execute_source(&source).is_err());
     }
 
     fn panic(rule: &str) {
         match Expr::try_from(rule) {
             Ok(expr) => {
                 let source = format!("return {expr};");
-                let res = execute_source32(&source);
+                let res = execute_source(&source);
                 assert!(res.is_err());
                 println!("{}", res.unwrap_err());
             }
@@ -353,19 +349,19 @@ mod test {
     #[test]
     fn range_expressions() {
         // Exclusive range
-        expect32("1..5", "[1, 2, 3, 4]");
+        expect("1..5", "[1, 2, 3, 4]");
 
         // Inclusive range
-        expect32("1..=5", "[1, 2, 3, 4, 5]");
+        expect("1..=5", "[1, 2, 3, 4, 5]");
 
         // Single element inclusive range
-        expect32("1..=1", "[1]");
+        expect("1..=1", "[1]");
 
         // Empty exclusive range
-        expect32("5..5", "[]");
+        expect("5..5", "[]");
 
         // Negative ranges
-        expect32("-3..=3", "[-3, -2, -1, 0, 1, 2, 3]");
+        expect("-3..=3", "[-3, -2, -1, 0, 1, 2, 3]");
     }
 
     // 缺失 Closure 测试
@@ -376,28 +372,28 @@ mod test {
         expect("\"Hello, World!\"", "Hello, World!");
 
         // Template string with simple variable interpolation using ${}
-        expect32_env("\"Hello, ${user.name}!\"", "Hello, lk!");
+        expect_env("\"Hello, ${user.name}!\"", "Hello, lk!");
 
         // Template string with multiple interpolations
-        expect32_env(
+        expect_env(
             "\"User ${user.name} is ${user.age} years old\"",
             "User lk is 18 years old",
         );
 
         // Template string with expressions
-        expect32_env("\"Next year: ${user.age + 1}\"", "Next year: 19");
+        expect_env("\"Next year: ${user.age + 1}\"", "Next year: 19");
 
         // Template string with list access
-        expect32_env("\"First item: ${list.0}\"", "First item: 1");
+        expect_env("\"First item: ${list.0}\"", "First item: 1");
 
         // Template string with boolean expressions
-        expect32_env("\"Is adult: ${user.age >= 18}\"", "Is adult: true");
+        expect_env("\"Is adult: ${user.age >= 18}\"", "Is adult: true");
 
         // Template string with arithmetic operations
-        expect32_env("\"Sum: ${list.0 + list.1}\"", "Sum: 3");
+        expect_env("\"Sum: ${list.0 + list.1}\"", "Sum: 3");
 
         // Template string with nested access
-        expect32_env("\"Nested: ${nested.level1.level2}\"", "Nested: value");
+        expect_env("\"Nested: ${nested.level1.level2}\"", "Nested: value");
 
         // Template string with special characters (escaped)
         expect(
@@ -406,16 +402,16 @@ mod test {
         );
 
         // Template string with nil value
-        expect32_env("\"Nil test: ${user.nonexistent}\"", "Nil test: nil");
+        expect_env("\"Nil test: ${user.nonexistent}\"", "Nil test: nil");
 
         // Template string with complex expressions
-        expect32_env("\"Calculation: ${(user.age * 2) + 5}\"", "Calculation: 41");
+        expect_env("\"Calculation: ${(user.age * 2) + 5}\"", "Calculation: 41");
 
         // Empty template string
         expect("\"\"", "");
 
         // Template string with only interpolation
-        expect32_env("\"${user.name}\"", "lk");
+        expect_env("\"${user.name}\"", "lk");
     }
 
     #[test]

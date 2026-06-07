@@ -3,7 +3,7 @@
 //! The `LiteralVal` enum remains active while the compiler and executor are migrated.
 //! New VM code should target these types first.
 
-use std::collections::BTreeMap;
+use crate::util::fast_map::{FastHashMap, fast_hash_map_from_iter, fast_hash_map_new};
 use std::sync::Arc;
 
 use super::values::{ChannelValue, ShortStr, StreamCursorValue, StreamValue, TaskValue};
@@ -109,23 +109,23 @@ pub enum CallableValue {
         function_index: u32,
         captures: Arc<Vec<RuntimeVal>>,
     },
-    RuntimeNative32 {
+    RuntimeNative {
         name: Arc<str>,
         arity: u16,
-        function: crate::vm::NativeFunction32,
+        function: crate::vm::NativeFunction,
     },
-    Runtime32(Arc<crate::vm::RuntimeCallable32>),
+    Runtime(Arc<crate::vm::RuntimeCallable>),
 }
 
 #[derive(Clone, Debug)]
 pub struct RuntimeObject {
     pub type_name: Arc<str>,
-    pub fields: BTreeMap<Arc<str>, RuntimeVal>,
+    pub fields: FastHashMap<Arc<str>, RuntimeVal>,
     pub field_slots: Vec<Arc<str>>,
 }
 
 impl RuntimeObject {
-    pub fn new(type_name: Arc<str>, fields: BTreeMap<Arc<str>, RuntimeVal>) -> Self {
+    pub fn new(type_name: Arc<str>, fields: FastHashMap<Arc<str>, RuntimeVal>) -> Self {
         let mut field_slots = Vec::with_capacity(fields.len());
         for key in fields.keys() {
             field_slots.push(Arc::clone(key));
@@ -338,11 +338,11 @@ fn typed_list_item_equal_no_heap(left: &TypedList, left_index: usize, right: &Ty
 
 #[derive(Clone, Debug)]
 pub enum TypedMap {
-    Mixed(BTreeMap<RuntimeMapKey, RuntimeVal>),
-    StringMixed(BTreeMap<Arc<str>, RuntimeVal>),
-    StringInt(BTreeMap<Arc<str>, i64>),
-    StringFloat(BTreeMap<Arc<str>, f64>),
-    StringBool(BTreeMap<Arc<str>, bool>),
+    Mixed(FastHashMap<RuntimeMapKey, RuntimeVal>),
+    StringMixed(FastHashMap<Arc<str>, RuntimeVal>),
+    StringInt(FastHashMap<Arc<str>, i64>),
+    StringFloat(FastHashMap<Arc<str>, f64>),
+    StringBool(FastHashMap<Arc<str>, bool>),
 }
 
 impl TypedMap {
@@ -362,6 +362,7 @@ impl TypedMap {
         self.len() == 0
     }
 
+    #[inline]
     pub fn get(&self, key: &RuntimeMapKey) -> Option<RuntimeVal> {
         match self {
             Self::Mixed(values) => values.get(key).cloned(),
@@ -428,39 +429,50 @@ impl TypedMap {
         out
     }
 
+    #[inline]
     pub fn set(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
         match self {
             Self::Mixed(values) => {
                 if values.is_empty()
-                    && let Some(key) = key.as_arc_str()
+                    && let Some(key_str) = key.as_str()
                 {
+                    let key = Arc::<str>::from(key_str);
                     *self = match value {
-                        RuntimeVal::Int(value) => Self::StringInt(BTreeMap::from([(key, value)])),
-                        RuntimeVal::Float(value) => Self::StringFloat(BTreeMap::from([(key, value)])),
-                        RuntimeVal::Bool(value) => Self::StringBool(BTreeMap::from([(key, value)])),
-                        value => Self::StringMixed(BTreeMap::from([(key, value)])),
+                        RuntimeVal::Int(value) => Self::StringInt(fast_hash_map_from_iter([(key, value)])),
+                        RuntimeVal::Float(value) => Self::StringFloat(fast_hash_map_from_iter([(key, value)])),
+                        RuntimeVal::Bool(value) => Self::StringBool(fast_hash_map_from_iter([(key, value)])),
+                        value => Self::StringMixed(fast_hash_map_from_iter([(key, value)])),
                     };
                     return;
                 }
                 values.insert(key, value);
             }
             Self::StringMixed(values) => {
-                if let Some(key) = key.as_arc_str() {
-                    values.insert(key, value);
+                if let Some(key_str) = key.as_str() {
+                    if let Some(existing) = values.get_mut(key_str) {
+                        *existing = value;
+                    } else {
+                        values.insert(Arc::<str>::from(key_str), value);
+                    }
                 } else {
                     self.materialize_string_map_to_mixed(key, value);
                 }
             }
             Self::StringInt(values) => {
-                if let Some(key) = key.as_arc_str() {
+                if let Some(key_str) = key.as_str() {
                     match value {
-                        RuntimeVal::Int(value) => {
-                            values.insert(key, value);
+                        RuntimeVal::Int(iv) => {
+                            if let Some(existing) = values.get_mut(key_str) {
+                                *existing = iv;
+                            } else {
+                                values.insert(Arc::<str>::from(key_str), iv);
+                            }
                         }
                         value => {
-                            let mut mixed = BTreeMap::new();
-                            for (key, value) in values.iter() {
-                                mixed.insert(key.clone(), RuntimeVal::Int(*value));
+                            let key = Arc::<str>::from(key_str);
+                            let mut mixed = fast_hash_map_new();
+                            for (k, v) in values.iter() {
+                                mixed.insert(k.clone(), RuntimeVal::Int(*v));
                             }
                             mixed.insert(key, value);
                             *self = Self::StringMixed(mixed);
@@ -471,15 +483,20 @@ impl TypedMap {
                 }
             }
             Self::StringFloat(values) => {
-                if let Some(key) = key.as_arc_str() {
+                if let Some(key_str) = key.as_str() {
                     match value {
-                        RuntimeVal::Float(value) => {
-                            values.insert(key, value);
+                        RuntimeVal::Float(fv) => {
+                            if let Some(existing) = values.get_mut(key_str) {
+                                *existing = fv;
+                            } else {
+                                values.insert(Arc::<str>::from(key_str), fv);
+                            }
                         }
                         value => {
-                            let mut mixed = BTreeMap::new();
-                            for (key, value) in values.iter() {
-                                mixed.insert(key.clone(), RuntimeVal::Float(*value));
+                            let key = Arc::<str>::from(key_str);
+                            let mut mixed = fast_hash_map_new();
+                            for (k, v) in values.iter() {
+                                mixed.insert(k.clone(), RuntimeVal::Float(*v));
                             }
                             mixed.insert(key, value);
                             *self = Self::StringMixed(mixed);
@@ -490,15 +507,20 @@ impl TypedMap {
                 }
             }
             Self::StringBool(values) => {
-                if let Some(key) = key.as_arc_str() {
+                if let Some(key_str) = key.as_str() {
                     match value {
-                        RuntimeVal::Bool(value) => {
-                            values.insert(key, value);
+                        RuntimeVal::Bool(bv) => {
+                            if let Some(existing) = values.get_mut(key_str) {
+                                *existing = bv;
+                            } else {
+                                values.insert(Arc::<str>::from(key_str), bv);
+                            }
                         }
                         value => {
-                            let mut mixed = BTreeMap::new();
-                            for (key, value) in values.iter() {
-                                mixed.insert(key.clone(), RuntimeVal::Bool(*value));
+                            let key = Arc::<str>::from(key_str);
+                            let mut mixed = fast_hash_map_new();
+                            for (k, v) in values.iter() {
+                                mixed.insert(k.clone(), RuntimeVal::Bool(*v));
                             }
                             mixed.insert(key, value);
                             *self = Self::StringMixed(mixed);
@@ -512,31 +534,31 @@ impl TypedMap {
     }
 
     fn materialize_string_map_to_mixed(&mut self, key: RuntimeMapKey, value: RuntimeVal) {
-        let mut mixed = match std::mem::replace(self, Self::Mixed(BTreeMap::new())) {
+        let mut mixed = match std::mem::replace(self, Self::Mixed(fast_hash_map_new())) {
             Self::Mixed(values) => values,
             Self::StringMixed(values) => {
-                let mut mixed = BTreeMap::new();
+                let mut mixed = fast_hash_map_new();
                 for (key, value) in values {
                     mixed.insert(RuntimeMapKey::String(key), value);
                 }
                 mixed
             }
             Self::StringInt(values) => {
-                let mut mixed = BTreeMap::new();
+                let mut mixed = fast_hash_map_new();
                 for (key, value) in values {
                     mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Int(value));
                 }
                 mixed
             }
             Self::StringFloat(values) => {
-                let mut mixed = BTreeMap::new();
+                let mut mixed = fast_hash_map_new();
                 for (key, value) in values {
                     mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Float(value));
                 }
                 mixed
             }
             Self::StringBool(values) => {
-                let mut mixed = BTreeMap::new();
+                let mut mixed = fast_hash_map_new();
                 for (key, value) in values {
                     mixed.insert(RuntimeMapKey::String(key), RuntimeVal::Bool(value));
                 }
@@ -546,9 +568,42 @@ impl TypedMap {
         mixed.insert(key, value);
         *self = Self::Mixed(mixed);
     }
+
+    /// Remove a key from the map, returning the removed value if present.
+    /// For typed string maps, if the key type doesn't match (e.g., integer key on StringInt map),
+    /// returns None without modification.
+    pub fn remove(&mut self, key: &RuntimeMapKey) -> Option<RuntimeVal> {
+        match self {
+            Self::Mixed(entries) => entries.remove(key),
+            Self::StringMixed(entries) => {
+                let Some(key_str) = key.as_str() else {
+                    return None;
+                };
+                entries.remove(key_str)
+            }
+            Self::StringInt(entries) => {
+                let Some(key_str) = key.as_str() else {
+                    return None;
+                };
+                entries.remove(key_str).map(RuntimeVal::Int)
+            }
+            Self::StringFloat(entries) => {
+                let Some(key_str) = key.as_str() else {
+                    return None;
+                };
+                entries.remove(key_str).map(RuntimeVal::Float)
+            }
+            Self::StringBool(entries) => {
+                let Some(key_str) = key.as_str() else {
+                    return None;
+                };
+                entries.remove(key_str).map(RuntimeVal::Bool)
+            }
+        }
+    }
 }
 
-pub(crate) fn typed_map_from_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> TypedMap {
+pub(crate) fn typed_map_from_entries(entries: FastHashMap<RuntimeMapKey, RuntimeVal>) -> TypedMap {
     if entries.is_empty() {
         return TypedMap::Mixed(entries);
     }
@@ -593,17 +648,19 @@ pub(crate) fn typed_map_from_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal
 }
 
 fn string_mixed_entries_from_runtime_entries(
-    entries: BTreeMap<RuntimeMapKey, RuntimeVal>,
-) -> BTreeMap<Arc<str>, RuntimeVal> {
-    let mut out = BTreeMap::new();
+    entries: FastHashMap<RuntimeMapKey, RuntimeVal>,
+) -> FastHashMap<Arc<str>, RuntimeVal> {
+    let mut out = fast_hash_map_new();
     for (key, value) in entries {
         out.insert(key.as_arc_str().expect("validated string key"), value);
     }
     out
 }
 
-fn string_int_entries_from_runtime_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> BTreeMap<Arc<str>, i64> {
-    let mut out = BTreeMap::new();
+fn string_int_entries_from_runtime_entries(
+    entries: FastHashMap<RuntimeMapKey, RuntimeVal>,
+) -> FastHashMap<Arc<str>, i64> {
+    let mut out = fast_hash_map_new();
     for (key, value) in entries {
         let RuntimeVal::Int(value) = value else {
             unreachable!("validated int map value");
@@ -613,8 +670,10 @@ fn string_int_entries_from_runtime_entries(entries: BTreeMap<RuntimeMapKey, Runt
     out
 }
 
-fn string_float_entries_from_runtime_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> BTreeMap<Arc<str>, f64> {
-    let mut out = BTreeMap::new();
+fn string_float_entries_from_runtime_entries(
+    entries: FastHashMap<RuntimeMapKey, RuntimeVal>,
+) -> FastHashMap<Arc<str>, f64> {
+    let mut out = fast_hash_map_new();
     for (key, value) in entries {
         let RuntimeVal::Float(value) = value else {
             unreachable!("validated float map value");
@@ -624,8 +683,10 @@ fn string_float_entries_from_runtime_entries(entries: BTreeMap<RuntimeMapKey, Ru
     out
 }
 
-fn string_bool_entries_from_runtime_entries(entries: BTreeMap<RuntimeMapKey, RuntimeVal>) -> BTreeMap<Arc<str>, bool> {
-    let mut out = BTreeMap::new();
+fn string_bool_entries_from_runtime_entries(
+    entries: FastHashMap<RuntimeMapKey, RuntimeVal>,
+) -> FastHashMap<Arc<str>, bool> {
+    let mut out = fast_hash_map_new();
     for (key, value) in entries {
         let RuntimeVal::Bool(value) = value else {
             unreachable!("validated bool map value");
@@ -703,7 +764,7 @@ fn typed_map_entry_value(map: &TypedMap, key: &RuntimeMapKey) -> Option<RuntimeV
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuntimeMapKey {
     Nil,
     Bool(bool),
@@ -737,7 +798,7 @@ mod tests {
 
     #[test]
     fn runtime_entries_materialize_to_typed_string_maps() {
-        let mut entries = BTreeMap::new();
+        let mut entries = fast_hash_map_new();
         entries.insert(RuntimeMapKey::String(Arc::<str>::from("answer")), RuntimeVal::Int(42));
 
         assert!(matches!(
@@ -745,7 +806,7 @@ mod tests {
             TypedMap::StringInt(values) if values.get("answer") == Some(&42)
         ));
 
-        let mut entries = BTreeMap::new();
+        let mut entries = fast_hash_map_new();
         entries.insert(
             RuntimeMapKey::ShortStr(ShortStr::new("ok").expect("short")),
             RuntimeVal::Bool(true),
@@ -755,7 +816,7 @@ mod tests {
             TypedMap::StringBool(values) if values.get("ok") == Some(&true)
         ));
 
-        let mut entries = BTreeMap::new();
+        let mut entries = fast_hash_map_new();
         entries.insert(RuntimeMapKey::Int(1), RuntimeVal::Int(42));
         assert!(matches!(typed_map_from_entries(entries), TypedMap::Mixed(_)));
     }
@@ -777,7 +838,7 @@ mod tests {
 
     #[test]
     fn typed_map_get_and_set_preserve_specialized_backing_until_polluted() {
-        let mut map = TypedMap::StringInt(BTreeMap::from([(Arc::<str>::from("answer"), 41)]));
+        let mut map = TypedMap::StringInt(fast_hash_map_from_iter([(Arc::<str>::from("answer"), 41)]));
 
         assert_eq!(
             map.get(&RuntimeMapKey::ShortStr(ShortStr::new("answer").expect("short"))),
@@ -805,7 +866,7 @@ mod tests {
 
     #[test]
     fn empty_mixed_map_set_with_string_key_specializes_backing() {
-        let mut map = TypedMap::Mixed(BTreeMap::new());
+        let mut map = TypedMap::Mixed(fast_hash_map_new());
 
         map.set(
             RuntimeMapKey::ShortStr(ShortStr::new("answer").expect("short")),
@@ -821,7 +882,7 @@ mod tests {
 
     #[test]
     fn typed_map_set_materializes_to_mixed_for_non_string_key() {
-        let mut map = TypedMap::StringBool(BTreeMap::from([(Arc::<str>::from("ok"), true)]));
+        let mut map = TypedMap::StringBool(fast_hash_map_from_iter([(Arc::<str>::from("ok"), true)]));
 
         map.set(RuntimeMapKey::Int(7), RuntimeVal::Bool(false));
 
@@ -836,13 +897,16 @@ mod tests {
 
     #[test]
     fn typed_map_equality_compares_entries_without_materializing_vector() {
-        let typed = TypedMap::StringInt(BTreeMap::from([(Arc::<str>::from("answer"), 42)]));
-        let string_mixed = TypedMap::StringMixed(BTreeMap::from([(Arc::<str>::from("answer"), RuntimeVal::Int(42))]));
-        let exact_mixed = TypedMap::Mixed(BTreeMap::from([(
+        let typed = TypedMap::StringInt(fast_hash_map_from_iter([(Arc::<str>::from("answer"), 42)]));
+        let string_mixed = TypedMap::StringMixed(fast_hash_map_from_iter([(
+            Arc::<str>::from("answer"),
+            RuntimeVal::Int(42),
+        )]));
+        let exact_mixed = TypedMap::Mixed(fast_hash_map_from_iter([(
             RuntimeMapKey::String(Arc::<str>::from("answer")),
             RuntimeVal::Int(42),
         )]));
-        let short_key_mixed = TypedMap::Mixed(BTreeMap::from([(
+        let short_key_mixed = TypedMap::Mixed(fast_hash_map_from_iter([(
             RuntimeMapKey::ShortStr(ShortStr::new("answer").expect("short")),
             RuntimeVal::Int(42),
         )]));
