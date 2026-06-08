@@ -143,6 +143,8 @@ pub(in crate::llvm) fn local_register_kind_before(code: &[Instr], pc: usize, reg
             | Opcode::DivInt
             | Opcode::ModInt
             | Opcode::AddMulInt
+            | Opcode::Add2Int
+            | Opcode::MidInt
             | Opcode::Len
             | Opcode::ForLoopI => Some(NativeScalarKind::I64),
             Opcode::LoadFloat => Some(NativeScalarKind::F64),
@@ -1081,6 +1083,11 @@ pub(in crate::llvm) fn emit_inline_i64_binary_block(
         Opcode::AddInt => ir.push_str(&format!("  {out} = add i64 {lhs}, {rhs}\n")),
         Opcode::SubInt => ir.push_str(&format!("  {out} = sub i64 {lhs}, {rhs}\n")),
         Opcode::MulInt => ir.push_str(&format!("  {out} = mul i64 {lhs}, {rhs}\n")),
+        Opcode::MidInt => {
+            let sum = next_tmp(tmp_index);
+            ir.push_str(&format!("  {sum} = add i64 {lhs}, {rhs}\n"));
+            ir.push_str(&format!("  {out} = sdiv i64 {sum}, 2\n"));
+        }
         Opcode::MinInt | Opcode::MaxInt => {
             let pred = if instr.opcode() == Opcode::MinInt { "slt" } else { "sgt" };
             let cond = next_tmp(tmp_index);
@@ -1124,6 +1131,31 @@ pub(in crate::llvm) fn emit_inline_i64_add_mul_block(
     ir.push_str(&format!("  {rhs} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.c()));
     ir.push_str(&format!("  {product} = mul i64 {lhs}, {rhs}\n"));
     ir.push_str(&format!("  {out} = add i64 {acc}, {product}\n"));
+    ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
+}
+
+pub(in crate::llvm) fn emit_inline_i64_add2_block(
+    ir: &mut String,
+    call_pc: usize,
+    instr: Instr,
+    tmp_index: &mut usize,
+) {
+    let acc = next_tmp(tmp_index);
+    let first = next_tmp(tmp_index);
+    let second = next_tmp(tmp_index);
+    let partial = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {acc} = load i64, ptr %call{call_pc}.r{}.slot\n", instr.a()));
+    ir.push_str(&format!(
+        "  {first} = load i64, ptr %call{call_pc}.r{}.slot\n",
+        instr.b()
+    ));
+    ir.push_str(&format!(
+        "  {second} = load i64, ptr %call{call_pc}.r{}.slot\n",
+        instr.c()
+    ));
+    ir.push_str(&format!("  {partial} = add i64 {acc}, {first}\n"));
+    ir.push_str(&format!("  {out} = add i64 {partial}, {second}\n"));
     ir.push_str(&format!("  store i64 {out}, ptr %call{call_pc}.r{}.slot\n", instr.a()));
 }
 

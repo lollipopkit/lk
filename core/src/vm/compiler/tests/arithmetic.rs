@@ -114,6 +114,70 @@ fn compiler_accumulates_int_add_chain_into_compound_target() {
 }
 
 #[test]
+fn compiler_accumulates_plain_int_add_pairs_into_compound_target() {
+    let function = compile_source(
+        r#"
+        let total = 10;
+        let a = 1;
+        let b = 2;
+        let c = 3;
+        total += a + b + c;
+        return total;
+        "#,
+    )
+    .expect("compile source");
+
+    let add2_count = function
+        .code
+        .iter()
+        .filter(|instr| instr.opcode() == Opcode::Add2Int)
+        .count();
+    assert_eq!(
+        add2_count, 1,
+        "compound add chain should fuse adjacent integer terms into Add2Int: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(16)]);
+}
+
+#[test]
+fn compiler_accumulates_typed_int_list_access_in_place() {
+    let function = compile_source(
+        r#"
+        let values = [];
+        for i in 0..3 {
+            values.push(i + 1);
+        }
+        let total = 0;
+        for i in 0..3 {
+            total += values[i];
+            if i > 0 {
+                total -= values[i - 1];
+            }
+        }
+        return total;
+        "#,
+    )
+    .expect("compile source");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::AddListInt),
+        "typed int list add accumulator should lower to AddListInt: {:?}",
+        function.code
+    );
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::SubListInt),
+        "typed int list sub accumulator should lower to SubListInt: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(3)]);
+}
+
+#[test]
 fn compiler_keeps_compound_add_semantics_when_rhs_reads_target() {
     let function = compile_source(
         r#"

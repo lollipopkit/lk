@@ -23,8 +23,8 @@ use super::{
         scalar_arg_value, text_value_from_reg,
     },
     scalar::emit::{
-        emit_f64_binary_block, emit_i64_add_mul_block, emit_i64_binary_block, emit_i64_immediate_block,
-        emit_numeric_compare_block,
+        emit_f64_binary_block, emit_i64_add_mul_block, emit_i64_add2_block, emit_i64_binary_block,
+        emit_i64_immediate_block, emit_i64_mid_block, emit_numeric_compare_block,
     },
     scalar::facts::{NativeScalarFacts, NativeScalarKind, native_scalar_block_facts_with_initial},
     straightline_value::{
@@ -369,7 +369,9 @@ pub(super) fn compile_native_scalar_subfunction(
             | Opcode::ModInt
             | Opcode::MinInt
             | Opcode::MaxInt
-            | Opcode::AddMulInt => {
+            | Opcode::AddMulInt
+            | Opcode::Add2Int
+            | Opcode::MidInt => {
                 if (instr.a() as usize) >= register_count
                     || (instr.b() as usize) >= register_count
                     || instr.c() as usize >= register_count
@@ -378,6 +380,10 @@ pub(super) fn compile_native_scalar_subfunction(
                 }
                 if instr.opcode() == Opcode::AddMulInt {
                     emit_i64_add_mul_block(&mut ir, instr, &mut tmp_index);
+                } else if instr.opcode() == Opcode::Add2Int {
+                    emit_i64_add2_block(&mut ir, instr, &mut tmp_index);
+                } else if instr.opcode() == Opcode::MidInt {
+                    emit_i64_mid_block(&mut ir, instr, &mut tmp_index);
                 } else {
                     emit_i64_binary_block(&mut ir, instr, &mut tmp_index);
                 }
@@ -982,9 +988,13 @@ pub(super) fn compile_native_ptr_list_subfunction(
                 ir.push_str(&format!("  store i64 {len}, ptr %r{}.slot\n", instr.a()));
                 static_regs[instr.a() as usize] = None;
             }
-            Opcode::AddInt | Opcode::MinInt | Opcode::MaxInt | Opcode::AddMulInt => {
+            Opcode::AddInt | Opcode::MinInt | Opcode::MaxInt | Opcode::AddMulInt | Opcode::Add2Int | Opcode::MidInt => {
                 if instr.opcode() == Opcode::AddMulInt {
                     emit_i64_add_mul_block(&mut ir, instr, &mut tmp_index);
+                } else if instr.opcode() == Opcode::Add2Int {
+                    emit_i64_add2_block(&mut ir, instr, &mut tmp_index);
+                } else if instr.opcode() == Opcode::MidInt {
+                    emit_i64_mid_block(&mut ir, instr, &mut tmp_index);
                 } else {
                     emit_i64_binary_block(&mut ir, instr, &mut tmp_index);
                 }

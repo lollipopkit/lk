@@ -236,7 +236,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
                     return None;
                 }
             }
-            Opcode::AddMulInt => {
+            Opcode::AddMulInt | Opcode::Add2Int => {
                 let acc = native_kind(&kinds, instr.a())
                     .or_else(|| static_kind(&static_values, instr.a()).and_then(|value| static_value_kind(&value)))
                     .unwrap_or(NativeScalarKind::I64);
@@ -261,6 +261,7 @@ pub(in crate::llvm) fn native_scalar_block_facts_with_initial(
             | Opcode::MulInt
             | Opcode::DivInt
             | Opcode::ModInt
+            | Opcode::MidInt
             | Opcode::MinInt
             | Opcode::MaxInt => {
                 if let (Some(NativeStraightlineValue::I64(lhs)), Some(NativeStraightlineValue::I64(rhs))) = (

@@ -5,19 +5,18 @@ const en: BaseTranslation = {
     lang: 'en',
     title: 'LK Lang',
     description:
-      'LK is a Rust-like scripting language with a bytecode VM, optional cached native execution, LLVM AOT, rich pattern matching, package imports, and a batteries-included standard library.',
+      'LK is a Rust-like scripting language with rich pattern matching, package imports, practical CLI workflows, and a batteries-included standard library.',
   },
   nav: {
-    performance: 'Performance',
     spec: 'Spec',
     github: 'Github',
     languageLabel: 'Language',
   },
   hero: {
     eyebrow: 'Rust-like scripting language written in Rust',
-    title: 'Fast, lightweight, modern language.',
+    title: 'Lightweight, modern scripting language.',
     subtitle:
-      'LK gives you clear syntax, deterministic VM execution by default, optional cached native execution, structured pattern matching, and a practical standard library for embedding logic in applications and writing automation scripts.',
+      'LK gives you clear syntax, structured pattern matching, practical CLI workflows, and a useful standard library for embedding logic in applications and writing automation scripts.',
     primaryAction: 'Start',
     secondaryAction: 'Read features',
     previewLabel: 'LK syntax preview',
@@ -52,9 +51,9 @@ const en: BaseTranslation = {
   },
   runtime: {
     kicker: 'Runtime and Tooling',
-    title: 'From script to VM execution, optional native cache, and LLVM AOT.',
+    title: 'From scripts to type checks, module artifacts, and package tools.',
     subtitle:
-      'LK can run a REPL, execute `.lk` files through the bytecode VM by default, type-check without executing, opt into cached native executables for supported shapes, and build explicit native executables.',
+      'LK can run a REPL, execute `.lk` files, type-check without executing, emit module artifacts, and manage package workspaces.',
     rows: {
       valueModel: 'Value model',
       execution: 'Execution',

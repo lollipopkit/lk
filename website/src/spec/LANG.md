@@ -46,6 +46,7 @@ This document describes the LK language as implemented in this repository (parse
 ### Closures
 - Expression form only: `|a, b| a + b`.
 - Block form: `|x| { let y = x + 1; y }` - the last expression is the return value.
+- Function-literal form: `fn(a: Int, b) => a + b`.
 - Closures capture and can mutate variables from the enclosing scope.
 
 ### Ranges
@@ -88,12 +89,13 @@ This document describes the LK language as implemented in this repository (parse
 
 ## Expressions
 - Literals, lists, maps, variables, calls, property/index access, closures, ranges, logical/comparison, `??`, and `?:`.
-- Concurrency expressions (feature-gated `concurrency`):
+- Concurrency helpers (feature-gated `concurrency`) are regular function calls:
   - `spawn(fn_or_closure)` → Task
   - `chan(capacity?, type?)` → Channel (type is a string like `"Int"`)
   - `send(channel, value)` → Bool
   - `recv(channel)` → `[ok, value]`
-  - `select { case recv(c) => expr; case send(c, v) => expr; default => expr }`
+- `select` is a dedicated expression over channel operations:
+  - `select { case recv(ch) => expr; case value <- recv(ch) if guard => expr; case send(ch, value) => expr; default => expr }`
 
 ### Match Expression
 - `match value { pattern => expr, ... }` (`,` or `;` separators allowed). Returns the chosen arm's value. Patterns below.
@@ -142,9 +144,9 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 ### Structs
 - Define: `struct User { id: Int, name: String? }`
 - Instantiate (literal): `User { id: 1, name: "Ann" }`
--Instantiate (call sugar): `User(id: 1, name: "Ann")`
+- Instantiate (call sugar): `User(id: 1, name: "Ann")`
 - Access: `user.name`
-- Update syntax: `User { ..existing, field: value }` - copies all fields from `existing`, overriding specified ones.
+- Update syntax: `User { ..existing, field: value }` or `User { ..existing }` - copies all fields from `existing`, overriding specified ones when fields are provided.
 
 ### Traits and Impl
 - Trait definition: `trait Area { fn area(self) -> Int; }`
@@ -157,9 +159,9 @@ Used in `match`, `if let`, `while let`, and `let` destructuring.
 - Parameters and return type are optional; functions return `nil` by default unless `return` is used.
 - First-class: closures and function values can be passed, returned, and called.
 - Default positional parameters: `fn greet(name, greeting = "hello") { ... }` - parameters with defaults must come after all required positional parameters.
-- Named parameters live in an optional trailing block: `fn f(a, b, { flag: Bool = true, label: String }) { ... }`.
+- Named parameters live in an optional trailing block and require type annotations: `fn f(a, b, { flag: Bool = true, label: String }) { ... }`. The block may also be the whole parameter list: `fn configure({host: String}) { ... }`.
 - Defaults are lazily evaluated inside the callee when the argument is omitted; expressions can reference other parameters.
-- Call sites supply named arguments with `name: expr` after the positional tail: `f(1, 2, label: "demo", flag: false)`. Named arguments may appear in any order but must follow all positional ones.
+- Call sites supply named arguments with `name: expr`: `f(1, 2, label: "demo", flag: false)` or `f(label: "demo")`. Named arguments may appear in any order; once a named argument appears, positional arguments cannot follow it.
 
 ### Imports
 - Forms:
@@ -297,18 +299,30 @@ opt_dot     ::= '?.' field
 index       ::= '[' expr ']'
 opt_index   ::= '?[' expr ']'
 primary     ::= nil | false | true | int | float | string | template | list | map | var | paren
-             | closure | spawn | chan | send | recv | select | match | struct_lit
+             | closure | select | match | struct_lit
 closure     ::= '|' [id {',' id}] '|' expr
              | '|' [id {',' id}] '|' '{' statement* '}'
+             | 'fn' '(' [ param { ',' param } ] ')' '=>' expr
+select      ::= 'select' '{' { select_case | default_case | ';' } '}'
+select_case ::= 'case' select_pattern [ 'if' expr ] '=>' expr [ ';' ]
+default_case ::= 'default' '=>' expr [ ';' ]
+select_pattern ::= [ (id | '_') '<-' ] 'recv' '(' expr ')'
+                 | 'send' '(' expr ',' expr ')'
 template    ::= string_with_${...}
 field       ::= id | int | string
 list        ::= '[' [ (expr | '..' expr) { ',' (expr | '..' expr) } [ ',' ] ] ']'
-map         ::= '{' [ (id | string) ':' expr { ',' (id | string) ':' expr } [ ',' ] ] '}'
+map         ::= '{' [ map_key ':' expr { ',' map_key ':' expr } [ ',' ] ] '}'
+map_key     ::= id | expr
 var         ::= identifier
 paren       ::= '(' expr ')'
-args        ::= [ expr { ',' expr } [ ',' name ':' expr { ',' name ':' expr } ] ]
-struct_lit  ::= id '{' [ '..' expr ',' ] id ':' expr { ',' id ':' expr } '}'
-             | id '{' '}'
+args        ::= [ positional_args [ ',' named_args ] | named_args ]
+positional_args ::= expr { ',' expr }
+named_args  ::= name ':' expr { ',' name ':' expr }
+struct_lit  ::= id '{' [ struct_update [ ',' struct_field_list [ ',' ] ]
+                       | struct_field_list [ ',' ] ] '}'
+struct_update ::= '..' expr
+struct_field_list ::= struct_field { ',' struct_field }
+struct_field ::= id ':' expr
 ```
 
 ### Statements
@@ -343,10 +357,13 @@ dot_assign_stmt    ::= expr '.' id ( '=' | '+=' | '-=' | '*=' | '/=' | '%=' ) ex
 return_stmt  ::= 'return' [ expr ] ';'
 break_stmt   ::= 'break' ';'
 continue_stmt ::= 'continue' ';'
-fn_stmt      ::= 'fn' id '(' [ param { ',' param } ] [ ',' '{' named_param { ',' named_param } '}' ] ')' [ '->' type ] block_stmt
-             | 'fn' id '(' [ param { ',' param } [ '=' expr ] { ',' param [ '=' expr ] } ] ')' [ '->' type ] block_stmt
+fn_stmt      ::= 'fn' id '(' [ fn_param_list ] ')' [ '->' type ] block_stmt
+fn_param_list ::= positional_param { ',' positional_param } [ ',' named_param_block ]
+                | named_param_block
+positional_param ::= id [ ':' type ] [ '=' expr ]
+named_param_block ::= '{' [ named_param { ',' named_param } [ ',' ] ] '}'
 param        ::= id [ ':' type ]
-named_param  ::= id [ ':' type ] [ '=' expr ]
+named_param  ::= id ':' type [ '=' expr ]
 struct_stmt  ::= 'struct' id '{' ( id [ ':' type ] { ',' id [ ':' type ] } )? '}'
 trait_stmt   ::= 'trait' id '{' fn_sig { ',' fn_sig } '}'
 impl_stmt    ::= 'impl' id 'for' type '{' fn_stmt { fn_stmt } '}'
@@ -373,11 +390,6 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - Execute a file (statements) through the bytecode VM: `lk FILE`
 - Compile to an executable module artifact: `lk compile [FILE]` -> `FILE.lkm`
 - Execute an module artifact: `lk FILE.lkm`
-- Compile to a native executable for LLVM-lowerable shapes: `lk compile exe [FILE]`
-- Optionally run a cached native executable for supported shapes with `LK_NATIVE_RUN=1 lk FILE`. If native lowering or native build fails, execution falls back to the bytecode VM.
-- Disable native opt-in with `LK_FORCE_VM=1` or `LK_VM_ONLY=1`.
-- Override the cached native executable directory with `LK_NATIVE_CACHE_DIR`.
-- The bytecode VM is the default execution path and correctness oracle for native/AOT work.
 - Only relative, sanitized paths are allowed
 - CLI prints a result only when it is not `nil`
 

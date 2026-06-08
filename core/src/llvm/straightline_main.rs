@@ -308,8 +308,38 @@ pub(super) fn compile_native_scalar_main_artifact(
             | Opcode::ModInt
             | Opcode::MinInt
             | Opcode::MaxInt
-            | Opcode::AddMulInt => {
-                if instr.opcode() == Opcode::AddMulInt {
+            | Opcode::AddMulInt
+            | Opcode::Add2Int
+            | Opcode::MidInt => {
+                if matches!(instr.opcode(), Opcode::AddMulInt | Opcode::Add2Int | Opcode::MidInt) {
+                    if instr.opcode() == Opcode::MidInt {
+                        let Some(NativeStraightlineValue::I64(lhs)) =
+                            regs.get(instr.b() as usize).and_then(Clone::clone)
+                        else {
+                            return Ok(None);
+                        };
+                        let Some(NativeStraightlineValue::I64(rhs)) =
+                            regs.get(instr.c() as usize).and_then(Clone::clone)
+                        else {
+                            return Ok(None);
+                        };
+                        let name = if let (Ok(lhs), Ok(rhs)) = (lhs.parse::<i64>(), rhs.parse::<i64>()) {
+                            lhs.wrapping_add(rhs).wrapping_div(2).to_string()
+                        } else {
+                            let sum = format!("%r{}_{}", instr.a(), ssa_index);
+                            ssa_index += 1;
+                            let name = format!("%r{}_{}", instr.a(), ssa_index);
+                            ssa_index += 1;
+                            body.push_str(&format!("  {sum} = add i64 {lhs}, {rhs}\n"));
+                            body.push_str(&format!("  {name} = sdiv i64 {sum}, 2\n"));
+                            name
+                        };
+                        if instr.a() as usize >= regs.len() {
+                            return Ok(None);
+                        }
+                        regs[instr.a() as usize] = Some(NativeStraightlineValue::I64(name));
+                        continue;
+                    }
                     let Some(NativeStraightlineValue::I64(acc)) = regs.get(instr.a() as usize).and_then(Clone::clone)
                     else {
                         return Ok(None);
@@ -325,14 +355,23 @@ pub(super) fn compile_native_scalar_main_artifact(
                     let name = if let (Ok(acc), Ok(lhs), Ok(rhs)) =
                         (acc.parse::<i64>(), lhs.parse::<i64>(), rhs.parse::<i64>())
                     {
-                        acc.wrapping_add(lhs.wrapping_mul(rhs)).to_string()
+                        if instr.opcode() == Opcode::AddMulInt {
+                            acc.wrapping_add(lhs.wrapping_mul(rhs)).to_string()
+                        } else {
+                            acc.wrapping_add(lhs).wrapping_add(rhs).to_string()
+                        }
                     } else {
-                        let product = format!("%r{}_{}", instr.a(), ssa_index);
+                        let partial = format!("%r{}_{}", instr.a(), ssa_index);
                         ssa_index += 1;
                         let name = format!("%r{}_{}", instr.a(), ssa_index);
                         ssa_index += 1;
-                        body.push_str(&format!("  {product} = mul i64 {lhs}, {rhs}\n"));
-                        body.push_str(&format!("  {name} = add i64 {acc}, {product}\n"));
+                        if instr.opcode() == Opcode::AddMulInt {
+                            body.push_str(&format!("  {partial} = mul i64 {lhs}, {rhs}\n"));
+                            body.push_str(&format!("  {name} = add i64 {acc}, {partial}\n"));
+                        } else {
+                            body.push_str(&format!("  {partial} = add i64 {acc}, {lhs}\n"));
+                            body.push_str(&format!("  {name} = add i64 {partial}, {rhs}\n"));
+                        }
                         name
                     };
                     if instr.a() as usize >= regs.len() {

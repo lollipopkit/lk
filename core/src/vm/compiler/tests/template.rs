@@ -86,6 +86,88 @@ fn compiler_template_string_skips_to_string_for_string_parts() {
 }
 
 #[test]
+fn compiler_template_string_assignment_writes_directly_to_destination() {
+    let function = compile_source(
+        r#"
+        let bucket = 7;
+        let key = "b${bucket}";
+        return key;
+        "#,
+    )
+    .expect("compile source");
+
+    let concat = function
+        .code
+        .iter()
+        .find(|instr| instr.opcode() == Opcode::ConcatString)
+        .expect("ConcatString");
+    let ret = function
+        .code
+        .iter()
+        .find(|instr| instr.opcode() == Opcode::Return1)
+        .expect("Return1");
+
+    assert_eq!(
+        concat.a(),
+        ret.a(),
+        "template assignment should write directly to the returned local: {:?}",
+        function.code
+    );
+    assert!(
+        !function
+            .code
+            .windows(2)
+            .any(|window| window[0].opcode() == Opcode::ConcatString
+                && window[1].opcode() == Opcode::Move
+                && window[0].a() == window[1].b()),
+        "template key assignment should not move the ConcatString result into its destination: {:?}",
+        function.code
+    );
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(returned_string(&result), "b7");
+}
+
+#[test]
+fn compiler_lowers_template_string_int_map_set_without_key_materialization() {
+    let function = compile_source(
+        r#"
+        let values = {};
+        let bucket = 7;
+        values.set("n${bucket}", 40);
+        return values["n7"];
+        "#,
+    )
+    .expect("compile source");
+
+    assert_eq!(opcode_count(&function, Opcode::SetIndexStrI), 1);
+    assert_eq!(opcode_count(&function, Opcode::ConcatString), 0);
+    assert_eq!(opcode_count(&function, Opcode::ConcatN), 0);
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(40)]);
+}
+
+#[test]
+fn compiler_keeps_dynamic_template_map_key_when_suffix_is_not_int() {
+    let function = compile_source(
+        r#"
+        let values = {};
+        let suffix = "x";
+        values.set("n${suffix}", 40);
+        return values["nx"];
+        "#,
+    )
+    .expect("compile source");
+
+    assert_eq!(opcode_count(&function, Opcode::SetIndexStrI), 0);
+    assert_eq!(opcode_count(&function, Opcode::ConcatString), 1);
+
+    let result = execute(&function).expect("execute");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(40)]);
+}
+
+#[test]
 fn compiler_template_string_uses_concat_n_for_three_or_more_parts() {
     let function = compile_source(
         r#"

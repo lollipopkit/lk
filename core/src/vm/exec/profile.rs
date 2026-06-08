@@ -1,3 +1,4 @@
+use crate::val::RuntimeVal;
 use crate::vm::analysis::{
     PerfIndexFact, PerfIndexTargetKind, VM_INDEX_KEY_METRIC_COUNT, VmContainerMetric, VmIndexKeyMetric,
     VmRegisterWriteSource,
@@ -26,6 +27,24 @@ pub(in crate::vm::exec) fn record_index_key_metric(
     if let Some(metrics) = metrics {
         metrics[metric.index()] += 1;
     }
+}
+
+#[inline]
+pub(in crate::vm::exec) fn record_dynamic_index_key_metric(
+    metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
+    key: &RuntimeVal,
+) {
+    let Some(metrics) = metrics else {
+        return;
+    };
+    metrics[VmIndexKeyMetric::DynamicRegisterKey.index()] += 1;
+    let metric = match key {
+        RuntimeVal::Int(_) => VmIndexKeyMetric::DynamicIntKey,
+        RuntimeVal::ShortStr(_) => VmIndexKeyMetric::DynamicShortStringKey,
+        RuntimeVal::Obj(_) => VmIndexKeyMetric::DynamicObjectKey,
+        RuntimeVal::Nil | RuntimeVal::Bool(_) | RuntimeVal::Float(_) => VmIndexKeyMetric::DynamicOtherKey,
+    };
+    metrics[metric.index()] += 1;
 }
 
 #[cfg(any(test, feature = "vm-profile"))]

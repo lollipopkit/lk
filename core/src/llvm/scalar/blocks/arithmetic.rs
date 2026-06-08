@@ -8,7 +8,10 @@ use crate::{
                 three_regs_in_bounds,
             },
             contains::{local_static_heap_const_before, text_value_from_trusted_reg},
-            emit::{emit_i64_add_mul_block, emit_i64_binary_block, emit_i64_immediate_block},
+            emit::{
+                emit_i64_add_mul_block, emit_i64_add2_block, emit_i64_binary_block, emit_i64_immediate_block,
+                emit_i64_mid_block,
+            },
             facts::{NativeScalarFacts, NativeScalarKind},
         },
         straightline_value::{NativeStraightlineValue, native_static_i64_binary},
@@ -33,8 +36,17 @@ pub(super) fn emit_int_arithmetic_block(
         return false;
     }
     static_regs[instr.a() as usize] = None;
-    if instr.opcode() == Opcode::AddMulInt {
-        emit_i64_add_mul_block(ir, instr, tmp_index);
+    if matches!(instr.opcode(), Opcode::AddMulInt | Opcode::Add2Int) {
+        if instr.opcode() == Opcode::AddMulInt {
+            emit_i64_add_mul_block(ir, instr, tmp_index);
+        } else {
+            emit_i64_add2_block(ir, instr, tmp_index);
+        }
+        emit_branch_to_next(ir, pc, code.len());
+        return true;
+    }
+    if instr.opcode() == Opcode::MidInt {
+        emit_i64_mid_block(ir, instr, tmp_index);
         emit_branch_to_next(ir, pc, code.len());
         return true;
     }

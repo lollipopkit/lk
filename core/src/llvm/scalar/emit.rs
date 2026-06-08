@@ -52,6 +52,34 @@ pub(in crate::llvm) fn emit_i64_add_mul_block(ir: &mut String, instr: Instr, tmp
     ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
 }
 
+pub(in crate::llvm) fn emit_i64_add2_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
+    let acc = next_tmp(tmp_index);
+    let first = next_tmp(tmp_index);
+    let second = next_tmp(tmp_index);
+    let partial = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {acc} = load i64, ptr %r{}.slot\n", instr.a()));
+    ir.push_str(&format!("  {first} = load i64, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {second} = load i64, ptr %r{}.slot\n", instr.c()));
+    ir.push_str(&format!("  {partial} = add i64 {acc}, {first}\n"));
+    ir.push_str(&format!("  {out} = add i64 {partial}, {second}\n"));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+    ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
+}
+
+pub(in crate::llvm) fn emit_i64_mid_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
+    let lhs = next_tmp(tmp_index);
+    let rhs = next_tmp(tmp_index);
+    let sum = next_tmp(tmp_index);
+    let out = next_tmp(tmp_index);
+    ir.push_str(&format!("  {lhs} = load i64, ptr %r{}.slot\n", instr.b()));
+    ir.push_str(&format!("  {rhs} = load i64, ptr %r{}.slot\n", instr.c()));
+    ir.push_str(&format!("  {sum} = add i64 {lhs}, {rhs}\n"));
+    ir.push_str(&format!("  {out} = sdiv i64 {sum}, 2\n"));
+    ir.push_str(&format!("  store i64 {out}, ptr %r{}.slot\n", instr.a()));
+    ir.push_str(&format!("  store i64 1, ptr %r{}.present.slot\n", instr.a()));
+}
+
 pub(in crate::llvm) fn emit_i64_immediate_block(ir: &mut String, instr: Instr, tmp_index: &mut usize) {
     let lhs = next_tmp(tmp_index);
     let out = next_tmp(tmp_index);

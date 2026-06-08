@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     expr::Expr,
+    operator::BinOp,
     val::{LiteralVal, ShortStr},
     vm::analysis::PerfValueKind,
 };
@@ -83,6 +84,9 @@ impl Compiler {
                 if self.is_external_module_call(callee, args, "math", "floor", 1)
                     && math_floor_arg_is_int_like(&args[0], &self.locals, &self.function.performance) =>
             {
+                if self.try_lower_int_midpoint_to_register(dst, &args[0])? {
+                    return Ok(true);
+                }
                 self.try_lower_expr_to_register(dst, &args[0])
             }
             Expr::CallExpr(callee, args) if self.is_external_module_call(callee, args, "map", "get", 2) => {
@@ -93,8 +97,33 @@ impl Compiler {
                 self.lower_access_to_register(dst, target, key)?;
                 Ok(true)
             }
+            Expr::TemplateString(parts) => {
+                self.lower_template_string_to_register(dst, parts)?;
+                Ok(true)
+            }
             _ => Ok(false),
         }
+    }
+
+    pub(super) fn try_lower_int_midpoint_to_register(&mut self, dst: u16, expr: &Expr) -> Result<bool> {
+        let Some((lhs_expr, rhs_expr)) = int_midpoint_terms(expr, &self.locals, &self.function.performance) else {
+            return Ok(false);
+        };
+        let lhs = self.lower_readonly_operand(lhs_expr)?;
+        let rhs = self.lower_readonly_operand(rhs_expr)?;
+        if self.function.performance.value_kind(lhs) != PerfValueKind::Int
+            || self.function.performance.value_kind(rhs) != PerfValueKind::Int
+        {
+            return Ok(false);
+        }
+        self.emit(Instr::abc(
+            Opcode::MidInt,
+            checked_u8("midpoint dst", dst)?,
+            checked_u8("midpoint lhs", lhs)?,
+            checked_u8("midpoint rhs", rhs)?,
+        ));
+        self.set_register_kind(dst, PerfValueKind::Int);
+        Ok(true)
     }
 
     pub(super) fn lower_expr_to_register(&mut self, dst: u16, expr: &Expr, context: &str) -> Result<()> {
@@ -205,5 +234,30 @@ fn math_floor_arg_is_int_like(
             math_floor_arg_is_int_like(lhs, locals, facts) && math_floor_arg_is_int_like(rhs, locals, facts)
         }
         _ => false,
+    }
+}
+
+fn int_midpoint_terms<'a>(
+    expr: &'a Expr,
+    locals: &std::collections::HashMap<String, u16>,
+    facts: &crate::vm::analysis::PerformanceFacts,
+) -> Option<(&'a Expr, &'a Expr)> {
+    let Expr::Bin(numerator, BinOp::Div, divisor) = strip_parens(expr) else {
+        return None;
+    };
+    if !matches!(strip_parens(divisor), Expr::Literal(LiteralVal::Int(2))) {
+        return None;
+    }
+    let Expr::Bin(lhs, BinOp::Add, rhs) = strip_parens(numerator) else {
+        return None;
+    };
+    (math_floor_arg_is_int_like(lhs, locals, facts) && math_floor_arg_is_int_like(rhs, locals, facts))
+        .then_some((strip_parens(lhs), strip_parens(rhs)))
+}
+
+fn strip_parens(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner) => strip_parens(inner),
+        other => other,
     }
 }

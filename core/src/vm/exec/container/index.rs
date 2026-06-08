@@ -2,10 +2,13 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::val::{HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, TypedList, TypedMap};
+use crate::val::{HeapValue, RuntimeMapKey, RuntimeVal, ShortStr, ShortStrOrStr, TypedList, TypedMap};
 use crate::vm::analysis::{PerfIndexFact, PerfIndexTargetKind, VM_INDEX_KEY_METRIC_COUNT, VmIndexKeyMetric};
 
-use super::{Executor, IndexTargetKind, heap_kind, record_index_key_metric, runtime_map_key_from_str};
+use super::{
+    Executor, IndexTargetKind, heap_kind, record_dynamic_index_key_metric, record_index_key_metric,
+    runtime_map_key_from_str,
+};
 
 impl Executor {
     #[inline(always)]
@@ -29,6 +32,54 @@ impl Executor {
             *index as usize
         };
         Ok(self.get_typed_list_element(list, index))
+    }
+
+    #[inline(always)]
+    pub(in crate::vm::exec) fn get_string_int_map_index(
+        &mut self,
+        target_reg: u8,
+        suffix_reg: u8,
+        prefix: &str,
+        index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
+    ) -> Result<RuntimeVal> {
+        let RuntimeVal::Obj(handle) = self.read_unchecked(target_reg) else {
+            bail!("GetIndexStrI target expected Obj");
+        };
+        let RuntimeVal::Int(suffix) = self.read_unchecked(suffix_reg) else {
+            bail!("GetIndexStrI suffix must be Int");
+        };
+        self.get_string_int_map_handle(*handle, prefix, *suffix, index_key_metrics)
+    }
+
+    #[inline(always)]
+    fn get_string_int_map_handle(
+        &mut self,
+        handle: crate::val::HeapRef,
+        prefix: &str,
+        suffix: i64,
+        mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
+    ) -> Result<RuntimeVal> {
+        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
+        record_index_key_metric(
+            index_key_metrics.as_deref_mut(),
+            VmIndexKeyMetric::DynamicShortStringKey,
+        );
+        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
+        match self.state.heap.get(handle) {
+            Some(HeapValue::Map(map)) => with_string_int_key(prefix, suffix, |key| {
+                if let Some(value) = get_string_map_direct(map, key) {
+                    record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
+                    return Ok(value);
+                }
+                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::GenericMapLookup);
+                Ok(map.get_str(key).unwrap_or(RuntimeVal::Nil))
+            })?,
+            Some(other) => bail!(
+                "GetIndexStrI target object changed while indexing: {:?}",
+                heap_kind(other)
+            ),
+            None => bail!("heap object {} out of bounds", handle.index()),
+        }
     }
 
     #[inline(always)]
@@ -81,6 +132,32 @@ impl Executor {
                 .map(RuntimeVal::Int)
                 .unwrap_or(RuntimeVal::Nil),
         )
+    }
+
+    #[inline(always)]
+    pub(in crate::vm::exec) fn read_known_int_list_index(&self, target_reg: u8, key_reg: u8) -> Result<i64> {
+        let RuntimeVal::Obj(handle) = self.read_unchecked(target_reg) else {
+            bail!("AddListInt/SubListInt target expected Obj");
+        };
+        let RuntimeVal::Int(index) = self.read_unchecked(key_reg) else {
+            bail!("AddListInt/SubListInt key must be Int");
+        };
+        let Some(HeapValue::List(TypedList::Int(values))) = self.state.heap.get(*handle) else {
+            bail!("AddListInt/SubListInt target object changed while reading int list");
+        };
+        let index = if *index < 0 {
+            let index = values.len() as i64 + *index;
+            if index < 0 {
+                bail!("AddListInt/SubListInt list index out of bounds");
+            }
+            index as usize
+        } else {
+            *index as usize
+        };
+        values
+            .get(index)
+            .copied()
+            .ok_or_else(|| anyhow!("AddListInt/SubListInt list index out of bounds"))
     }
 
     #[inline(always)]
@@ -155,7 +232,6 @@ impl Executor {
                         return Ok(map.get_str(key_str).unwrap_or(RuntimeVal::Nil));
                     }
                 } else {
-                    record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
                     // Dynamic key from register: avoid RuntimeMapKey construction
                     return self.get_map_index_fast(handle, key_reg, index_key_metrics);
                 }
@@ -240,6 +316,7 @@ impl Executor {
         mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
     ) -> Result<RuntimeVal> {
         let key_val = self.read_unchecked(key_reg);
+        record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), key_val);
         match &key_val {
             RuntimeVal::ShortStr(short) => {
                 let key_str = short.as_str();
@@ -342,7 +419,7 @@ impl Executor {
                         runtime_map_key_from_str(key_str)
                     }
                     None => {
-                        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
+                        record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?);
                         record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
                         self.map_key_from_register(key_reg)?
                     }
@@ -357,7 +434,7 @@ impl Executor {
                         Arc::<str>::from(key_str)
                     }
                     None => {
-                        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
+                        record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?);
                         record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::ObjectKey);
                         self.object_key_from_register(key_reg)?
                     }
@@ -461,6 +538,18 @@ fn get_string_map_direct(map: &TypedMap, key: &str) -> Option<RuntimeVal> {
                 .unwrap_or(RuntimeVal::Nil),
         ),
     }
+}
+
+#[inline(always)]
+pub(in crate::vm::exec) fn with_string_int_key<R>(prefix: &str, suffix: i64, f: impl FnOnce(&str) -> R) -> Result<R> {
+    let Some(prefix) = ShortStr::new(prefix) else {
+        let key = format!("{prefix}{suffix}");
+        return Ok(f(&key));
+    };
+    Ok(match prefix.concat_int(suffix) {
+        ShortStrOrStr::Short(key) => f(key.as_str()),
+        ShortStrOrStr::Str(key) => f(&key),
+    })
 }
 
 #[cfg(test)]

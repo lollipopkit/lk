@@ -568,7 +568,7 @@ pub struct VmRuntimeMetrics {
 
 pub const VM_OPCODE_COUNT: usize = 128;
 pub const VM_REGISTER_WRITE_SOURCE_COUNT: usize = 10;
-pub const VM_INDEX_KEY_METRIC_COUNT: usize = 8;
+pub const VM_INDEX_KEY_METRIC_COUNT: usize = 12;
 pub const VM_REGISTER_WRITE_SOURCE_NAMES: [&str; VM_REGISTER_WRITE_SOURCE_COUNT] = [
     "move",
     "const_load",
@@ -584,6 +584,10 @@ pub const VM_REGISTER_WRITE_SOURCE_NAMES: [&str; VM_REGISTER_WRITE_SOURCE_COUNT]
 pub const VM_INDEX_KEY_METRIC_NAMES: [&str; VM_INDEX_KEY_METRIC_COUNT] = [
     "known_string_key",
     "dynamic_register_key",
+    "dynamic_int_key",
+    "dynamic_short_string_key",
+    "dynamic_object_key",
+    "dynamic_other_key",
     "runtime_map_key",
     "direct_string_key",
     "typed_map_direct",
@@ -596,6 +600,10 @@ pub const VM_INDEX_KEY_METRIC_NAMES: [&str; VM_INDEX_KEY_METRIC_COUNT] = [
 pub(crate) enum VmIndexKeyMetric {
     KnownStringKey,
     DynamicRegisterKey,
+    DynamicIntKey,
+    DynamicShortStringKey,
+    DynamicObjectKey,
+    DynamicOtherKey,
     RuntimeMapKey,
     DirectStringKey,
     TypedMapDirect,
@@ -610,12 +618,16 @@ impl VmIndexKeyMetric {
         match self {
             Self::KnownStringKey => 0,
             Self::DynamicRegisterKey => 1,
-            Self::RuntimeMapKey => 2,
-            Self::DirectStringKey => 3,
-            Self::TypedMapDirect => 4,
-            Self::GenericMapLookup => 5,
-            Self::ObjectKey => 6,
-            Self::SlowPath => 7,
+            Self::DynamicIntKey => 2,
+            Self::DynamicShortStringKey => 3,
+            Self::DynamicObjectKey => 4,
+            Self::DynamicOtherKey => 5,
+            Self::RuntimeMapKey => 6,
+            Self::DirectStringKey => 7,
+            Self::TypedMapDirect => 8,
+            Self::GenericMapLookup => 9,
+            Self::ObjectKey => 10,
+            Self::SlowPath => 11,
         }
     }
 }

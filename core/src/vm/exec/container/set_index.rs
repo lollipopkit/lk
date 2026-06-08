@@ -7,7 +7,10 @@ use crate::vm::analysis::{
     PerfIndexFact, PerfIndexTargetKind, PerfValueKind, VM_INDEX_KEY_METRIC_COUNT, VmIndexKeyMetric,
 };
 
-use super::{Executor, heap_kind, record_index_key_metric, runtime_map_key_from_str, set_list_value};
+use super::{
+    Executor, heap_kind, record_dynamic_index_key_metric, record_index_key_metric, runtime_map_key_from_str,
+    set_list_value, with_string_int_key,
+};
 
 /// A small, stack-allocated key representation that avoids String allocation
 /// for ShortStr keys (which are ≤7 bytes).
@@ -122,7 +125,10 @@ impl Executor {
                 runtime_map_key_from_str(key_str)
             }
             None => {
-                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
+                match moved_key.as_ref() {
+                    Some(key) => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), key),
+                    None => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?),
+                }
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
                 self.map_key_from_register_or_value(key_reg, moved_key)?
             }
@@ -153,6 +159,63 @@ impl Executor {
             other => bail!("SetIndex target object changed while writing: {:?}", heap_kind(other)),
         }?;
         self.maybe_bump_shape(handle, has_static_fact);
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(in crate::vm::exec) fn set_string_int_map_index(
+        &mut self,
+        target_reg: u8,
+        suffix_reg: u8,
+        value_reg: u8,
+        prefix: &str,
+        move_value: bool,
+        known_value_kind: Option<PerfValueKind>,
+        mut index_key_metrics: Option<&mut [u64; VM_INDEX_KEY_METRIC_COUNT]>,
+    ) -> Result<()> {
+        let RuntimeVal::Obj(handle) = self.read(target_reg)? else {
+            bail!("SetIndexStrI target expected Obj");
+        };
+        let handle = *handle;
+        let RuntimeVal::Int(suffix) = self.read(suffix_reg)? else {
+            bail!("SetIndexStrI suffix must be Int");
+        };
+        let suffix = *suffix;
+        let value = if move_value {
+            self.take(value_reg)?
+        } else {
+            self.read(value_reg)?.clone()
+        };
+        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
+        record_index_key_metric(
+            index_key_metrics.as_deref_mut(),
+            VmIndexKeyMetric::DynamicShortStringKey,
+        );
+        record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
+        with_string_int_key(prefix, suffix, |key| {
+            if self.try_set_typed_string_map(handle, key, &value, known_value_kind)? {
+                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
+                return Ok(());
+            }
+            record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::GenericMapLookup);
+            let key = runtime_map_key_from_str(key);
+            match self
+                .state
+                .heap
+                .get_mut(handle)
+                .ok_or_else(|| anyhow!("heap object {} out of bounds", handle.index()))?
+            {
+                HeapValue::Map(map) => {
+                    map.set(key, value);
+                    Ok(())
+                }
+                other => bail!(
+                    "SetIndexStrI target object changed while writing map: {:?}",
+                    heap_kind(other)
+                ),
+            }
+        })??;
+        self.maybe_bump_shape(handle, true);
         Ok(())
     }
 
@@ -299,6 +362,10 @@ impl Executor {
             };
             if let Some(key_str) = small_key.as_str() {
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
+                record_index_key_metric(
+                    index_key_metrics.as_deref_mut(),
+                    VmIndexKeyMetric::DynamicShortStringKey,
+                );
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DirectStringKey);
                 if self.try_set_typed_string_map(handle, key_str, &value, known_value_kind)? {
                     record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::TypedMapDirect);
@@ -314,7 +381,10 @@ impl Executor {
                 runtime_map_key_from_str(key_str)
             }
             None => {
-                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
+                match moved_key.as_ref() {
+                    Some(key) => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), key),
+                    None => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?),
+                }
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::RuntimeMapKey);
                 self.map_key_from_register_or_value(key_reg, moved_key)?
             }

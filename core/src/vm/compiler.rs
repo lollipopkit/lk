@@ -42,7 +42,8 @@ use crate::{
 
 use super::{ConstHeapValue, ConstRuntimeValue, Function, GlobalSlot, Instr, Module, NativeEntry, Opcode};
 use crate::vm::analysis::{
-    PerfCallTargetKind, PerfContainerBuildFact, PerfGlobalFact, PerfRegisterFact, PerfValueKind,
+    PerfCallTargetKind, PerfContainerBuildFact, PerfGlobalFact, PerfKeyFact, PerfRegisterFact, PerfStringIntKeyFact,
+    PerfValueKind,
 };
 use facts::*;
 use for_value_usage::{stmt_shadows_name_deep, stmt_uses_for_binding_value};
@@ -468,6 +469,21 @@ impl Compiler {
     pub(super) fn lower_access_to_register(&mut self, dst: u16, target: &Expr, key: &Expr) -> Result<()> {
         let target = self.lower_readonly_access_target(target)?;
         let index_fact = index_fact_from_target(&self.function.performance, target);
+        if let Some((suffix, key_fact)) = self.try_lower_string_int_key_for_map(index_fact, key)? {
+            let pc = self.function.code.len();
+            self.emit(Instr::abc(
+                Opcode::GetIndexStrI,
+                checked_u8("string-int index dst", dst)?,
+                checked_u8("string-int index target", target)?,
+                checked_u8("string-int index suffix", suffix)?,
+            ));
+            self.function.performance.set_key_fact(pc, key_fact);
+            self.function.performance.clear_register(dst);
+            if let Some(fact) = index_fact {
+                self.function.performance.set_index_fact(pc, fact);
+            }
+            return Ok(());
+        }
         let (key, key_fact) = self.lower_index_key_for_target(target, index_fact, key)?;
         let pc = self.function.code.len();
         if list_int_key(index_fact, &self.function.performance, key) {
@@ -538,6 +554,37 @@ impl Compiler {
             return Ok((dst, key_fact));
         }
         Ok((self.lower_readonly_operand(key)?, None))
+    }
+
+    pub(super) fn try_lower_string_int_key_for_map(
+        &mut self,
+        index_fact: Option<crate::vm::analysis::PerfIndexFact>,
+        key: &Expr,
+    ) -> Result<Option<(u16, PerfKeyFact)>> {
+        if !index_fact.is_some_and(|fact| fact.target_kind == crate::vm::analysis::PerfIndexTargetKind::Map) {
+            return Ok(None);
+        }
+        let Some((prefix, suffix_expr)) = string_int_template_key(key) else {
+            return Ok(None);
+        };
+        if !string_int_key_suffix_is_int_like(suffix_expr, &self.locals, &self.function.performance) {
+            return Ok(None);
+        }
+        let suffix = self.lower_readonly_operand(suffix_expr)?;
+        if self.function.performance.value_kind(suffix) != PerfValueKind::Int {
+            return Ok(None);
+        }
+        let prefix_key = self.push_string(prefix)?;
+        Ok(Some((
+            suffix,
+            PerfKeyFact {
+                const_key: None,
+                string_int: Some(PerfStringIntKeyFact {
+                    prefix_key,
+                    suffix_reg: suffix,
+                }),
+            },
+        )))
     }
 
     fn lower_optional_access(&mut self, target: &Expr, key: &Expr) -> Result<u16> {
@@ -898,6 +945,61 @@ impl Compiler {
             acc = Some(dst);
         }
         acc.map_or_else(|| self.lower_val(&LiteralVal::from_str("")), Ok)
+    }
+
+    pub(super) fn lower_template_string_to_register(&mut self, dst: u16, parts: &[TemplateStringPart]) -> Result<()> {
+        let parts = parts
+            .iter()
+            .filter(|part| !matches!(part, TemplateStringPart::Literal(value) if value.is_empty()))
+            .collect::<Vec<_>>();
+        if parts.is_empty() {
+            self.emit_literal_to_register(dst, &LiteralVal::from_str(""))?;
+            return Ok(());
+        }
+        let force_single_expr_string = parts.len() == 1;
+
+        if parts.len() == 1 {
+            self.lower_template_string_part_to_register(dst, parts[0], force_single_expr_string)?;
+            self.set_register_kind(dst, PerfValueKind::String);
+            return Ok(());
+        }
+
+        if parts.len() >= 3 && parts.len() <= 255 {
+            let start_reg = self.alloc_reg();
+            for _ in 1..parts.len() {
+                self.alloc_reg();
+            }
+            for (index, part) in parts.iter().enumerate() {
+                self.lower_template_string_part_to_register(start_reg + index as u16, part, force_single_expr_string)?;
+            }
+            self.emit(Instr::abc(
+                Opcode::ConcatN,
+                checked_u8("template concatn dst", dst)?,
+                checked_u8("template concatn start", start_reg)?,
+                checked_u8("template concatn count", parts.len() as u16)?,
+            ));
+            self.set_register_kind(dst, PerfValueKind::String);
+            return Ok(());
+        }
+
+        let mut acc = self.lower_template_string_part(parts[0], force_single_expr_string)?;
+        for (index, part) in parts.iter().enumerate().skip(1) {
+            let part_reg = self.lower_template_string_part(part, force_single_expr_string)?;
+            let concat_dst = if index == parts.len() - 1 {
+                dst
+            } else {
+                self.alloc_reg()
+            };
+            self.emit(Instr::abc(
+                Opcode::ConcatString,
+                checked_u8("template concat dst", concat_dst)?,
+                checked_u8("template concat lhs", acc)?,
+                checked_u8("template concat rhs", part_reg)?,
+            ));
+            self.set_register_kind(concat_dst, PerfValueKind::String);
+            acc = concat_dst;
+        }
+        Ok(())
     }
 
     fn lower_template_string_part(&mut self, part: &TemplateStringPart, force_expr_string: bool) -> Result<u16> {
@@ -1948,6 +2050,48 @@ fn get_field_key(
     }
     let key = key_fact?.const_key?;
     (key <= u8::MAX as u16).then_some(key)
+}
+
+fn string_int_template_key(expr: &Expr) -> Option<(&str, &Expr)> {
+    let Expr::TemplateString(parts) = strip_expr_parens(expr) else {
+        return None;
+    };
+    let parts = parts
+        .iter()
+        .filter(|part| !matches!(part, TemplateStringPart::Literal(value) if value.is_empty()))
+        .collect::<Vec<_>>();
+    match parts.as_slice() {
+        [TemplateStringPart::Expr(expr)] => Some(("", strip_expr_parens(expr))),
+        [TemplateStringPart::Literal(prefix), TemplateStringPart::Expr(expr)] => {
+            Some((prefix.as_str(), strip_expr_parens(expr)))
+        }
+        _ => None,
+    }
+}
+
+fn string_int_key_suffix_is_int_like(
+    expr: &Expr,
+    locals: &std::collections::HashMap<String, u16>,
+    facts: &crate::vm::analysis::PerformanceFacts,
+) -> bool {
+    match strip_expr_parens(expr) {
+        Expr::Literal(LiteralVal::Int(_)) => true,
+        Expr::Var(name) => locals
+            .get(name)
+            .is_some_and(|reg| facts.value_kind(*reg) == PerfValueKind::Int),
+        Expr::Bin(lhs, op, rhs) if op.is_arith() => {
+            string_int_key_suffix_is_int_like(lhs, locals, facts)
+                && string_int_key_suffix_is_int_like(rhs, locals, facts)
+        }
+        _ => false,
+    }
+}
+
+fn strip_expr_parens(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner) => strip_expr_parens(inner),
+        other => other,
+    }
 }
 
 fn list_int_key(

@@ -60,6 +60,10 @@ impl Compiler {
     }
 
     pub(super) fn lower_compound_assign(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<()> {
+        if self.try_lower_list_int_accumulator(name, op, value)? {
+            self.clear_const_map_local(name);
+            return Ok(());
+        }
         if self.try_lower_int_immediate_compound_assign(name, op, value)? {
             self.clear_const_map_local(name);
             return Ok(());
@@ -112,6 +116,58 @@ impl Compiler {
         Ok(())
     }
 
+    fn try_lower_list_int_accumulator(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<bool> {
+        if !matches!(op, BinOp::Add | BinOp::Sub) || self.cell_locals.contains(name) {
+            return Ok(false);
+        }
+        let Some(acc) = self.locals.get(name).copied() else {
+            return Ok(false);
+        };
+        if self.function.performance.value_kind(acc) != PerfValueKind::Int
+            || self.local_slot_is_shared(acc)
+            || self.is_loop_cached_literal_register(acc)
+        {
+            return Ok(false);
+        }
+        let Expr::Access(target_expr, key_expr) = strip_parens(value) else {
+            return Ok(false);
+        };
+        let Expr::Var(target_name) = strip_parens(target_expr) else {
+            return Ok(false);
+        };
+        if self.cell_locals.contains(target_name) {
+            return Ok(false);
+        }
+        let Some(target) = self.locals.get(target_name).copied() else {
+            return Ok(false);
+        };
+        let Some(index_fact) = index_fact_from_target(&self.function.performance, target) else {
+            return Ok(false);
+        };
+        if index_fact.target_kind != PerfIndexTargetKind::List || index_fact.value_kind != PerfValueKind::Int {
+            return Ok(false);
+        }
+        if !additive_expr_is_int_like(key_expr, &self.locals, &self.function.performance) {
+            return Ok(false);
+        }
+        let key = self.lower_readonly_operand(key_expr)?;
+        if self.function.performance.value_kind(key) != PerfValueKind::Int {
+            bail!("compiler expected List<Int> accumulator key to lower as Int");
+        }
+        self.emit(Instr::abc(
+            if matches!(op, BinOp::Add) {
+                Opcode::AddListInt
+            } else {
+                Opcode::SubListInt
+            },
+            checked_u8("list accumulator", acc)?,
+            checked_u8("list accumulator target", target)?,
+            checked_u8("list accumulator key", key)?,
+        ));
+        self.set_register_kind(acc, PerfValueKind::Int);
+        Ok(true)
+    }
+
     fn try_lower_int_immediate_compound_assign(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<bool> {
         let Some(immediate) = int_immediate_operand(op, value) else {
             return Ok(false);
@@ -154,13 +210,21 @@ impl Compiler {
         }
         let dst = lhs;
         let mut acc = lhs;
-        for term in terms {
+        let mut index = 0;
+        while index < terms.len() {
+            let term = terms[index];
             if acc == dst && self.try_emit_add_mul_term(dst, term)? {
+                index += 1;
+                continue;
+            }
+            if acc == dst && index + 1 < terms.len() && self.try_emit_add2_terms(dst, term, terms[index + 1])? {
+                index += 2;
                 continue;
             }
             let term = self.lower_additive_term_operand(term)?;
             self.emit_bin_op_to_register_with_flavor(dst, &BinOp::Add, acc, term, NumericFlavor::Int)?;
             acc = dst;
+            index += 1;
         }
         Ok(true)
     }
@@ -181,13 +245,21 @@ impl Compiler {
 
         let dst = self.emit_get_global(slot)?;
         let mut acc = dst;
-        for term in terms {
+        let mut index = 0;
+        while index < terms.len() {
+            let term = terms[index];
             if acc == dst && self.try_emit_add_mul_term(dst, term)? {
+                index += 1;
+                continue;
+            }
+            if acc == dst && index + 1 < terms.len() && self.try_emit_add2_terms(dst, term, terms[index + 1])? {
+                index += 2;
                 continue;
             }
             let term = self.lower_additive_term_operand(term)?;
             self.emit_bin_op_to_register_with_flavor(dst, &BinOp::Add, acc, term, NumericFlavor::Int)?;
             acc = dst;
+            index += 1;
         }
         self.emit_set_global_with_policy(dst, slot, true)?;
         Ok(true)
@@ -216,6 +288,24 @@ impl Compiler {
             checked_u8("add-mul accumulator", acc)?,
             checked_u8("add-mul lhs", lhs)?,
             checked_u8("add-mul rhs", rhs)?,
+        ));
+        self.set_register_kind(acc, PerfValueKind::Int);
+        Ok(true)
+    }
+
+    fn try_emit_add2_terms(&mut self, acc: u16, first: &Expr, second: &Expr) -> Result<bool> {
+        if matches!(strip_parens(first), Expr::Bin(_, BinOp::Mul, _))
+            || matches!(strip_parens(second), Expr::Bin(_, BinOp::Mul, _))
+        {
+            return Ok(false);
+        }
+        let first = self.lower_additive_term_operand(first)?;
+        let second = self.lower_additive_term_operand(second)?;
+        self.emit(Instr::abc(
+            Opcode::Add2Int,
+            checked_u8("add2 accumulator", acc)?,
+            checked_u8("add2 first term", first)?,
+            checked_u8("add2 second term", second)?,
         ));
         self.set_register_kind(acc, PerfValueKind::Int);
         Ok(true)

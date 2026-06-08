@@ -101,6 +101,21 @@ impl Compiler {
         }
         let target = self.lower_readonly_index_operand(&args[0])?;
         let index_fact = index_fact_from_target(&self.function.performance, target);
+        if let Some((suffix, key_fact)) = self.try_lower_string_int_key_for_map(index_fact, &args[1])? {
+            let pc = self.function.code.len();
+            self.emit(Instr::abc(
+                Opcode::GetIndexStrI,
+                checked_u8("map.get string-int dst", dst)?,
+                checked_u8("map.get string-int target", target)?,
+                checked_u8("map.get string-int suffix", suffix)?,
+            ));
+            self.function.performance.set_key_fact(pc, key_fact);
+            self.function.performance.clear_register(dst);
+            if let Some(fact) = index_fact {
+                self.function.performance.set_index_fact(pc, fact);
+            }
+            return Ok(());
+        }
         let (key, key_fact) = self.lower_readonly_index_key_for_target(target, index_fact, &args[1])?;
         let pc = self.function.code.len();
         if let Some(const_key) = get_field_key(index_fact, key_fact) {
@@ -132,6 +147,12 @@ impl Compiler {
         if args.len() != 1 {
             bail!("Compiler math.floor expects 1 arg, got {}", args.len());
         }
+        let watermark = self.next_reg;
+        let dst = self.alloc_reg();
+        if self.try_lower_int_midpoint_to_register(dst, &args[0])? {
+            return Ok(dst);
+        }
+        self.next_reg = watermark;
         let arg = self.lower_readonly_operand(&args[0])?;
         if self.function.performance.value_kind(arg) == PerfValueKind::Int {
             return Ok(arg);
@@ -301,6 +322,29 @@ impl Compiler {
         let target_reg = self.lower_mutable_method_receiver(target)?;
         let index_fact = index_fact_from_target(&self.function.performance, target_reg)
             .filter(|fact| fact.target_kind != PerfIndexTargetKind::String);
+        if let Some((suffix, key_fact)) = self.try_lower_string_int_key_for_map(index_fact, key)? {
+            let value_reg = self.lower_readonly_operand(value)?;
+            let move_value = !self.is_current_local_slot(value_reg);
+            let pc = self.function.code.len();
+            self.emit(Instr::abc(
+                Opcode::SetIndexStrI,
+                checked_u8("method set string-int target", target_reg)?,
+                checked_u8("method set string-int suffix", suffix)?,
+                checked_u8("method set string-int value", value_reg)?,
+            ));
+            self.function.performance.set_key_fact(pc, key_fact);
+            self.function.performance.set_container_move_fact(
+                pc,
+                PerfContainerMoveFact {
+                    move_key: false,
+                    move_value,
+                },
+            );
+            if let Some(fact) = index_fact {
+                self.function.performance.set_index_fact(pc, fact);
+            }
+            return Ok(());
+        }
         let (key_reg, key_fact) = self.lower_index_key_for_target(target_reg, index_fact, key)?;
         let value_reg = self.lower_readonly_operand(value)?;
         let move_key = set_method_key_move_preferred(key) && !self.is_current_local_slot(key_reg);

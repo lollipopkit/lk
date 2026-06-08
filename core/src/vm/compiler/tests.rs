@@ -715,11 +715,11 @@ fn compiler_lowers_int_math_floor_directly_into_destination() {
         Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("compile module");
     let function = module.entry_function().expect("entry function");
 
-    let div = function
+    let mid = function
         .code
         .iter()
-        .find(|instr| instr.opcode() == Opcode::DivInt)
-        .expect("expected int division for floor argument");
+        .find(|instr| instr.opcode() == Opcode::MidInt)
+        .expect("expected midpoint opcode for floor argument");
     let mid_return = function
         .code
         .iter()
@@ -727,9 +727,9 @@ fn compiler_lowers_int_math_floor_directly_into_destination() {
         .expect("expected single return");
 
     assert_eq!(
-        div.a(),
+        mid.a(),
         mid_return.a(),
-        "math.floor(Int) should write division directly into the destination local: {:?}",
+        "math.floor(Int midpoint) should write directly into the destination local: {:?}",
         function.code
     );
     assert!(
@@ -740,6 +740,37 @@ fn compiler_lowers_int_math_floor_directly_into_destination() {
         "math.floor(Int) should not emit DivInt followed by a destination Move: {:?}",
         function.code
     );
+    assert!(
+        !function.code.iter().any(|instr| instr.opcode() == Opcode::DivInt),
+        "midpoint floor should avoid AddInt + DivInt arithmetic chain: {:?}",
+        function.code
+    );
+}
+
+#[test]
+fn compiler_midpoint_floor_preserves_current_int_division_semantics() {
+    let program = parse_program(
+        r#"
+        let lo = -5;
+        let hi = 2;
+        return math.floor((lo + hi) / 2);
+        "#,
+    );
+    let module =
+        Compiler::compile_module_with_natives_and_globals(&program, Vec::new(), ["math"]).expect("compile module");
+    let function = module.entry_function().expect("entry function");
+
+    assert!(
+        function.code.iter().any(|instr| instr.opcode() == Opcode::MidInt),
+        "midpoint floor should lower to MidInt: {:?}",
+        function.code
+    );
+    let result = crate::vm::exec::execute_compiled_module_with_ctx(
+        std::sync::Arc::new(module),
+        &mut crate::vm::VmContext::new(),
+    )
+    .expect("execute module");
+    assert_eq!(result.returns, vec![crate::val::RuntimeVal::Int(-1)]);
 }
 
 #[test]

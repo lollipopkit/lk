@@ -263,7 +263,9 @@ pub(in crate::llvm) fn compile_native_scalar_main_blocks(
             | Opcode::ModInt
             | Opcode::MinInt
             | Opcode::MaxInt
-            | Opcode::AddMulInt => {
+            | Opcode::AddMulInt
+            | Opcode::Add2Int
+            | Opcode::MidInt => {
                 if !emit_int_arithmetic_block(
                     &mut ir,
                     code,

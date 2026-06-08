@@ -452,6 +452,7 @@ fn local_static_i64_expr_before(
             | Opcode::MulInt
             | Opcode::DivInt
             | Opcode::ModInt
+            | Opcode::MidInt
             | Opcode::MinInt
             | Opcode::MaxInt => {
                 let NativeStraightlineValue::I64(lhs) =

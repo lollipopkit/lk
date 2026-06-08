@@ -47,6 +47,7 @@
 ### 闭包
 - 仅表达式形式：`|a, b| a + b`。
 - 块形式：`|x| { let y = x + 1; y }`，最后一个表达式作为返回值。
+- 函数字面量形式：`fn(a: Int, b) => a + b`。
 - 闭包会捕获并可变更外层作用域变量。
 
 ### 范围（Range）
@@ -89,12 +90,13 @@
 
 ## 表达式
 - 字面量、列表、映射、变量、调用、属性/下标访问、闭包、范围、逻辑/比较、`??` 和 `?:`。
-- 并发表达式（功能开关 `concurrency`）：
+- 并发 helper（功能开关 `concurrency`）是普通函数调用：
   - `spawn(fn_or_closure)` → Task
   - `chan(capacity?, type?)` → Channel（type 为字符串如 `"Int"`）
   - `send(channel, value)` → Bool
   - `recv(channel)` → `[ok, value]`
-  - `select { case recv(c) => expr; case send(c, v) => expr; default => expr }`
+- `select` 是针对通道操作的专用表达式：
+  - `select { case recv(ch) => expr; case value <- recv(ch) if guard => expr; case send(ch, value) => expr; default => expr }`
 
 ### Match 表达式
 - `match value { pattern => expr, ... }`（允许 `,` 或 `;` 作为分隔）。返回匹配分支的值。见下文模式定义。
@@ -145,7 +147,7 @@
 - 字面量实例化：`User { id: 1, name: "Ann" }`
 - 实例化（调用糖）：`User(id: 1, name: "Ann")`
 - 访问：`user.name`
-- 更新语法：`User { ..existing, field: value }` —— 从 `existing` 复制全部字段并覆盖指定值。
+- 更新语法：`User { ..existing, field: value }` 或 `User { ..existing }` —— 从 `existing` 复制全部字段；提供字段时覆盖指定值。
 
 ### Trait 与 Impl
 - Trait 定义：`trait Area { fn area(self) -> Int; }`
@@ -158,9 +160,9 @@
 - 参数与返回类型可省略；若无 `return`，默认返回 `nil`。
 - 一等函数：函数值可传递、返回与调用。
 - 位置参数默认值：`fn greet(name, greeting = "hello") { ... }`，带默认值参数必须放在所有必填位置参数之后。
-- 命名参数放在可选尾部块中：`fn f(a, b, { flag: Bool = true, label: String }) { ... }`。
+- 命名参数放在可选尾部块中，且必须写类型标注：`fn f(a, b, { flag: Bool = true, label: String }) { ... }`。该块也可以是整个参数列表：`fn configure({host: String}) { ... }`。
 - 默认值延迟在被调端计算；表达式可以引用其他参数。
-- 调用时使用 `name: expr` 传入命名参数：`f(1, 2, label: "demo", flag: false)`。命名参数可任意顺序，但必须在位置参数之后。
+- 调用时使用 `name: expr` 传入命名参数：`f(1, 2, label: "demo", flag: false)` 或 `f(label: "demo")`。命名参数可任意顺序；一旦出现命名参数，其后不能再出现位置参数。
 
 ### 导入
 - 形式：
@@ -298,18 +300,30 @@ opt_dot     ::= '?.' field
 index       ::= '[' expr ']'
 opt_index   ::= '?[' expr ']'
 primary     ::= nil | false | true | int | float | string | template | list | map | var | paren
-             | closure | spawn | chan | send | recv | select | match | struct_lit
+             | closure | select | match | struct_lit
 closure     ::= '|' [id {',' id}] '|' expr
              | '|' [id {',' id}] '|' '{' statement* '}'
+             | 'fn' '(' [ param { ',' param } ] ')' '=>' expr
+select      ::= 'select' '{' { select_case | default_case | ';' } '}'
+select_case ::= 'case' select_pattern [ 'if' expr ] '=>' expr [ ';' ]
+default_case ::= 'default' '=>' expr [ ';' ]
+select_pattern ::= [ (id | '_') '<-' ] 'recv' '(' expr ')'
+                 | 'send' '(' expr ',' expr ')'
 template    ::= string_with_${...}
 field       ::= id | int | string
 list        ::= '[' [ (expr | '..' expr) { ',' (expr | '..' expr) } [ ',' ] ] ']'
-map         ::= '{' [ (id | string) ':' expr { ',' (id | string) ':' expr } [ ',' ] } '}'
+map         ::= '{' [ map_key ':' expr { ',' map_key ':' expr } [ ',' ] ] '}'
+map_key     ::= id | expr
 var         ::= identifier
 paren       ::= '(' expr ')'
-args        ::= [ expr { ',' expr } [ ',' name ':' expr { ',' name ':' expr } ] ]
-struct_lit  ::= id '{' [ '..' expr ',' ] id ':' expr { ',' id ':' expr } '}'
-             | id '{' '}'
+args        ::= [ positional_args [ ',' named_args ] | named_args ]
+positional_args ::= expr { ',' expr }
+named_args  ::= name ':' expr { ',' name ':' expr }
+struct_lit  ::= id '{' [ struct_update [ ',' struct_field_list [ ',' ] ]
+                       | struct_field_list [ ',' ] ] '}'
+struct_update ::= '..' expr
+struct_field_list ::= struct_field { ',' struct_field }
+struct_field ::= id ':' expr
 ```
 
 ### 语句
@@ -331,7 +345,7 @@ module_alias ::= module 'as' id
 if_stmt      ::= 'if' ( '(' expr ')' | expr ) statement [ 'else' statement ]
 if_let_stmt  ::= 'if' 'let' pattern '=' expr statement [ 'else' statement ]
 while_stmt   ::= 'while' ( '(' expr ')' | expr ) statement
-while_let_stmt ::= 'while' 'let' pattern = expr statement
+while_let_stmt ::= 'while' 'let' pattern '=' expr statement
 for_stmt     ::= 'for' for_pattern [ ',' for_pattern ]* 'in' expr statement
 
 let_stmt     ::= 'let' pattern [ ':' type ] '=' expr ';'
@@ -344,10 +358,13 @@ dot_assign_stmt    ::= expr '.' id ( '=' | '+=' | '-=' | '*=' | '/=' | '%=' ) ex
 return_stmt  ::= 'return' [ expr ] ';'
 break_stmt   ::= 'break' ';'
 continue_stmt ::= 'continue' ';'
-fn_stmt      ::= 'fn' id '(' [ param { ',' param } ] [ ',' '{' named_param { ',' named_param } '}' ] ')' [ '->' type ] block_stmt
-             | 'fn' id '(' [ param { ',' param } [ '=' expr ] { ',' param [ '=' expr ] } ] ')' [ '->' type ] block_stmt
+fn_stmt      ::= 'fn' id '(' [ fn_param_list ] ')' [ '->' type ] block_stmt
+fn_param_list ::= positional_param { ',' positional_param } [ ',' named_param_block ]
+                | named_param_block
+positional_param ::= id [ ':' type ] [ '=' expr ]
+named_param_block ::= '{' [ named_param { ',' named_param } [ ',' ] ] '}'
 param        ::= id [ ':' type ]
-named_param  ::= id [ ':' type ] [ '=' expr ]
+named_param  ::= id ':' type [ '=' expr ]
 struct_stmt  ::= 'struct' id '{' ( id [ ':' type ] { ',' id [ ':' type ] } )? '}'
 trait_stmt   ::= 'trait' id '{' fn_sig { ',' fn_sig } '}'
 impl_stmt    ::= 'impl' id 'for' type '{' fn_stmt { fn_stmt } '}'
@@ -374,11 +391,6 @@ for_pattern  ::= '_' | id | '(' for_pattern { ',' for_pattern } ')' | '[' for_pa
 - 通过 bytecode VM 执行文件（语句）：`lk FILE`
 - 编译为可执行模块产物：`lk compile [FILE]` -> `FILE.lkm`
 - 执行模块产物：`lk FILE.lkm`
-- 编译为 LLVM 可 native lowering 形状的 native 可执行文件：`lk compile exe [FILE]`
-- 可通过 `LK_NATIVE_RUN=1 lk FILE` 为已支持的 shape 可选启用 cached native executable；如果 native lowering 或 native 构建失败，则回退 bytecode VM。
-- 可通过 `LK_FORCE_VM=1` 或 `LK_VM_ONLY=1` 禁用 native opt-in。
-- 可通过 `LK_NATIVE_CACHE_DIR` 指定 cached native executable 目录。
-- bytecode VM 是默认执行路径，也是 native/AOT 工作的 correctness oracle。
 - 只允许相对且经过清洗的路径。
 - CLI 只在结果非 `nil` 时打印。
 

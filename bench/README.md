@@ -24,11 +24,14 @@ bench/run_workload_bench.sh
 ```
 
 By default the runner measures the same bytecode VM path used by direct
-`lk file.lk` execution. Use `RUN_AOT=1` to compile and measure native AOT as an
-additional explicit engine. If LLVM is disabled or the current workload artifact
-is not native lowerable yet, AOT is reported as skipped and the VM/Lua benchmark
-still runs. The latest smoke currently skips full-suite AOT because native
-lowering does not yet support a loop-after dynamic-map `GetIndex` shape.
+`lk file.lk` execution. LK samples set `LK_FORCE_VM=1` unless
+`LK_NATIVE_RUN=1` is explicitly provided, so an exported shell native-cache flag
+does not accidentally change the default VM baseline. Use `RUN_AOT=1` to compile
+and measure native AOT as an additional explicit engine. If LLVM is disabled or
+the current workload artifact is not native lowerable yet, AOT is reported as
+skipped and the VM/Lua benchmark still runs. The latest smoke currently skips
+full-suite AOT because native lowering does not yet support a loop-after
+dynamic-map `GetIndex` shape.
 
 The runner executes one workload at a time and prints progress to stderr, so a
 slow or stuck workload can be identified directly. Each workload has a timeout
@@ -138,6 +141,22 @@ without adding workload-specific opcodes.
 Plain indexed access now uses the same direct-to-destination path, and
 facts-confirmed `List<Int> + Int key` access lowers to `GetList` instead of the
 fully generic `GetIndex`.
+Facts-confirmed typed int-list accumulator access also lowers
+`total += values[i]` / `total -= values[j]` to `AddListInt` / `SubListInt` when
+the accumulator is an `Int`, the list local is known as `List<Int>`, and the key
+is Int-like. This is a generic list-index accumulator shape; it is not a
+workload-specific fold opcode.
+Facts-confirmed integer midpoint expressions lower
+`math.floor((lhs + rhs) / 2)` to `MidInt` when both operands are Int-like. This
+covers a common interval/binary-search operand shape without naming any
+workload and removes the paired `AddInt + DivInt` dispatch for that expression.
+Map writes with direct template keys such as `"n${i}"` now lower to
+`SetIndexStrI` when the target is known to be a map and the suffix is proven
+`Int`. This avoids materializing the short string key before `.set(...)` while
+keeping ordinary dynamic keys on `SetIndex`. A profile-enabled single-sample
+run reduced `two_sum_map` opcode steps from about `2.04M` to `1.84M` and
+`event_join_by_id` from about `3.78M` to `3.55M`; the default checksum-clean
+VM/Lua geomean is now `0.783x`.
 Direct `lk file.lk` execution defaults to the bytecode VM. Set
 `LK_NATIVE_RUN=1` to opt into the cached native executable fast path when LLVM
 lowering succeeds; keep `LK_FORCE_VM=1` for interpreter-only benchmark/profile
@@ -166,26 +185,37 @@ RUN_AOT=0 RUNS=3 EXTRA_RUNS=5 BENCH_PROGRESS=0 BENCH_TIMEOUT=60 bash bench/run_w
 ```
 
 This is the direct-execution baseline: `lk file.lk` defaults to the bytecode VM,
-and the runner defaults to `RUN_AOT=0`, so this command intentionally does not
-use cached native execution or AOT. The latest checksum-clean rerun reported
-LK/Lua geomean `0.793x` / `0.808x` across two retained-candidate reruns. The
+and the runner defaults to `RUN_AOT=0` plus `LK_FORCE_VM=1` for LK samples unless
+`LK_NATIVE_RUN=1` is explicitly provided, so this command intentionally does not
+use cached native execution or AOT. The latest checksum-clean rerun after opcode
+renumbering reported LK/Lua geomean `0.783x`; the prior ordering compare-test
+dispatch-arm rerun was `0.785x`, the `MidInt`
+rerun was `0.792x`, the `AddListInt` / `SubListInt` rerun was `0.797x`, the
+previous `Add2Int` rerun was `0.796x`, the previous profile-metric split rerun
+was `0.800x`, and the retained `ConcatN` register-window optimization
+previously measured `0.798x` / `0.793x`. The
 largest remaining VM regressions still include `sliding_window_sum`,
 `state_machine_transitions`, `prime_trial_division`, `gcd_batch`, and
 `config_defaults_merge`. Small-int branch lowering reduced
 `state_machine_transitions` from the previous `2.073x` result while keeping the
 optimization generic; `AddMulInt` folds facts-confirmed compound-add multiply
-terms into one accumulator write; `AddIntI` / `MulIntI` also cover commuted
+terms into one accumulator write, and `Add2Int` folds adjacent plain Int terms
+in compound-add accumulator chains; `AddIntI` / `MulIntI` also cover commuted
 small-int immediate arithmetic (`literal + x` / `literal * x`) when facts
 confirm the register operand is `Int`; facts-confirmed typed int-list `GetIndex`
 reads now try the `TypedList::Int` backing before the generic typed-list element
 matcher, `GetList` covers the narrower facts-confirmed `List<Int> + Int key`
-shape, known string key lookup on empty `TypedMap::Mixed` now returns `nil`
+shape, `AddListInt` / `SubListInt` cover typed int-list accumulator reads,
+known string key lookup on empty `TypedMap::Mixed` now returns `nil`
 directly for sparse/default maps, and `ListPush` propagates pushed element kind into list facts without
 preserving unsafe static length assumptions.
 Continuous `Move` dispatch now uses a tight next-op bounds check instead of
 `code.get(...).map(...)` on each adjacent move. Loop scalar const caching now
 also covers short template literal parts, so `"prefix${i}"` style keys do not
 reload the literal prefix on every iteration.
+`ConcatN` now lowers literal, arithmetic, `map.get`, and indexed-access template
+parts directly into its contiguous register window instead of first writing a
+temporary register and moving it into the window.
 `ModInt` / `ModIntI` followed by a same-register `BrEqZeroInt` / `BrNeZeroInt`
 now applies that branch inside the modulo arm and skips the next dispatch; this
 is a VM peephole over existing bytecode, not a new opcode.
@@ -193,6 +223,15 @@ is a VM peephole over existing bytecode, not a new opcode.
 small-divisor divisibility guards like `(x % K) == 0` and `(x % K) != 0` for
 `K` in `1..15`, folding `ModIntI + zero branch` into one packed branch without
 creating workload-specific fused opcodes.
+`MidInt` covers facts-confirmed midpoint expressions like
+`math.floor((lo + hi) / 2)` and keeps the current integer division semantics.
+`TestLtInt`, `TestLeInt`, `TestGtInt`, and `TestGeInt` now have dedicated VM
+dispatch arms for facts-confirmed Int/Int ordering compare-tests, avoiding the
+generic compare-test opcode match on hot condition paths without adding new
+bytecode.
+Template string assignment now lowers `ConcatString` / `ConcatN` directly into
+the destination register when possible, avoiding `ConcatString temp; Move dst
+temp` on dynamic string-key construction without adding a new opcode.
 Nil branches, zero branches, small-int branch/test, and ordinary compare-test
 fallthrough bodies shaped as `Move + Jmp` or a single `Move` also execute inside
 the current branch handler, reducing branch-chain/default dispatch without
@@ -214,13 +253,16 @@ when executing immediate arithmetic. `AddIntI` / `MulIntI` additionally lower
 commuted small-int literal forms without adding new opcodes.
 Profile-enabled validation showed `gcd_batch` executing `BrEqZeroInt:737372`,
 `config_defaults_merge` executing `BrNeZeroInt:360000`, and
-`stock_max_profit` executing `MaxInt:540000` and `MinInt:540000`. Static
-static coverage now reports `instructions=1952`, `Jmp=166`, `LoadInt=313`,
-`AddInt=106`, `AddIntI=58`, `AddMulInt:10`, `BrModNeZeroIntI4:21`,
-`BrNeZeroInt:9`, `BrNeIntI4:10`, `GetIndex=62`, `GetList=6`, and `Move=341`.
+`stock_max_profit` executing `MaxInt:540000` and `MinInt:540000`. The latest
+profile-enabled run showed `sliding_window_sum AddListInt:480000`, with opcode
+steps dropping from about `7.06M` to `6.15M`. Static coverage now reports
+`instructions=1902`, `Jmp=166`, `LoadInt=313`, `AddInt=99`, `SubInt=43`,
+`DivInt=16`, `AddIntI=58`, `AddMulInt:10`, `Add2Int:2`, `AddListInt:1`,
+`SubListInt:1`, `MidInt:2`, `BrModNeZeroIntI4:21`, `BrNeZeroInt:9`,
+`BrNeIntI4:10`, `SetIndexStrI:3`, `GetIndex=62`, `GetList=4`, and `Move=300`.
 Typed int sidecar/register cache was tested and rejected after a low-sample
 VM-only run regressed to `1.210x`. `ConcatKInt` was also tested as a general
-`"prefix${int}"` template-key opcode, but was reverted after the default VM
+`"prefix${int}"` string construction opcode, but was reverted after the default VM
 geomean regressed to `1.073x`.
 
 ## Adaptive Rerun Policy
@@ -478,7 +520,11 @@ RUN_AOT=0 RUNS=1 EXTRA_RUNS=0 PROFILE_WORKLOADS=1 BENCH_PROGRESS=0 BENCH_TIMEOUT
 
 The profile table now includes `VM Dynamic Opcode Top-6 by Workload`,
 `VM Register Write Source Top-6 by Workload`, and `VM Index Key Top-6 by
-Workload`. The latest coverage profile shows aggregate dynamic immediate
+Workload`. Index-key profiling keeps `dynamic_register_key` as the total and
+also breaks it down into `dynamic_int_key`, `dynamic_short_string_key`,
+`dynamic_object_key`, and `dynamic_other_key`; the latest profile shows the hot
+dynamic map keys are overwhelmingly short strings, so `GetI` / `SetI` is not the
+next default opcode direction. The latest coverage profile shows aggregate dynamic immediate
 arithmetic coverage in the multi-million range: `MulIntI` covers hot multiply
 literal RHS paths and `ModIntI` covers hot modulo literal RHS paths. The
 remaining top dispatch pressure is now `AddInt`, `Move`, `ForLoopI`, `Jmp`,
@@ -497,9 +543,13 @@ pressure. This moves the next optimization target toward arithmetic immediates,
 compare branch lowering, `Move` elimination, and string/index-result
 consumption rather than workload-specific opcodes.
 
-The VM currently has one temporary opcode exception: `Opcode::ForLoopI` reuses
+The VM previously had one temporary opcode exception: `Opcode::ForLoopI` reused
 the old `Extra = 62` slot to compress static positive/negative-step range loops.
-It is not the long-term opcode encoding migration described in `OPCODE.md`.
+Opcodes are now renumbered into semantic groups within the 7-bit encoding, so
+`ForLoopI` no longer occupies that historical slot. This is an encoding and
+maintenance refactor; benchmark claims still come from checksum-clean wall-clock
+runs. Module artifacts were bumped to version `2` so old raw instruction words
+are rejected instead of being decoded under the new numbering.
 Continuous `Move` dispatch batching is also enabled; it preserves per-instruction
 profile accounting, so `Move` remains visible in dynamic opcode counters even
 when adjacent moves are consumed inside one dispatch arm. On the current opcode
@@ -523,6 +573,30 @@ showed opcode steps dropping from about `2.63M` to `2.24M` in `two_sum_map`,
 `4.41M` to `3.99M` in `histogram_group_count`, and `1.08M` to `0.92M` in
 `template_render_mix`; this removes dynamic `LoadString` prefix materialization
 without adding a workload-specific opcode.
+
+`ConcatN` register-window direct lowering further reduces template/string-heavy
+temporary moves without adding a new opcode. In a profile-enabled single-sample
+run, `log_parse_filter` dropped from about `4.26M` to `3.62M` opcode steps and
+from about `1.39M` to `757K` dynamic `Move`; `template_render_mix` dropped from
+about `860K` to `730K` opcode steps and from about `255K` to `125K` dynamic
+`Move`.
+
+`Add2Int` is a new general accumulator operand shape for `A += B + C` after
+facts prove both RHS terms are Int and the accumulator can be updated in place.
+It is paired with the older `AddMulInt` multiply-term shape and is not a
+workload-specific transition opcode. Static coverage is only `Add2Int:2`, but
+profile-enabled validation shows `state_machine_transitions Add2Int:120000` and
+opcode steps dropping from about `1.663M` to `1.543M`; the default VM
+checksum-clean benchmark reported `0.796x` vs Lua at that step. The later
+`AddListInt` / `SubListInt` typed-list accumulator lowering kept checksums clean
+and reported `0.797x` vs Lua while reducing `sliding_window_sum` opcode steps
+from about `7.06M` to `6.15M`.
+
+Two dispatch-local loop candidates were also measured and rejected. Fusing
+`Move2` / `AddIntI` into a following `Jmp` reduced profile opcode steps in
+`gcd_batch` and `binary_search`, but the default release VM regressed to
+`0.823x`. Recording static range `step_value` in `ForLoopI` facts removed one
+hot-path step-register read, but the default release VM regressed to `0.821x`.
 
 The normal release VM now uses a zero-sized no-op runtime profile frame when
 `vm-profile` is not enabled; opcode histogram, register write source, and

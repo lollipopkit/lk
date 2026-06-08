@@ -404,10 +404,18 @@ run_engine_workload() {
     lk)
       command_label="LK"
       progress "[$sample] $command_label $name"
-      if ! LK_WORKLOAD_FILTER="$name" run_with_timeout "$out_file" "$err_file" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk"; then
-        echo "$command_label workload '$name' failed or timed out after ${BENCH_TIMEOUT}s" >&2
-        sed 's/^/  /' "$err_file" >&2
-        return 1
+      if [ "${LK_NATIVE_RUN:-0}" = "1" ]; then
+        if ! LK_WORKLOAD_FILTER="$name" run_with_timeout "$out_file" "$err_file" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk"; then
+          echo "$command_label workload '$name' failed or timed out after ${BENCH_TIMEOUT}s" >&2
+          sed 's/^/  /' "$err_file" >&2
+          return 1
+        fi
+      else
+        if ! LK_FORCE_VM=1 LK_WORKLOAD_FILTER="$name" run_with_timeout "$out_file" "$err_file" "$LK_BIN" "$BENCH_DIR/workloads_business_algorithms.lk"; then
+          echo "$command_label workload '$name' failed or timed out after ${BENCH_TIMEOUT}s" >&2
+          sed 's/^/  /' "$err_file" >&2
+          return 1
+        fi
       fi
       ;;
     aot)

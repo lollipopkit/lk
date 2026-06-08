@@ -15,12 +15,12 @@ use super::{
     block_helpers::{
         clear_control_flow_static_values, concat_text_values, control_flow_static_boundaries,
         emit_dynamic_string_starts_with, emit_inline_branch_to_next, emit_inline_i64_add_mul_block,
-        emit_inline_i64_binary_block, emit_inline_scalar_arg_stores, emit_inline_scalar_equality_block,
-        emit_inline_scalar_ordered_comparison_block, emit_inline_string_ptr_equality_block,
-        emit_mixed_numeric_int_opcode_block, emit_static_formatted_print, emit_static_string_i64_map_get,
-        i64_slot_kind, inline_native_label, inline_text_value_from_reg, native_static_string, scalar_named_call_args,
-        static_call_args, static_string_i64_map_supported, static_string_value_trusted_at_call,
-        store_native_inline_scalar_value, three_regs_in_bounds,
+        emit_inline_i64_add2_block, emit_inline_i64_binary_block, emit_inline_scalar_arg_stores,
+        emit_inline_scalar_equality_block, emit_inline_scalar_ordered_comparison_block,
+        emit_inline_string_ptr_equality_block, emit_mixed_numeric_int_opcode_block, emit_static_formatted_print,
+        emit_static_string_i64_map_get, i64_slot_kind, inline_native_label, inline_text_value_from_reg,
+        native_static_string, scalar_named_call_args, static_call_args, static_string_i64_map_supported,
+        static_string_value_trusted_at_call, store_native_inline_scalar_value, three_regs_in_bounds,
     },
     emit::emit_f64_binary_block,
     facts::{NativeScalarFacts, NativeScalarKind, native_scalar_block_facts_with_initial},
@@ -358,19 +358,25 @@ fn emit_inline_direct_scalar_blocks(
             | Opcode::ModInt
             | Opcode::MinInt
             | Opcode::MaxInt
-            | Opcode::AddMulInt => {
+            | Opcode::AddMulInt
+            | Opcode::Add2Int
+            | Opcode::MidInt => {
                 if !three_regs_in_bounds(register_count, instr) {
                     return None;
                 }
                 static_regs[instr.a() as usize] = None;
-                if instr.opcode() == Opcode::AddMulInt {
+                if matches!(instr.opcode(), Opcode::AddMulInt | Opcode::Add2Int) {
                     let acc = facts.register_kind_before(pc, instr.a())?;
                     let lhs = facts.register_kind_before(pc, instr.b())?;
                     let rhs = facts.register_kind_before(pc, instr.c())?;
                     if !i64_slot_kind(acc) || !i64_slot_kind(lhs) || !i64_slot_kind(rhs) {
                         return None;
                     }
-                    emit_inline_i64_add_mul_block(ir, call_pc, instr, tmp_index);
+                    if instr.opcode() == Opcode::AddMulInt {
+                        emit_inline_i64_add_mul_block(ir, call_pc, instr, tmp_index);
+                    } else {
+                        emit_inline_i64_add2_block(ir, call_pc, instr, tmp_index);
+                    }
                     emit_inline_branch_to_next(ir, call_pc, pc, code.len());
                     continue;
                 }

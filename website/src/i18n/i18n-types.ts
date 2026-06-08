@@ -24,15 +24,11 @@ type RootTranslation = {
 		 */
 		title: string
 		/**
-		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​a​ ​b​y​t​e​c​o​d​e​ ​V​M​,​ ​o​p​t​i​o​n​a​l​ ​c​a​c​h​e​d​ ​n​a​t​i​v​e​ ​e​x​e​c​u​t​i​o​n​,​ ​L​L​V​M​ ​A​O​T​,​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​a​c​k​a​g​e​ ​i​m​p​o​r​t​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
+		 * L​K​ ​i​s​ ​a​ ​R​u​s​t​-​l​i​k​e​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​ ​w​i​t​h​ ​r​i​c​h​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​a​c​k​a​g​e​ ​i​m​p​o​r​t​s​,​ ​p​r​a​c​t​i​c​a​l​ ​C​L​I​ ​w​o​r​k​f​l​o​w​s​,​ ​a​n​d​ ​a​ ​b​a​t​t​e​r​i​e​s​-​i​n​c​l​u​d​e​d​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​.
 		 */
 		description: string
 	}
 	nav: {
-		/**
-		 * P​e​r​f​o​r​m​a​n​c​e
-		 */
-		performance: string
 		/**
 		 * S​p​e​c
 		 */
@@ -52,11 +48,11 @@ type RootTranslation = {
 		 */
 		eyebrow: string
 		/**
-		 * F​a​s​t​,​ ​l​i​g​h​t​w​e​i​g​h​t​,​ ​m​o​d​e​r​n​ ​l​a​n​g​u​a​g​e​.
+		 * L​i​g​h​t​w​e​i​g​h​t​,​ ​m​o​d​e​r​n​ ​s​c​r​i​p​t​i​n​g​ ​l​a​n​g​u​a​g​e​.
 		 */
 		title: string
 		/**
-		 * L​K​ ​g​i​v​e​s​ ​y​o​u​ ​c​l​e​a​r​ ​s​y​n​t​a​x​,​ ​d​e​t​e​r​m​i​n​i​s​t​i​c​ ​V​M​ ​e​x​e​c​u​t​i​o​n​ ​b​y​ ​d​e​f​a​u​l​t​,​ ​o​p​t​i​o​n​a​l​ ​c​a​c​h​e​d​ ​n​a​t​i​v​e​ ​e​x​e​c​u​t​i​o​n​,​ ​s​t​r​u​c​t​u​r​e​d​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​a​n​d​ ​a​ ​p​r​a​c​t​i​c​a​l​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​ ​f​o​r​ ​e​m​b​e​d​d​i​n​g​ ​l​o​g​i​c​ ​i​n​ ​a​p​p​l​i​c​a​t​i​o​n​s​ ​a​n​d​ ​w​r​i​t​i​n​g​ ​a​u​t​o​m​a​t​i​o​n​ ​s​c​r​i​p​t​s​.
+		 * L​K​ ​g​i​v​e​s​ ​y​o​u​ ​c​l​e​a​r​ ​s​y​n​t​a​x​,​ ​s​t​r​u​c​t​u​r​e​d​ ​p​a​t​t​e​r​n​ ​m​a​t​c​h​i​n​g​,​ ​p​r​a​c​t​i​c​a​l​ ​C​L​I​ ​w​o​r​k​f​l​o​w​s​,​ ​a​n​d​ ​a​ ​u​s​e​f​u​l​ ​s​t​a​n​d​a​r​d​ ​l​i​b​r​a​r​y​ ​f​o​r​ ​e​m​b​e​d​d​i​n​g​ ​l​o​g​i​c​ ​i​n​ ​a​p​p​l​i​c​a​t​i​o​n​s​ ​a​n​d​ ​w​r​i​t​i​n​g​ ​a​u​t​o​m​a​t​i​o​n​ ​s​c​r​i​p​t​s​.
 		 */
 		subtitle: string
 		/**
@@ -134,11 +130,11 @@ type RootTranslation = {
 		 */
 		kicker: string
 		/**
-		 * F​r​o​m​ ​s​c​r​i​p​t​ ​t​o​ ​V​M​ ​e​x​e​c​u​t​i​o​n​,​ ​o​p​t​i​o​n​a​l​ ​n​a​t​i​v​e​ ​c​a​c​h​e​,​ ​a​n​d​ ​L​L​V​M​ ​A​O​T​.
+		 * F​r​o​m​ ​s​c​r​i​p​t​s​ ​t​o​ ​t​y​p​e​ ​c​h​e​c​k​s​,​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​p​a​c​k​a​g​e​ ​t​o​o​l​s​.
 		 */
 		title: string
 		/**
-		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​ ​t​h​r​o​u​g​h​ ​t​h​e​ ​b​y​t​e​c​o​d​e​ ​V​M​ ​b​y​ ​d​e​f​a​u​l​t​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​o​p​t​ ​i​n​t​o​ ​c​a​c​h​e​d​ ​n​a​t​i​v​e​ ​e​x​e​c​u​t​a​b​l​e​s​ ​f​o​r​ ​s​u​p​p​o​r​t​e​d​ ​s​h​a​p​e​s​,​ ​a​n​d​ ​b​u​i​l​d​ ​e​x​p​l​i​c​i​t​ ​n​a​t​i​v​e​ ​e​x​e​c​u​t​a​b​l​e​s​.
+		 * L​K​ ​c​a​n​ ​r​u​n​ ​a​ ​R​E​P​L​,​ ​e​x​e​c​u​t​e​ ​`​.​l​k​`​ ​f​i​l​e​s​,​ ​t​y​p​e​-​c​h​e​c​k​ ​w​i​t​h​o​u​t​ ​e​x​e​c​u​t​i​n​g​,​ ​e​m​i​t​ ​m​o​d​u​l​e​ ​a​r​t​i​f​a​c​t​s​,​ ​a​n​d​ ​m​a​n​a​g​e​ ​p​a​c​k​a​g​e​ ​w​o​r​k​s​p​a​c​e​s​.
 		 */
 		subtitle: string
 		rows: {
@@ -247,15 +243,11 @@ export type TranslationFunctions = {
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK is a Rust-like scripting language with a bytecode VM, optional cached native execution, LLVM AOT, rich pattern matching, package imports, and a batteries-included standard library.
+		 * LK is a Rust-like scripting language with rich pattern matching, package imports, practical CLI workflows, and a batteries-included standard library.
 		 */
 		description: () => LocalizedString
 	}
 	nav: {
-		/**
-		 * Performance
-		 */
-		performance: () => LocalizedString
 		/**
 		 * Spec
 		 */
@@ -275,11 +267,11 @@ export type TranslationFunctions = {
 		 */
 		eyebrow: () => LocalizedString
 		/**
-		 * Fast, lightweight, modern language.
+		 * Lightweight, modern scripting language.
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK gives you clear syntax, deterministic VM execution by default, optional cached native execution, structured pattern matching, and a practical standard library for embedding logic in applications and writing automation scripts.
+		 * LK gives you clear syntax, structured pattern matching, practical CLI workflows, and a useful standard library for embedding logic in applications and writing automation scripts.
 		 */
 		subtitle: () => LocalizedString
 		/**
@@ -357,11 +349,11 @@ export type TranslationFunctions = {
 		 */
 		kicker: () => LocalizedString
 		/**
-		 * From script to VM execution, optional native cache, and LLVM AOT.
+		 * From scripts to type checks, module artifacts, and package tools.
 		 */
 		title: () => LocalizedString
 		/**
-		 * LK can run a REPL, execute `.lk` files through the bytecode VM by default, type-check without executing, opt into cached native executables for supported shapes, and build explicit native executables.
+		 * LK can run a REPL, execute `.lk` files, type-check without executing, emit module artifacts, and manage package workspaces.
 		 */
 		subtitle: () => LocalizedString
 		rows: {

@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::val::{HeapRef, HeapValue, RuntimeMapKey, RuntimeObject, RuntimeVal, ShortStr, TypedList, TypedMap};
 
-use super::profile::record_index_key_metric;
+use super::profile::{record_dynamic_index_key_metric, record_index_key_metric};
 use super::{Executor, heap_kind, push_list_value, set_list_value};
 use crate::vm::{
     IndexInlineCache,
@@ -14,6 +14,8 @@ use crate::vm::{
 
 mod index;
 mod set_index;
+
+pub(in crate::vm::exec) use index::with_string_int_key;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum IndexTargetKind {
@@ -606,7 +608,10 @@ impl Executor {
                 Arc::<str>::from(key_str)
             }
             None => {
-                record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::DynamicRegisterKey);
+                match moved_key.as_ref() {
+                    Some(key) => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), key),
+                    None => record_dynamic_index_key_metric(index_key_metrics.as_deref_mut(), self.read(key_reg)?),
+                }
                 record_index_key_metric(index_key_metrics.as_deref_mut(), VmIndexKeyMetric::ObjectKey);
                 self.object_key_from_register_or_value(key_reg, moved_key)?
             }

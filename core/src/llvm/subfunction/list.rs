@@ -9,7 +9,10 @@ use crate::llvm::{
     },
     ir_text::{native_label, native_relative_target, next_tmp},
     scalar::block_helpers::local_register_kind_before,
-    scalar::emit::{emit_i64_add_mul_block, emit_i64_binary_block, emit_numeric_compare_block},
+    scalar::emit::{
+        emit_i64_add_mul_block, emit_i64_add2_block, emit_i64_binary_block, emit_i64_mid_block,
+        emit_numeric_compare_block,
+    },
     scalar::facts::NativeScalarKind,
     straightline_value::{NativeBuiltin, NativeListElementKind, NativeStraightlineValue, native_static_global},
 };
@@ -314,9 +317,15 @@ fn compile_native_i64_list_subfunction_profile(
             | Opcode::ModInt
             | Opcode::MinInt
             | Opcode::MaxInt
-            | Opcode::AddMulInt => {
+            | Opcode::AddMulInt
+            | Opcode::Add2Int
+            | Opcode::MidInt => {
                 if instr.opcode() == Opcode::AddMulInt {
                     emit_i64_add_mul_block(&mut ir, instr, &mut tmp_index);
+                } else if instr.opcode() == Opcode::Add2Int {
+                    emit_i64_add2_block(&mut ir, instr, &mut tmp_index);
+                } else if instr.opcode() == Opcode::MidInt {
+                    emit_i64_mid_block(&mut ir, instr, &mut tmp_index);
                 } else {
                     emit_i64_binary_block(&mut ir, instr, &mut tmp_index);
                 }

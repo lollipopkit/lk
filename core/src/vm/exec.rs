@@ -672,6 +672,60 @@ impl Executor {
                         ),
                     }
                 }
+                Opcode::Add2Int => {
+                    let (acc_idx, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
+                    match (
+                        &self.state.stack[acc_idx],
+                        &self.state.stack[lhs_idx],
+                        &self.state.stack[rhs_idx],
+                    ) {
+                        (RuntimeVal::Int(acc), RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => {
+                            self.state.stack[acc_idx] = RuntimeVal::Int(acc.wrapping_add(*lhs).wrapping_add(*rhs));
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            self.pc += 1;
+                        }
+                        (acc, lhs, rhs) => bail!(
+                            "Add2Int expected Int operands, got {:?}, {:?}, and {:?}",
+                            acc.kind(),
+                            lhs.kind(),
+                            rhs.kind()
+                        ),
+                    }
+                }
+                Opcode::MidInt => {
+                    let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
+                    match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => {
+                            self.state.stack[dst] = RuntimeVal::Int(lhs.wrapping_add(*rhs) / 2);
+                            profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                            self.pc += 1;
+                        }
+                        (lhs, rhs) => bail!(
+                            "MidInt expected Int operands, got {:?} and {:?}",
+                            lhs.kind(),
+                            rhs.kind()
+                        ),
+                    }
+                }
+                Opcode::AddListInt | Opcode::SubListInt => {
+                    let acc_idx = self.stack_index_unchecked(instr.a());
+                    let RuntimeVal::Int(acc) = self.state.stack[acc_idx] else {
+                        bail!(
+                            "{:?} expected Int accumulator, got {:?}",
+                            instr.opcode(),
+                            self.state.stack[acc_idx].kind()
+                        );
+                    };
+                    let item = self.read_known_int_list_index(instr.b(), instr.c())?;
+                    let value = if instr.opcode() == Opcode::AddListInt {
+                        acc.wrapping_add(item)
+                    } else {
+                        acc.wrapping_sub(item)
+                    };
+                    self.state.stack[acc_idx] = RuntimeVal::Int(value);
+                    profile.record_write_source(VmRegisterWriteSource::Arithmetic, collect_metrics);
+                    self.pc += 1;
+                }
                 Opcode::SubInt => {
                     let (dst, lhs_idx, rhs_idx) = self.stack_abc_unchecked(instr);
                     let lhs = &self.state.stack[lhs_idx];
@@ -1098,6 +1152,42 @@ impl Executor {
                     };
                     self.apply_compare_test_branch_unchecked(function, code, instr, value);
                 }
+                Opcode::TestLtInt => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs_idx = self.stack_index_unchecked(instr.b());
+                    let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => lhs < rhs,
+                        _ => self.compare_test_value_slow(instr, lhs_idx, rhs_idx)?,
+                    };
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
+                }
+                Opcode::TestLeInt => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs_idx = self.stack_index_unchecked(instr.b());
+                    let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => lhs <= rhs,
+                        _ => self.compare_test_value_slow(instr, lhs_idx, rhs_idx)?,
+                    };
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
+                }
+                Opcode::TestGtInt => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs_idx = self.stack_index_unchecked(instr.b());
+                    let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => lhs > rhs,
+                        _ => self.compare_test_value_slow(instr, lhs_idx, rhs_idx)?,
+                    };
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
+                }
+                Opcode::TestGeInt => {
+                    let lhs_idx = self.stack_index_unchecked(instr.a());
+                    let rhs_idx = self.stack_index_unchecked(instr.b());
+                    let value = match (&self.state.stack[lhs_idx], &self.state.stack[rhs_idx]) {
+                        (RuntimeVal::Int(lhs), RuntimeVal::Int(rhs)) => lhs >= rhs,
+                        _ => self.compare_test_value_slow(instr, lhs_idx, rhs_idx)?,
+                    };
+                    self.apply_compare_test_branch_unchecked(function, code, instr, value);
+                }
                 Opcode::TestEqIntI2 => {
                     let lhs_idx = self.stack_index_unchecked(instr.a());
                     let rhs_idx = self.stack_index_unchecked(instr.b());
@@ -1279,6 +1369,28 @@ impl Executor {
                     profile.record_write_source(VmRegisterWriteSource::Index, collect_metrics);
                     self.pc += 1;
                 }
+                Opcode::GetIndexStrI => {
+                    let index_fact = self.static_index_fact(function);
+                    let Some(key_fact) = function.performance.known_key(self.pc).and_then(|fact| fact.string_int)
+                    else {
+                        bail!("GetIndexStrI missing string-int key fact at pc {}", self.pc);
+                    };
+                    let Some(prefix) = function.consts.string(key_fact.prefix_key) else {
+                        bail!("GetIndexStrI prefix const {} out of bounds", key_fact.prefix_key);
+                    };
+                    if collect_metrics {
+                        record_container_op_known_enabled(index_metric_kind(index_fact));
+                    }
+                    let value = self.get_string_int_map_index(
+                        instr.b(),
+                        instr.c(),
+                        prefix,
+                        profile.index_key_metrics(collect_metrics),
+                    )?;
+                    self.write_unchecked(instr.a(), value);
+                    profile.record_write_source(VmRegisterWriteSource::Index, collect_metrics);
+                    self.pc += 1;
+                }
                 Opcode::GetFieldK => {
                     let index_fact = self.static_index_fact(function);
                     if collect_metrics {
@@ -1353,6 +1465,33 @@ impl Executor {
                         move_value,
                         known_string_key,
                         index_fact,
+                        profile.index_key_metrics(collect_metrics),
+                    )?;
+                    self.pc += 1;
+                }
+                Opcode::SetIndexStrI => {
+                    let move_value = function
+                        .performance
+                        .container_move(self.pc)
+                        .is_some_and(|fact| fact.move_value);
+                    let index_fact = self.static_index_fact(function);
+                    let Some(key_fact) = function.performance.known_key(self.pc).and_then(|fact| fact.string_int)
+                    else {
+                        bail!("SetIndexStrI missing string-int key fact at pc {}", self.pc);
+                    };
+                    let Some(prefix) = function.consts.string(key_fact.prefix_key) else {
+                        bail!("SetIndexStrI prefix const {} out of bounds", key_fact.prefix_key);
+                    };
+                    if collect_metrics {
+                        record_container_op_known_enabled(index_metric_kind(index_fact));
+                    }
+                    self.set_string_int_map_index(
+                        instr.a(),
+                        instr.b(),
+                        instr.c(),
+                        prefix,
+                        move_value,
+                        index_fact.map(|fact| fact.value_kind),
                         profile.index_key_metrics(collect_metrics),
                     )?;
                     self.pc += 1;

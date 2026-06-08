@@ -13,7 +13,7 @@ use super::{
     ConstHeapValue, ConstPool, ConstRuntimeValue, Function, GlobalSlot, Instr, Module, analysis::PerformanceFacts,
 };
 
-pub const MODULE_ARTIFACT_VERSION: u32 = 1;
+pub const MODULE_ARTIFACT_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleArtifact {
