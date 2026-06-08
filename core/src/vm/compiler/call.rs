@@ -58,6 +58,9 @@ impl Compiler {
                 let callee = self.lower_readonly_operand(callee)?;
                 return self.lower_call_window_boxes(callee, args);
             }
+            if let Some((target, key)) = map_get_method_call_args(callee, args) {
+                return self.lower_map_get_method_call(target, key);
+            }
             return self.lower_builtin_method_call(target, method, args);
         }
         let callee = self.lower_readonly_operand(callee)?;
@@ -90,18 +93,32 @@ impl Compiler {
         Ok(dst)
     }
 
+    fn lower_map_get_method_call(&mut self, target: &Expr, key: &Expr) -> Result<u16> {
+        let dst = self.alloc_reg();
+        self.lower_map_get_expr_to_register(dst, target, key)?;
+        Ok(dst)
+    }
+
     pub(super) fn lower_map_get_function_call_to_register(&mut self, dst: u16, args: &[Box<Expr>]) -> Result<()> {
         if args.len() != 2 {
             bail!("Compiler map.get expects 2 args, got {}", args.len());
         }
-        if let Some(value) = self.lower_const_map_get(&args[0], &args[1])? {
+        self.lower_map_get_expr_to_register(dst, &args[0], &args[1])
+    }
+
+    pub(super) fn lower_map_get_method_call_to_register(&mut self, dst: u16, target: &Expr, key: &Expr) -> Result<()> {
+        self.lower_map_get_expr_to_register(dst, target, key)
+    }
+
+    fn lower_map_get_expr_to_register(&mut self, dst: u16, target_expr: &Expr, key_expr: &Expr) -> Result<()> {
+        if let Some(value) = self.lower_const_map_get(target_expr, key_expr)? {
             let move_source = !self.is_current_local_slot(value);
             self.emit_move_with_policy(dst, value, "map.get const value", move_source)?;
             return Ok(());
         }
-        let target = self.lower_readonly_index_operand(&args[0])?;
+        let target = self.lower_readonly_index_operand(target_expr)?;
         let index_fact = index_fact_from_target(&self.function.performance, target);
-        if let Some((suffix, key_fact)) = self.try_lower_string_int_key_for_map(index_fact, &args[1])? {
+        if let Some((suffix, key_fact)) = self.try_lower_string_int_key_for_map(index_fact, key_expr)? {
             let pc = self.function.code.len();
             self.emit(Instr::abc(
                 Opcode::GetIndexStrI,
@@ -116,7 +133,7 @@ impl Compiler {
             }
             return Ok(());
         }
-        let (key, key_fact) = self.lower_readonly_index_key_for_target(target, index_fact, &args[1])?;
+        let (key, key_fact) = self.lower_readonly_index_key_for_target(target, index_fact, key_expr)?;
         let pc = self.function.code.len();
         if let Some(const_key) = get_field_key(index_fact, key_fact) {
             self.emit(Instr::abc(
@@ -990,6 +1007,19 @@ fn method_name(expr: &Expr) -> Option<&str> {
         Expr::Literal(value) => value.as_str(),
         _ => None,
     }
+}
+
+pub(super) fn map_get_method_call_args<'a>(callee: &'a Expr, args: &'a [Box<Expr>]) -> Option<(&'a Expr, &'a Expr)> {
+    if args.len() != 1 {
+        return None;
+    }
+    let Expr::Access(target, method) = callee else {
+        return None;
+    };
+    if method_name(method) != Some("get") {
+        return None;
+    }
+    Some((target.as_ref(), args[0].as_ref()))
 }
 
 fn literal_string_text(expr: &Expr) -> Option<&str> {

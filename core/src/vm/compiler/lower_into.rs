@@ -9,7 +9,9 @@ use crate::{
     vm::analysis::PerfValueKind,
 };
 
-use super::{Compiler, ConstHeapValue, Instr, Opcode, checked_u8, support::ast_literal_kind};
+use super::{
+    Compiler, ConstHeapValue, Instr, Opcode, call::map_get_method_call_args, checked_u8, support::ast_literal_kind,
+};
 
 impl Compiler {
     pub(super) fn lower_readonly_operand(&mut self, expr: &Expr) -> Result<u16> {
@@ -89,9 +91,16 @@ impl Compiler {
                 }
                 self.try_lower_expr_to_register(dst, &args[0])
             }
-            Expr::CallExpr(callee, args) if self.is_external_module_call(callee, args, "map", "get", 2) => {
-                self.lower_map_get_function_call_to_register(dst, args)?;
-                Ok(true)
+            Expr::CallExpr(callee, args) => {
+                if self.is_external_module_call(callee, args, "map", "get", 2) {
+                    self.lower_map_get_function_call_to_register(dst, args)?;
+                    return Ok(true);
+                }
+                if let Some((target, key)) = map_get_method_call_args(callee, args) {
+                    self.lower_map_get_method_call_to_register(dst, target, key)?;
+                    return Ok(true);
+                }
+                Ok(false)
             }
             Expr::Access(target, key) => {
                 self.lower_access_to_register(dst, target, key)?;
