@@ -30,10 +30,6 @@ impl ReplCompletionState {
         source.push_str(input);
         source.push('\n');
     }
-
-    fn snapshot(&self) -> String {
-        self.source.lock().map(|source| source.clone()).unwrap_or_default()
-    }
 }
 
 pub(crate) struct ReplHelper {
@@ -64,12 +60,13 @@ impl Completer for ReplHelper {
     type Candidate = Pair;
 
     fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Result<(usize, Vec<Self::Candidate>)> {
-        let session = self.state.snapshot();
+        let session_guard = self.state.source.lock().ok();
+        let session_source = session_guard.as_ref().map(|source| source.as_str());
         let candidates = self.engine.complete(CompletionRequest {
             source: line,
             cursor: pos.min(line.len()),
             mode: CompletionMode::Repl,
-            session_source: Some(&session),
+            session_source,
             base_dir: self.base_dir.as_deref(),
         });
         let start = candidates.first().map(|item| item.replace_start).unwrap_or(pos);

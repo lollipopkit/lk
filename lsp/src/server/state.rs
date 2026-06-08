@@ -42,12 +42,12 @@ pub(crate) struct LkLanguageServer {
 }
 
 impl LkLanguageServer {
-    pub(crate) fn new(client: Client) -> Self {
+    pub(crate) fn new(client: Client, completion_engine: CompletionEngine) -> Self {
         Self {
             client,
             documents: Arc::new(DashMap::new()),
             analyzer: Mutex::new(LkAnalyzer::new()),
-            completion_engine: CompletionEngine::default(),
+            completion_engine,
             config: Mutex::new(super::config::ServerConfig::default()),
             compute_limiter: Mutex::new(Arc::new(Semaphore::new(2))),
             workspace_root: Mutex::new(None),

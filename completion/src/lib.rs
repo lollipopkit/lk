@@ -83,6 +83,12 @@ impl CompletionEngine {
         Ok(Self { registry })
     }
 
+    pub fn fallback() -> Self {
+        Self {
+            registry: ModuleRegistry::new(),
+        }
+    }
+
     pub fn complete(&self, request: CompletionRequest<'_>) -> Vec<CompletionCandidate> {
         let cursor = request.cursor.min(request.source.len());
         let ctx = CompletionContext::new(request.source, cursor);
@@ -424,7 +430,13 @@ impl CompletionEngine {
 
 impl Default for CompletionEngine {
     fn default() -> Self {
-        Self::new().expect("stdlib completion registry should initialize")
+        match Self::new() {
+            Ok(engine) => engine,
+            Err(err) => {
+                eprintln!("failed to initialize stdlib completion registry: {err}");
+                Self::fallback()
+            }
+        }
     }
 }
 
@@ -622,9 +634,12 @@ fn scan_fn_params(tokens: &[Token], start: usize) -> Option<(FnParams, usize)> {
             Token::LBrace if paren == 1 => named_depth += 1,
             Token::RBrace if paren == 1 => named_depth -= 1,
             Token::Id(name) if paren == 1 && named_depth == 0 => {
-                if matches!(tokens.get(i + 1), Some(Token::Colon)) {
+                let previous_is_param_boundary =
+                    matches!(tokens.get(i.wrapping_sub(1)), Some(Token::LParen | Token::Comma));
+                if previous_is_param_boundary && matches!(tokens.get(i + 1), Some(Token::Colon)) {
                     params.positional.push(name.clone());
-                } else if matches!(tokens.get(i + 1), Some(Token::Comma | Token::RParen)) {
+                } else if previous_is_param_boundary && matches!(tokens.get(i + 1), Some(Token::Comma | Token::RParen))
+                {
                     params.positional.push(name.clone());
                 }
             }
@@ -1088,6 +1103,24 @@ mod tests {
         assert!(
             got.iter()
                 .any(|item| item.label == "width:" && item.replacement == "width: ")
+        );
+    }
+
+    #[test]
+    fn typed_positional_params_do_not_complete_type_names_as_locals() {
+        let engine = CompletionEngine::new().unwrap();
+        let source = "fn f(a: Int, b: String) { I";
+        let got = engine.complete(CompletionRequest {
+            source,
+            cursor: source.len(),
+            mode: CompletionMode::Lsp,
+            session_source: None,
+            base_dir: None,
+        });
+        assert!(got.iter().any(|item| item.label == "Int"));
+        assert!(
+            !got.iter()
+                .any(|item| item.label == "Int" && item.detail.as_deref() == Some("parameter"))
         );
     }
 
